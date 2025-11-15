@@ -1,4 +1,4 @@
-modules = ["bash", "python-3.12"]
+modules = ["bash", "python-3.12", "nodejs-20"]
 [agent]
 expertMode = true
 
@@ -15,15 +15,15 @@ author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "workflow.run"
-args = "pipecat-bot"
+args = "botelier-dashboard"
 
 [[workflows.workflow]]
-name = "pipecat-bot"
+name = "botelier-dashboard"
 author = "agent"
 
 [[workflows.workflow.tasks]]
 task = "shell.exec"
-args = "cd examples/quickstart && python bot.py --host 0.0.0.0 --port 5000"
+args = "cd botelier/frontend && npm run dev"
 waitForPort = 5000
 
 [workflows.workflow.metadata]
@@ -32,3 +32,7 @@ outputType = "webview"
 [[ports]]
 localPort = 5000
 externalPort = 80
+
+[[ports]]
+localPort = 34753
+externalPort = 3000
