@@ -1,7 +1,7 @@
 "use client";
 
 import { useState } from "react";
-import { ArrowLeft, Save, Sparkles } from "lucide-react";
+import { ArrowLeft, Save, Sparkles, Settings2, Mic, Volume2, Brain } from "lucide-react";
 import Link from "next/link";
 
 const STT_PROVIDERS = [
@@ -43,10 +43,24 @@ export default function NewAssistantPage() {
     llmProvider: "openai",
     llmModel: "gpt-4o-mini",
     llmTemperature: 0.7,
+    llmMaxTokens: 150,
+    llmTopP: 1.0,
+    llmFrequencyPenalty: 0.0,
+    llmPresencePenalty: 0.0,
     ttsProvider: "cartesia",
     ttsVoiceId: "71a7ad14-091c-4e8e-a314-022ece01c121",
+    ttsSpeed: 1.0,
+    ttsPitch: 0,
+    ttsVolume: 0,
+    ttsEmotion: "",
+    ttsStability: 0.5,
     systemPrompt: "You are a friendly hotel concierge assistant.",
     greetingMessage: "Hello! How can I assist you today?",
+    enableVad: true,
+    vadConfidence: 0.7,
+    vadStopSecs: 0.8,
+    enableInterruptions: true,
+    idleTimeout: 300,
   });
 
   const selectedLLM = LLM_PROVIDERS.find((p) => p.id === formData.llmProvider);
@@ -90,7 +104,7 @@ export default function NewAssistantPage() {
             />
           </Section>
 
-          <Section title="Model" icon={<Sparkles className="h-5 w-5 text-blue-400" />}>
+          <Section title="Language Model (LLM)" icon={<Brain className="h-5 w-5 text-blue-400" />}>
             <div className="grid grid-cols-2 gap-4">
               <Select
                 label="Provider"
@@ -113,19 +127,64 @@ export default function NewAssistantPage() {
                 />
               )}
             </div>
-            <Input
-              label="Temperature"
-              type="number"
-              min="0"
-              max="2"
-              step="0.1"
-              value={formData.llmTemperature}
-              onChange={(e) => setFormData({ ...formData, llmTemperature: parseFloat(e.target.value) })}
-              helpText="Controls randomness. Higher = more creative (0-2)"
-            />
+            
+            <div className="grid grid-cols-2 gap-4">
+              <Input
+                label="Temperature"
+                type="number"
+                min="0"
+                max="2"
+                step="0.1"
+                value={formData.llmTemperature}
+                onChange={(e) => setFormData({ ...formData, llmTemperature: parseFloat(e.target.value) })}
+                helpText="Creativity (0-2)"
+              />
+              <Input
+                label="Max Tokens"
+                type="number"
+                min="10"
+                max="4096"
+                value={formData.llmMaxTokens}
+                onChange={(e) => setFormData({ ...formData, llmMaxTokens: parseInt(e.target.value) })}
+                helpText="Response length"
+              />
+            </div>
+
+            <div className="grid grid-cols-3 gap-4">
+              <Input
+                label="Top P"
+                type="number"
+                min="0"
+                max="1"
+                step="0.1"
+                value={formData.llmTopP}
+                onChange={(e) => setFormData({ ...formData, llmTopP: parseFloat(e.target.value) })}
+                helpText="Nucleus sampling"
+              />
+              <Input
+                label="Frequency Penalty"
+                type="number"
+                min="0"
+                max="2"
+                step="0.1"
+                value={formData.llmFrequencyPenalty}
+                onChange={(e) => setFormData({ ...formData, llmFrequencyPenalty: parseFloat(e.target.value) })}
+                helpText="Reduce repetition"
+              />
+              <Input
+                label="Presence Penalty"
+                type="number"
+                min="0"
+                max="2"
+                step="0.1"
+                value={formData.llmPresencePenalty}
+                onChange={(e) => setFormData({ ...formData, llmPresencePenalty: parseFloat(e.target.value) })}
+                helpText="Topic diversity"
+              />
+            </div>
           </Section>
 
-          <Section title="Voice Configuration">
+          <Section title="Voice Configuration" icon={<Volume2 className="h-5 w-5 text-purple-400" />}>
             <div className="grid grid-cols-2 gap-4">
               <Select
                 label="Voice Provider"
@@ -148,23 +207,128 @@ export default function NewAssistantPage() {
                 />
               )}
             </div>
+
+            <div className="grid grid-cols-2 gap-4">
+              <Input
+                label="Speed"
+                type="number"
+                min="0.5"
+                max="2"
+                step="0.1"
+                value={formData.ttsSpeed}
+                onChange={(e) => setFormData({ ...formData, ttsSpeed: parseFloat(e.target.value) })}
+                helpText="Speech rate (1.0 = normal)"
+              />
+              <Input
+                label="Pitch"
+                type="number"
+                min="-20"
+                max="20"
+                step="1"
+                value={formData.ttsPitch}
+                onChange={(e) => setFormData({ ...formData, ttsPitch: parseInt(e.target.value) })}
+                helpText="Voice pitch adjustment (%)"
+              />
+            </div>
+
+            {formData.ttsProvider === "elevenlabs" && (
+              <div className="grid grid-cols-2 gap-4">
+                <Input
+                  label="Stability"
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.1"
+                  value={formData.ttsStability}
+                  onChange={(e) => setFormData({ ...formData, ttsStability: parseFloat(e.target.value) })}
+                  helpText="Voice consistency"
+                />
+                <Select
+                  label="Emotion"
+                  value={formData.ttsEmotion}
+                  onChange={(e) => setFormData({ ...formData, ttsEmotion: e.target.value })}
+                  options={[
+                    { value: "", label: "None" },
+                    { value: "excited", label: "Excited" },
+                    { value: "friendly", label: "Friendly" },
+                    { value: "serious", label: "Serious" },
+                  ]}
+                />
+              </div>
+            )}
           </Section>
 
-          <Section title="System Prompt">
+          <Section title="Voice Activity Detection" icon={<Mic className="h-5 w-5 text-green-400" />}>
+            <Checkbox
+              label="Enable VAD"
+              id="enableVad"
+              checked={formData.enableVad}
+              onChange={(e) => setFormData({ ...formData, enableVad: e.target.checked })}
+              helpText="Automatically detect when user starts/stops speaking"
+            />
+
+            {formData.enableVad && (
+              <div className="grid grid-cols-2 gap-4 mt-4">
+                <Input
+                  label="Confidence Threshold"
+                  type="number"
+                  min="0"
+                  max="1"
+                  step="0.1"
+                  value={formData.vadConfidence}
+                  onChange={(e) => setFormData({ ...formData, vadConfidence: parseFloat(e.target.value) })}
+                  helpText="VAD sensitivity (0-1)"
+                />
+                <Input
+                  label="Stop Silence (seconds)"
+                  type="number"
+                  min="0.1"
+                  max="3"
+                  step="0.1"
+                  value={formData.vadStopSecs}
+                  onChange={(e) => setFormData({ ...formData, vadStopSecs: parseFloat(e.target.value) })}
+                  helpText="Silence before stopping"
+                />
+              </div>
+            )}
+          </Section>
+
+          <Section title="Conversation Settings">
             <Textarea
+              label="System Prompt"
               value={formData.systemPrompt}
               onChange={(e) => setFormData({ ...formData, systemPrompt: e.target.value })}
               rows={6}
               placeholder="Define how your assistant should behave..."
             />
-          </Section>
-
-          <Section title="First Message">
             <Input
+              label="First Message"
               value={formData.greetingMessage}
               onChange={(e) => setFormData({ ...formData, greetingMessage: e.target.value })}
               placeholder="What the assistant says when call starts"
             />
+          </Section>
+
+          <Section title="Advanced Settings" icon={<Settings2 className="h-5 w-5 text-gray-400" />}>
+            <div className="space-y-3">
+              <Checkbox
+                label="Enable Interruptions"
+                id="enableInterruptions"
+                checked={formData.enableInterruptions}
+                onChange={(e) => setFormData({ ...formData, enableInterruptions: e.target.checked })}
+                helpText="Allow users to interrupt the agent mid-sentence"
+              />
+              
+              <Input
+                label="Idle Timeout (seconds)"
+                type="number"
+                min="30"
+                max="600"
+                value={formData.idleTimeout}
+                onChange={(e) => setFormData({ ...formData, idleTimeout: parseInt(e.target.value) })}
+                helpText="Maximum silence before ending call"
+              />
+            </div>
           </Section>
         </div>
       </div>
@@ -232,24 +396,29 @@ function Input({
 }
 
 function Textarea({
+  label,
   value,
   onChange,
   rows = 3,
   placeholder,
 }: {
+  label?: string;
   value: string;
   onChange: (e: React.ChangeEvent<HTMLTextAreaElement>) => void;
   rows?: number;
   placeholder?: string;
 }) {
   return (
-    <textarea
-      value={value}
-      onChange={onChange}
-      rows={rows}
-      placeholder={placeholder}
-      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm font-mono"
-    />
+    <div>
+      {label && <label className="block text-sm font-medium text-gray-300 mb-2">{label}</label>}
+      <textarea
+        value={value}
+        onChange={onChange}
+        rows={rows}
+        placeholder={placeholder}
+        className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm font-mono"
+      />
+    </div>
   );
 }
 
@@ -278,6 +447,38 @@ function Select({
           </option>
         ))}
       </select>
+    </div>
+  );
+}
+
+function Checkbox({
+  label,
+  id,
+  checked,
+  onChange,
+  helpText,
+}: {
+  label: string;
+  id: string;
+  checked: boolean;
+  onChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
+  helpText?: string;
+}) {
+  return (
+    <div className="flex items-start">
+      <input
+        type="checkbox"
+        id={id}
+        checked={checked}
+        onChange={onChange}
+        className="mt-1 h-4 w-4 text-blue-600 focus:ring-blue-500 border-gray-300 rounded"
+      />
+      <div className="ml-3">
+        <label htmlFor={id} className="text-sm font-medium text-gray-300">
+          {label}
+        </label>
+        {helpText && <p className="text-xs text-gray-500 mt-0.5">{helpText}</p>}
+      </div>
     </div>
   );
 }
