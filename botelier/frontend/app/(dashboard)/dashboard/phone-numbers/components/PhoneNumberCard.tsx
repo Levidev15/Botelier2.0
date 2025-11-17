@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState } from "react";
 import { Phone, Trash2 } from "lucide-react";
 
 interface Assistant {
@@ -17,28 +17,13 @@ interface PhoneNumberCardProps {
     assistant_id: string | null;
     is_active: boolean;
   };
+  assistants: Assistant[];
   onDelete: (id: string) => void;
   onUpdate: () => void;
 }
 
-export default function PhoneNumberCard({ phoneNumber, onDelete, onUpdate }: PhoneNumberCardProps) {
-  const [assistants, setAssistants] = useState<Assistant[]>([]);
+export default function PhoneNumberCard({ phoneNumber, assistants, onDelete, onUpdate }: PhoneNumberCardProps) {
   const [assigning, setAssigning] = useState(false);
-
-  useEffect(() => {
-    fetchAssistants();
-  }, []);
-
-  const fetchAssistants = async () => {
-    try {
-      const hotelId = "6b410bcc-f843-40df-b32d-078d3e01ac7f"; // Demo Hotel ID
-      const response = await fetch(`/api/assistants?hotel_id=${hotelId}`);
-      const data = await response.json();
-      setAssistants(data.assistants || []);
-    } catch (error) {
-      console.error("Failed to fetch assistants:", error);
-    }
-  };
 
   const handleAssignment = async (assistantId: string) => {
     setAssigning(true);
@@ -65,11 +50,6 @@ export default function PhoneNumberCard({ phoneNumber, onDelete, onUpdate }: Pho
     }
   };
 
-  const getAssistantName = () => {
-    if (!phoneNumber.assistant_id) return "Not assigned";
-    const assistant = assistants.find(a => a.id === phoneNumber.assistant_id);
-    return assistant?.name || "Unknown";
-  };
   return (
     <div className="bg-[#141414] border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors">
       <div className="flex items-start justify-between mb-3">

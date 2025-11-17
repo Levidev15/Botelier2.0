@@ -11,12 +11,19 @@ interface PhoneNumber {
   friendly_name: string | null;
   country_code: string;
   assistant_id: string | null;
+  hotel_id: string;
   is_active: boolean;
   created_at: string;
 }
 
+interface Assistant {
+  id: string;
+  name: string;
+}
+
 export default function PhoneNumbersPage() {
   const [phoneNumbers, setPhoneNumbers] = useState<PhoneNumber[]>([]);
+  const [assistants, setAssistants] = useState<Assistant[]>([]);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [loading, setLoading] = useState(true);
 
@@ -35,9 +42,28 @@ export default function PhoneNumbersPage() {
     }
   };
 
+  const fetchAssistants = async (hotelId: string) => {
+    try {
+      const response = await fetch(`/api/assistants?hotel_id=${hotelId}`);
+      const data = await response.json();
+      setAssistants(data.assistants || []);
+    } catch (error) {
+      console.error("Failed to fetch assistants:", error);
+      setAssistants([]);
+    }
+  };
+
   useEffect(() => {
     fetchPhoneNumbers();
   }, []);
+
+  useEffect(() => {
+    // Fetch assistants when phone numbers are loaded
+    if (phoneNumbers.length > 0) {
+      const hotelId = phoneNumbers[0].hotel_id;
+      fetchAssistants(hotelId);
+    }
+  }, [phoneNumbers]);
 
   const handleNumberAdded = () => {
     setIsDrawerOpen(false);
@@ -107,6 +133,7 @@ export default function PhoneNumbersPage() {
               <PhoneNumberCard
                 key={number.id}
                 phoneNumber={number}
+                assistants={assistants}
                 onDelete={handleDelete}
                 onUpdate={fetchPhoneNumbers}
               />
