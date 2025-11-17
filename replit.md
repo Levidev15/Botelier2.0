@@ -59,7 +59,7 @@ from pipecat.services.openai.llm import OpenAILLMService
 
 ## Current Status
 
-### ✅ Completed (Task 1)
+### ✅ Completed
 
 **Project Foundation:**
 - Created `botelier/` directory structure
@@ -74,17 +74,31 @@ from pipecat.services.openai.llm import OpenAILLMService
   - 15+ TTS providers (Cartesia, ElevenLabs, Google, etc.)
 - Comprehensive provider metadata (models, voices, capabilities)
 
-### 🚧 In Progress (Tasks 2-9)
+**Tools System (Function Calling):**
+- PostgreSQL database schema for tools (`models/tool.py`)
+  - Tool types: Transfer Call, API Request, End Call, SMS, Email
+  - JSON config storage for tool-specific parameters
+- FastAPI CRUD endpoints (`api/tools.py`)
+  - Create, read, update, delete tools
+  - Filter by assistant and tool type
+- React frontend Tools page (`frontend/app/dashboard/tools/`)
+  - Vapi.ai-style dark theme interface
+  - Tool drawer with type selector
+  - Transfer Call form with validation
+  - Tool cards with edit/delete functionality
+- Pipecat integration layer (`voice/function_mapper.py`)
+  - Converts database tools → LLM function schemas
+  - Handles call transfers via Twilio/Daily
+  - Maps API requests to external systems
+- Comprehensive documentation (`TOOLS_README.md`)
 
-**Next Steps:**
-- Task 2: Next.js frontend with authentication
-- Task 3: PostgreSQL multi-tenant database schema
-- Task 4: FastAPI backend REST API
-- Task 5: Hotel dashboard UI for agent configuration
-- Task 6: Provider selection interface
-- Task 7: Agent settings UI
-- Task 8: API key management with encryption
-- Task 9: Testing with sample agents
+### 🚧 Next Steps
+
+**Voice Agent Integration:**
+- Add tool registration to voice agent startup
+- Test end-to-end: UI → Database → Pipecat → Live call
+- Build API Request and End Call tool types
+- Add integration-based tools (Opera PMS, Mews, Cloudbeds)
 
 ## AI Provider Support
 
