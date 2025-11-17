@@ -11,6 +11,7 @@ import os
 
 from botelier.database import init_db
 from botelier.api import tools_router
+from botelier.api.phone_numbers import router as phone_numbers_router
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -32,6 +33,7 @@ app.add_middleware(
 
 # Register API routers
 app.include_router(tools_router)
+app.include_router(phone_numbers_router)
 
 
 @app.on_event("startup")

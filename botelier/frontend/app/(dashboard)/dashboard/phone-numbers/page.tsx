@@ -1,32 +1,126 @@
+"use client";
+
+import { useState, useEffect } from "react";
 import { Plus, Phone } from "lucide-react";
+import PhoneNumberCard from "./components/PhoneNumberCard";
+import AddNumberDrawer from "./components/AddNumberDrawer";
+
+interface PhoneNumber {
+  id: string;
+  phone_number: string;
+  friendly_name: string | null;
+  country_code: string;
+  assistant_id: string | null;
+  is_active: boolean;
+  created_at: string;
+}
 
 export default function PhoneNumbersPage() {
+  const [phoneNumbers, setPhoneNumbers] = useState<PhoneNumber[]>([]);
+  const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [loading, setLoading] = useState(true);
+
+  const fetchPhoneNumbers = async () => {
+    try {
+      setLoading(true);
+      // TODO: Replace with actual hotel_id from auth context
+      const hotelId = "test-hotel-id";
+      const response = await fetch(`http://localhost:8000/api/phone-numbers?hotel_id=${hotelId}`);
+      const data = await response.json();
+      setPhoneNumbers(data.phone_numbers || []);
+    } catch (error) {
+      console.error("Failed to fetch phone numbers:", error);
+      setPhoneNumbers([]);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    fetchPhoneNumbers();
+  }, []);
+
+  const handleNumberAdded = () => {
+    setIsDrawerOpen(false);
+    fetchPhoneNumbers();
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!confirm("Are you sure you want to release this phone number?")) return;
+
+    try {
+      const response = await fetch(`http://localhost:8000/api/phone-numbers/${id}`, {
+        method: "DELETE",
+      });
+
+      if (response.ok) {
+        fetchPhoneNumbers();
+      } else {
+        alert("Failed to delete phone number");
+      }
+    } catch (error) {
+      console.error("Failed to delete phone number:", error);
+      alert("Failed to delete phone number");
+    }
+  };
+
   return (
-    <div className="p-8">
-      <div className="flex justify-between items-center mb-6">
-        <div>
-          <h1 className="text-2xl font-bold">Phone Numbers</h1>
-          <p className="text-sm text-gray-400 mt-1">
-            Manage your Twilio phone numbers
-          </p>
+    <div className="flex-1 overflow-auto bg-[#0a0a0a]">
+      <div className="max-w-7xl mx-auto px-6 py-8">
+        <div className="flex items-center justify-between mb-8">
+          <div>
+            <h1 className="text-3xl font-bold text-white mb-2">Phone Numbers</h1>
+            <p className="text-gray-400">Manage your Twilio phone numbers</p>
+          </div>
+          <button
+            onClick={() => setIsDrawerOpen(true)}
+            className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
+          >
+            <Plus className="h-5 w-5" />
+            <span>Add Number</span>
+          </button>
         </div>
-        <button className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition text-sm font-medium">
-          <Plus className="h-4 w-4 mr-2" />
-          Add Number
-        </button>
+
+        {loading ? (
+          <div className="flex items-center justify-center py-12">
+            <div className="text-gray-400">Loading phone numbers...</div>
+          </div>
+        ) : phoneNumbers.length === 0 ? (
+          <div className="flex flex-col items-center justify-center py-16">
+            <div className="w-20 h-20 bg-gray-800 rounded-full flex items-center justify-center mb-4">
+              <Phone className="h-10 w-10 text-gray-600" />
+            </div>
+            <h2 className="text-xl font-semibold text-white mb-2">No phone numbers yet</h2>
+            <p className="text-gray-400 text-center mb-6 max-w-md">
+              Add a phone number to start receiving calls
+            </p>
+            <button
+              onClick={() => setIsDrawerOpen(true)}
+              className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg transition-colors"
+            >
+              <Plus className="h-5 w-5" />
+              <span>Add Your First Number</span>
+            </button>
+          </div>
+        ) : (
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            {phoneNumbers.map((number) => (
+              <PhoneNumberCard
+                key={number.id}
+                phoneNumber={number}
+                onDelete={handleDelete}
+                onUpdate={fetchPhoneNumbers}
+              />
+            ))}
+          </div>
+        )}
       </div>
 
-      <div className="bg-[#141414] border border-gray-800 rounded-lg p-12 text-center">
-        <Phone className="h-12 w-12 text-gray-600 mx-auto mb-4" />
-        <h3 className="text-lg font-semibold mb-2">No phone numbers yet</h3>
-        <p className="text-sm text-gray-400 mb-6">
-          Add a phone number to start receiving calls
-        </p>
-        <button className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition text-sm font-medium">
-          <Plus className="h-4 w-4 mr-2" />
-          Add Your First Number
-        </button>
-      </div>
+      <AddNumberDrawer
+        isOpen={isDrawerOpen}
+        onClose={() => setIsDrawerOpen(false)}
+        onNumberAdded={handleNumberAdded}
+      />
     </div>
   );
 }
