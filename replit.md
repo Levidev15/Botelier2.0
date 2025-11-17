@@ -113,6 +113,31 @@ from pipecat.services.openai.llm import OpenAILLMService
   - PhoneNumberCard showing number details and assignment status
 - Architecture: Each hotel gets isolated Twilio sub-account for billing separation
 
+**Knowledge Bases System (RAG Integration):**
+- Database models (`models/knowledge_base.py`, `models/knowledge_document.py`, `models/assistant_knowledge_base.py`)
+  - KnowledgeBase model with name, description, document count
+  - KnowledgeDocument model with filename, content, character count
+  - AssistantKnowledgeBase junction table for future assignment feature
+- FastAPI CRUD endpoints (`api/knowledge_bases.py`)
+  - Create, read, update, delete knowledge bases
+  - Upload, list, delete documents within knowledge bases
+  - 50k character limit per document for safety
+  - Proper error handling and validation
+- RAG query handler (`voice/knowledge_handler.py`)
+  - Integrates with Pipecat's function calling pattern
+  - Uses OpenAI LLM (gpt-4o-mini) for RAG queries
+  - Loads all hotel knowledge bases into context
+  - 50k character safety limit on concatenated content
+  - Truncation with warnings if content exceeds limit
+- React frontend Knowledge Bases page (`frontend/app/dashboard/knowledge-bases/`)
+  - Vapi.ai-style dark theme matching existing pages
+  - Empty state with clear call-to-action
+  - AddKnowledgeBaseDrawer with two tabs: Basic Info and Documents
+  - Document upload with filename and text content
+  - Document list with character counts and delete functionality
+  - Knowledge base cards showing document counts
+- Architecture: Each hotel can create multiple knowledge bases with text documents for RAG
+
 ### 🚧 Next Steps
 
 **Complete Phone Numbers Integration:**
@@ -194,6 +219,16 @@ The quickstart bot is still configured if you need to reference it:
 - [Pipecat GitHub](https://github.com/pipecat-ai/pipecat)
 
 ## Recent Changes
+
+- **2024-11-17:** Knowledge Bases System (RAG Integration)
+  - Built complete RAG system for hotel knowledge bases
+  - Created database models for knowledge bases and documents
+  - Implemented API endpoints for CRUD operations
+  - Built RAG query handler using Pipecat function calling + OpenAI
+  - Created frontend UI with Vapi.ai dark theme
+  - Added 50k character safety limits to prevent unbounded concatenation
+  - Fixed critical API validation bug (hotel_id on updates)
+  - Navigation link added to sidebar
 
 - **2024-11-15:** Created Botelier SaaS architecture
   - Set up clean project structure separating SaaS from framework
