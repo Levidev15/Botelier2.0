@@ -52,5 +52,7 @@ def init_db():
     """
     # Import all models here to ensure they're registered
     from botelier.models import tool  # noqa: F401
+    from botelier.models import hotel  # noqa: F401
+    from botelier.models import phone_number  # noqa: F401
     
     Base.metadata.create_all(bind=engine)
