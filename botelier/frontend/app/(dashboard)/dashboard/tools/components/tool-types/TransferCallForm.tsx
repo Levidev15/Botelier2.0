@@ -66,7 +66,7 @@ export default function TransferCallForm({ onSuccess, onCancel }: TransferCallFo
         is_active: true,
       };
 
-      const response = await fetch("http://localhost:8000/api/tools", {
+      const response = await fetch("/api/tools", {
         method: "POST",
         headers: {
           "Content-Type": "application/json",

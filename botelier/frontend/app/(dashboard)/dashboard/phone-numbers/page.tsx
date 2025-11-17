@@ -24,7 +24,7 @@ export default function PhoneNumbersPage() {
     try {
       setLoading(true);
       // TODO: Replace with actual hotel_id from auth context when available
-      const response = await fetch(`http://localhost:8000/api/phone-numbers`);
+      const response = await fetch(`/api/phone-numbers`);
       const data = await response.json();
       setPhoneNumbers(data.phone_numbers || []);
     } catch (error) {
@@ -48,7 +48,7 @@ export default function PhoneNumbersPage() {
     if (!confirm("Are you sure you want to release this phone number?")) return;
 
     try {
-      const response = await fetch(`http://localhost:8000/api/phone-numbers/${id}`, {
+      const response = await fetch(`/api/phone-numbers/${id}`, {
         method: "DELETE",
       });
 

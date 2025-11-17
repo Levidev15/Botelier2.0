@@ -42,7 +42,7 @@ export default function BuyBotelierForm({ onNumberAdded, onClose }: BuyBotelierF
         params.append("area_code", areaCode);
       }
 
-      const response = await fetch(`http://localhost:8000/api/phone-numbers/available?${params}`);
+      const response = await fetch(`/api/phone-numbers/available?${params}`);
       
       if (!response.ok) {
         const error = await response.json();
@@ -75,7 +75,7 @@ export default function BuyBotelierForm({ onNumberAdded, onClose }: BuyBotelierF
     setPurchasing(true);
     try {
       const hotelId = "6b410bcc-f843-40df-b32d-078d3e01ac7f"; // Demo Hotel ID
-      const response = await fetch("http://localhost:8000/api/phone-numbers/purchase", {
+      const response = await fetch("/api/phone-numbers/purchase", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
