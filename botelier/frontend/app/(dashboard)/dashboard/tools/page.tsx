@@ -27,7 +27,7 @@ export default function ToolsPage() {
 
   const fetchTools = async () => {
     try {
-      const response = await fetch("http://localhost:8000/api/tools");
+      const response = await fetch("/api/tools");
       const data = await response.json();
       setTools(data.tools || []);
     } catch (error) {

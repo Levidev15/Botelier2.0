@@ -25,7 +25,7 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete }: Tool
 
     setDeleting(true);
     try {
-      const response = await fetch(`http://localhost:8000/api/tools/${tool.id}`, {
+      const response = await fetch(`/api/tools/${tool.id}`, {
         method: "DELETE",
       });
 
