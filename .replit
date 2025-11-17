@@ -1,6 +1,7 @@
 modules = ["bash", "python-3.12", "nodejs-20"]
 [agent]
 expertMode = true
+integrations = ["python_database:1.0.0"]
 
 [nix]
 channel = "stable-25_05"
@@ -32,3 +33,7 @@ outputType = "webview"
 [[ports]]
 localPort = 5000
 externalPort = 80
+
+[[ports]]
+localPort = 8000
+externalPort = 8000
