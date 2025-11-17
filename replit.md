@@ -92,7 +92,35 @@ from pipecat.services.openai.llm import OpenAILLMService
   - Maps API requests to external systems
 - Comprehensive documentation (`TOOLS_README.md`)
 
+**Phone Numbers System (Twilio Integration):**
+- Database models (`models/hotel.py`, `models/phone_number.py`)
+  - Hotel model with Twilio sub-account fields
+  - PhoneNumber model with Twilio SID, capabilities, assignment tracking
+- Twilio integration layer (`integrations/twilio/`)
+  - `client.py` - Twilio API wrapper with sub-account support
+  - `sub_accounts.py` - Sub-account creation/management for multi-tenant isolation
+  - `phone_numbers.py` - Search, purchase, configure, release phone numbers
+- FastAPI CRUD endpoints (`api/phone_numbers.py`)
+  - Search available numbers by area code
+  - Purchase numbers and assign to hotel sub-accounts
+  - List, assign to assistants, and release numbers
+  - All endpoints include proper error handling and validation
+- React frontend Phone Numbers page (`frontend/app/dashboard/phone-numbers/`)
+  - Vapi.ai-style dark theme matching Tools page
+  - Empty state with clear call-to-action
+  - AddNumberDrawer with 3 tabs: Buy Botelier, Import Twilio, BYOT SIP
+  - BuyBotelierForm with area code search functionality
+  - PhoneNumberCard showing number details and assignment status
+- Architecture: Each hotel gets isolated Twilio sub-account for billing separation
+
 ### 🚧 Next Steps
+
+**Complete Phone Numbers Integration:**
+- Set up Replit Twilio connector for main account credentials
+- Create test hotel with Twilio sub-account
+- Test area code search → purchase → assign flow
+- Build Twilio webhook handler for incoming calls
+- Implement WebSocket endpoint with TwilioFrameSerializer
 
 **Voice Agent Integration:**
 - Add tool registration to voice agent startup
