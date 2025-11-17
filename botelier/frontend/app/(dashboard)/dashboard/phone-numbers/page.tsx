@@ -55,15 +55,10 @@ export default function PhoneNumbersPage() {
 
   useEffect(() => {
     fetchPhoneNumbers();
+    // Fetch assistants on mount - using Demo Hotel ID until auth is implemented
+    const hotelId = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
+    fetchAssistants(hotelId);
   }, []);
-
-  useEffect(() => {
-    // Fetch assistants when phone numbers are loaded
-    if (phoneNumbers.length > 0) {
-      const hotelId = phoneNumbers[0].hotel_id;
-      fetchAssistants(hotelId);
-    }
-  }, [phoneNumbers]);
 
   const handleNumberAdded = () => {
     setIsDrawerOpen(false);
