@@ -28,7 +28,7 @@ export default function BuyBotelierForm({ onNumberAdded, onClose }: BuyBotelierF
   const handleSearch = async () => {
     setSearching(true);
     try {
-      const hotelId = "test-hotel-id"; // TODO: Get from auth context
+      const hotelId = "6b410bcc-f843-40df-b32d-078d3e01ac7f"; // Demo Hotel ID
       const params = new URLSearchParams({
         hotel_id: hotelId,
         country,
@@ -55,7 +55,7 @@ export default function BuyBotelierForm({ onNumberAdded, onClose }: BuyBotelierF
 
     setPurchasing(true);
     try {
-      const hotelId = "test-hotel-id"; // TODO: Get from auth context
+      const hotelId = "6b410bcc-f843-40df-b32d-078d3e01ac7f"; // Demo Hotel ID
       const response = await fetch("http://localhost:8000/api/phone-numbers/purchase", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
