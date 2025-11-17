@@ -27,6 +27,9 @@ export default function BuyBotelierForm({ onNumberAdded, onClose }: BuyBotelierF
 
   const handleSearch = async () => {
     setSearching(true);
+    setAvailableNumbers([]);
+    setSelectedNumber(null);
+    
     try {
       const hotelId = "6b410bcc-f843-40df-b32d-078d3e01ac7f"; // Demo Hotel ID
       const params = new URLSearchParams({
@@ -40,11 +43,27 @@ export default function BuyBotelierForm({ onNumberAdded, onClose }: BuyBotelierF
       }
 
       const response = await fetch(`http://localhost:8000/api/phone-numbers/available?${params}`);
+      
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || `Server error: ${response.status}`);
+      }
+      
       const data = await response.json();
+      
+      if (!Array.isArray(data)) {
+        throw new Error("Invalid response format from server");
+      }
+      
+      if (data.length === 0) {
+        alert(`No available numbers found${areaCode ? ` in area code ${areaCode}` : ""}. Try a different area code or country.`);
+      }
+      
       setAvailableNumbers(data);
     } catch (error) {
       console.error("Failed to search numbers:", error);
-      alert("Failed to search for available numbers");
+      const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
+      alert(`Failed to search for available numbers: ${errorMessage}`);
     } finally {
       setSearching(false);
     }
