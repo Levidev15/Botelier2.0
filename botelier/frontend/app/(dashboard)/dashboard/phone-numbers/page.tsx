@@ -23,9 +23,8 @@ export default function PhoneNumbersPage() {
   const fetchPhoneNumbers = async () => {
     try {
       setLoading(true);
-      // TODO: Replace with actual hotel_id from auth context
-      const hotelId = "test-hotel-id";
-      const response = await fetch(`http://localhost:8000/api/phone-numbers?hotel_id=${hotelId}`);
+      // TODO: Replace with actual hotel_id from auth context when available
+      const response = await fetch(`http://localhost:8000/api/phone-numbers`);
       const data = await response.json();
       setPhoneNumbers(data.phone_numbers || []);
     } catch (error) {
