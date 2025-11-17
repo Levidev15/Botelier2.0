@@ -1,4 +1,4 @@
-import { Bot, LayoutDashboard, Phone, BarChart, Settings, Key, Users } from "lucide-react";
+import { Bot, LayoutDashboard, Phone, BarChart, Settings, Key, Users, Wrench } from "lucide-react";
 import Link from "next/link";
 
 export default function DashboardLayout({
@@ -22,6 +22,9 @@ export default function DashboardLayout({
           </NavItem>
           <NavItem href="/dashboard/assistants" icon={<Bot className="h-5 w-5" />} active>
             Assistants
+          </NavItem>
+          <NavItem href="/dashboard/tools" icon={<Wrench className="h-5 w-5" />}>
+            Tools
           </NavItem>
           <NavItem href="/dashboard/phone-numbers" icon={<Phone className="h-5 w-5" />}>
             Phone Numbers

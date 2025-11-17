@@ -18,6 +18,10 @@ author = "agent"
 task = "workflow.run"
 args = "botelier-dashboard"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "botelier-backend"
+
 [[workflows.workflow]]
 name = "botelier-dashboard"
 author = "agent"
@@ -30,6 +34,18 @@ waitForPort = 5000
 [workflows.workflow.metadata]
 outputType = "webview"
 
+[[workflows.workflow]]
+name = "botelier-backend"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd botelier/backend && python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+waitForPort = 8000
+
+[workflows.workflow.metadata]
+outputType = "console"
+
 [[ports]]
 localPort = 5000
 externalPort = 80
@@ -37,3 +53,7 @@ externalPort = 80
 [[ports]]
 localPort = 8000
 externalPort = 8000
+
+[[ports]]
+localPort = 45899
+externalPort = 3000
