@@ -81,11 +81,15 @@ export default function PhoneNumberCard({ phoneNumber, assistants, onDelete, onU
           className="w-full px-3 py-2 bg-[#1a1a1a] border border-gray-700 rounded-lg text-sm text-gray-300 focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           <option value="">Not assigned</option>
-          {assistants.map((assistant) => (
-            <option key={assistant.id} value={assistant.id}>
-              {assistant.name}
-            </option>
-          ))}
+          {assistants && assistants.length > 0 ? (
+            assistants.map((assistant) => (
+              <option key={assistant.id} value={assistant.id}>
+                {assistant.name}
+              </option>
+            ))
+          ) : (
+            <option disabled>No assistants available</option>
+          )}
         </select>
       </div>
 
