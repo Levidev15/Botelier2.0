@@ -68,34 +68,48 @@ class CallHandler:
             await websocket.accept()
             logger.info("✅ WebSocket accepted from Twilio")
             
-            # 2. Receive Twilio's 'start' event to extract metadata
+            # 2. Receive Twilio events until we get 'start'
+            # Twilio sends 'connected' first, then 'start' with metadata
             # Parameters from <Parameter> tags are in start.customParameters
             logger.info("⏳ Waiting for Twilio 'start' event...")
             
-            data = await websocket.receive_text()
-            message = json.loads(data)
+            stream_sid = None
+            call_sid = None
+            from_number = None
+            to_number = None
             
-            if message.get("event") != "start":
-                logger.error(f"❌ Expected 'start' event, got: {message.get('event')}")
+            # Read events until we get 'start' (skip 'connected')
+            max_attempts = 5
+            for attempt in range(max_attempts):
+                data = await websocket.receive_text()
+                message = json.loads(data)
+                event_type = message.get("event")
+                
+                if event_type == "connected":
+                    logger.debug("Received 'connected' event, waiting for 'start'...")
+                    continue
+                elif event_type == "start":
+                    logger.info("✅ Received 'start' event")
+                    start_data = message.get("start", {})
+                    stream_sid = message.get("streamSid")
+                    call_sid = start_data.get("callSid")
+                    custom_params = start_data.get("customParameters", {})
+                    
+                    # Extract phone numbers from <Parameter> tags
+                    from_number = custom_params.get("from", "Unknown")
+                    to_number = custom_params.get("to", "")
+                    break
+                else:
+                    logger.warning(f"⚠️ Unexpected event '{event_type}', waiting for 'start'...")
+                    continue
+            
+            if not stream_sid or not call_sid:
+                logger.error(f"❌ Never received valid 'start' event after {max_attempts} attempts")
                 await websocket.close()
                 return
-            
-            start_data = message.get("start", {})
-            stream_sid = message.get("streamSid")
-            call_sid = start_data.get("callSid")
-            custom_params = start_data.get("customParameters", {})
-            
-            # Extract phone numbers from <Parameter> tags
-            from_number = custom_params.get("from", "Unknown")
-            to_number = custom_params.get("to", "")
             
             logger.info(f"📞 Twilio call started - Stream: {stream_sid}, Call: {call_sid}")
             logger.info(f"📞 From: {from_number} → To: {to_number}")
-            
-            if not stream_sid or not call_sid:
-                logger.error(f"❌ Missing stream_sid or call_sid in start event")
-                await websocket.close()
-                return
             
             # 3. Validate phone number parameter
             if not to_number:
