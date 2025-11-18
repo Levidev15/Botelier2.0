@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Info, Mic, MessageSquare, Volume2 } from "lucide-react";
 import Link from "next/link";
@@ -20,6 +20,7 @@ interface Assistant {
   tts_provider: string;
   stt_model: string | null;
   llm_model: string | null;
+  tts_model: string | null;
   tts_voice: string | null;
   stt_config: any;
   llm_config: any;
@@ -54,6 +55,7 @@ const DEMO_HOTEL_ID = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
 
 export default function AssistantConfigForm({ mode, assistantId }: AssistantConfigFormProps) {
   const router = useRouter();
+  const scrollContainerRef = useRef<HTMLElement | null>(null);
   const [activeTab, setActiveTab] = useState("info");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -68,7 +70,9 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
     tts_provider: "cartesia",
     stt_model: "",
     llm_model: "",
+    tts_model: "",
     tts_voice: "",
+    stt_config: {},
     system_prompt: "You are a helpful hotel concierge assistant. Be friendly, professional, and helpful.",
     first_message: "Hello! Thank you for calling. How may I assist you today?",
     language: "en",
@@ -93,6 +97,8 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
 
   useEffect(() => {
     if (loading) return;
+    
+    scrollContainerRef.current = document.querySelector('main');
     
     const observers: IntersectionObserver[] = [];
     const intersectingEntries = new Map<string, IntersectionObserverEntry>();
@@ -127,7 +133,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
     };
 
     const observerOptions = {
-      root: null,
+      root: scrollContainerRef.current,
       rootMargin: '-100px 0px -50% 0px',
       threshold: [0, 0.25, 0.5, 0.75, 1],
     };
@@ -190,6 +196,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
           ...prev,
           stt_model: sttProviders.deepgram?.default_model || "",
           llm_model: llmProviders.openai?.default_model || "",
+          tts_model: ttsProviders.cartesia?.default_model || "",
           tts_voice: ttsProviders.cartesia?.voices?.[0]?.value || "",
         }));
       }
@@ -269,12 +276,14 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
   const scrollToSection = (tabId: string) => {
     setActiveTab(tabId);
     const element = document.getElementById(`section-${tabId}`);
-    if (element) {
+    const container = scrollContainerRef.current;
+    if (element && container) {
       const offset = 150;
       const elementPosition = element.getBoundingClientRect().top;
-      const offsetPosition = elementPosition + window.pageYOffset - offset;
-      window.scrollTo({
-        top: offsetPosition,
+      const containerPosition = container.getBoundingClientRect().top;
+      const scrollOffset = elementPosition - containerPosition + container.scrollTop - offset;
+      container.scrollTo({
+        top: scrollOffset,
         behavior: "smooth",
       });
     }
@@ -472,30 +481,92 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
           title="Text-to-Speech Configuration"
           description="Configure how responses are spoken"
         >
-          <ProviderSelector
-            label="TTS Provider"
-            description="Service that converts text into natural-sounding voice"
-            providerValue={formData.tts_provider || ""}
-            modelValue={formData.tts_voice || ""}
-            providers={Object.entries(providers.tts).map(([key, config]: [string, any]) => ({
-              value: key,
-              label: config.display_name || key,
-            }))}
-            models={formData.tts_provider && providers.tts[formData.tts_provider]?.voices 
-              ? providers.tts[formData.tts_provider].voices.map((v: any) => ({
-                  value: v.value,
-                  label: v.label,
-                }))
-              : []}
-            onProviderChange={(value) => {
-              handleFieldChange("tts_provider", value);
-              const defaultVoice = providers.tts[value]?.voices?.[0]?.value;
-              if (defaultVoice) {
-                handleFieldChange("tts_voice", defaultVoice);
-              }
-            }}
-            onModelChange={(value) => handleFieldChange("tts_voice", value)}
-          />
+          <FormField label="TTS Provider" description="Service that converts text into natural-sounding voice" required>
+            <select
+              value={formData.tts_provider || ""}
+              onChange={(e) => {
+                const newProvider = e.target.value;
+                handleFieldChange("tts_provider", newProvider);
+                const defaultModel = providers.tts[newProvider]?.default_model;
+                if (defaultModel) {
+                  handleFieldChange("tts_model", defaultModel);
+                }
+                if (newProvider === "deepgram" && defaultModel) {
+                  const voicesByModel = providers.tts[newProvider]?.voices_by_model?.[defaultModel];
+                  if (voicesByModel?.[0]?.value) {
+                    handleFieldChange("tts_voice", voicesByModel[0].value);
+                  }
+                } else {
+                  const defaultVoice = providers.tts[newProvider]?.voices?.[0]?.value;
+                  if (defaultVoice) {
+                    handleFieldChange("tts_voice", defaultVoice);
+                  }
+                }
+              }}
+              className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+            >
+              <option value="">Select provider...</option>
+              {Object.entries(providers.tts).map(([key, config]: [string, any]) => (
+                <option key={key} value={key}>
+                  {config.display_name || key}
+                </option>
+              ))}
+            </select>
+          </FormField>
+
+          {formData.tts_provider && providers.tts[formData.tts_provider]?.models && (
+            <FormField label="TTS Model" description="The specific model to use for speech synthesis" required>
+              <select
+                value={formData.tts_model || ""}
+                onChange={(e) => {
+                  const newModel = e.target.value;
+                  handleFieldChange("tts_model", newModel);
+                  if (formData.tts_provider === "deepgram") {
+                    const voicesByModel = providers.tts[formData.tts_provider]?.voices_by_model?.[newModel];
+                    if (voicesByModel?.[0]?.value) {
+                      handleFieldChange("tts_voice", voicesByModel[0].value);
+                    }
+                  }
+                }}
+                className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+              >
+                <option value="">Select model...</option>
+                {providers.tts[formData.tts_provider].models.map((model: any) => (
+                  <option key={model.value} value={model.value}>
+                    {model.label}
+                  </option>
+                ))}
+              </select>
+            </FormField>
+          )}
+
+          {formData.tts_provider && formData.tts_model && (() => {
+            const ttsConfig = providers.tts[formData.tts_provider];
+            let voiceOptions: any[] = [];
+            
+            if (formData.tts_provider === "deepgram" && ttsConfig?.voices_by_model) {
+              voiceOptions = ttsConfig.voices_by_model[formData.tts_model] || [];
+            } else if (ttsConfig?.voices) {
+              voiceOptions = ttsConfig.voices;
+            }
+            
+            return voiceOptions.length > 0 ? (
+              <FormField label="Voice" description="The voice to use for speech synthesis" required>
+                <select
+                  value={formData.tts_voice || ""}
+                  onChange={(e) => handleFieldChange("tts_voice", e.target.value)}
+                  className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                >
+                  <option value="">Select voice...</option>
+                  {voiceOptions.map((voice: any) => (
+                    <option key={voice.value} value={voice.value}>
+                      {voice.label}
+                    </option>
+                  ))}
+                </select>
+              </FormField>
+            ) : null;
+          })()}
         </FormSection>
 
         {/* Transcriber Section */}
@@ -528,6 +599,79 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
             }}
             onModelChange={(value) => handleFieldChange("stt_model", value)}
           />
+
+          {formData.stt_provider === "deepgram" && 
+           formData.stt_model && 
+           formData.stt_model.includes("flux") && 
+           providers.stt.deepgram?.flux_params && (
+            <>
+              <div className="border-t border-gray-700 pt-6 mt-6">
+                <h3 className="text-sm font-semibold text-gray-200 mb-4">Deepgram Flux Parameters</h3>
+                <div className="space-y-6">
+                  <FormField
+                    label="EOT Threshold"
+                    description="End-of-Turn threshold (0.0-1.0). Controls when the model considers speech complete. Default: 0.7"
+                  >
+                    <input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.1"
+                      value={formData.stt_config?.eot_threshold ?? 0.7}
+                      onChange={(e) => {
+                        const newConfig = { ...formData.stt_config, eot_threshold: parseFloat(e.target.value) };
+                        handleFieldChange("stt_config", newConfig);
+                      }}
+                      className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                    />
+                  </FormField>
+
+                  <FormField
+                    label="EOT Timeout (ms)"
+                    description="End-of-Turn timeout in milliseconds (1000-10000). How long to wait before considering speech ended. Default: 5000"
+                  >
+                    <input
+                      type="number"
+                      min="1000"
+                      max="10000"
+                      step="500"
+                      value={formData.stt_config?.eot_timeout_ms ?? 5000}
+                      onChange={(e) => {
+                        const newConfig = { ...formData.stt_config, eot_timeout_ms: parseInt(e.target.value) };
+                        handleFieldChange("stt_config", newConfig);
+                      }}
+                      className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                    />
+                  </FormField>
+
+                  <FormField
+                    label="Eager EOT Threshold"
+                    description="Eager End-of-Turn threshold (0.0-1.0). Optional. Enables faster turn detection for shorter utterances."
+                  >
+                    <input
+                      type="number"
+                      min="0"
+                      max="1"
+                      step="0.1"
+                      value={formData.stt_config?.eager_eot_threshold ?? ""}
+                      onChange={(e) => {
+                        const value = e.target.value;
+                        const newConfig = { ...formData.stt_config };
+                        if (value === "") {
+                          delete newConfig.eager_eot_threshold;
+                        } else {
+                          newConfig.eager_eot_threshold = parseFloat(value);
+                        }
+                        handleFieldChange("stt_config", newConfig);
+                      }}
+                      placeholder="Optional"
+                      className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                    />
+                  </FormField>
+                </div>
+              </div>
+            </>
+          )}
         </FormSection>
       </div>
 

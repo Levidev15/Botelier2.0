@@ -44,6 +44,7 @@ class Assistant(Base):
     # Model selections
     stt_model = Column(String(100), nullable=True)
     llm_model = Column(String(100), nullable=False, default="gpt-4o-mini")
+    tts_model = Column(String(100), nullable=True)
     tts_voice = Column(String(100), nullable=True)
     
     # Behavior
@@ -83,6 +84,7 @@ class Assistant(Base):
             "tts_provider": self.tts_provider,
             "stt_model": self.stt_model,
             "llm_model": self.llm_model,
+            "tts_model": self.tts_model,
             "tts_voice": self.tts_voice,
             "system_prompt": self.system_prompt,
             "first_message": self.first_message,
