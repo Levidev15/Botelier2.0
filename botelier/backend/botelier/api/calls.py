@@ -50,14 +50,16 @@ async def incoming_call_webhook(request: Request):
         
         # Get WebSocket URL from environment or construct it
         # In Replit, we need to use the public domain
-        replit_domain = os.environ.get("REPL_SLUG") + "." + os.environ.get("REPL_OWNER") + ".repl.co"
-        ws_protocol = "wss"  # Always use secure WebSocket in production
-        ws_url = f"{ws_protocol}://{replit_domain}/ws/call"
+        replit_slug = os.environ.get("REPL_SLUG")
+        replit_owner = os.environ.get("REPL_OWNER")
         
-        # Alternative: Use X-Forwarded-Host if behind proxy
-        host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host")
-        if host and not host.endswith(".repl.co"):
-            ws_url = f"wss://{host}/ws/call"
+        if replit_slug and replit_owner:
+            replit_domain = f"{replit_slug}.{replit_owner}.repl.co"
+            ws_url = f"wss://{replit_domain}/ws/call"
+        else:
+            # Alternative: Use X-Forwarded-Host if behind proxy
+            host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host")
+            ws_url = f"wss://{host}/ws/call" if host else "wss://localhost/ws/call"
         
         logger.info(f"Directing call to WebSocket: {ws_url}")
         

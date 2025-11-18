@@ -14,12 +14,11 @@ from loguru import logger
 
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketTransport
 from pipecat.serializers.twilio import TwilioFrameSerializer
-from pipecat.frames.frames import TTSStartFrame
+from pipecat.frames.frames import TTSSpeakFrame
 
 from .engine import VoiceEngineFactory
 from .agent import VoiceAgentConfig
 from .function_mapper import FunctionMapper
-from .knowledge_handler import KnowledgeHandler
 from ..models.assistant import Assistant
 from ..models.phone_number import PhoneNumber
 
@@ -135,7 +134,7 @@ class CallHandler:
             
             # 10. Queue greeting message
             await task.queue_frames([
-                TTSStartFrame(text=config.greeting_message)
+                TTSSpeakFrame(text=config.greeting_message)
             ])
             
             logger.info(f"Starting pipeline for call {call_sid}")

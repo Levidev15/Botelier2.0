@@ -13,22 +13,12 @@ Key Design Principle:
 import os
 from typing import Optional, Dict, Any
 
-from pipecat.services.deepgram.stt import DeepgramSTTService
-from pipecat.services.deepgram.flux.stt import DeepgramFluxSTTService
-from pipecat.services.deepgram.tts import DeepgramTTSService
-from pipecat.services.openai.llm import OpenAILLMService
-from pipecat.services.openai.base_llm import BaseOpenAILLMService
-from pipecat.services.anthropic.llm import AnthropicLLMService
-from pipecat.services.cartesia.tts import CartesiaTTSService
-from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
-from pipecat.services.openai.tts import OpenAITTSService
+# Lazy imports for provider services to avoid startup issues with optional dependencies
+# Services will be imported only when actually used
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineTask, PipelineParams
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
-from pipecat.audio.vad.silero import SileroVADAnalyzer
-from pipecat.audio.vad.vad_analyzer import VADParams
-from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.transcriptions.language import Language
 
 from .agent import VoiceAgentConfig
@@ -55,6 +45,9 @@ class VoiceEngineFactory:
         model = config.stt_model or "nova-3-general"
         
         if provider == "deepgram":
+            from pipecat.services.deepgram.stt import DeepgramSTTService
+            from pipecat.services.deepgram.flux.stt import DeepgramFluxSTTService
+            
             # Check if using Flux model (advanced turn detection)
             if is_flux_model(model):
                 # Use Deepgram Flux with proper InputParams
@@ -106,6 +99,8 @@ class VoiceEngineFactory:
         provider = config.llm_provider.lower()
         
         if provider == "openai":
+            from pipecat.services.openai.llm import OpenAILLMService
+            from pipecat.services.openai.base_llm import BaseOpenAILLMService
             # Use OpenAI's InputParams with provider-specific parameters
             params = BaseOpenAILLMService.InputParams(
                 temperature=config.llm_temperature,
@@ -120,18 +115,11 @@ class VoiceEngineFactory:
                 params=params,
             )
         elif provider == "anthropic":
-            # Use Anthropic's InputParams with prompt caching support
-            params = AnthropicLLMService.InputParams(
-                temperature=config.llm_temperature,
-                max_tokens=config.llm_max_tokens or 4096,
-                top_k=config.llm_config.get("top_k", 0),
-                top_p=config.llm_config.get("top_p", 1.0),
-                enable_prompt_caching=config.llm_config.get("enable_prompt_caching", False),
-            )
-            return AnthropicLLMService(
-                api_key=api_keys.get("anthropic_api_key"),
-                model=config.llm_model,
-                params=params,
+            # TODO: Anthropic support temporarily disabled due to SDK installation issues
+            # Will be re-enabled once anthropic package is properly installed in Replit environment
+            raise ValueError(
+                "Anthropic LLM provider is temporarily unavailable. "
+                "Please use OpenAI or Google Gemini instead."
             )
         elif provider == "google_gemini":
             from pipecat.services.google.llm import GoogleLLMService
@@ -148,22 +136,26 @@ class VoiceEngineFactory:
         provider = config.tts_provider.lower()
         
         if provider == "deepgram":
+            from pipecat.services.deepgram.tts import DeepgramTTSService
             return DeepgramTTSService(
                 api_key=api_keys.get("deepgram_api_key"),
                 voice=config.tts_voice_id or "aura-2-helena-en",
                 encoding=config.tts_config.get("encoding", "linear16"),
             )
         elif provider == "cartesia":
+            from pipecat.services.cartesia.tts import CartesiaTTSService
             return CartesiaTTSService(
                 api_key=api_keys.get("cartesia_api_key"),
                 voice_id=config.tts_voice_id,
             )
         elif provider == "elevenlabs":
+            from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
             return ElevenLabsTTSService(
                 api_key=api_keys.get("elevenlabs_api_key"),
                 voice_id=config.tts_voice_id,
             )
         elif provider == "openai":
+            from pipecat.services.openai.tts import OpenAITTSService
             return OpenAITTSService(
                 api_key=api_keys.get("openai_api_key"),
                 voice=config.tts_voice_id or "alloy",
@@ -231,9 +223,18 @@ class VoiceEngineFactory:
         )
         
         if config.enable_vad:
-            params.vad_analyzer = SileroVADAnalyzer(
-                params=VADParams(stop_secs=0.2)
-            )
-            params.turn_analyzer = LocalSmartTurnAnalyzerV3()
+            # Lazy import VAD to avoid onnxruntime dependency at startup
+            try:
+                from pipecat.audio.vad.silero import SileroVADAnalyzer
+                from pipecat.audio.vad.vad_analyzer import VADParams
+                from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+                
+                params.vad_analyzer = SileroVADAnalyzer(
+                    params=VADParams(stop_secs=0.2)
+                )
+                params.turn_analyzer = LocalSmartTurnAnalyzerV3()
+            except ImportError as e:
+                # VAD not available, disable it
+                logger.warning(f"VAD disabled due to missing dependencies: {e}")
         
         return params
