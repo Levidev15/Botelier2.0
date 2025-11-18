@@ -444,20 +444,27 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
             label="Temperature"
             description={`Controls creativity (${formData.temperature || "0.7"}). Lower = more focused, Higher = more creative`}
           >
-            <input
-              type="range"
-              min="0"
-              max="2"
-              step="0.1"
-              value={parseFloat(formData.temperature?.toString() || "0.7")}
-              onChange={(e) => handleFieldChange("temperature", parseFloat(e.target.value))}
-              className="w-full"
-            />
-            <div className="flex justify-between text-xs text-gray-500 mt-1">
-              <span>Focused (0)</span>
-              <span>Balanced (1)</span>
-              <span>Creative (2)</span>
-            </div>
+            {(() => {
+              const maxTemp = formData.llm_provider === "anthropic" ? 1 : 2;
+              return (
+                <>
+                  <input
+                    type="range"
+                    min="0"
+                    max={maxTemp}
+                    step="0.1"
+                    value={Math.min(parseFloat(formData.temperature?.toString() || "0.7"), maxTemp)}
+                    onChange={(e) => handleFieldChange("temperature", parseFloat(e.target.value))}
+                    className="w-full"
+                  />
+                  <div className="flex justify-between text-xs text-gray-500 mt-1">
+                    <span>Focused (0)</span>
+                    <span>Balanced ({maxTemp === 1 ? "0.5" : "1"})</span>
+                    <span>Creative ({maxTemp})</span>
+                  </div>
+                </>
+              );
+            })()}
           </FormField>
 
           <FormField
