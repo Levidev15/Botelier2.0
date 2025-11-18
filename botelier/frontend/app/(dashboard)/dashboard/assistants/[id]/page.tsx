@@ -40,9 +40,9 @@ interface ProviderConfig {
 
 const TABS: Tab[] = [
   { id: "info", label: "Info", icon: <Info className="h-4 w-4" /> },
-  { id: "transcriber", label: "Transcriber", icon: <Mic className="h-4 w-4" /> },
   { id: "model", label: "Language Model", icon: <MessageSquare className="h-4 w-4" /> },
   { id: "voice", label: "Voice", icon: <Volume2 className="h-4 w-4" /> },
+  { id: "transcriber", label: "Transcriber", icon: <Mic className="h-4 w-4" /> },
 ];
 
 export default function AssistantDetailPage() {
@@ -230,7 +230,7 @@ export default function AssistantDetailPage() {
   }
 
   return (
-    <div className="h-full pb-20">
+    <div className="h-full pb-32">
       {/* Header */}
       <div className="border-b border-gray-800 bg-[#0a0a0a] sticky top-0 z-30">
         <div className="px-8 py-6">
@@ -316,38 +316,6 @@ export default function AssistantDetailPage() {
           </FormField>
         </FormSection>
 
-        {/* Transcriber Section */}
-        <FormSection
-          id="section-transcriber"
-          title="Speech-to-Text Configuration"
-          description="Configure how voice is converted to text"
-        >
-          <ProviderSelector
-            label="STT Provider"
-            description="Service that converts speech to text"
-            providerValue={formData.stt_provider || ""}
-            modelValue={formData.stt_model || ""}
-            providers={Object.entries(providers.stt).map(([key, config]: [string, any]) => ({
-              value: key,
-              label: config.display_name || key,
-            }))}
-            models={formData.stt_provider && providers.stt[formData.stt_provider]?.models 
-              ? providers.stt[formData.stt_provider].models.map((m: any) => ({
-                  value: m.value,
-                  label: m.label,
-                }))
-              : []}
-            onProviderChange={(value) => {
-              handleFieldChange("stt_provider", value);
-              const defaultModel = providers.stt[value]?.default_model;
-              if (defaultModel) {
-                handleFieldChange("stt_model", defaultModel);
-              }
-            }}
-            onModelChange={(value) => handleFieldChange("stt_model", value)}
-          />
-        </FormSection>
-
         {/* Language Model Section */}
         <FormSection
           id="section-model"
@@ -402,8 +370,8 @@ export default function AssistantDetailPage() {
               min="0"
               max="2"
               step="0.1"
-              value={parseFloat(formData.temperature || "0.7")}
-              onChange={(e) => handleFieldChange("temperature", e.target.value)}
+              value={parseFloat(formData.temperature?.toString() || "0.7")}
+              onChange={(e) => handleFieldChange("temperature", parseFloat(e.target.value))}
               className="w-full"
             />
             <div className="flex justify-between text-xs text-gray-500 mt-1">
@@ -456,6 +424,38 @@ export default function AssistantDetailPage() {
               }
             }}
             onModelChange={(value) => handleFieldChange("tts_voice", value)}
+          />
+        </FormSection>
+
+        {/* Transcriber Section */}
+        <FormSection
+          id="section-transcriber"
+          title="Speech-to-Text Configuration"
+          description="Configure how voice is converted to text"
+        >
+          <ProviderSelector
+            label="STT Provider"
+            description="Service that converts speech to text"
+            providerValue={formData.stt_provider || ""}
+            modelValue={formData.stt_model || ""}
+            providers={Object.entries(providers.stt).map(([key, config]: [string, any]) => ({
+              value: key,
+              label: config.display_name || key,
+            }))}
+            models={formData.stt_provider && providers.stt[formData.stt_provider]?.models 
+              ? providers.stt[formData.stt_provider].models.map((m: any) => ({
+                  value: m.value,
+                  label: m.label,
+                }))
+              : []}
+            onProviderChange={(value) => {
+              handleFieldChange("stt_provider", value);
+              const defaultModel = providers.stt[value]?.default_model;
+              if (defaultModel) {
+                handleFieldChange("stt_model", defaultModel);
+              }
+            }}
+            onModelChange={(value) => handleFieldChange("stt_model", value)}
           />
         </FormSection>
       </div>
