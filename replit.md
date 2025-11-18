@@ -228,6 +228,15 @@ The quickstart bot is still configured if you need to reference it:
 
 ## Recent Changes
 
+- **2024-11-18:** Knowledge Base "Last Modified" Timestamps
+  - Frontend: Added formatDate helper with smart relative/absolute time display
+  - Frontend: "Modified X ago" text on grid view cards
+  - Frontend: "Last Modified" column in table view (sortable)
+  - Backend: Updated knowledge_entry model with default value for updated_at
+  - Backend: Fixed route ordering (bulk endpoints before parameterized endpoints)
+  - Database: Migrated existing entries to populate updated_at from created_at
+  - UX: Shows "Just now", "5 mins ago" for recent changes, full dates for older entries
+
 - **2024-11-18:** Knowledge Base Enhanced (Filtering, Search, Sorting, Bulk Actions)
   - Backend: Added bulk delete and bulk update endpoints (/api/entries/bulk)
   - Frontend: Dynamic category filter (populated from existing entries only, not hardcoded)
