@@ -72,34 +72,48 @@ def get_websocket_url(path: str = "/api/ws/call", fallback_host: Optional[str] =
     """
     Get the WebSocket URL for Twilio Media Streams.
     
-    Converts the public base URL from https:// to wss:// and appends the path.
-    Uses default HTTPS port (443) for both dev and production since Next.js
-    proxies /api/* requests to the FastAPI backend.
+    CRITICAL: WebSocket connections CANNOT go through Next.js rewrites() - they must
+    connect directly to the FastAPI backend on port 3001. Next.js rewrites only
+    handle HTTP requests, not WebSocket upgrades.
+    
+    Architecture:
+    - HTTP API calls (dashboard): Frontend (5000) → Next.js proxy → Backend (3001)
+    - WebSocket calls (Twilio): Twilio → Backend (3001) directly
     
     Args:
         path: WebSocket endpoint path (default: "/api/ws/call")
         fallback_host: Optional host from request headers
         
     Returns:
-        WebSocket URL with wss:// scheme (e.g., "wss://mydomain.com/api/ws/call")
+        WebSocket URL pointing directly to backend port 3001
         
     Examples:
-        >>> # Replit dev - proxied through Next.js
+        >>> # Replit dev - direct to backend
         >>> os.environ["REPLIT_DEV_DOMAIN"] = "abc123.repl.dev"
         >>> get_websocket_url()
-        "wss://abc123.repl.dev/api/ws/call"
+        "wss://abc123.repl.dev:3001/api/ws/call"
         
-        >>> # Production - standard HTTPS port
+        >>> # Production with custom backend URL
         >>> os.environ["PUBLIC_BASE_URL"] = "https://api.botelier.com"
         >>> get_websocket_url()
         "wss://api.botelier.com/api/ws/call"
     """
-    # Get base URL (handles both dev and production)
+    # Get base URL
     base_url = get_public_base_url(fallback_host=fallback_host)
     
-    # Convert https:// to wss:// (or http:// to ws://)
-    # No explicit port needed - Next.js proxies /api/* to backend
+    # Convert https:// to wss://
     ws_url = base_url.replace("https://", "wss://").replace("http://", "ws://")
+    
+    # Add backend port for WebSocket connections (bypasses Next.js)
+    # Only add port if not already present and in dev environment
+    if ":3001" not in ws_url and os.environ.get("REPLIT_DEV_DOMAIN"):
+        # Remove any existing port first, then add :3001
+        if ":" in ws_url.split("//")[1]:
+            # Has a port, replace it
+            ws_url = ws_url.rsplit(":", 1)[0] + ":3001"
+        else:
+            # No port, add it
+            ws_url = f"{ws_url}:3001"
     
     # Ensure path starts with /
     if not path.startswith("/"):
