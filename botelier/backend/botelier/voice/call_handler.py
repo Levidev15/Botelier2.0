@@ -213,15 +213,19 @@ class CallHandler:
         Returns:
             VoiceAgentConfig for pipeline creation
         """
+        from botelier.voice.agent import AgentStatus
+        
+        status = AgentStatus.ACTIVE if assistant.is_active else AgentStatus.PAUSED
+        
         return VoiceAgentConfig(
             agent_id=str(assistant.id),
             hotel_id=str(assistant.hotel_id),
             name=assistant.name,
             description=assistant.description,
-            status=assistant.status,
+            status=status,
             stt_provider=assistant.stt_provider,
             stt_model=assistant.stt_model,
-            stt_language=assistant.stt_language or "en",
+            stt_language=assistant.language or "en",
             stt_config=assistant.stt_config or {},
             llm_provider=assistant.llm_provider,
             llm_model=assistant.llm_model,
@@ -229,13 +233,13 @@ class CallHandler:
             llm_max_tokens=assistant.max_tokens or 150,
             llm_config=assistant.llm_config or {},
             tts_provider=assistant.tts_provider,
-            tts_voice_id=assistant.tts_voice or "",  # Note: field is 'tts_voice' in DB
+            tts_voice_id=assistant.tts_voice or "",
             tts_model=assistant.tts_model,
-            tts_speed=assistant.tts_speed or 1.0,
+            tts_speed=1.0,
             tts_config=assistant.tts_config or {},
             system_prompt=assistant.system_prompt or "You are a friendly hotel assistant.",
-            greeting_message=assistant.greeting_message or "Hello! How can I help you today?",
-            enable_function_calling=True,  # Always enable for tool support
+            greeting_message=assistant.first_message or "Hello! How can I help you today?",
+            enable_function_calling=True,
             enable_interruptions=True,
             enable_vad=True,
         )
