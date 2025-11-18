@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Info, Mic, MessageSquare, Volume2 } from "lucide-react";
 import Link from "next/link";
@@ -46,7 +46,7 @@ export default function NewAssistantPage() {
   const [activeTab, setActiveTab] = useState("info");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
-  const [isDirty, setIsDirty] = useState(false);
+  const [isDirty, setIsDirty] = useState(true); // Always enabled on create page
   
   const [formData, setFormData] = useState<FormData>({
     name: "",
@@ -65,13 +65,14 @@ export default function NewAssistantPage() {
   });
   
   const [providers, setProviders] = useState<ProviderConfig>({ stt: {}, llm: {}, tts: {} });
-  const sectionRefs = useRef<{ [key: string]: HTMLElement | null }>({});
 
   useEffect(() => {
     fetchProviders();
   }, []);
 
   useEffect(() => {
+    if (loading) return; // Don't setup observers until data is loaded
+    
     const observers: IntersectionObserver[] = [];
     const intersectingEntries = new Map<string, IntersectionObserverEntry>();
     
@@ -102,8 +103,9 @@ export default function NewAssistantPage() {
       threshold: 0,
     };
 
-    Object.keys(sectionRefs.current).forEach((key) => {
-      const element = sectionRefs.current[key];
+    const sectionIds = ['info', 'model', 'voice', 'transcriber'];
+    sectionIds.forEach((sectionId) => {
+      const element = document.getElementById(`section-${sectionId}`);
       if (element) {
         const observer = new IntersectionObserver(observerCallback, observerOptions);
         observer.observe(element);
@@ -114,7 +116,7 @@ export default function NewAssistantPage() {
     return () => {
       observers.forEach((observer) => observer.disconnect());
     };
-  }, []);
+  }, [loading]);
 
   const fetchProviders = async () => {
     try {
@@ -130,13 +132,19 @@ export default function NewAssistantPage() {
         ttsRes.json(),
       ]);
 
-      setProviders({ stt: sttData, llm: llmData, tts: ttsData });
+      // Extract the providers object from the API response
+      const sttProviders = sttData.providers || {};
+      const llmProviders = llmData.providers || {};
+      const ttsProviders = ttsData.providers || {};
 
+      setProviders({ stt: sttProviders, llm: llmProviders, tts: ttsProviders });
+
+      // Set default models/voices based on selected providers
       setFormData(prev => ({
         ...prev,
-        stt_model: sttData.deepgram?.default_model || "",
-        llm_model: llmData.openai?.default_model || "",
-        tts_voice: ttsData.cartesia?.voices?.[0]?.value || "",
+        stt_model: sttProviders.deepgram?.default_model || "",
+        llm_model: llmProviders.openai?.default_model || "",
+        tts_voice: ttsProviders.cartesia?.voices?.[0]?.value || "",
       }));
       
       setLoading(false);
@@ -244,9 +252,6 @@ export default function NewAssistantPage() {
           id="section-info"
           title="Basic Information"
           description="Configure the basic details of your assistant"
-          ref={(el) => {
-            if (el) sectionRefs.current['info'] = el;
-          }}
         >
           <FormField label="Assistant Name" required>
             <input
@@ -300,9 +305,6 @@ export default function NewAssistantPage() {
           id="section-model"
           title="Language Model Configuration"
           description="Configure the AI that powers conversations"
-          ref={(el) => {
-            if (el) sectionRefs.current['model'] = el;
-          }}
         >
           <ProviderSelector
             label="LLM Provider"
@@ -382,9 +384,6 @@ export default function NewAssistantPage() {
           id="section-voice"
           title="Text-to-Speech Configuration"
           description="Configure how responses are spoken"
-          ref={(el) => {
-            if (el) sectionRefs.current['voice'] = el;
-          }}
         >
           <ProviderSelector
             label="TTS Provider"
@@ -417,9 +416,6 @@ export default function NewAssistantPage() {
           id="section-transcriber"
           title="Speech-to-Text Configuration"
           description="Configure how voice is converted to text"
-          ref={(el) => {
-            if (el) sectionRefs.current['transcriber'] = el;
-          }}
         >
           <ProviderSelector
             label="STT Provider"
