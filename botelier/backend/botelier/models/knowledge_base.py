@@ -1,8 +1,8 @@
 """
-Knowledge Base Model - Represents a collection of documents for RAG.
+Knowledge Base Model - Represents a collection of Q&A entries for RAG.
 
 Each knowledge base:
-- Contains multiple documents (policies, menus, guides)
+- Contains multiple Q&A entries (FAQs, policies, information)
 - Can be assigned to multiple assistants
 - Owned by a hotel for multi-tenancy
 """
@@ -20,7 +20,7 @@ class KnowledgeBase(Base):
     
     Each knowledge base is:
     - Owned by a hotel
-    - Can contain multiple documents
+    - Can contain multiple Q&A entries
     - Assigned to assistants for RAG queries
     """
     __tablename__ = "knowledge_bases"

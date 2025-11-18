@@ -3,7 +3,7 @@ Knowledge Base RAG Handler - Query hotel knowledge bases via function calling.
 
 This module provides the RAG (Retrieval-Augmented Generation) function
 that Pipecat voice assistants can call to answer guest questions using
-the hotel's knowledge base documents.
+the hotel's knowledge base Q&A entries.
 
 Pattern follows Pipecat's function calling standard (FunctionCallParams).
 """
@@ -72,17 +72,18 @@ async def query_hotel_knowledge(params: FunctionCallParams) -> None:
 
 async def load_hotel_knowledge(hotel_id: str) -> str:
     """
-    Load all knowledge base documents for a hotel.
+    Load all active (non-expired) Q&A entries for a hotel.
     
     Args:
         hotel_id: Hotel UUID
     
     Returns:
-        Combined text content from all knowledge base documents
+        Formatted Q&A entries ready for RAG context
     """
+    from datetime import date
     from botelier.database import SessionLocal
     from botelier.models.knowledge_base import KnowledgeBase
-    from botelier.models.knowledge_document import KnowledgeDocument
+    from botelier.models.knowledge_entry import KnowledgeEntry
     
     db = SessionLocal()
     
@@ -96,23 +97,32 @@ async def load_hotel_knowledge(hotel_id: str) -> str:
         
         kb_ids = [kb.id for kb in knowledge_bases]
         
-        documents = db.query(KnowledgeDocument).filter(
-            KnowledgeDocument.knowledge_base_id.in_(kb_ids)
+        # Load only non-expired entries
+        today = date.today()
+        entries = db.query(KnowledgeEntry).filter(
+            KnowledgeEntry.knowledge_base_id.in_(kb_ids),
+            (KnowledgeEntry.expiration_date.is_(None)) | 
+            (KnowledgeEntry.expiration_date >= today)
         ).all()
         
-        if not documents:
+        if not entries:
             return ""
         
-        combined_content = "\n\n---\n\n".join([
-            f"# {doc.filename}\n\n{doc.content}"
-            for doc in documents
-        ])
+        # Format as Q&A pairs with optional categories
+        qa_blocks = []
+        for entry in entries:
+            category_tag = f"[{entry.category}] " if entry.category else ""
+            qa_block = f"{category_tag}Q: {entry.question}\nA: {entry.answer}"
+            qa_blocks.append(qa_block)
         
+        combined_content = "\n\n".join(qa_blocks)
+        
+        # Apply safety limit
         if len(combined_content) > MAX_KNOWLEDGE_CHARS:
             logger.warning(f"Knowledge base too large ({len(combined_content)} chars), truncating to {MAX_KNOWLEDGE_CHARS}")
             combined_content = combined_content[:MAX_KNOWLEDGE_CHARS] + "\n\n[... content truncated for length]"
         
-        logger.info(f"Loaded {len(documents)} documents ({len(combined_content)} chars) for hotel {hotel_id}")
+        logger.info(f"Loaded {len(entries)} active Q&A entries ({len(combined_content)} chars) for hotel {hotel_id}")
         
         return combined_content
         
@@ -125,12 +135,12 @@ async def query_with_rag(knowledge_content: str, question: str) -> str:
     Query the knowledge base using OpenAI for RAG.
     
     This uses a separate OpenAI call (not the voice LLM) to:
-    1. Inject the knowledge base into the context
+    1. Inject the Q&A knowledge base into the context
     2. Ask the question
     3. Return a concise answer (optimized for TTS)
     
     Args:
-        knowledge_content: Combined text from knowledge base documents
+        knowledge_content: Formatted Q&A entries
         question: Guest's question
     
     Returns:
@@ -145,16 +155,16 @@ async def query_with_rag(knowledge_content: str, question: str) -> str:
     client = AsyncOpenAI(api_key=api_key)
     
     rag_prompt = f"""
-You are a helpful hotel assistant answering guest questions based on the hotel's knowledge base.
+You are a helpful hotel assistant answering guest questions based on the hotel's FAQ knowledge base.
 
 **Instructions:**
-1. Answer questions ONLY using information from the Knowledge Base below
+1. Answer questions ONLY using information from the Q&A Knowledge Base below
 2. Keep responses under 50 words - this will be spoken aloud
 3. Use natural, conversational language (no bullet points or special characters)
 4. If the answer isn't in the knowledge base, say "I don't have that information available."
-5. Do not introduce your response - just provide the answer
+5. Do not introduce your response - just provide the answer directly
 
-**Knowledge Base:**
+**Q&A Knowledge Base:**
 {knowledge_content}
 
 **Guest Question:**
