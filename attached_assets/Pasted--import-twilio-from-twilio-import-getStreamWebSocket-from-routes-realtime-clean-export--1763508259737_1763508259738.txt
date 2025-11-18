@@ -1,0 +1,117 @@
+
+import twilio from "twilio";
+import { getStreamWebSocket } from "./routes-realtime-clean";
+
+export class TwilioMediaStreamService {
+  // Generate TwiML to end call with message
+  endCallTwiML(message: string): string {
+    const VoiceResponse = twilio.twiml.VoiceResponse;
+    const twiml = new VoiceResponse();
+    
+    twiml.say({
+      voice: 'alice',
+      language: 'en-US'
+    }, message);
+    
+    twiml.hangup();
+    
+    return twiml.toString();
+  }
+
+  // Generate TwiML to start a media stream with bidirectional streaming
+  generateMediaStreamTwiML(callSid: string, mediaStreamUrl: string): string {
+    const VoiceResponse = twilio.twiml.VoiceResponse;
+    const twiml = new VoiceResponse();
+
+    console.log(`🔧 TWIML: Generating bidirectional stream TwiML for callSid: ${callSid}`);
+
+    // Use Connect with Stream for bidirectional media streaming (no track attribute)
+    const connect = twiml.connect();
+    connect.stream({
+      url: mediaStreamUrl,
+      name: `stream-${callSid}`
+    });
+
+    const twimlString = twiml.toString();
+    console.log(`📋 TWIML Generated:`, twimlString);
+    return twimlString;
+  }
+
+  // Generate TwiML with greeting and media stream
+  generateGreetingWithStreamTwiML(
+    greeting: string, 
+    callSid: string, 
+    mediaStreamUrl: string,
+    voice: string = 'alice'
+  ): string {
+    const VoiceResponse = twilio.twiml.VoiceResponse;
+    const twiml = new VoiceResponse();
+
+    // FIXED: NO Twilio Say - greeting handled exclusively by media stream handler
+    // This prevents double-voice issue where both Twilio TTS and OpenAI TTS play simultaneously
+    console.log(`🔧 STREAM-TWIML: Skipping Twilio greeting, using media stream only for ${callSid}`);
+
+    // Use Connect with Stream for media streaming (more compatible)
+    const connect = twiml.connect();
+    connect.stream({
+      name: `stream-${callSid}`,
+      url: mediaStreamUrl
+    });
+
+    return twiml.toString();
+  }
+
+  // Send audio back to caller through media stream
+  // sendMark: Set to true only at clip boundaries to reduce WebSocket traffic
+  sendAudioToStream(streamSid: string, mulaw8k: Buffer, label = "reply", sendMark = false): boolean {
+    const ws = getStreamWebSocket(streamSid);
+    if (!ws || ws.readyState !== 1) {
+      console.warn(`⚠️ WebSocket not available for stream ${streamSid} (state=${ws?.readyState ?? 'none'})`);
+      return false;
+    }
+
+    try {
+      // Send audio data as base64-encoded μ-law
+      ws.send(JSON.stringify({
+        event: "media",
+        streamSid,
+        media: { payload: mulaw8k.toString("base64") }
+      }));
+
+      // Only send mark at clip boundaries (not every chunk) to reduce WebSocket traffic
+      if (sendMark) {
+        ws.send(JSON.stringify({
+          event: "mark",
+          streamSid,
+          mark: { name: label }
+        }));
+      }
+
+      // Removed excessive per-chunk logging to prevent console flooding and audio quality issues
+      return true;
+    } catch (error) {
+      console.error(`❌ Error sending audio to stream ${streamSid}:`, error);
+      return false;
+    }
+  }
+
+  // Clear playback (barge-in helper)
+  clearPlayback(streamSid: string): void {
+    const ws = getStreamWebSocket(streamSid);
+    if (ws && ws.readyState === 1) {
+      try {
+        ws.send(JSON.stringify({ 
+          event: "clear", 
+          streamSid 
+        }));
+        console.log(`🛑 Cleared playback for stream ${streamSid}`);
+      } catch (error) {
+        console.error(`❌ Error clearing playback for stream ${streamSid}:`, error);
+      }
+    } else {
+      console.warn(`⚠️ Cannot clear playback - WebSocket not available for stream ${streamSid}`);
+    }
+  }
+}
+
+export const twilioMediaStreamService = new TwilioMediaStreamService();
