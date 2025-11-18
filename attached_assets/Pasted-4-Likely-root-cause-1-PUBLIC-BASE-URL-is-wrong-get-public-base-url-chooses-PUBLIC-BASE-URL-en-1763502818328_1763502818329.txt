@@ -1,0 +1,137 @@
+4. Likely root cause #1 – PUBLIC_BASE_URL is wrong
+
+get_public_base_url chooses:
+
+PUBLIC_BASE_URL env var
+
+REPLIT_DEV_DOMAIN
+
+fallback_host from request
+
+"https://localhost"
+
+If PUBLIC_BASE_URL is set to something like https://localhost or an old dev URL, then:
+
+Your incoming webhook works because Twilio is hitting the URL you configured in Twilio Console (e.g. https://api.yourdomain.com/api/calls/incoming).
+
+But the TwiML you return says:
+
+<Stream url="wss://localhost/ws/call?from=...&to=..." />
+
+
+Twilio tries to open wss://localhost/ws/call from Twilio’s cloud, which obviously fails.
+
+Your backend never sees the WebSocket at all → no logs.
+
+You’re already logging this in /incoming:
+
+logger.info(f"Directing call to WebSocket: {ws_url}")
+
+
+Action:
+Check that log line during a real Twilio call.
+
+If it says anything like wss://localhost/... or a wrong domain → that’s the problem.
+
+Fix: set PUBLIC_BASE_URL in your backend environment to your real public base URL, for example:
+
+PUBLIC_BASE_URL=https://api.your-real-domain.com
+
+
+or, if you’re using ngrok:
+
+PUBLIC_BASE_URL=https://<your-ngrok-id>.ngrok.io
+
+
+Or, while you’re debugging, you can simply unset PUBLIC_BASE_URL so the code falls back to fallback_host from the real request.
+
+5. Likely root cause #2 – infra only forwards /api/*, not /ws/*
+
+Your routes:
+
+HTTP: /api/calls/incoming (works)
+
+WS: /ws/call (not under /api)
+
+If you have any reverse proxy / ingress (Nginx, Cloudflare tunnel, Vercel, Netlify, etc.) that:
+
+forwards /api/* → backend
+
+but doesn’t forward /ws/*
+
+or doesn’t support WebSocket upgrades on /ws/*
+
+Then:
+
+Twilio successfully POSTs to /api/calls/incoming (webhook OK ✅).
+
+Twilio then tries wss://your-domain/ws/call.
+
+That route is either:
+
+not forwarded to FastAPI, or
+
+doesn’t support Upgrade: websocket.
+
+Result: the connection dies before it hits your FastAPI app → no logs.
+
+Action:
+
+From outside your network, try a WebSocket client to the exact URL your logs show:
+
+import asyncio, websockets
+
+async def test():
+    uri = "wss://YOUR_PUBLIC_DOMAIN/ws/call?from=+15551234567&to=+15557654321"
+    async with websockets.connect(uri) as ws:
+        print("Connected!")
+asyncio.run(test())
+
+
+If that fails, Twilio will fail too. Fix your proxy / ingress so /ws/* is forwarded with WebSocket upgrade support to this FastAPI app.
+
+6. Likely root cause #3 – minor but worth fixing: query param name
+
+TwiML sends:
+
+<Stream url=".../ws/call?from={From}&to={To}" />
+
+
+Your handler signature is:
+
+async def websocket_call_endpoint(
+    websocket: WebSocket,
+    from_number: str = "",
+    to: str = "",
+    db: Session = Depends(get_db)
+):
+
+
+FastAPI matches query parameters by name, so:
+
+to will bind correctly (?to=...)
+
+from_number will not receive ?from=... – it’ll stay ""
+
+That doesn’t break the connection, but it does mean you always log From: → To: ... and then pass "Unknown" into CallHandler.
+
+You can fix this cleanly with an alias:
+
+from fastapi import Query
+
+@router.websocket("/call")
+async def websocket_call_endpoint(
+    websocket: WebSocket,
+    from_number: str = Query("", alias="from"),
+    to: str = "",
+    db: Session = Depends(get_db),
+):
+    logger.info(f"WebSocket connection from Twilio - From: {from_number} → To: {to}")
+    ...
+
+
+That way:
+
+?from=+1555... → from_number="+1555..."
+
+Again: this won’t fix “no logs,” but it will make your logs and assistant lookup correct once the WS is actually hitting your app.

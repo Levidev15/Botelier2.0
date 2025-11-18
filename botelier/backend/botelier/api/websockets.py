@@ -6,7 +6,7 @@ between Twilio and Pipecat voice pipelines.
 """
 
 import json
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query
 from sqlalchemy.orm import Session
 from loguru import logger
 
@@ -20,8 +20,8 @@ router = APIRouter(prefix="/ws", tags=["WebSocket"])
 @router.websocket("/call")
 async def websocket_call_endpoint(
     websocket: WebSocket,
-    from_number: str = "",  # From URL query params
-    to: str = "",  # To phone number from URL query params
+    from_number: str = Query("", alias="from"),  # Binds to ?from=... query param
+    to: str = Query("", alias="to"),  # Binds to ?to=... query param
     db: Session = Depends(get_db)
 ):
     """
@@ -46,7 +46,9 @@ async def websocket_call_endpoint(
     
     URL format: wss://domain/ws/call?from=+1234567890&to=+0987654321
     """
-    logger.info(f"WebSocket connection from Twilio - From: {from_number} → To: {to}")
+    # Log WebSocket endpoint hit for debugging
+    logger.info(f"🔌 WebSocket endpoint /ws/call hit - From: {from_number} → To: {to}")
+    logger.info(f"WebSocket state: {websocket.client_state}")
     
     try:
         # Create call handler - it will accept WebSocket and orchestrate Pipecat pipeline
