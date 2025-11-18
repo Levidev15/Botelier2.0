@@ -14,7 +14,7 @@ from ..database import get_db
 from ..voice.call_handler import CallHandler
 
 
-router = APIRouter(prefix="/ws", tags=["WebSocket"])
+router = APIRouter(prefix="/api/ws", tags=["WebSocket"])
 
 
 @router.websocket("/call")

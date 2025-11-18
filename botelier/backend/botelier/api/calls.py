@@ -27,7 +27,7 @@ async def incoming_call_webhook(request: Request):
     
     TwiML Flow:
         1. <Connect> - Start connection
-        2. <Stream> - Open WebSocket to /ws/call
+        2. <Stream> - Open WebSocket to /api/ws/call
         3. Audio flows: Caller ↔ Twilio ↔ WebSocket ↔ Pipecat
     
     Twilio sends form data:
@@ -53,7 +53,7 @@ async def incoming_call_webhook(request: Request):
         # Get WebSocket URL using domain helper
         # This works in both Replit dev and production with custom domains
         fallback_host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host")
-        ws_url = get_websocket_url(path="/ws/call", fallback_host=fallback_host)
+        ws_url = get_websocket_url(path="/api/ws/call", fallback_host=fallback_host)
         
         logger.info(f"Directing call to WebSocket: {ws_url}")
         
