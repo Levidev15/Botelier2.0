@@ -228,6 +228,16 @@ The quickstart bot is still configured if you need to reference it:
 
 ## Recent Changes
 
+- **2024-11-18:** Assistants Page Tabbed Navigation (Vapi-style)
+  - Reusable components: TabNavigation, FormSection, FormField, ProviderSelector, SaveBar
+  - Assistant detail page with 6 tabs: Info, Voice, Model, Tools, Phone Numbers, Knowledge
+  - IntersectionObserver for automatic active tab tracking during scroll
+  - Smart dirty form detection (only marks dirty when values differ from original)
+  - Sticky header + tabs with proper positioning (no overlap)
+  - Clean component architecture for future expansion
+  - All sections properly structured and ready for backend integration
+  - File organization: components/tabs/, components/forms/, components/ui/
+
 - **2024-11-18:** Knowledge Base "Last Modified" Timestamps
   - Frontend: Added formatDate helper with smart relative/absolute time display
   - Frontend: "Modified X ago" text on grid view cards
