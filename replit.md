@@ -228,14 +228,15 @@ The quickstart bot is still configured if you need to reference it:
 
 ## Recent Changes
 
-- **2024-11-18:** Assistants Page Tabbed Navigation (Vapi-style)
+- **2024-11-18:** Assistants Page Tabbed Navigation (Simplified to Pipecat Config)
+  - Refactored to 4 tabs matching VoiceAgentConfig: Info, Transcriber, Language Model, Voice
+  - Removed placeholder tabs (Tools, Phone Numbers, Knowledge) - separate features
+  - Clean separation of STT, LLM, and TTS configurations
+  - Each tab maps directly to Pipecat service configurations
   - Reusable components: TabNavigation, FormSection, FormField, ProviderSelector, SaveBar
-  - Assistant detail page with 6 tabs: Info, Voice, Model, Tools, Phone Numbers, Knowledge
   - IntersectionObserver for automatic active tab tracking during scroll
   - Smart dirty form detection (only marks dirty when values differ from original)
   - Sticky header + tabs with proper positioning (no overlap)
-  - Clean component architecture for future expansion
-  - All sections properly structured and ready for backend integration
   - File organization: components/tabs/, components/forms/, components/ui/
 
 - **2024-11-18:** Knowledge Base "Last Modified" Timestamps
