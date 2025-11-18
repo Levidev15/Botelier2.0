@@ -14,11 +14,11 @@ Botelier is built with a clean architectural separation, where the core SaaS app
 
 ### UI/UX Decisions
 The frontend, built with Next.js, follows a Vapi.ai-style dark theme for consistency across different dashboard pages (Tools, Phone Numbers, Knowledge Bases). Key UI components include:
-- Tabbed navigation for agent configuration.
-- Reusable form components (FormField, ProviderSelector).
-- Sticky headers and smart dirty form detection.
-- Dual-view systems (Table/Grid) with sortable, searchable, and filterable data.
-- Bulk selection and action capabilities for managing entries.
+- **Assistant Configuration Pages:** Unified 4-tab layout (Info → Language Model → Voice → Transcriber) with auto-tab-switching on scroll via IntersectionObserver. Both create and edit pages share identical components for consistent UX.
+- **Reusable Form Components:** FormField, ProviderSelector (with dynamic provider loading from API), FormSection, TabNavigation, and SaveBar with smart dirty form detection.
+- **Sticky Headers:** Persistent header and tab navigation for easy access while scrolling through long forms.
+- **Dual-view Systems:** Table/Grid views with sortable, searchable, and filterable data.
+- **Bulk Selection:** Action capabilities for managing multiple entries simultaneously.
 
 ### Technical Implementations & Feature Specifications
 - **Voice AI Engine:** A wrapper around Pipecat provides a clean `VoiceAgent` interface, allowing hotels to configure STT, LLM, and TTS providers, system prompts, and behaviors without exposing Pipecat internals.
