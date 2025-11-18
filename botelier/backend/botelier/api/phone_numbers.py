@@ -9,6 +9,7 @@ Endpoints:
 - DELETE /api/phone-numbers/{id} - Release number
 """
 
+import os
 from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel, Field
@@ -197,13 +198,27 @@ async def purchase_phone_number(
             sub_auth_token=hotel.twilio_sub_auth_token
         )
         
-        # TODO: Set voice_url to your WebSocket webhook
-        # voice_url = f"https://your-domain.com/api/twilio/voice?hotel_id={hotel.id}"
+        # Construct webhook URL for incoming calls
+        # Use Replit domain in production, or localhost in dev
+        replit_slug = os.environ.get("REPL_SLUG")
+        replit_owner = os.environ.get("REPL_OWNER")
+        
+        if replit_slug and replit_owner:
+            # Production Replit URL
+            base_url = f"https://{replit_slug}.{replit_owner}.repl.co"
+        else:
+            # Fallback for development
+            base_url = os.environ.get("BASE_URL", "https://your-domain.com")
+        
+        voice_url = f"{base_url}/api/calls/incoming"
+        status_callback = f"{base_url}/api/calls/status"
         
         purchased = manager.purchase_number(
             phone_number=request.phone_number,
             friendly_name=request.friendly_name,
-            # voice_url=voice_url,  # Enable when webhook is ready
+            voice_url=voice_url,
+            voice_method="POST",
+            status_callback=status_callback,
         )
         
         # Extract country code from E.164 number
