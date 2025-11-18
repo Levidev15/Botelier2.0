@@ -113,30 +113,33 @@ from pipecat.services.openai.llm import OpenAILLMService
   - PhoneNumberCard showing number details and assignment status
 - Architecture: Each hotel gets isolated Twilio sub-account for billing separation
 
-**Knowledge Bases System (RAG Integration):**
-- Database models (`models/knowledge_base.py`, `models/knowledge_document.py`, `models/assistant_knowledge_base.py`)
-  - KnowledgeBase model with name, description, document count
-  - KnowledgeDocument model with filename, content, character count
-  - AssistantKnowledgeBase junction table for future assignment feature
+**Knowledge Bases System (Q&A Entry System with RAG):**
+- Database models (`models/knowledge_base.py`, `models/knowledge_entry.py`)
+  - KnowledgeBase model with name, description, entry count
+  - KnowledgeEntry model with question, answer, category (free-text tags), expiration_date
+  - is_expired property for automatic expiration checking
 - FastAPI CRUD endpoints (`api/knowledge_bases.py`)
-  - Create, read, update, delete knowledge bases
-  - Upload, list, delete documents within knowledge bases
-  - 50k character limit per document for safety
+  - Knowledge base CRUD operations
+  - Entry CRUD endpoints (create, read, update, delete Q&A entries)
+  - Consolidated GET /api/entries endpoint (fetches all hotel entries in one query)
+  - CSV bulk import with validation (required: question/answer, optional: category/expiration_date)
+  - Auto-filters expired entries from queries unless explicitly requested
   - Proper error handling and validation
 - RAG query handler (`voice/knowledge_handler.py`)
   - Integrates with Pipecat's function calling pattern
   - Uses OpenAI LLM (gpt-4o-mini) for RAG queries
-  - Loads all hotel knowledge bases into context
+  - Loads active (non-expired) Q&A entries into context
+  - Formats as "Q: ... A: ..." pairs for optimal RAG performance
+  - Auto-filters expired entries from AI queries
   - 50k character safety limit on concatenated content
-  - Truncation with warnings if content exceeds limit
 - React frontend Knowledge Bases page (`frontend/app/dashboard/knowledge-bases/`)
   - Vapi.ai-style dark theme matching existing pages
-  - Empty state with clear call-to-action
-  - AddKnowledgeBaseDrawer with two tabs: Basic Info and Documents
-  - Document upload with filename and text content
-  - Document list with character counts and delete functionality
-  - Knowledge base cards showing document counts
-- Architecture: Each hotel can create multiple knowledge bases with text documents for RAG
+  - Dual-view system: Table view (sortable) + Grid view (cards) with toggle
+  - Entry count dashboard showing total, active, and expired counts
+  - Filter for showing/hiding expired entries
+  - Category filtering support
+  - Expired entry badges in UI
+- Architecture: Hotels create Q&A entries with optional expiration for time-sensitive info (weekly specials, events)
 
 ### 🚧 Next Steps
 
