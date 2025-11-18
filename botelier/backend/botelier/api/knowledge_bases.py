@@ -9,13 +9,15 @@ Endpoints:
 - GET /api/entries/{entry_id} - Get specific entry
 - PUT /api/entries/{entry_id} - Update entry
 - DELETE /api/entries/{entry_id} - Delete entry
+- DELETE /api/entries/bulk - Bulk delete entries
+- PUT /api/entries/bulk - Bulk update entries
 - POST /api/entries/import-csv - Bulk CSV import
 """
 
 import csv
 import io
 from datetime import date, datetime
-from typing import Optional
+from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -44,6 +46,17 @@ class EntryUpdate(BaseModel):
     answer: Optional[str] = Field(None, min_length=1)
     category: Optional[str] = Field(None, max_length=100)
     expiration_date: Optional[str] = None  # ISO date string YYYY-MM-DD
+
+
+class BulkDeleteRequest(BaseModel):
+    """Request model for bulk delete."""
+    entry_ids: List[str] = Field(..., min_items=1)
+
+
+class BulkUpdateRequest(BaseModel):
+    """Request model for bulk update."""
+    entry_ids: List[str] = Field(..., min_items=1)
+    category: Optional[str] = None
 
 
 class EntryResponse(BaseModel):
@@ -229,6 +242,62 @@ async def delete_entry(
     
     db.delete(entry)
     db.commit()
+
+
+@router.delete("/bulk", status_code=200)
+async def bulk_delete_entries(
+    data: BulkDeleteRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Bulk delete multiple entries.
+    
+    Body:
+    - entry_ids: List of entry UUIDs to delete
+    
+    Returns:
+    - Count of deleted entries
+    """
+    deleted_count = db.query(KnowledgeEntry).filter(
+        KnowledgeEntry.id.in_(data.entry_ids)
+    ).delete(synchronize_session=False)
+    
+    db.commit()
+    
+    return {
+        "success": True,
+        "deleted": deleted_count
+    }
+
+
+@router.put("/bulk", status_code=200)
+async def bulk_update_entries(
+    data: BulkUpdateRequest,
+    db: Session = Depends(get_db)
+):
+    """
+    Bulk update category for multiple entries.
+    
+    Body:
+    - entry_ids: List of entry UUIDs to update
+    - category: New category to set (or null to clear)
+    
+    Returns:
+    - Count of updated entries
+    """
+    updated_count = db.query(KnowledgeEntry).filter(
+        KnowledgeEntry.id.in_(data.entry_ids)
+    ).update(
+        {"category": data.category},
+        synchronize_session=False
+    )
+    
+    db.commit()
+    
+    return {
+        "success": True,
+        "updated": updated_count
+    }
 
 
 @router.post("/import-csv", status_code=201)
