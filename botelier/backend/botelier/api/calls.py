@@ -10,6 +10,8 @@ from fastapi import APIRouter, Request, Response
 from fastapi.responses import PlainTextResponse
 from loguru import logger
 
+from ..config.domain import get_websocket_url
+
 
 router = APIRouter(prefix="/api/calls", tags=["Calls"])
 
@@ -48,18 +50,10 @@ async def incoming_call_webhook(request: Request):
         logger.info(f"Incoming call webhook - CallSid: {call_sid}")
         logger.info(f"From: {from_number} → To: {to_number}, Status: {call_status}")
         
-        # Get WebSocket URL from environment or construct it
-        # In Replit, we need to use the public domain
-        replit_slug = os.environ.get("REPL_SLUG")
-        replit_owner = os.environ.get("REPL_OWNER")
-        
-        if replit_slug and replit_owner:
-            replit_domain = f"{replit_slug}.{replit_owner}.repl.co"
-            ws_url = f"wss://{replit_domain}/ws/call"
-        else:
-            # Alternative: Use X-Forwarded-Host if behind proxy
-            host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host")
-            ws_url = f"wss://{host}/ws/call" if host else "wss://localhost/ws/call"
+        # Get WebSocket URL using domain helper
+        # This works in both Replit dev and production with custom domains
+        fallback_host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host")
+        ws_url = get_websocket_url(path="/ws/call", fallback_host=fallback_host)
         
         logger.info(f"Directing call to WebSocket: {ws_url}")
         
