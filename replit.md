@@ -136,8 +136,13 @@ from pipecat.services.openai.llm import OpenAILLMService
   - Vapi.ai-style dark theme matching existing pages
   - Dual-view system: Table view (sortable) + Grid view (cards) with toggle
   - Entry count dashboard showing total, active, and expired counts
+  - Dynamic category filter dropdown (populated from existing entries only)
+  - Real-time search box (filters questions, answers, categories)
+  - Sort options: Newest, Oldest, Alphabetical, Expiring Soonest, Expired First
+  - Bulk selection system with checkboxes (table rows + grid cards)
+  - Select all checkbox in table header
+  - Bulk actions: Delete Selected, Categorize Selected (with confirmation modals)
   - Filter for showing/hiding expired entries
-  - Category-based organization (no dropdown complexity)
   - Expired entry badges in UI
 - Architecture: Simplified flat structure - entries belong directly to hotels with category tags for organization
 
@@ -222,6 +227,18 @@ The quickstart bot is still configured if you need to reference it:
 - [Pipecat GitHub](https://github.com/pipecat-ai/pipecat)
 
 ## Recent Changes
+
+- **2024-11-18:** Knowledge Base Enhanced (Filtering, Search, Sorting, Bulk Actions)
+  - Backend: Added bulk delete and bulk update endpoints (/api/entries/bulk)
+  - Frontend: Dynamic category filter (populated from existing entries only, not hardcoded)
+  - Frontend: Real-time search box (filters questions, answers, categories)
+  - Frontend: Sort options (Newest, Oldest, Alphabetical, Expiring Soonest, Expired First)
+  - Frontend: Bulk selection with checkboxes on table rows and grid cards
+  - Frontend: Select all checkbox in table header
+  - Frontend: Bulk actions bar with Delete Selected and Categorize Selected
+  - Frontend: Bulk categorize modal with category dropdown
+  - Code cleanup: Removed unused code, organized structure
+  - All features work in both grid and table views
 
 - **2024-11-18:** Knowledge Base Simplified (Flat Structure)
   - Removed knowledge_bases grouping layer - entries now belong directly to hotels
