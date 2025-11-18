@@ -107,7 +107,19 @@ STT_PROVIDERS: Dict[STTProvider, STTConfig] = {
         requires_api_key=True,
         supported_languages=["en", "es", "fr", "de", "pt", "ja", "ko", "zh"],
         default_model="nova-3-general",
-        available_models=["nova-3-general", "nova-2-general", "nova-2-meeting", "nova-2-phonecall"],
+        available_models=[
+            "nova-3-general",
+            "nova-3-meeting",
+            "nova-3-phonecall",
+            "nova-3-voicemail",
+            "nova-3-finance",
+            "nova-3-medical",
+            "nova-2-general",
+            "nova-2-meeting",
+            "nova-2-phonecall",
+            "nova-2-voicemail",
+            "flux-general-en",  # Advanced turn detection for conversational AI
+        ],
         supports_vad=True,
         supports_diarization=True,
         supports_interim_results=True,
@@ -181,6 +193,39 @@ LLM_PROVIDERS: Dict[LLMProvider, LLMConfig] = {
 }
 
 TTS_PROVIDERS: Dict[TTSProvider, TTSConfig] = {
+    TTSProvider.DEEPGRAM: TTSConfig(
+        provider_type="tts",
+        display_name="Deepgram Aura",
+        description="Fast, natural-sounding voice synthesis",
+        requires_api_key=True,
+        supported_languages=["en", "es"],
+        default_model="aura-2",
+        available_models=["aura-2", "aura-1"],
+        available_voices=[
+            # Aura-2 voices (latest, professional)
+            {"id": "aura-2-helena-en", "name": "Helena (Professional)", "gender": "female"},
+            {"id": "aura-2-asteria-en", "name": "Asteria (Friendly)", "gender": "female"},
+            {"id": "aura-2-thalia-en", "name": "Thalia (Warm)", "gender": "female"},
+            {"id": "aura-2-luna-en", "name": "Luna (Natural)", "gender": "female"},
+            {"id": "aura-2-athena-en", "name": "Athena (Professional)", "gender": "female"},
+            {"id": "aura-2-hera-en", "name": "Hera (Authoritative)", "gender": "female"},
+            {"id": "aura-2-aurora-en", "name": "Aurora (Bright)", "gender": "female"},
+            {"id": "aura-2-orpheus-en", "name": "Orpheus (Narrative)", "gender": "male"},
+            {"id": "aura-2-orion-en", "name": "Orion (Strong)", "gender": "male"},
+            {"id": "aura-2-apollo-en", "name": "Apollo (Clear)", "gender": "male"},
+            {"id": "aura-2-zeus-en", "name": "Zeus (Deep)", "gender": "male"},
+            {"id": "aura-2-hermes-en", "name": "Hermes (Friendly)", "gender": "male"},
+            # Aura-1 voices (original)
+            {"id": "aura-asteria-en", "name": "Asteria V1 (Friendly)", "gender": "female"},
+            {"id": "aura-luna-en", "name": "Luna V1 (Natural)", "gender": "female"},
+            {"id": "aura-athena-en", "name": "Athena V1 (Professional)", "gender": "female"},
+            {"id": "aura-orpheus-en", "name": "Orpheus V1 (Narrative)", "gender": "male"},
+            {"id": "aura-zeus-en", "name": "Zeus V1 (Deep)", "gender": "male"},
+        ],
+        supports_emotion=False,
+        supports_speed_control=True,
+        supports_pitch_control=False,
+    ),
     TTSProvider.CARTESIA: TTSConfig(
         provider_type="tts",
         display_name="Cartesia",
@@ -249,3 +294,102 @@ def get_provider_config(provider_type: str, provider_name: str) -> ProviderConfi
     elif provider_type == "tts":
         return TTS_PROVIDERS.get(TTSProvider(provider_name))
     raise ValueError(f"Unknown provider type: {provider_type}")
+
+
+def is_flux_model(model: str) -> bool:
+    """Check if a Deepgram model is Flux"""
+    return model and model.startswith("flux-")
+
+
+# Provider-specific parameter schemas (matching Pipecat's InputParams)
+PROVIDER_PARAMS = {
+    "stt": {
+        "deepgram_standard": {
+            "punctuate": {"type": "boolean", "default": True, "label": "Punctuate"},
+            "profanity_filter": {"type": "boolean", "default": True, "label": "Profanity Filter"},
+            "smart_format": {"type": "boolean", "default": True, "label": "Smart Format"},
+            "vad_events": {"type": "boolean", "default": False, "label": "VAD Events"},
+        },
+        "deepgram_flux": {
+            "eager_eot_threshold": {
+                "type": "number",
+                "min": 0.0,
+                "max": 1.0,
+                "step": 0.1,
+                "default": None,
+                "label": "Eager End-of-Turn Threshold",
+                "description": "Lower = faster response, more LLM calls"
+            },
+            "eot_threshold": {
+                "type": "number",
+                "min": 0.0,
+                "max": 1.0,
+                "step": 0.1,
+                "default": 0.7,
+                "label": "End-of-Turn Threshold"
+            },
+            "eot_timeout_ms": {
+                "type": "number",
+                "min": 1000,
+                "max": 10000,
+                "step": 500,
+                "default": 5000,
+                "label": "End-of-Turn Timeout (ms)"
+            },
+        },
+    },
+    "llm": {
+        "openai": {
+            "frequency_penalty": {
+                "type": "number",
+                "min": -2.0,
+                "max": 2.0,
+                "step": 0.1,
+                "default": 0.0,
+                "label": "Frequency Penalty",
+                "description": "Reduces token repetition based on frequency"
+            },
+            "presence_penalty": {
+                "type": "number",
+                "min": -2.0,
+                "max": 2.0,
+                "step": 0.1,
+                "default": 0.0,
+                "label": "Presence Penalty",
+                "description": "Reduces repetition of any tokens"
+            },
+            "top_p": {
+                "type": "number",
+                "min": 0.0,
+                "max": 1.0,
+                "step": 0.05,
+                "default": 1.0,
+                "label": "Top P"
+            },
+        },
+        "anthropic": {
+            "top_k": {
+                "type": "number",
+                "min": 0,
+                "max": 500,
+                "step": 10,
+                "default": 0,
+                "label": "Top K"
+            },
+            "top_p": {
+                "type": "number",
+                "min": 0.0,
+                "max": 1.0,
+                "step": 0.05,
+                "default": 1.0,
+                "label": "Top P"
+            },
+            "enable_prompt_caching": {
+                "type": "boolean",
+                "default": False,
+                "label": "Enable Prompt Caching",
+                "description": "Cache system prompts for 50% cost savings"
+            },
+        },
+    },
+}
