@@ -4,3 +4,5 @@ sqlalchemy==2.0.23
 psycopg2-binary==2.9.9
 pydantic==2.5.2
 python-multipart==0.0.6
+twilio==9.0.0
+pipecat-ai[deepgram]==0.0.64
