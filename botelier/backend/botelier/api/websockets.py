@@ -20,8 +20,6 @@ router = APIRouter(prefix="/api/ws", tags=["WebSocket"])
 @router.websocket("/call")
 async def websocket_call_endpoint(
     websocket: WebSocket,
-    from_number: str = Query("", alias="from"),  # Binds to ?from=... query param
-    to: str = Query("", alias="to"),  # Binds to ?to=... query param
     db: Session = Depends(get_db)
 ):
     """
@@ -44,21 +42,17 @@ async def websocket_call_endpoint(
            d. Creates FastAPIWebsocketTransport
            e. Lets Pipecat handle all subsequent messages (media, dtmf, stop)
     
-    URL format: wss://domain/ws/call?from=+1234567890&to=+0987654321
+    URL format: wss://domain/api/ws/call (phone numbers in <Parameter> tags)
     """
     # Log WebSocket endpoint hit for debugging
-    logger.info(f"🔌 WebSocket endpoint /api/ws/call hit - From: {from_number} → To: {to}")
+    logger.info(f"🔌 WebSocket endpoint /api/ws/call hit!")
     logger.info(f"WebSocket state: {websocket.client_state}")
     
     try:
-        # Create call handler - it will accept WebSocket and orchestrate Pipecat pipeline
-        # CallHandler validates phone number after accepting WebSocket (can't close before accept)
+        # Create call handler - it will accept WebSocket, read parameters from Twilio 'start' event,
+        # and orchestrate Pipecat pipeline
         handler = CallHandler(db)
-        await handler.handle_call(
-            websocket=websocket,
-            from_number=from_number or "Unknown",
-            to_number=to,
-        )
+        await handler.handle_call(websocket=websocket)
         
     except Exception as e:
         logger.exception(f"Error in WebSocket endpoint: {e}")

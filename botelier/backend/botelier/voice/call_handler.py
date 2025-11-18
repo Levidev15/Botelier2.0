@@ -46,86 +46,84 @@ class CallHandler:
         self.db = db
         self.active_calls: Dict[str, asyncio.Task] = {}
     
-    async def handle_call(
-        self,
-        websocket: WebSocket,
-        from_number: str,
-        to_number: str,
-    ):
+    async def handle_call(self, websocket: WebSocket):
         """
         Handle incoming call by creating Pipecat pipeline and streaming audio.
         
         Args:
             websocket: FastAPI WebSocket connection from Twilio (not yet accepted)
-            from_number: Caller's phone number
-            to_number: Botelier phone number that received the call
         
         Flow:
-            1. Look up phone number → assistant (BEFORE accepting WebSocket)
-            2. Accept WebSocket and receive Twilio 'start' event to get stream_sid
-            3. Create Pipecat pipeline with TwilioFrameSerializer
-            4. Let Pipecat transport handle all subsequent WebSocket messages
-            5. Run pipeline (blocking until call ends)
-            6. Cleanup
+            1. Accept WebSocket and receive Twilio 'start' event
+            2. Extract phone numbers from <Parameter> tags in start event
+            3. Look up phone number → assistant
+            4. Create Pipecat pipeline with TwilioFrameSerializer
+            5. Let Pipecat transport handle all subsequent WebSocket messages
+            6. Run pipeline (blocking until call ends)
+            7. Cleanup
         """
         call_sid = None
         try:
-            # 1. Accept WebSocket FIRST (required before we can close it on error)
+            # 1. Accept WebSocket FIRST
             await websocket.accept()
-            logger.info("WebSocket accepted from Twilio")
+            logger.info("✅ WebSocket accepted from Twilio")
             
-            # 2. Validate phone number parameter
-            if not to_number:
-                logger.error("Missing 'to' phone number parameter")
-                await websocket.close(code=1008, reason="Missing phone number")
-                return
-            
-            # 3. Look up which assistant is assigned to this phone number
-            phone_record = self.db.query(PhoneNumber).filter(
-                PhoneNumber.phone_number == to_number
-            ).first()
-            
-            if not phone_record or not phone_record.assistant_id:
-                logger.warning(f"No assistant assigned to phone number: {to_number}")
-                await websocket.close(code=1008, reason="No assistant assigned")
-                return
-            
-            # 4. Fetch assistant configuration
-            assistant = self.db.query(Assistant).filter(
-                Assistant.id == phone_record.assistant_id
-            ).first()
-            
-            if not assistant:
-                logger.error(f"Assistant not found: {phone_record.assistant_id}")
-                await websocket.close(code=1008, reason="Assistant not found")
-                return
-            
-            logger.info(f"Handling call for assistant '{assistant.name}' (ID: {assistant.id})")
-            
-            # 5. Receive Twilio's 'start' event to extract stream_sid and call_sid
-            # We MUST manually parse it because TwilioFrameSerializer:
-            # - Requires stream_sid in constructor (not Optional, line 60 in serializer)
-            # - deserialize() ignores 'start' events (returns None, line 279)
-            logger.info("Waiting for Twilio 'start' event...")
+            # 2. Receive Twilio's 'start' event to extract metadata
+            # Parameters from <Parameter> tags are in start.customParameters
+            logger.info("⏳ Waiting for Twilio 'start' event...")
             
             data = await websocket.receive_text()
             message = json.loads(data)
             
             if message.get("event") != "start":
-                logger.error(f"Expected 'start' event, got: {message.get('event')}")
+                logger.error(f"❌ Expected 'start' event, got: {message.get('event')}")
                 await websocket.close()
                 return
             
             start_data = message.get("start", {})
             stream_sid = message.get("streamSid")
             call_sid = start_data.get("callSid")
+            custom_params = start_data.get("customParameters", {})
+            
+            # Extract phone numbers from <Parameter> tags
+            from_number = custom_params.get("from", "Unknown")
+            to_number = custom_params.get("to", "")
+            
+            logger.info(f"📞 Twilio call started - Stream: {stream_sid}, Call: {call_sid}")
+            logger.info(f"📞 From: {from_number} → To: {to_number}")
             
             if not stream_sid or not call_sid:
-                logger.error(f"Missing stream_sid or call_sid in start event")
+                logger.error(f"❌ Missing stream_sid or call_sid in start event")
                 await websocket.close()
                 return
             
-            logger.info(f"Twilio call started - Stream: {stream_sid}, Call: {call_sid}")
+            # 3. Validate phone number parameter
+            if not to_number:
+                logger.error("❌ Missing 'to' phone number in parameters")
+                await websocket.close(code=1008, reason="Missing phone number")
+                return
+            
+            # 4. Look up which assistant is assigned to this phone number
+            phone_record = self.db.query(PhoneNumber).filter(
+                PhoneNumber.phone_number == to_number
+            ).first()
+            
+            if not phone_record or not phone_record.assistant_id:
+                logger.warning(f"⚠️ No assistant assigned to phone number: {to_number}")
+                await websocket.close(code=1008, reason="No assistant assigned")
+                return
+            
+            # 5. Fetch assistant configuration
+            assistant = self.db.query(Assistant).filter(
+                Assistant.id == phone_record.assistant_id
+            ).first()
+            
+            if not assistant:
+                logger.error(f"❌ Assistant not found: {phone_record.assistant_id}")
+                await websocket.close(code=1008, reason="Assistant not found")
+                return
+            
+            logger.info(f"🤖 Handling call for assistant '{assistant.name}' (ID: {assistant.id})")
             
             # 4. Convert database model to VoiceAgentConfig
             config = self._create_agent_config(assistant)
