@@ -73,39 +73,33 @@ def get_websocket_url(path: str = "/api/ws/call", fallback_host: Optional[str] =
     Get the WebSocket URL for Twilio Media Streams.
     
     Converts the public base URL from https:// to wss:// and appends the path.
-    In Replit dev, uses port 8000 for backend WebSocket (frontend is on port 80).
-    In production, uses standard ports (no explicit port needed).
+    Uses default HTTPS port (443) for both dev and production since Next.js
+    proxies /api/* requests to the FastAPI backend.
     
     Args:
         path: WebSocket endpoint path (default: "/api/ws/call")
-        fallback_host: Optional host from request headers (not used for WebSocket routing)
+        fallback_host: Optional host from request headers
         
     Returns:
-        WebSocket URL with wss:// scheme (e.g., "wss://mydomain.com:8000/api/ws/call")
+        WebSocket URL with wss:// scheme (e.g., "wss://mydomain.com/api/ws/call")
         
     Examples:
-        >>> # Replit dev - backend on port 8000
+        >>> # Replit dev - proxied through Next.js
         >>> os.environ["REPLIT_DEV_DOMAIN"] = "abc123.repl.dev"
         >>> get_websocket_url()
-        "wss://abc123.repl.dev:8000/api/ws/call"
+        "wss://abc123.repl.dev/api/ws/call"
         
         >>> # Production - standard HTTPS port
         >>> os.environ["PUBLIC_BASE_URL"] = "https://api.botelier.com"
         >>> get_websocket_url()
         "wss://api.botelier.com/api/ws/call"
     """
-    # Check if we're in Replit dev environment
-    replit_domain = os.environ.get("REPLIT_DEV_DOMAIN")
+    # Get base URL (handles both dev and production)
+    base_url = get_public_base_url(fallback_host=fallback_host)
     
-    if replit_domain:
-        # In Replit dev: Backend runs on external port 8000
-        # Frontend is on port 80 (default), so WebSocket needs :8000
-        ws_url = f"wss://{replit_domain}:8000"
-    else:
-        # Production: Use PUBLIC_BASE_URL or fallback
-        base_url = get_public_base_url(fallback_host=fallback_host)
-        # Convert https:// to wss:// (or http:// to ws://)
-        ws_url = base_url.replace("https://", "wss://").replace("http://", "ws://")
+    # Convert https:// to wss:// (or http:// to ws://)
+    # No explicit port needed - Next.js proxies /api/* to backend
+    ws_url = base_url.replace("https://", "wss://").replace("http://", "ws://")
     
     # Ensure path starts with /
     if not path.startswith("/"):

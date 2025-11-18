@@ -47,7 +47,7 @@ async def websocket_call_endpoint(
     URL format: wss://domain/ws/call?from=+1234567890&to=+0987654321
     """
     # Log WebSocket endpoint hit for debugging
-    logger.info(f"🔌 WebSocket endpoint /ws/call hit - From: {from_number} → To: {to}")
+    logger.info(f"🔌 WebSocket endpoint /api/ws/call hit - From: {from_number} → To: {to}")
     logger.info(f"WebSocket state: {websocket.client_state}")
     
     try:
