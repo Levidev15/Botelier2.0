@@ -83,8 +83,11 @@ class AssistantResponse(BaseModel):
     system_prompt: str
     first_message: Optional[str]
     language: str
-    temperature: Optional[str]
-    max_tokens: Optional[str]
+    temperature: Optional[float]
+    max_tokens: Optional[int]
+    stt_config: Optional[dict]
+    llm_config: Optional[dict]
+    tts_config: Optional[dict]
     is_active: bool
     created_at: Optional[str]
     updated_at: Optional[str]

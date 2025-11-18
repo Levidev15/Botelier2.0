@@ -13,6 +13,7 @@ interface TabNavigationProps {
   activeTab: string;
   onTabChange: (tabId: string) => void;
   sticky?: boolean;
+  topOffset?: number;
 }
 
 export default function TabNavigation({
@@ -20,12 +21,14 @@ export default function TabNavigation({
   activeTab,
   onTabChange,
   sticky = true,
+  topOffset = 0,
 }: TabNavigationProps) {
   return (
     <div
       className={`border-b border-gray-800 bg-[#0a0a0a] ${
-        sticky ? "sticky top-0 z-20" : ""
+        sticky ? "sticky z-20" : ""
       }`}
+      style={sticky ? { top: `${topOffset}px` } : undefined}
     >
       <div className="px-8">
         <nav className="flex space-x-1 overflow-x-auto">
