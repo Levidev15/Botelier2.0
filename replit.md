@@ -113,22 +113,22 @@ from pipecat.services.openai.llm import OpenAILLMService
   - PhoneNumberCard showing number details and assignment status
 - Architecture: Each hotel gets isolated Twilio sub-account for billing separation
 
-**Knowledge Bases System (Q&A Entry System with RAG):**
-- Database models (`models/knowledge_base.py`, `models/knowledge_entry.py`)
-  - KnowledgeBase model with name, description, entry count
-  - KnowledgeEntry model with question, answer, category (free-text tags), expiration_date
+**Knowledge Base System (Simplified Q&A Entry System with RAG):**
+- Database model (`models/knowledge_entry.py`)
+  - KnowledgeEntry model: Entries belong directly to hotels (no grouping layer)
+  - Fields: question, answer, category (free-text tags), expiration_date
+  - hotel_id foreign key for direct hotel ownership
   - is_expired property for automatic expiration checking
 - FastAPI CRUD endpoints (`api/knowledge_bases.py`)
-  - Knowledge base CRUD operations
-  - Entry CRUD endpoints (create, read, update, delete Q&A entries)
-  - Consolidated GET /api/entries endpoint (fetches all hotel entries in one query)
+  - Entry CRUD operations (create, read, update, delete Q&A entries)
+  - GET /api/entries?hotel_id=xxx (fetches all hotel entries in one query)
   - CSV bulk import with validation (required: question/answer, optional: category/expiration_date)
   - Auto-filters expired entries from queries unless explicitly requested
   - Proper error handling and validation
 - RAG query handler (`voice/knowledge_handler.py`)
   - Integrates with Pipecat's function calling pattern
   - Uses OpenAI LLM (gpt-4o-mini) for RAG queries
-  - Loads active (non-expired) Q&A entries into context
+  - Loads active (non-expired) Q&A entries directly by hotel_id
   - Formats as "Q: ... A: ..." pairs for optimal RAG performance
   - Auto-filters expired entries from AI queries
   - 50k character safety limit on concatenated content
@@ -137,9 +137,9 @@ from pipecat.services.openai.llm import OpenAILLMService
   - Dual-view system: Table view (sortable) + Grid view (cards) with toggle
   - Entry count dashboard showing total, active, and expired counts
   - Filter for showing/hiding expired entries
-  - Category filtering support
+  - Category-based organization (no dropdown complexity)
   - Expired entry badges in UI
-- Architecture: Hotels create Q&A entries with optional expiration for time-sensitive info (weekly specials, events)
+- Architecture: Simplified flat structure - entries belong directly to hotels with category tags for organization
 
 ### 🚧 Next Steps
 
@@ -223,17 +223,21 @@ The quickstart bot is still configured if you need to reference it:
 
 ## Recent Changes
 
-- **2024-11-18:** Knowledge Bases Redesigned (Q&A Entry System)
-  - Completely redesigned from document-based to Q&A entry system
-  - Database: KnowledgeEntry model with question, answer, category, expiration_date
-  - API: Entry CRUD + CSV bulk import + consolidated /api/entries endpoint (eliminates N+1 queries)
-  - RAG: Auto-filters expired entries, formats as Q&A pairs for Pipecat function calling
-  - Frontend: Working Add Entry modal, CSV upload, edit/delete, dual-view toggle (grid/table)
-  - All old document-based code removed for clean, organized codebase
-  - Architect approved with no blocking defects
+- **2024-11-18:** Knowledge Base Simplified (Flat Structure)
+  - Removed knowledge_bases grouping layer - entries now belong directly to hotels
+  - Database: Dropped knowledge_bases, knowledge_documents, assistant_knowledge_bases tables
+  - Updated knowledge_entries schema: knowledge_base_id → hotel_id foreign key
+  - API: Completely rewritten to /api/entries endpoints (removed all KB CRUD)
+  - RAG: Loads entries directly by hotel_id (simplified query logic)
+  - Frontend: Removed KB dropdown from modals, cleaner entry management
+  - Architecture: Flat structure with category tags for organization
+  - Database tables: assistants, hotels, knowledge_entries, phone_numbers, tools (cleaned)
+
+- **2024-11-18:** Knowledge Bases Redesigned (Q&A Entry System - Replaced)
+  - Replaced by flat structure simplification (see above)
 
 - **2024-11-17:** Knowledge Bases System (Initial Version - Replaced)
-  - Initial document-based system (replaced by Q&A entry system on 2024-11-18)
+  - Initial document-based system (replaced by flat structure on 2024-11-18)
 
 - **2024-11-15:** Created Botelier SaaS architecture
   - Set up clean project structure separating SaaS from framework

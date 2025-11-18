@@ -8,7 +8,6 @@ from botelier.models.hotel import Hotel
 from botelier.models.phone_number import PhoneNumber
 from botelier.models.tool import Tool
 from botelier.models.assistant import Assistant
-from botelier.models.knowledge_base import KnowledgeBase
 from botelier.models.knowledge_entry import KnowledgeEntry
 
 __all__ = [
@@ -16,6 +15,5 @@ __all__ = [
     "PhoneNumber",
     "Tool",
     "Assistant",
-    "KnowledgeBase",
     "KnowledgeEntry",
 ]
