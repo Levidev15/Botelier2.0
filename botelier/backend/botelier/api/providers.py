@@ -87,25 +87,76 @@ async def get_llm_providers():
 
 
 @router.get("/tts")
-async def get_tts_providers():
+async def get_tts_providers(model: Optional[str] = Query(None, description="Filter voices by model")):
     """
-    Get all available TTS providers with their voices and parameters.
+    Get all available TTS providers with their models and voices.
     
     Returns provider configurations that map to Pipecat's TTSService implementations.
+    For providers like Deepgram Aura where voices are model-specific, voices are grouped by model.
     """
     providers_data = {}
     
     for provider_enum, config in TTS_PROVIDERS.items():
-        providers_data[provider_enum.value] = {
-            "id": provider_enum.value,
-            "display_name": config.display_name,
-            "description": config.description,
-            "default_model": config.default_model,
-            "voices": config.available_voices,
-            "supported_languages": config.supported_languages,
-            "supports_emotion": config.supports_emotion,
-            "supports_speed_control": config.supports_speed_control,
-        }
+        provider_id = provider_enum.value
+        
+        # Organize models
+        models_list = [{"value": m, "label": m} for m in config.available_models]
+        
+        # Organize voices based on provider
+        if provider_id == "deepgram":
+            # Deepgram voices are model-specific (aura-2-helena-en belongs to aura-2)
+            voices_by_model = {}
+            for voice in config.available_voices:
+                voice_id = voice["id"]
+                # Determine which model this voice belongs to
+                if voice_id.startswith("aura-2-"):
+                    model_key = "aura-2"
+                elif voice_id.startswith("aura-"):
+                    model_key = "aura-1"
+                else:
+                    model_key = config.default_model
+                
+                if model_key not in voices_by_model:
+                    voices_by_model[model_key] = []
+                voices_by_model[model_key].append({
+                    "value": voice_id,
+                    "label": voice["name"],
+                    "gender": voice.get("gender"),
+                })
+            
+            providers_data[provider_id] = {
+                "id": provider_id,
+                "display_name": config.display_name,
+                "description": config.description,
+                "default_model": config.default_model,
+                "models": models_list,
+                "voices_by_model": voices_by_model,
+                "supported_languages": config.supported_languages,
+                "supports_emotion": config.supports_emotion,
+                "supports_speed_control": config.supports_speed_control,
+            }
+        else:
+            # Other providers: voices work with all models
+            voices_list = [
+                {
+                    "value": voice["id"],
+                    "label": voice["name"],
+                    "gender": voice.get("gender"),
+                }
+                for voice in config.available_voices
+            ]
+            
+            providers_data[provider_id] = {
+                "id": provider_id,
+                "display_name": config.display_name,
+                "description": config.description,
+                "default_model": config.default_model,
+                "models": models_list,
+                "voices": voices_list,  # All voices work with all models
+                "supported_languages": config.supported_languages,
+                "supports_emotion": config.supports_emotion,
+                "supports_speed_control": config.supports_speed_control,
+            }
     
     return {"providers": providers_data}
 
