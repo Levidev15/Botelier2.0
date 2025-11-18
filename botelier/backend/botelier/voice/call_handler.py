@@ -6,6 +6,7 @@ Pipecat pipelines with TwilioFrameSerializer for real-time audio streaming.
 """
 
 import os
+import json
 import asyncio
 from typing import Optional, Dict, Any
 from fastapi import WebSocket
@@ -48,8 +49,6 @@ class CallHandler:
     async def handle_call(
         self,
         websocket: WebSocket,
-        stream_sid: str,
-        call_sid: str,
         from_number: str,
         to_number: str,
     ):
@@ -57,20 +56,19 @@ class CallHandler:
         Handle incoming call by creating Pipecat pipeline and streaming audio.
         
         Args:
-            websocket: FastAPI WebSocket connection from Twilio
-            stream_sid: Twilio Media Stream ID
-            call_sid: Twilio Call SID
+            websocket: FastAPI WebSocket connection from Twilio (not yet accepted)
             from_number: Caller's phone number
             to_number: Botelier phone number that received the call
         
         Flow:
-            1. Look up phone number → assistant
-            2. Fetch assistant configuration
+            1. Look up phone number → assistant (BEFORE accepting WebSocket)
+            2. Accept WebSocket and receive Twilio 'start' event to get stream_sid
             3. Create Pipecat pipeline with TwilioFrameSerializer
-            4. Stream greeting message
+            4. Let Pipecat transport handle all subsequent WebSocket messages
             5. Run pipeline (blocking until call ends)
             6. Cleanup
         """
+        call_sid = None
         try:
             # 1. Look up which assistant is assigned to this phone number
             phone_record = self.db.query(PhoneNumber).filter(
@@ -94,13 +92,37 @@ class CallHandler:
             
             logger.info(f"Handling call for assistant '{assistant.name}' (ID: {assistant.id})")
             
-            # 3. Convert database model to VoiceAgentConfig
+            # 3. Accept WebSocket and receive Twilio's 'start' event
+            # We MUST do this manually to get stream_sid and call_sid required by TwilioFrameSerializer
+            await websocket.accept()
+            logger.info("WebSocket accepted, waiting for Twilio 'start' event...")
+            
+            data = await websocket.receive_text()
+            message = json.loads(data)
+            
+            if message.get("event") != "start":
+                logger.error(f"Expected 'start' event, got: {message.get('event')}")
+                await websocket.close()
+                return
+            
+            start_data = message.get("start", {})
+            stream_sid = message.get("streamSid")
+            call_sid = start_data.get("callSid")
+            
+            if not stream_sid or not call_sid:
+                logger.error(f"Missing stream_sid or call_sid in start event")
+                await websocket.close()
+                return
+            
+            logger.info(f"Twilio call started - Stream: {stream_sid}, Call: {call_sid}")
+            
+            # 4. Convert database model to VoiceAgentConfig
             config = self._create_agent_config(assistant)
             
-            # 4. Get API keys from environment
+            # 5. Get API keys from environment
             api_keys = self._get_api_keys()
             
-            # 5. Create TwilioFrameSerializer (Pipecat component - hidden from hotels)
+            # 6. Create TwilioFrameSerializer (Pipecat component - hidden from hotels)
             serializer = TwilioFrameSerializer(
                 stream_sid=stream_sid,
                 call_sid=call_sid,
@@ -111,8 +133,8 @@ class CallHandler:
                 )
             )
             
-            # 6. Create WebSocket transport with Twilio serializer
-            # Note: serializer must be passed in params, not as direct argument
+            # 7. Create WebSocket transport with Twilio serializer
+            # The WebSocket is already accepted, and Pipecat will handle all subsequent messages
             transport_params = VoiceEngineFactory.create_transport_params(config)
             transport_params.serializer = serializer
             
@@ -121,28 +143,30 @@ class CallHandler:
                 params=transport_params,
             )
             
-            # 7. Create Pipecat pipeline
+            # 8. Create Pipecat pipeline
             pipeline, task = VoiceEngineFactory.create_pipeline(
                 config=config,
                 api_keys=api_keys,
                 transport=transport,
             )
             
-            # 8. Set up function calling if enabled
+            # 9. Set up function calling if enabled
             if config.enable_function_calling:
                 await self._setup_function_calling(assistant, task, api_keys)
             
-            # 9. Track active call
+            # 10. Track active call
             self.active_calls[call_sid] = task
             
-            # 10. Queue greeting message
+            # 11. Queue greeting message
             await task.queue_frames([
                 TTSSpeakFrame(text=config.greeting_message)
             ])
             
-            logger.info(f"Starting pipeline for call {call_sid}")
+            logger.info(f"Starting Pipecat pipeline for call {call_sid}")
+            logger.info(f"Pipeline: STT ({config.stt_provider}) → LLM ({config.llm_provider}) → TTS ({config.tts_provider})")
             
-            # 11. Run pipeline (blocks until call ends)
+            # 12. Run pipeline (blocks until call ends)
+            # Pipecat's FastAPIWebsocketTransport now handles all Twilio messages (media, stop, etc.)
             await task.run()
             
             logger.info(f"Call {call_sid} ended")
