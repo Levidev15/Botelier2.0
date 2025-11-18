@@ -22,6 +22,13 @@ The frontend, built with Next.js, follows a Vapi.ai-style dark theme for consist
 
 ### Technical Implementations & Feature Specifications
 - **Voice AI Engine:** A wrapper around Pipecat provides a clean `VoiceAgent` interface, allowing hotels to configure STT, LLM, and TTS providers, system prompts, and behaviors without exposing Pipecat internals.
+- **Call Handling Infrastructure (Twilio Media Streams):**
+    - HTTP webhook endpoint (`/api/calls/incoming`) returns TwiML with `<Connect><Stream>` pointing to WebSocket URL
+    - WebSocket endpoint (`/ws/twilio`) accepts Twilio Media Streams connections using Pipecat's TwilioFrameSerializer
+    - CallHandler class orchestrates full Pipecat pipeline: STT → LLM → TTS with real-time bidirectional audio
+    - Phone number purchase automatically configures voice_url webhook to incoming call endpoint
+    - Lazy provider imports prevent startup failures from missing optional dependencies (Anthropic, Cartesia, ElevenLabs, VAD)
+    - Active call sessions tracked with concurrent WebSocket handling per call
 - **Tools System (Function Calling):**
     - PostgreSQL schema for various tool types (Transfer Call, API Request, End Call, SMS, Email) with JSON configuration.
     - FastAPI CRUD endpoints for managing tools.
