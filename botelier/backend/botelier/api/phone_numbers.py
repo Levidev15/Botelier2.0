@@ -20,6 +20,7 @@ from botelier.database import get_db
 from botelier.models.phone_number import PhoneNumber
 from botelier.models.hotel import Hotel
 from botelier.integrations.twilio.phone_numbers import PhoneNumberManager
+from botelier.config.domain import get_public_base_url
 
 
 router = APIRouter(prefix="/api/phone-numbers", tags=["phone-numbers"])
@@ -198,18 +199,9 @@ async def purchase_phone_number(
             sub_auth_token=hotel.twilio_sub_auth_token
         )
         
-        # Construct webhook URL for incoming calls
-        # Use Replit domain in production, or localhost in dev
-        replit_slug = os.environ.get("REPL_SLUG")
-        replit_owner = os.environ.get("REPL_OWNER")
-        
-        if replit_slug and replit_owner:
-            # Production Replit URL
-            base_url = f"https://{replit_slug}.{replit_owner}.repl.co"
-        else:
-            # Fallback for development
-            base_url = os.environ.get("BASE_URL", "https://your-domain.com")
-        
+        # Construct webhook URLs for incoming calls using domain helper
+        # This works in both Replit dev and production with custom domains
+        base_url = get_public_base_url()
         voice_url = f"{base_url}/api/calls/incoming"
         status_callback = f"{base_url}/api/calls/status"
         
