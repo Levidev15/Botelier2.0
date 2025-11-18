@@ -14,9 +14,26 @@ interface Entry {
   expiration_date: string | null;
   is_expired: boolean;
   created_at: string;
+  updated_at: string;
 }
 
 type SortOption = "newest" | "oldest" | "alphabetical" | "expiring" | "expired";
+
+function formatDate(dateString: string): string {
+  const date = new Date(dateString);
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMs / 3600000);
+  const diffDays = Math.floor(diffMs / 86400000);
+
+  if (diffMins < 1) return "Just now";
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  if (diffDays < 7) return `${diffDays}d ago`;
+  
+  return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: date.getFullYear() !== now.getFullYear() ? 'numeric' : undefined });
+}
 
 export default function KnowledgeBasesPage() {
   const [view, setView] = useState<"grid" | "table">("grid");
@@ -345,17 +362,22 @@ export default function KnowledgeBasesPage() {
                     <div className="text-sm font-semibold text-green-600 mb-1">A:</div>
                     <div className="text-gray-400 text-sm line-clamp-3">{entry.answer}</div>
                   </div>
-                  <div className="flex items-center justify-between text-xs text-gray-500 mt-3 pt-3 border-t border-gray-800">
-                    <div>
-                      {entry.category && <span className="bg-gray-800 px-2 py-1 rounded">{entry.category}</span>}
+                  <div className="mt-3 pt-3 border-t border-gray-800">
+                    <div className="flex items-center justify-between text-xs text-gray-500 mb-2">
+                      <div>
+                        {entry.category && <span className="bg-gray-800 px-2 py-1 rounded">{entry.category}</span>}
+                      </div>
+                      <div className="flex space-x-2">
+                        <button onClick={() => { setEditEntry(entry); setShowAddModal(true); }} className="p-1 hover:text-white">
+                          <Pencil className="h-4 w-4" />
+                        </button>
+                        <button onClick={() => handleDelete(entry.id)} className="p-1 hover:text-red-400">
+                          <Trash2 className="h-4 w-4" />
+                        </button>
+                      </div>
                     </div>
-                    <div className="flex space-x-2">
-                      <button onClick={() => { setEditEntry(entry); setShowAddModal(true); }} className="p-1 hover:text-white">
-                        <Pencil className="h-4 w-4" />
-                      </button>
-                      <button onClick={() => handleDelete(entry.id)} className="p-1 hover:text-red-400">
-                        <Trash2 className="h-4 w-4" />
-                      </button>
+                    <div className="text-xs text-gray-600">
+                      Modified {formatDate(entry.updated_at)}
                     </div>
                   </div>
                 </div>
@@ -379,6 +401,7 @@ export default function KnowledgeBasesPage() {
                   <th className="text-left px-6 py-3 text-xs font-medium text-gray-400 uppercase">Answer</th>
                   <th className="text-left px-6 py-3 text-xs font-medium text-gray-400 uppercase">Category</th>
                   <th className="text-left px-6 py-3 text-xs font-medium text-gray-400 uppercase">Expires</th>
+                  <th className="text-left px-6 py-3 text-xs font-medium text-gray-400 uppercase">Last Modified</th>
                   <th className="text-right px-6 py-3 text-xs font-medium text-gray-400 uppercase">Actions</th>
                 </tr>
               </thead>
@@ -397,6 +420,7 @@ export default function KnowledgeBasesPage() {
                     <td className="px-6 py-4 text-gray-400 max-w-md truncate">{entry.answer}</td>
                     <td className="px-6 py-4 text-gray-400">{entry.category || "-"}</td>
                     <td className="px-6 py-4 text-gray-400 text-sm">{entry.expiration_date || "-"}</td>
+                    <td className="px-6 py-4 text-gray-400 text-sm">{formatDate(entry.updated_at)}</td>
                     <td className="px-6 py-4 text-right space-x-2">
                       <button onClick={() => { setEditEntry(entry); setShowAddModal(true); }} className="text-gray-400 hover:text-white">
                         <Pencil className="h-4 w-4 inline" />
