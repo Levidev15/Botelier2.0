@@ -74,6 +74,8 @@ async def load_hotel_knowledge(hotel_id: str) -> str:
     """
     Load all active (non-expired) Q&A entries for a hotel.
     
+    Simplified architecture: Entries belong directly to hotels.
+    
     Args:
         hotel_id: Hotel UUID
     
@@ -82,25 +84,15 @@ async def load_hotel_knowledge(hotel_id: str) -> str:
     """
     from datetime import date
     from botelier.database import SessionLocal
-    from botelier.models.knowledge_base import KnowledgeBase
     from botelier.models.knowledge_entry import KnowledgeEntry
     
     db = SessionLocal()
     
     try:
-        knowledge_bases = db.query(KnowledgeBase).filter(
-            KnowledgeBase.hotel_id == hotel_id
-        ).all()
-        
-        if not knowledge_bases:
-            return ""
-        
-        kb_ids = [kb.id for kb in knowledge_bases]
-        
-        # Load only non-expired entries
+        # Load only non-expired entries for this hotel
         today = date.today()
         entries = db.query(KnowledgeEntry).filter(
-            KnowledgeEntry.knowledge_base_id.in_(kb_ids),
+            KnowledgeEntry.hotel_id == hotel_id,
             (KnowledgeEntry.expiration_date.is_(None)) | 
             (KnowledgeEntry.expiration_date >= today)
         ).all()
