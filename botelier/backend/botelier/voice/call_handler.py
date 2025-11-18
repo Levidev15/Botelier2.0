@@ -112,10 +112,13 @@ class CallHandler:
             )
             
             # 6. Create WebSocket transport with Twilio serializer
+            # Note: serializer must be passed in params, not as direct argument
+            transport_params = VoiceEngineFactory.create_transport_params(config)
+            transport_params.serializer = serializer
+            
             transport = FastAPIWebsocketTransport(
                 websocket=websocket,
-                serializer=serializer,
-                params=VoiceEngineFactory.create_transport_params(config),
+                params=transport_params,
             )
             
             # 7. Create Pipecat pipeline
@@ -179,7 +182,7 @@ class CallHandler:
             llm_max_tokens=assistant.max_tokens or 150,
             llm_config=assistant.llm_config or {},
             tts_provider=assistant.tts_provider,
-            tts_voice_id=assistant.tts_voice_id,
+            tts_voice_id=assistant.tts_voice or "",  # Note: field is 'tts_voice' in DB
             tts_model=assistant.tts_model,
             tts_speed=assistant.tts_speed or 1.0,
             tts_config=assistant.tts_config or {},
