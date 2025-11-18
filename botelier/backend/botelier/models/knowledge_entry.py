@@ -1,10 +1,10 @@
 """
-Knowledge Entry Model - Individual Q&A entries within a knowledge base.
+Knowledge Entry Model - Individual Q&A entries for hotel knowledge base.
 
 Each entry:
-- Belongs to one knowledge base
+- Belongs directly to a hotel (simplified from knowledge_base grouping)
 - Contains a question and answer pair
-- Can have an optional category/tag
+- Can have an optional category/tag for organization
 - Can have an optional expiration date for time-sensitive info
 """
 
@@ -20,7 +20,7 @@ class KnowledgeEntry(Base):
     Knowledge Entry model for storing Q&A pairs.
     
     Each entry is:
-    - Part of a knowledge base
+    - Owned directly by a hotel
     - Question/answer pair for structured RAG
     - Optionally categorized with free-text tags
     - Optionally expires for time-sensitive information
@@ -29,15 +29,15 @@ class KnowledgeEntry(Base):
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     
-    # Ownership
-    knowledge_base_id = Column(UUID(as_uuid=True), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False)
+    # Direct hotel ownership (simplified from knowledge_base_id)
+    hotel_id = Column(UUID(as_uuid=True), ForeignKey("hotels.id", ondelete="CASCADE"), nullable=False)
     
     # Q&A content
     question = Column(Text, nullable=False)
     answer = Column(Text, nullable=False)
     
-    # Organization
-    category = Column(String(100), nullable=True)  # Free-text tags
+    # Organization via free-text category tags
+    category = Column(String(100), nullable=True)
     
     # Expiration for time-sensitive info (weekly specials, events, etc.)
     expiration_date = Column(Date, nullable=True)
@@ -60,7 +60,7 @@ class KnowledgeEntry(Base):
         """Convert to dictionary for API responses."""
         return {
             "id": str(self.id),
-            "knowledge_base_id": str(self.knowledge_base_id),
+            "hotel_id": str(self.hotel_id),
             "question": self.question,
             "answer": self.answer,
             "category": self.category,
