@@ -412,7 +412,7 @@ export default function KnowledgeBasesPage() {
           </div>
         )}
 
-        {showAddModal && <AddEntryModal entry={editEntry} onClose={() => { setShowAddModal(false); setEditEntry(null); }} onSaved={() => { setShowAddModal(false); setEditEntry(null); fetchEntries(); }} />}
+        {showAddModal && <AddEntryModal entry={editEntry} categories={uniqueCategories} onClose={() => { setShowAddModal(false); setEditEntry(null); }} onSaved={() => { setShowAddModal(false); setEditEntry(null); fetchEntries(); }} />}
         {showCSVModal && <CSVModal onClose={() => setShowCSVModal(false)} onUploaded={() => { setShowCSVModal(false); fetchEntries(); }} />}
         {showBulkCategorizeModal && <BulkCategorizeModal categories={uniqueCategories} onClose={() => setShowBulkCategorizeModal(false)} onSubmit={handleBulkCategorize} />}
       </div>
@@ -420,7 +420,7 @@ export default function KnowledgeBasesPage() {
   );
 }
 
-function AddEntryModal({ entry, onClose, onSaved }: any) {
+function AddEntryModal({ entry, categories, onClose, onSaved }: any) {
   const [question, setQuestion] = useState(entry?.question || "");
   const [answer, setAnswer] = useState(entry?.answer || "");
   const [category, setCategory] = useState(entry?.category || "");
@@ -481,7 +481,18 @@ function AddEntryModal({ entry, onClose, onSaved }: any) {
           <div className="grid grid-cols-2 gap-4">
             <div>
               <label className="block text-sm font-medium text-gray-400 mb-2">Category</label>
-              <input value={category} onChange={e => setCategory(e.target.value)} className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white" placeholder="Front Desk" />
+              <input 
+                value={category} 
+                onChange={e => setCategory(e.target.value)} 
+                list="entry-categories"
+                className="w-full bg-gray-800 border border-gray-700 rounded-lg px-4 py-2 text-white" 
+                placeholder="Select or type a category" 
+              />
+              <datalist id="entry-categories">
+                {categories.map((cat: string) => (
+                  <option key={cat} value={cat} />
+                ))}
+              </datalist>
             </div>
 
             <div>
