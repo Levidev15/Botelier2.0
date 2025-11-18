@@ -19,6 +19,7 @@ from uuid import UUID
 from botelier.database import get_db
 from botelier.models.phone_number import PhoneNumber
 from botelier.models.hotel import Hotel
+from botelier.models.assistant import Assistant
 from botelier.integrations.twilio.phone_numbers import PhoneNumberManager
 from botelier.config.domain import get_public_base_url
 
@@ -249,6 +250,9 @@ async def assign_to_assistant(
     """
     Assign phone number to a voice assistant.
     
+    MULTI-TENANCY: Validates that the assistant belongs to the same hotel
+    as the phone number to prevent cross-hotel contamination.
+    
     Path params:
     - phone_number_id: Phone number UUID
     
@@ -258,14 +262,26 @@ async def assign_to_assistant(
     Returns:
     - Updated phone number record
     """
+    # Look up phone number
     phone_number = db.query(PhoneNumber).filter(PhoneNumber.id == phone_number_id).first()
     if not phone_number:
         raise HTTPException(status_code=404, detail="Phone number not found")
     
-    # Update assignment
+    # Validate assistant belongs to same hotel (CRITICAL for multi-tenancy)
     if request.assistant_id:
+        assistant = db.query(Assistant).filter(Assistant.id == request.assistant_id).first()
+        if not assistant:
+            raise HTTPException(status_code=404, detail="Assistant not found")
+        
+        if assistant.hotel_id != phone_number.hotel_id:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Cannot assign assistant from hotel {assistant.hotel_id} to phone number from hotel {phone_number.hotel_id}. Multi-tenancy violation."
+            )
+        
         phone_number.assistant_id = request.assistant_id
     else:
+        # Unassign
         phone_number.assistant_id = None
     
     db.commit()
