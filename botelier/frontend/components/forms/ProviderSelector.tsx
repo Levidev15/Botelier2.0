@@ -43,7 +43,7 @@ export default function ProviderSelector({
           disabled={disabled}
           className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          <option value="">Select provider...</option>
+          <option key="placeholder-provider" value="">Select provider...</option>
           {providers.map((provider) => (
             <option key={provider.value} value={provider.value}>
               {provider.label}
@@ -63,7 +63,7 @@ export default function ProviderSelector({
             disabled={disabled}
             className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
           >
-            <option value="">Select model/voice...</option>
+            <option key="placeholder-model" value="">Select model/voice...</option>
             {models.map((model) => (
               <option key={model.value} value={model.value}>
                 {model.label}
