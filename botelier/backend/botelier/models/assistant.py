@@ -10,8 +10,8 @@ Each assistant has:
 
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Text, DateTime, Boolean, ForeignKey
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Column, String, Text, DateTime, Boolean, ForeignKey, Float, Integer
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from botelier.database import Base
 
 
@@ -52,8 +52,14 @@ class Assistant(Base):
     language = Column(String(10), nullable=False, default="en")
     
     # Settings
-    temperature = Column(String(10), nullable=True, default="0.7")
-    max_tokens = Column(String(10), nullable=True)
+    temperature = Column(Float, nullable=True, default=0.7)
+    max_tokens = Column(Integer, nullable=True)
+    
+    # Provider-specific configurations (stored as JSONB for flexibility)
+    # These map directly to Pipecat's InputParams classes
+    stt_config = Column(JSONB, nullable=True, default=dict)  # Deepgram LiveOptions, Flux InputParams, etc.
+    llm_config = Column(JSONB, nullable=True, default=dict)  # OpenAI frequency_penalty, Anthropic prompt_caching, etc.
+    tts_config = Column(JSONB, nullable=True, default=dict)  # TTS-specific settings
     
     # Status
     is_active = Column(Boolean, default=True)
@@ -83,6 +89,9 @@ class Assistant(Base):
             "language": self.language,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
+            "stt_config": self.stt_config or {},
+            "llm_config": self.llm_config or {},
+            "tts_config": self.tts_config or {},
             "is_active": self.is_active,
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
             "updated_at": self.updated_at.isoformat() + "Z" if self.updated_at else None,
