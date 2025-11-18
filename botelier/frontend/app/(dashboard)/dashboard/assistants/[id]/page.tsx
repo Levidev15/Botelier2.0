@@ -21,12 +21,21 @@ interface Assistant {
   stt_model: string | null;
   llm_model: string | null;
   tts_voice: string | null;
+  stt_config: any;
+  llm_config: any;
+  tts_config: any;
   system_prompt: string | null;
   first_message: string | null;
   language: string;
-  temperature: string;
+  temperature: number | null;
   max_tokens: number | null;
   is_active: boolean;
+}
+
+interface ProviderConfig {
+  stt: any;
+  llm: any;
+  tts: any;
 }
 
 const TABS: Tab[] = [
@@ -34,24 +43,6 @@ const TABS: Tab[] = [
   { id: "transcriber", label: "Transcriber", icon: <Mic className="h-4 w-4" /> },
   { id: "model", label: "Language Model", icon: <MessageSquare className="h-4 w-4" /> },
   { id: "voice", label: "Voice", icon: <Volume2 className="h-4 w-4" /> },
-];
-
-const STT_PROVIDERS = [
-  { value: "deepgram", label: "Deepgram" },
-  { value: "openai_whisper", label: "OpenAI Whisper" },
-  { value: "assemblyai", label: "AssemblyAI" },
-];
-
-const LLM_PROVIDERS = [
-  { value: "openai", label: "OpenAI" },
-  { value: "anthropic", label: "Anthropic" },
-  { value: "google_gemini", label: "Google Gemini" },
-];
-
-const TTS_PROVIDERS = [
-  { value: "cartesia", label: "Cartesia" },
-  { value: "elevenlabs", label: "ElevenLabs" },
-  { value: "openai", label: "OpenAI TTS" },
 ];
 
 export default function AssistantDetailPage() {
@@ -64,11 +55,13 @@ export default function AssistantDetailPage() {
   
   const [assistant, setAssistant] = useState<Assistant | null>(null);
   const [formData, setFormData] = useState<Partial<Assistant>>({});
+  const [providers, setProviders] = useState<ProviderConfig>({ stt: {}, llm: {}, tts: {} });
   
   const sectionRefs = useRef<{ [key: string]: HTMLElement | null }>({});
 
   useEffect(() => {
     fetchAssistant();
+    fetchProviders();
   }, [params.id]);
 
   useEffect(() => {
@@ -136,6 +129,30 @@ export default function AssistantDetailPage() {
       console.error("Failed to fetch assistant:", error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchProviders = async () => {
+    try {
+      const [sttRes, llmRes, ttsRes] = await Promise.all([
+        fetch('/api/providers/stt'),
+        fetch('/api/providers/llm'),
+        fetch('/api/providers/tts'),
+      ]);
+      
+      const [sttData, llmData, ttsData] = await Promise.all([
+        sttRes.json(),
+        llmRes.json(),
+        ttsRes.json(),
+      ]);
+      
+      setProviders({
+        stt: sttData.providers || {},
+        llm: llmData.providers || {},
+        tts: ttsData.providers || {},
+      });
+    } catch (error) {
+      console.error("Failed to fetch providers:", error);
     }
   };
 
@@ -310,27 +327,25 @@ export default function AssistantDetailPage() {
             description="Service that converts speech to text"
             providerValue={formData.stt_provider || ""}
             modelValue={formData.stt_model || ""}
-            providers={STT_PROVIDERS}
-            models={[]}
-            onProviderChange={(value) => handleFieldChange("stt_provider", value)}
+            providers={Object.entries(providers.stt).map(([key, config]: [string, any]) => ({
+              value: key,
+              label: config.display_name || key,
+            }))}
+            models={formData.stt_provider && providers.stt[formData.stt_provider]?.models 
+              ? providers.stt[formData.stt_provider].models.map((m: any) => ({
+                  value: m.value,
+                  label: m.label,
+                }))
+              : []}
+            onProviderChange={(value) => {
+              handleFieldChange("stt_provider", value);
+              const defaultModel = providers.stt[value]?.default_model;
+              if (defaultModel) {
+                handleFieldChange("stt_model", defaultModel);
+              }
+            }}
             onModelChange={(value) => handleFieldChange("stt_model", value)}
           />
-
-          <FormField
-            label="STT Language"
-            description="Language for speech recognition"
-          >
-            <select
-              value={formData.language || "en"}
-              onChange={(e) => handleFieldChange("language", e.target.value)}
-              className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-            >
-              <option value="en">English</option>
-              <option value="es">Spanish</option>
-              <option value="fr">French</option>
-              <option value="de">German</option>
-            </select>
-          </FormField>
         </FormSection>
 
         {/* Language Model Section */}
@@ -344,9 +359,23 @@ export default function AssistantDetailPage() {
             description="Service that generates intelligent responses"
             providerValue={formData.llm_provider || ""}
             modelValue={formData.llm_model || ""}
-            providers={LLM_PROVIDERS}
-            models={[]}
-            onProviderChange={(value) => handleFieldChange("llm_provider", value)}
+            providers={Object.entries(providers.llm).map(([key, config]: [string, any]) => ({
+              value: key,
+              label: config.display_name || key,
+            }))}
+            models={formData.llm_provider && providers.llm[formData.llm_provider]?.models 
+              ? providers.llm[formData.llm_provider].models.map((m: any) => ({
+                  value: m.value,
+                  label: m.label,
+                }))
+              : []}
+            onProviderChange={(value) => {
+              handleFieldChange("llm_provider", value);
+              const defaultModel = providers.llm[value]?.default_model;
+              if (defaultModel) {
+                handleFieldChange("llm_model", defaultModel);
+              }
+            }}
             onModelChange={(value) => handleFieldChange("llm_model", value)}
           />
 
@@ -409,9 +438,23 @@ export default function AssistantDetailPage() {
             description="Service that converts text into natural-sounding voice"
             providerValue={formData.tts_provider || ""}
             modelValue={formData.tts_voice || ""}
-            providers={TTS_PROVIDERS}
-            models={[]}
-            onProviderChange={(value) => handleFieldChange("tts_provider", value)}
+            providers={Object.entries(providers.tts).map(([key, config]: [string, any]) => ({
+              value: key,
+              label: config.display_name || key,
+            }))}
+            models={formData.tts_provider && providers.tts[formData.tts_provider]?.voices 
+              ? providers.tts[formData.tts_provider].voices.map((v: any) => ({
+                  value: v.value,
+                  label: v.label,
+                }))
+              : []}
+            onProviderChange={(value) => {
+              handleFieldChange("tts_provider", value);
+              const defaultVoice = providers.tts[value]?.voices?.[0]?.value;
+              if (defaultVoice) {
+                handleFieldChange("tts_voice", defaultVoice);
+              }
+            }}
             onModelChange={(value) => handleFieldChange("tts_voice", value)}
           />
         </FormSection>
