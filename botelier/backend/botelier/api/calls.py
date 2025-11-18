@@ -58,13 +58,14 @@ async def incoming_call_webhook(request: Request):
         logger.info(f"Directing call to WebSocket: {ws_url}")
         
         # Return TwiML to start Media Stream
+        # Pass phone numbers as URL query params so we can look up the assistant
+        # before Pipecat starts processing the WebSocket
+        ws_url_with_params = f"{ws_url}?from={from_number}&to={to_number}"
+        
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
-        <Stream url="{ws_url}">
-            <Parameter name="from" value="{from_number}" />
-            <Parameter name="to" value="{to_number}" />
-        </Stream>
+        <Stream url="{ws_url_with_params}" />
     </Connect>
 </Response>"""
         

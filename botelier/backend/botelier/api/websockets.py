@@ -20,6 +20,8 @@ router = APIRouter(prefix="/ws", tags=["WebSocket"])
 @router.websocket("/call")
 async def websocket_call_endpoint(
     websocket: WebSocket,
+    from_number: str = "",  # From URL query params
+    to: str = "",  # To phone number from URL query params
     db: Session = Depends(get_db)
 ):
     """
@@ -27,66 +29,40 @@ async def websocket_call_endpoint(
     
     Twilio connects here after the HTTP webhook returns TwiML with <Stream>.
     
+    IMPORTANT: This endpoint does NOT manually parse Twilio WebSocket events!
+    Pipecat's FastAPIWebsocketTransport + TwilioFrameSerializer handle the entire
+    Twilio protocol automatically (start, media, stop events).
+    
     Flow:
-        1. Accept WebSocket connection
-        2. Wait for Twilio 'start' event with call metadata
-        3. Extract stream_sid, call_sid, from, to
-        4. Hand off to CallHandler for pipeline orchestration
-        5. Stream audio until call ends
+        1. Extract phone numbers from URL query params (from TwiML)
+        2. Look up which assistant is assigned to the phone number
+        3. Create Pipecat pipeline with assistant config
+        4. Let Pipecat's transport handle the entire WebSocket lifecycle
     
-    Twilio sends JSON events:
-        - "start": Call metadata (stream_sid, call_sid, from, to, etc.)
-        - "media": Audio payload (base64 μ-law)
-        - "stop": Call ended
+    URL format: wss://domain/ws/call?from=+1234567890&to=+0987654321
     """
-    await websocket.accept()
-    logger.info("WebSocket connection accepted from Twilio")
-    
-    # Wait for Twilio's 'start' event with call metadata
-    stream_sid = None
-    call_sid = None
-    from_number = None
-    to_number = None
+    logger.info(f"WebSocket connection from Twilio - From: {from_number} → To: {to}")
     
     try:
-        # First message from Twilio is always the 'start' event
-        data = await websocket.receive_text()
-        message = json.loads(data)
+        # Validate phone number
+        if not to:
+            logger.error("Missing 'to' phone number in query params")
+            await websocket.close(code=1008, reason="Missing phone number")
+            return
         
-        if message.get("event") == "start":
-            start_data = message.get("start", {})
-            stream_sid = message.get("streamSid")
-            call_sid = start_data.get("callSid")
-            from_number = start_data.get("customParameters", {}).get("from") or start_data.get("from")
-            to_number = start_data.get("customParameters", {}).get("to") or start_data.get("to")
-            
-            logger.info(f"Twilio call started - Stream: {stream_sid}, Call: {call_sid}")
-            logger.info(f"From: {from_number} → To: {to_number}")
-            
-            # Validate required fields
-            if not all([stream_sid, call_sid, to_number]):
-                logger.error(f"Missing required fields - stream_sid: {stream_sid}, call_sid: {call_sid}, to_number: {to_number}")
-                await websocket.close()
-                return
-            
-            # Create call handler and process the call
-            handler = CallHandler(db)
-            await handler.handle_call(
-                websocket=websocket,
-                stream_sid=stream_sid,
-                call_sid=call_sid,
-                from_number=from_number or "Unknown",
-                to_number=to_number,
-            )
-        else:
-            logger.warning(f"Expected 'start' event, got: {message.get('event')}")
-            await websocket.close()
-            
-    except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for call {call_sid}")
+        # Create call handler and let it orchestrate the Pipecat pipeline
+        # The handler will create the transport which handles websocket.accept() and all Twilio events
+        handler = CallHandler(db)
+        await handler.handle_call(
+            websocket=websocket,
+            from_number=from_number or "Unknown",
+            to_number=to,
+        )
+        
     except Exception as e:
         logger.exception(f"Error in WebSocket endpoint: {e}")
         try:
-            await websocket.close()
+            if websocket.client_state.name == "CONNECTED":
+                await websocket.close()
         except:
             pass
