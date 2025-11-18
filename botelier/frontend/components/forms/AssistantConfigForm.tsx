@@ -310,7 +310,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
   const pageTitle = mode === "create" ? "Create New Assistant" : assistant?.name || "Edit Assistant";
 
   return (
-    <div className="h-full pb-32">
+    <div className="h-full pb-48">
       {/* Header */}
       <div className="border-b border-gray-800 bg-[#0a0a0a] sticky top-0 z-30">
         <div className="px-8 py-6">
@@ -332,14 +332,13 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
       </div>
 
       {/* Tab Navigation */}
-      <div className="sticky top-[89px] z-20">
-        <TabNavigation
-          tabs={TABS}
-          activeTab={activeTab}
-          onTabChange={scrollToSection}
-          sticky={false}
-        />
-      </div>
+      <TabNavigation
+        tabs={TABS}
+        activeTab={activeTab}
+        onTabChange={scrollToSection}
+        sticky={true}
+        topOffset={89}
+      />
 
       {/* Content */}
       <div className="px-8 py-8 space-y-12">
