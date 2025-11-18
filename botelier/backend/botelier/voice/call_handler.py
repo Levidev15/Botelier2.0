@@ -70,32 +70,43 @@ class CallHandler:
         """
         call_sid = None
         try:
-            # 1. Look up which assistant is assigned to this phone number
+            # 1. Accept WebSocket FIRST (required before we can close it on error)
+            await websocket.accept()
+            logger.info("WebSocket accepted from Twilio")
+            
+            # 2. Validate phone number parameter
+            if not to_number:
+                logger.error("Missing 'to' phone number parameter")
+                await websocket.close(code=1008, reason="Missing phone number")
+                return
+            
+            # 3. Look up which assistant is assigned to this phone number
             phone_record = self.db.query(PhoneNumber).filter(
                 PhoneNumber.phone_number == to_number
             ).first()
             
             if not phone_record or not phone_record.assistant_id:
                 logger.warning(f"No assistant assigned to phone number: {to_number}")
-                await websocket.close()
+                await websocket.close(code=1008, reason="No assistant assigned")
                 return
             
-            # 2. Fetch assistant configuration
+            # 4. Fetch assistant configuration
             assistant = self.db.query(Assistant).filter(
                 Assistant.id == phone_record.assistant_id
             ).first()
             
             if not assistant:
                 logger.error(f"Assistant not found: {phone_record.assistant_id}")
-                await websocket.close()
+                await websocket.close(code=1008, reason="Assistant not found")
                 return
             
             logger.info(f"Handling call for assistant '{assistant.name}' (ID: {assistant.id})")
             
-            # 3. Accept WebSocket and receive Twilio's 'start' event
-            # We MUST do this manually to get stream_sid and call_sid required by TwilioFrameSerializer
-            await websocket.accept()
-            logger.info("WebSocket accepted, waiting for Twilio 'start' event...")
+            # 5. Receive Twilio's 'start' event to extract stream_sid and call_sid
+            # We MUST manually parse it because TwilioFrameSerializer:
+            # - Requires stream_sid in constructor (not Optional, line 60 in serializer)
+            # - deserialize() ignores 'start' events (returns None, line 279)
+            logger.info("Waiting for Twilio 'start' event...")
             
             data = await websocket.receive_text()
             message = json.loads(data)

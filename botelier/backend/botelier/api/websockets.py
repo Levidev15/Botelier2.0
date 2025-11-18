@@ -29,29 +29,28 @@ async def websocket_call_endpoint(
     
     Twilio connects here after the HTTP webhook returns TwiML with <Stream>.
     
-    IMPORTANT: This endpoint does NOT manually parse Twilio WebSocket events!
-    Pipecat's FastAPIWebsocketTransport + TwilioFrameSerializer handle the entire
-    Twilio protocol automatically (start, media, stop events).
+    Architecture:
+        - Pipecat's TwilioFrameSerializer IGNORES 'start' events (returns None)
+        - stream_sid is REQUIRED in serializer constructor (not Optional)
+        - Therefore, we MUST manually parse 'start' to bootstrap the serializer
+        - This is the correct integration pattern per Pipecat's design
     
     Flow:
         1. Extract phone numbers from URL query params (from TwiML)
-        2. Look up which assistant is assigned to the phone number
-        3. Create Pipecat pipeline with assistant config
-        4. Let Pipecat's transport handle the entire WebSocket lifecycle
+        2. Pass to CallHandler which:
+           a. Accepts WebSocket
+           b. Receives 'start' event to get stream_sid/call_sid
+           c. Creates TwilioFrameSerializer with those IDs
+           d. Creates FastAPIWebsocketTransport
+           e. Lets Pipecat handle all subsequent messages (media, dtmf, stop)
     
     URL format: wss://domain/ws/call?from=+1234567890&to=+0987654321
     """
     logger.info(f"WebSocket connection from Twilio - From: {from_number} → To: {to}")
     
     try:
-        # Validate phone number
-        if not to:
-            logger.error("Missing 'to' phone number in query params")
-            await websocket.close(code=1008, reason="Missing phone number")
-            return
-        
-        # Create call handler and let it orchestrate the Pipecat pipeline
-        # The handler will create the transport which handles websocket.accept() and all Twilio events
+        # Create call handler - it will accept WebSocket and orchestrate Pipecat pipeline
+        # CallHandler validates phone number after accepting WebSocket (can't close before accept)
         handler = CallHandler(db)
         await handler.handle_call(
             websocket=websocket,
