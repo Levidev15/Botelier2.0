@@ -223,15 +223,17 @@ The quickstart bot is still configured if you need to reference it:
 
 ## Recent Changes
 
-- **2024-11-17:** Knowledge Bases System (RAG Integration)
-  - Built complete RAG system for hotel knowledge bases
-  - Created database models for knowledge bases and documents
-  - Implemented API endpoints for CRUD operations
-  - Built RAG query handler using Pipecat function calling + OpenAI
-  - Created frontend UI with Vapi.ai dark theme
-  - Added 50k character safety limits to prevent unbounded concatenation
-  - Fixed critical API validation bug (hotel_id on updates)
-  - Navigation link added to sidebar
+- **2024-11-18:** Knowledge Bases Redesigned (Q&A Entry System)
+  - Completely redesigned from document-based to Q&A entry system
+  - Database: KnowledgeEntry model with question, answer, category, expiration_date
+  - API: Entry CRUD + CSV bulk import + consolidated /api/entries endpoint (eliminates N+1 queries)
+  - RAG: Auto-filters expired entries, formats as Q&A pairs for Pipecat function calling
+  - Frontend: Working Add Entry modal, CSV upload, edit/delete, dual-view toggle (grid/table)
+  - All old document-based code removed for clean, organized codebase
+  - Architect approved with no blocking defects
+
+- **2024-11-17:** Knowledge Bases System (Initial Version - Replaced)
+  - Initial document-based system (replaced by Q&A entry system on 2024-11-18)
 
 - **2024-11-15:** Created Botelier SaaS architecture
   - Set up clean project structure separating SaaS from framework
