@@ -29,8 +29,9 @@ async def get_stt_providers():
     providers_data = {}
     
     for provider_enum, config in STT_PROVIDERS.items():
-        providers_data[provider_enum.value] = {
-            "id": provider_enum.value,
+        provider_id = provider_enum.value
+        provider_data = {
+            "id": provider_id,
             "display_name": config.display_name,
             "description": config.description,
             "default_model": config.default_model,
@@ -43,9 +44,14 @@ async def get_stt_providers():
                 for model in config.available_models
             ],
             "supported_languages": config.supported_languages,
-            "standard_params": PROVIDER_PARAMS["stt"].get("deepgram_standard", {}),
-            "flux_params": PROVIDER_PARAMS["stt"].get("deepgram_flux", {}),
         }
+        
+        # Only include Deepgram-specific params for Deepgram
+        if provider_id == "deepgram":
+            provider_data["standard_params"] = PROVIDER_PARAMS["stt"].get("deepgram_standard", {})
+            provider_data["flux_params"] = PROVIDER_PARAMS["stt"].get("deepgram_flux", {})
+        
+        providers_data[provider_id] = provider_data
     
     return {"providers": providers_data}
 
