@@ -23,8 +23,13 @@ The frontend, built with Next.js, follows a Vapi.ai-style dark theme for consist
 ### Technical Implementations & Feature Specifications
 - **Voice AI Engine:** A wrapper around Pipecat provides a clean `VoiceAgent` interface, allowing hotels to configure STT, LLM, and TTS providers, system prompts, and behaviors without exposing Pipecat internals.
 - **Call Handling Infrastructure (Twilio Media Streams):**
-    - HTTP webhook endpoint (`/api/calls/incoming`) returns TwiML with `<Connect><Stream>` pointing to WebSocket URL
-    - WebSocket endpoint (`/ws/twilio`) accepts Twilio Media Streams connections using Pipecat's TwilioFrameSerializer
+    - HTTP webhook endpoint (`/api/calls/incoming`) returns TwiML with `<Connect><Stream>` pointing to WebSocket URL with phone numbers as query params
+    - WebSocket endpoint (`/ws/call`) uses hybrid Pipecat integration:
+        - Extracts phone numbers from URL query params to look up assistant BEFORE accepting WebSocket
+        - Manually accepts WebSocket and receives Twilio's 'start' event to extract `stream_sid` and `call_sid` (required by TwilioFrameSerializer constructor)
+        - Creates Pipecat pipeline with TwilioFrameSerializer initialized with stream_sid/call_sid
+        - Delegates ALL subsequent WebSocket messages (media, stop, etc.) to Pipecat's FastAPIWebsocketTransport
+        - **Design rationale**: Pipecat's TwilioFrameSerializer requires stream_sid upfront, but we implement the WebSocket endpoint that receives it, necessitating manual bootstrap of the first event
     - CallHandler class orchestrates full Pipecat pipeline: STT → LLM → TTS with real-time bidirectional audio
     - Phone number purchase automatically configures voice_url webhook to incoming call endpoint
     - Lazy provider imports prevent startup failures from missing optional dependencies (Anthropic, Cartesia, ElevenLabs, VAD)
@@ -46,7 +51,12 @@ The frontend, built with Next.js, follows a Vapi.ai-style dark theme for consist
 ### System Design Choices
 - **Clean Branding:** The platform prioritizes "Botelier" branding, treating Pipecat as a backend dependency, similar to how a developer uses a framework like React or Django.
 - **Provider Configuration:** A flexible configuration system allows hotels to choose from a wide range of AI providers (STT, LLM, TTS), specific models, voices, languages, and behavioral parameters (temperature, speed, emotions, prompts).
-- **Multi-tenancy:** Core systems like Twilio integration are designed with multi-tenancy in mind, ensuring isolation and proper billing for each hotel.
+- **Multi-tenancy with Complete Isolation:** Every hotel resource is strictly isolated:
+    - Database queries filter by `hotel_id` for assistants, phone numbers, tools, and knowledge entries
+    - Phone number assignment endpoint validates that assistant.hotel_id matches phone_number.hotel_id (403 error on mismatch)
+    - Tools and knowledge base RAG queries automatically scope to the calling assistant's hotel_id
+    - Twilio sub-accounts provide billing and resource separation per hotel
+    - **Security guarantee**: Hotel A cannot access, modify, or trigger Hotel B's resources under any circumstances
 
 ## External Dependencies
 
