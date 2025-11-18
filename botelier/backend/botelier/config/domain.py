@@ -104,16 +104,9 @@ def get_websocket_url(path: str = "/api/ws/call", fallback_host: Optional[str] =
     # Convert https:// to wss://
     ws_url = base_url.replace("https://", "wss://").replace("http://", "ws://")
     
-    # Add backend port for WebSocket connections (bypasses Next.js)
-    # Only add port if not already present and in dev environment
-    if ":3001" not in ws_url and os.environ.get("REPLIT_DEV_DOMAIN"):
-        # Remove any existing port first, then add :3001
-        if ":" in ws_url.split("//")[1]:
-            # Has a port, replace it
-            ws_url = ws_url.rsplit(":", 1)[0] + ":3001"
-        else:
-            # No port, add it
-            ws_url = f"{ws_url}:3001"
+    # No port needed - WebSocket connections go through Next.js custom server on default port
+    # Next.js server (port 5000 → external 80) proxies /api/ws/* to FastAPI backend (port 3001)
+    # This allows Twilio to connect on standard HTTPS port (443)
     
     # Ensure path starts with /
     if not path.startswith("/"):
