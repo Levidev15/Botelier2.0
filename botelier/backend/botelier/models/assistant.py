@@ -62,6 +62,12 @@ class Assistant(Base):
     llm_config = Column(JSONB, nullable=True, default=dict)  # OpenAI frequency_penalty, Anthropic prompt_caching, etc.
     tts_config = Column(JSONB, nullable=True, default=dict)  # TTS-specific settings
     
+    # Voice Activity Detection (VAD) configuration
+    # Note: Flux users should disable external VAD and use Flux's built-in endpointing
+    vad_enabled = Column(Boolean, default=False)  # Enable transport-level VAD (Silero/WebRTC/AIC)
+    vad_provider = Column(String(50), nullable=True)  # "silero", "webrtc", "aic", or null
+    vad_config = Column(JSONB, nullable=True, default=dict)  # VADParams: confidence, start_secs, stop_secs, min_volume
+    
     # Status
     is_active = Column(Boolean, default=True)
     
@@ -94,6 +100,9 @@ class Assistant(Base):
             "stt_config": self.stt_config or {},
             "llm_config": self.llm_config or {},
             "tts_config": self.tts_config or {},
+            "vad_enabled": self.vad_enabled,
+            "vad_provider": self.vad_provider,
+            "vad_config": self.vad_config or {},
             "is_active": self.is_active,
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
             "updated_at": self.updated_at.isoformat() + "Z" if self.updated_at else None,

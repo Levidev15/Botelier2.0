@@ -241,7 +241,9 @@ class CallHandler:
             greeting_message=assistant.first_message or "Hello! How can I help you today?",
             enable_function_calling=True,
             enable_interruptions=True,
-            enable_vad=True,
+            enable_vad=assistant.vad_enabled,
+            vad_provider=assistant.vad_provider,
+            vad_config=assistant.vad_config or {},
         )
     
     def _get_api_keys(self) -> Dict[str, str]:

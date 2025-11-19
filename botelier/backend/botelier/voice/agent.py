@@ -51,7 +51,9 @@ class VoiceAgentConfig(BaseModel):
     functions: List[Dict[str, Any]] = Field(default_factory=list)
     
     enable_interruptions: bool = True
-    enable_vad: bool = True
+    enable_vad: bool = False
+    vad_provider: Optional[str] = None
+    vad_config: Dict[str, Any] = Field(default_factory=dict)
     
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
