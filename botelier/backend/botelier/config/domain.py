@@ -68,7 +68,11 @@ def get_public_base_url(fallback_host: Optional[str] = None) -> str:
     return "https://localhost"
 
 
-def get_websocket_url(path: str = "/api/ws/call", fallback_host: Optional[str] = None) -> str:
+def get_websocket_url(
+    path: str = "/api/ws/call",
+    fallback_host: Optional[str] = None,
+    query_params: Optional[dict] = None
+) -> str:
     """
     Get the WebSocket URL for Twilio Media Streams.
     
@@ -83,6 +87,7 @@ def get_websocket_url(path: str = "/api/ws/call", fallback_host: Optional[str] =
     Args:
         path: WebSocket endpoint path (default: "/api/ws/call")
         fallback_host: Optional host from request headers
+        query_params: Optional dict of query parameters to append
         
     Returns:
         WebSocket URL pointing directly to backend port 3001
@@ -93,11 +98,12 @@ def get_websocket_url(path: str = "/api/ws/call", fallback_host: Optional[str] =
         >>> get_websocket_url()
         "wss://abc123.repl.dev:3001/api/ws/call"
         
-        >>> # Production with custom backend URL
-        >>> os.environ["PUBLIC_BASE_URL"] = "https://api.botelier.com"
-        >>> get_websocket_url()
-        "wss://api.botelier.com/api/ws/call"
+        >>> # With query params
+        >>> get_websocket_url(query_params={"to": "+17027074036"})
+        "wss://abc123.repl.dev:3001/api/ws/call?to=%2B17027074036"
     """
+    from urllib.parse import urlencode
+    
     # Get base URL (don't pass fallback_host to avoid port issues)
     # WebSocket must connect to default HTTPS port (443) via Next.js proxy
     base_url = get_public_base_url(fallback_host=None)
@@ -117,4 +123,12 @@ def get_websocket_url(path: str = "/api/ws/call", fallback_host: Optional[str] =
     if not path.startswith("/"):
         path = f"/{path}"
     
-    return f"{ws_url}{path}"
+    # Build final URL
+    full_url = f"{ws_url}{path}"
+    
+    # Add query parameters if provided
+    if query_params:
+        query_string = urlencode(query_params)
+        full_url = f"{full_url}?{query_string}"
+    
+    return full_url
