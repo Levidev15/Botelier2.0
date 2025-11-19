@@ -36,17 +36,11 @@ class CallHandler:
     - Function calling and knowledge base integration
     """
     
-    def __init__(self, db: Session):
-        """
-        Initialize call handler with database session.
-        
-        Args:
-            db: SQLAlchemy database session for lookups
-        """
-        self.db = db
+    def __init__(self):
+        """Initialize call handler."""
         self.active_calls: Dict[str, asyncio.Task] = {}
     
-    async def handle_call(self, websocket: WebSocket):
+    async def handle_call(self, websocket: WebSocket, db: Session):
         """
         Handle incoming call by creating Pipecat pipeline and streaming audio.
         
@@ -118,29 +112,41 @@ class CallHandler:
                 return
             
             # 4. Look up which assistant is assigned to this phone number
-            phone_record = self.db.query(PhoneNumber).filter(
-                PhoneNumber.phone_number == to_number
-            ).first()
+            # Query database and close session immediately to avoid connection pool exhaustion
+            try:
+                phone_record = db.query(PhoneNumber).filter(
+                    PhoneNumber.phone_number == to_number
+                ).first()
+                
+                if not phone_record or not phone_record.assistant_id:
+                    logger.warning(f"⚠️ No assistant assigned to phone number: {to_number}")
+                    db.close()
+                    await websocket.close(code=1008, reason="No assistant assigned")
+                    return
+                
+                # 5. Fetch assistant configuration
+                assistant = db.query(Assistant).filter(
+                    Assistant.id == phone_record.assistant_id
+                ).first()
+                
+                if not assistant:
+                    logger.error(f"❌ Assistant not found: {phone_record.assistant_id}")
+                    db.close()
+                    await websocket.close(code=1008, reason="Assistant not found")
+                    return
+                
+                logger.info(f"🤖 Handling call for assistant '{assistant.name}' (ID: {assistant.id})")
+                
+                # Convert database model to VoiceAgentConfig
+                config = self._create_agent_config(assistant)
+                
+            finally:
+                # CRITICAL: Close database session immediately after fetching data
+                # WebSocket connections are long-lived - keeping sessions open exhausts the connection pool
+                db.close()
+                logger.debug("✅ Database session closed, continuing with call handling")
             
-            if not phone_record or not phone_record.assistant_id:
-                logger.warning(f"⚠️ No assistant assigned to phone number: {to_number}")
-                await websocket.close(code=1008, reason="No assistant assigned")
-                return
-            
-            # 5. Fetch assistant configuration
-            assistant = self.db.query(Assistant).filter(
-                Assistant.id == phone_record.assistant_id
-            ).first()
-            
-            if not assistant:
-                logger.error(f"❌ Assistant not found: {phone_record.assistant_id}")
-                await websocket.close(code=1008, reason="Assistant not found")
-                return
-            
-            logger.info(f"🤖 Handling call for assistant '{assistant.name}' (ID: {assistant.id})")
-            
-            # 4. Convert database model to VoiceAgentConfig
-            config = self._create_agent_config(assistant)
+            # From this point forward, we only use 'config' (no more database access)
             
             # 5. Get API keys from environment
             api_keys = self._get_api_keys()
