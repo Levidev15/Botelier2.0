@@ -62,7 +62,8 @@ class Tool(Base):
     # Tool configuration (flexible JSON structure)
     config = Column(JSON, nullable=False, default={})
     
-    # Multi-tenancy (future: associate with specific hotel/assistant)
+    # Multi-tenancy
+    hotel_id = Column(String(36), nullable=False, index=True)
     assistant_id = Column(String(36), nullable=True, index=True)
     
     # Timestamps
@@ -83,6 +84,7 @@ class Tool(Base):
             "description": self.description,
             "tool_type": self.tool_type.value,
             "config": self.config,
+            "hotel_id": self.hotel_id,
             "assistant_id": self.assistant_id,
             "is_active": self.is_active == "true",
             "created_at": self.created_at.isoformat() if self.created_at else None,
