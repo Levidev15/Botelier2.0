@@ -42,6 +42,9 @@ class AssistantCreate(BaseModel):
     stt_config: Optional[dict] = None
     llm_config: Optional[dict] = None
     tts_config: Optional[dict] = None
+    vad_enabled: bool = False
+    vad_provider: Optional[str] = None
+    vad_config: Optional[dict] = None
     is_active: bool = True
 
 
@@ -64,6 +67,9 @@ class AssistantUpdate(BaseModel):
     stt_config: Optional[dict] = None
     llm_config: Optional[dict] = None
     tts_config: Optional[dict] = None
+    vad_enabled: Optional[bool] = None
+    vad_provider: Optional[str] = None
+    vad_config: Optional[dict] = None
     is_active: Optional[bool] = None
 
 
@@ -88,6 +94,9 @@ class AssistantResponse(BaseModel):
     stt_config: Optional[dict]
     llm_config: Optional[dict]
     tts_config: Optional[dict]
+    vad_enabled: bool
+    vad_provider: Optional[str]
+    vad_config: Optional[dict]
     is_active: bool
     created_at: Optional[str]
     updated_at: Optional[str]
@@ -179,6 +188,9 @@ async def create_assistant(
         stt_config=data.stt_config or {},
         llm_config=data.llm_config or {},
         tts_config=data.tts_config or {},
+        vad_enabled=data.vad_enabled,
+        vad_provider=data.vad_provider,
+        vad_config=data.vad_config or {},
         is_active=data.is_active,
     )
     
