@@ -9,7 +9,6 @@ import FormSection from "@/components/forms/FormSection";
 import FormField from "@/components/forms/FormField";
 import ProviderSelector from "@/components/forms/ProviderSelector";
 import SaveBar from "@/components/ui/SaveBar";
-import TestCallButton from "@/components/ui/TestCallButton";
 
 interface Assistant {
   id: string;
@@ -322,27 +321,19 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
       {/* Header */}
       <div className="border-b border-gray-800 bg-[#0a0a0a] sticky top-0 z-30">
         <div className="px-8 py-6">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center space-x-4">
-              <Link
-                href="/dashboard/assistants"
-                className="text-gray-400 hover:text-white transition"
-              >
-                <ArrowLeft className="h-5 w-5" />
-              </Link>
-              <div>
-                <h1 className="text-2xl font-bold">{pageTitle}</h1>
-                <p className="text-sm text-gray-400 mt-1">
-                  Configure your voice assistant
-                </p>
-              </div>
+          <div className="flex items-center space-x-4">
+            <Link
+              href="/dashboard/assistants"
+              className="text-gray-400 hover:text-white transition"
+            >
+              <ArrowLeft className="h-5 w-5" />
+            </Link>
+            <div>
+              <h1 className="text-2xl font-bold">{pageTitle}</h1>
+              <p className="text-sm text-gray-400 mt-1">
+                Configure your voice assistant
+              </p>
             </div>
-            {mode === "edit" && assistantId && (
-              <TestCallButton 
-                assistantId={assistantId} 
-                assistantName={formData.name || "Assistant"} 
-              />
-            )}
           </div>
         </div>
       </div>
