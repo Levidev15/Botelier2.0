@@ -231,7 +231,7 @@ class CallHandler:
         api_keys: Dict[str, str]
     ):
         """
-        Set up function calling with hotel's configured tools.
+        Set up function calling with hotel's configured tools and knowledge base.
         
         Args:
             assistant: Database assistant model
@@ -240,32 +240,75 @@ class CallHandler:
             api_keys: API keys for external services
         """
         try:
-            if not tools:
-                logger.debug(f"No active tools found for hotel {assistant.hotel_id}")
-                return
+            from pipecat.adapters.schemas.function_schema import FunctionSchema
+            from pipecat.adapters.schemas.tools_schema import ToolsSchema
+            from botelier.voice.knowledge_handler import query_hotel_knowledge
             
-            # Create function mapper
-            mapper = FunctionMapper()
-            
-            # Get LLM from pipeline
+            # Get LLM and context from pipeline
             llm = task.pipeline.processors[3]  # LLM is at index 3 in pipeline
+            context_aggregator = task.pipeline.processors[2]  # Context aggregator at index 2
             
-            # Register each tool as a function
-            for tool in tools:
-                try:
-                    function_schema, handler = mapper.map_tool_to_function(tool)
-                    
-                    # Register with LLM
-                    llm.register_function(
-                        function_name=function_schema["name"],
-                        handler=handler,
-                    )
-                    
-                    logger.info(f"Registered tool: {tool.name}")
-                except Exception as e:
-                    logger.error(f"Failed to register tool {tool.name}: {e}")
+            # Collect all function schemas
+            function_schemas = []
             
-            logger.info(f"Registered {len(tools)} tools for assistant {assistant.name}")
+            # 1. Add knowledge base function (always available)
+            knowledge_schema = FunctionSchema(
+                name="query_hotel_knowledge",
+                description="Query the hotel's knowledge base to answer guest questions about the hotel, amenities, policies, services, and local information. Use this when guests ask questions about the hotel.",
+                properties={
+                    "question": {
+                        "type": "string",
+                        "description": "The guest's question to look up in the knowledge base",
+                    },
+                },
+                required=["question"],
+            )
+            function_schemas.append(knowledge_schema)
+            
+            async def knowledge_handler_wrapper(params):
+                """Wrapper to inject hotel_id into knowledge base queries."""
+                if "hotel_id" not in params.arguments:
+                    params.arguments["hotel_id"] = str(assistant.hotel_id)
+                await query_hotel_knowledge(params)
+            
+            llm.register_function(
+                function_name="query_hotel_knowledge",
+                handler=knowledge_handler_wrapper,
+            )
+            logger.info(f"✅ Registered knowledge base function for hotel {assistant.hotel_id}")
+            
+            # 2. Add database tools
+            if tools:
+                mapper = FunctionMapper()
+                
+                for tool in tools:
+                    try:
+                        function_schema_dict, handler = mapper.map_tool_to_function(tool)
+                        
+                        # Convert dict to FunctionSchema
+                        tool_schema = FunctionSchema(
+                            name=function_schema_dict["name"],
+                            description=function_schema_dict["description"],
+                            properties=function_schema_dict.get("parameters", {}).get("properties", {}),
+                            required=function_schema_dict.get("parameters", {}).get("required", []),
+                        )
+                        function_schemas.append(tool_schema)
+                        
+                        # Register handler
+                        llm.register_function(
+                            function_name=function_schema_dict["name"],
+                            handler=handler,
+                        )
+                        
+                        logger.info(f"✅ Registered tool: {tool.name}")
+                    except Exception as e:
+                        logger.error(f"Failed to register tool {tool.name}: {e}")
+            
+            # 3. Update LLM context with all function schemas
+            tools_schema = ToolsSchema(standard_tools=function_schemas)
+            context_aggregator.set_tools(tools_schema)
+            
+            logger.info(f"✅ Updated LLM context with {len(function_schemas)} functions (knowledge base + {len(tools)} tools)")
             
         except Exception as e:
             logger.error(f"Error setting up function calling: {e}")
