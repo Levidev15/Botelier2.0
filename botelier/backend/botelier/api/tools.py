@@ -81,8 +81,10 @@ def create_tool(tool_data: ToolCreate, db: Session = Depends(get_db)):
     """
     Create a new tool.
     
-    SECURITY NOTE: In production, hotel_id should be derived from authenticated 
-    user context rather than trusted from request body. Auth implementation pending.
+    TODO (SECURITY): Once authentication is implemented, hotel_id must be derived from 
+    authenticated user context rather than trusted from request body. This endpoint 
+    currently validates referential integrity but cannot prevent cross-tenant writes 
+    without auth. See backlog for tenant-scoped authentication implementation.
     
     Example request body for Transfer Call:
     {
@@ -96,6 +98,30 @@ def create_tool(tool_data: ToolCreate, db: Session = Depends(get_db)):
         "hotel_id": "uuid-from-auth-context"
     }
     """
+    # Validate hotel_id exists (referential integrity)
+    from ..models.hotel import Hotel
+    hotel = db.query(Hotel).filter(Hotel.id == tool_data.hotel_id).first()
+    if not hotel:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Hotel with id {tool_data.hotel_id} not found"
+        )
+    
+    # Validate assistant belongs to same hotel (if provided)
+    if tool_data.assistant_id:
+        from ..models.assistant import Assistant
+        assistant = db.query(Assistant).filter(Assistant.id == tool_data.assistant_id).first()
+        if not assistant:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Assistant with id {tool_data.assistant_id} not found"
+            )
+        if assistant.hotel_id != tool_data.hotel_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Assistant does not belong to the specified hotel"
+            )
+    
     # Generate unique ID
     tool_id = str(uuid.uuid4())
     
