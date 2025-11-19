@@ -41,78 +41,26 @@ class CallHandler:
         """Initialize call handler."""
         self.active_calls: Dict[str, asyncio.Task] = {}
     
-    async def handle_call(self, websocket: WebSocket, db: Session):
+    async def handle_call(self, websocket: WebSocket, to_number: str, db: Session):
         """
         Handle incoming call by creating Pipecat pipeline and streaming audio.
         
         Args:
-            websocket: FastAPI WebSocket connection from Twilio (not yet accepted)
+            websocket: FastAPI WebSocket connection from Twilio (NOT yet accepted)
+            to_number: Phone number being called (from query params)
+            db: Database session
         
         Flow:
-            1. Accept WebSocket and receive Twilio 'start' event
-            2. Extract phone numbers from <Parameter> tags in start event
-            3. Look up phone number → assistant
-            4. Create Pipecat pipeline with TwilioFrameSerializer
-            5. Let Pipecat transport handle all subsequent WebSocket messages
-            6. Run pipeline (blocking until call ends)
-            7. Cleanup
+            1. Look up phone number → assistant in database
+            2. Accept WebSocket and read Twilio 'start' event for stream_sid/call_sid
+            3. Create Pipecat pipeline with TwilioFrameSerializer
+            4. Run pipeline (Pipecat handles all WebSocket messages)
         """
         call_sid = None
         try:
-            # 1. Accept WebSocket FIRST
-            await websocket.accept()
-            logger.info("✅ WebSocket accepted from Twilio")
+            logger.info(f"📞 Incoming call to: {to_number}")
             
-            # 2. Receive Twilio events until we get 'start'
-            # Twilio sends 'connected' first, then 'start' with metadata
-            # Parameters from <Parameter> tags are in start.customParameters
-            logger.info("⏳ Waiting for Twilio 'start' event...")
-            
-            stream_sid = None
-            call_sid = None
-            from_number = None
-            to_number = None
-            
-            # Read events until we get 'start' (skip 'connected')
-            max_attempts = 5
-            for attempt in range(max_attempts):
-                data = await websocket.receive_text()
-                message = json.loads(data)
-                event_type = message.get("event")
-                
-                if event_type == "connected":
-                    logger.debug("Received 'connected' event, waiting for 'start'...")
-                    continue
-                elif event_type == "start":
-                    logger.info("✅ Received 'start' event")
-                    start_data = message.get("start", {})
-                    stream_sid = message.get("streamSid")
-                    call_sid = start_data.get("callSid")
-                    custom_params = start_data.get("customParameters", {})
-                    
-                    # Extract phone numbers from <Parameter> tags
-                    from_number = custom_params.get("from", "Unknown")
-                    to_number = custom_params.get("to", "")
-                    break
-                else:
-                    logger.warning(f"⚠️ Unexpected event '{event_type}', waiting for 'start'...")
-                    continue
-            
-            if not stream_sid or not call_sid:
-                logger.error(f"❌ Never received valid 'start' event after {max_attempts} attempts")
-                await websocket.close()
-                return
-            
-            logger.info(f"📞 Twilio call started - Stream: {stream_sid}, Call: {call_sid}")
-            logger.info(f"📞 From: {from_number} → To: {to_number}")
-            
-            # 3. Validate phone number parameter
-            if not to_number:
-                logger.error("❌ Missing 'to' phone number in parameters")
-                await websocket.close(code=1008, reason="Missing phone number")
-                return
-            
-            # 4. Look up which assistant is assigned to this phone number
+            # 1. Look up which assistant is assigned to this phone number
             # Query database and close session immediately to avoid connection pool exhaustion
             try:
                 phone_record = db.query(PhoneNumber).filter(
@@ -125,7 +73,7 @@ class CallHandler:
                     await websocket.close(code=1008, reason="No assistant assigned")
                     return
                 
-                # 5. Fetch assistant configuration
+                # Fetch assistant configuration
                 assistant = db.query(Assistant).filter(
                     Assistant.id == phone_record.assistant_id
                 ).first()
@@ -133,10 +81,9 @@ class CallHandler:
                 if not assistant:
                     logger.error(f"❌ Assistant not found: {phone_record.assistant_id}")
                     db.close()
-                    await websocket.close(code=1008, reason="Assistant not found")
                     return
                 
-                logger.info(f"🤖 Handling call for assistant '{assistant.name}' (ID: {assistant.id})")
+                logger.info(f"🤖 Assistant: '{assistant.name}' (ID: {assistant.id})")
                 
                 # Convert database model to VoiceAgentConfig
                 config = self._create_agent_config(assistant)
@@ -154,14 +101,38 @@ class CallHandler:
                 # CRITICAL: Close database session immediately after fetching data
                 # WebSocket connections are long-lived - keeping sessions open exhausts the connection pool
                 db.close()
-                logger.debug("✅ Database session closed, continuing with call handling")
+                logger.debug("✅ Database session closed")
             
-            # From this point forward, we only use 'config' and 'tools' (no more database access)
+            # 2. Accept WebSocket and read Twilio 'start' event
+            # CRITICAL: Accept ONCE, read start event ONCE, then immediately create pipeline
+            await websocket.accept()
+            logger.debug("✅ WebSocket accepted")
             
-            # 5. Get API keys from environment
+            # Read events until we get 'start' (Twilio sends 'connected' first)
+            stream_sid = None
+            call_sid = None
+            
+            for _ in range(3):  # Max 3 events (connected + start)
+                data = await websocket.receive_text()
+                message = json.loads(data)
+                event_type = message.get("event")
+                
+                if event_type == "start":
+                    start_data = message.get("start", {})
+                    stream_sid = message.get("streamSid")
+                    call_sid = start_data.get("callSid")
+                    logger.info(f"📞 Call started - Stream: {stream_sid}, Call: {call_sid}")
+                    break
+            
+            if not stream_sid or not call_sid:
+                logger.error("❌ Never received 'start' event")
+                await websocket.close()
+                return
+            
+            # 3. Get API keys from environment
             api_keys = self._get_api_keys()
             
-            # 6. Create TwilioFrameSerializer (Pipecat component - hidden from hotels)
+            # 4. Create TwilioFrameSerializer with stream_sid/call_sid from start event
             serializer = TwilioFrameSerializer(
                 stream_sid=stream_sid,
                 call_sid=call_sid,
@@ -172,8 +143,7 @@ class CallHandler:
                 )
             )
             
-            # 7. Create WebSocket transport with Twilio serializer
-            # The WebSocket is already accepted, and Pipecat will handle all subsequent messages
+            # 5. Create WebSocket transport (WebSocket already accepted)
             transport = FastAPIWebsocketTransport(
                 websocket=websocket,
                 params=FastAPIWebsocketParams(
@@ -184,21 +154,21 @@ class CallHandler:
                 ),
             )
             
-            # 8. Create Pipecat pipeline
+            # 6. Create Pipecat pipeline
             pipeline, task = VoiceEngineFactory.create_pipeline(
                 config=config,
                 api_keys=api_keys,
                 transport=transport,
             )
             
-            # 9. Set up function calling if enabled
+            # 7. Set up function calling if enabled
             if config.enable_function_calling and tools:
                 await self._setup_function_calling(assistant, tools, task, api_keys)
             
-            # 10. Track active call
+            # 8. Track active call
             self.active_calls[call_sid] = task
             
-            # 11. Queue greeting message
+            # 9. Queue greeting message
             await task.queue_frames([
                 TTSSpeakFrame(text=config.greeting_message)
             ])
@@ -206,8 +176,8 @@ class CallHandler:
             logger.info(f"Starting Pipecat pipeline for call {call_sid}")
             logger.info(f"Pipeline: STT ({config.stt_provider}) → LLM ({config.llm_provider}) → TTS ({config.tts_provider})")
             
-            # 12. Run pipeline (blocks until call ends)
-            # Pipecat's FastAPIWebsocketTransport now handles all Twilio messages (media, stop, etc.)
+            # 10. Run pipeline (blocks until call ends)
+            # Pipecat now handles all remaining WebSocket messages (media, dtmf, stop)
             runner = PipelineRunner()
             await runner.run(task)
             

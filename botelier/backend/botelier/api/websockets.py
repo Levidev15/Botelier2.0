@@ -20,6 +20,7 @@ router = APIRouter(prefix="/api/ws", tags=["WebSocket"])
 @router.websocket("/call")
 async def websocket_call_endpoint(
     websocket: WebSocket,
+    to: str = Query(..., description="Phone number being called (Botelier number)"),
     db: Session = Depends(get_db)
 ):
     """
@@ -27,29 +28,19 @@ async def websocket_call_endpoint(
     
     Twilio connects here after the HTTP webhook returns TwiML with <Stream>.
     
-    Architecture:
-        - Pipecat's TwilioFrameSerializer IGNORES 'start' events (returns None)
-        - stream_sid is REQUIRED in serializer constructor (not Optional)
-        - Therefore, we MUST manually parse 'start' to bootstrap the serializer
-        - This is the correct integration pattern per Pipecat's design
-    
     Flow:
-        1. Extract phone numbers from URL query params (from TwiML)
-        2. Pass to CallHandler which:
-           a. Accepts WebSocket
-           b. Receives 'start' event to get stream_sid/call_sid
-           c. Creates TwilioFrameSerializer with those IDs
-           d. Creates FastAPIWebsocketTransport
-           e. Lets Pipecat handle all subsequent messages (media, dtmf, stop)
+        1. Extract phone number from query params
+        2. Look up assistant assigned to phone number
+        3. Create Pipecat pipeline (FastAPIWebsocketTransport handles WebSocket internally)
+        4. Run pipeline (blocking until call ends)
     
-    URL format: wss://domain/api/ws/call (phone numbers in <Parameter> tags)
+    URL format: wss://domain/api/ws/call?to=%2B17027074036
     """
-    logger.info(f"🔌 WebSocket endpoint /api/ws/call hit!")
-    logger.info(f"WebSocket state: {websocket.client_state}")
+    logger.info(f"🔌 WebSocket connection for phone number: {to}")
     
     try:
         handler = CallHandler()
-        await handler.handle_call(websocket=websocket, db=db)
+        await handler.handle_call(websocket=websocket, to_number=to, db=db)
         
     except Exception as e:
         logger.exception(f"Error in WebSocket endpoint: {e}")
