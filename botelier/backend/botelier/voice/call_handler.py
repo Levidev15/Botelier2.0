@@ -37,9 +37,14 @@ class CallHandler:
     - Function calling and knowledge base integration
     """
     
+    # Class-level lock and active calls dict (shared across all instances)
+    _lock = asyncio.Lock()
+    _active_calls: Dict[str, asyncio.Task] = {}
+    
     def __init__(self):
         """Initialize call handler."""
-        self.active_calls: Dict[str, asyncio.Task] = {}
+        # Use class-level dict for proper duplicate detection across instances
+        self.active_calls = CallHandler._active_calls
     
     async def handle_call(self, websocket: WebSocket, to_number: str, stream_sid: str, call_sid: str, db: Session):
         """
@@ -60,7 +65,16 @@ class CallHandler:
             5. Build pipeline and run (Pipecat handles remaining messages)
         """
         try:
-            logger.info(f"📞 Call: {call_sid} → {to_number}")
+            # CRITICAL: Check for duplicate call FIRST with async lock (prevents race conditions)
+            async with CallHandler._lock:
+                if call_sid in self.active_calls:
+                    logger.warning(f"⚠️ Duplicate WebSocket for call {call_sid}, closing")
+                    await websocket.close(code=1000, reason="Duplicate connection")
+                    return
+                # Reserve this call_sid immediately
+                self.active_calls[call_sid] = None
+            
+            logger.info(f"📞 Call {call_sid}: {to_number}")
             
             # 1. Look up which assistant is assigned to this phone number
             # Query database and close session immediately to avoid connection pool exhaustion
@@ -103,20 +117,11 @@ class CallHandler:
                 # CRITICAL: Close database session immediately after fetching data
                 # WebSocket connections are long-lived - keeping sessions open exhausts the connection pool
                 db.close()
-                logger.debug("✅ Database session closed")
             
-            # 2. Check for duplicate call (prevent multiple pipelines)
-            if call_sid in self.active_calls:
-                logger.warning(f"⚠️ Call {call_sid} already active, ignoring duplicate")
-                return
-            
-            # 3. Register call early (prevents race conditions)
-            self.active_calls[call_sid] = None
-            
-            # 4. Get API keys
+            # 2. Get API keys
             api_keys = self._get_api_keys()
             
-            # 5. Create TwilioFrameSerializer (Pipecat pattern)
+            # 3. Create TwilioFrameSerializer (Pipecat pattern)
             serializer = TwilioFrameSerializer(
                 stream_sid=stream_sid,
                 call_sid=call_sid,
@@ -127,7 +132,7 @@ class CallHandler:
                 )
             )
             
-            # 6. Create WebSocket transport (WebSocket ALREADY ACCEPTED, 'start' ALREADY READ)
+            # 4. Create WebSocket transport (WebSocket ALREADY ACCEPTED, 'start' ALREADY READ)
             transport = FastAPIWebsocketTransport(
                 websocket=websocket,
                 params=FastAPIWebsocketParams(
@@ -138,34 +143,31 @@ class CallHandler:
                 ),
             )
             
-            # 7. Create Pipecat pipeline
+            # 5. Create Pipecat pipeline
             pipeline, task = VoiceEngineFactory.create_pipeline(
                 config=config,
                 api_keys=api_keys,
                 transport=transport,
             )
             
-            # 8. Set up function calling if enabled
+            # 6. Set up function calling if enabled
             if config.enable_function_calling and tools:
                 await self._setup_function_calling(assistant, tools, task, api_keys)
             
-            # 9. Update active call with task
+            # 7. Update active call with task
             self.active_calls[call_sid] = task
             
-            # 10. Queue greeting message
-            await task.queue_frames([
-                TTSSpeakFrame(text=config.greeting_message)
-            ])
+            # 8. Queue greeting message
+            await task.queue_frames([TTSSpeakFrame(text=config.greeting_message)])
             
-            logger.info(f"Starting Pipecat pipeline for call {call_sid}")
-            logger.info(f"Pipeline: STT ({config.stt_provider}) → LLM ({config.llm_provider}) → TTS ({config.tts_provider})")
+            logger.info(f"▶️ Pipeline starting: STT ({config.stt_provider}) → LLM ({config.llm_provider}) → TTS ({config.tts_provider})")
             
-            # 11. Run pipeline (blocks until call ends)
+            # 9. Run pipeline (blocks until call ends)
             # Pipecat handles all remaining WebSocket messages (media, dtmf, stop)
             runner = PipelineRunner()
             await runner.run(task)
             
-            logger.info(f"Call {call_sid} ended")
+            logger.info(f"✅ Call {call_sid} ended")
             
         except Exception as e:
             logger.exception(f"Error handling call {call_sid}: {e}")
