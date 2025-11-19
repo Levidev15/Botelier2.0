@@ -240,35 +240,40 @@ class CallHandler:
             api_keys: API keys for external services
         """
         try:
-            from pipecat.adapters.schemas.function_schema import FunctionSchema
-            from pipecat.adapters.schemas.tools_schema import ToolsSchema
+            from pipecat.adapters.schemas.tools_schema import ToolsSchema, AdapterType
             from botelier.voice.knowledge_handler import query_hotel_knowledge
             
-            # Get LLM and context from pipeline
-            llm = task.pipeline.processors[3]  # LLM is at index 3 in pipeline
-            context_aggregator = task.pipeline.processors[2]  # Context aggregator at index 2
+            # Get LLM and context from pipeline  
+            # Pipeline structure: [input, stt, user_aggregator, llm, tts, output, assistant_aggregator]
+            llm = task.pipeline.processors[3]  # LLM is at index 3
+            context_aggregator = task.pipeline.processors[2]  # User aggregator at index 2
             
-            # Collect all function schemas
-            function_schemas = []
+            # Collect all function schemas as dicts (OpenAI format)
+            function_schemas_dicts = []
             
             # 1. Add knowledge base function (always available)
-            knowledge_schema = FunctionSchema(
-                name="query_hotel_knowledge",
-                description="Query the hotel's knowledge base to answer guest questions about the hotel, amenities, policies, services, and local information. Use this when guests ask questions about the hotel.",
-                properties={
-                    "question": {
-                        "type": "string",
-                        "description": "The guest's question to look up in the knowledge base",
+            knowledge_schema = {
+                "type": "function",
+                "function": {
+                    "name": "query_hotel_knowledge",
+                    "description": "Query the hotel's knowledge base to answer guest questions about the hotel, amenities, policies, services, and local information. Use this when guests ask questions about the hotel.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "question": {
+                                "type": "string",
+                                "description": "The guest's question to look up in the knowledge base",
+                            },
+                        },
+                        "required": ["question"],
                     },
                 },
-                required=["question"],
-            )
-            function_schemas.append(knowledge_schema)
+            }
+            function_schemas_dicts.append(knowledge_schema)
             
             async def knowledge_handler_wrapper(params):
                 """Wrapper to inject hotel_id into knowledge base queries."""
-                if "hotel_id" not in params.arguments:
-                    params.arguments["hotel_id"] = str(assistant.hotel_id)
+                params.arguments["hotel_id"] = str(assistant.hotel_id)
                 await query_hotel_knowledge(params)
             
             llm.register_function(
@@ -285,14 +290,16 @@ class CallHandler:
                     try:
                         function_schema_dict, handler = mapper.map_tool_to_function(tool)
                         
-                        # Convert dict to FunctionSchema
-                        tool_schema = FunctionSchema(
-                            name=function_schema_dict["name"],
-                            description=function_schema_dict["description"],
-                            properties=function_schema_dict.get("parameters", {}).get("properties", {}),
-                            required=function_schema_dict.get("parameters", {}).get("required", []),
-                        )
-                        function_schemas.append(tool_schema)
+                        # Convert to OpenAI format
+                        tool_schema = {
+                            "type": "function",
+                            "function": {
+                                "name": function_schema_dict["name"],
+                                "description": function_schema_dict["description"],
+                                "parameters": function_schema_dict.get("parameters", {}),
+                            },
+                        }
+                        function_schemas_dicts.append(tool_schema)
                         
                         # Register handler
                         llm.register_function(
@@ -304,11 +311,11 @@ class CallHandler:
                     except Exception as e:
                         logger.error(f"Failed to register tool {tool.name}: {e}")
             
-            # 3. Update LLM context with all function schemas
-            tools_schema = ToolsSchema(standard_tools=function_schemas)
+            # 3. Update LLM context with all function schemas (OpenAI format wrapped in ToolsSchema)
+            tools_schema = ToolsSchema(custom_tools={AdapterType.SHIM: function_schemas_dicts})
             context_aggregator.set_tools(tools_schema)
             
-            logger.info(f"✅ Updated LLM context with {len(function_schemas)} functions (knowledge base + {len(tools)} tools)")
+            logger.info(f"✅ Updated LLM context with {len(function_schemas_dicts)} functions (knowledge base + {len(tools)} tools)")
             
         except Exception as e:
             logger.error(f"Error setting up function calling: {e}")
