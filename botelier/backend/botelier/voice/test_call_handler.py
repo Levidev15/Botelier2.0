@@ -13,13 +13,13 @@ from sqlalchemy.orm import Session
 from loguru import logger
 
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketTransport, FastAPIWebsocketParams
-from pipecat.serializers.protobuf import ProtobufFrameSerializer
 from pipecat.frames.frames import TTSSpeakFrame
 from pipecat.pipeline.runner import PipelineRunner
 
 from .engine import VoiceEngineFactory
 from .agent import VoiceAgentConfig
 from .function_mapper import FunctionMapper
+from .raw_audio_serializer import RawAudioFrameSerializer
 from ..models.assistant import Assistant
 
 
@@ -91,14 +91,14 @@ class TestCallHandler:
                 # Close database session immediately
                 db.close()
             
-            # Create transport for browser audio (no phone-specific serializer)
+            # Create transport for browser audio with raw PCM serializer
             transport = FastAPIWebsocketTransport(
                 websocket=websocket,
                 params=FastAPIWebsocketParams(
                     audio_in_enabled=True,
                     audio_out_enabled=True,
                     add_wav_header=False,
-                    serializer=ProtobufFrameSerializer()
+                    serializer=RawAudioFrameSerializer(sample_rate=16000)
                 )
             )
             
