@@ -52,21 +52,21 @@ async def incoming_call_webhook(request: Request):
         
         # Get WebSocket URL using domain helper
         # This works in both Replit dev and production with custom domains
-        # Pass phone numbers as query params (Pipecat pattern - no manual WebSocket handling needed)
         fallback_host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host")
-        ws_url = get_websocket_url(
-            path="/api/ws/call",
-            fallback_host=fallback_host,
-            query_params={"to": to_number}
-        )
+        ws_url = get_websocket_url(path="/api/ws/call", fallback_host=fallback_host)
         
         logger.info(f"Directing call to WebSocket: {ws_url}")
         
         # Return TwiML to start Media Stream
+        # Use <Parameter> tags to pass phone numbers (Pipecat official pattern)
+        # These appear in the Twilio 'start' event as customParameters
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect>
-        <Stream url="{ws_url}" />
+        <Stream url="{ws_url}">
+            <Parameter name="to" value="{to_number}" />
+            <Parameter name="from" value="{from_number}" />
+        </Stream>
     </Connect>
 </Response>"""
         
