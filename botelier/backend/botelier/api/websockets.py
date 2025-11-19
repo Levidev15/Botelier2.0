@@ -13,7 +13,6 @@ from loguru import logger
 
 from ..database import get_db
 from ..voice.call_handler import CallHandler
-from ..voice.test_call_handler import TestCallHandler
 
 
 router = APIRouter(prefix="/api/ws", tags=["WebSocket"])
@@ -92,52 +91,6 @@ async def websocket_call_endpoint(
         
     except Exception as e:
         logger.exception(f"❌ WebSocket error: {e}")
-        try:
-            if websocket.client_state.name == "CONNECTED":
-                await websocket.close()
-        except:
-            pass
-
-
-@router.websocket("/test-call/{assistant_id}")
-async def websocket_test_call_endpoint(
-    websocket: WebSocket,
-    assistant_id: str,
-    db: Session = Depends(get_db)
-):
-    """
-    WebSocket endpoint for browser-based test calls.
-    
-    Allows instant assistant testing from dashboard without phone numbers.
-    Browser streams raw audio directly to Pipecat pipeline.
-    
-    Flow:
-        1. Accept WebSocket from browser
-        2. Load assistant configuration from database
-        3. Create Pipecat pipeline with Protobuf serializer
-        4. Stream audio: Browser mic → STT → LLM → TTS → Browser speakers
-    
-    URL: wss://domain/api/ws/test-call/{assistant_id}
-    """
-    try:
-        logger.info(f"🧪 Test call WebSocket connection for assistant: {assistant_id}")
-        
-        # Accept WebSocket connection
-        await websocket.accept()
-        logger.info("✅ Test call WebSocket accepted")
-        
-        # Delegate to TestCallHandler
-        handler = TestCallHandler()
-        await handler.handle_test_call(
-            websocket=websocket,
-            assistant_id=assistant_id,
-            db=db
-        )
-        
-    except WebSocketDisconnect:
-        logger.info(f"🔌 Test call WebSocket disconnected for assistant: {assistant_id}")
-    except Exception as e:
-        logger.exception(f"❌ Test call WebSocket error: {e}")
         try:
             if websocket.client_state.name == "CONNECTED":
                 await websocket.close()
