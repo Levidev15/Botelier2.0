@@ -39,7 +39,7 @@ class CallHandler:
     
     def __init__(self):
         """Initialize call handler."""
-        pass
+        self.active_calls = {}
     
     async def handle_call(self, websocket: WebSocket, to_number: str, stream_sid: str, call_sid: str, db: Session):
         """
