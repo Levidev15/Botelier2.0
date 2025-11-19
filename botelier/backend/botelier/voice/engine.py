@@ -167,14 +167,27 @@ class VoiceEngineFactory:
     def create_pipeline(
         config: VoiceAgentConfig,
         api_keys: Dict[str, str],
-        transport
-    ) -> tuple[Pipeline, PipelineTask]:
+        transport,
+        function_schemas: Optional[list] = None,
+        function_handlers: Optional[Dict[str, Any]] = None,
+    ) -> tuple[Pipeline, PipelineTask, Any, Any]:
         """
         Create complete voice pipeline from agent configuration
         
         This is where Pipecat is actually used, but it's completely hidden
         from the hotel-facing API.
+        
+        Args:
+            config: Voice agent configuration
+            api_keys: API keys for external services
+            transport: WebSocket transport
+            function_schemas: Optional list of FunctionSchema objects for function calling
+            function_handlers: Optional dict mapping function names to async handlers
+            
+        Returns:
+            Tuple of (pipeline, task, llm, context_aggregator) for external access
         """
+        from pipecat.adapters.schemas.tools_schema import ToolsSchema
         
         stt = VoiceEngineFactory.create_stt_service(config, api_keys)
         llm = VoiceEngineFactory.create_llm_service(config, api_keys)
@@ -187,8 +200,19 @@ class VoiceEngineFactory:
             },
         ]
         
-        context = LLMContext(messages)
+        # Create context with tools if schemas provided
+        if function_schemas:
+            tools = ToolsSchema(standard_tools=function_schemas)
+            context = LLMContext(messages, tools=tools)
+        else:
+            context = LLMContext(messages)
+        
         context_aggregator = LLMContextAggregatorPair(context)
+        
+        # Register function handlers with LLM
+        if function_handlers:
+            for function_name, handler in function_handlers.items():
+                llm.register_function(function_name, handler)
         
         pipeline = Pipeline(
             [
@@ -210,7 +234,7 @@ class VoiceEngineFactory:
             ),
         )
         
-        return pipeline, task
+        return pipeline, task, llm, context_aggregator
     
     @staticmethod
     def create_transport_params(config: VoiceAgentConfig):
