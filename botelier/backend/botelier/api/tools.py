@@ -24,23 +24,20 @@ router = APIRouter(prefix="/api/tools", tags=["tools"])
 
 @router.get("", response_model=ToolListResponse)
 def list_tools(
-    hotel_id: str = None,
+    hotel_id: str,
     assistant_id: str = None,
     tool_type: str = None,
     db: Session = Depends(get_db)
 ):
     """
-    List all tools with optional filtering.
+    List all tools for a hotel with optional filtering.
     
     Query Parameters:
-        - hotel_id: Filter by hotel ID (multi-tenancy)
-        - assistant_id: Filter by assistant ID
-        - tool_type: Filter by tool type (transfer_call, api_request, etc.)
+        - hotel_id: Hotel ID (REQUIRED for multi-tenant isolation)
+        - assistant_id: Filter by assistant ID (optional)
+        - tool_type: Filter by tool type (optional)
     """
-    query = db.query(Tool)
-    
-    if hotel_id:
-        query = query.filter(Tool.hotel_id == hotel_id)
+    query = db.query(Tool).filter(Tool.hotel_id == hotel_id)
     
     if assistant_id:
         query = query.filter(Tool.assistant_id == assistant_id)
@@ -63,14 +60,17 @@ def list_tools(
 
 
 @router.get("/{tool_id}", response_model=ToolResponse)
-def get_tool(tool_id: str, db: Session = Depends(get_db)):
-    """Get a specific tool by ID."""
-    tool = db.query(Tool).filter(Tool.id == tool_id).first()
+def get_tool(tool_id: str, hotel_id: str, db: Session = Depends(get_db)):
+    """Get a specific tool by ID (multi-tenant scoped)."""
+    tool = db.query(Tool).filter(
+        Tool.id == tool_id,
+        Tool.hotel_id == hotel_id
+    ).first()
     
     if not tool:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tool with id {tool_id} not found"
+            detail=f"Tool with id {tool_id} not found for this hotel"
         )
     
     return ToolResponse(**tool.to_dict())
@@ -81,6 +81,9 @@ def create_tool(tool_data: ToolCreate, db: Session = Depends(get_db)):
     """
     Create a new tool.
     
+    SECURITY NOTE: In production, hotel_id should be derived from authenticated 
+    user context rather than trusted from request body. Auth implementation pending.
+    
     Example request body for Transfer Call:
     {
         "name": "transfer_to_front_desk",
@@ -89,7 +92,8 @@ def create_tool(tool_data: ToolCreate, db: Session = Depends(get_db)):
         "config": {
             "phone_number": "+1-555-0123",
             "pre_transfer_message": "Let me connect you..."
-        }
+        },
+        "hotel_id": "uuid-from-auth-context"
     }
     """
     # Generate unique ID
@@ -120,16 +124,20 @@ def create_tool(tool_data: ToolCreate, db: Session = Depends(get_db)):
 @router.put("/{tool_id}", response_model=ToolResponse)
 def update_tool(
     tool_id: str,
+    hotel_id: str,
     tool_data: ToolUpdate,
     db: Session = Depends(get_db)
 ):
-    """Update an existing tool."""
-    tool = db.query(Tool).filter(Tool.id == tool_id).first()
+    """Update an existing tool (multi-tenant scoped)."""
+    tool = db.query(Tool).filter(
+        Tool.id == tool_id,
+        Tool.hotel_id == hotel_id
+    ).first()
     
     if not tool:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tool with id {tool_id} not found"
+            detail=f"Tool with id {tool_id} not found for this hotel"
         )
     
     # Update fields if provided
@@ -149,14 +157,17 @@ def update_tool(
 
 
 @router.delete("/{tool_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_tool(tool_id: str, db: Session = Depends(get_db)):
-    """Delete a tool."""
-    tool = db.query(Tool).filter(Tool.id == tool_id).first()
+def delete_tool(tool_id: str, hotel_id: str, db: Session = Depends(get_db)):
+    """Delete a tool (multi-tenant scoped)."""
+    tool = db.query(Tool).filter(
+        Tool.id == tool_id,
+        Tool.hotel_id == hotel_id
+    ).first()
     
     if not tool:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tool with id {tool_id} not found"
+            detail=f"Tool with id {tool_id} not found for this hotel"
         )
     
     db.delete(tool)
