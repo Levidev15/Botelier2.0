@@ -58,17 +58,13 @@ async def websocket_call_endpoint(
                 start_data = message.get("start", {})
                 stream_sid = start_data.get("streamSid")
                 call_sid = start_data.get("callSid")
-                # Get phone number from customParameters (if using TwiML <Parameter>) or query params
+                # Extract phone number from TwiML <Parameter> tags (official Pipecat pattern)
                 custom_params = start_data.get("customParameters", {})
                 to_number = custom_params.get("to")
+                from_number = custom_params.get("from")
                 logger.info(f"📞 Call started - Stream: {stream_sid}, Call: {call_sid}")
+                logger.info(f"📞 From: {from_number} → To: {to_number}")
                 break
-        
-        # Fallback: Try query params if not in customParameters
-        if not to_number:
-            query_string = websocket.scope.get("query_string", b"").decode()
-            params = parse_qs(query_string)
-            to_number = params.get("to", [None])[0]
         
         if not stream_sid or not call_sid:
             logger.error("❌ Never received Twilio 'start' event")
@@ -76,7 +72,7 @@ async def websocket_call_endpoint(
             return
         
         if not to_number:
-            logger.error("❌ Missing phone number in customParameters and query params")
+            logger.error(f"❌ Missing 'to' in customParameters. Start data: {start_data}")
             await websocket.close(code=1008, reason="Missing phone number")
             return
         
