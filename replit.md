@@ -4,12 +4,23 @@
 Botelier is a multi-tenant SaaS platform designed to empower hotels with custom voice AI agents for guest services. It provides a hotel-focused interface for configuring conversational AI, abstracting away underlying framework complexities. The platform aims to streamline hotel operations, enhance guest experiences, and provide a robust, scalable solution for AI-powered guest interaction.
 
 ## Recent Changes (November 19, 2025)
-**Function Calling System Refactored** - Migrated from post-pipeline `set_tools()` pattern to proper initialization-time registration following Pipecat's official best practices:
-- VoiceEngineFactory.create_pipeline() now accepts `function_schemas` and `function_handlers` parameters
-- Function schemas built using FunctionSchema objects and passed to LLMContext during initialization via ToolsSchema(standard_tools=[...])
-- Knowledge base function ALWAYS registered (even with zero custom tools) for consistent guest experience
-- FunctionMapper handlers updated to use modern FunctionCallParams pattern with params.llm.push_frame() for intermediate responses
-- Removed hardcoded pipeline processor indices - LLM and context_aggregator returned from create_pipeline for clean separation
+**Twilio Call Transfer Implemented** - Full end-to-end call transfer functionality:
+- CallHandler now passes `call_sid` to FunctionMapper during initialization
+- Transfer handler uses Twilio REST API to update active call with new TwiML: `<Response><Dial>{phone_number}</Dial></Response>`
+- Flow: Pre-transfer message → Twilio API call → EndFrame (terminates bot) → Structured result callback
+- Error handling and logging for missing credentials or failed transfers
+- Call continues with transferred party after bot session ends
+
+**Codebase Cleanup** - Removed unused files and improved organization:
+- Deleted unused abstraction layers: `orchestrator.py`, `session.py` (not referenced anywhere)
+- Removed empty `auth/` directory (authentication planned for future)
+- Updated `voice/__init__.py` to export only used classes: VoiceAgent, CallHandler
+- Fixed LSP errors: None-safe OpenAI response handling, HTTP method validation
+
+**Knowledge Base Architecture** - Current implementation uses "context stuffing" rather than vector RAG:
+- Loads all active Q&A entries (up to 50k chars) from database
+- Passes to separate OpenAI call (gpt-4o-mini) with RAG prompt
+- Works well for <100 FAQ entries; would need vector embeddings (Pinecone/Qdrant) for larger scale
 
 ## User Preferences
 - **Branding:** All customer-facing code should be branded as "Botelier"
