@@ -24,6 +24,7 @@ router = APIRouter(prefix="/api/tools", tags=["tools"])
 
 @router.get("", response_model=ToolListResponse)
 def list_tools(
+    hotel_id: str = None,
     assistant_id: str = None,
     tool_type: str = None,
     db: Session = Depends(get_db)
@@ -32,10 +33,14 @@ def list_tools(
     List all tools with optional filtering.
     
     Query Parameters:
+        - hotel_id: Filter by hotel ID (multi-tenancy)
         - assistant_id: Filter by assistant ID
         - tool_type: Filter by tool type (transfer_call, api_request, etc.)
     """
     query = db.query(Tool)
+    
+    if hotel_id:
+        query = query.filter(Tool.hotel_id == hotel_id)
     
     if assistant_id:
         query = query.filter(Tool.assistant_id == assistant_id)
@@ -100,6 +105,7 @@ def create_tool(tool_data: ToolCreate, db: Session = Depends(get_db)):
         description=tool_data.description,
         tool_type=db_tool_type,
         config=tool_data.config,
+        hotel_id=tool_data.hotel_id,
         assistant_id=tool_data.assistant_id,
         is_active="true" if tool_data.is_active else "false"
     )

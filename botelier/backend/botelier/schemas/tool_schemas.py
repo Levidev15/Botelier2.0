@@ -77,6 +77,7 @@ class ToolCreate(BaseModel):
     description: str = Field(..., min_length=1, description="What this tool does (helps AI decide when to use it)")
     tool_type: ToolType
     config: Dict[str, Any] = Field(..., description="Tool-specific configuration")
+    hotel_id: str = Field(..., description="Hotel ID (multi-tenancy)")
     assistant_id: Optional[str] = Field(None, description="Associated assistant ID")
     is_active: bool = Field(True, description="Whether tool is enabled")
     
@@ -114,6 +115,7 @@ class ToolResponse(BaseModel):
     description: str
     tool_type: str
     config: Dict[str, Any]
+    hotel_id: str
     assistant_id: Optional[str]
     is_active: bool
     created_at: Optional[datetime]
