@@ -47,6 +47,7 @@ async def websocket_call_endpoint(
         stream_sid = None
         call_sid = None
         to_number = None
+        start_data = {}
         
         # Read initial messages from Twilio
         for _ in range(3):  # Twilio sends 'connected' then 'start'
