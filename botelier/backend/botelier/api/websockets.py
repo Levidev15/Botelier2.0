@@ -36,18 +36,13 @@ async def websocket_call_endpoint(
     URL format: wss://domain/api/ws/call?to=%2B17027074036
     """
     try:
-        # Extract query params from WebSocket URL (before accept)
-        # websocket.url is a Starlette URL object with query params
-        to_number = websocket.url.query.get("to") if hasattr(websocket.url, 'query') else None
-        
-        # Fallback: parse from scope
-        if not to_number and websocket.scope.get("query_string"):
-            query_string = websocket.scope["query_string"].decode()
-            params = parse_qs(query_string)
-            to_number = params.get("to", [None])[0]
+        # Extract query params from WebSocket scope (before accept)
+        query_string = websocket.scope.get("query_string", b"").decode()
+        params = parse_qs(query_string)
+        to_number = params.get("to", [None])[0]
         
         if not to_number:
-            logger.error(f"❌ Missing 'to' query parameter. URL: {websocket.url}")
+            logger.error(f"❌ Missing 'to' query parameter. Query string: {query_string}")
             await websocket.accept()
             await websocket.close(code=1008, reason="Missing 'to' parameter")
             return
