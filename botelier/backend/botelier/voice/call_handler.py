@@ -140,13 +140,22 @@ class CallHandler:
                 # Convert database model to VoiceAgentConfig
                 config = self._create_agent_config(assistant)
                 
+                # Fetch tools for function calling (if enabled) before closing session
+                tools = []
+                if config.enable_function_calling:
+                    from ..models.tool import Tool
+                    tools = db.query(Tool).filter(
+                        Tool.hotel_id == assistant.hotel_id,
+                        Tool.is_active == True
+                    ).all()
+                
             finally:
                 # CRITICAL: Close database session immediately after fetching data
                 # WebSocket connections are long-lived - keeping sessions open exhausts the connection pool
                 db.close()
                 logger.debug("✅ Database session closed, continuing with call handling")
             
-            # From this point forward, we only use 'config' (no more database access)
+            # From this point forward, we only use 'config' and 'tools' (no more database access)
             
             # 5. Get API keys from environment
             api_keys = self._get_api_keys()
@@ -180,8 +189,8 @@ class CallHandler:
             )
             
             # 9. Set up function calling if enabled
-            if config.enable_function_calling:
-                await self._setup_function_calling(assistant, task, api_keys)
+            if config.enable_function_calling and tools:
+                await self._setup_function_calling(assistant, tools, task, api_keys)
             
             # 10. Track active call
             self.active_calls[call_sid] = task
@@ -271,6 +280,7 @@ class CallHandler:
     async def _setup_function_calling(
         self,
         assistant: Assistant,
+        tools: list,
         task,
         api_keys: Dict[str, str]
     ):
@@ -279,19 +289,11 @@ class CallHandler:
         
         Args:
             assistant: Database assistant model
+            tools: List of Tool models (already fetched from database)
             task: Pipecat PipelineTask
             api_keys: API keys for external services
         """
         try:
-            # Import Tool model
-            from ..models.tool import Tool
-            
-            # Fetch active tools for this hotel
-            tools = self.db.query(Tool).filter(
-                Tool.hotel_id == assistant.hotel_id,
-                Tool.is_active == True
-            ).all()
-            
             if not tools:
                 logger.debug(f"No active tools found for hotel {assistant.hotel_id}")
                 return
