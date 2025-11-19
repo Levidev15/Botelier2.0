@@ -13,7 +13,7 @@ from fastapi import WebSocket
 from sqlalchemy.orm import Session
 from loguru import logger
 
-from pipecat.transports.websocket.fastapi import FastAPIWebsocketTransport
+from pipecat.transports.websocket.fastapi import FastAPIWebsocketTransport, FastAPIWebsocketParams
 from pipecat.serializers.twilio import TwilioFrameSerializer
 from pipecat.frames.frames import TTSSpeakFrame
 from pipecat.pipeline.runner import PipelineRunner
@@ -174,8 +174,6 @@ class CallHandler:
             
             # 7. Create WebSocket transport with Twilio serializer
             # The WebSocket is already accepted, and Pipecat will handle all subsequent messages
-            from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketParams
-            
             transport = FastAPIWebsocketTransport(
                 websocket=websocket,
                 params=FastAPIWebsocketParams(
