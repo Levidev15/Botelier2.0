@@ -13,13 +13,9 @@ const handle = app.getRequestHandler();
 const apiProxy = createProxyMiddleware({
   target: 'http://localhost:3001',
   changeOrigin: true,
-  ws: true,
   logLevel: 'silent',
   onProxyReq: (proxyReq, req, res) => {
     console.log(`🔄 Proxying ${req.method} ${req.url} to backend`);
-  },
-  onProxyReqWs: (proxyReq, req, socket, options, head) => {
-    console.log(`🔌 Proxying WebSocket ${req.url} to backend`);
   },
   onError: (err, req, res) => {
     console.error(`❌ Proxy error for ${req.url}:`, err.message);
@@ -48,23 +44,10 @@ app.prepare().then(() => {
     }
   });
 
-  server.on('upgrade', (req, socket, head) => {
-    const parsedUrl = parse(req.url, true);
-    const { pathname } = parsedUrl;
-    
-    console.log(`⬆️ WebSocket upgrade request: ${req.url}`);
-    
-    if (pathname.startsWith('/api/')) {
-      apiProxy.upgrade(req, socket, head);
-    } else {
-      socket.destroy();
-    }
-  });
-
   server.listen(port, hostname, (err) => {
     if (err) throw err;
     console.log(`✅ Custom Next.js server ready on http://${hostname}:${port}`);
-    console.log(`🔧 Proxying /api/* to http://localhost:3001`);
-    console.log(`🔌 WebSocket upgrade support enabled for /api/*`);
+    console.log(`🔧 Proxying HTTP /api/* to http://localhost:3001`);
+    console.log(`📞 Twilio WebSocket connects directly to backend:3001 (no proxy)`);
   });
 });

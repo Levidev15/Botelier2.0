@@ -76,17 +76,16 @@ def get_websocket_url(
     """
     Get the WebSocket URL for Twilio Media Streams.
     
-    CRITICAL: WebSocket connections CANNOT go through Next.js rewrites() - they must
-    connect directly to the FastAPI backend on port 3001. Next.js rewrites only
-    handle HTTP requests, not WebSocket upgrades.
-    
     Architecture:
     - HTTP API calls (dashboard): Frontend (5000) → Next.js proxy → Backend (3001)
-    - WebSocket calls (Twilio): Twilio → Backend (3001) directly
+    - WebSocket calls (Twilio): Twilio → Backend (3001) DIRECTLY (no proxy)
+    
+    This connects directly to the FastAPI backend on port 3001, bypassing the Next.js
+    frontend entirely. This is the standard Pipecat pattern and avoids proxy issues.
     
     Args:
         path: WebSocket endpoint path (default: "/api/ws/call")
-        fallback_host: Optional host from request headers
+        fallback_host: Optional host from request headers (unused, kept for compatibility)
         query_params: Optional dict of query parameters to append
         
     Returns:
@@ -98,26 +97,28 @@ def get_websocket_url(
         >>> get_websocket_url()
         "wss://abc123.repl.dev:3001/api/ws/call"
         
-        >>> # With query params
-        >>> get_websocket_url(query_params={"to": "+17027074036"})
-        "wss://abc123.repl.dev:3001/api/ws/call?to=%2B17027074036"
+        >>> # Production with custom backend URL
+        >>> os.environ["BACKEND_WS_URL"] = "wss://api.botelier.com"
+        >>> get_websocket_url()
+        "wss://api.botelier.com/api/ws/call"
     """
     from urllib.parse import urlencode
     
-    # Get base URL (don't pass fallback_host to avoid port issues)
-    # WebSocket must connect to default HTTPS port (443) via Next.js proxy
-    base_url = get_public_base_url(fallback_host=None)
-    
-    # Convert https:// to wss://
-    ws_url = base_url.replace("https://", "wss://").replace("http://", "ws://")
-    
-    # Strip any port number - WebSocket connections MUST use default port (443)
-    # Next.js server (port 5000 → external 80) proxies /api/ws/* to FastAPI backend (port 3001)
-    if ":" in ws_url.split("//")[1]:
-        # Remove port (e.g., "wss://domain:3001" → "wss://domain")
-        protocol, rest = ws_url.split("//", 1)
-        domain = rest.split(":")[0].split("/")[0]
-        ws_url = f"{protocol}//{domain}"
+    # Priority 1: Explicit backend WebSocket URL (for production with custom domains)
+    backend_ws_url = os.environ.get("BACKEND_WS_URL")
+    if backend_ws_url:
+        # Ensure it has wss:// scheme
+        if not backend_ws_url.startswith(("ws://", "wss://")):
+            backend_ws_url = f"wss://{backend_ws_url}"
+        ws_url = backend_ws_url.rstrip("/")
+    else:
+        # Priority 2: Replit development domain with port 3001
+        replit_domain = os.environ.get("REPLIT_DEV_DOMAIN")
+        if replit_domain:
+            ws_url = f"wss://{replit_domain}:3001"
+        else:
+            # Fallback: localhost (for local development)
+            ws_url = "ws://localhost:3001"
     
     # Ensure path starts with /
     if not path.startswith("/"):
