@@ -30,15 +30,20 @@ The frontend, built with Next.js, follows a Vapi.ai-style dark theme for consist
         - Creates Pipecat pipeline with TwilioFrameSerializer initialized with stream_sid/call_sid
         - Delegates ALL subsequent WebSocket messages (media, stop, etc.) to Pipecat's FastAPIWebsocketTransport
         - **Design rationale**: Pipecat's TwilioFrameSerializer requires stream_sid upfront, but we implement the WebSocket endpoint that receives it, necessitating manual bootstrap of the first event
+    - **Next.js Proxy Architecture (Critical):**
+        - Custom Next.js server (`server.js`) creates a SINGLE `http-proxy-middleware` instance at startup for all API routes and WebSocket upgrades
+        - The proxy middleware is reused for both HTTP requests and WebSocket upgrade events to prevent memory leaks and duplicate connections
+        - **Anti-pattern to avoid**: Never create a new proxy instance per-request or per-upgrade event - this causes MaxListenersExceededWarning and duplicate WebSocket sessions
+        - WebSocket traffic goes: Twilio → Next.js (port 5000) → FastAPI backend (port 3001) → Pipecat
     - CallHandler class orchestrates full Pipecat pipeline: STT → LLM → TTS with real-time bidirectional audio
     - Phone number purchase automatically configures voice_url webhook to incoming call endpoint
     - Lazy provider imports prevent startup failures from missing optional dependencies (Anthropic, Cartesia, ElevenLabs, VAD)
-    - Active call sessions tracked with concurrent WebSocket handling per call
+    - Active call sessions tracked with concurrent WebSocket handling per call, with duplicate call detection using async locks
 - **Tools System (Function Calling):**
     - PostgreSQL schema with `hotel_id` scoping for various tool types (Transfer Call, API Request, End Call, SMS, Email) with JSON configuration.
     - FastAPI CRUD endpoints with hotel_id filtering for multi-tenant isolation (all read/write operations require hotel_id parameter).
     - Referential integrity validation: create endpoint validates hotel existence and assistant/hotel ownership before persistence.
-    - Call handler queries tools by `hotel_id` and `is_active="true"` (string comparison matching database storage).
+    - Call handler queries tools by `hotel_id` and `is_active=True` (boolean comparison matching database boolean field).
     - **Known limitation**: Without authentication, hotel_id comes from request parameters (trusted input). TODO: Derive from auth context once authentication is implemented.
     - Pipecat integration converts database tools into LLM function schemas and handles call transfers (via Twilio/Daily) and API requests.
 - **Phone Numbers System (Twilio Integration):**
