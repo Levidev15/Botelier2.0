@@ -43,7 +43,7 @@ The frontend, built with Next.js, follows a Vapi.ai-style dark theme for consist
     - PostgreSQL schema with `hotel_id` scoping for various tool types (Transfer Call, API Request, End Call, SMS, Email) with JSON configuration.
     - FastAPI CRUD endpoints with hotel_id filtering for multi-tenant isolation (all read/write operations require hotel_id parameter).
     - Referential integrity validation: create endpoint validates hotel existence and assistant/hotel ownership before persistence.
-    - Call handler queries tools by `hotel_id` and `is_active=True` (boolean comparison matching database boolean field).
+    - Call handler queries tools by `hotel_id` and `is_active="true"` (string comparison matching database VARCHAR storage).
     - **Known limitation**: Without authentication, hotel_id comes from request parameters (trusted input). TODO: Derive from auth context once authentication is implemented.
     - Pipecat integration converts database tools into LLM function schemas and handles call transfers (via Twilio/Daily) and API requests.
 - **Phone Numbers System (Twilio Integration):**

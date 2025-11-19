@@ -110,7 +110,7 @@ class CallHandler:
                     from ..models.tool import Tool
                     tools = db.query(Tool).filter(
                         Tool.hotel_id == assistant.hotel_id,
-                        Tool.is_active == True
+                        Tool.is_active == "true"
                     ).all()
                 
             finally:
