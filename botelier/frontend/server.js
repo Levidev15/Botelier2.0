@@ -10,6 +10,26 @@ const port = parseInt(process.env.PORT || '5000', 10);
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
+const apiProxy = createProxyMiddleware({
+  target: 'http://localhost:3001',
+  changeOrigin: true,
+  ws: true,
+  logLevel: 'silent',
+  onProxyReq: (proxyReq, req, res) => {
+    console.log(`🔄 Proxying ${req.method} ${req.url} to backend`);
+  },
+  onProxyReqWs: (proxyReq, req, socket, options, head) => {
+    console.log(`🔌 Proxying WebSocket ${req.url} to backend`);
+  },
+  onError: (err, req, res) => {
+    console.error(`❌ Proxy error for ${req.url}:`, err.message);
+    if (res && res.writeHead) {
+      res.writeHead(500, { 'Content-Type': 'text/plain' });
+      res.end('Proxy error');
+    }
+  }
+});
+
 app.prepare().then(() => {
   const server = createServer(async (req, res) => {
     try {
@@ -17,26 +37,6 @@ app.prepare().then(() => {
       const { pathname } = parsedUrl;
 
       if (pathname.startsWith('/api/')) {
-        const apiProxy = createProxyMiddleware({
-          target: 'http://localhost:3001',
-          changeOrigin: true,
-          ws: true,
-          logLevel: 'debug',
-          onProxyReq: (proxyReq, req, res) => {
-            console.log(`🔄 Proxying ${req.method} ${req.url} to backend`);
-          },
-          onProxyReqWs: (proxyReq, req, socket, options, head) => {
-            console.log(`🔌 Proxying WebSocket ${req.url} to backend`);
-          },
-          onError: (err, req, res) => {
-            console.error(`❌ Proxy error for ${req.url}:`, err.message);
-            if (res.writeHead) {
-              res.writeHead(500, { 'Content-Type': 'text/plain' });
-              res.end('Proxy error');
-            }
-          }
-        });
-
         apiProxy(req, res);
       } else {
         await handle(req, res, parsedUrl);
@@ -55,19 +55,7 @@ app.prepare().then(() => {
     console.log(`⬆️ WebSocket upgrade request: ${req.url}`);
     
     if (pathname.startsWith('/api/')) {
-      const wsProxy = createProxyMiddleware({
-        target: 'http://localhost:3001',
-        changeOrigin: true,
-        ws: true,
-        logLevel: 'debug',
-        // CRITICAL: Preserve query parameters during WebSocket upgrade
-        pathRewrite: (path, req) => {
-          console.log(`🔄 Preserving WebSocket path: ${req.url}`);
-          return req.url; // Keep full URL with query params
-        }
-      });
-
-      wsProxy.upgrade(req, socket, head);
+      apiProxy.upgrade(req, socket, head);
     } else {
       socket.destroy();
     }
