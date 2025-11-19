@@ -6,9 +6,11 @@ Tools define what actions the AI can perform during conversations
 """
 
 from sqlalchemy import Column, String, Text, JSON, DateTime, Enum as SQLEnum
+from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from datetime import datetime
 import enum
+import uuid as uuid_pkg
 
 from botelier.database import Base
 
@@ -63,7 +65,7 @@ class Tool(Base):
     config = Column(JSON, nullable=False, default={})
     
     # Multi-tenancy
-    hotel_id = Column(String(36), nullable=False, index=True)
+    hotel_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     assistant_id = Column(String(36), nullable=True, index=True)
     
     # Timestamps
