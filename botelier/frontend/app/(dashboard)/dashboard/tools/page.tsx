@@ -5,6 +5,8 @@ import { Plus, Phone, Globe, PhoneOff, Mail, MessageSquare } from "lucide-react"
 import ToolCard from "./components/ToolCard";
 import ToolDrawer from "./components/ToolDrawer";
 
+const HOTEL_ID = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
+
 interface Tool {
   id: string;
   name: string;
@@ -27,7 +29,7 @@ export default function ToolsPage() {
 
   const fetchTools = async () => {
     try {
-      const response = await fetch("/api/tools");
+      const response = await fetch(`/api/tools?hotel_id=${HOTEL_ID}`);
       const data = await response.json();
       setTools(data.tools || []);
     } catch (error) {
