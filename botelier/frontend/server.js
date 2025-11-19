@@ -49,16 +49,22 @@ app.prepare().then(() => {
   });
 
   server.on('upgrade', (req, socket, head) => {
-    const { pathname } = parse(req.url, true);
+    const parsedUrl = parse(req.url, true);
+    const { pathname } = parsedUrl;
     
-    console.log(`⬆️ WebSocket upgrade request: ${pathname}`);
+    console.log(`⬆️ WebSocket upgrade request: ${req.url}`);
     
     if (pathname.startsWith('/api/')) {
       const wsProxy = createProxyMiddleware({
         target: 'http://localhost:3001',
         changeOrigin: true,
         ws: true,
-        logLevel: 'debug'
+        logLevel: 'debug',
+        // CRITICAL: Preserve query parameters during WebSocket upgrade
+        pathRewrite: (path, req) => {
+          console.log(`🔄 Preserving WebSocket path: ${req.url}`);
+          return req.url; // Keep full URL with query params
+        }
       });
 
       wsProxy.upgrade(req, socket, head);
