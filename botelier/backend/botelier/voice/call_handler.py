@@ -37,14 +37,9 @@ class CallHandler:
     - Function calling and knowledge base integration
     """
     
-    # Class-level lock and active calls dict (shared across all instances)
-    _lock = asyncio.Lock()
-    _active_calls: Dict[str, asyncio.Task] = {}
-    
     def __init__(self):
         """Initialize call handler."""
-        # Use class-level dict for proper duplicate detection across instances
-        self.active_calls = CallHandler._active_calls
+        pass
     
     async def handle_call(self, websocket: WebSocket, to_number: str, stream_sid: str, call_sid: str, db: Session):
         """
@@ -65,7 +60,6 @@ class CallHandler:
             5. Build pipeline and run (Pipecat handles remaining messages)
         """
         try:
-            # Note: Duplicate detection happens in websocket endpoint BEFORE this is called
             logger.info(f"📞 Call {call_sid}: {to_number}")
             
             # 1. Look up which assistant is assigned to this phone number
