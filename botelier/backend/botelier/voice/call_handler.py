@@ -65,15 +65,7 @@ class CallHandler:
             5. Build pipeline and run (Pipecat handles remaining messages)
         """
         try:
-            # CRITICAL: Check for duplicate call FIRST with async lock (prevents race conditions)
-            async with CallHandler._lock:
-                if call_sid in self.active_calls:
-                    logger.warning(f"⚠️ Duplicate WebSocket for call {call_sid}, closing")
-                    await websocket.close(code=1000, reason="Duplicate connection")
-                    return
-                # Reserve this call_sid immediately
-                self.active_calls[call_sid] = None
-            
+            # Note: Duplicate detection happens in websocket endpoint BEFORE this is called
             logger.info(f"📞 Call {call_sid}: {to_number}")
             
             # 1. Look up which assistant is assigned to this phone number
