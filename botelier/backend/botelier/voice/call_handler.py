@@ -173,11 +173,8 @@ class CallHandler:
             
             # 7. Create WebSocket transport with Twilio serializer
             # The WebSocket is already accepted, and Pipecat will handle all subsequent messages
-            transport_params = VoiceEngineFactory.create_transport_params(config)
-            
             transport = FastAPIWebsocketTransport(
                 websocket=websocket,
-                params=transport_params,
                 serializer=serializer,
             )
             
