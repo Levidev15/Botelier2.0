@@ -77,17 +77,33 @@ async def websocket_call_endpoint(
             await websocket.close(code=1008, reason="Missing phone number")
             return
         
+        # Check for duplicate call EARLY (before delegating to handler)
+        # This prevents both connections from processing Twilio messages
+        from ..voice.call_handler import CallHandler
+        async with CallHandler._lock:
+            if call_sid in CallHandler._active_calls:
+                logger.warning(f"⚠️ Duplicate WebSocket for call {call_sid}, rejecting early")
+                await websocket.close(code=1000, reason="Duplicate connection")
+                return
+            # Reserve this call_sid immediately
+            CallHandler._active_calls[call_sid] = None
+        
         logger.info(f"🔌 Handling call for phone: {to_number}")
         
         # Step 3-5: Delegate to CallHandler (Pipecat pattern)
         handler = CallHandler()
-        await handler.handle_call(
-            websocket=websocket,
-            to_number=to_number,
-            stream_sid=stream_sid,
-            call_sid=call_sid,
-            db=db
-        )
+        try:
+            await handler.handle_call(
+                websocket=websocket,
+                to_number=to_number,
+                stream_sid=stream_sid,
+                call_sid=call_sid,
+                db=db
+            )
+        finally:
+            # Cleanup on exit
+            if call_sid in CallHandler._active_calls:
+                del CallHandler._active_calls[call_sid]
         
     except Exception as e:
         logger.exception(f"❌ WebSocket error: {e}")
