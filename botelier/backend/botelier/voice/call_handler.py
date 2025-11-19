@@ -173,9 +173,16 @@ class CallHandler:
             
             # 7. Create WebSocket transport with Twilio serializer
             # The WebSocket is already accepted, and Pipecat will handle all subsequent messages
+            from pipecat.transports.network.fastapi_websocket import FastAPIWebsocketParams
+            
             transport = FastAPIWebsocketTransport(
                 websocket=websocket,
-                serializer=serializer,
+                params=FastAPIWebsocketParams(
+                    audio_in_enabled=True,
+                    audio_out_enabled=True,
+                    add_wav_header=False,  # Twilio uses raw μ-law, not WAV
+                    serializer=serializer,
+                ),
             )
             
             # 8. Create Pipecat pipeline
