@@ -16,6 +16,7 @@ from loguru import logger
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketTransport
 from pipecat.serializers.twilio import TwilioFrameSerializer
 from pipecat.frames.frames import TTSSpeakFrame
+from pipecat.pipeline.runner import PipelineRunner
 
 from .engine import VoiceEngineFactory
 from .agent import VoiceAgentConfig
@@ -209,7 +210,8 @@ class CallHandler:
             
             # 12. Run pipeline (blocks until call ends)
             # Pipecat's FastAPIWebsocketTransport now handles all Twilio messages (media, stop, etc.)
-            await task.run()
+            runner = PipelineRunner()
+            await runner.run(task)
             
             logger.info(f"Call {call_sid} ended")
             
