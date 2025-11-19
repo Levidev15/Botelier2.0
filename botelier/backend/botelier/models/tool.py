@@ -86,7 +86,7 @@ class Tool(Base):
             "description": self.description,
             "tool_type": self.tool_type.value,
             "config": self.config,
-            "hotel_id": self.hotel_id,
+            "hotel_id": str(self.hotel_id),
             "assistant_id": self.assistant_id,
             "is_active": self.is_active == "true",
             "created_at": self.created_at.isoformat() if self.created_at else None,
