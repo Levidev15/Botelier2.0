@@ -3,6 +3,8 @@
 import { useState } from "react";
 import { Phone } from "lucide-react";
 
+const HOTEL_ID = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
+
 interface TransferCallFormProps {
   onSuccess: (tool: any) => void;
   onCancel: () => void;
@@ -63,6 +65,7 @@ export default function TransferCallForm({ onSuccess, onCancel }: TransferCallFo
           phone_number: formData.phone_number,
           pre_transfer_message: formData.pre_transfer_message,
         },
+        hotel_id: HOTEL_ID,
         is_active: true,
       };
 
