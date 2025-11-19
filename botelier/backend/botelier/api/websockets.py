@@ -44,15 +44,12 @@ async def websocket_call_endpoint(
     
     URL format: wss://domain/api/ws/call (phone numbers in <Parameter> tags)
     """
-    # Log WebSocket endpoint hit for debugging
     logger.info(f"🔌 WebSocket endpoint /api/ws/call hit!")
     logger.info(f"WebSocket state: {websocket.client_state}")
     
     try:
-        # Create call handler - it will accept WebSocket, read parameters from Twilio 'start' event,
-        # and orchestrate Pipecat pipeline
-        handler = CallHandler(db)
-        await handler.handle_call(websocket=websocket)
+        handler = CallHandler()
+        await handler.handle_call(websocket=websocket, db=db)
         
     except Exception as e:
         logger.exception(f"Error in WebSocket endpoint: {e}")
