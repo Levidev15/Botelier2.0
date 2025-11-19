@@ -83,3 +83,71 @@ The frontend, built with Next.js, follows a Vapi.ai-style dark theme for consist
 - Opera PMS
 - Mews
 - Cloudbeds
+
+## Pipecat Features Available for Frontend Exposure
+
+The following Pipecat built-in features are available and could be exposed in the Botelier dashboard for hotel configuration:
+
+### 1. Interruption Handling
+- **MinWordsInterruptionStrategy**: Allow interruptions only after user speaks X words (prevents accidental interruptions)
+- **Allow/Disallow Interruptions**: Global flag to enable/disable user interruptions during bot speech
+- **Use Case**: Hotels can configure whether guests can interrupt the AI or must wait for it to finish speaking
+
+### 2. Voice Activity Detection (VAD) Configuration
+- **VADParams**: 
+  - `confidence` (0.0-1.0): Minimum confidence threshold for detecting speech (default: 0.7)
+  - `start_secs`: Duration to wait before confirming voice start (default: 0.2s)
+  - `stop_secs`: Duration to wait before confirming voice stop (default: 0.8s)
+  - `min_volume` (0.0-1.0): Minimum audio volume threshold (default: 0.6)
+- **VAD Analyzers**: Silero, AIC, WebRTC (different algorithms for speech detection)
+- **Use Case**: Fine-tune sensitivity to prevent cutting off guests mid-sentence or being too slow to respond
+
+### 3. Turn Detection & Conversation Flow
+- **SmartTurnParams**: Analyzes when user has finished speaking (beyond basic VAD)
+- **Turn-based Audio Events**: Capture user and bot turns separately for analytics
+- **Use Case**: Better conversation flow, especially for guests who pause while thinking
+
+### 4. STT Mute Strategies
+Control when Speech-to-Text should be muted to prevent unwanted processing:
+- **FIRST_SPEECH**: Mute STT until first bot speech (prevents pre-conversation noise)
+- **MUTE_UNTIL_FIRST_BOT_COMPLETE**: Mute until bot finishes first complete response
+- **FUNCTION_CALL**: Mute during function execution (prevents interrupting booking/transfer operations)
+- **ALWAYS**: Always mute STT when bot is speaking (strict turn-taking)
+- **CUSTOM**: Hotel-defined custom logic
+- **Use Case**: Prevent guests from accidentally interrupting critical operations like payment processing or room booking
+
+### 5. User Idle Detection & Timeout Handling
+- **UserIdleProcessor**: Monitors inactivity and triggers callbacks after timeout
+- **Configurable Parameters**:
+  - `timeout`: Seconds before considering user idle
+  - `callback`: Action to take (e.g., "Are you still there?", hang up, transfer to human)
+  - Retry logic with count tracking
+- **Use Case**: Detect silent guests and prompt them, or gracefully end inactive calls to save costs
+
+### 6. LLM Context Management (Partially Implemented)
+- **Message History**: Already exposed via conversation logs
+- **Tool Choices**: `auto`, `required`, `none`, or specify exact tool
+- **Context Updates**: Runtime updates to system prompts, tools, or instructions
+- **Use Case**: Dynamic conversation context based on guest requests or PMS data
+
+### 7. Audio Processing Configuration
+- **Sample Rate**: Configurable audio quality (8kHz phone quality vs 16kHz/48kHz high quality)
+- **Channels**: Mono vs stereo processing
+- **Buffer Settings**: Latency vs reliability tradeoffs
+- **Use Case**: Balance call quality with bandwidth/cost constraints
+
+### Priority Features to Implement
+Based on hotel use cases, these should be prioritized for frontend exposure:
+
+**High Priority:**
+1. **User Idle Timeout** - Critical for cost management and guest experience
+2. **STT Mute During Function Calls** - Prevent interrupting bookings/payments
+3. **VAD Sensitivity** - Fine-tune for different accents and speaking styles
+
+**Medium Priority:**
+4. **Interruption Strategy** - Hotel preference for conversation style (formal vs casual)
+5. **Turn Detection Params** - Better handling of thoughtful pauses
+
+**Low Priority (Advanced):**
+6. **Audio Buffer Settings** - Most hotels won't need to adjust
+7. **Custom VAD Analyzers** - Only for specialized requirements
