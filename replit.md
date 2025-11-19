@@ -4,6 +4,15 @@
 Botelier is a multi-tenant SaaS platform designed to empower hotels with custom voice AI agents for guest services. It provides a hotel-focused interface for configuring conversational AI, abstracting away underlying framework complexities. The platform aims to streamline hotel operations, enhance guest experiences, and provide a robust, scalable solution for AI-powered guest interaction.
 
 ## Recent Changes (November 19, 2025)
+**Test Call Feature Implemented** - Browser-based instant assistant testing:
+- WebSocket endpoint (`/api/ws/test-call/{assistant_id}`) for direct browser audio streaming
+- TestCallHandler uses FastAPIWebsocketTransport with RawAudioFrameSerializer (custom serializer for browser PCM audio)
+- Frontend: useTestCall hook manages WebSocket connection, microphone capture (16kHz PCM), and audio playback
+- TestCallButton component in assistant settings (edit mode only) with modal UI and status indicators
+- No phone number required - instant voice testing from dashboard
+- Uses local `src/pipecat` folder (added to sys.path in main.py) for latest Pipecat features
+- Pattern: Browser mic → WebSocket (raw PCM) → Pipecat pipeline (STT → LLM → TTS) → Browser speakers
+
 **Twilio Call Transfer Implemented** - Full end-to-end call transfer functionality:
 - CallHandler now passes `call_sid` to FunctionMapper during initialization
 - Transfer handler uses Twilio REST API to update active call with new TwiML: `<Response><Dial>{phone_number}</Dial></Response>`
