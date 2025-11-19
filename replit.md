@@ -3,6 +3,14 @@
 ## Overview
 Botelier is a multi-tenant SaaS platform designed to empower hotels with custom voice AI agents for guest services. It provides a hotel-focused interface for configuring conversational AI, abstracting away underlying framework complexities. The platform aims to streamline hotel operations, enhance guest experiences, and provide a robust, scalable solution for AI-powered guest interaction.
 
+## Recent Changes (November 19, 2025)
+**Function Calling System Refactored** - Migrated from post-pipeline `set_tools()` pattern to proper initialization-time registration following Pipecat's official best practices:
+- VoiceEngineFactory.create_pipeline() now accepts `function_schemas` and `function_handlers` parameters
+- Function schemas built using FunctionSchema objects and passed to LLMContext during initialization via ToolsSchema(standard_tools=[...])
+- Knowledge base function ALWAYS registered (even with zero custom tools) for consistent guest experience
+- FunctionMapper handlers updated to use modern FunctionCallParams pattern with params.llm.push_frame() for intermediate responses
+- Removed hardcoded pipeline processor indices - LLM and context_aggregator returned from create_pipeline for clean separation
+
 ## User Preferences
 - **Branding:** All customer-facing code should be branded as "Botelier"
 - **Architecture:** Clean separation - Pipecat as hidden dependency
