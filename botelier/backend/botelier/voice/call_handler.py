@@ -41,24 +41,26 @@ class CallHandler:
         """Initialize call handler."""
         self.active_calls: Dict[str, asyncio.Task] = {}
     
-    async def handle_call(self, websocket: WebSocket, to_number: str, db: Session):
+    async def handle_call(self, websocket: WebSocket, to_number: str, stream_sid: str, call_sid: str, db: Session):
         """
-        Handle incoming call by creating Pipecat pipeline and streaming audio.
+        Handle incoming call using Pipecat - Official Pattern.
         
         Args:
-            websocket: FastAPI WebSocket connection from Twilio (NOT yet accepted)
-            to_number: Phone number being called (from query params)
+            websocket: FastAPI WebSocket (ALREADY ACCEPTED, 'start' event already read)
+            to_number: Phone number being called
+            stream_sid: Twilio stream SID (from 'start' event)
+            call_sid: Twilio call SID (from 'start' event)
             db: Database session
         
-        Flow:
-            1. Look up phone number → assistant in database
-            2. Accept WebSocket and read Twilio 'start' event for stream_sid/call_sid
-            3. Create Pipecat pipeline with TwilioFrameSerializer
-            4. Run pipeline (Pipecat handles all WebSocket messages)
+        Pattern (from Pipecat docs):
+            1. WebSocket already accepted, 'start' event already consumed
+            2. Look up assistant by phone number
+            3. Create TwilioFrameSerializer with stream_sid/call_sid
+            4. Create FastAPIWebsocketTransport with ALREADY-ACCEPTED websocket
+            5. Build pipeline and run (Pipecat handles remaining messages)
         """
-        call_sid = None
         try:
-            logger.info(f"📞 Incoming call to: {to_number}")
+            logger.info(f"📞 Call: {call_sid} → {to_number}")
             
             # 1. Look up which assistant is assigned to this phone number
             # Query database and close session immediately to avoid connection pool exhaustion
@@ -103,43 +105,18 @@ class CallHandler:
                 db.close()
                 logger.debug("✅ Database session closed")
             
-            # 2. Accept WebSocket and read Twilio 'start' event
-            await websocket.accept()
-            logger.debug("✅ WebSocket accepted")
-            
-            # Read events until we get 'start' (Twilio sends 'connected' first)
-            stream_sid = None
-            call_sid = None
-            start_message = None
-            
-            for _ in range(3):  # Max 3 events
-                data = await websocket.receive_text()
-                message = json.loads(data)
-                event_type = message.get("event")
-                
-                if event_type == "start":
-                    start_data = message.get("start", {})
-                    # CRITICAL: streamSid is at start_data["streamSid"], NOT top-level
-                    stream_sid = start_data.get("streamSid")
-                    call_sid = start_data.get("callSid")
-                    start_message = data  # Save raw message to replay to Pipecat
-                    logger.info(f"📞 Call started - Stream: {stream_sid}, Call: {call_sid}")
-                    break
-            
-            if not stream_sid or not call_sid:
-                logger.error("❌ Never received 'start' event")
-                await websocket.close()
-                return
-            
-            # 3. Check for duplicate call (prevent multiple pipelines for same call)
+            # 2. Check for duplicate call (prevent multiple pipelines)
             if call_sid in self.active_calls:
-                logger.warning(f"⚠️ Call {call_sid} already has active pipeline, ignoring duplicate")
+                logger.warning(f"⚠️ Call {call_sid} already active, ignoring duplicate")
                 return
             
-            # 4. Get API keys from environment
+            # 3. Register call early (prevents race conditions)
+            self.active_calls[call_sid] = None
+            
+            # 4. Get API keys
             api_keys = self._get_api_keys()
             
-            # 5. Create TwilioFrameSerializer with stream_sid/call_sid from start event
+            # 5. Create TwilioFrameSerializer (Pipecat pattern)
             serializer = TwilioFrameSerializer(
                 stream_sid=stream_sid,
                 call_sid=call_sid,
@@ -150,7 +127,7 @@ class CallHandler:
                 )
             )
             
-            # 6. Create WebSocket transport (WebSocket already accepted)
+            # 6. Create WebSocket transport (WebSocket ALREADY ACCEPTED, 'start' ALREADY READ)
             transport = FastAPIWebsocketTransport(
                 websocket=websocket,
                 params=FastAPIWebsocketParams(
@@ -168,17 +145,14 @@ class CallHandler:
                 transport=transport,
             )
             
-            # 8. Register call BEFORE starting pipeline (prevents duplicates)
-            self.active_calls[call_sid] = None  # Placeholder until pipeline starts
-            
-            # 9. Set up function calling if enabled
+            # 8. Set up function calling if enabled
             if config.enable_function_calling and tools:
                 await self._setup_function_calling(assistant, tools, task, api_keys)
             
-            # 10. Update active call with actual task
+            # 9. Update active call with task
             self.active_calls[call_sid] = task
             
-            # 11. Queue greeting message
+            # 10. Queue greeting message
             await task.queue_frames([
                 TTSSpeakFrame(text=config.greeting_message)
             ])
@@ -186,8 +160,8 @@ class CallHandler:
             logger.info(f"Starting Pipecat pipeline for call {call_sid}")
             logger.info(f"Pipeline: STT ({config.stt_provider}) → LLM ({config.llm_provider}) → TTS ({config.tts_provider})")
             
-            # 12. Run pipeline (blocks until call ends)
-            # Pipecat now handles all remaining WebSocket messages (media, dtmf, stop)
+            # 11. Run pipeline (blocks until call ends)
+            # Pipecat handles all remaining WebSocket messages (media, dtmf, stop)
             runner = PipelineRunner()
             await runner.run(task)
             
