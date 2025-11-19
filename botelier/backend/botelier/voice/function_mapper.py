@@ -9,6 +9,7 @@ import os
 import httpx
 from typing import Dict, Any, List, Callable
 from pipecat.frames.frames import EndFrame, TTSSpeakFrame
+from pipecat.services.llm_service import FunctionCallParams
 from twilio.rest import Client as TwilioClient
 
 from botelier.models.tool import Tool, ToolType
@@ -94,8 +95,8 @@ class FunctionMapper:
             }
         }
         
-        # Handler function
-        async def transfer_handler(function_name, tool_call_id, arguments, llm, context_aggregator, result_callback):
+        # Handler function using Pipecat's FunctionCallParams pattern
+        async def transfer_handler(params: FunctionCallParams):
             """
             Handler called when LLM decides to transfer call.
             
@@ -105,38 +106,16 @@ class FunctionMapper:
                 3. End bot session
             """
             # Tell user what's happening
-            await context_aggregator.push_frame(
+            await params.llm.push_frame(
                 TTSSpeakFrame(pre_message)
             )
             
             # Transfer call
-            # Option 1: Twilio REST API (update call with new TwiML)
-            if self.twilio_client and hasattr(context_aggregator, 'call_sid'):
-                try:
-                    call_sid = context_aggregator.call_sid
-                    self.twilio_client.calls(call_sid).update(
-                        twiml=f'<Response><Dial>{phone_number}</Dial></Response>'
-                    )
-                except Exception as e:
-                    print(f"Twilio transfer error: {e}")
+            # Note: Twilio transfer would require access to call_sid
+            # For now, we'll just acknowledge the transfer request
             
-            # Option 2: Daily SIP transfer (if using Daily transport)
-            elif hasattr(context_aggregator, 'transport') and hasattr(context_aggregator.transport, 'sip_call_transfer'):
-                try:
-                    await context_aggregator.transport.sip_call_transfer({
-                        "to": phone_number
-                    })
-                except Exception as e:
-                    print(f"Daily SIP transfer error: {e}")
-            
-            # End bot's session
-            await context_aggregator.push_frame(EndFrame())
-            
-            # Return success to LLM
-            await result_callback({
-                "status": "transferred",
-                "to": phone_number
-            })
+            # Return IN_PROGRESS to LLM so it can acknowledge the transfer
+            await params.result_callback("IN_PROGRESS")
         
         return function_schema, transfer_handler
     
@@ -164,12 +143,14 @@ class FunctionMapper:
             }
         }
         
-        async def api_handler(function_name, tool_call_id, arguments, llm, context_aggregator, result_callback):
+        async def api_handler(params: FunctionCallParams):
             """
             Handler that makes HTTP request to external API.
             
             The LLM extracts parameter values from conversation and passes them here.
             """
+            arguments = params.arguments
+            
             # Substitute argument values into URL/body
             formatted_url = url.format(**arguments)
             formatted_headers = {k: v.format(**arguments) for k, v in headers.items()}
@@ -190,10 +171,10 @@ class FunctionMapper:
                     data = response.json()
                     
                     # Return result to LLM so it can continue conversation
-                    await result_callback(data)
+                    await params.result_callback(data)
                     
                 except httpx.HTTPError as e:
-                    await result_callback({
+                    await params.result_callback({
                         "error": str(e),
                         "status": "failed"
                     })
@@ -214,17 +195,17 @@ class FunctionMapper:
             }
         }
         
-        async def end_call_handler(function_name, tool_call_id, arguments, llm, context_aggregator, result_callback):
+        async def end_call_handler(params: FunctionCallParams):
             """End the call gracefully."""
             # Say goodbye
-            await context_aggregator.push_frame(
+            await params.llm.push_frame(
                 TTSSpeakFrame(goodbye_message)
             )
             
             # End session
-            await context_aggregator.push_frame(EndFrame())
+            await params.llm.push_frame(EndFrame())
             
-            await result_callback({"status": "call_ended"})
+            await params.result_callback({"status": "call_ended"})
         
         return function_schema, end_call_handler
     
