@@ -6,7 +6,8 @@ between Twilio and Pipecat voice pipelines.
 """
 
 import json
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Query
+from urllib.parse import parse_qs, urlparse
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Request
 from sqlalchemy.orm import Session
 from loguru import logger
 
@@ -28,20 +29,25 @@ async def websocket_call_endpoint(
     Twilio connects here after the HTTP webhook returns TwiML with <Stream>.
     
     Flow:
-        1. Accept WebSocket first (required for FastAPI WebSocket)
-        2. Extract phone number from query params or Twilio 'start' event
-        3. Look up assistant assigned to phone number
-        4. Create Pipecat pipeline and run
+        1. Extract phone number from WebSocket URL query params
+        2. Accept WebSocket
+        3. Look up assistant and create Pipecat pipeline
     
     URL format: wss://domain/api/ws/call?to=%2B17027074036
     """
     try:
-        # Extract phone number from query params
-        # Access directly from websocket.query_params (available after accept)
-        to_number = websocket.query_params.get("to")
+        # Extract query params from WebSocket URL (before accept)
+        # websocket.url is a Starlette URL object with query params
+        to_number = websocket.url.query.get("to") if hasattr(websocket.url, 'query') else None
+        
+        # Fallback: parse from scope
+        if not to_number and websocket.scope.get("query_string"):
+            query_string = websocket.scope["query_string"].decode()
+            params = parse_qs(query_string)
+            to_number = params.get("to", [None])[0]
         
         if not to_number:
-            logger.error("❌ Missing 'to' query parameter")
+            logger.error(f"❌ Missing 'to' query parameter. URL: {websocket.url}")
             await websocket.accept()
             await websocket.close(code=1008, reason="Missing 'to' parameter")
             return
