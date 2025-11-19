@@ -107,7 +107,12 @@ class CallHandler:
             # 2. Get API keys
             api_keys = self._get_api_keys()
             
-            # 3. Create TwilioFrameSerializer (Pipecat pattern)
+            # 3. Build function schemas and handlers (knowledge base ALWAYS available)
+            function_schemas, function_handlers = self._build_function_schemas_and_handlers(
+                assistant, tools, api_keys
+            )
+            
+            # 4. Create TwilioFrameSerializer (Pipecat pattern)
             serializer = TwilioFrameSerializer(
                 stream_sid=stream_sid,
                 call_sid=call_sid,
@@ -118,7 +123,7 @@ class CallHandler:
                 )
             )
             
-            # 4. Create WebSocket transport (WebSocket ALREADY ACCEPTED, 'start' ALREADY READ)
+            # 5. Create WebSocket transport (WebSocket ALREADY ACCEPTED, 'start' ALREADY READ)
             transport = FastAPIWebsocketTransport(
                 websocket=websocket,
                 params=FastAPIWebsocketParams(
@@ -129,16 +134,14 @@ class CallHandler:
                 ),
             )
             
-            # 5. Create Pipecat pipeline
-            pipeline, task = VoiceEngineFactory.create_pipeline(
+            # 6. Create Pipecat pipeline with function calling support
+            pipeline, task, llm, context_aggregator = VoiceEngineFactory.create_pipeline(
                 config=config,
                 api_keys=api_keys,
                 transport=transport,
+                function_schemas=function_schemas if function_schemas else None,
+                function_handlers=function_handlers if function_handlers else None,
             )
-            
-            # 6. Set up function calling if enabled
-            if config.enable_function_calling and tools:
-                await self._setup_function_calling(assistant, tools, task, api_keys)
             
             # 7. Update active call with task
             self.active_calls[call_sid] = task
@@ -223,102 +226,78 @@ class CallHandler:
             "google_api_key": os.environ.get("GOOGLE_API_KEY"),
         }
     
-    async def _setup_function_calling(
+    def _build_function_schemas_and_handlers(
         self,
         assistant: Assistant,
         tools: list,
-        task,
         api_keys: Dict[str, str]
-    ):
+    ) -> tuple[list, Dict[str, Any]]:
         """
-        Set up function calling with hotel's configured tools and knowledge base.
+        Build FunctionSchema objects and handlers for knowledge base and tools.
+        
+        This follows Pipecat's proper pattern of creating schemas before pipeline initialization.
         
         Args:
             assistant: Database assistant model
             tools: List of Tool models (already fetched from database)
-            task: Pipecat PipelineTask
             api_keys: API keys for external services
+            
+        Returns:
+            Tuple of (function_schemas, function_handlers)
         """
-        try:
-            from pipecat.adapters.schemas.tools_schema import ToolsSchema, AdapterType
-            from botelier.voice.knowledge_handler import query_hotel_knowledge
-            
-            # Get LLM and context from pipeline  
-            # Pipeline structure: [input, stt, user_aggregator, llm, tts, output, assistant_aggregator]
-            llm = task.pipeline.processors[3]  # LLM is at index 3
-            context_aggregator = task.pipeline.processors[2]  # User aggregator at index 2
-            
-            # Collect all function schemas as dicts (OpenAI format)
-            function_schemas_dicts = []
-            
-            # 1. Add knowledge base function (always available)
-            knowledge_schema = {
-                "type": "function",
-                "function": {
-                    "name": "query_hotel_knowledge",
-                    "description": "Query the hotel's knowledge base to answer guest questions about the hotel, amenities, policies, services, and local information. Use this when guests ask questions about the hotel.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {
-                            "question": {
-                                "type": "string",
-                                "description": "The guest's question to look up in the knowledge base",
-                            },
-                        },
-                        "required": ["question"],
-                    },
+        from pipecat.adapters.schemas.function_schema import FunctionSchema
+        from botelier.voice.knowledge_handler import query_hotel_knowledge
+        
+        function_schemas = []
+        function_handlers = {}
+        
+        # 1. Add knowledge base function (ALWAYS available, even with zero custom tools)
+        knowledge_schema = FunctionSchema(
+            name="query_hotel_knowledge",
+            description="Query the hotel's knowledge base to answer guest questions about the hotel, amenities, policies, services, and local information. Use this when guests ask questions about the hotel.",
+            properties={
+                "question": {
+                    "type": "string",
+                    "description": "The guest's question to look up in the knowledge base",
                 },
-            }
-            function_schemas_dicts.append(knowledge_schema)
+            },
+            required=["question"],
+        )
+        function_schemas.append(knowledge_schema)
+        
+        async def knowledge_handler_wrapper(params):
+            """Wrapper to inject hotel_id into knowledge base queries."""
+            params.arguments["hotel_id"] = str(assistant.hotel_id)
+            await query_hotel_knowledge(params)
+        
+        function_handlers["query_hotel_knowledge"] = knowledge_handler_wrapper
+        logger.info(f"✅ Built knowledge base function schema for hotel {assistant.hotel_id}")
+        
+        # 2. Add database tools
+        if tools:
+            mapper = FunctionMapper()
             
-            async def knowledge_handler_wrapper(params):
-                """Wrapper to inject hotel_id into knowledge base queries."""
-                params.arguments["hotel_id"] = str(assistant.hotel_id)
-                await query_hotel_knowledge(params)
-            
-            llm.register_function(
-                function_name="query_hotel_knowledge",
-                handler=knowledge_handler_wrapper,
-            )
-            logger.info(f"✅ Registered knowledge base function for hotel {assistant.hotel_id}")
-            
-            # 2. Add database tools
-            if tools:
-                mapper = FunctionMapper()
-                
-                for tool in tools:
-                    try:
-                        function_schema_dict, handler = mapper.map_tool_to_function(tool)
-                        
-                        # Convert to OpenAI format
-                        tool_schema = {
-                            "type": "function",
-                            "function": {
-                                "name": function_schema_dict["name"],
-                                "description": function_schema_dict["description"],
-                                "parameters": function_schema_dict.get("parameters", {}),
-                            },
-                        }
-                        function_schemas_dicts.append(tool_schema)
-                        
-                        # Register handler
-                        llm.register_function(
-                            function_name=function_schema_dict["name"],
-                            handler=handler,
-                        )
-                        
-                        logger.info(f"✅ Registered tool: {tool.name}")
-                    except Exception as e:
-                        logger.error(f"Failed to register tool {tool.name}: {e}")
-            
-            # 3. Update LLM context with all function schemas (OpenAI format wrapped in ToolsSchema)
-            tools_schema = ToolsSchema(custom_tools={AdapterType.SHIM: function_schemas_dicts})
-            context_aggregator.set_tools(tools_schema)
-            
-            logger.info(f"✅ Updated LLM context with {len(function_schemas_dicts)} functions (knowledge base + {len(tools)} tools)")
-            
-        except Exception as e:
-            logger.error(f"Error setting up function calling: {e}")
+            for tool in tools:
+                try:
+                    function_schema_dict, handler = mapper.map_tool_to_function(tool)
+                    
+                    # Convert dict to FunctionSchema
+                    tool_schema = FunctionSchema(
+                        name=function_schema_dict["name"],
+                        description=function_schema_dict["description"],
+                        properties=function_schema_dict.get("parameters", {}).get("properties", {}),
+                        required=function_schema_dict.get("parameters", {}).get("required", []),
+                    )
+                    function_schemas.append(tool_schema)
+                    function_handlers[function_schema_dict["name"]] = handler
+                    
+                    logger.info(f"✅ Built function schema for tool: {tool.name}")
+                except Exception as e:
+                    logger.error(f"Failed to build schema for tool {tool.name}: {e}")
+        
+        logger.info(f"📋 Built {len(function_schemas)} function schemas (1 knowledge base + {len(tools)} tools)")
+        
+        return function_schemas, function_handlers
     
     async def hangup_call(self, call_sid: str):
         """
