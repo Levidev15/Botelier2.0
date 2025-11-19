@@ -109,7 +109,7 @@ class CallHandler:
             
             # 3. Build function schemas and handlers (knowledge base ALWAYS available)
             function_schemas, function_handlers = self._build_function_schemas_and_handlers(
-                assistant, tools, api_keys
+                assistant, tools, api_keys, call_sid
             )
             
             # 4. Create TwilioFrameSerializer (Pipecat pattern)
@@ -230,7 +230,8 @@ class CallHandler:
         self,
         assistant: Assistant,
         tools: list,
-        api_keys: Dict[str, str]
+        api_keys: Dict[str, str],
+        call_sid: str
     ) -> tuple[list, Dict[str, Any]]:
         """
         Build FunctionSchema objects and handlers for knowledge base and tools.
@@ -241,6 +242,7 @@ class CallHandler:
             assistant: Database assistant model
             tools: List of Tool models (already fetched from database)
             api_keys: API keys for external services
+            call_sid: Twilio call SID (for call transfers)
             
         Returns:
             Tuple of (function_schemas, function_handlers)
@@ -275,7 +277,7 @@ class CallHandler:
         
         # 2. Add database tools
         if tools:
-            mapper = FunctionMapper()
+            mapper = FunctionMapper(call_sid=call_sid)
             
             for tool in tools:
                 try:

@@ -8,6 +8,7 @@ and the actual Pipecat function calling system during voice conversations.
 import os
 import httpx
 from typing import Dict, Any, List, Callable
+from loguru import logger
 from pipecat.frames.frames import EndFrame, TTSSpeakFrame
 from pipecat.services.llm_service import FunctionCallParams
 from twilio.rest import Client as TwilioClient
@@ -22,7 +23,7 @@ class FunctionMapper:
     Usage:
         # At voice agent initialization
         tools = db.query(Tool).filter(Tool.is_active == "true").all()
-        mapper = FunctionMapper()
+        mapper = FunctionMapper(call_sid="CA1234...")
         
         # Register all tools with LLM
         for tool in tools:
@@ -30,8 +31,15 @@ class FunctionMapper:
             llm.register_function(function_schema['name'], handler)
     """
     
-    def __init__(self):
-        """Initialize function mapper with necessary clients."""
+    def __init__(self, call_sid: str = None):
+        """
+        Initialize function mapper with necessary clients.
+        
+        Args:
+            call_sid: Twilio call SID (required for call transfers)
+        """
+        self.call_sid = call_sid
+        
         # Twilio client for call transfers
         self.twilio_client = None
         if os.environ.get("TWILIO_ACCOUNT_SID") and os.environ.get("TWILIO_AUTH_TOKEN"):
@@ -102,7 +110,7 @@ class FunctionMapper:
             
             Flow:
                 1. AI says pre-transfer message
-                2. Transfer call via Twilio/Daily
+                2. Transfer call via Twilio REST API
                 3. End bot session
             """
             # Tell user what's happening
@@ -110,12 +118,29 @@ class FunctionMapper:
                 TTSSpeakFrame(pre_message)
             )
             
-            # Transfer call
-            # Note: Twilio transfer would require access to call_sid
-            # For now, we'll just acknowledge the transfer request
+            # Perform Twilio call transfer
+            transfer_success = False
+            if self.twilio_client and self.call_sid:
+                try:
+                    # Use Twilio REST API to update the call with new TwiML that dials the transfer number
+                    self.twilio_client.calls(self.call_sid).update(
+                        twiml=f'<Response><Dial>{phone_number}</Dial></Response>'
+                    )
+                    transfer_success = True
+                    logger.info(f"✅ Call {self.call_sid} transferred to {phone_number}")
+                except Exception as e:
+                    logger.error(f"❌ Twilio transfer failed for call {self.call_sid}: {e}")
+            else:
+                logger.warning(f"⚠️ Cannot transfer call: Twilio client or call_sid missing")
             
-            # Return IN_PROGRESS to LLM so it can acknowledge the transfer
-            await params.result_callback("IN_PROGRESS")
+            # End bot's session (call will continue with transferred party)
+            await params.llm.push_frame(EndFrame())
+            
+            # Return result to LLM
+            await params.result_callback({
+                "status": "transferred" if transfer_success else "failed",
+                "to": phone_number
+            })
         
         return function_schema, transfer_handler
     
@@ -166,6 +191,13 @@ class FunctionMapper:
                         response = await client.put(formatted_url, headers=formatted_headers, json=body)
                     elif method == "DELETE":
                         response = await client.delete(formatted_url, headers=formatted_headers)
+                    else:
+                        # Unsupported HTTP method
+                        await params.result_callback({
+                            "error": f"Unsupported HTTP method: {method}",
+                            "status": "failed"
+                        })
+                        return
                     
                     response.raise_for_status()
                     data = response.json()

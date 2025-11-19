@@ -172,6 +172,8 @@ You are a helpful hotel assistant answering guest questions based on the hotel's
         max_tokens=RAG_MAX_TOKENS,
     )
     
-    answer = response.choices[0].message.content.strip()
+    answer = response.choices[0].message.content
+    if answer is None:
+        return "I don't have that information available."
     
-    return answer
+    return answer.strip()
