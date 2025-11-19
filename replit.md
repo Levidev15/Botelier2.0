@@ -35,8 +35,11 @@ The frontend, built with Next.js, follows a Vapi.ai-style dark theme for consist
     - Lazy provider imports prevent startup failures from missing optional dependencies (Anthropic, Cartesia, ElevenLabs, VAD)
     - Active call sessions tracked with concurrent WebSocket handling per call
 - **Tools System (Function Calling):**
-    - PostgreSQL schema for various tool types (Transfer Call, API Request, End Call, SMS, Email) with JSON configuration.
-    - FastAPI CRUD endpoints for managing tools.
+    - PostgreSQL schema with `hotel_id` scoping for various tool types (Transfer Call, API Request, End Call, SMS, Email) with JSON configuration.
+    - FastAPI CRUD endpoints with hotel_id filtering for multi-tenant isolation (all read/write operations require hotel_id parameter).
+    - Referential integrity validation: create endpoint validates hotel existence and assistant/hotel ownership before persistence.
+    - Call handler queries tools by `hotel_id` and `is_active="true"` (string comparison matching database storage).
+    - **Known limitation**: Without authentication, hotel_id comes from request parameters (trusted input). TODO: Derive from auth context once authentication is implemented.
     - Pipecat integration converts database tools into LLM function schemas and handles call transfers (via Twilio/Daily) and API requests.
 - **Phone Numbers System (Twilio Integration):**
     - Database models for Hotels (with Twilio sub-account fields) and Phone Numbers (Twilio SID, capabilities).
