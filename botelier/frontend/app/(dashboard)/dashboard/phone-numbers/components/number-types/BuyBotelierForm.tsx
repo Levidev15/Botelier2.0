@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Search, Phone, MapPin } from "lucide-react";
+import { notify } from "@/lib/notifications";
 
 interface AvailableNumber {
   phone_number: string;
@@ -56,14 +57,14 @@ export default function BuyBotelierForm({ onNumberAdded, onClose }: BuyBotelierF
       }
       
       if (data.length === 0) {
-        alert(`No available numbers found${areaCode ? ` in area code ${areaCode}` : ""}. Try a different area code or country.`);
+        notify.info(`No available numbers found${areaCode ? ` in area code ${areaCode}` : ""}. Try a different area code or country.`);
       }
       
       setAvailableNumbers(data);
     } catch (error) {
       console.error("Failed to search numbers:", error);
       const errorMessage = error instanceof Error ? error.message : "Unknown error occurred";
-      alert(`Failed to search for available numbers: ${errorMessage}`);
+      notify.error(`Failed to search for available numbers: ${errorMessage}`);
     } finally {
       setSearching(false);
     }
@@ -86,14 +87,15 @@ export default function BuyBotelierForm({ onNumberAdded, onClose }: BuyBotelierF
       });
 
       if (response.ok) {
+        notify.success("Phone number purchased successfully");
         onNumberAdded();
       } else {
         const error = await response.json();
-        alert(`Failed to purchase number: ${error.detail}`);
+        notify.error(`Failed to purchase number: ${error.detail}`);
       }
     } catch (error) {
       console.error("Failed to purchase number:", error);
-      alert("Failed to purchase number");
+      notify.error("Failed to purchase number");
     } finally {
       setPurchasing(false);
     }
