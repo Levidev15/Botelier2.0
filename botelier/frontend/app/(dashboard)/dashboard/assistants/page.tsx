@@ -1,8 +1,9 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Plus, Search, MoreVertical, Play, Pause, Copy, Bot } from "lucide-react";
+import { Plus, Search, MoreVertical, Play, Pause, Copy, Bot, Trash2 } from "lucide-react";
 import Link from "next/link";
+import { notify, confirmAction } from "@/lib/notifications";
 
 interface Assistant {
   id: string;
@@ -105,7 +106,7 @@ export default function AssistantsPage() {
         ) : (
           <div className="space-y-3">
             {assistants.map((assistant) => (
-              <AssistantCard key={assistant.id} assistant={assistant} />
+              <AssistantCard key={assistant.id} assistant={assistant} onUpdate={fetchAssistants} />
             ))}
           </div>
         )}
@@ -114,7 +115,11 @@ export default function AssistantsPage() {
   );
 }
 
-function AssistantCard({ assistant }: { assistant: Assistant }) {
+function AssistantCard({ assistant, onUpdate }: { assistant: Assistant; onUpdate: () => void }) {
+  const [showMenu, setShowMenu] = useState(false);
+  const [isToggling, setIsToggling] = useState(false);
+  const [isDuplicating, setIsDuplicating] = useState(false);
+
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return "Never";
     const date = new Date(dateStr);
@@ -127,6 +132,95 @@ function AssistantCard({ assistant }: { assistant: Assistant }) {
     if (diffHours < 24) return `${diffHours} hour${diffHours > 1 ? 's' : ''} ago`;
     if (diffDays < 7) return `${diffDays} day${diffDays > 1 ? 's' : ''} ago`;
     return date.toLocaleDateString();
+  };
+
+  const handleToggleActive = async () => {
+    setIsToggling(true);
+    try {
+      const response = await fetch(`/api/assistants/${assistant.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ is_active: !assistant.is_active }),
+      });
+
+      if (response.ok) {
+        notify.success(`Assistant ${!assistant.is_active ? 'activated' : 'deactivated'} successfully`);
+        onUpdate();
+      } else {
+        notify.error("Failed to update assistant status");
+      }
+    } catch (error) {
+      console.error("Failed to toggle assistant:", error);
+      notify.error("Failed to update assistant status");
+    } finally {
+      setIsToggling(false);
+    }
+  };
+
+  const handleDuplicate = async () => {
+    setIsDuplicating(true);
+    try {
+      // Fetch full assistant details
+      const response = await fetch(`/api/assistants/${assistant.id}`);
+      if (!response.ok) throw new Error("Failed to fetch assistant");
+      
+      const fullAssistant = await response.json();
+      
+      // Create duplicate with new name
+      const duplicateResponse = await fetch("/api/assistants", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...fullAssistant,
+          id: undefined, // Remove ID to create new
+          name: `Copy of ${fullAssistant.name}`,
+          is_active: false, // Start as draft
+        }),
+      });
+
+      if (duplicateResponse.ok) {
+        notify.success("Assistant duplicated successfully");
+        onUpdate();
+      } else {
+        notify.error("Failed to duplicate assistant");
+      }
+    } catch (error) {
+      console.error("Failed to duplicate assistant:", error);
+      notify.error("Failed to duplicate assistant");
+    } finally {
+      setIsDuplicating(false);
+      setShowMenu(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    const confirmed = await confirmAction(
+      `Delete "${assistant.name}"? This action cannot be undone.`,
+      {
+        confirmText: "Delete",
+        cancelText: "Cancel",
+      }
+    );
+    
+    if (!confirmed) return;
+
+    try {
+      const response = await fetch(`/api/assistants/${assistant.id}`, {
+        method: "DELETE",
+      });
+
+      if (response.ok) {
+        notify.success("Assistant deleted successfully");
+        onUpdate();
+      } else {
+        notify.error("Failed to delete assistant");
+      }
+    } catch (error) {
+      console.error("Failed to delete assistant:", error);
+      notify.error("Failed to delete assistant");
+    } finally {
+      setShowMenu(false);
+    }
   };
 
   return (
@@ -161,10 +255,20 @@ function AssistantCard({ assistant }: { assistant: Assistant }) {
         </div>
 
         <div className="flex items-center space-x-2">
-          <button className="p-2 hover:bg-gray-800 rounded-lg transition opacity-0 group-hover:opacity-100">
+          <button
+            onClick={handleDuplicate}
+            disabled={isDuplicating}
+            className="p-2 hover:bg-gray-800 rounded-lg transition opacity-0 group-hover:opacity-100 disabled:opacity-50"
+            title="Duplicate assistant"
+          >
             <Copy className="h-4 w-4 text-gray-400" />
           </button>
-          <button className="p-2 hover:bg-gray-800 rounded-lg transition opacity-0 group-hover:opacity-100">
+          <button
+            onClick={handleToggleActive}
+            disabled={isToggling}
+            className="p-2 hover:bg-gray-800 rounded-lg transition opacity-0 group-hover:opacity-100 disabled:opacity-50"
+            title={assistant.is_active ? "Deactivate assistant" : "Activate assistant"}
+          >
             {assistant.is_active ? (
               <Pause className="h-4 w-4 text-gray-400" />
             ) : (
@@ -177,9 +281,37 @@ function AssistantCard({ assistant }: { assistant: Assistant }) {
           >
             Configure
           </Link>
-          <button className="p-2 hover:bg-gray-800 rounded-lg transition">
-            <MoreVertical className="h-4 w-4 text-gray-400" />
-          </button>
+          <div className="relative">
+            <button
+              onClick={() => setShowMenu(!showMenu)}
+              className="p-2 hover:bg-gray-800 rounded-lg transition"
+              title="More options"
+            >
+              <MoreVertical className="h-4 w-4 text-gray-400" />
+            </button>
+            {showMenu && (
+              <>
+                <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
+                <div className="absolute right-0 mt-2 w-48 bg-gray-900 border border-gray-800 rounded-lg shadow-lg z-20">
+                  <button
+                    onClick={handleDuplicate}
+                    disabled={isDuplicating}
+                    className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-gray-800 flex items-center space-x-2 disabled:opacity-50"
+                  >
+                    <Copy className="h-4 w-4" />
+                    <span>Duplicate</span>
+                  </button>
+                  <button
+                    onClick={handleDelete}
+                    className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-gray-800 flex items-center space-x-2 rounded-b-lg"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                    <span>Delete</span>
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
     </div>
