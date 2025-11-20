@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Phone } from "lucide-react";
+import { notify } from "@/lib/notifications";
 
 const HOTEL_ID = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
 
@@ -85,7 +86,7 @@ export default function TransferCallForm({ onSuccess, onCancel }: TransferCallFo
       onSuccess(newTool);
     } catch (error) {
       console.error("Error creating tool:", error);
-      alert("Failed to create tool. Please try again.");
+      notify.error("Failed to create tool. Please try again.");
     } finally {
       setSaving(false);
     }

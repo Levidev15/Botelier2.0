@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { Plus, Phone } from "lucide-react";
 import PhoneNumberCard from "./components/PhoneNumberCard";
 import AddNumberDrawer from "./components/AddNumberDrawer";
+import { notify, confirmAction } from "@/lib/notifications";
 
 interface PhoneNumber {
   id: string;
@@ -66,7 +67,11 @@ export default function PhoneNumbersPage() {
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Are you sure you want to release this phone number?")) return;
+    const confirmed = await confirmAction("Are you sure you want to release this phone number?", {
+      confirmText: "Release",
+      cancelText: "Cancel",
+    });
+    if (!confirmed) return;
 
     try {
       const response = await fetch(`/api/phone-numbers/${id}`, {
@@ -74,13 +79,14 @@ export default function PhoneNumbersPage() {
       });
 
       if (response.ok) {
+        notify.success("Phone number released successfully");
         fetchPhoneNumbers();
       } else {
-        alert("Failed to delete phone number");
+        notify.error("Failed to delete phone number");
       }
     } catch (error) {
       console.error("Failed to delete phone number:", error);
-      alert("Failed to delete phone number");
+      notify.error("Failed to delete phone number");
     }
   };
 

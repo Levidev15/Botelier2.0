@@ -9,6 +9,7 @@ import FormSection from "@/components/forms/FormSection";
 import FormField from "@/components/forms/FormField";
 import ProviderSelector from "@/components/forms/ProviderSelector";
 import SaveBar from "@/components/ui/SaveBar";
+import { notify } from "@/lib/notifications";
 
 interface Assistant {
   id: string;
@@ -265,7 +266,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
       }
     } catch (error) {
       console.error("Failed to save:", error);
-      alert(`Failed to ${mode === "create" ? "create" : "save"} assistant`);
+      notify.error(`Failed to ${mode === "create" ? "create" : "save"} assistant`);
     } finally {
       setSaving(false);
     }

@@ -2,6 +2,7 @@
 
 import { LucideIcon, Trash2, Edit } from "lucide-react";
 import { useState } from "react";
+import { notify, confirmAction } from "@/lib/notifications";
 
 interface ToolCardProps {
   tool: {
@@ -21,22 +22,31 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete }: Tool
   const [deleting, setDeleting] = useState(false);
 
   const handleDelete = async () => {
-    if (!confirm(`Delete tool "${tool.name}"?`)) return;
+    const confirmed = await confirmAction(`Delete tool "${tool.name}"?`, {
+      confirmText: "Delete",
+      cancelText: "Cancel",
+    });
+
+    if (!confirmed) return;
 
     setDeleting(true);
+    const hotelId = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
+
     try {
-      const response = await fetch(`/api/tools/${tool.id}`, {
+      const response = await fetch(`/api/tools/${tool.id}?hotel_id=${hotelId}`, {
         method: "DELETE",
       });
 
       if (response.ok) {
+        notify.success("Tool deleted successfully");
         onDelete(tool.id);
       } else {
-        alert("Failed to delete tool");
+        const error = await response.json();
+        notify.error(error.detail || "Failed to delete tool");
       }
     } catch (error) {
       console.error("Error deleting tool:", error);
-      alert("Failed to delete tool");
+      notify.error("Failed to delete tool");
     } finally {
       setDeleting(false);
     }
