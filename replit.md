@@ -3,7 +3,16 @@
 ## Overview
 Botelier is a multi-tenant SaaS platform designed to empower hotels with custom voice AI agents for guest services. It provides a hotel-focused interface for configuring conversational AI, abstracting away underlying framework complexities. The platform aims to streamline hotel operations, enhance guest experiences, and provide a robust, scalable solution for AI-powered guest interaction.
 
-## Recent Changes (November 19, 2025)
+## Recent Changes (November 20, 2025)
+**Rollback Recovery & Dependency Upgrade** - Fixed backend crash after rollback by upgrading Pipecat and dependencies:
+- Upgraded Pipecat from 0.0.64 → 0.0.95 to match code structure
+- Upgraded FastAPI 0.104.1 → 0.121.3 for Pipecat compatibility
+- Upgraded Pydantic 2.5.2 → 2.12.4 (required by Pipecat >=2.10.6)
+- Fixed import paths: `pipecat.transports.websocket.fastapi` (newer structure)
+- All assistants, tools, and knowledge base entries successfully restored and visible
+- Backend running successfully with proper module dependencies
+
+**Previous Changes (November 19, 2025)**
 **Twilio Call Transfer Implemented** - Full end-to-end call transfer functionality:
 - CallHandler now passes `call_sid` to FunctionMapper during initialization
 - Transfer handler uses Twilio REST API to update active call with new TwiML: `<Response><Dial>{phone_number}</Dial></Response>`
