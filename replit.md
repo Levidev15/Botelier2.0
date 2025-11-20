@@ -3,6 +3,19 @@
 ## Overview
 Botelier is a multi-tenant SaaS platform providing hotels with custom voice AI agents for guest services. It offers a hotel-centric interface for configuring conversational AI, abstracting complex underlying frameworks. The platform aims to streamline hotel operations, enhance guest experiences, and deliver a scalable solution for AI-powered guest interaction. The business vision is to become the leading provider of voice AI for the hospitality industry, offering a robust and intuitive platform that significantly improves operational efficiency and guest satisfaction.
 
+## Recent Changes (November 20, 2025)
+**Assistant Card Actions** - Implemented full button functionality on assistant cards:
+- **Copy button** (📋): Duplicates assistant with "Copy of..." prefix, starts as draft
+- **Play/Pause button** (▶️/⏸️): Toggles assistant active/inactive status with toast feedback
+- **More menu** (⋮): Dropdown with Duplicate and Delete options
+- **Delete**: Confirmation dialog before permanent deletion
+- All actions use toast notification system with loading states
+
+**Toast Notification System** - Replaced browser alerts with professional in-app notifications:
+- Uses Sonner library matching dark UI theme (bottom-right positioning)
+- Migrated all pages: Tools, Knowledge Base, Phone Numbers, Assistants
+- Fixed tool deletion bug (missing hotel_id parameter)
+
 ## User Preferences
 - **Branding:** All customer-facing code should be branded as "Botelier"
 - **Architecture:** Clean separation - Pipecat as hidden dependency
