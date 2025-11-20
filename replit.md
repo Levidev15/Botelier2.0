@@ -4,6 +4,14 @@
 Botelier is a multi-tenant SaaS platform designed to empower hotels with custom voice AI agents for guest services. It provides a hotel-focused interface for configuring conversational AI, abstracting away underlying framework complexities. The platform aims to streamline hotel operations, enhance guest experiences, and provide a robust, scalable solution for AI-powered guest interaction.
 
 ## Recent Changes (November 20, 2025)
+**Toast Notification System** - Replaced browser alerts with professional in-app toast notifications:
+- Installed Sonner library for React toast notifications (same library used by Shadcn UI and Vapi.ai)
+- Created notification utility (`lib/notifications.ts`) with helpers for success/error/info/loading/promise/confirm messages
+- Migrated all user-facing notifications across Tools, Knowledge Base, Phone Numbers, and Assistants pages
+- Branded notifications match dark UI theme with consistent positioning (bottom-right)
+- Fixed tool deletion bug (missing hotel_id parameter causing 422 error)
+- All alert() and confirm() browser popups removed for modern UX
+
 **Rollback Recovery & Dependency Upgrade** - Fixed backend crash after rollback by upgrading Pipecat and dependencies:
 - Upgraded Pipecat from 0.0.64 → 0.0.95 to match code structure
 - Upgraded FastAPI 0.104.1 → 0.121.3 for Pipecat compatibility
@@ -42,6 +50,7 @@ Botelier is built with a clean architectural separation, where the core SaaS app
 
 ### UI/UX Decisions
 The frontend, built with Next.js, follows a Vapi.ai-style dark theme for consistency across different dashboard pages (Tools, Phone Numbers, Knowledge Bases). Key UI components include:
+- **Toast Notification System:** Professional in-app notifications using Sonner library, matching the dark theme with consistent bottom-right positioning. Supports success/error/info/loading/promise/confirm message types with custom actions.
 - **Assistant Configuration Pages:** Unified 4-tab layout (Info → Language Model → Voice → Transcriber) with auto-tab-switching on scroll via IntersectionObserver. Both create and edit pages share identical components for consistent UX.
 - **Reusable Form Components:** FormField, ProviderSelector (with dynamic provider loading from API), FormSection, TabNavigation, and SaveBar with smart dirty form detection.
 - **Sticky Headers:** Persistent header and tab navigation for easy access while scrolling through long forms.

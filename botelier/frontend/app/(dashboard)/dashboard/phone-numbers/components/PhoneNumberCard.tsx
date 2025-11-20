@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { Phone, Trash2 } from "lucide-react";
+import { notify } from "@/lib/notifications";
 
 interface Assistant {
   id: string;
@@ -37,14 +38,15 @@ export default function PhoneNumberCard({ phoneNumber, assistants, onDelete, onU
       });
 
       if (response.ok) {
+        notify.success("Assistant assigned successfully");
         onUpdate();
       } else {
         const error = await response.json();
-        alert(`Failed to assign: ${error.detail}`);
+        notify.error(`Failed to assign: ${error.detail}`);
       }
     } catch (error) {
       console.error("Failed to assign phone number:", error);
-      alert("Failed to assign phone number");
+      notify.error("Failed to assign phone number");
     } finally {
       setAssigning(false);
     }
