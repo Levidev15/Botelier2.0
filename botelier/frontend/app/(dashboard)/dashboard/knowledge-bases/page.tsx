@@ -2,6 +2,7 @@
 
 import { useState, useEffect, useMemo } from "react";
 import { BookOpen, Plus, Grid3x3, List, Upload, Pencil, Trash2, AlertCircle, X, Search, Tag } from "lucide-react";
+import { notify, confirmAction } from "@/lib/notifications";
 
 const HOTEL_ID = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
 
@@ -122,18 +123,33 @@ export default function KnowledgeBasesPage() {
   }, [entries, searchQuery, categoryFilter, sortBy]);
 
   const handleDelete = async (entryId: string) => {
-    if (!confirm("Delete this entry?")) return;
+    const confirmed = await confirmAction("Delete this entry?", {
+      confirmText: "Delete",
+      cancelText: "Cancel",
+    });
+    if (!confirmed) return;
+
     try {
       const res = await fetch(`/api/entries/${entryId}`, { method: "DELETE" });
-      if (res.ok) fetchEntries();
+      if (res.ok) {
+        notify.success("Entry deleted successfully");
+        fetchEntries();
+      } else {
+        notify.error("Failed to delete entry");
+      }
     } catch (error) {
       console.error("Delete failed:", error);
+      notify.error("Failed to delete entry");
     }
   };
 
   const handleBulkDelete = async () => {
     if (selectedIds.size === 0) return;
-    if (!confirm(`Delete ${selectedIds.size} selected entries?`)) return;
+    const confirmed = await confirmAction(`Delete ${selectedIds.size} selected entries?`, {
+      confirmText: "Delete",
+      cancelText: "Cancel",
+    });
+    if (!confirmed) return;
 
     try {
       const res = await fetch(`/api/entries/bulk`, {
@@ -141,9 +157,16 @@ export default function KnowledgeBasesPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ entry_ids: Array.from(selectedIds) })
       });
-      if (res.ok) fetchEntries();
+      if (res.ok) {
+        notify.success(`Deleted ${selectedIds.size} entries successfully`);
+        setSelectedIds(new Set());
+        fetchEntries();
+      } else {
+        notify.error("Failed to delete entries");
+      }
     } catch (error) {
       console.error("Bulk delete failed:", error);
+      notify.error("Failed to delete entries");
     }
   };
 
@@ -453,7 +476,7 @@ function AddEntryModal({ entry, categories, onClose, onSaved }: any) {
 
   const handleSave = async () => {
     if (!question.trim() || !answer.trim()) {
-      alert("Question and answer are required");
+      notify.error("Question and answer are required");
       return;
     }
 
@@ -473,11 +496,14 @@ function AddEntryModal({ entry, categories, onClose, onSaved }: any) {
         })
       });
 
-      if (res.ok) onSaved();
-      else alert("Failed to save entry");
+      if (res.ok) {
+        notify.success(entry ? "Entry updated successfully" : "Entry added successfully");
+        onSaved();
+      }
+      else notify.error("Failed to save entry");
     } catch (error) {
       console.error("Save failed:", error);
-      alert("Failed to save entry");
+      notify.error("Failed to save entry");
     } finally {
       setLoading(false);
     }
@@ -543,7 +569,7 @@ function CSVModal({ onClose, onUploaded }: any) {
 
   const handleUpload = async () => {
     if (!file) {
-      alert("Please select a CSV file");
+      notify.error("Please select a CSV file");
       return;
     }
 
@@ -559,14 +585,14 @@ function CSVModal({ onClose, onUploaded }: any) {
 
       const data = await res.json();
       if (res.ok) {
-        alert(`Imported ${data.created} entries${data.errors > 0 ? `, ${data.errors} errors` : ""}`);
+        notify.success(`Imported ${data.created} entries${data.errors > 0 ? `, ${data.errors} errors` : ""}`);
         onUploaded();
       } else {
-        alert("Failed to import CSV");
+        notify.error("Failed to import CSV");
       }
     } catch (error) {
       console.error("Upload failed:", error);
-      alert("Failed to upload CSV");
+      notify.error("Failed to upload CSV");
     } finally {
       setLoading(false);
     }
