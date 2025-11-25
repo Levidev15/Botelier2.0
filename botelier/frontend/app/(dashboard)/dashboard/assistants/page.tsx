@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Plus, Search, MoreVertical, Play, Pause, Copy, Bot, Trash2 } from "lucide-react";
+import { Plus, Search, MoreVertical, Play, Pause, Copy, Bot, Trash2, GitBranch } from "lucide-react";
 import Link from "next/link";
 import { notify, confirmAction } from "@/lib/notifications";
 
@@ -275,6 +275,14 @@ function AssistantCard({ assistant, onUpdate }: { assistant: Assistant; onUpdate
               <Play className="h-4 w-4 text-gray-400" />
             )}
           </button>
+          <Link
+            href={`/dashboard/assistants/${assistant.id}/flow`}
+            className="px-3 py-2 bg-purple-600/10 hover:bg-purple-600/20 text-purple-400 rounded-lg transition text-sm font-medium flex items-center gap-1.5"
+            title="Edit conversation flow"
+          >
+            <GitBranch className="h-3.5 w-3.5" />
+            Flow
+          </Link>
           <Link
             href={`/dashboard/assistants/${assistant.id}`}
             className="px-4 py-2 bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 rounded-lg transition text-sm font-medium"

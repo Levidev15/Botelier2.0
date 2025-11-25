@@ -71,6 +71,11 @@ class Assistant(Base):
     # Status
     is_active = Column(Boolean, default=True)
     
+    # Pipecat Flows configuration (stored as JSONB)
+    # This stores the complete flow graph designed in the visual editor
+    # Structure follows Pipecat Flows format: nodes, edges, initial_node, etc.
+    flow_config = Column(JSONB, nullable=True, default=None)
+    
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
@@ -104,6 +109,7 @@ class Assistant(Base):
             "vad_provider": self.vad_provider,
             "vad_config": self.vad_config or {},
             "is_active": self.is_active,
+            "flow_config": self.flow_config,
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
             "updated_at": self.updated_at.isoformat() + "Z" if self.updated_at else None,
         }

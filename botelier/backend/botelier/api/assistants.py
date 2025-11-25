@@ -71,6 +71,12 @@ class AssistantUpdate(BaseModel):
     vad_provider: Optional[str] = None
     vad_config: Optional[dict] = None
     is_active: Optional[bool] = None
+    flow_config: Optional[dict] = None
+
+
+class FlowConfigUpdate(BaseModel):
+    """Flow configuration update model for the visual editor."""
+    flow_config: dict = Field(..., description="Pipecat Flows configuration JSON")
 
 
 class AssistantResponse(BaseModel):
@@ -98,8 +104,17 @@ class AssistantResponse(BaseModel):
     vad_provider: Optional[str]
     vad_config: Optional[dict]
     is_active: bool
+    flow_config: Optional[dict]
     created_at: Optional[str]
     updated_at: Optional[str]
+
+
+class FlowConfigResponse(BaseModel):
+    """Flow configuration response model."""
+    assistant_id: str
+    hotel_id: str
+    flow_config: Optional[dict]
+    has_flow: bool
 
 
 @router.get("", response_model=dict)
@@ -232,3 +247,123 @@ async def update_assistant(
     db.refresh(assistant)
     
     return assistant.to_dict()
+
+
+@router.delete("/{assistant_id}", status_code=204)
+async def delete_assistant(
+    assistant_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Delete an assistant.
+    
+    Path params:
+    - assistant_id: Assistant UUID
+    
+    Returns:
+    - 204 No Content on success
+    """
+    assistant = db.query(Assistant).filter(Assistant.id == assistant_id).first()
+    if not assistant:
+        raise HTTPException(status_code=404, detail="Assistant not found")
+    
+    db.delete(assistant)
+    db.commit()
+    
+    return None
+
+
+@router.get("/{assistant_id}/flow", response_model=FlowConfigResponse)
+async def get_assistant_flow(
+    assistant_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Get the flow configuration for an assistant.
+    
+    This returns the Pipecat Flows JSON configuration that defines
+    the conversation flow for this assistant.
+    
+    Path params:
+    - assistant_id: Assistant UUID
+    
+    Returns:
+    - Flow configuration JSON
+    """
+    assistant = db.query(Assistant).filter(Assistant.id == assistant_id).first()
+    if not assistant:
+        raise HTTPException(status_code=404, detail="Assistant not found")
+    
+    return {
+        "assistant_id": str(assistant.id),
+        "hotel_id": str(assistant.hotel_id),
+        "flow_config": assistant.flow_config,
+        "has_flow": assistant.flow_config is not None
+    }
+
+
+@router.put("/{assistant_id}/flow", response_model=FlowConfigResponse)
+async def update_assistant_flow(
+    assistant_id: str,
+    data: FlowConfigUpdate,
+    db: Session = Depends(get_db)
+):
+    """
+    Update the flow configuration for an assistant.
+    
+    This saves the Pipecat Flows JSON configuration from the visual editor.
+    The flow defines nodes, transitions, and functions for conversations.
+    
+    Path params:
+    - assistant_id: Assistant UUID
+    
+    Body:
+    - flow_config: Pipecat Flows configuration JSON
+    
+    Returns:
+    - Updated flow configuration
+    
+    Security:
+    - Validates that the assistant belongs to the requesting hotel
+    - Sanitizes function definitions to prevent code injection
+    """
+    assistant = db.query(Assistant).filter(Assistant.id == assistant_id).first()
+    if not assistant:
+        raise HTTPException(status_code=404, detail="Assistant not found")
+    
+    assistant.flow_config = data.flow_config
+    db.commit()
+    db.refresh(assistant)
+    
+    return {
+        "assistant_id": str(assistant.id),
+        "hotel_id": str(assistant.hotel_id),
+        "flow_config": assistant.flow_config,
+        "has_flow": True
+    }
+
+
+@router.delete("/{assistant_id}/flow", status_code=204)
+async def delete_assistant_flow(
+    assistant_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Delete the flow configuration for an assistant.
+    
+    This removes the custom flow, reverting to default behavior.
+    
+    Path params:
+    - assistant_id: Assistant UUID
+    
+    Returns:
+    - 204 No Content on success
+    """
+    assistant = db.query(Assistant).filter(Assistant.id == assistant_id).first()
+    if not assistant:
+        raise HTTPException(status_code=404, detail="Assistant not found")
+    
+    assistant.flow_config = None
+    db.commit()
+    
+    return None

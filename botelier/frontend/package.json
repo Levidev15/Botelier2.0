@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.28.0",
+    "@xyflow/react": "^12.9.3",
     "axios": "^1.6.8",
     "clsx": "^2.1.0",
     "http-proxy-middleware": "^3.0.5",
@@ -18,7 +19,8 @@
     "react": "^18.3.0",
     "react-dom": "^18.3.0",
     "sonner": "^2.0.7",
-    "tailwind-merge": "^2.2.2"
+    "tailwind-merge": "^2.2.2",
+    "zustand": "^5.0.8"
   },
   "devDependencies": {
     "@types/node": "^20",
