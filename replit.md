@@ -5,6 +5,23 @@ Botelier is a multi-tenant SaaS platform providing hotels with custom voice AI a
 
 ## Recent Changes (November 26, 2025)
 
+**Flow Versioning System** - Draft/Publish workflow for production safety:
+- **Draft/Publish Workflow**: Flows are saved as drafts, tested in simulator, then explicitly published to go live
+- **Version History**: Numbered versions with descriptions and timestamps stored in `flow_versions` table
+- **Revert Capability**: Can revert to any previous published version (creates new draft from that version)
+- **Live Call Safety**: `tool.config` only updates on publish, ensuring live calls always use published versions
+- **Database Model** (`botelier/backend/botelier/models/flow_version.py`): FlowVersion with tool_id, version_number, status (draft/published), description, flow_config
+- **Partial Unique Index**: Enforces only one draft per tool at database level
+- **Version API** (`botelier/backend/botelier/api/flow_versions.py`):
+  - `PUT /api/tools/{tool_id}/flow/draft` - Save draft
+  - `POST /api/tools/{tool_id}/flow/publish` - Publish draft with validation
+  - `GET /api/tools/{tool_id}/flow/versions` - List version history
+  - `DELETE /api/tools/{tool_id}/flow/draft` - Discard draft
+  - `POST /api/tools/{tool_id}/flow/versions/{version}/revert` - Revert to version
+- **Publish-time Validation**: Comprehensive flow validation (initial node, node reachability, required fields) before allowing publish
+- **Frontend UI**: Draft indicator badge, version selector dropdown, publish button/modal, discard button
+- **Store Integration**: Zustand store tracks currentSource, currentVersionNumber, hasDraft, hasPublished, versions array
+
 **Production Hardening** - Flow system improvements for production-ready deployments:
 - **Validators Module** (`botelier/backend/botelier/validators.py`): Built-in validation for phone (E.164 format), email (regex), dates (with cross-field validation for check-out > check-in), and number limits
 - **ConfirmationNode**: New node type for reviewing booking details before API calls with summary template and confirmed/edit routing
