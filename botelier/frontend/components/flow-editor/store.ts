@@ -411,9 +411,98 @@ const CONCIERGE_TEMPLATE = {
   ],
 };
 
+const ROOM_SERVICE_TEMPLATE = {
+  variables: [
+    { key: "room_number", type: "text" as SlotType, description: "Guest room number", required: true },
+    { key: "guest_name", type: "text" as SlotType, description: "Guest name", required: false },
+    { key: "order_items", type: "text" as SlotType, description: "Items ordered", required: true },
+    { key: "special_instructions", type: "text" as SlotType, description: "Special dietary needs or requests", required: false },
+    { key: "delivery_time", type: "time" as SlotType, description: "Preferred delivery time", required: false },
+  ],
+  nodes: [
+    {
+      id: "start_1",
+      type: "initial",
+      position: { x: 250, y: 0 },
+      data: {
+        name: "Room Service Greeting",
+        systemPrompt: "You are a friendly room service operator. Help guests place orders from the in-room dining menu. Be patient and helpful with menu questions.",
+        greeting: "Good evening, room service! How may I help you tonight?",
+      },
+    },
+    {
+      id: "collect_room",
+      type: "collect_slot",
+      position: { x: 250, y: 120 },
+      data: {
+        name: "Get Room Number",
+        slot: {
+          variableKey: "room_number",
+          prompt: "May I have your room number, please?",
+          type: "text",
+          retryPrompt: "I'm sorry, could you repeat your room number?",
+          maxRetries: 2,
+        },
+      },
+    },
+    {
+      id: "take_order",
+      type: "collect_slot",
+      position: { x: 250, y: 240 },
+      data: {
+        name: "Take Order",
+        slot: {
+          variableKey: "order_items",
+          prompt: "What would you like to order from our menu?",
+          type: "text",
+          retryPrompt: "Could you please repeat your order?",
+          maxRetries: 3,
+        },
+      },
+    },
+    {
+      id: "special_requests",
+      type: "message",
+      position: { x: 250, y: 360 },
+      data: {
+        name: "Special Requests",
+        message: "Do you have any allergies or special dietary requirements I should note?",
+        waitForResponse: true,
+      },
+    },
+    {
+      id: "confirm_order",
+      type: "message",
+      position: { x: 250, y: 480 },
+      data: {
+        name: "Confirm Order",
+        message: "Let me confirm your order for room {{room_number}}: {{order_items}}. Your order will be delivered in approximately 30-45 minutes. Is this correct?",
+        waitForResponse: true,
+      },
+    },
+    {
+      id: "end_success",
+      type: "end",
+      position: { x: 250, y: 600 },
+      data: {
+        name: "Order Complete",
+        closingMessage: "Wonderful! Your order has been placed. Enjoy your meal, and please call again if you need anything else!",
+      },
+    },
+  ],
+  edges: [
+    { id: "e1", source: "start_1", target: "collect_room" },
+    { id: "e2", source: "collect_room", target: "take_order" },
+    { id: "e3", source: "take_order", target: "special_requests" },
+    { id: "e4", source: "special_requests", target: "confirm_order" },
+    { id: "e5", source: "confirm_order", target: "end_success" },
+  ],
+};
+
 const TEMPLATES: Record<string, typeof ROOM_BOOKING_TEMPLATE> = {
   "room-booking": ROOM_BOOKING_TEMPLATE,
   "concierge": CONCIERGE_TEMPLATE,
+  "room-service": ROOM_SERVICE_TEMPLATE,
 };
 
 export const useFlowStore = create<FlowState>((set, get) => ({
@@ -672,4 +761,5 @@ export const useFlowStore = create<FlowState>((set, get) => ({
 export const AVAILABLE_TEMPLATES = [
   { id: "room-booking", name: "Room Booking", description: "Complete room reservation flow with guest details collection" },
   { id: "concierge", name: "Concierge Services", description: "Help guests with dining, spa, and activity requests" },
+  { id: "room-service", name: "Room Service", description: "Take food and beverage orders with special dietary requirements" },
 ];
