@@ -18,6 +18,7 @@ class ToolType(str, Enum):
     end_call = "end_call"
     send_sms = "send_sms"
     send_email = "send_email"
+    flow = "flow"  # Conversation flow for structured multi-step interactions
 
 
 # Configuration schemas for each tool type
@@ -66,6 +67,14 @@ class EndCallConfig(BaseModel):
         "Thank you for calling. Have a great day!",
         description="Message AI says before ending call"
     )
+
+
+class FlowConfig(BaseModel):
+    """Configuration for flow tool - stores the visual flow editor data."""
+    
+    initial_node: Optional[str] = Field(None, description="ID of the starting node")
+    nodes: list[Dict[str, Any]] = Field(default=[], description="Flow nodes with positions and data")
+    edges: list[Dict[str, Any]] = Field(default=[], description="Connections between nodes")
 
 
 # Request schemas

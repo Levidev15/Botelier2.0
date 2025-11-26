@@ -1,11 +1,3 @@
-import InitialNode from "./InitialNode";
-import ConversationNode from "./ConversationNode";
-import EndNode from "./EndNode";
-
-export const nodeTypes = {
-  initial: InitialNode,
-  node: ConversationNode,
-  end: EndNode,
-};
-
-export { InitialNode, ConversationNode, EndNode };
+export { default as InitialNode } from "./InitialNode";
+export { default as ConversationNode } from "./ConversationNode";
+export { default as EndNode } from "./EndNode";

@@ -21,8 +21,9 @@ import FlowToolbar from "./FlowToolbar";
 import { notify } from "@/lib/notifications";
 
 interface FlowEditorProps {
-  assistantId: string;
-  assistantName?: string;
+  toolId: string;
+  hotelId: string;
+  toolName?: string;
 }
 
 const nodeTypes = {
@@ -31,7 +32,7 @@ const nodeTypes = {
   end: EndNode,
 };
 
-function FlowEditorInner({ assistantId, assistantName }: FlowEditorProps) {
+function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
   const {
     nodes,
     edges,
@@ -49,8 +50,8 @@ function FlowEditorInner({ assistantId, assistantName }: FlowEditorProps) {
   const [isSaving, setIsSaving] = useState(false);
 
   useEffect(() => {
-    loadFlow(assistantId);
-  }, [assistantId, loadFlow]);
+    loadFlow(toolId, hotelId);
+  }, [toolId, hotelId, loadFlow]);
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: Node<NodeData>) => {
