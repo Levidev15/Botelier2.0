@@ -1,7 +1,8 @@
 "use client";
 
-import { LucideIcon, Trash2, Edit } from "lucide-react";
+import { LucideIcon, Trash2, Edit, GitBranch } from "lucide-react";
 import { useState } from "react";
+import { useRouter } from "next/navigation";
 import { notify, confirmAction } from "@/lib/notifications";
 
 interface ToolCardProps {
@@ -19,7 +20,14 @@ interface ToolCardProps {
 }
 
 export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete }: ToolCardProps) {
+  const router = useRouter();
   const [deleting, setDeleting] = useState(false);
+
+  const isFlowTool = tool.tool_type === "flow";
+
+  const handleEditFlow = () => {
+    router.push(`/dashboard/tools/${tool.id}/flow`);
+  };
 
   const handleDelete = async () => {
     const confirmed = await confirmAction(`Delete tool "${tool.name}"?`, {
@@ -52,13 +60,22 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete }: Tool
     }
   };
 
+  const getIconColor = () => {
+    if (isFlowTool) return "text-cyan-500";
+    return "text-blue-500";
+  };
+
+  const getIconBgColor = () => {
+    if (isFlowTool) return "bg-cyan-600/10";
+    return "bg-blue-600/10";
+  };
+
   return (
     <div className="bg-[#141414] border border-gray-800 rounded-lg p-6 hover:border-gray-700 transition-colors">
-      {/* Header */}
       <div className="flex items-start justify-between mb-4">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-lg bg-blue-600/10 flex items-center justify-center">
-            <Icon className="text-blue-500" size={20} />
+          <div className={`w-10 h-10 rounded-lg ${getIconBgColor()} flex items-center justify-center`}>
+            <Icon className={getIconColor()} size={20} />
           </div>
           <div>
             <h3 className="font-semibold text-white">{tool.name}</h3>
@@ -71,16 +88,14 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete }: Tool
         </div>
       </div>
 
-      {/* Description */}
       <p className="text-sm text-gray-400 mb-4 line-clamp-2">
         {tool.description}
       </p>
 
-      {/* Config Preview */}
       <div className="text-xs text-gray-500 mb-4">
         {tool.tool_type === "transfer_call" && (
           <div className="bg-[#0a0a0a] rounded p-2">
-            📞 {tool.config.phone_number}
+            <span className="mr-1">📞</span> {tool.config.phone_number}
           </div>
         )}
         {tool.tool_type === "api_request" && (
@@ -88,16 +103,31 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete }: Tool
             <span className="font-mono">{tool.config.method || "GET"}</span> {tool.config.url?.substring(0, 40)}...
           </div>
         )}
+        {tool.tool_type === "flow" && (
+          <div className="bg-[#0a0a0a] rounded p-2 flex items-center gap-2">
+            <GitBranch size={12} className="text-cyan-500" />
+            <span>{tool.config.nodes?.length || 0} nodes</span>
+          </div>
+        )}
       </div>
 
-      {/* Actions */}
       <div className="flex items-center gap-2 pt-4 border-t border-gray-800">
-        <button
-          className="flex-1 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800 rounded transition-colors flex items-center justify-center gap-2"
-        >
-          <Edit size={14} />
-          Edit
-        </button>
+        {isFlowTool ? (
+          <button
+            onClick={handleEditFlow}
+            className="flex-1 px-3 py-2 text-sm text-cyan-400 hover:text-cyan-300 hover:bg-cyan-950/20 rounded transition-colors flex items-center justify-center gap-2"
+          >
+            <GitBranch size={14} />
+            Edit Flow
+          </button>
+        ) : (
+          <button
+            className="flex-1 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800 rounded transition-colors flex items-center justify-center gap-2"
+          >
+            <Edit size={14} />
+            Edit
+          </button>
+        )}
         <button
           onClick={handleDelete}
           disabled={deleting}
