@@ -56,5 +56,6 @@ def init_db():
     from botelier.models import phone_number  # noqa: F401
     from botelier.models import assistant  # noqa: F401
     from botelier.models import knowledge_entry  # noqa: F401
+    from botelier.models import flow_version  # noqa: F401
     
     Base.metadata.create_all(bind=engine)

@@ -5,7 +5,7 @@ Tools define what actions the AI can perform during conversations
 (API calls, call transfers, sending messages, etc.)
 """
 
-from sqlalchemy import Column, String, Text, JSON, DateTime, Enum as SQLEnum
+from sqlalchemy import Column, String, Text, JSON, DateTime, Integer, ForeignKey, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 from datetime import datetime
@@ -32,6 +32,11 @@ class Tool(Base):
     
     Each tool represents an action the AI can perform during a conversation.
     Configuration is stored as JSON to support flexible schemas per tool type.
+    
+    For FLOW type tools:
+    - published_version_id: Points to the current live version (used by calls)
+    - draft_version_id: Points to the work-in-progress version (for editing/testing)
+    - published_version_number: Quick access to current version number
     
     Examples:
         Transfer Call Tool:
@@ -63,11 +68,18 @@ class Tool(Base):
     tool_type = Column(SQLEnum(ToolType), nullable=False, index=True)
     
     # Tool configuration (flexible JSON structure)
+    # For non-FLOW tools, this stores the full config
+    # For FLOW tools, this is kept for backwards compatibility but versions are preferred
     config = Column(JSON, nullable=False, default={})
     
     # Multi-tenancy
     hotel_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     assistant_id = Column(String(36), nullable=True, index=True)
+    
+    # Flow versioning (only used for FLOW type tools)
+    published_version_id = Column(UUID(as_uuid=True), nullable=True)
+    draft_version_id = Column(UUID(as_uuid=True), nullable=True)
+    published_version_number = Column(Integer, nullable=True, default=0)
     
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -81,7 +93,7 @@ class Tool(Base):
     
     def to_dict(self):
         """Convert model to dictionary for API responses."""
-        return {
+        result = {
             "id": self.id,
             "name": self.name,
             "description": self.description,
@@ -93,3 +105,13 @@ class Tool(Base):
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "updated_at": self.updated_at.isoformat() if self.updated_at else None,
         }
+        
+        if self.tool_type == ToolType.FLOW:
+            result["versioning"] = {
+                "published_version_id": str(self.published_version_id) if self.published_version_id else None,
+                "draft_version_id": str(self.draft_version_id) if self.draft_version_id else None,
+                "published_version_number": self.published_version_number or 0,
+                "has_draft": self.draft_version_id is not None,
+            }
+        
+        return result
