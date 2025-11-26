@@ -11,7 +11,7 @@ Provides endpoints for managing versioned flow configurations:
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
-from typing import Optional
+from typing import Optional, List, Tuple
 from datetime import datetime, timezone
 import uuid
 
@@ -20,6 +20,111 @@ from botelier.models.tool import Tool, ToolType as DBToolType
 from botelier.models.flow_version import FlowVersion, FlowVersionStatus
 
 router = APIRouter(prefix="/api/tools", tags=["flow-versions"])
+
+
+def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str]]:
+    """
+    Validate a flow configuration for publishing.
+    
+    Returns (is_valid, errors) tuple.
+    """
+    errors = []
+    
+    nodes = flow_config.get("nodes", [])
+    edges = flow_config.get("edges", [])
+    
+    if not nodes:
+        errors.append("Flow must have at least one node")
+        return False, errors
+    
+    initial_nodes = [n for n in nodes if n.get("type") == "initial"]
+    if len(initial_nodes) == 0:
+        errors.append("Flow must have a Start node")
+    elif len(initial_nodes) > 1:
+        errors.append("Flow can only have one Start node")
+    
+    initial_node_id = flow_config.get("initial_node")
+    if not initial_node_id:
+        errors.append("No initial node specified in flow configuration")
+    else:
+        initial_exists = any(n.get("id") == initial_node_id for n in nodes)
+        if not initial_exists:
+            errors.append(f"Initial node '{initial_node_id}' does not exist in flow")
+    
+    node_ids = {n.get("id") for n in nodes}
+    for edge in edges:
+        source = edge.get("source")
+        target = edge.get("target")
+        if source and source not in node_ids:
+            errors.append(f"Edge references non-existent source node: {source}")
+        if target and target not in node_ids:
+            errors.append(f"Edge references non-existent target node: {target}")
+    
+    if initial_node_id and initial_node_id in node_ids:
+        connected = set()
+        to_visit = [initial_node_id]
+        edge_map = {}
+        for edge in edges:
+            source = edge.get("source")
+            if source not in edge_map:
+                edge_map[source] = []
+            edge_map[source].append(edge.get("target"))
+        
+        while to_visit:
+            current = to_visit.pop()
+            if current in connected:
+                continue
+            connected.add(current)
+            for target in edge_map.get(current, []):
+                if target not in connected:
+                    to_visit.append(target)
+        
+        end_nodes = [n for n in nodes if n.get("type") == "end"]
+        end_ids = {n.get("id") for n in end_nodes}
+        
+        disconnected = node_ids - connected
+        critical_disconnected = disconnected - end_ids
+        if critical_disconnected:
+            for node_id in critical_disconnected:
+                node = next((n for n in nodes if n.get("id") == node_id), None)
+                if node:
+                    errors.append(f"Node '{node.get('data', {}).get('name', node_id)}' is not reachable from Start")
+    
+    for node in nodes:
+        node_type = node.get("type")
+        node_data = node.get("data", {})
+        node_name = node_data.get("name", node.get("id"))
+        
+        if node_type == "collect_slot":
+            slot = node_data.get("slot", {})
+            if not slot.get("variableKey"):
+                errors.append(f"Collect Input node '{node_name}' has no variable key")
+            if not slot.get("prompt"):
+                errors.append(f"Collect Input node '{node_name}' has no prompt")
+        
+        elif node_type == "api_request":
+            api = node_data.get("api", {})
+            if not api.get("url"):
+                errors.append(f"API Request node '{node_name}' has no URL")
+        
+        elif node_type == "condition":
+            condition = node_data.get("condition", {})
+            if not condition.get("variable"):
+                errors.append(f"Condition node '{node_name}' has no variable to check")
+        
+        elif node_type == "router":
+            router_cfg = node_data.get("router", {})
+            if not router_cfg.get("variable"):
+                errors.append(f"Router node '{node_name}' has no variable to route on")
+            if not router_cfg.get("options"):
+                errors.append(f"Router node '{node_name}' has no routing options")
+        
+        elif node_type == "transfer":
+            transfer = node_data.get("transfer", {})
+            if not transfer.get("phoneNumber"):
+                errors.append(f"Transfer node '{node_name}' has no phone number")
+    
+    return len(errors) == 0, errors
 
 
 @router.get("/{tool_id}/flow")
@@ -250,6 +355,16 @@ def publish_flow(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Draft version not found"
+        )
+    
+    is_valid, validation_errors = validate_flow_config(draft.flow_config or {})
+    if not is_valid:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail={
+                "message": "Flow validation failed",
+                "errors": validation_errors
+            }
         )
     
     if publish_data and publish_data.get("description"):

@@ -885,6 +885,9 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       
       if (!response.ok) {
         const error = await response.json();
+        if (error.detail && typeof error.detail === "object" && error.detail.errors) {
+          throw new Error(`Flow validation failed: ${error.detail.errors.join(", ")}`);
+        }
         throw new Error(error.detail || "Failed to publish flow");
       }
       
