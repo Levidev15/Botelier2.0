@@ -11,6 +11,7 @@ This module handles:
 import re
 import json
 import httpx
+from datetime import datetime, timezone
 from typing import Any, Optional, Callable, Awaitable
 from dataclasses import dataclass, field
 from enum import Enum
@@ -334,13 +335,22 @@ class FlowExecutor:
         
         flow_context = self._generate_flow_context()
         
+        now = datetime.now(timezone.utc)
+        current_date = now.strftime("%Y-%m-%d")
+        current_time = now.strftime("%H:%M")
+        current_date_human = now.strftime("%B %d, %Y")
+        
         return f"""{base_prompt}
+
+Current date/time: {current_date} {current_time} UTC ({current_date_human})
 
 You are executing a structured conversation flow. Follow these guidelines:
 1. Collect information in the order specified by the flow
 2. Use the provided functions to progress through the flow
 3. Be natural and conversational while following the flow structure
 4. If the guest provides information proactively, acknowledge and record it
+5. When a guest provides a date without a year (e.g., "Dec 12th"), interpret it as the next occurrence after today ({current_date}). Never assume a past year.
+6. For number fields, respect the minimum and maximum limits specified.
 
 {flow_context}"""
     
@@ -352,7 +362,22 @@ You are executing a structured conversation flow. Follow these guidelines:
         for var in ordered_vars:
             if var.key not in self.state.collected_slots:
                 node_instructions = self._get_instructions_for_variable(var.key)
+                validation = self._get_validation_for_variable(var.key)
+                
                 slot_info = f"- {var.key}: {var.description} ({var.type.value})"
+                
+                if validation:
+                    constraints = []
+                    if "min" in validation:
+                        constraints.append(f"minimum: {validation['min']}")
+                    if "max" in validation:
+                        constraints.append(f"maximum: {validation['max']}")
+                    if constraints:
+                        slot_info += f" [{', '.join(constraints)}]"
+                
+                if var.type == SlotType.DATE:
+                    slot_info += " [must be in the future, use YYYY-MM-DD format]"
+                
                 if node_instructions:
                     slot_info += f"\n  Instructions: {node_instructions}"
                 slots_to_collect.append(slot_info)
@@ -361,6 +386,15 @@ You are executing a structured conversation flow. Follow these guidelines:
             return f"""Information to collect (in order):
 {chr(10).join(slots_to_collect)}"""
         return "All required information has been collected."
+    
+    def _get_validation_for_variable(self, var_key: str) -> Optional[dict]:
+        """Get the validation config for the node that collects a specific variable."""
+        for node in self.flow_config.nodes:
+            if node.type == NodeType.COLLECT_SLOT:
+                slot = node.data.get("slot", {})
+                if slot.get("variableKey") == var_key:
+                    return slot.get("validation")
+        return None
     
     def _get_instructions_for_variable(self, var_key: str) -> Optional[str]:
         """Get the instructions for the node that collects a specific variable."""
@@ -507,10 +541,9 @@ You are executing a structured conversation flow. Follow these guidelines:
     
     def _create_slot_function(self, var: FlowVariable) -> dict:
         """Create a function schema for collecting a slot."""
-        param_type = "string"
-        if var.type == SlotType.NUMBER:
-            param_type = "integer"
-        elif var.type == SlotType.CHOICE and var.choices:
+        validation = self._get_validation_for_variable(var.key)
+        
+        if var.type == SlotType.CHOICE and var.choices:
             return {
                 "type": "function",
                 "function": {
@@ -530,6 +563,52 @@ You are executing a structured conversation flow. Follow these guidelines:
                 }
             }
         
+        if var.type == SlotType.NUMBER:
+            param_schema = {
+                "type": "integer",
+                "description": var.description
+            }
+            if validation:
+                if "min" in validation:
+                    param_schema["minimum"] = validation["min"]
+                if "max" in validation:
+                    param_schema["maximum"] = validation["max"]
+            return {
+                "type": "function",
+                "function": {
+                    "name": f"collect_{var.key}",
+                    "description": f"Record the {var.description}",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            var.key: param_schema
+                        },
+                        "required": [var.key]
+                    }
+                }
+            }
+        
+        if var.type == SlotType.DATE:
+            now = datetime.now(timezone.utc)
+            current_date = now.strftime("%Y-%m-%d")
+            return {
+                "type": "function",
+                "function": {
+                    "name": f"collect_{var.key}",
+                    "description": f"Record the {var.description}. Date must be in the future (after {current_date}). Format: YYYY-MM-DD.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            var.key: {
+                                "type": "string",
+                                "description": f"{var.description} (YYYY-MM-DD format, must be after {current_date})"
+                            }
+                        },
+                        "required": [var.key]
+                    }
+                }
+            }
+        
         return {
             "type": "function",
             "function": {
@@ -539,7 +618,7 @@ You are executing a structured conversation flow. Follow these guidelines:
                     "type": "object",
                     "properties": {
                         var.key: {
-                            "type": param_type,
+                            "type": "string",
                             "description": var.description
                         }
                     },
@@ -709,29 +788,44 @@ You are executing a structured conversation flow. Follow these guidelines:
         
         if var_key in arguments:
             value = arguments[var_key]
-            self.state.set_variable(var_key, value)
-            
-            collecting_node_id = None
-            next_node_id = None
-            
-            for node in self.flow_config.nodes:
-                if node.type == NodeType.COLLECT_SLOT:
-                    slot = node.data.get("slot", {})
-                    if slot.get("variableKey") == var_key:
-                        collecting_node_id = node.id
-                        next_node = self.state.get_next_node(node.id)
-                        if next_node:
-                            next_node_id = next_node.id
-                            self.state.advance_to(next_node.id)
-                        else:
-                            self.state.advance_to(node.id)
-                        break
             
             var_info = None
             for var in self.flow_config.variables:
                 if var.key == var_key:
                     var_info = var
                     break
+            
+            collecting_node_id = None
+            slot_config = None
+            for node in self.flow_config.nodes:
+                if node.type == NodeType.COLLECT_SLOT:
+                    slot = node.data.get("slot", {})
+                    if slot.get("variableKey") == var_key:
+                        collecting_node_id = node.id
+                        slot_config = slot
+                        break
+            
+            validation_error = self._validate_slot_value(var_info, slot_config, value)
+            if validation_error:
+                retry_prompt = slot_config.get("retryPrompt", "Please try again.") if slot_config else "Please try again."
+                return {
+                    "success": False,
+                    "message": f"{validation_error} {retry_prompt}",
+                    "action": None,
+                    "validation_error": validation_error,
+                    "current_node_id": collecting_node_id or self.state.current_node_id
+                }
+            
+            self.state.set_variable(var_key, value)
+            
+            next_node_id = None
+            if collecting_node_id:
+                next_node = self.state.get_next_node(collecting_node_id)
+                if next_node:
+                    next_node_id = next_node.id
+                    self.state.advance_to(next_node.id)
+                else:
+                    self.state.advance_to(collecting_node_id)
             
             return {
                 "success": True,
@@ -747,6 +841,35 @@ You are executing a structured conversation flow. Follow these guidelines:
             "action": None,
             "current_node_id": self.state.current_node_id
         }
+    
+    def _validate_slot_value(self, var_info: Optional[FlowVariable], slot_config: Optional[dict], value: Any) -> Optional[str]:
+        """Validate a slot value. Returns error message or None if valid."""
+        if not var_info:
+            return None
+        
+        validation = slot_config.get("validation", {}) if slot_config else {}
+        
+        if var_info.type == SlotType.NUMBER:
+            try:
+                num_value = int(value) if isinstance(value, str) else value
+                if "min" in validation and num_value < validation["min"]:
+                    return f"Value must be at least {validation['min']}."
+                if "max" in validation and num_value > validation["max"]:
+                    return f"Value cannot exceed {validation['max']}."
+            except (ValueError, TypeError):
+                return "Please provide a valid number."
+        
+        elif var_info.type == SlotType.DATE:
+            if isinstance(value, str):
+                try:
+                    date_value = datetime.strptime(value, "%Y-%m-%d").date()
+                    today = datetime.now(timezone.utc).date()
+                    if date_value < today:
+                        return f"Date must be today or in the future (on or after {today})."
+                except ValueError:
+                    return "Please provide a date in YYYY-MM-DD format."
+        
+        return None
     
     async def _handle_api_request(self, function_name: str, arguments: dict) -> dict:
         """Execute an API request."""
