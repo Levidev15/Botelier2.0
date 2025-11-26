@@ -51,17 +51,17 @@ export default function ToolsPage() {
 
   const getToolIcon = (toolType: string) => {
     switch (toolType) {
-      case "flow":
+      case "FLOW":
         return GitBranch;
-      case "transfer_call":
+      case "TRANSFER_CALL":
         return Phone;
-      case "api_request":
+      case "API_REQUEST":
         return Globe;
-      case "end_call":
+      case "END_CALL":
         return PhoneOff;
-      case "send_sms":
+      case "SEND_SMS":
         return MessageSquare;
-      case "send_email":
+      case "SEND_EMAIL":
         return Mail;
       default:
         return Globe;
@@ -70,17 +70,17 @@ export default function ToolsPage() {
 
   const getToolTypeLabel = (toolType: string) => {
     switch (toolType) {
-      case "flow":
+      case "FLOW":
         return "Conversation Flow";
-      case "transfer_call":
+      case "TRANSFER_CALL":
         return "Transfer Call";
-      case "api_request":
+      case "API_REQUEST":
         return "API Request";
-      case "end_call":
+      case "END_CALL":
         return "End Call";
-      case "send_sms":
+      case "SEND_SMS":
         return "Send SMS";
-      case "send_email":
+      case "SEND_EMAIL":
         return "Send Email";
       default:
         return toolType;

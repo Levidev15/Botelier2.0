@@ -13,12 +13,12 @@ from enum import Enum
 class ToolType(str, Enum):
     """Tool types available for creation."""
     
-    transfer_call = "transfer_call"
-    api_request = "api_request"
-    end_call = "end_call"
-    send_sms = "send_sms"
-    send_email = "send_email"
-    flow = "flow"  # Conversation flow for structured multi-step interactions
+    transfer_call = "TRANSFER_CALL"
+    api_request = "API_REQUEST"
+    end_call = "END_CALL"
+    send_sms = "SEND_SMS"
+    send_email = "SEND_EMAIL"
+    flow = "FLOW"  # Conversation flow for structured multi-step interactions
 
 
 # Configuration schemas for each tool type
