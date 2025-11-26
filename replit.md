@@ -5,11 +5,14 @@ Botelier is a multi-tenant SaaS platform providing hotels with custom voice AI a
 
 ## Recent Changes (November 26, 2025)
 
-**Flow Simulator** - Test flows without making phone calls:
-- **Simulation API** (`botelier/backend/botelier/api/simulation.py`): Endpoints for `/api/simulate/start`, `/api/simulate/message`, `/api/simulate/session/{id}`, `/api/simulate/test-api`
+**Flow Simulator with LLM** - Test flows like real conversations:
+- **Real LLM Conversations**: Uses OpenAI (gpt-4o-mini) with function calling to simulate actual voice calls
+- **Natural Language Processing**: LLM extracts information from user messages and automatically calls appropriate functions
+- **Multi-Slot Collection**: Can extract multiple pieces of information from a single message (e.g., name, date, and guest count)
+- **Simulation API** (`botelier/backend/botelier/api/simulation.py`): Endpoints with OpenAI integration for `/api/simulate/start`, `/api/simulate/message`
 - **FlowSimulator Modal** (`components/flow-simulator/`): Chat-based testing interface with real-time slot tracking
 - **Test Button on Tools Page**: Flows show an enabled "Test" button when nodes are configured
-- **Function Picker**: Click to execute functions like slot collection, end call
+- **Manual Function Picker**: Optional panel for testing specific function calls directly
 - **Slot Tracker Panel**: Real-time display of collected variables and progress
 - **API Tester**: Test API endpoints with variable substitution preview
 
