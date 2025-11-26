@@ -17,6 +17,10 @@ from ..voice.call_handler import CallHandler
 
 router = APIRouter(prefix="/api/ws", tags=["WebSocket"])
 
+# Module-level CallHandler instance persists across WebSocket connections
+# This ensures FlowExecutor state is maintained during multi-turn conversations
+call_handler = CallHandler()
+
 
 @router.websocket("/call")
 async def websocket_call_endpoint(
@@ -79,9 +83,9 @@ async def websocket_call_endpoint(
         
         logger.info(f"🔌 Handling call for phone: {to_number}")
         
-        # Step 3-5: Delegate to CallHandler (Pipecat pattern)
-        handler = CallHandler()
-        await handler.handle_call(
+        # Step 3-5: Delegate to CallHandler
+        # Use module-level instance to persist state across function calls
+        await call_handler.handle_call(
             websocket=websocket,
             to_number=to_number,
             stream_sid=stream_sid,
