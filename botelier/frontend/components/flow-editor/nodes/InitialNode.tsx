@@ -3,20 +3,18 @@
 import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
 import { Play, Grip } from "lucide-react";
-import { NodeData, FlowFunction } from "../store";
+import { InitialNodeData } from "../store";
 
 interface InitialNodeProps {
-  data: NodeData;
+  data: InitialNodeData;
   selected?: boolean;
 }
 
 function InitialNode({ data, selected }: InitialNodeProps) {
-  const nodeData = data as NodeData;
-  
   return (
     <div
       className={`
-        min-w-[200px] rounded-lg border-2 bg-[#141414] shadow-lg
+        min-w-[220px] max-w-[280px] rounded-lg border-2 bg-[#141414] shadow-lg
         ${selected ? "border-green-500 ring-2 ring-green-500/20" : "border-green-600/50"}
       `}
     >
@@ -26,26 +24,14 @@ function InitialNode({ data, selected }: InitialNodeProps) {
         <span className="text-sm font-medium text-green-400">Start</span>
       </div>
       
-      <div className="px-3 py-3">
+      <div className="px-3 py-3 space-y-2">
         <div className="text-sm font-semibold text-white truncate">
-          {nodeData.name || "Greeting"}
+          {data.name || "Greeting"}
         </div>
         
-        {nodeData.functions && nodeData.functions.length > 0 && (
-          <div className="mt-2 space-y-1">
-            {nodeData.functions.slice(0, 3).map((func: FlowFunction, i: number) => (
-              <div
-                key={i}
-                className="text-xs text-gray-400 bg-gray-800/50 rounded px-2 py-1 truncate"
-              >
-                {func.name}
-              </div>
-            ))}
-            {nodeData.functions.length > 3 && (
-              <div className="text-xs text-gray-500">
-                +{nodeData.functions.length - 3} more
-              </div>
-            )}
+        {data.greeting && (
+          <div className="text-xs text-gray-400 line-clamp-2 bg-gray-800/50 rounded px-2 py-1">
+            "{data.greeting.substring(0, 80)}..."
           </div>
         )}
       </div>
