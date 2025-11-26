@@ -230,6 +230,64 @@ class FlowExecutor:
         self.transfer_callback = transfer_callback
         self.end_call_callback = end_call_callback
     
+    def get_variables_in_flow_order(self) -> list[FlowVariable]:
+        """
+        Get variables in the order they appear in the flow traversal.
+        
+        This traverses the flow graph from the initial node and returns
+        variables in the order their collect_slot nodes are encountered.
+        """
+        ordered_keys = []
+        visited = set()
+        
+        def get_next_nodes(node_id: str) -> list[FlowNode]:
+            """Get all nodes connected from a source node."""
+            next_nodes = []
+            for edge in self.flow_config.edges:
+                if edge.source == node_id:
+                    for node in self.flow_config.nodes:
+                        if node.id == edge.target:
+                            next_nodes.append(node)
+            return next_nodes
+        
+        def traverse(node_id: str):
+            if node_id in visited:
+                return
+            visited.add(node_id)
+            
+            node = None
+            for n in self.flow_config.nodes:
+                if n.id == node_id:
+                    node = n
+                    break
+            
+            if not node:
+                return
+            
+            if node.type == NodeType.COLLECT_SLOT:
+                slot = node.data.get("slot", {})
+                var_key = slot.get("variableKey")
+                if var_key and var_key not in ordered_keys:
+                    ordered_keys.append(var_key)
+            
+            for next_node in get_next_nodes(node_id):
+                traverse(next_node.id)
+        
+        if self.flow_config.initial_node:
+            traverse(self.flow_config.initial_node)
+        
+        var_by_key = {v.key: v for v in self.flow_config.variables}
+        ordered_variables = []
+        for key in ordered_keys:
+            if key in var_by_key:
+                ordered_variables.append(var_by_key[key])
+        
+        for var in self.flow_config.variables:
+            if var not in ordered_variables:
+                ordered_variables.append(var)
+        
+        return ordered_variables
+    
     def get_system_prompt(self) -> str:
         """Generate the system prompt including flow context."""
         initial_node = None
