@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Plus, Phone, Globe, PhoneOff, Mail, MessageSquare } from "lucide-react";
+import { Plus, Phone, Globe, PhoneOff, Mail, MessageSquare, GitBranch } from "lucide-react";
 import ToolCard from "./components/ToolCard";
 import ToolDrawer from "./components/ToolDrawer";
 
@@ -51,6 +51,8 @@ export default function ToolsPage() {
 
   const getToolIcon = (toolType: string) => {
     switch (toolType) {
+      case "flow":
+        return GitBranch;
       case "transfer_call":
         return Phone;
       case "api_request":
@@ -68,6 +70,8 @@ export default function ToolsPage() {
 
   const getToolTypeLabel = (toolType: string) => {
     switch (toolType) {
+      case "flow":
+        return "Conversation Flow";
       case "transfer_call":
         return "Transfer Call";
       case "api_request":

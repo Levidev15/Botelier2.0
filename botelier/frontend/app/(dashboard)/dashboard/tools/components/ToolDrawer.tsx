@@ -4,6 +4,7 @@ import { X } from "lucide-react";
 import { useState } from "react";
 import ToolTypeSelector from "./ToolTypeSelector";
 import TransferCallForm from "./tool-types/TransferCallForm";
+import FlowForm from "./tool-types/FlowForm";
 
 interface ToolDrawerProps {
   isOpen: boolean;
@@ -16,7 +17,8 @@ export type ToolType =
   | "api_request"
   | "end_call"
   | "send_sms"
-  | "send_email";
+  | "send_email"
+  | "flow";
 
 export default function ToolDrawer({ isOpen, onClose, onToolCreated }: ToolDrawerProps) {
   const [selectedType, setSelectedType] = useState<ToolType | null>(null);
@@ -106,6 +108,13 @@ export default function ToolDrawer({ isOpen, onClose, onToolCreated }: ToolDrawe
               <div className="text-center py-12 text-gray-400">
                 Send Email form coming soon...
               </div>
+            )}
+
+            {selectedType === "flow" && (
+              <FlowForm
+                onSuccess={handleToolCreated}
+                onCancel={handleReset}
+              />
             )}
 
             {!selectedType && (
