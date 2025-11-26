@@ -4,27 +4,40 @@
 Botelier is a multi-tenant SaaS platform providing hotels with custom voice AI agents for guest services. It offers a hotel-centric interface for configuring conversational AI, abstracting complex underlying frameworks. The platform aims to streamline hotel operations, enhance guest experiences, and deliver a scalable solution for AI-powered guest interaction. The business vision is to become the leading provider of voice AI for the hospitality industry, offering a robust and intuitive platform that significantly improves operational efficiency and guest satisfaction.
 
 ## Recent Changes (November 26, 2025)
-**Flows as Tools Architecture** - Conversation flows are now callable tools that the LLM invokes based on guest intent:
-- **Flow Tool Type**: New `FLOW` type added to the Tools system (alongside TRANSFER_CALL, API_REQUEST, etc.)
-- **Tool Type Case Convention**: All tool types use UPPERCASE in database and API (FLOW, TRANSFER_CALL, API_REQUEST, END_CALL, SEND_SMS, SEND_EMAIL)
-- **Intent-Based Activation**: LLM detects guest intent (e.g., "book a room") and triggers the appropriate flow tool
-- **Reusability**: Flow tools can be shared across multiple assistants within a hotel
-- **API Endpoints**: `GET/PUT /api/tools/{tool_id}/flow` for loading/saving flow configurations
-- **Frontend Store Update**: FlowEditor now uses `toolId` and `hotelId` instead of `assistantId`
 
-**Flow Editor** - Node-based conversation flow designer:
-- **React Flow Canvas**: Drag-and-drop node-based editor for designing conversation flows
-- **Node Types**: Initial (green, start node), Conversation (blue, middle steps), End (red, call termination)
-- **Templates System**: Pre-built flow templates for quick setup
-- **Node Inspector**: Right panel for editing node properties (name, messages, functions)
-- **Toolbar**: Add Node dropdown, Templates dropdown, undo/redo, Save Flow button
+**Flow Execution Runtime** - Backend system to execute flows during Pipecat calls:
+- **FlowExecutor Class** (`botelier/backend/botelier/flow_executor.py`): Converts visual flows to Pipecat function schemas
+- **Variable Substitution**: `{{variable_name}}` syntax replaced with collected slot values
+- **Slot Collection Functions**: Each flow variable generates a `collect_*` function the LLM can call
+- **Flow State Management**: Tracks current node, collected slots, flow completion status
+- **FunctionMapper Integration**: FLOW tools now generate multiple function schemas per variable
+
+**Enhanced Node Types** - Complete node system for hotel workflows:
+- **Initial Node**: Greeting and system prompt configuration
+- **Message Node**: Speak messages with variable substitution ({{variable}})
+- **CollectSlot Node**: Gather guest information with validation and retry logic
+- **APIRequest Node**: Call external APIs with templated URLs and response mapping
+- **Condition Node**: Branch flow based on variable values (equals, greater_than, is_empty, etc.)
+- **Transfer Node**: Escalate to human agent with pre-transfer message
+- **End Node**: Graceful call termination with closing message
+
+**Hotel-Specific Templates** - Pre-built conversation flows:
+- **Room Booking**: Full reservation flow (name, dates, guest count, phone, confirmation)
+- **Concierge Services**: Help with dining, spa, transportation, activities
+- **Room Service**: Food orders with room number, items, dietary requirements
 
 **Flow Editor Components**:
-- `FlowEditor.tsx`: Main canvas with React Flow, wrapped in ReactFlowProvider
-- `store.ts`: Zustand store using toolId for flow state management
-- `FlowToolbar.tsx`: Toolbar with add node, templates, undo/redo, save actions
-- `NodeInspector.tsx`: Side panel for editing selected node properties
-- Custom node components in `nodes/`: `InitialNode`, `ConversationNode`, `EndNode`
+- `FlowEditor.tsx`: React Flow canvas with node types, MiniMap, and Controls
+- `store.ts`: Zustand store with templates, flow loading/saving, variable management
+- `FlowToolbar.tsx`: Add Node dropdown, Templates dropdown, Save Flow button
+- `NodeInspector.tsx`: Type-specific property editors for each node type
+- Custom nodes in `nodes/`: InitialNode, MessageNode, CollectSlotNode, APIRequestNode, ConditionNode, TransferNode, EndNode
+
+**Flows as Tools Architecture**:
+- **FLOW Tool Type**: New type in Tools system alongside TRANSFER_CALL, API_REQUEST, etc.
+- **Intent-Based Activation**: LLM detects guest intent and triggers appropriate flow tool
+- **Multi-Function Generation**: Each FLOW generates multiple Pipecat functions
+- **API Endpoints**: `GET/PUT /api/tools/{tool_id}/flow` for flow configurations
 
 **Previous Changes (November 25, 2025)**
 - Visual Flow Editor initial implementation

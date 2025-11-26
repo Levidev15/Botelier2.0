@@ -41,6 +41,9 @@ class FunctionMapper:
         """
         self.call_sid = call_sid
         
+        # Store flow executors by tool name for state persistence across turns
+        self._flow_executors: Dict[str, FlowExecutor] = {}
+        
         # Twilio client for call transfers
         self.twilio_client = None
         if os.environ.get("TWILIO_ACCOUNT_SID") and os.environ.get("TWILIO_AUTH_TOKEN"):
@@ -348,40 +351,47 @@ class FunctionMapper:
         - API request functions
         - Transfer and end call functions
         
+        The executor is stored and reused across calls to maintain state
+        throughout the conversation.
+        
         Returns:
             Tuple of (list of function schemas, dict of handlers)
         """
         flow_config_dict = tool.config or {}
+        tool_name = str(tool.name)
         
         if not flow_config_dict.get("nodes"):
             # Empty flow - return just the trigger function
             schema, handler = self._map_flow(tool)
             return [schema], {schema["name"]: handler}
         
-        # Parse and create executor
-        flow_config = parse_flow_config(flow_config_dict)
-        executor = FlowExecutor(flow_config)
-        
-        # Store executor
-        if not hasattr(self, '_flow_executors'):
-            self._flow_executors = {}
-        self._flow_executors[tool.name] = executor
+        # Check if we already have an executor for this flow (state persistence)
+        if tool_name in self._flow_executors:
+            executor = self._flow_executors[tool_name]
+            logger.debug(f"Reusing existing FlowExecutor for {tool_name}")
+        else:
+            # Parse and create new executor
+            flow_config = parse_flow_config(dict(flow_config_dict))
+            executor = FlowExecutor(flow_config)
+            self._flow_executors[tool_name] = executor
+            logger.info(f"Created new FlowExecutor for {tool_name}")
         
         # Get all function schemas from the executor
         function_schemas = executor.get_function_schemas()
         
-        # Create handlers for each function
+        # Create handlers for each function - handlers reference the stored executor
         handlers = {}
         for schema in function_schemas:
             func_name = schema["function"]["name"]
-            handlers[func_name] = self._create_flow_function_handler(executor, func_name)
+            # Create handler that uses the stored executor (closure captures tool_name)
+            handlers[func_name] = self._create_flow_function_handler(tool_name, func_name)
         
         # Add trigger function
         trigger_schema = {
             "type": "function",
             "function": {
-                "name": f"start_{tool.name}",
-                "description": f"Start the {tool.name} conversation flow when the guest wants to {tool.description or 'complete this task'}",
+                "name": f"start_{tool_name}",
+                "description": f"Start the {tool_name} conversation flow when the guest wants to {tool.description or 'complete this task'}",
                 "parameters": {
                     "type": "object",
                     "properties": {},
@@ -390,18 +400,34 @@ class FunctionMapper:
             }
         }
         function_schemas.insert(0, trigger_schema)
-        handlers[f"start_{tool.name}"] = self._create_flow_trigger_handler(executor, tool.name)
+        handlers[f"start_{tool_name}"] = self._create_flow_trigger_handler(tool_name)
         
         return function_schemas, handlers
     
-    def _create_flow_function_handler(self, executor: FlowExecutor, function_name: str):
-        """Create a handler for a specific flow function."""
+    def _create_flow_function_handler(self, tool_name: str, function_name: str):
+        """
+        Create a handler for a specific flow function.
+        
+        Uses tool_name to look up the stored executor, ensuring state
+        is preserved across multiple function calls during a conversation.
+        """
         async def handler(params: FunctionCallParams):
-            result = await executor.handle_function_call(function_name, params.arguments)
+            # Look up the stored executor for this flow
+            executor = self._flow_executors.get(tool_name)
+            if not executor:
+                logger.error(f"No executor found for flow {tool_name}")
+                await params.result_callback({
+                    "status": "error",
+                    "message": "Flow not initialized"
+                })
+                return
             
-            # If the result includes a message, speak it
-            if result.get("message") and result.get("action") not in ["end", "transfer"]:
-                pass  # LLM will use the result to form response
+            # Execute the function and get result
+            result = await executor.handle_function_call(function_name, dict(params.arguments))
+            
+            # Log collected data for debugging
+            if result.get("collected"):
+                logger.info(f"Flow {tool_name} collected: {result['collected']}")
             
             # Handle special actions
             if result.get("action") == "transfer":
@@ -411,6 +437,7 @@ class FunctionMapper:
                         self.twilio_client.calls(self.call_sid).update(
                             twiml=f'<Response><Dial>{target}</Dial></Response>'
                         )
+                        logger.info(f"Call transferred to {target}")
                     except Exception as e:
                         logger.error(f"Transfer failed: {e}")
                 await params.llm.push_frame(EndFrame())
@@ -419,22 +446,48 @@ class FunctionMapper:
                 await params.llm.push_frame(TTSSpeakFrame(result.get("message", "Goodbye!")))
                 await params.llm.push_frame(EndFrame())
             
+            # Add current progress to result for LLM context
+            result["progress"] = executor.get_progress()
+            
             await params.result_callback(result)
         
         return handler
     
-    def _create_flow_trigger_handler(self, executor: FlowExecutor, flow_name: str):
-        """Create handler for starting a flow."""
+    def _create_flow_trigger_handler(self, tool_name: str):
+        """
+        Create handler for starting a flow.
+        
+        Uses tool_name to look up the stored executor.
+        """
         async def handler(params: FunctionCallParams):
-            logger.info(f"🎬 Starting flow: {flow_name}")
+            logger.info(f"🎬 Starting flow: {tool_name}")
+            
+            # Look up the stored executor
+            executor = self._flow_executors.get(tool_name)
+            if not executor:
+                logger.error(f"No executor found for flow {tool_name}")
+                await params.result_callback({
+                    "status": "error",
+                    "message": "Flow not initialized"
+                })
+                return
+            
             greeting = executor.get_greeting()
             progress = executor.get_progress()
+            
+            # Get list of variables to collect for context
+            variables_to_collect = [
+                {"key": v.key, "type": v.type.value, "description": v.description}
+                for v in executor.flow_config.variables
+                if v.key not in executor.state.collected_slots
+            ]
             
             await params.result_callback({
                 "status": "flow_started",
                 "greeting": greeting,
                 "progress": progress,
-                "instructions": "Collect the required information by calling the collect_* functions as you gather data from the guest."
+                "variables_to_collect": variables_to_collect,
+                "instructions": "Collect the required information by calling the collect_* functions as you gather data from the guest. Ask for each piece of information naturally in conversation."
             })
         
         return handler
