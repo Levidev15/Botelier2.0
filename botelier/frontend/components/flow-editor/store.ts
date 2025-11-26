@@ -167,6 +167,15 @@ export interface EndNodeData extends BaseNodeData {
 
 export type NodeData = BaseNodeData;
 
+export interface FlowVersionInfo {
+  id: string;
+  version_number: number;
+  status: "draft" | "published";
+  description: string | null;
+  created_at: string | null;
+  published_at: string | null;
+}
+
 export interface FlowState {
   nodes: Node<NodeData>[];
   edges: Edge[];
@@ -177,6 +186,15 @@ export interface FlowState {
   isLoading: boolean;
   toolId: string | null;
   hotelId: string | null;
+  
+  // Versioning state
+  currentSource: "draft" | "published" | "legacy";
+  currentVersionNumber: number;
+  publishedVersionNumber: number;
+  hasDraft: boolean;
+  hasPublished: boolean;
+  versions: FlowVersionInfo[];
+  draftDescription: string;
 
   setNodes: (nodes: Node<NodeData>[]) => void;
   setEdges: (edges: Edge[]) => void;
@@ -195,8 +213,13 @@ export interface FlowState {
   updateVariable: (key: string, variable: Partial<FlowVariable>) => void;
   deleteVariable: (key: string) => void;
   
-  loadFlow: (toolId: string, hotelId: string) => Promise<void>;
-  saveFlow: () => Promise<void>;
+  loadFlow: (toolId: string, hotelId: string, source?: "draft" | "published") => Promise<void>;
+  saveFlow: (description?: string) => Promise<void>;
+  publishFlow: (description?: string) => Promise<void>;
+  discardDraft: () => Promise<void>;
+  loadVersions: () => Promise<void>;
+  revertToVersion: (versionNumber: number, publishImmediately?: boolean) => Promise<void>;
+  setDraftDescription: (description: string) => void;
   applyTemplate: (templateId: string) => void;
   clearFlow: () => void;
   
@@ -615,6 +638,15 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   isLoading: false,
   toolId: null,
   hotelId: null,
+  
+  // Versioning state
+  currentSource: "legacy",
+  currentVersionNumber: 0,
+  publishedVersionNumber: 0,
+  hasDraft: false,
+  hasPublished: false,
+  versions: [],
+  draftDescription: "",
 
   setNodes: (nodes) => set({ nodes, isDirty: true }),
   setEdges: (edges) => set({ edges, isDirty: true }),
@@ -726,10 +758,11 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     });
   },
 
-  loadFlow: async (toolId: string, hotelId: string) => {
+  loadFlow: async (toolId: string, hotelId: string, source?: "draft" | "published") => {
     set({ isLoading: true, toolId, hotelId });
     try {
-      const response = await fetch(`/api/tools/${toolId}/flow?hotel_id=${hotelId}`);
+      const sourceParam = source ? `&source=${source}` : "";
+      const response = await fetch(`/api/tools/${toolId}/flow?hotel_id=${hotelId}${sourceParam}`);
       if (!response.ok) throw new Error("Failed to load flow");
       
       const data = await response.json();
@@ -752,6 +785,12 @@ export const useFlowStore = create<FlowState>((set, get) => ({
           edges: loadedEdges,
           variables: data.flow_config.variables || [],
           isDirty: false,
+          currentSource: data.source || "legacy",
+          currentVersionNumber: data.version_number || 0,
+          publishedVersionNumber: data.published_version_number || 0,
+          hasDraft: data.has_draft || false,
+          hasPublished: data.has_published || false,
+          draftDescription: data.description || "",
         });
       } else {
         set({
@@ -759,8 +798,16 @@ export const useFlowStore = create<FlowState>((set, get) => ({
           edges: [],
           variables: [],
           isDirty: false,
+          currentSource: "legacy",
+          currentVersionNumber: 0,
+          publishedVersionNumber: 0,
+          hasDraft: false,
+          hasPublished: false,
         });
       }
+      
+      // Load version history
+      get().loadVersions();
     } catch (error) {
       console.error("Failed to load flow:", error);
     } finally {
@@ -768,8 +815,8 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     }
   },
 
-  saveFlow: async () => {
-    const { toolId, hotelId, nodes, edges, variables } = get();
+  saveFlow: async (description?: string) => {
+    const { toolId, hotelId, nodes, edges, variables, draftDescription } = get();
     if (!toolId || !hotelId) return;
 
     set({ isLoading: true });
@@ -794,15 +841,28 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         })),
       };
 
-      const response = await fetch(`/api/tools/${toolId}/flow?hotel_id=${hotelId}`, {
+      const response = await fetch(`/api/tools/${toolId}/flow/draft?hotel_id=${hotelId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ flow_config: flowConfig }),
+        body: JSON.stringify({ 
+          flow_config: flowConfig,
+          description: description || draftDescription || undefined,
+        }),
       });
 
       if (!response.ok) throw new Error("Failed to save flow");
       
-      set({ isDirty: false });
+      const result = await response.json();
+      
+      set({ 
+        isDirty: false,
+        currentSource: "draft",
+        currentVersionNumber: result.version_number,
+        hasDraft: true,
+      });
+      
+      // Refresh versions list
+      get().loadVersions();
     } catch (error) {
       console.error("Failed to save flow:", error);
       throw error;
@@ -810,6 +870,115 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       set({ isLoading: false });
     }
   },
+  
+  publishFlow: async (description?: string) => {
+    const { toolId, hotelId } = get();
+    if (!toolId || !hotelId) return;
+    
+    set({ isLoading: true });
+    try {
+      const response = await fetch(`/api/tools/${toolId}/flow/publish?hotel_id=${hotelId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ description }),
+      });
+      
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.detail || "Failed to publish flow");
+      }
+      
+      const result = await response.json();
+      
+      set({
+        currentSource: "published",
+        currentVersionNumber: result.version_number,
+        publishedVersionNumber: result.version_number,
+        hasDraft: false,
+        hasPublished: true,
+      });
+      
+      // Refresh versions list
+      get().loadVersions();
+      
+      return result;
+    } catch (error) {
+      console.error("Failed to publish flow:", error);
+      throw error;
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+  
+  discardDraft: async () => {
+    const { toolId, hotelId } = get();
+    if (!toolId || !hotelId) return;
+    
+    set({ isLoading: true });
+    try {
+      const response = await fetch(`/api/tools/${toolId}/flow/draft?hotel_id=${hotelId}`, {
+        method: "DELETE",
+      });
+      
+      if (!response.ok) throw new Error("Failed to discard draft");
+      
+      // Reload the published version
+      await get().loadFlow(toolId, hotelId, "published");
+    } catch (error) {
+      console.error("Failed to discard draft:", error);
+      throw error;
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+  
+  loadVersions: async () => {
+    const { toolId, hotelId } = get();
+    if (!toolId || !hotelId) return;
+    
+    try {
+      const response = await fetch(`/api/tools/${toolId}/flow/versions?hotel_id=${hotelId}`);
+      if (!response.ok) return;
+      
+      const data = await response.json();
+      set({
+        versions: data.versions || [],
+        publishedVersionNumber: data.published_version_number || 0,
+        hasDraft: data.has_draft || false,
+      });
+    } catch (error) {
+      console.error("Failed to load versions:", error);
+    }
+  },
+  
+  revertToVersion: async (versionNumber: number, publishImmediately = false) => {
+    const { toolId, hotelId } = get();
+    if (!toolId || !hotelId) return;
+    
+    set({ isLoading: true });
+    try {
+      const response = await fetch(
+        `/api/tools/${toolId}/flow/versions/${versionNumber}/revert?hotel_id=${hotelId}`,
+        {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ publish_immediately: publishImmediately }),
+        }
+      );
+      
+      if (!response.ok) throw new Error("Failed to revert to version");
+      
+      // Reload the flow
+      await get().loadFlow(toolId, hotelId);
+    } catch (error) {
+      console.error("Failed to revert to version:", error);
+      throw error;
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+  
+  setDraftDescription: (description: string) => set({ draftDescription: description }),
 
   applyTemplate: (templateId: string) => {
     const template = TEMPLATES[templateId];
