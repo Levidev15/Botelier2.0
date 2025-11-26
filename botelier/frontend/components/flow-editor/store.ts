@@ -12,30 +12,106 @@ import {
   applyEdgeChanges,
 } from "@xyflow/react";
 
-export interface FlowFunction {
-  name: string;
+export type SlotType = "text" | "date" | "number" | "phone" | "email" | "time" | "choice";
+
+export interface FlowVariable {
+  key: string;
+  type: SlotType;
   description: string;
-  parameters?: {
-    type: string;
-    properties: Record<string, any>;
-    required: string[];
-  };
-  transition_to?: string;
+  required: boolean;
+  defaultValue?: string;
+  choices?: string[];
 }
 
-export interface NodeData {
+export interface SlotConfig {
+  variableKey: string;
+  prompt: string;
+  type: SlotType;
+  validation?: {
+    pattern?: string;
+    min?: number;
+    max?: number;
+    choices?: string[];
+  };
+  retryPrompt?: string;
+  maxRetries?: number;
+}
+
+export interface APIRequestConfig {
+  method: "GET" | "POST" | "PUT" | "DELETE";
+  url: string;
+  headers?: Record<string, string>;
+  bodyTemplate?: string;
+  responseMapping?: Record<string, string>;
+  onSuccess?: string;
+  onError?: string;
+}
+
+export interface ConditionConfig {
+  variable: string;
+  operator: "equals" | "not_equals" | "contains" | "greater_than" | "less_than" | "is_empty" | "is_not_empty";
+  value: string;
+  trueTarget?: string;
+  falseTarget?: string;
+}
+
+export interface TransferConfig {
+  phoneNumber: string;
+  preTransferMessage?: string;
+  warmTransfer?: boolean;
+}
+
+export type NodeType = 
+  | "initial" 
+  | "message" 
+  | "collect_slot" 
+  | "api_request" 
+  | "condition" 
+  | "transfer" 
+  | "end";
+
+export interface BaseNodeData {
   name: string;
-  role_messages?: Array<{ role: string; content: string }>;
-  task_messages?: Array<{ role: string; content: string }>;
-  functions?: FlowFunction[];
-  is_end_node?: boolean;
-  action_type?: "message" | "data_collection" | "api_call" | "decision";
+  description?: string;
   [key: string]: unknown;
 }
+
+export interface InitialNodeData extends BaseNodeData {
+  systemPrompt: string;
+  greeting: string;
+}
+
+export interface MessageNodeData extends BaseNodeData {
+  message: string;
+  waitForResponse?: boolean;
+}
+
+export interface CollectSlotNodeData extends BaseNodeData {
+  slot: SlotConfig;
+}
+
+export interface APIRequestNodeData extends BaseNodeData {
+  api: APIRequestConfig;
+}
+
+export interface ConditionNodeData extends BaseNodeData {
+  condition: ConditionConfig;
+}
+
+export interface TransferNodeData extends BaseNodeData {
+  transfer: TransferConfig;
+}
+
+export interface EndNodeData extends BaseNodeData {
+  closingMessage?: string;
+}
+
+export type NodeData = BaseNodeData;
 
 export interface FlowState {
   nodes: Node<NodeData>[];
   edges: Edge[];
+  variables: FlowVariable[];
   selectedNode: Node<NodeData> | null;
   isDirty: boolean;
   isLoading: boolean;
@@ -50,19 +126,28 @@ export interface FlowState {
   
   selectNode: (node: Node<NodeData> | null) => void;
   updateNodeData: (nodeId: string, data: Partial<NodeData>) => void;
-  addNode: (type: "initial" | "node" | "end", position: { x: number; y: number }) => void;
+  addNode: (type: NodeType, position: { x: number; y: number }) => void;
   deleteNode: (nodeId: string) => void;
+  
+  addVariable: (variable: FlowVariable) => void;
+  updateVariable: (key: string, variable: Partial<FlowVariable>) => void;
+  deleteVariable: (key: string) => void;
   
   loadFlow: (toolId: string, hotelId: string) => Promise<void>;
   saveFlow: () => Promise<void>;
-  applyTemplate: (templateId: string) => Promise<void>;
+  applyTemplate: (templateId: string) => void;
   clearFlow: () => void;
   
   setIsDirty: (dirty: boolean) => void;
   setToolId: (id: string) => void;
   setHotelId: (id: string) => void;
   
-  getFlowConfig: () => { nodes: any[]; edges: any[]; initial_node: string | null };
+  getFlowConfig: () => { 
+    nodes: any[]; 
+    edges: any[]; 
+    variables: FlowVariable[];
+    initial_node: string | null;
+  };
 }
 
 let nodeIdCounter = 0;
@@ -72,9 +157,269 @@ const generateNodeId = () => {
   return `node_${Date.now()}_${nodeIdCounter}`;
 };
 
+const getDefaultNodeData = (type: NodeType): NodeData => {
+  switch (type) {
+    case "initial":
+      return {
+        name: "Start",
+        systemPrompt: "You are a helpful hotel concierge assistant. Be friendly, professional, and helpful.",
+        greeting: "Hello! Thank you for calling. How may I assist you today?",
+      } as InitialNodeData;
+    
+    case "message":
+      return {
+        name: "Message",
+        message: "Enter your message here. Use {{variable_name}} to include collected data.",
+        waitForResponse: true,
+      } as MessageNodeData;
+    
+    case "collect_slot":
+      return {
+        name: "Collect Info",
+        slot: {
+          variableKey: "guest_name",
+          prompt: "May I have your name, please?",
+          type: "text",
+          retryPrompt: "I didn't catch that. Could you please repeat your name?",
+          maxRetries: 3,
+        },
+      } as CollectSlotNodeData;
+    
+    case "api_request":
+      return {
+        name: "API Call",
+        api: {
+          method: "POST",
+          url: "https://api.example.com/reservations",
+          headers: { "Content-Type": "application/json" },
+          bodyTemplate: '{"check_in": "{{check_in_date}}", "guests": "{{guest_count}}"}',
+          responseMapping: {
+            "reservation_id": "response.id",
+            "room_number": "response.room",
+          },
+        },
+      } as APIRequestNodeData;
+    
+    case "condition":
+      return {
+        name: "Check Condition",
+        condition: {
+          variable: "room_available",
+          operator: "equals",
+          value: "true",
+        },
+      } as ConditionNodeData;
+    
+    case "transfer":
+      return {
+        name: "Transfer Call",
+        transfer: {
+          phoneNumber: "",
+          preTransferMessage: "Let me connect you with our front desk team. Please hold.",
+          warmTransfer: false,
+        },
+      } as TransferNodeData;
+    
+    case "end":
+      return {
+        name: "End Call",
+        closingMessage: "Thank you for calling! Have a wonderful day.",
+      } as EndNodeData;
+    
+    default:
+      return { name: "Node" };
+  }
+};
+
+const getNodeStyle = (type: NodeType) => {
+  switch (type) {
+    case "condition":
+      return { stroke: "#f59e0b", strokeWidth: 2 };
+    default:
+      return { stroke: "#3b82f6", strokeWidth: 2 };
+  }
+};
+
+const ROOM_BOOKING_TEMPLATE = {
+  variables: [
+    { key: "guest_name", type: "text" as SlotType, description: "Guest full name", required: true },
+    { key: "check_in_date", type: "date" as SlotType, description: "Check-in date", required: true },
+    { key: "check_out_date", type: "date" as SlotType, description: "Check-out date", required: true },
+    { key: "guest_count", type: "number" as SlotType, description: "Number of guests", required: true },
+    { key: "room_type", type: "choice" as SlotType, description: "Room type preference", required: false, choices: ["Standard", "Deluxe", "Suite"] },
+    { key: "phone_number", type: "phone" as SlotType, description: "Contact phone number", required: true },
+    { key: "email", type: "email" as SlotType, description: "Email address", required: false },
+  ],
+  nodes: [
+    {
+      id: "start_1",
+      type: "initial",
+      position: { x: 250, y: 0 },
+      data: {
+        name: "Greeting",
+        systemPrompt: "You are a friendly hotel reservation assistant. Help guests book rooms efficiently.",
+        greeting: "Hello! Thank you for calling. I'd be happy to help you with a room reservation. Let me gather a few details.",
+      },
+    },
+    {
+      id: "collect_name",
+      type: "collect_slot",
+      position: { x: 250, y: 120 },
+      data: {
+        name: "Get Name",
+        slot: {
+          variableKey: "guest_name",
+          prompt: "May I have your full name for the reservation?",
+          type: "text",
+          retryPrompt: "I'm sorry, I didn't catch that. Could you please spell your name?",
+          maxRetries: 3,
+        },
+      },
+    },
+    {
+      id: "collect_checkin",
+      type: "collect_slot",
+      position: { x: 250, y: 240 },
+      data: {
+        name: "Check-in Date",
+        slot: {
+          variableKey: "check_in_date",
+          prompt: "What date would you like to check in?",
+          type: "date",
+          retryPrompt: "Please provide a valid date, for example, December 15th.",
+          maxRetries: 3,
+        },
+      },
+    },
+    {
+      id: "collect_checkout",
+      type: "collect_slot",
+      position: { x: 250, y: 360 },
+      data: {
+        name: "Check-out Date",
+        slot: {
+          variableKey: "check_out_date",
+          prompt: "And what date will you be checking out?",
+          type: "date",
+          retryPrompt: "Please provide a valid checkout date.",
+          maxRetries: 3,
+        },
+      },
+    },
+    {
+      id: "collect_guests",
+      type: "collect_slot",
+      position: { x: 250, y: 480 },
+      data: {
+        name: "Guest Count",
+        slot: {
+          variableKey: "guest_count",
+          prompt: "How many guests will be staying?",
+          type: "number",
+          validation: { min: 1, max: 10 },
+          retryPrompt: "Please tell me the number of guests, between 1 and 10.",
+          maxRetries: 2,
+        },
+      },
+    },
+    {
+      id: "collect_phone",
+      type: "collect_slot",
+      position: { x: 250, y: 600 },
+      data: {
+        name: "Phone Number",
+        slot: {
+          variableKey: "phone_number",
+          prompt: "What's the best phone number to reach you?",
+          type: "phone",
+          retryPrompt: "Could you please repeat your phone number?",
+          maxRetries: 2,
+        },
+      },
+    },
+    {
+      id: "confirm_booking",
+      type: "message",
+      position: { x: 250, y: 720 },
+      data: {
+        name: "Confirm Details",
+        message: "Perfect! Let me confirm: {{guest_name}}, checking in on {{check_in_date}}, checking out on {{check_out_date}}, for {{guest_count}} guests. I'll reach you at {{phone_number}}. Is this correct?",
+        waitForResponse: true,
+      },
+    },
+    {
+      id: "end_success",
+      type: "end",
+      position: { x: 250, y: 840 },
+      data: {
+        name: "Booking Complete",
+        closingMessage: "Wonderful! Your reservation is confirmed. You'll receive a confirmation email shortly. Is there anything else I can help you with today?",
+      },
+    },
+  ],
+  edges: [
+    { id: "e1", source: "start_1", target: "collect_name" },
+    { id: "e2", source: "collect_name", target: "collect_checkin" },
+    { id: "e3", source: "collect_checkin", target: "collect_checkout" },
+    { id: "e4", source: "collect_checkout", target: "collect_guests" },
+    { id: "e5", source: "collect_guests", target: "collect_phone" },
+    { id: "e6", source: "collect_phone", target: "confirm_booking" },
+    { id: "e7", source: "confirm_booking", target: "end_success" },
+  ],
+};
+
+const CONCIERGE_TEMPLATE = {
+  variables: [
+    { key: "guest_name", type: "text" as SlotType, description: "Guest name", required: false },
+    { key: "room_number", type: "text" as SlotType, description: "Room number", required: false },
+    { key: "request_type", type: "choice" as SlotType, description: "Type of request", required: true, choices: ["Restaurant", "Spa", "Transportation", "Activities", "Other"] },
+  ],
+  nodes: [
+    {
+      id: "start_1",
+      type: "initial",
+      position: { x: 250, y: 0 },
+      data: {
+        name: "Concierge Greeting",
+        systemPrompt: "You are a knowledgeable hotel concierge. Help guests with dining recommendations, spa bookings, transportation, and local activities.",
+        greeting: "Good day! This is your hotel concierge. How may I assist you today?",
+      },
+    },
+    {
+      id: "identify_need",
+      type: "message",
+      position: { x: 250, y: 120 },
+      data: {
+        name: "Identify Request",
+        message: "I can help you with restaurant reservations, spa appointments, transportation, or local activities. What would you like assistance with?",
+        waitForResponse: true,
+      },
+    },
+    {
+      id: "end_help",
+      type: "end",
+      position: { x: 250, y: 240 },
+      data: {
+        name: "Closing",
+        closingMessage: "It was my pleasure to assist you. Enjoy your stay, and please don't hesitate to call if you need anything else!",
+      },
+    },
+  ],
+  edges: [
+    { id: "e1", source: "start_1", target: "identify_need" },
+    { id: "e2", source: "identify_need", target: "end_help" },
+  ],
+};
+
+const TEMPLATES: Record<string, typeof ROOM_BOOKING_TEMPLATE> = {
+  "room-booking": ROOM_BOOKING_TEMPLATE,
+  "concierge": CONCIERGE_TEMPLATE,
+};
+
 export const useFlowStore = create<FlowState>((set, get) => ({
   nodes: [],
   edges: [],
+  variables: [],
   selectedNode: null,
   isDirty: false,
   isLoading: false,
@@ -99,13 +444,16 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   onConnect: (connection) => {
+    const sourceNode = get().nodes.find(n => n.id === connection.source);
+    const edgeStyle = sourceNode ? getNodeStyle(sourceNode.type as NodeType) : { stroke: "#3b82f6", strokeWidth: 2 };
+    
     set({
       edges: addEdge(
         {
           ...connection,
           type: "smoothstep",
           animated: true,
-          style: { stroke: "#3b82f6", strokeWidth: 2 },
+          style: edgeStyle,
         },
         get().edges
       ),
@@ -130,15 +478,9 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     });
   },
 
-  addNode: (type, position) => {
+  addNode: (type: NodeType, position: { x: number; y: number }) => {
     const id = generateNodeId();
-    const defaultData: NodeData = {
-      name: type === "initial" ? "Greeting" : type === "end" ? "End Call" : "New Node",
-      role_messages: type === "initial" ? [{ role: "system", content: "You are a helpful hotel assistant." }] : [],
-      task_messages: [{ role: "system", content: type === "initial" ? "Greet the caller warmly." : type === "end" ? "Thank the guest and end the call." : "Handle this step." }],
-      functions: [],
-      is_end_node: type === "end",
-    };
+    const defaultData = getDefaultNodeData(type);
 
     const newNode: Node<NodeData> = {
       id,
@@ -162,6 +504,29 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     });
   },
 
+  addVariable: (variable) => {
+    set({
+      variables: [...get().variables, variable],
+      isDirty: true,
+    });
+  },
+
+  updateVariable: (key, updates) => {
+    set({
+      variables: get().variables.map((v) =>
+        v.key === key ? { ...v, ...updates } : v
+      ),
+      isDirty: true,
+    });
+  },
+
+  deleteVariable: (key) => {
+    set({
+      variables: get().variables.filter((v) => v.key !== key),
+      isDirty: true,
+    });
+  },
+
   loadFlow: async (toolId: string, hotelId: string) => {
     set({ isLoading: true, toolId, hotelId });
     try {
@@ -174,17 +539,19 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         set({
           nodes: data.flow_config.nodes.map((n: any) => ({
             id: n.id,
-            type: n.type || "node",
+            type: n.type || "message",
             position: n.position || { x: 0, y: 0 },
             data: n.data || { name: n.id },
           })),
           edges: data.flow_config.edges || [],
+          variables: data.flow_config.variables || [],
           isDirty: false,
         });
       } else {
         set({
           nodes: [],
           edges: [],
+          variables: [],
           isDirty: false,
         });
       }
@@ -196,7 +563,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   saveFlow: async () => {
-    const { toolId, hotelId, nodes, edges } = get();
+    const { toolId, hotelId, nodes, edges, variables } = get();
     if (!toolId || !hotelId) return;
 
     set({ isLoading: true });
@@ -205,6 +572,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       
       const flowConfig = {
         initial_node: initialNode?.id || null,
+        variables,
         nodes: nodes.map((n) => ({
           id: n.id,
           type: n.type,
@@ -215,6 +583,8 @@ export const useFlowStore = create<FlowState>((set, get) => ({
           id: e.id,
           source: e.source,
           target: e.target,
+          sourceHandle: e.sourceHandle,
+          targetHandle: e.targetHandle,
         })),
       };
 
@@ -235,36 +605,37 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     }
   },
 
-  applyTemplate: async (templateId: string) => {
-    set({ isLoading: true });
-    try {
-      const response = await fetch(`/api/flow-templates/${templateId}`);
-      if (!response.ok) throw new Error("Failed to load template");
-      
-      const template = await response.json();
-      const flowConfig = template.flow_config;
-      
-      set({
-        nodes: flowConfig.nodes.map((n: any) => ({
-          id: n.id,
-          type: n.type || "node",
-          position: n.position || { x: 0, y: 0 },
-          data: n.data || { name: n.id },
-        })),
-        edges: flowConfig.edges || [],
-        isDirty: true,
-      });
-    } catch (error) {
-      console.error("Failed to apply template:", error);
-      throw error;
-    } finally {
-      set({ isLoading: false });
+  applyTemplate: (templateId: string) => {
+    const template = TEMPLATES[templateId];
+    if (!template) {
+      console.error("Template not found:", templateId);
+      return;
     }
+
+    set({
+      nodes: template.nodes.map((n: any) => ({
+        id: n.id,
+        type: n.type,
+        position: n.position,
+        data: n.data,
+      })),
+      edges: template.edges.map((e: any) => ({
+        id: e.id,
+        source: e.source,
+        target: e.target,
+        type: "smoothstep",
+        animated: true,
+        style: { stroke: "#3b82f6", strokeWidth: 2 },
+      })),
+      variables: template.variables,
+      isDirty: true,
+    });
   },
 
   clearFlow: () => set({
     nodes: [],
     edges: [],
+    variables: [],
     selectedNode: null,
     isDirty: false,
     toolId: null,
@@ -275,11 +646,12 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   setHotelId: (id) => set({ hotelId: id }),
 
   getFlowConfig: () => {
-    const { nodes, edges } = get();
+    const { nodes, edges, variables } = get();
     const initialNode = nodes.find((n) => n.type === "initial");
     
     return {
       initial_node: initialNode?.id || null,
+      variables,
       nodes: nodes.map((n) => ({
         id: n.id,
         type: n.type,
@@ -290,7 +662,14 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         id: e.id,
         source: e.source,
         target: e.target,
+        sourceHandle: e.sourceHandle,
+        targetHandle: e.targetHandle,
       })),
     };
   },
 }));
+
+export const AVAILABLE_TEMPLATES = [
+  { id: "room-booking", name: "Room Booking", description: "Complete room reservation flow with guest details collection" },
+  { id: "concierge", name: "Concierge Services", description: "Help guests with dining, spa, and activity requests" },
+];

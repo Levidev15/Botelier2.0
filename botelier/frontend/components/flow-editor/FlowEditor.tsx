@@ -1,21 +1,18 @@
 "use client";
 
-import { useCallback, useEffect, useState, useMemo } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   ReactFlow,
   Background,
   Controls,
   MiniMap,
   BackgroundVariant,
-  Node,
   ReactFlowProvider,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
-import { useFlowStore, NodeData } from "./store";
-import InitialNode from "./nodes/InitialNode";
-import ConversationNode from "./nodes/ConversationNode";
-import EndNode from "./nodes/EndNode";
+import { useFlowStore } from "./store";
+import { nodeTypes } from "./nodes";
 import NodeInspector from "./NodeInspector";
 import FlowToolbar from "./FlowToolbar";
 import { notify } from "@/lib/notifications";
@@ -25,12 +22,6 @@ interface FlowEditorProps {
   hotelId: string;
   toolName?: string;
 }
-
-const nodeTypes = {
-  initial: InitialNode,
-  node: ConversationNode,
-  end: EndNode,
-};
 
 function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
   const {
@@ -54,7 +45,7 @@ function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
   }, [toolId, hotelId, loadFlow]);
 
   const onNodeClick = useCallback(
-    (_: React.MouseEvent, node: Node<NodeData>) => {
+    (_: React.MouseEvent, node: any) => {
       selectNode(node);
     },
     [selectNode]
@@ -90,16 +81,6 @@ function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isDirty, isSaving]);
 
-  if (isLoading && nodes.length === 0) {
-    return (
-      <div className="h-full flex items-center justify-center bg-[#0a0a0a]">
-        <div className="text-center">
-          <div className="animate-spin h-8 w-8 border-4 border-blue-600 border-t-transparent rounded-full mx-auto" />
-          <p className="mt-4 text-gray-400">Loading flow editor...</p>
-        </div>
-      </div>
-    );
-  }
 
   return (
     <div className="h-full flex flex-col bg-[#0a0a0a]">
@@ -108,14 +89,14 @@ function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
       <div className="flex-1 flex">
         <div className="flex-1 relative">
           <ReactFlow
-            nodes={nodes}
+            nodes={nodes as any}
             edges={edges}
-            onNodesChange={onNodesChange}
+            onNodesChange={onNodesChange as any}
             onEdgesChange={onEdgesChange}
             onConnect={onConnect}
             onNodeClick={onNodeClick}
             onPaneClick={onPaneClick}
-            nodeTypes={nodeTypes}
+            nodeTypes={nodeTypes as any}
             fitView
             snapToGrid
             snapGrid={[15, 15]}
@@ -144,6 +125,16 @@ function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
                 switch (node.type) {
                   case "initial":
                     return "#22c55e";
+                  case "collect_slot":
+                    return "#a855f7";
+                  case "message":
+                    return "#3b82f6";
+                  case "api_request":
+                    return "#f97316";
+                  case "condition":
+                    return "#eab308";
+                  case "transfer":
+                    return "#06b6d4";
                   case "end":
                     return "#ef4444";
                   default:
