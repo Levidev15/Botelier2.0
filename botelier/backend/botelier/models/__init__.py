@@ -9,6 +9,7 @@ from botelier.models.phone_number import PhoneNumber
 from botelier.models.tool import Tool
 from botelier.models.assistant import Assistant
 from botelier.models.knowledge_entry import KnowledgeEntry
+from botelier.models.flow_version import FlowVersion, FlowVersionStatus
 
 __all__ = [
     "Hotel",
@@ -16,4 +17,6 @@ __all__ = [
     "Tool",
     "Assistant",
     "KnowledgeEntry",
+    "FlowVersion",
+    "FlowVersionStatus",
 ]
