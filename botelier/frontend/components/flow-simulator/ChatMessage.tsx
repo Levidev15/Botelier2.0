@@ -1,5 +1,7 @@
 "use client";
 
+import { CheckCircle2 } from "lucide-react";
+
 interface ChatMessageProps {
   role: "user" | "assistant";
   content: string;
@@ -11,6 +13,8 @@ interface ChatMessageProps {
 
 export default function ChatMessage({ role, content, metadata }: ChatMessageProps) {
   const isUser = role === "user";
+  const functionResult = metadata?.function_result as Record<string, unknown> | undefined;
+  const collectedData = functionResult?.collected as Record<string, unknown> | undefined;
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"} mb-3`}>
@@ -24,16 +28,42 @@ export default function ChatMessage({ role, content, metadata }: ChatMessageProp
         <p className="text-sm whitespace-pre-wrap">{content}</p>
         
         {metadata?.function_called && (
-          <div className="mt-2 pt-2 border-t border-gray-600">
-            <div className="flex items-center gap-2 text-xs text-gray-400">
-              <span className="bg-[#3a3a3a] px-2 py-0.5 rounded font-mono">
-                {metadata.function_called}
+          <div className="mt-2 pt-2 border-t border-gray-600/50">
+            <div className="flex items-center gap-2 text-xs">
+              <CheckCircle2 className="w-3.5 h-3.5 text-green-400" />
+              <span className="text-gray-400">
+                {formatFunctionName(metadata.function_called)}
               </span>
-              <span className="text-green-400">executed</span>
             </div>
+            {collectedData && Object.keys(collectedData).length > 0 && (
+              <div className="mt-1.5 flex flex-wrap gap-1.5">
+                {Object.entries(collectedData).map(([key, value]) => (
+                  <span
+                    key={key}
+                    className="bg-green-900/30 text-green-300 px-2 py-0.5 rounded text-xs"
+                  >
+                    {key}: {String(value)}
+                  </span>
+                ))}
+              </div>
+            )}
           </div>
         )}
       </div>
     </div>
   );
+}
+
+function formatFunctionName(name: string): string {
+  if (name.startsWith("collect_")) {
+    const varName = name.replace("collect_", "");
+    return `Collected ${varName.replace(/_/g, " ")}`;
+  }
+  if (name.startsWith("end_call_")) {
+    return "Call ended";
+  }
+  if (name.startsWith("transfer_")) {
+    return "Call transferred";
+  }
+  return name.replace(/_/g, " ");
 }

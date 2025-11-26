@@ -10,9 +10,14 @@ interface SlotTrackerProps {
     choices?: string[];
   }>;
   progress: {
-    collected: number;
-    total: number;
-    percentage: number;
+    total_slots?: number;
+    required_slots?: number;
+    collected_slots?: number;
+    required_collected?: number;
+    is_complete?: boolean;
+    collected?: number;
+    total?: number;
+    percentage?: number;
   };
 }
 
@@ -21,12 +26,16 @@ export default function SlotTracker({
   variablesToCollect,
   progress,
 }: SlotTrackerProps) {
+  const collected = progress.collected_slots ?? progress.collected ?? 0;
+  const total = progress.total_slots ?? progress.total ?? variablesToCollect.length;
+  const percentage = total > 0 ? Math.round((collected / total) * 100) : 0;
+
   return (
     <div className="bg-[#1a1a1a] rounded-lg border border-[#2a2a2a] p-4">
       <div className="flex items-center justify-between mb-4">
         <h3 className="text-sm font-medium text-gray-300">Collected Data</h3>
         <span className="text-xs text-gray-500">
-          {progress.collected}/{progress.total} ({progress.percentage}%)
+          {collected}/{total} ({percentage}%)
         </span>
       </div>
 
@@ -34,7 +43,7 @@ export default function SlotTracker({
         <div className="w-full bg-[#2a2a2a] rounded-full h-2">
           <div
             className="bg-blue-500 h-2 rounded-full transition-all duration-300"
-            style={{ width: `${progress.percentage}%` }}
+            style={{ width: `${percentage}%` }}
           />
         </div>
       </div>
