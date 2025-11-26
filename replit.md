@@ -5,7 +5,8 @@ Botelier is a multi-tenant SaaS platform providing hotels with custom voice AI a
 
 ## Recent Changes (November 26, 2025)
 **Flows as Tools Architecture** - Conversation flows are now callable tools that the LLM invokes based on guest intent:
-- **Flow Tool Type**: New `FLOW` type added to the Tools system (alongside transfer_call, api_request, etc.)
+- **Flow Tool Type**: New `FLOW` type added to the Tools system (alongside TRANSFER_CALL, API_REQUEST, etc.)
+- **Tool Type Case Convention**: All tool types use UPPERCASE in database and API (FLOW, TRANSFER_CALL, API_REQUEST, END_CALL, SEND_SMS, SEND_EMAIL)
 - **Intent-Based Activation**: LLM detects guest intent (e.g., "book a room") and triggers the appropriate flow tool
 - **Reusability**: Flow tools can be shared across multiple assistants within a hotel
 - **API Endpoints**: `GET/PUT /api/tools/{tool_id}/flow` for loading/saving flow configurations

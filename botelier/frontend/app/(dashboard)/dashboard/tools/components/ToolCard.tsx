@@ -23,7 +23,7 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete }: Tool
   const router = useRouter();
   const [deleting, setDeleting] = useState(false);
 
-  const isFlowTool = tool.tool_type === "flow";
+  const isFlowTool = tool.tool_type === "FLOW";
 
   const handleEditFlow = () => {
     router.push(`/dashboard/tools/${tool.id}/flow`);
@@ -93,17 +93,17 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete }: Tool
       </p>
 
       <div className="text-xs text-gray-500 mb-4">
-        {tool.tool_type === "transfer_call" && (
+        {tool.tool_type === "TRANSFER_CALL" && (
           <div className="bg-[#0a0a0a] rounded p-2">
             <span className="mr-1">📞</span> {tool.config.phone_number}
           </div>
         )}
-        {tool.tool_type === "api_request" && (
+        {tool.tool_type === "API_REQUEST" && (
           <div className="bg-[#0a0a0a] rounded p-2">
             <span className="font-mono">{tool.config.method || "GET"}</span> {tool.config.url?.substring(0, 40)}...
           </div>
         )}
-        {tool.tool_type === "flow" && (
+        {tool.tool_type === "FLOW" && (
           <div className="bg-[#0a0a0a] rounded p-2 flex items-center gap-2">
             <GitBranch size={12} className="text-cyan-500" />
             <span>{tool.config.nodes?.length || 0} nodes</span>

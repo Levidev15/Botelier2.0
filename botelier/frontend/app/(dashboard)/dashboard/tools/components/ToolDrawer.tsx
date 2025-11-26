@@ -13,12 +13,12 @@ interface ToolDrawerProps {
 }
 
 export type ToolType =
-  | "transfer_call"
-  | "api_request"
-  | "end_call"
-  | "send_sms"
-  | "send_email"
-  | "flow";
+  | "TRANSFER_CALL"
+  | "API_REQUEST"
+  | "END_CALL"
+  | "SEND_SMS"
+  | "SEND_EMAIL"
+  | "FLOW";
 
 export default function ToolDrawer({ isOpen, onClose, onToolCreated }: ToolDrawerProps) {
   const [selectedType, setSelectedType] = useState<ToolType | null>(null);
@@ -79,38 +79,38 @@ export default function ToolDrawer({ isOpen, onClose, onToolCreated }: ToolDrawe
 
           {/* Form Content */}
           <div className="flex-1 overflow-y-auto p-6">
-            {selectedType === "transfer_call" && (
+            {selectedType === "TRANSFER_CALL" && (
               <TransferCallForm
                 onSuccess={handleToolCreated}
                 onCancel={handleReset}
               />
             )}
 
-            {selectedType === "api_request" && (
+            {selectedType === "API_REQUEST" && (
               <div className="text-center py-12 text-gray-400">
                 API Request form coming soon...
               </div>
             )}
 
-            {selectedType === "end_call" && (
+            {selectedType === "END_CALL" && (
               <div className="text-center py-12 text-gray-400">
                 End Call form coming soon...
               </div>
             )}
 
-            {selectedType === "send_sms" && (
+            {selectedType === "SEND_SMS" && (
               <div className="text-center py-12 text-gray-400">
                 Send SMS form coming soon...
               </div>
             )}
 
-            {selectedType === "send_email" && (
+            {selectedType === "SEND_EMAIL" && (
               <div className="text-center py-12 text-gray-400">
                 Send Email form coming soon...
               </div>
             )}
 
-            {selectedType === "flow" && (
+            {selectedType === "FLOW" && (
               <FlowForm
                 onSuccess={handleToolCreated}
                 onCancel={handleReset}

@@ -18,12 +18,12 @@ from botelier.database import Base
 class ToolType(str, enum.Enum):
     """Available tool types for AI assistants."""
     
-    TRANSFER_CALL = "transfer_call"
-    API_REQUEST = "api_request"
-    END_CALL = "end_call"
-    SEND_SMS = "send_sms"
-    SEND_EMAIL = "send_email"
-    FLOW = "flow"  # Conversation flow - guides structured multi-step interactions
+    TRANSFER_CALL = "TRANSFER_CALL"
+    API_REQUEST = "API_REQUEST"
+    END_CALL = "END_CALL"
+    SEND_SMS = "SEND_SMS"
+    SEND_EMAIL = "SEND_EMAIL"
+    FLOW = "FLOW"  # Conversation flow - guides structured multi-step interactions
 
 
 class Tool(Base):

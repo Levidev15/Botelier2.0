@@ -61,7 +61,7 @@ export default function TransferCallForm({ onSuccess, onCancel }: TransferCallFo
       const payload = {
         name: formData.name,
         description: formData.description,
-        tool_type: "transfer_call",
+        tool_type: "TRANSFER_CALL",
         config: {
           phone_number: formData.phone_number,
           pre_transfer_message: formData.pre_transfer_message,

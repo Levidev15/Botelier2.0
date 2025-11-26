@@ -49,7 +49,7 @@ export default function FlowToolEditorPage() {
         }
         const data = await response.json();
         
-        if (data.tool_type !== "flow") {
+        if (data.tool_type !== "FLOW") {
           setError("This tool is not a conversation flow");
           return;
         }

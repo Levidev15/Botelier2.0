@@ -53,7 +53,7 @@ export default function FlowForm({ onSuccess, onCancel }: FlowFormProps) {
       const payload = {
         name: formData.name,
         description: formData.description,
-        tool_type: "flow",
+        tool_type: "FLOW",
         config: {
           initial_node: null,
           nodes: [],

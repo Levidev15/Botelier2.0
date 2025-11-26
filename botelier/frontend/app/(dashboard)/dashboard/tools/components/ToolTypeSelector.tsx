@@ -18,42 +18,42 @@ interface ToolTypeOption {
 
 const toolTypes: ToolTypeOption[] = [
   {
-    type: "flow",
+    type: "FLOW",
     label: "Conversation Flow",
     icon: GitBranch,
     color: "bg-cyan-600",
     description: "Guide multi-step conversations"
   },
   {
-    type: "transfer_call",
+    type: "TRANSFER_CALL",
     label: "Transfer Call",
     icon: Phone,
     color: "bg-blue-600",
     description: "Transfer call to a phone number"
   },
   {
-    type: "api_request",
+    type: "API_REQUEST",
     label: "API Request",
     icon: Globe,
     color: "bg-purple-600",
     description: "Call external APIs"
   },
   {
-    type: "end_call",
+    type: "END_CALL",
     label: "End Call",
     icon: PhoneOff,
     color: "bg-red-600",
     description: "End the conversation"
   },
   {
-    type: "send_sms",
+    type: "SEND_SMS",
     label: "Send SMS",
     icon: MessageSquare,
     color: "bg-green-600",
     description: "Send text message"
   },
   {
-    type: "send_email",
+    type: "SEND_EMAIL",
     label: "Send Email",
     icon: Mail,
     color: "bg-orange-600",
