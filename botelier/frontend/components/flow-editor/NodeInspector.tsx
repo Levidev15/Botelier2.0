@@ -11,6 +11,8 @@ import {
   APIRequestNodeData,
   ConditionNodeData,
   RouterNodeData,
+  ConfirmationNodeData,
+  SetVariableNodeData,
   TransferNodeData,
   EndNodeData,
   SlotType,
@@ -624,6 +626,200 @@ function RouterNodePanel({ data, nodeId }: { data: RouterNodeData; nodeId: strin
   );
 }
 
+function ConfirmationNodePanel({ data, nodeId }: { data: ConfirmationNodeData; nodeId: string }) {
+  const { updateNodeData, variables } = useFlowStore();
+  const confirmation = data.confirmation || { 
+    summaryTemplate: "", 
+    confirmPrompt: "Is this correct?",
+    editPrompt: "What would you like to change?",
+    variablesToConfirm: [],
+    allowEdit: true
+  };
+
+  const updateConfirmation = (updates: Partial<typeof confirmation>) => {
+    updateNodeData(nodeId, { confirmation: { ...confirmation, ...updates } });
+  };
+
+  const toggleVariable = (varKey: string) => {
+    const current = confirmation.variablesToConfirm || [];
+    if (current.includes(varKey)) {
+      updateConfirmation({ variablesToConfirm: current.filter(v => v !== varKey) });
+    } else {
+      updateConfirmation({ variablesToConfirm: [...current, varKey] });
+    }
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <label className="block text-sm font-medium text-gray-400 mb-1">Variables to Confirm</label>
+        <div className="flex flex-wrap gap-2">
+          {variables.map((v) => (
+            <button
+              key={v.key}
+              onClick={() => toggleVariable(v.key)}
+              className={`text-xs rounded px-2 py-1 transition ${
+                confirmation.variablesToConfirm?.includes(v.key)
+                  ? "bg-emerald-600 text-white"
+                  : "bg-gray-700 text-gray-300 hover:bg-gray-600"
+              }`}
+            >
+              {v.key}
+            </button>
+          ))}
+        </div>
+        {variables.length === 0 && (
+          <p className="text-xs text-gray-500">Add flow variables first</p>
+        )}
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-400 mb-1">
+          Summary Template
+          <span className="text-xs text-emerald-400 ml-2">Use {"{{variable}}"}</span>
+        </label>
+        <textarea
+          value={confirmation.summaryTemplate || ""}
+          onChange={(e) => updateConfirmation({ summaryTemplate: e.target.value })}
+          rows={3}
+          className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none resize-none"
+          placeholder="Let me confirm: {{guest_name}}, checking in {{check_in_date}}..."
+        />
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-400 mb-1">Confirm Prompt</label>
+        <input
+          type="text"
+          value={confirmation.confirmPrompt || ""}
+          onChange={(e) => updateConfirmation({ confirmPrompt: e.target.value })}
+          className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none"
+          placeholder="Is this information correct?"
+        />
+      </div>
+
+      <div className="flex items-center gap-2">
+        <input
+          type="checkbox"
+          id="allowEdit"
+          checked={confirmation.allowEdit ?? true}
+          onChange={(e) => updateConfirmation({ allowEdit: e.target.checked })}
+          className="w-4 h-4 bg-[#1a1a1a] border-gray-700 rounded text-emerald-500 focus:ring-emerald-500"
+        />
+        <label htmlFor="allowEdit" className="text-sm text-gray-400">
+          Allow guest to edit (uses "Edit" output)
+        </label>
+      </div>
+
+      {confirmation.allowEdit && (
+        <div>
+          <label className="block text-sm font-medium text-gray-400 mb-1">Edit Prompt</label>
+          <input
+            type="text"
+            value={confirmation.editPrompt || ""}
+            onChange={(e) => updateConfirmation({ editPrompt: e.target.value })}
+            className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none"
+            placeholder="What would you like to change?"
+          />
+        </div>
+      )}
+
+      <div className="pt-2 border-t border-gray-800">
+        <p className="text-xs text-gray-500">
+          <span className="text-emerald-400">Confirmed</span> → proceeds to next step
+          {confirmation.allowEdit && (
+            <><br/><span className="text-red-400">Edit</span> → loops back to collect info</>
+          )}
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function SetVariableNodePanel({ data, nodeId }: { data: SetVariableNodeData; nodeId: string }) {
+  const { updateNodeData, variables } = useFlowStore();
+  const setVariable = data.setVariable || { 
+    variableKey: "", 
+    valueType: "static",
+    value: ""
+  };
+
+  const updateSetVariable = (updates: Partial<typeof setVariable>) => {
+    updateNodeData(nodeId, { setVariable: { ...setVariable, ...updates } });
+  };
+
+  return (
+    <div className="space-y-4">
+      <div>
+        <label className="block text-sm font-medium text-gray-400 mb-1">Variable to Set</label>
+        <select
+          value={setVariable.variableKey || ""}
+          onChange={(e) => updateSetVariable({ variableKey: e.target.value })}
+          className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-violet-500 focus:outline-none"
+        >
+          <option value="">Select variable...</option>
+          {variables.map((v) => (
+            <option key={v.key} value={v.key}>{v.key}</option>
+          ))}
+        </select>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-400 mb-1">Value Type</label>
+        <select
+          value={setVariable.valueType || "static"}
+          onChange={(e) => updateSetVariable({ valueType: e.target.value as any })}
+          className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-violet-500 focus:outline-none"
+        >
+          <option value="static">Static Value</option>
+          <option value="template">Template (with variables)</option>
+          <option value="expression">Expression</option>
+        </select>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-400 mb-1">
+          Value
+          {setVariable.valueType === "template" && (
+            <span className="text-xs text-violet-400 ml-2">Use {"{{variable}}"}</span>
+          )}
+        </label>
+        {setVariable.valueType === "expression" ? (
+          <textarea
+            value={setVariable.value || ""}
+            onChange={(e) => updateSetVariable({ value: e.target.value })}
+            rows={2}
+            className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm font-mono focus:border-violet-500 focus:outline-none resize-none"
+            placeholder="guest_count * 2"
+          />
+        ) : (
+          <input
+            type="text"
+            value={setVariable.value || ""}
+            onChange={(e) => updateSetVariable({ value: e.target.value })}
+            className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-violet-500 focus:outline-none"
+            placeholder={setVariable.valueType === "template" ? "Hello, {{guest_name}}!" : "confirmed"}
+          />
+        )}
+      </div>
+
+      {setVariable.valueType === "template" && variables.length > 0 && (
+        <div className="flex flex-wrap gap-1">
+          {variables.map((v) => (
+            <button
+              key={v.key}
+              onClick={() => updateSetVariable({ value: (setVariable.value || "") + `{{${v.key}}}` })}
+              className="text-xs bg-violet-900/30 text-violet-400 rounded px-1.5 py-0.5 hover:bg-violet-900/50"
+            >
+              {`{{${v.key}}}`}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TransferNodePanel({ data, nodeId }: { data: TransferNodeData; nodeId: string }) {
   const { updateNodeData } = useFlowStore();
   const transfer = data.transfer || { phoneNumber: "", preTransferMessage: "" };
@@ -739,6 +935,10 @@ export default function NodeInspector() {
         return <ConditionNodePanel data={data as ConditionNodeData} nodeId={selectedNode.id} />;
       case "router":
         return <RouterNodePanel data={data as RouterNodeData} nodeId={selectedNode.id} />;
+      case "confirmation":
+        return <ConfirmationNodePanel data={data as ConfirmationNodeData} nodeId={selectedNode.id} />;
+      case "set_variable":
+        return <SetVariableNodePanel data={data as SetVariableNodeData} nodeId={selectedNode.id} />;
       case "transfer":
         return <TransferNodePanel data={data as TransferNodeData} nodeId={selectedNode.id} />;
       case "end":
@@ -755,6 +955,8 @@ export default function NodeInspector() {
     api_request: "border-orange-500",
     condition: "border-yellow-500",
     router: "border-indigo-500",
+    confirmation: "border-emerald-500",
+    set_variable: "border-violet-500",
     transfer: "border-cyan-500",
     end: "border-red-500",
   };
