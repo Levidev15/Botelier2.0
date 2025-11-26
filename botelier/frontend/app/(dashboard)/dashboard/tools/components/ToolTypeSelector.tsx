@@ -1,6 +1,6 @@
 "use client";
 
-import { Phone, Globe, PhoneOff, Mail, MessageSquare, LucideIcon } from "lucide-react";
+import { Phone, Globe, PhoneOff, Mail, MessageSquare, GitBranch, LucideIcon } from "lucide-react";
 import { ToolType } from "./ToolDrawer";
 
 interface ToolTypeSelectorProps {
@@ -17,6 +17,13 @@ interface ToolTypeOption {
 }
 
 const toolTypes: ToolTypeOption[] = [
+  {
+    type: "flow",
+    label: "Conversation Flow",
+    icon: GitBranch,
+    color: "bg-cyan-600",
+    description: "Guide multi-step conversations"
+  },
   {
     type: "transfer_call",
     label: "Transfer Call",
