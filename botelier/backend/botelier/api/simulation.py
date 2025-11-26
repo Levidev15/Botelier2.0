@@ -181,11 +181,11 @@ async def simulate_message(request: SimulateMessageRequest):
     
     state.add_message("user", request.message)
     
-    if request.function_call and request.function_args:
+    if request.function_call:
         try:
             result = await executor.handle_function_call(
                 request.function_call,
-                request.function_args
+                request.function_args or {}
             )
             function_called = request.function_call
             function_result = result
