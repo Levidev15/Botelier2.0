@@ -200,3 +200,90 @@ def delete_tool(tool_id: str, hotel_id: str, db: Session = Depends(get_db)):
     db.commit()
     
     return None
+
+
+# Flow-specific endpoints
+
+@router.get("/{tool_id}/flow")
+def get_tool_flow(tool_id: str, hotel_id: str, db: Session = Depends(get_db)):
+    """
+    Get flow configuration for a flow-type tool.
+    
+    Returns the visual flow editor data (nodes, edges, initial_node).
+    """
+    tool = db.query(Tool).filter(
+        Tool.id == tool_id,
+        Tool.hotel_id == hotel_id
+    ).first()
+    
+    if not tool:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Tool with id {tool_id} not found for this hotel"
+        )
+    
+    if tool.tool_type != DBToolType.FLOW:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Tool {tool_id} is not a flow type tool"
+        )
+    
+    flow_config = tool.config or {}
+    
+    return {
+        "tool_id": tool.id,
+        "hotel_id": str(tool.hotel_id),
+        "name": tool.name,
+        "flow_config": {
+            "initial_node": flow_config.get("initial_node"),
+            "nodes": flow_config.get("nodes", []),
+            "edges": flow_config.get("edges", [])
+        }
+    }
+
+
+@router.put("/{tool_id}/flow")
+def update_tool_flow(
+    tool_id: str,
+    hotel_id: str,
+    flow_data: dict,
+    db: Session = Depends(get_db)
+):
+    """
+    Update flow configuration for a flow-type tool.
+    
+    Saves the visual flow editor data (nodes, edges, initial_node).
+    """
+    tool = db.query(Tool).filter(
+        Tool.id == tool_id,
+        Tool.hotel_id == hotel_id
+    ).first()
+    
+    if not tool:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Tool with id {tool_id} not found for this hotel"
+        )
+    
+    if tool.tool_type != DBToolType.FLOW:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Tool {tool_id} is not a flow type tool"
+        )
+    
+    flow_config = flow_data.get("flow_config", {})
+    
+    tool.config = {
+        "initial_node": flow_config.get("initial_node"),
+        "nodes": flow_config.get("nodes", []),
+        "edges": flow_config.get("edges", [])
+    }
+    
+    db.commit()
+    db.refresh(tool)
+    
+    return {
+        "tool_id": tool.id,
+        "message": "Flow configuration saved successfully",
+        "flow_config": tool.config
+    }

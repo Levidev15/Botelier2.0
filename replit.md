@@ -3,30 +3,30 @@
 ## Overview
 Botelier is a multi-tenant SaaS platform providing hotels with custom voice AI agents for guest services. It offers a hotel-centric interface for configuring conversational AI, abstracting complex underlying frameworks. The platform aims to streamline hotel operations, enhance guest experiences, and deliver a scalable solution for AI-powered guest interaction. The business vision is to become the leading provider of voice AI for the hospitality industry, offering a robust and intuitive platform that significantly improves operational efficiency and guest satisfaction.
 
-## Recent Changes (November 25, 2025)
-**Visual Flow Editor** - Node-based conversation flow designer for scaling to 50+ hotels:
+## Recent Changes (November 26, 2025)
+**Flows as Tools Architecture** - Conversation flows are now callable tools that the LLM invokes based on guest intent:
+- **Flow Tool Type**: New `FLOW` type added to the Tools system (alongside transfer_call, api_request, etc.)
+- **Intent-Based Activation**: LLM detects guest intent (e.g., "book a room") and triggers the appropriate flow tool
+- **Reusability**: Flow tools can be shared across multiple assistants within a hotel
+- **API Endpoints**: `GET/PUT /api/tools/{tool_id}/flow` for loading/saving flow configurations
+- **Frontend Store Update**: FlowEditor now uses `toolId` and `hotelId` instead of `assistantId`
+
+**Flow Editor** - Node-based conversation flow designer:
 - **React Flow Canvas**: Drag-and-drop node-based editor for designing conversation flows
 - **Node Types**: Initial (green, start node), Conversation (blue, middle steps), End (red, call termination)
-- **Templates System**: Pre-built flow templates (Hotel Booking Flow, FAQ Bot) for quick setup
+- **Templates System**: Pre-built flow templates for quick setup
 - **Node Inspector**: Right panel for editing node properties (name, messages, functions)
 - **Toolbar**: Add Node dropdown, Templates dropdown, undo/redo, Save Flow button
-- **Auto-save Keyboard Shortcut**: Ctrl/Cmd+S to save flow changes
-- **Multi-tenancy**: All flows scoped by assistant_id and hotel_id
 
-**Flow Editor Frontend Components**:
+**Flow Editor Components**:
 - `FlowEditor.tsx`: Main canvas with React Flow, wrapped in ReactFlowProvider
-- `store.ts`: Zustand store for flow state management (nodes, edges, loading, saving)
+- `store.ts`: Zustand store using toolId for flow state management
 - `FlowToolbar.tsx`: Toolbar with add node, templates, undo/redo, save actions
 - `NodeInspector.tsx`: Side panel for editing selected node properties
-- Custom node components: `InitialNode`, `ConversationNode`, `EndNode`
+- Custom node components in `nodes/`: `InitialNode`, `ConversationNode`, `EndNode`
 
-**Flow Editor Backend Integration**:
-- `flow_config` JSONB column in assistants table for storing flow definitions
-- `GET/PUT /api/assistants/{id}/flow` endpoints for loading/saving flows
-- `GET /api/flow-templates/{id}` endpoint for retrieving templates
-- `BoteilerFlowEngine` wrapper class abstracting Pipecat Flows framework
-
-**Previous Changes (November 20, 2025)**
+**Previous Changes (November 25, 2025)**
+- Visual Flow Editor initial implementation
 - Assistant Card Actions with Copy, Play/Pause, More menu, Delete
 - Toast Notification System using Sonner library
 

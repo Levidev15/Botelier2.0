@@ -29,6 +29,7 @@ export interface NodeData {
   task_messages?: Array<{ role: string; content: string }>;
   functions?: FlowFunction[];
   is_end_node?: boolean;
+  action_type?: "message" | "data_collection" | "api_call" | "decision";
   [key: string]: unknown;
 }
 
@@ -38,7 +39,7 @@ export interface FlowState {
   selectedNode: Node<NodeData> | null;
   isDirty: boolean;
   isLoading: boolean;
-  assistantId: string | null;
+  toolId: string | null;
   hotelId: string | null;
 
   setNodes: (nodes: Node<NodeData>[]) => void;
@@ -52,12 +53,13 @@ export interface FlowState {
   addNode: (type: "initial" | "node" | "end", position: { x: number; y: number }) => void;
   deleteNode: (nodeId: string) => void;
   
-  loadFlow: (assistantId: string) => Promise<void>;
+  loadFlow: (toolId: string, hotelId: string) => Promise<void>;
   saveFlow: () => Promise<void>;
   applyTemplate: (templateId: string) => Promise<void>;
+  clearFlow: () => void;
   
   setIsDirty: (dirty: boolean) => void;
-  setAssistantId: (id: string) => void;
+  setToolId: (id: string) => void;
   setHotelId: (id: string) => void;
   
   getFlowConfig: () => { nodes: any[]; edges: any[]; initial_node: string | null };
@@ -76,7 +78,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   selectedNode: null,
   isDirty: false,
   isLoading: false,
-  assistantId: null,
+  toolId: null,
   hotelId: null,
 
   setNodes: (nodes) => set({ nodes, isDirty: true }),
@@ -160,10 +162,10 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     });
   },
 
-  loadFlow: async (assistantId: string) => {
-    set({ isLoading: true, assistantId });
+  loadFlow: async (toolId: string, hotelId: string) => {
+    set({ isLoading: true, toolId, hotelId });
     try {
-      const response = await fetch(`/api/assistants/${assistantId}/flow`);
+      const response = await fetch(`/api/tools/${toolId}/flow?hotel_id=${hotelId}`);
       if (!response.ok) throw new Error("Failed to load flow");
       
       const data = await response.json();
@@ -177,14 +179,12 @@ export const useFlowStore = create<FlowState>((set, get) => ({
             data: n.data || { name: n.id },
           })),
           edges: data.flow_config.edges || [],
-          hotelId: data.hotel_id,
           isDirty: false,
         });
       } else {
         set({
           nodes: [],
           edges: [],
-          hotelId: data.hotel_id,
           isDirty: false,
         });
       }
@@ -196,8 +196,8 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   saveFlow: async () => {
-    const { assistantId, nodes, edges } = get();
-    if (!assistantId) return;
+    const { toolId, hotelId, nodes, edges } = get();
+    if (!toolId || !hotelId) return;
 
     set({ isLoading: true });
     try {
@@ -218,7 +218,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         })),
       };
 
-      const response = await fetch(`/api/assistants/${assistantId}/flow`, {
+      const response = await fetch(`/api/tools/${toolId}/flow?hotel_id=${hotelId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ flow_config: flowConfig }),
@@ -262,8 +262,16 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     }
   },
 
+  clearFlow: () => set({
+    nodes: [],
+    edges: [],
+    selectedNode: null,
+    isDirty: false,
+    toolId: null,
+  }),
+
   setIsDirty: (dirty) => set({ isDirty: dirty }),
-  setAssistantId: (id) => set({ assistantId: id }),
+  setToolId: (id) => set({ toolId: id }),
   setHotelId: (id) => set({ hotelId: id }),
 
   getFlowConfig: () => {

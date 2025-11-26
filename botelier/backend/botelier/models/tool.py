@@ -23,6 +23,7 @@ class ToolType(str, enum.Enum):
     END_CALL = "end_call"
     SEND_SMS = "send_sms"
     SEND_EMAIL = "send_email"
+    FLOW = "flow"  # Conversation flow - guides structured multi-step interactions
 
 
 class Tool(Base):
