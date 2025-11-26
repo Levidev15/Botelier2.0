@@ -18,6 +18,7 @@ from botelier.api.providers import router as providers_router
 from botelier.api.calls import router as calls_router
 from botelier.api.websockets import router as websockets_router
 from botelier.api.flow_templates import router as flow_templates_router
+from botelier.api.simulation import router as simulation_router
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -46,6 +47,7 @@ app.include_router(providers_router)
 app.include_router(calls_router)
 app.include_router(websockets_router)
 app.include_router(flow_templates_router)
+app.include_router(simulation_router)
 
 
 @app.on_event("startup")
