@@ -273,6 +273,66 @@ You are executing a structured conversation flow. Follow these guidelines:
                 return node.data.get("greeting", "Hello! How can I assist you?")
         return "Hello! How can I assist you?"
     
+    def get_initial_messages(self) -> list[str]:
+        """
+        Get all initial messages, following auto-advance chain.
+        
+        If the initial node has awaitResponse=false, it will continue
+        to get messages from connected nodes until one requires a response.
+        """
+        messages = []
+        initial_node = None
+        
+        for node in self.flow_config.nodes:
+            if node.type == NodeType.INITIAL:
+                initial_node = node
+                break
+        
+        if not initial_node:
+            return ["Hello! How can I assist you?"]
+        
+        messages.append(initial_node.data.get("greeting", "Hello! How can I assist you?"))
+        
+        await_response = initial_node.data.get("awaitResponse", True)
+        if await_response:
+            return messages
+        
+        current_node = self.state.get_next_node(initial_node.id)
+        while current_node:
+            node_message = self._get_node_message(current_node)
+            if node_message:
+                messages.append(node_message)
+            
+            self.state.advance_to(current_node.id)
+            
+            node_await = current_node.data.get("awaitResponse", current_node.data.get("waitForResponse", True))
+            if node_await or current_node.type in [NodeType.COLLECT_SLOT, NodeType.END, NodeType.TRANSFER]:
+                break
+            
+            current_node = self.state.get_next_node(current_node.id)
+        
+        return messages
+    
+    def _get_node_message(self, node: FlowNode) -> Optional[str]:
+        """Extract the spoken message from a node based on its type."""
+        if node.type == NodeType.MESSAGE:
+            return substitute_variables(
+                node.data.get("message", ""),
+                self.state.collected_slots
+            )
+        elif node.type == NodeType.COLLECT_SLOT:
+            slot = node.data.get("slot", {})
+            return slot.get("prompt", "")
+        elif node.type == NodeType.END:
+            return substitute_variables(
+                node.data.get("closingMessage", "Thank you for calling. Goodbye!"),
+                self.state.collected_slots
+            )
+        elif node.type == NodeType.TRANSFER:
+            transfer = node.data.get("transfer", {})
+            return transfer.get("preTransferMessage", "Please hold while I transfer you.")
+        return None
+    
     def get_function_schemas(self) -> list[dict]:
         """
         Generate Pipecat-compatible function schemas from the flow.
