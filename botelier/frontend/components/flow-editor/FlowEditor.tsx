@@ -228,6 +228,8 @@ function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
                     return "#f97316";
                   case "condition":
                     return "#eab308";
+                  case "router":
+                    return "#6366f1";
                   case "transfer":
                     return "#06b6d4";
                   case "end":

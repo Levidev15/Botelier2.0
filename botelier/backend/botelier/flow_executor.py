@@ -22,6 +22,7 @@ class NodeType(str, Enum):
     COLLECT_SLOT = "collect_slot"
     API_REQUEST = "api_request"
     CONDITION = "condition"
+    ROUTER = "router"
     TRANSFER = "transfer"
     END = "end"
 
@@ -74,6 +75,19 @@ class ConditionConfig:
     value: str
     true_target: Optional[str] = None
     false_target: Optional[str] = None
+
+
+@dataclass
+class RouterOption:
+    id: str
+    value: str
+    label: str
+
+
+@dataclass
+class RouterConfig:
+    variable: str
+    options: list[RouterOption]
 
 
 @dataclass
@@ -437,6 +451,9 @@ You are executing a structured conversation flow. Follow these guidelines:
             if node.type == NodeType.API_REQUEST:
                 func_schema = self._create_api_function(node)
                 functions.append(func_schema)
+            elif node.type == NodeType.ROUTER:
+                func_schema = self._create_router_function(node)
+                functions.append(func_schema)
             elif node.type == NodeType.TRANSFER:
                 func_schema = self._create_transfer_function(node)
                 functions.append(func_schema)
@@ -558,6 +575,38 @@ You are executing a structured conversation flow. Follow these guidelines:
             }
         }
     
+    def _create_router_function(self, node: FlowNode) -> dict:
+        """Create a function schema for a router node."""
+        router_data = node.data.get("router", {})
+        variable = router_data.get("variable", "choice")
+        options = router_data.get("options", [])
+        
+        option_values = [opt.get("value", "") for opt in options if opt.get("value")]
+        option_labels = [opt.get("label", opt.get("value", "")) for opt in options]
+        
+        description = f"Route the conversation based on {variable}. "
+        if option_labels:
+            description += f"Options: {', '.join(option_labels)}"
+        
+        return {
+            "type": "function",
+            "function": {
+                "name": f"route_{node.id}",
+                "description": description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "choice": {
+                            "type": "string",
+                            "enum": option_values if option_values else ["default"],
+                            "description": f"The selected option for {variable}"
+                        }
+                    },
+                    "required": ["choice"]
+                }
+            }
+        }
+    
     async def handle_function_call(self, function_name: str, arguments: dict) -> dict:
         """
         Handle a function call from the LLM.
@@ -571,6 +620,8 @@ You are executing a structured conversation flow. Follow these guidelines:
             return await self._handle_slot_collection(function_name, arguments)
         elif function_name.startswith("execute_"):
             return await self._handle_api_request(function_name, arguments)
+        elif function_name.startswith("route_"):
+            return await self._handle_router(function_name, arguments)
         elif function_name.startswith("transfer_"):
             return await self._handle_transfer(function_name, arguments)
         elif function_name.startswith("end_call_"):
@@ -718,6 +769,64 @@ You are executing a structured conversation flow. Follow these guidelines:
             else:
                 return None
         return current
+    
+    async def _handle_router(self, function_name: str, arguments: dict) -> dict:
+        """Handle routing based on a choice value."""
+        node_id = function_name.replace("route_", "")
+        node = None
+        for n in self.flow_config.nodes:
+            if n.id == node_id:
+                node = n
+                break
+        
+        if not node:
+            return {"success": False, "message": "Router node not found", "action": None, "current_node_id": None}
+        
+        router_data = node.data.get("router", {})
+        variable = router_data.get("variable", "")
+        options = router_data.get("options", [])
+        choice = arguments.get("choice", "")
+        
+        if variable:
+            self.state.set_variable(variable, choice)
+        
+        matched_option_id = None
+        matched_label = choice
+        for opt in options:
+            if opt.get("value", "").lower() == choice.lower():
+                matched_option_id = opt.get("id")
+                matched_label = opt.get("label", choice)
+                break
+        
+        next_node_id = None
+        if matched_option_id:
+            next_node = self.state.get_next_node(node_id, handle=matched_option_id)
+            if next_node:
+                next_node_id = next_node.id
+                self.state.advance_to(next_node.id)
+        
+        if not next_node_id:
+            next_node = self.state.get_next_node(node_id, handle="default")
+            if next_node:
+                next_node_id = next_node.id
+                self.state.advance_to(next_node.id)
+        
+        if not next_node_id:
+            next_node = self.state.get_next_node(node_id)
+            if next_node:
+                next_node_id = next_node.id
+                self.state.advance_to(next_node.id)
+            else:
+                self.state.advance_to(node_id)
+                next_node_id = node_id
+        
+        return {
+            "success": True,
+            "message": f"Routing to: {matched_label}",
+            "action": None,
+            "routed_to": matched_label,
+            "current_node_id": next_node_id
+        }
     
     async def _handle_transfer(self, function_name: str, arguments: dict) -> dict:
         """Handle a call transfer request."""

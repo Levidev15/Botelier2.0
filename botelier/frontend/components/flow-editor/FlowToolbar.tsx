@@ -13,6 +13,7 @@ import {
   FormInput,
   Globe,
   GitBranch,
+  Route,
   PhoneForwarded,
   PhoneOff,
   FlaskConical
@@ -32,6 +33,7 @@ const nodeTypeConfig: { type: NodeType; label: string; icon: React.ReactNode; co
   { type: "collect_slot", label: "Collect Input", icon: <FormInput className="h-3 w-3" />, color: "bg-purple-500" },
   { type: "api_request", label: "API Request", icon: <Globe className="h-3 w-3" />, color: "bg-orange-500" },
   { type: "condition", label: "Condition", icon: <GitBranch className="h-3 w-3" />, color: "bg-yellow-500" },
+  { type: "router", label: "Router", icon: <Route className="h-3 w-3" />, color: "bg-indigo-500" },
   { type: "transfer", label: "Transfer Call", icon: <PhoneForwarded className="h-3 w-3" />, color: "bg-cyan-500" },
   { type: "end", label: "End Call", icon: <PhoneOff className="h-3 w-3" />, color: "bg-red-500" },
 ];

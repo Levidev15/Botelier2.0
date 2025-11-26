@@ -34,7 +34,8 @@ Botelier is a multi-tenant SaaS platform providing hotels with custom voice AI a
 - **Auto-Advance**: When "await response" is OFF, flow automatically continues to next node without waiting for guest input
 - **CollectSlot Node**: Gather guest information with validation and retry logic
 - **APIRequest Node**: Call external APIs with templated URLs and response mapping
-- **Condition Node**: Branch flow based on variable values (equals, greater_than, is_empty, etc.)
+- **Condition Node**: Branch flow based on variable values (equals, greater_than, is_empty, etc.) - 2-way True/False branching
+- **Router Node**: Multi-way branching based on variable values (e.g., "new", "cancel", "change" reservation types) - N-way routing with labeled options and default fallback
 - **Transfer Node**: Escalate to human agent with pre-transfer message
 - **End Node**: Graceful call termination with closing message
 
@@ -48,7 +49,7 @@ Botelier is a multi-tenant SaaS platform providing hotels with custom voice AI a
 - `store.ts`: Zustand store with templates, flow loading/saving, variable management
 - `FlowToolbar.tsx`: Add Node dropdown, Templates dropdown, Save Flow button
 - `NodeInspector.tsx`: Type-specific property editors for each node type
-- Custom nodes in `nodes/`: InitialNode, MessageNode, CollectSlotNode, APIRequestNode, ConditionNode, TransferNode, EndNode
+- Custom nodes in `nodes/`: InitialNode, MessageNode, CollectSlotNode, APIRequestNode, ConditionNode, RouterNode, TransferNode, EndNode
 
 **Flows as Tools Architecture**:
 - **FLOW Tool Type**: New type in Tools system alongside TRANSFER_CALL, API_REQUEST, etc.

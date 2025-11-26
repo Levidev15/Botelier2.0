@@ -55,6 +55,17 @@ export interface ConditionConfig {
   falseTarget?: string;
 }
 
+export interface RouterOption {
+  id: string;
+  value: string;
+  label: string;
+}
+
+export interface RouterConfig {
+  variable: string;
+  options: RouterOption[];
+}
+
 export interface TransferConfig {
   phoneNumber: string;
   preTransferMessage?: string;
@@ -67,6 +78,7 @@ export type NodeType =
   | "collect_slot" 
   | "api_request" 
   | "condition" 
+  | "router"
   | "transfer" 
   | "end";
 
@@ -98,6 +110,10 @@ export interface APIRequestNodeData extends BaseNodeData {
 
 export interface ConditionNodeData extends BaseNodeData {
   condition: ConditionConfig;
+}
+
+export interface RouterNodeData extends BaseNodeData {
+  router: RouterConfig;
 }
 
 export interface TransferNodeData extends BaseNodeData {
@@ -216,6 +232,19 @@ const getDefaultNodeData = (type: NodeType): NodeData => {
         },
       } as ConditionNodeData;
     
+    case "router":
+      return {
+        name: "Route Decision",
+        router: {
+          variable: "request_type",
+          options: [
+            { id: "opt_new", value: "new", label: "New Reservation" },
+            { id: "opt_cancel", value: "cancel", label: "Cancel Reservation" },
+            { id: "opt_change", value: "change", label: "Modify Reservation" },
+          ],
+        },
+      } as RouterNodeData;
+    
     case "transfer":
       return {
         name: "Transfer Call",
@@ -241,6 +270,8 @@ const getNodeStyle = (type: NodeType) => {
   switch (type) {
     case "condition":
       return { stroke: "#f59e0b", strokeWidth: 2 };
+    case "router":
+      return { stroke: "#6366f1", strokeWidth: 2 };
     default:
       return { stroke: "#3b82f6", strokeWidth: 2 };
   }
