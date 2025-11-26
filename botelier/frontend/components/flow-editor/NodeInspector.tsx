@@ -203,7 +203,12 @@ function CollectSlotNodePanel({ data, nodeId }: { data: CollectSlotNodeData; nod
   }, [nodeId, slot.variableKey]);
 
   const updateSlot = (updates: Partial<typeof slot>) => {
-    updateNodeData(nodeId, { slot: { ...slot, ...updates } });
+    const newSlot = { ...slot, ...updates };
+    updateNodeData(nodeId, { slot: newSlot });
+    
+    if (updates.type && newSlot.variableKey) {
+      updateVariable(newSlot.variableKey, { type: updates.type });
+    }
   };
 
   const handleVariableKeyInput = (key: string) => {
@@ -214,11 +219,11 @@ function CollectSlotNodePanel({ data, nodeId }: { data: CollectSlotNodeData; nod
   const commitVariableKey = () => {
     const key = localVarKey.trim();
     if (key && key !== slot.variableKey) {
-      updateSlot({ variableKey: key });
+      updateNodeData(nodeId, { slot: { ...slot, variableKey: key } });
       const existingVar = variables.find(v => v.key === key);
       if (!existingVar) {
         addVariable({
-          key: key,
+          key,
           type: slot.type,
           description: `Collected from: ${data.name}`,
           required: true,

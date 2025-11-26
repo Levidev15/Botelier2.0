@@ -5,16 +5,21 @@ Botelier is a multi-tenant SaaS platform providing hotels with custom voice AI a
 
 ## Recent Changes (November 26, 2025)
 
+**Integrated Flow Simulator** - Test flows directly in the flow editor (Retell AI-style):
+- **Embedded Sidebar**: Simulator integrated as a sidebar panel in the flow editor, not a separate modal
+- **Test Button in Toolbar**: Click "Test" button in flow editor toolbar to toggle the simulator sidebar
+- **Node Highlighting**: Active conversation node is highlighted with cyan border and glow effect during simulation
+- **Real-time Node Tracking**: `current_node_id` from backend updates `activeNodeId` in store for visual feedback
+- **MiniMap Highlighting**: Active node also highlighted in cyan on the minimap
+- **Variable Type Sync**: Changing slot type in a node automatically updates the Flow Variables list
+
 **Flow Simulator with LLM** - Test flows like real conversations:
 - **Real LLM Conversations**: Uses OpenAI (gpt-4o-mini) with function calling to simulate actual voice calls
 - **Natural Language Processing**: LLM extracts information from user messages and automatically calls appropriate functions
 - **Multi-Slot Collection**: Can extract multiple pieces of information from a single message (e.g., name, date, and guest count)
 - **Simulation API** (`botelier/backend/botelier/api/simulation.py`): Endpoints with OpenAI integration for `/api/simulate/start`, `/api/simulate/message`
-- **FlowSimulator Modal** (`components/flow-simulator/`): Chat-based testing interface with real-time slot tracking
-- **Test Button on Tools Page**: Flows show an enabled "Test" button when nodes are configured
-- **Manual Function Picker**: Optional panel for testing specific function calls directly
+- **FlowSimulatorSidebar** (`components/flow-simulator/FlowSimulatorSidebar.tsx`): Compact chat interface with slot tracking
 - **Slot Tracker Panel**: Real-time display of collected variables and progress
-- **API Tester**: Test API endpoints with variable substitution preview
 
 **Flow Execution Runtime** - Backend system to execute flows during Pipecat calls:
 - **FlowExecutor Class** (`botelier/backend/botelier/flow_executor.py`): Converts visual flows to Pipecat function schemas

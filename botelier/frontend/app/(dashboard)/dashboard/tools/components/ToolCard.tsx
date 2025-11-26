@@ -4,7 +4,6 @@ import { LucideIcon, Trash2, Edit, GitBranch, Play } from "lucide-react";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { notify, confirmAction } from "@/lib/notifications";
-import { FlowSimulator } from "@/components/flow-simulator";
 
 interface ToolCardProps {
   tool: {
@@ -23,7 +22,6 @@ interface ToolCardProps {
 export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete }: ToolCardProps) {
   const router = useRouter();
   const [deleting, setDeleting] = useState(false);
-  const [showSimulator, setShowSimulator] = useState(false);
 
   const isFlowTool = tool.tool_type === "FLOW";
   const hasFlowNodes = isFlowTool && tool.config?.nodes?.length > 0;
@@ -33,7 +31,7 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete }: Tool
   };
 
   const handleTestFlow = () => {
-    setShowSimulator(true);
+    router.push(`/dashboard/tools/${tool.id}/flow`);
   };
 
   const handleDelete = async () => {
@@ -155,14 +153,6 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete }: Tool
           {deleting ? "Deleting..." : "Delete"}
         </button>
       </div>
-
-      {showSimulator && (
-        <FlowSimulator
-          toolId={tool.id}
-          toolName={tool.name}
-          onClose={() => setShowSimulator(false)}
-        />
-      )}
     </div>
   );
 }
