@@ -11,14 +11,14 @@ interface RouterNodeProps {
 }
 
 const OPTION_COLORS = [
-  { bg: "bg-blue-500", border: "border-blue-300" },
-  { bg: "bg-green-500", border: "border-green-300" },
-  { bg: "bg-purple-500", border: "border-purple-300" },
-  { bg: "bg-orange-500", border: "border-orange-300" },
-  { bg: "bg-pink-500", border: "border-pink-300" },
-  { bg: "bg-cyan-500", border: "border-cyan-300" },
-  { bg: "bg-yellow-500", border: "border-yellow-300" },
-  { bg: "bg-red-500", border: "border-red-300" },
+  { bg: "#3b82f6", border: "#93c5fd" },
+  { bg: "#22c55e", border: "#86efac" },
+  { bg: "#a855f7", border: "#d8b4fe" },
+  { bg: "#f97316", border: "#fdba74" },
+  { bg: "#ec4899", border: "#f9a8d4" },
+  { bg: "#06b6d4", border: "#67e8f9" },
+  { bg: "#eab308", border: "#fde047" },
+  { bg: "#ef4444", border: "#fca5a5" },
 ];
 
 function RouterNode({ data, selected }: RouterNodeProps) {
@@ -68,13 +68,16 @@ function RouterNode({ data, selected }: RouterNodeProps) {
             const color = OPTION_COLORS[index % OPTION_COLORS.length];
             return (
               <div key={option.id} className="flex items-center gap-2 text-xs">
-                <span className={`w-2 h-2 ${color.bg} rounded-full`} />
+                <span 
+                  className="w-2 h-2 rounded-full" 
+                  style={{ backgroundColor: color.bg }}
+                />
                 <span className="text-gray-300 truncate">{option.label || option.value}</span>
               </div>
             );
           })}
           <div className="flex items-center gap-2 text-xs">
-            <span className="w-2 h-2 bg-gray-500 rounded-full" />
+            <span className="w-2 h-2 rounded-full" style={{ backgroundColor: "#6b7280" }} />
             <span className="text-gray-500 italic">Default</span>
           </div>
         </div>
@@ -89,8 +92,13 @@ function RouterNode({ data, selected }: RouterNodeProps) {
             type="source"
             position={Position.Bottom}
             id={option.id}
-            style={{ left: `${position}%` }}
-            className={`!w-3 !h-3 ${color.bg} !border-2 ${color.border}`}
+            style={{ 
+              left: `${position}%`,
+              width: "12px",
+              height: "12px",
+              backgroundColor: color.bg,
+              border: `2px solid ${color.border}`
+            }}
             title={option.label || option.value}
           />
         );
@@ -99,8 +107,13 @@ function RouterNode({ data, selected }: RouterNodeProps) {
         type="source"
         position={Position.Bottom}
         id="default"
-        style={{ left: `${((options.length + 1) / optionCount) * 100}%` }}
-        className="!w-3 !h-3 !bg-gray-500 !border-2 !border-gray-400"
+        style={{ 
+          left: `${((options.length + 1) / optionCount) * 100}%`,
+          width: "12px",
+          height: "12px",
+          backgroundColor: "#6b7280",
+          border: "2px solid #9ca3af"
+        }}
         title="Default (no match)"
       />
     </div>
