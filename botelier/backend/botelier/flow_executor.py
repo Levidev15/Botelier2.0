@@ -278,7 +278,8 @@ You are executing a structured conversation flow. Follow these guidelines:
         Get all initial messages, following auto-advance chain.
         
         If the initial node has awaitResponse=false, it will continue
-        to get messages from connected nodes until one requires a response.
+        to get messages from connected nodes until one requires a response
+        or reaches a node that collects input (collect_slot, end, transfer).
         """
         messages = []
         initial_node = None
@@ -305,8 +306,11 @@ You are executing a structured conversation flow. Follow these guidelines:
             
             self.state.advance_to(current_node.id)
             
+            if current_node.type in [NodeType.COLLECT_SLOT, NodeType.END, NodeType.TRANSFER]:
+                break
+            
             node_await = current_node.data.get("awaitResponse", current_node.data.get("waitForResponse", True))
-            if node_await or current_node.type in [NodeType.COLLECT_SLOT, NodeType.END, NodeType.TRANSFER]:
+            if node_await:
                 break
             
             current_node = self.state.get_next_node(current_node.id)
