@@ -23,6 +23,8 @@ class NodeType(str, Enum):
     API_REQUEST = "api_request"
     CONDITION = "condition"
     ROUTER = "router"
+    CONFIRMATION = "confirmation"
+    SET_VARIABLE = "set_variable"
     TRANSFER = "transfer"
     END = "end"
 
@@ -88,6 +90,22 @@ class RouterOption:
 class RouterConfig:
     variable: str
     options: list[RouterOption]
+
+
+@dataclass
+class ConfirmationConfig:
+    summary_template: str
+    confirm_prompt: str
+    edit_prompt: Optional[str] = None
+    variables_to_confirm: list[str] = field(default_factory=list)
+    allow_edit: bool = True
+
+
+@dataclass
+class SetVariableConfig:
+    variable_key: str
+    value_type: str
+    value: str
 
 
 @dataclass
@@ -454,6 +472,12 @@ You are executing a structured conversation flow. Follow these guidelines:
             elif node.type == NodeType.ROUTER:
                 func_schema = self._create_router_function(node)
                 functions.append(func_schema)
+            elif node.type == NodeType.CONFIRMATION:
+                func_schema = self._create_confirmation_function(node)
+                functions.append(func_schema)
+            elif node.type == NodeType.SET_VARIABLE:
+                func_schema = self._create_set_variable_function(node)
+                functions.append(func_schema)
             elif node.type == NodeType.TRANSFER:
                 func_schema = self._create_transfer_function(node)
                 functions.append(func_schema)
@@ -607,6 +631,50 @@ You are executing a structured conversation flow. Follow these guidelines:
             }
         }
     
+    def _create_confirmation_function(self, node: FlowNode) -> dict:
+        """Create a function schema for a confirmation node."""
+        confirmation_data = node.data.get("confirmation", {})
+        summary_template = confirmation_data.get("summaryTemplate", "")
+        variables_to_confirm = confirmation_data.get("variablesToConfirm", [])
+        
+        var_list = ", ".join(variables_to_confirm) if variables_to_confirm else "collected details"
+        
+        return {
+            "type": "function",
+            "function": {
+                "name": f"confirm_{node.id}",
+                "description": f"Confirm or edit {var_list}. Call after presenting the summary to the guest.",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "confirmed": {
+                            "type": "boolean",
+                            "description": "True if the guest confirms the details are correct, False if they want to make changes"
+                        }
+                    },
+                    "required": ["confirmed"]
+                }
+            }
+        }
+    
+    def _create_set_variable_function(self, node: FlowNode) -> dict:
+        """Create a function schema for a set variable node."""
+        set_var_data = node.data.get("setVariable", {})
+        var_key = set_var_data.get("variableKey", "variable")
+        
+        return {
+            "type": "function",
+            "function": {
+                "name": f"set_var_{node.id}",
+                "description": f"Set the value of {var_key}",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        }
+    
     async def handle_function_call(self, function_name: str, arguments: dict) -> dict:
         """
         Handle a function call from the LLM.
@@ -622,6 +690,10 @@ You are executing a structured conversation flow. Follow these guidelines:
             return await self._handle_api_request(function_name, arguments)
         elif function_name.startswith("route_"):
             return await self._handle_router(function_name, arguments)
+        elif function_name.startswith("confirm_"):
+            return await self._handle_confirmation(function_name, arguments)
+        elif function_name.startswith("set_var_"):
+            return await self._handle_set_variable(function_name, arguments)
         elif function_name.startswith("transfer_"):
             return await self._handle_transfer(function_name, arguments)
         elif function_name.startswith("end_call_"):
@@ -825,6 +897,102 @@ You are executing a structured conversation flow. Follow these guidelines:
             "message": f"Routing to: {matched_label}",
             "action": None,
             "routed_to": matched_label,
+            "current_node_id": next_node_id
+        }
+    
+    async def _handle_confirmation(self, function_name: str, arguments: dict) -> dict:
+        """Handle a confirmation node - guest confirms or requests edit."""
+        node_id = function_name.replace("confirm_", "")
+        node = None
+        for n in self.flow_config.nodes:
+            if n.id == node_id:
+                node = n
+                break
+        
+        if not node:
+            return {"success": False, "message": "Confirmation node not found", "action": None, "current_node_id": None}
+        
+        confirmed = arguments.get("confirmed", True)
+        confirmation_data = node.data.get("confirmation", {})
+        
+        if confirmed:
+            next_node = self.state.get_next_node(node_id, handle="confirmed")
+            if next_node:
+                self.state.advance_to(next_node.id)
+                return {
+                    "success": True,
+                    "message": "Details confirmed. Proceeding.",
+                    "action": None,
+                    "confirmed": True,
+                    "current_node_id": next_node.id
+                }
+            return {
+                "success": True,
+                "message": "Details confirmed.",
+                "action": None,
+                "confirmed": True,
+                "current_node_id": node_id
+            }
+        else:
+            edit_prompt = confirmation_data.get("editPrompt", "What would you like to change?")
+            next_node = self.state.get_next_node(node_id, handle="edit")
+            if next_node:
+                self.state.advance_to(next_node.id)
+                return {
+                    "success": True,
+                    "message": edit_prompt,
+                    "action": None,
+                    "confirmed": False,
+                    "current_node_id": next_node.id
+                }
+            return {
+                "success": True,
+                "message": edit_prompt,
+                "action": None,
+                "confirmed": False,
+                "current_node_id": node_id
+            }
+    
+    async def _handle_set_variable(self, function_name: str, arguments: dict) -> dict:
+        """Handle setting a variable value."""
+        node_id = function_name.replace("set_var_", "")
+        node = None
+        for n in self.flow_config.nodes:
+            if n.id == node_id:
+                node = n
+                break
+        
+        if not node:
+            return {"success": False, "message": "Set variable node not found", "action": None, "current_node_id": None}
+        
+        set_var_data = node.data.get("setVariable", {})
+        var_key = set_var_data.get("variableKey", "")
+        value_type = set_var_data.get("valueType", "static")
+        value = set_var_data.get("value", "")
+        
+        if value_type == "template":
+            final_value = substitute_variables(value, self.state.collected_slots)
+        elif value_type == "expression":
+            try:
+                final_value = eval(value, {"__builtins__": {}}, self.state.collected_slots)
+            except:
+                final_value = value
+        else:
+            final_value = value
+        
+        if var_key:
+            self.state.set_variable(var_key, final_value)
+        
+        next_node = self.state.get_next_node(node_id)
+        next_node_id = next_node.id if next_node else node_id
+        if next_node:
+            self.state.advance_to(next_node.id)
+        
+        return {
+            "success": True,
+            "message": f"Set {var_key} to {final_value}",
+            "action": None,
+            "set_variable": {var_key: final_value},
             "current_node_id": next_node_id
         }
     

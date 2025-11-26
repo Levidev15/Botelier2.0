@@ -23,18 +23,32 @@ export interface FlowVariable {
   choices?: string[];
 }
 
+export interface SlotValidation {
+  pattern?: string;
+  min?: number;
+  max?: number;
+  minLength?: number;
+  maxLength?: number;
+  choices?: string[];
+  requireFuture?: boolean;
+  minDaysAhead?: number;
+  maxDaysAhead?: number;
+  allowDecimal?: boolean;
+  crossFieldCheck?: {
+    compareWith: string;
+    operator: "after" | "before" | "greater" | "less";
+    errorMessage: string;
+  };
+}
+
 export interface SlotConfig {
   variableKey: string;
   prompt: string;
   type: SlotType;
-  validation?: {
-    pattern?: string;
-    min?: number;
-    max?: number;
-    choices?: string[];
-  };
+  validation?: SlotValidation;
   retryPrompt?: string;
   maxRetries?: number;
+  useBuiltInValidator?: boolean;
 }
 
 export interface APIRequestConfig {
@@ -43,8 +57,25 @@ export interface APIRequestConfig {
   headers?: Record<string, string>;
   bodyTemplate?: string;
   responseMapping?: Record<string, string>;
-  onSuccess?: string;
-  onError?: string;
+  successMessage?: string;
+  errorMessage?: string;
+  timeout?: number;
+  retries?: number;
+  retryDelay?: number;
+}
+
+export interface ConfirmationConfig {
+  summaryTemplate: string;
+  confirmPrompt: string;
+  editPrompt?: string;
+  variablesToConfirm: string[];
+  allowEdit?: boolean;
+}
+
+export interface SetVariableConfig {
+  variableKey: string;
+  valueType: "static" | "template" | "expression";
+  value: string;
 }
 
 export interface ConditionConfig {
@@ -79,6 +110,8 @@ export type NodeType =
   | "api_request" 
   | "condition" 
   | "router"
+  | "confirmation"
+  | "set_variable"
   | "transfer" 
   | "end";
 
@@ -114,6 +147,14 @@ export interface ConditionNodeData extends BaseNodeData {
 
 export interface RouterNodeData extends BaseNodeData {
   router: RouterConfig;
+}
+
+export interface ConfirmationNodeData extends BaseNodeData {
+  confirmation: ConfirmationConfig;
+}
+
+export interface SetVariableNodeData extends BaseNodeData {
+  setVariable: SetVariableConfig;
 }
 
 export interface TransferNodeData extends BaseNodeData {
@@ -244,6 +285,28 @@ const getDefaultNodeData = (type: NodeType): NodeData => {
           ],
         },
       } as RouterNodeData;
+    
+    case "confirmation":
+      return {
+        name: "Confirm Details",
+        confirmation: {
+          summaryTemplate: "Let me confirm your reservation: {{guest_name}}, checking in on {{check_in_date}}, checking out on {{check_out_date}}, for {{guest_count}} guests.",
+          confirmPrompt: "Is this information correct?",
+          editPrompt: "What would you like to change?",
+          variablesToConfirm: ["guest_name", "check_in_date", "check_out_date", "guest_count"],
+          allowEdit: true,
+        },
+      } as ConfirmationNodeData;
+    
+    case "set_variable":
+      return {
+        name: "Set Variable",
+        setVariable: {
+          variableKey: "status",
+          valueType: "static",
+          value: "confirmed",
+        },
+      } as SetVariableNodeData;
     
     case "transfer":
       return {
