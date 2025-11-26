@@ -588,14 +588,20 @@ You are executing a structured conversation flow. Follow these guidelines:
             value = arguments[var_key]
             self.state.set_variable(var_key, value)
             
-            # Find the node that collects this variable and advance to it
             collecting_node_id = None
+            next_node_id = None
+            
             for node in self.flow_config.nodes:
                 if node.type == NodeType.COLLECT_SLOT:
                     slot = node.data.get("slot", {})
                     if slot.get("variableKey") == var_key:
                         collecting_node_id = node.id
-                        self.state.advance_to(node.id)
+                        next_node = self.state.get_next_node(node.id)
+                        if next_node:
+                            next_node_id = next_node.id
+                            self.state.advance_to(next_node.id)
+                        else:
+                            self.state.advance_to(node.id)
                         break
             
             var_info = None
@@ -609,7 +615,7 @@ You are executing a structured conversation flow. Follow these guidelines:
                 "message": f"Recorded {var_info.description if var_info else var_key}: {value}",
                 "action": None,
                 "collected": {var_key: value},
-                "current_node_id": collecting_node_id
+                "current_node_id": next_node_id or collecting_node_id
             }
         
         return {
@@ -664,13 +670,20 @@ You are executing a structured conversation flow. Follow these guidelines:
                             if value is not None:
                                 self.state.set_variable(var_key, value)
                     
-                    self.state.advance_to(node_id)
+                    next_node = self.state.get_next_node(node_id)
+                    if next_node:
+                        self.state.advance_to(next_node.id)
+                        next_node_id = next_node.id
+                    else:
+                        self.state.advance_to(node_id)
+                        next_node_id = node_id
+                    
                     return {
                         "success": True,
                         "message": api_config.get("onSuccess", "API request completed successfully"),
                         "action": None,
                         "response": response_data,
-                        "current_node_id": node_id
+                        "current_node_id": next_node_id
                     }
                 else:
                     return {
