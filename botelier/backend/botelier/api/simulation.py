@@ -51,11 +51,12 @@ class SimulationState:
     def _init_llm_context(self):
         """Initialize LLM conversation context with system prompt."""
         system_prompt = self.executor.get_system_prompt()
-        greeting = self.executor.get_greeting()
+        initial_messages = self.executor.get_initial_messages()
+        combined_greeting = " ".join(initial_messages)
         
         self.llm_messages = [
             {"role": "system", "content": system_prompt},
-            {"role": "assistant", "content": greeting}
+            {"role": "assistant", "content": combined_greeting}
         ]
     
     def add_message(self, role: str, content: str, metadata: Optional[dict] = None):
@@ -158,8 +159,11 @@ async def start_simulation(
     session_id = str(uuid.uuid4())
     state = SimulationState(tool_id=request.tool_id, executor=executor, tool_name=tool.name)
     
-    greeting = executor.get_greeting()
-    state.add_message("assistant", greeting)
+    initial_messages = executor.get_initial_messages()
+    greeting = " ".join(initial_messages)
+    
+    for msg in initial_messages:
+        state.add_message("assistant", msg)
     
     SimulationSession.sessions[session_id] = state
     
