@@ -634,8 +634,8 @@ You are executing a structured conversation flow. Follow these guidelines:
     def _create_confirmation_function(self, node: FlowNode) -> dict:
         """Create a function schema for a confirmation node."""
         confirmation_data = node.data.get("confirmation", {})
-        summary_template = confirmation_data.get("summaryTemplate", "")
-        variables_to_confirm = confirmation_data.get("variablesToConfirm", [])
+        summary_template = confirmation_data.get("summaryTemplate", confirmation_data.get("summary_template", ""))
+        variables_to_confirm = confirmation_data.get("variablesToConfirm", confirmation_data.get("variables_to_confirm", []))
         
         var_list = ", ".join(variables_to_confirm) if variables_to_confirm else "collected details"
         
@@ -659,8 +659,8 @@ You are executing a structured conversation flow. Follow these guidelines:
     
     def _create_set_variable_function(self, node: FlowNode) -> dict:
         """Create a function schema for a set variable node."""
-        set_var_data = node.data.get("setVariable", {})
-        var_key = set_var_data.get("variableKey", "variable")
+        set_var_data = node.data.get("setVariable", node.data.get("set_variable", {}))
+        var_key = set_var_data.get("variableKey", set_var_data.get("variable_key", "variable"))
         
         return {
             "type": "function",
@@ -915,6 +915,9 @@ You are executing a structured conversation flow. Follow these guidelines:
         confirmed = arguments.get("confirmed", True)
         confirmation_data = node.data.get("confirmation", {})
         
+        summary_template = confirmation_data.get("summaryTemplate", "")
+        summary_message = substitute_variables(summary_template, self.state.collected_slots)
+        
         if confirmed:
             next_node = self.state.get_next_node(node_id, handle="confirmed")
             if next_node:
@@ -934,7 +937,7 @@ You are executing a structured conversation flow. Follow these guidelines:
                 "current_node_id": node_id
             }
         else:
-            edit_prompt = confirmation_data.get("editPrompt", "What would you like to change?")
+            edit_prompt = confirmation_data.get("editPrompt", confirmation_data.get("edit_prompt", "What would you like to change?"))
             next_node = self.state.get_next_node(node_id, handle="edit")
             if next_node:
                 self.state.advance_to(next_node.id)
@@ -965,9 +968,9 @@ You are executing a structured conversation flow. Follow these guidelines:
         if not node:
             return {"success": False, "message": "Set variable node not found", "action": None, "current_node_id": None}
         
-        set_var_data = node.data.get("setVariable", {})
-        var_key = set_var_data.get("variableKey", "")
-        value_type = set_var_data.get("valueType", "static")
+        set_var_data = node.data.get("setVariable", node.data.get("set_variable", {}))
+        var_key = set_var_data.get("variableKey", set_var_data.get("variable_key", ""))
+        value_type = set_var_data.get("valueType", set_var_data.get("value_type", "static"))
         value = set_var_data.get("value", "")
         
         if value_type == "template":
