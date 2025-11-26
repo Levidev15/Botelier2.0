@@ -6,7 +6,7 @@ import { GitBranch, Grip, Check, X } from "lucide-react";
 import { ConditionNodeData } from "../store";
 
 interface ConditionNodeProps {
-  data: ConditionNodeData;
+  data: ConditionNodeData & { isActive?: boolean };
   selected?: boolean;
 }
 
@@ -21,13 +21,19 @@ const operatorLabels: Record<string, string> = {
 };
 
 function ConditionNode({ data, selected }: ConditionNodeProps) {
+  const isActive = data.isActive;
   const condition = data.condition;
   
   return (
     <div
       className={`
-        min-w-[220px] max-w-[280px] rounded-lg border-2 bg-[#141414] shadow-lg
-        ${selected ? "border-yellow-500 ring-2 ring-yellow-500/20" : "border-yellow-600/50"}
+        min-w-[220px] max-w-[280px] rounded-lg border-2 bg-[#141414] shadow-lg transition-all duration-300
+        ${isActive 
+          ? "border-cyan-400 ring-4 ring-cyan-400/40 scale-105" 
+          : selected 
+            ? "border-yellow-500 ring-2 ring-yellow-500/20" 
+            : "border-yellow-600/50"
+        }
       `}
     >
       <Handle

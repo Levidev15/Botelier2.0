@@ -314,15 +314,37 @@ You are executing a structured conversation flow. Follow these guidelines:
     
     def _generate_flow_context(self) -> str:
         """Generate context about what information needs to be collected."""
+        ordered_vars = self.get_variables_in_flow_order()
         slots_to_collect = []
-        for var in self.flow_config.variables:
+        
+        for var in ordered_vars:
             if var.key not in self.state.collected_slots:
-                slots_to_collect.append(f"- {var.key}: {var.description} ({var.type.value})")
+                node_instructions = self._get_instructions_for_variable(var.key)
+                slot_info = f"- {var.key}: {var.description} ({var.type.value})"
+                if node_instructions:
+                    slot_info += f"\n  Instructions: {node_instructions}"
+                slots_to_collect.append(slot_info)
         
         if slots_to_collect:
-            return f"""Information to collect:
+            return f"""Information to collect (in order):
 {chr(10).join(slots_to_collect)}"""
         return "All required information has been collected."
+    
+    def _get_instructions_for_variable(self, var_key: str) -> Optional[str]:
+        """Get the instructions for the node that collects a specific variable."""
+        for node in self.flow_config.nodes:
+            if node.type == NodeType.COLLECT_SLOT:
+                slot = node.data.get("slot", {})
+                if slot.get("variableKey") == var_key:
+                    return node.data.get("instructions")
+        return None
+    
+    def get_current_node_instructions(self) -> Optional[str]:
+        """Get instructions for the current node."""
+        current_node = self.state.get_current_node()
+        if current_node:
+            return current_node.data.get("instructions")
+        return None
     
     def get_greeting(self) -> str:
         """Get the initial greeting message."""
@@ -566,6 +588,16 @@ You are executing a structured conversation flow. Follow these guidelines:
             value = arguments[var_key]
             self.state.set_variable(var_key, value)
             
+            # Find the node that collects this variable and advance to it
+            collecting_node_id = None
+            for node in self.flow_config.nodes:
+                if node.type == NodeType.COLLECT_SLOT:
+                    slot = node.data.get("slot", {})
+                    if slot.get("variableKey") == var_key:
+                        collecting_node_id = node.id
+                        self.state.advance_to(node.id)
+                        break
+            
             var_info = None
             for var in self.flow_config.variables:
                 if var.key == var_key:
@@ -576,13 +608,15 @@ You are executing a structured conversation flow. Follow these guidelines:
                 "success": True,
                 "message": f"Recorded {var_info.description if var_info else var_key}: {value}",
                 "action": None,
-                "collected": {var_key: value}
+                "collected": {var_key: value},
+                "current_node_id": collecting_node_id
             }
         
         return {
             "success": False,
             "message": f"Missing value for {var_key}",
-            "action": None
+            "action": None,
+            "current_node_id": self.state.current_node_id
         }
     
     async def _handle_api_request(self, function_name: str, arguments: dict) -> dict:
@@ -630,17 +664,20 @@ You are executing a structured conversation flow. Follow these guidelines:
                             if value is not None:
                                 self.state.set_variable(var_key, value)
                     
+                    self.state.advance_to(node_id)
                     return {
                         "success": True,
                         "message": api_config.get("onSuccess", "API request completed successfully"),
                         "action": None,
-                        "response": response_data
+                        "response": response_data,
+                        "current_node_id": node_id
                     }
                 else:
                     return {
                         "success": False,
                         "message": api_config.get("onError", "There was an issue processing your request"),
-                        "action": None
+                        "action": None,
+                        "current_node_id": node_id
                     }
         
         except Exception as e:
@@ -648,7 +685,8 @@ You are executing a structured conversation flow. Follow these guidelines:
                 "success": False,
                 "message": api_config.get("onError", "There was an issue processing your request"),
                 "action": None,
-                "error": str(e)
+                "error": str(e),
+                "current_node_id": node_id
             }
     
     def _extract_json_value(self, data: dict, path: str) -> Any:
@@ -678,7 +716,7 @@ You are executing a structured conversation flow. Follow these guidelines:
                 break
         
         if not node:
-            return {"success": False, "message": "Transfer node not found", "action": None}
+            return {"success": False, "message": "Transfer node not found", "action": None, "current_node_id": None}
         
         transfer_config = node.data.get("transfer", {})
         phone_number = transfer_config.get("phoneNumber", "")
@@ -686,6 +724,7 @@ You are executing a structured conversation flow. Follow these guidelines:
         
         self.state.transfer_requested = True
         self.state.transfer_target = phone_number
+        self.state.advance_to(node_id)
         
         if self.transfer_callback:
             await self.transfer_callback(phone_number, arguments.get("reason", ""))
@@ -694,7 +733,8 @@ You are executing a structured conversation flow. Follow these guidelines:
             "success": True,
             "message": pre_message,
             "action": "transfer",
-            "target": phone_number
+            "target": phone_number,
+            "current_node_id": node_id
         }
     
     async def _handle_end_call(self, function_name: str, arguments: dict) -> dict:
@@ -713,6 +753,7 @@ You are executing a structured conversation flow. Follow these guidelines:
         closing_message = substitute_variables(closing_message, self.state.collected_slots)
         
         self.state.is_complete = True
+        self.state.advance_to(node_id)
         
         if self.end_call_callback:
             await self.end_call_callback(closing_message)
@@ -720,7 +761,8 @@ You are executing a structured conversation flow. Follow these guidelines:
         return {
             "success": True,
             "message": closing_message,
-            "action": "end"
+            "action": "end",
+            "current_node_id": node_id
         }
     
     async def _handle_confirm_booking(self, arguments: dict) -> dict:
@@ -732,13 +774,15 @@ You are executing a structured conversation flow. Follow these guidelines:
                 "success": True,
                 "message": "Booking confirmed. Processing your reservation.",
                 "action": "confirmed",
-                "booking_data": self.state.collected_slots.copy()
+                "booking_data": self.state.collected_slots.copy(),
+                "current_node_id": self.state.current_node_id
             }
         else:
             return {
                 "success": True,
                 "message": "No problem. Let me know what you'd like to change.",
-                "action": None
+                "action": None,
+                "current_node_id": self.state.current_node_id
             }
     
     def get_collected_data(self) -> dict:

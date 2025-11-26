@@ -6,7 +6,7 @@ import { FormInput, Grip, Calendar, Phone, Mail, Hash, List, Type } from "lucide
 import { CollectSlotNodeData, SlotType } from "../store";
 
 interface CollectSlotNodeProps {
-  data: CollectSlotNodeData;
+  data: CollectSlotNodeData & { isActive?: boolean };
   selected?: boolean;
 }
 
@@ -31,13 +31,19 @@ const slotTypeLabels: Record<SlotType, string> = {
 };
 
 function CollectSlotNode({ data, selected }: CollectSlotNodeProps) {
+  const isActive = data.isActive;
   const slot = data.slot;
   
   return (
     <div
       className={`
-        min-w-[220px] max-w-[280px] rounded-lg border-2 bg-[#141414] shadow-lg
-        ${selected ? "border-purple-500 ring-2 ring-purple-500/20" : "border-purple-600/50"}
+        min-w-[220px] max-w-[280px] rounded-lg border-2 bg-[#141414] shadow-lg transition-all duration-300
+        ${isActive 
+          ? "border-cyan-400 ring-4 ring-cyan-400/40 scale-105" 
+          : selected 
+            ? "border-purple-500 ring-2 ring-purple-500/20" 
+            : "border-purple-600/50"
+        }
       `}
     >
       <Handle

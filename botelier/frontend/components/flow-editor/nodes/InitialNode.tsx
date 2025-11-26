@@ -6,16 +6,23 @@ import { Play, Grip } from "lucide-react";
 import { InitialNodeData } from "../store";
 
 interface InitialNodeProps {
-  data: InitialNodeData;
+  data: InitialNodeData & { isActive?: boolean };
   selected?: boolean;
 }
 
 function InitialNode({ data, selected }: InitialNodeProps) {
+  const isActive = data.isActive;
+  
   return (
     <div
       className={`
-        min-w-[220px] max-w-[280px] rounded-lg border-2 bg-[#141414] shadow-lg
-        ${selected ? "border-green-500 ring-2 ring-green-500/20" : "border-green-600/50"}
+        min-w-[220px] max-w-[280px] rounded-lg border-2 bg-[#141414] shadow-lg transition-all duration-300
+        ${isActive 
+          ? "border-cyan-400 ring-4 ring-cyan-400/40 scale-105" 
+          : selected 
+            ? "border-green-500 ring-2 ring-green-500/20" 
+            : "border-green-600/50"
+        }
       `}
     >
       <div className="flex items-center gap-2 px-3 py-2 border-b border-gray-800 bg-green-900/20 rounded-t-lg">

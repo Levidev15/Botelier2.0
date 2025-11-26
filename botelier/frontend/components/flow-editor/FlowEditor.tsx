@@ -19,6 +19,7 @@ import { useFlowStore } from "./store";
 import { nodeTypes } from "./nodes";
 import NodeInspector from "./NodeInspector";
 import FlowToolbar from "./FlowToolbar";
+import { FlowSimulatorSidebar } from "@/components/flow-simulator";
 import { notify } from "@/lib/notifications";
 import { X } from "lucide-react";
 
@@ -100,9 +101,12 @@ function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
     saveFlow,
     isLoading,
     isDirty,
+    activeNodeId,
+    setActiveNodeId,
   } = useFlowStore();
 
   const [isSaving, setIsSaving] = useState(false);
+  const [showSimulator, setShowSimulator] = useState(false);
 
   useEffect(() => {
     loadFlow(toolId, hotelId);
@@ -157,14 +161,27 @@ function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
     );
   }
 
+  const nodesWithHighlight = nodes.map((node) => ({
+    ...node,
+    data: {
+      ...node.data,
+      isActive: node.id === activeNodeId,
+    },
+  }));
+
   return (
     <div className="h-full flex flex-col bg-[#0a0a0a]">
-      <FlowToolbar onSave={handleSave} isSaving={isSaving} />
+      <FlowToolbar 
+        onSave={handleSave} 
+        isSaving={isSaving} 
+        showSimulator={showSimulator}
+        onToggleSimulator={() => setShowSimulator(!showSimulator)}
+      />
       
-      <div className="flex-1 flex">
+      <div className="flex-1 flex min-h-0">
         <div className="flex-1 relative">
           <ReactFlow
-            nodes={nodes as any}
+            nodes={nodesWithHighlight as any}
             edges={edges}
             onNodesChange={onNodesChange as any}
             onEdgesChange={onEdgesChange}
@@ -199,6 +216,7 @@ function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
               className="!bg-[#141414] !border-gray-700"
               maskColor="rgba(0, 0, 0, 0.8)"
               nodeColor={(node) => {
+                if (node.id === activeNodeId) return "#22d3ee";
                 switch (node.type) {
                   case "initial":
                     return "#22c55e";
@@ -234,6 +252,17 @@ function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
         </div>
 
         <NodeInspector />
+
+        {showSimulator && (
+          <div className="w-80 flex-shrink-0">
+            <FlowSimulatorSidebar
+              toolId={toolId}
+              toolName={toolName || "Flow"}
+              onClose={() => setShowSimulator(false)}
+              onNodeChange={setActiveNodeId}
+            />
+          </div>
+        )}
       </div>
     </div>
   );
