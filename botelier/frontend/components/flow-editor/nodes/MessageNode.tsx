@@ -6,11 +6,13 @@ import { MessageSquare, Grip } from "lucide-react";
 import { MessageNodeData } from "../store";
 
 interface MessageNodeProps {
-  data: MessageNodeData;
+  data: MessageNodeData & { isActive?: boolean };
   selected?: boolean;
 }
 
 function MessageNode({ data, selected }: MessageNodeProps) {
+  const isActive = data.isActive;
+
   const highlightVariables = (text: string) => {
     const parts = text.split(/(\{\{[^}]+\}\})/g);
     return parts.map((part, i) => {
@@ -28,8 +30,13 @@ function MessageNode({ data, selected }: MessageNodeProps) {
   return (
     <div
       className={`
-        min-w-[220px] max-w-[280px] rounded-lg border-2 bg-[#141414] shadow-lg
-        ${selected ? "border-blue-500 ring-2 ring-blue-500/20" : "border-blue-600/50"}
+        min-w-[220px] max-w-[280px] rounded-lg border-2 bg-[#141414] shadow-lg transition-all duration-300
+        ${isActive 
+          ? "border-cyan-400 ring-4 ring-cyan-400/40 scale-105" 
+          : selected 
+            ? "border-blue-500 ring-2 ring-blue-500/20" 
+            : "border-blue-600/50"
+        }
       `}
     >
       <Handle

@@ -6,16 +6,23 @@ import { PhoneOff, Grip } from "lucide-react";
 import { EndNodeData } from "../store";
 
 interface EndNodeProps {
-  data: EndNodeData;
+  data: EndNodeData & { isActive?: boolean };
   selected?: boolean;
 }
 
 function EndNode({ data, selected }: EndNodeProps) {
+  const isActive = data.isActive;
+  
   return (
     <div
       className={`
-        min-w-[220px] max-w-[280px] rounded-lg border-2 bg-[#141414] shadow-lg
-        ${selected ? "border-red-500 ring-2 ring-red-500/20" : "border-red-600/50"}
+        min-w-[220px] max-w-[280px] rounded-lg border-2 bg-[#141414] shadow-lg transition-all duration-300
+        ${isActive 
+          ? "border-cyan-400 ring-4 ring-cyan-400/40 scale-105" 
+          : selected 
+            ? "border-red-500 ring-2 ring-red-500/20" 
+            : "border-red-600/50"
+        }
       `}
     >
       <Handle

@@ -73,6 +73,7 @@ export type NodeType =
 export interface BaseNodeData {
   name: string;
   description?: string;
+  instructions?: string; // Private LLM instructions for how to handle this node
   [key: string]: unknown;
 }
 
@@ -114,6 +115,7 @@ export interface FlowState {
   edges: Edge[];
   variables: FlowVariable[];
   selectedNode: Node<NodeData> | null;
+  activeNodeId: string | null; // For simulator highlighting
   isDirty: boolean;
   isLoading: boolean;
   toolId: string | null;
@@ -126,6 +128,7 @@ export interface FlowState {
   onConnect: (connection: Connection) => void;
   
   selectNode: (node: Node<NodeData> | null) => void;
+  setActiveNodeId: (nodeId: string | null) => void;
   updateNodeData: (nodeId: string, data: Partial<NodeData>) => void;
   addNode: (type: NodeType, position: { x: number; y: number }) => void;
   deleteNode: (nodeId: string) => void;
@@ -513,6 +516,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   edges: [],
   variables: [],
   selectedNode: null,
+  activeNodeId: null,
   isDirty: false,
   isLoading: false,
   toolId: null,
@@ -554,6 +558,8 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   selectNode: (node) => set({ selectedNode: node }),
+  
+  setActiveNodeId: (nodeId) => set({ activeNodeId: nodeId }),
 
   updateNodeData: (nodeId, data) => {
     set({

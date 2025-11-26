@@ -1,6 +1,6 @@
 "use client";
 
-interface SlotTrackerProps {
+export interface SlotTrackerProps {
   collectedSlots: Record<string, unknown>;
   variablesToCollect: Array<{
     key: string;
@@ -19,16 +19,60 @@ interface SlotTrackerProps {
     total?: number;
     percentage?: number;
   };
+  compact?: boolean;
 }
 
 export default function SlotTracker({
   collectedSlots,
   variablesToCollect,
   progress,
+  compact,
 }: SlotTrackerProps) {
   const collected = progress.collected_slots ?? progress.collected ?? 0;
   const total = progress.total_slots ?? progress.total ?? variablesToCollect.length;
   const percentage = total > 0 ? Math.round((collected / total) * 100) : 0;
+
+  if (compact) {
+    return (
+      <div className="space-y-1.5">
+        <div className="w-full bg-[#2a2a2a] rounded-full h-1.5">
+          <div
+            className="bg-blue-500 h-1.5 rounded-full transition-all duration-300"
+            style={{ width: `${percentage}%` }}
+          />
+        </div>
+        <div className="space-y-1">
+          {variablesToCollect.map((variable) => {
+            const isCollected = variable.key in collectedSlots;
+            const value = collectedSlots[variable.key];
+
+            return (
+              <div
+                key={variable.key}
+                className={`flex items-center justify-between py-1 px-2 rounded text-xs ${
+                  isCollected ? "bg-green-900/20" : "bg-[#2a2a2a]"
+                }`}
+              >
+                <div className="flex items-center gap-1.5">
+                  <span
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      isCollected ? "bg-green-500" : "bg-gray-500"
+                    }`}
+                  />
+                  <span className="text-gray-300 font-mono">{variable.key}</span>
+                </div>
+                {isCollected && (
+                  <span className="text-green-400 font-mono truncate max-w-[100px]">
+                    {String(value)}
+                  </span>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="bg-[#1a1a1a] rounded-lg border border-[#2a2a2a] p-4">

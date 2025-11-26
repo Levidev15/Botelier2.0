@@ -14,13 +14,16 @@ import {
   Globe,
   GitBranch,
   PhoneForwarded,
-  PhoneOff
+  PhoneOff,
+  FlaskConical
 } from "lucide-react";
 import { useFlowStore, NodeType, AVAILABLE_TEMPLATES } from "./store";
 
 interface FlowToolbarProps {
   onSave: () => void;
   isSaving: boolean;
+  showSimulator?: boolean;
+  onToggleSimulator?: () => void;
 }
 
 const nodeTypeConfig: { type: NodeType; label: string; icon: React.ReactNode; color: string }[] = [
@@ -33,7 +36,7 @@ const nodeTypeConfig: { type: NodeType; label: string; icon: React.ReactNode; co
   { type: "end", label: "End Call", icon: <PhoneOff className="h-3 w-3" />, color: "bg-red-500" },
 ];
 
-export default function FlowToolbar({ onSave, isSaving }: FlowToolbarProps) {
+export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleSimulator }: FlowToolbarProps) {
   const { addNode, isDirty, applyTemplate, isLoading, nodes } = useFlowStore();
   const [showAddMenu, setShowAddMenu] = useState(false);
   const [showTemplateMenu, setShowTemplateMenu] = useState(false);
@@ -136,6 +139,25 @@ export default function FlowToolbar({ onSave, isSaving }: FlowToolbarProps) {
       <div className="flex items-center gap-2">
         {isDirty && (
           <span className="text-xs text-yellow-500 mr-2">Unsaved changes</span>
+        )}
+
+        {onToggleSimulator && (
+          <button
+            onClick={onToggleSimulator}
+            disabled={nodes.length === 0}
+            className={`
+              flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition
+              ${showSimulator
+                ? "bg-cyan-600 hover:bg-cyan-700 text-white"
+                : nodes.length > 0
+                  ? "bg-gray-700 hover:bg-gray-600 text-white"
+                  : "bg-gray-800 text-gray-500 cursor-not-allowed"
+              }
+            `}
+          >
+            <FlaskConical className="h-4 w-4" />
+            {showSimulator ? "Hide Test" : "Test"}
+          </button>
         )}
 
         <button

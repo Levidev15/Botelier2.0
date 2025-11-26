@@ -668,6 +668,24 @@ export default function NodeInspector() {
         </div>
 
         {renderNodePanel()}
+
+        {/* Instructions field - shown for all node types */}
+        <div className="pt-4 border-t border-gray-800">
+          <label className="block text-sm font-medium text-gray-400 mb-1">
+            AI Instructions
+            <span className="text-xs text-gray-500 ml-2">(private)</span>
+          </label>
+          <textarea
+            value={(data as any).instructions || ""}
+            onChange={(e) => updateNodeData(selectedNode.id, { instructions: e.target.value })}
+            rows={3}
+            className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-gray-500 focus:outline-none resize-none"
+            placeholder="e.g., Be empathetic, confirm date includes year, offer examples if guest seems confused..."
+          />
+          <p className="text-xs text-gray-500 mt-1">
+            Private guidance for the AI on how to handle this step
+          </p>
+        </div>
       </div>
     </div>
   );
