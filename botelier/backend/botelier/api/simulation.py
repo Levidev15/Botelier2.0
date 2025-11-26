@@ -1,17 +1,20 @@
 """
-Flow Simulation API - Test flows without making phone calls.
+Flow Simulation API - Test flows with real LLM conversations.
 
-This module provides endpoints for simulating conversation flows,
-allowing users to test slot collection, API calls, and conditions
-in a chat-like interface without requiring Twilio integration.
+This module provides endpoints for simulating conversation flows
+with actual LLM-powered responses, allowing users to test slot collection,
+API calls, and conditions in a chat-like interface without requiring Twilio.
 """
 
+import os
 import uuid
+import json
 from typing import Any, Optional
 from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from loguru import logger
+from openai import OpenAI
 
 from ..database import get_db
 from ..models.tool import Tool
@@ -19,6 +22,13 @@ from ..flow_executor import FlowExecutor, parse_flow_config
 
 
 router = APIRouter(prefix="/api/simulate", tags=["Simulation"])
+
+# the newest OpenAI model is "gpt-5" which was released August 7, 2025.
+# do not change this unless explicitly requested by the user
+OPENAI_MODEL = "gpt-4o-mini"
+
+OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
+openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 
 class SimulationSession:
@@ -29,11 +39,24 @@ class SimulationSession:
 class SimulationState:
     """Tracks state for a simulation session."""
     
-    def __init__(self, tool_id: str, executor: FlowExecutor):
+    def __init__(self, tool_id: str, executor: FlowExecutor, tool_name: str = ""):
         self.tool_id = tool_id
+        self.tool_name = tool_name
         self.executor = executor
         self.messages: list[dict] = []
+        self.llm_messages: list[dict] = []
         self.is_ended = False
+        self._init_llm_context()
+    
+    def _init_llm_context(self):
+        """Initialize LLM conversation context with system prompt."""
+        system_prompt = self.executor.get_system_prompt()
+        greeting = self.executor.get_greeting()
+        
+        self.llm_messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "assistant", "content": greeting}
+        ]
     
     def add_message(self, role: str, content: str, metadata: Optional[dict] = None):
         self.messages.append({
@@ -41,6 +64,9 @@ class SimulationState:
             "content": content,
             "metadata": metadata or {}
         })
+    
+    def add_llm_message(self, role: str, content: str):
+        self.llm_messages.append({"role": role, "content": content})
     
     def get_state_snapshot(self) -> dict:
         """Get current state for frontend display."""
@@ -130,7 +156,7 @@ async def start_simulation(
         raise HTTPException(status_code=400, detail=f"Invalid flow configuration: {str(e)}")
     
     session_id = str(uuid.uuid4())
-    state = SimulationState(tool_id=request.tool_id, executor=executor)
+    state = SimulationState(tool_id=request.tool_id, executor=executor, tool_name=tool.name)
     
     greeting = executor.get_greeting()
     state.add_message("assistant", greeting)
@@ -162,10 +188,10 @@ async def start_simulation(
 @router.post("/message", response_model=SimulateMessageResponse)
 async def simulate_message(request: SimulateMessageRequest):
     """
-    Process a message or function call in the simulation.
+    Process a message in the simulation using LLM with function calling.
     
-    If function_call is provided, execute that function directly.
-    Otherwise, analyze the message to suggest which function to call.
+    If function_call is provided, execute that function directly (manual mode).
+    Otherwise, send the message to the LLM and let it decide what to do.
     """
     state = SimulationSession.sessions.get(request.session_id)
     if not state:
@@ -201,13 +227,19 @@ async def simulate_message(request: SimulateMessageRequest):
             elif result.get("next_prompt"):
                 response_text = str(result.get("next_prompt", ""))
             else:
-                response_text = f"Collected: {request.function_args}"
+                response_text = f"Recorded: {request.function_args}"
                 
         except Exception as e:
             logger.error(f"Function call error: {e}")
             response_text = f"Error executing function: {str(e)}"
     else:
-        response_text = _analyze_message_for_slots(request.message, executor)
+        llm_response = await _process_with_llm(state, request.message)
+        response_text = llm_response["response"]
+        function_called = llm_response.get("function_called")
+        function_result = llm_response.get("function_result")
+        
+        if llm_response.get("is_ended"):
+            state.is_ended = True
     
     state.add_message("assistant", response_text, {
         "function_called": function_called,
@@ -224,6 +256,123 @@ async def simulate_message(request: SimulateMessageRequest):
         messages=state.messages,
         suggested_functions=suggested_functions
     )
+
+
+async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
+    """
+    Process user message with OpenAI LLM using function calling.
+    
+    The LLM will naturally converse and call functions to collect slots.
+    Handles multiple function calls in sequence until a text response is generated.
+    """
+    if not openai_client:
+        return {
+            "response": "OpenAI API key not configured. Please use the function picker to test manually.",
+            "function_called": None,
+            "function_result": None,
+            "is_ended": False
+        }
+    
+    state.add_llm_message("user", user_message)
+    
+    function_schemas = state.executor.get_function_schemas()
+    tools = [
+        {
+            "type": "function",
+            "function": schema.get("function", schema)
+        }
+        for schema in function_schemas
+    ]
+    
+    all_functions_called = []
+    all_function_results = []
+    is_ended = False
+    max_iterations = 5
+    
+    try:
+        for iteration in range(max_iterations):
+            response = openai_client.chat.completions.create(
+                model=OPENAI_MODEL,
+                messages=state.llm_messages,
+                tools=tools if tools else None,
+                tool_choice="auto" if tools else None,
+            )
+            
+            assistant_message = response.choices[0].message
+            
+            if assistant_message.tool_calls:
+                tool_calls_to_process = []
+                for tool_call in assistant_message.tool_calls:
+                    tool_calls_to_process.append({
+                        "id": tool_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_call.function.name,
+                            "arguments": tool_call.function.arguments
+                        }
+                    })
+                
+                state.llm_messages.append({
+                    "role": "assistant",
+                    "content": None,
+                    "tool_calls": tool_calls_to_process
+                })
+                
+                for tool_call in assistant_message.tool_calls:
+                    function_name = tool_call.function.name
+                    try:
+                        function_args = json.loads(tool_call.function.arguments)
+                    except json.JSONDecodeError:
+                        function_args = {}
+                    
+                    result = await state.executor.handle_function_call(function_name, function_args)
+                    
+                    all_functions_called.append(function_name)
+                    all_function_results.append(result)
+                    
+                    if result.get("action") in ["end", "transfer"]:
+                        is_ended = True
+                    
+                    state.llm_messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps(result)
+                    })
+                
+                if is_ended:
+                    last_result = all_function_results[-1] if all_function_results else {}
+                    return {
+                        "response": last_result.get("message", "Thank you for calling. Goodbye!"),
+                        "function_called": all_functions_called[-1] if all_functions_called else None,
+                        "function_result": last_result,
+                        "is_ended": True
+                    }
+            else:
+                content = assistant_message.content or ""
+                state.add_llm_message("assistant", content)
+                
+                return {
+                    "response": content,
+                    "function_called": all_functions_called[-1] if all_functions_called else None,
+                    "function_result": all_function_results[-1] if all_function_results else None,
+                    "is_ended": is_ended
+                }
+        
+        return {
+            "response": "I've processed your information. Is there anything else I can help with?",
+            "function_called": all_functions_called[-1] if all_functions_called else None,
+            "function_result": all_function_results[-1] if all_function_results else None,
+            "is_ended": is_ended
+        }
+    
+    except Exception as e:
+        logger.error(f"LLM processing error: {e}")
+        return {
+            "response": f"I apologize, I'm having trouble processing that. Could you please repeat?",
+            "function_called": None,
+            "function_result": None,
+            "is_ended": False
+        }
 
 
 @router.delete("/session/{session_id}")
@@ -311,25 +460,6 @@ async def test_api_endpoint(request: TestAPIRequest):
             resolved_body=resolved_body,
             error=str(e)
         )
-
-
-def _analyze_message_for_slots(message: str, executor: FlowExecutor) -> str:
-    """
-    Analyze a user message to suggest what data might be extracted.
-    
-    This is a simplified analysis - in production, the LLM would do this.
-    """
-    state = executor.state
-    uncollected = [
-        v for v in executor.flow_config.variables
-        if v.key not in state.collected_slots
-    ]
-    
-    if not uncollected:
-        return "All information has been collected. The flow is ready to proceed."
-    
-    next_var = uncollected[0]
-    return f"I need to collect: {next_var.description}. Please use the 'collect_{next_var.key}' function with the value from the guest's message."
 
 
 def _get_suggested_functions(executor: FlowExecutor) -> list[dict]:
