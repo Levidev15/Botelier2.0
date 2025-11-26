@@ -115,8 +115,22 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
       toast.success(`Version ${currentVersionNumber} published successfully`);
       setShowPublishModal(false);
       setPublishDescription("");
-    } catch (error) {
-      toast.error("Failed to publish flow");
+    } catch (error: any) {
+      const errorMessage = error?.message || "Failed to publish flow";
+      if (errorMessage.includes("validation failed") || errorMessage.includes("errors")) {
+        try {
+          const parsed = JSON.parse(errorMessage.replace("Flow validation failed: ", ""));
+          if (parsed.errors && Array.isArray(parsed.errors)) {
+            toast.error(`Validation failed: ${parsed.errors.join(", ")}`);
+          } else {
+            toast.error(errorMessage);
+          }
+        } catch {
+          toast.error(errorMessage);
+        }
+      } else {
+        toast.error(errorMessage);
+      }
     } finally {
       setIsPublishing(false);
     }

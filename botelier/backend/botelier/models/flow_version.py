@@ -56,6 +56,12 @@ class FlowVersion(Base):
     __table_args__ = (
         UniqueConstraint('tool_id', 'version_number', name='uq_tool_version'),
         Index('ix_flow_versions_tool_status', 'tool_id', 'status'),
+        Index(
+            'ix_flow_versions_single_draft',
+            'tool_id',
+            unique=True,
+            postgresql_where=(status == FlowVersionStatus.DRAFT)
+        ),
     )
     
     def __repr__(self):
