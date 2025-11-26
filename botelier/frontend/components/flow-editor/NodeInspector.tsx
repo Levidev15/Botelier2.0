@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Trash2, ChevronDown, ChevronRight, Plus, X, Variable } from "lucide-react";
 import { 
   useFlowStore, 
@@ -194,23 +194,38 @@ function MessageNodePanel({ data, nodeId }: { data: MessageNodeData; nodeId: str
 }
 
 function CollectSlotNodePanel({ data, nodeId }: { data: CollectSlotNodeData; nodeId: string }) {
-  const { updateNodeData, addVariable } = useFlowStore();
+  const { updateNodeData, addVariable, updateVariable, variables } = useFlowStore();
   const slot = data.slot || { variableKey: "", prompt: "", type: "text" as SlotType };
+  const [localVarKey, setLocalVarKey] = useState(slot.variableKey || "");
+
+  useEffect(() => {
+    setLocalVarKey(slot.variableKey || "");
+  }, [nodeId, slot.variableKey]);
 
   const updateSlot = (updates: Partial<typeof slot>) => {
     updateNodeData(nodeId, { slot: { ...slot, ...updates } });
   };
 
-  const handleVariableKeyChange = (key: string) => {
+  const handleVariableKeyInput = (key: string) => {
     const sanitized = key.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
-    updateSlot({ variableKey: sanitized });
-    if (sanitized) {
-      addVariable({
-        key: sanitized,
-        type: slot.type,
-        description: `Collected from: ${data.name}`,
-        required: true,
-      });
+    setLocalVarKey(sanitized);
+  };
+
+  const commitVariableKey = () => {
+    const key = localVarKey.trim();
+    if (key && key !== slot.variableKey) {
+      updateSlot({ variableKey: key });
+      const existingVar = variables.find(v => v.key === key);
+      if (!existingVar) {
+        addVariable({
+          key: key,
+          type: slot.type,
+          description: `Collected from: ${data.name}`,
+          required: true,
+        });
+      } else {
+        updateVariable(key, { type: slot.type });
+      }
     }
   };
 
@@ -221,8 +236,10 @@ function CollectSlotNodePanel({ data, nodeId }: { data: CollectSlotNodeData; nod
           <label className="block text-sm font-medium text-gray-400 mb-1">Variable Name</label>
           <input
             type="text"
-            value={slot.variableKey || ""}
-            onChange={(e) => handleVariableKeyChange(e.target.value)}
+            value={localVarKey}
+            onChange={(e) => handleVariableKeyInput(e.target.value)}
+            onBlur={commitVariableKey}
+            onKeyDown={(e) => e.key === "Enter" && commitVariableKey()}
             className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-purple-500 focus:outline-none font-mono"
             placeholder="guest_name"
           />
