@@ -35,11 +35,16 @@ class CallHandler:
     - Real-time audio streaming via WebSocket
     - Call session lifecycle management
     - Function calling and knowledge base integration
+    
+    Call-scoped state:
+    - active_calls: Tracks running call sessions
+    - call_mappers: Stores FunctionMapper per call_sid for state persistence
     """
     
     def __init__(self):
         """Initialize call handler."""
         self.active_calls = {}
+        self.call_mappers: Dict[str, FunctionMapper] = {}
     
     async def handle_call(self, websocket: WebSocket, to_number: str, stream_sid: str, call_sid: str, db: Session):
         """
@@ -163,9 +168,12 @@ class CallHandler:
             if websocket.client_state.name == "CONNECTED":
                 await websocket.close()
         finally:
-            # Cleanup
+            # Cleanup call session state
             if call_sid in self.active_calls:
                 del self.active_calls[call_sid]
+            if call_sid in self.call_mappers:
+                del self.call_mappers[call_sid]
+                logger.debug(f"Cleaned up FunctionMapper for call {call_sid}")
     
     def _create_agent_config(self, assistant: Assistant) -> VoiceAgentConfig:
         """
@@ -277,7 +285,15 @@ class CallHandler:
         
         # 2. Add database tools
         if tools:
-            mapper = FunctionMapper(call_sid=call_sid)
+            # Get or create FunctionMapper for this call session
+            # This ensures FlowExecutor state persists across function calls
+            if call_sid in self.call_mappers:
+                mapper = self.call_mappers[call_sid]
+                logger.debug(f"Reusing FunctionMapper for call {call_sid}")
+            else:
+                mapper = FunctionMapper(call_sid=call_sid)
+                self.call_mappers[call_sid] = mapper
+                logger.info(f"Created FunctionMapper for call {call_sid}")
             
             for tool in tools:
                 try:
