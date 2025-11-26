@@ -167,6 +167,7 @@ async def start_simulation(
     
     SimulationSession.sessions[session_id] = state
     
+    ordered_variables = executor.get_variables_in_flow_order()
     variables_to_collect = [
         {
             "key": v.key,
@@ -175,7 +176,7 @@ async def start_simulation(
             "required": v.required,
             "choices": v.choices
         }
-        for v in flow_config.variables
+        for v in ordered_variables
     ]
     
     logger.info(f"Started simulation session {session_id} for tool {tool.name}")
