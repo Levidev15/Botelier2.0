@@ -14,6 +14,7 @@ from pipecat.services.llm_service import FunctionCallParams
 from twilio.rest import Client as TwilioClient
 
 from botelier.models.tool import Tool, ToolType
+from botelier.flow_executor import FlowExecutor, parse_flow_config
 
 
 class FunctionMapper:
@@ -73,6 +74,8 @@ class FunctionMapper:
             return self._map_send_sms(tool)
         elif tool.tool_type == ToolType.SEND_EMAIL:
             return self._map_send_email(tool)
+        elif tool.tool_type == ToolType.FLOW:
+            return self._map_flow(tool)
         else:
             raise ValueError(f"Unknown tool type: {tool.tool_type}")
     
@@ -250,6 +253,191 @@ class FunctionMapper:
         """Map send email tool to Pipecat function."""
         # Placeholder - implement when email integration is ready
         raise NotImplementedError("Email sending not yet implemented")
+    
+    def _map_flow(self, tool: Tool) -> tuple[Dict[str, Any], Callable]:
+        """
+        Map a conversation flow tool to Pipecat function.
+        
+        Flows are visual conversation workflows with nodes for:
+        - Collecting slot information (name, dates, phone, etc.)
+        - Making API requests
+        - Conditional branching
+        - Transferring calls
+        - Ending conversations
+        
+        The flow executor converts the visual flow into function schemas
+        that the LLM can call to progress through the flow.
+        """
+        flow_config_dict = tool.config or {}
+        
+        # Parse the flow configuration
+        if not flow_config_dict.get("nodes"):
+            logger.warning(f"Flow tool {tool.name} has no nodes configured")
+            # Return a placeholder schema
+            return {
+                "name": tool.name,
+                "description": tool.description or "Execute conversation flow",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }, self._create_empty_flow_handler(tool.name)
+        
+        # Parse the flow config into typed objects
+        flow_config = parse_flow_config(flow_config_dict)
+        
+        # Create flow executor
+        executor = FlowExecutor(flow_config)
+        
+        # Store executor for this flow (we might need to access collected data)
+        if not hasattr(self, '_flow_executors'):
+            self._flow_executors = {}
+        self._flow_executors[tool.name] = executor
+        
+        # Return main flow trigger function
+        # The LLM calls this when it detects the guest wants to start this flow
+        function_schema = {
+            "name": f"start_{tool.name}",
+            "description": f"Start the {tool.name} flow. {tool.description or ''}",
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": []
+            }
+        }
+        
+        async def flow_trigger_handler(params: FunctionCallParams):
+            """Handler for starting the flow."""
+            logger.info(f"🎬 Starting flow: {tool.name}")
+            
+            # Get greeting from the flow
+            greeting = executor.get_greeting()
+            
+            # Speak the greeting
+            await params.llm.push_frame(TTSSpeakFrame(greeting))
+            
+            # Return flow info to LLM so it knows what to collect
+            progress = executor.get_progress()
+            
+            await params.result_callback({
+                "status": "flow_started",
+                "message": greeting,
+                "next_action": "collect_information",
+                "progress": progress
+            })
+        
+        return function_schema, flow_trigger_handler
+    
+    def _create_empty_flow_handler(self, flow_name: str):
+        """Create a placeholder handler for empty flows."""
+        async def empty_handler(params: FunctionCallParams):
+            await params.result_callback({
+                "status": "error",
+                "message": f"Flow {flow_name} has no configured steps"
+            })
+        return empty_handler
+    
+    def get_flow_functions(self, tool: Tool) -> tuple[list[Dict[str, Any]], Dict[str, Callable]]:
+        """
+        Get all function schemas and handlers for a flow tool.
+        
+        A flow generates multiple functions:
+        - One trigger function to start the flow
+        - One function per variable to collect
+        - API request functions
+        - Transfer and end call functions
+        
+        Returns:
+            Tuple of (list of function schemas, dict of handlers)
+        """
+        flow_config_dict = tool.config or {}
+        
+        if not flow_config_dict.get("nodes"):
+            # Empty flow - return just the trigger function
+            schema, handler = self._map_flow(tool)
+            return [schema], {schema["name"]: handler}
+        
+        # Parse and create executor
+        flow_config = parse_flow_config(flow_config_dict)
+        executor = FlowExecutor(flow_config)
+        
+        # Store executor
+        if not hasattr(self, '_flow_executors'):
+            self._flow_executors = {}
+        self._flow_executors[tool.name] = executor
+        
+        # Get all function schemas from the executor
+        function_schemas = executor.get_function_schemas()
+        
+        # Create handlers for each function
+        handlers = {}
+        for schema in function_schemas:
+            func_name = schema["function"]["name"]
+            handlers[func_name] = self._create_flow_function_handler(executor, func_name)
+        
+        # Add trigger function
+        trigger_schema = {
+            "type": "function",
+            "function": {
+                "name": f"start_{tool.name}",
+                "description": f"Start the {tool.name} conversation flow when the guest wants to {tool.description or 'complete this task'}",
+                "parameters": {
+                    "type": "object",
+                    "properties": {},
+                    "required": []
+                }
+            }
+        }
+        function_schemas.insert(0, trigger_schema)
+        handlers[f"start_{tool.name}"] = self._create_flow_trigger_handler(executor, tool.name)
+        
+        return function_schemas, handlers
+    
+    def _create_flow_function_handler(self, executor: FlowExecutor, function_name: str):
+        """Create a handler for a specific flow function."""
+        async def handler(params: FunctionCallParams):
+            result = await executor.handle_function_call(function_name, params.arguments)
+            
+            # If the result includes a message, speak it
+            if result.get("message") and result.get("action") not in ["end", "transfer"]:
+                pass  # LLM will use the result to form response
+            
+            # Handle special actions
+            if result.get("action") == "transfer":
+                target = result.get("target")
+                if self.twilio_client and self.call_sid:
+                    try:
+                        self.twilio_client.calls(self.call_sid).update(
+                            twiml=f'<Response><Dial>{target}</Dial></Response>'
+                        )
+                    except Exception as e:
+                        logger.error(f"Transfer failed: {e}")
+                await params.llm.push_frame(EndFrame())
+            
+            elif result.get("action") == "end":
+                await params.llm.push_frame(TTSSpeakFrame(result.get("message", "Goodbye!")))
+                await params.llm.push_frame(EndFrame())
+            
+            await params.result_callback(result)
+        
+        return handler
+    
+    def _create_flow_trigger_handler(self, executor: FlowExecutor, flow_name: str):
+        """Create handler for starting a flow."""
+        async def handler(params: FunctionCallParams):
+            logger.info(f"🎬 Starting flow: {flow_name}")
+            greeting = executor.get_greeting()
+            progress = executor.get_progress()
+            
+            await params.result_callback({
+                "status": "flow_started",
+                "greeting": greeting,
+                "progress": progress,
+                "instructions": "Collect the required information by calling the collect_* functions as you gather data from the guest."
+            })
+        
+        return handler
 
 
 # Helper function to load tools for a voice agent

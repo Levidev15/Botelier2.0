@@ -281,19 +281,39 @@ class CallHandler:
             
             for tool in tools:
                 try:
-                    function_schema_dict, handler = mapper.map_tool_to_function(tool)
-                    
-                    # Convert dict to FunctionSchema
-                    tool_schema = FunctionSchema(
-                        name=function_schema_dict["name"],
-                        description=function_schema_dict["description"],
-                        properties=function_schema_dict.get("parameters", {}).get("properties", {}),
-                        required=function_schema_dict.get("parameters", {}).get("required", []),
-                    )
-                    function_schemas.append(tool_schema)
-                    function_handlers[function_schema_dict["name"]] = handler
-                    
-                    logger.info(f"✅ Built function schema for tool: {tool.name}")
+                    # Check if this is a FLOW type tool - requires special handling
+                    if tool.tool_type.value == "FLOW":
+                        # Flow tools generate multiple function schemas (one per slot + API calls + etc.)
+                        flow_schemas, flow_handlers = mapper.get_flow_functions(tool)
+                        
+                        for schema in flow_schemas:
+                            # Convert OpenAI format to FunctionSchema
+                            func_def = schema.get("function", schema)
+                            tool_schema = FunctionSchema(
+                                name=func_def["name"],
+                                description=func_def.get("description", ""),
+                                properties=func_def.get("parameters", {}).get("properties", {}),
+                                required=func_def.get("parameters", {}).get("required", []),
+                            )
+                            function_schemas.append(tool_schema)
+                        
+                        function_handlers.update(flow_handlers)
+                        logger.info(f"✅ Built {len(flow_schemas)} function schemas for flow: {tool.name}")
+                    else:
+                        # Regular tool - single function
+                        function_schema_dict, handler = mapper.map_tool_to_function(tool)
+                        
+                        # Convert dict to FunctionSchema
+                        tool_schema = FunctionSchema(
+                            name=function_schema_dict["name"],
+                            description=function_schema_dict["description"],
+                            properties=function_schema_dict.get("parameters", {}).get("properties", {}),
+                            required=function_schema_dict.get("parameters", {}).get("required", []),
+                        )
+                        function_schemas.append(tool_schema)
+                        function_handlers[function_schema_dict["name"]] = handler
+                        
+                        logger.info(f"✅ Built function schema for tool: {tool.name}")
                 except Exception as e:
                     logger.error(f"Failed to build schema for tool {tool.name}: {e}")
         
