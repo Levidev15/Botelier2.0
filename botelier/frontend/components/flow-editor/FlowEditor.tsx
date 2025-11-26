@@ -8,6 +8,10 @@ import {
   MiniMap,
   BackgroundVariant,
   ReactFlowProvider,
+  Edge,
+  EdgeProps,
+  getBezierPath,
+  BaseEdge,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
@@ -16,12 +20,72 @@ import { nodeTypes } from "./nodes";
 import NodeInspector from "./NodeInspector";
 import FlowToolbar from "./FlowToolbar";
 import { notify } from "@/lib/notifications";
+import { X } from "lucide-react";
 
 interface FlowEditorProps {
   toolId: string;
   hotelId: string;
   toolName?: string;
 }
+
+function DeletableEdge({
+  id,
+  sourceX,
+  sourceY,
+  targetX,
+  targetY,
+  sourcePosition,
+  targetPosition,
+  style = {},
+  markerEnd,
+  selected,
+}: EdgeProps) {
+  const deleteEdge = useFlowStore((state) => state.deleteEdge);
+  
+  const [edgePath, labelX, labelY] = getBezierPath({
+    sourceX,
+    sourceY,
+    sourcePosition,
+    targetX,
+    targetY,
+    targetPosition,
+  });
+
+  const onEdgeClick = (evt: React.MouseEvent) => {
+    evt.stopPropagation();
+    deleteEdge(id);
+  };
+
+  return (
+    <>
+      <BaseEdge path={edgePath} markerEnd={markerEnd} style={style} />
+      {selected && (
+        <foreignObject
+          width={20}
+          height={20}
+          x={labelX - 10}
+          y={labelY - 10}
+          className="edgebutton-foreignobject"
+          requiredExtensions="http://www.w3.org/1999/xhtml"
+        >
+          <div className="flex items-center justify-center w-full h-full">
+            <button
+              className="w-5 h-5 bg-red-500 hover:bg-red-600 rounded-full flex items-center justify-center cursor-pointer border-2 border-[#0a0a0a] transition-colors"
+              onClick={onEdgeClick}
+              title="Delete connection"
+            >
+              <X className="w-3 h-3 text-white" />
+            </button>
+          </div>
+        </foreignObject>
+      )}
+    </>
+  );
+}
+
+const edgeTypes = {
+  deletable: DeletableEdge,
+};
 
 function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
   const {
@@ -82,6 +146,17 @@ function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
   }, [isDirty, isSaving]);
 
 
+  if (isLoading) {
+    return (
+      <div className="h-full flex items-center justify-center bg-[#0a0a0a]">
+        <div className="text-center">
+          <div className="animate-spin h-8 w-8 border-4 border-cyan-600 border-t-transparent rounded-full mx-auto" />
+          <p className="mt-4 text-gray-400">Loading flow...</p>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="h-full flex flex-col bg-[#0a0a0a]">
       <FlowToolbar onSave={handleSave} isSaving={isSaving} />
@@ -97,11 +172,13 @@ function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
             onNodeClick={onNodeClick}
             onPaneClick={onPaneClick}
             nodeTypes={nodeTypes as any}
+            edgeTypes={edgeTypes}
             fitView
             snapToGrid
             snapGrid={[15, 15]}
+            edgesReconnectable
             defaultEdgeOptions={{
-              type: "smoothstep",
+              type: "deletable",
               animated: true,
               style: { stroke: "#3b82f6", strokeWidth: 2 },
             }}
