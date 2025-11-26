@@ -24,8 +24,9 @@ Botelier is a multi-tenant SaaS platform providing hotels with custom voice AI a
 - **FunctionMapper Integration**: FLOW tools now generate multiple function schemas per variable
 
 **Enhanced Node Types** - Complete node system for hotel workflows:
-- **Initial Node**: Greeting and system prompt configuration
-- **Message Node**: Speak messages with variable substitution ({{variable}})
+- **Initial Node**: Greeting and system prompt configuration with "await response" toggle
+- **Message Node**: Speak messages with variable substitution ({{variable}}) and "wait for response" toggle
+- **Auto-Advance**: When "await response" is OFF, flow automatically continues to next node without waiting for guest input
 - **CollectSlot Node**: Gather guest information with validation and retry logic
 - **APIRequest Node**: Call external APIs with templated URLs and response mapping
 - **Condition Node**: Branch flow based on variable values (equals, greater_than, is_empty, etc.)
