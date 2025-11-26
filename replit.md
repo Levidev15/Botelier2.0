@@ -5,6 +5,14 @@ Botelier is a multi-tenant SaaS platform providing hotels with custom voice AI a
 
 ## Recent Changes (November 26, 2025)
 
+**Flow Simulator** - Test flows without making phone calls:
+- **Simulation API** (`botelier/backend/botelier/api/simulation.py`): Endpoints for `/api/simulate/start`, `/api/simulate/message`, `/api/simulate/session/{id}`, `/api/simulate/test-api`
+- **FlowSimulator Modal** (`components/flow-simulator/`): Chat-based testing interface with real-time slot tracking
+- **Test Button on Tools Page**: Flows show an enabled "Test" button when nodes are configured
+- **Function Picker**: Click to execute functions like slot collection, end call
+- **Slot Tracker Panel**: Real-time display of collected variables and progress
+- **API Tester**: Test API endpoints with variable substitution preview
+
 **Flow Execution Runtime** - Backend system to execute flows during Pipecat calls:
 - **FlowExecutor Class** (`botelier/backend/botelier/flow_executor.py`): Converts visual flows to Pipecat function schemas
 - **Variable Substitution**: `{{variable_name}}` syntax replaced with collected slot values
