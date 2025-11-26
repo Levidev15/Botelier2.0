@@ -237,7 +237,8 @@ def get_tool_flow(tool_id: str, hotel_id: str, db: Session = Depends(get_db)):
         "flow_config": {
             "initial_node": flow_config.get("initial_node"),
             "nodes": flow_config.get("nodes", []),
-            "edges": flow_config.get("edges", [])
+            "edges": flow_config.get("edges", []),
+            "variables": flow_config.get("variables", [])
         }
     }
 
@@ -276,7 +277,8 @@ def update_tool_flow(
     tool.config = {
         "initial_node": flow_config.get("initial_node"),
         "nodes": flow_config.get("nodes", []),
-        "edges": flow_config.get("edges", [])
+        "edges": flow_config.get("edges", []),
+        "variables": flow_config.get("variables", [])
     }
     
     db.commit()
