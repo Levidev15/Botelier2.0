@@ -129,6 +129,7 @@ export interface FlowState {
   updateNodeData: (nodeId: string, data: Partial<NodeData>) => void;
   addNode: (type: NodeType, position: { x: number; y: number }) => void;
   deleteNode: (nodeId: string) => void;
+  deleteEdge: (edgeId: string) => void;
   
   addVariable: (variable: FlowVariable) => void;
   updateVariable: (key: string, variable: Partial<FlowVariable>) => void;
@@ -542,7 +543,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       edges: addEdge(
         {
           ...connection,
-          type: "smoothstep",
+          type: "deletable",
           animated: true,
           style: edgeStyle,
         },
@@ -595,6 +596,13 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     });
   },
 
+  deleteEdge: (edgeId) => {
+    set({
+      edges: get().edges.filter((e) => e.id !== edgeId),
+      isDirty: true,
+    });
+  },
+
   addVariable: (variable) => {
     set({
       variables: [...get().variables, variable],
@@ -627,6 +635,13 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       const data = await response.json();
       
       if (data.flow_config && data.flow_config.nodes) {
+        const loadedEdges = (data.flow_config.edges || []).map((e: any) => ({
+          ...e,
+          type: "deletable",
+          animated: true,
+          style: { stroke: "#3b82f6", strokeWidth: 2 },
+        }));
+        
         set({
           nodes: data.flow_config.nodes.map((n: any) => ({
             id: n.id,
@@ -634,7 +649,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
             position: n.position || { x: 0, y: 0 },
             data: n.data || { name: n.id },
           })),
-          edges: data.flow_config.edges || [],
+          edges: loadedEdges,
           variables: data.flow_config.variables || [],
           isDirty: false,
         });
