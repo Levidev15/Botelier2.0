@@ -1,9 +1,10 @@
 "use client";
 
-import { LucideIcon, Trash2, Edit, GitBranch } from "lucide-react";
+import { LucideIcon, Trash2, Edit, GitBranch, Play } from "lucide-react";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { notify, confirmAction } from "@/lib/notifications";
+import { FlowSimulator } from "@/components/flow-simulator";
 
 interface ToolCardProps {
   tool: {
@@ -22,11 +23,17 @@ interface ToolCardProps {
 export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete }: ToolCardProps) {
   const router = useRouter();
   const [deleting, setDeleting] = useState(false);
+  const [showSimulator, setShowSimulator] = useState(false);
 
   const isFlowTool = tool.tool_type === "FLOW";
+  const hasFlowNodes = isFlowTool && tool.config?.nodes?.length > 0;
 
   const handleEditFlow = () => {
     router.push(`/dashboard/tools/${tool.id}/flow`);
+  };
+
+  const handleTestFlow = () => {
+    setShowSimulator(true);
   };
 
   const handleDelete = async () => {
@@ -113,13 +120,24 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete }: Tool
 
       <div className="flex items-center gap-2 pt-4 border-t border-gray-800">
         {isFlowTool ? (
-          <button
-            onClick={handleEditFlow}
-            className="flex-1 px-3 py-2 text-sm text-cyan-400 hover:text-cyan-300 hover:bg-cyan-950/20 rounded transition-colors flex items-center justify-center gap-2"
-          >
-            <GitBranch size={14} />
-            Edit Flow
-          </button>
+          <>
+            <button
+              onClick={handleEditFlow}
+              className="flex-1 px-3 py-2 text-sm text-cyan-400 hover:text-cyan-300 hover:bg-cyan-950/20 rounded transition-colors flex items-center justify-center gap-2"
+            >
+              <GitBranch size={14} />
+              Edit
+            </button>
+            <button
+              onClick={handleTestFlow}
+              disabled={!hasFlowNodes}
+              className="flex-1 px-3 py-2 text-sm text-green-400 hover:text-green-300 hover:bg-green-950/20 rounded transition-colors flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed"
+              title={hasFlowNodes ? "Test this flow" : "Add nodes to test this flow"}
+            >
+              <Play size={14} />
+              Test
+            </button>
+          </>
         ) : (
           <button
             className="flex-1 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800 rounded transition-colors flex items-center justify-center gap-2"
@@ -137,6 +155,14 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete }: Tool
           {deleting ? "Deleting..." : "Delete"}
         </button>
       </div>
+
+      {showSimulator && (
+        <FlowSimulator
+          toolId={tool.id}
+          toolName={tool.name}
+          onClose={() => setShowSimulator(false)}
+        />
+      )}
     </div>
   );
 }
