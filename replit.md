@@ -5,6 +5,13 @@ Botelier is a multi-tenant SaaS platform providing hotels with custom voice AI a
 
 ## Recent Changes (November 26, 2025)
 
+**Production Hardening** - Flow system improvements for production-ready deployments:
+- **Validators Module** (`botelier/backend/botelier/validators.py`): Built-in validation for phone (E.164 format), email (regex), dates (with cross-field validation for check-out > check-in), and number limits
+- **ConfirmationNode**: New node type for reviewing booking details before API calls with summary template and confirmed/edit routing
+- **SetVariableNode**: New node type for mid-flow data transformations supporting static values, templates, and expressions
+- **FlowExecutor Updates**: Handlers and function schemas for CONFIRMATION and SET_VARIABLE nodes with camelCase/snake_case compatibility
+- **Schema Compatibility**: Backend handlers support both frontend (camelCase) and backend (snake_case) key formats
+
 **Integrated Flow Simulator** - Test flows directly in the flow editor (Retell AI-style):
 - **Embedded Sidebar**: Simulator integrated as a sidebar panel in the flow editor, not a separate modal
 - **Test Button in Toolbar**: Click "Test" button in flow editor toolbar to toggle the simulator sidebar
