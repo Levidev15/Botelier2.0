@@ -351,6 +351,8 @@ You are executing a structured conversation flow. Follow these guidelines:
 4. If the guest provides information proactively, acknowledge and record it
 5. When a guest provides a date without a year (e.g., "Dec 12th"), interpret it as the next occurrence after today ({current_date}). Never assume a past year.
 6. For number fields, respect the minimum and maximum limits specified.
+7. IMPORTANT: Never use markdown formatting (no asterisks, bold, bullets, etc). This is a voice conversation - speak naturally without any special formatting.
+8. When confirming details, list them conversationally without formatting (e.g., "Your name is John Smith, checking in December 8th, checking out December 10th, for 2 guests").
 
 {flow_context}"""
     
@@ -358,6 +360,9 @@ You are executing a structured conversation flow. Follow these guidelines:
         """Generate context about what information needs to be collected."""
         ordered_vars = self.get_variables_in_flow_order()
         slots_to_collect = []
+        
+        now = datetime.now(timezone.utc)
+        current_date = now.strftime("%Y-%m-%d")
         
         for var in ordered_vars:
             if var.key not in self.state.collected_slots:
@@ -372,14 +377,32 @@ You are executing a structured conversation flow. Follow these guidelines:
                         constraints.append(f"minimum: {validation['min']}")
                     if "max" in validation:
                         constraints.append(f"maximum: {validation['max']}")
+                    
+                    after_date_var = validation.get("afterDateVariable") or validation.get("after_date_variable")
+                    if after_date_var:
+                        after_date_str = self.state.get_variable(after_date_var)
+                        if after_date_str:
+                            constraints.append(f"must be after {after_date_str}")
+                    
                     if constraints:
                         slot_info += f" [{', '.join(constraints)}]"
                 
                 if var.type == SlotType.DATE:
-                    slot_info += " [must be in the future, use YYYY-MM-DD format]"
+                    after_date_var = None
+                    if validation:
+                        after_date_var = validation.get("afterDateVariable") or validation.get("after_date_variable")
+                    if after_date_var:
+                        after_date_str = self.state.get_variable(after_date_var)
+                        if after_date_str:
+                            slot_info += f" [must be after {after_date_str}, use YYYY-MM-DD format]"
+                        else:
+                            slot_info += f" [must be after {current_date}, use YYYY-MM-DD format]"
+                    else:
+                        slot_info += f" [must be after {current_date}, use YYYY-MM-DD format]"
                 
                 if node_instructions:
-                    slot_info += f"\n  Instructions: {node_instructions}"
+                    node_instructions_resolved = substitute_variables(node_instructions, self.state.collected_slots)
+                    slot_info += f"\n  Instructions: {node_instructions_resolved}"
                 slots_to_collect.append(slot_info)
         
         if slots_to_collect:
@@ -404,6 +427,112 @@ You are executing a structured conversation flow. Follow these guidelines:
                 if slot.get("variableKey") == var_key:
                     return node.data.get("instructions")
         return None
+    
+    def _find_next_reachable_collect_slot(self) -> tuple:
+        """
+        Find the next COLLECT_SLOT node reachable from the current position.
+        Traverses edges from current node without skipping collect_slots.
+        
+        Returns: (node, variable_key) or (None, None) if no collect_slot reachable
+        """
+        current_node = self.state.get_current_node()
+        if not current_node:
+            return (None, None)
+        
+        if current_node.type == NodeType.COLLECT_SLOT:
+            slot = current_node.data.get("slot", {})
+            return (current_node, slot.get("variableKey"))
+        
+        visited = set()
+        queue = [current_node.id]
+        
+        while queue:
+            node_id = queue.pop(0)
+            if node_id in visited:
+                continue
+            visited.add(node_id)
+            
+            node = None
+            for n in self.flow_config.nodes:
+                if n.id == node_id:
+                    node = n
+                    break
+            
+            if not node:
+                continue
+            
+            if node.type == NodeType.COLLECT_SLOT:
+                slot = node.data.get("slot", {})
+                var_key = slot.get("variableKey")
+                if var_key and var_key not in self.state.collected_slots:
+                    return (node, var_key)
+            
+            for edge in self.flow_config.edges:
+                if edge.source == node_id and edge.target not in visited:
+                    queue.append(edge.target)
+        
+        return (None, None)
+    
+    def _get_next_slot_instructions(self) -> Optional[dict]:
+        """Get instructions for the next slot to collect, with dynamic constraints based on collected values."""
+        current_node = self.state.get_current_node()
+        if not current_node:
+            return None
+        
+        if current_node.type != NodeType.COLLECT_SLOT:
+            return None
+        
+        slot = current_node.data.get("slot", {})
+        var_key = slot.get("variableKey")
+        if not var_key or var_key in self.state.collected_slots:
+            return None
+        
+        var_info = None
+        for var in self.flow_config.variables:
+            if var.key == var_key:
+                var_info = var
+                break
+        
+        if not var_info:
+            return None
+        
+        validation = slot.get("validation") or {}
+        constraints = []
+        
+        now = datetime.now(timezone.utc)
+        current_date = now.strftime("%Y-%m-%d")
+        
+        if var_info.type == SlotType.NUMBER:
+            if "min" in validation:
+                constraints.append(f"minimum: {validation['min']}")
+            if "max" in validation:
+                constraints.append(f"maximum: {validation['max']}")
+        
+        elif var_info.type == SlotType.DATE:
+            after_date_var = None
+            if validation:
+                after_date_var = validation.get("afterDateVariable") or validation.get("after_date_variable")
+            if after_date_var:
+                after_date_str = self.state.get_variable(after_date_var)
+                if after_date_str:
+                    constraints.append(f"must be after {after_date_str}")
+                else:
+                    constraints.append(f"must be after {current_date}")
+            else:
+                constraints.append(f"must be after {current_date}")
+            constraints.append("use YYYY-MM-DD format")
+        
+        instructions = current_node.data.get("instructions")
+        if instructions:
+            instructions = substitute_variables(instructions, self.state.collected_slots)
+        
+        return {
+            "variable": var_key,
+            "type": var_info.type.value,
+            "description": var_info.description,
+            "constraints": constraints if constraints else None,
+            "instructions": instructions
+        }
     
     def get_current_node_instructions(self) -> Optional[str]:
         """Get instructions for the current node."""
@@ -519,29 +648,31 @@ You are executing a structured conversation flow. Follow these guidelines:
                 func_schema = self._create_end_function(node)
                 functions.append(func_schema)
         
-        functions.append({
-            "type": "function",
-            "function": {
-                "name": "confirm_booking",
-                "description": "Confirm the booking details with the guest after all information is collected",
-                "parameters": {
-                    "type": "object",
-                    "properties": {
-                        "confirmed": {
-                            "type": "boolean",
-                            "description": "Whether the guest confirmed the booking details"
-                        }
-                    },
-                    "required": ["confirmed"]
+        has_confirmation_node = any(node.type == NodeType.CONFIRMATION for node in self.flow_config.nodes)
+        if not has_confirmation_node:
+            functions.append({
+                "type": "function",
+                "function": {
+                    "name": "confirm_booking",
+                    "description": "Confirm the booking details with the guest after all information is collected. Summarize all collected information in plain text (no markdown or special formatting) and ask the guest to confirm.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Whether the guest confirmed the booking details"
+                            }
+                        },
+                        "required": ["confirmed"]
+                    }
                 }
-            }
-        })
+            })
         
         return functions
     
     def _create_slot_function(self, var: FlowVariable) -> dict:
         """Create a function schema for collecting a slot."""
-        validation = self._get_validation_for_variable(var.key)
+        validation = self._get_validation_for_variable(var.key) or {}
         
         if var.type == SlotType.CHOICE and var.choices:
             return {
@@ -591,17 +722,30 @@ You are executing a structured conversation flow. Follow these guidelines:
         if var.type == SlotType.DATE:
             now = datetime.now(timezone.utc)
             current_date = now.strftime("%Y-%m-%d")
+            
+            after_date_var = None
+            if validation:
+                after_date_var = validation.get("afterDateVariable") or validation.get("after_date_variable")
+            after_date_str = None
+            if after_date_var and hasattr(self, 'state'):
+                after_date_str = self.state.get_variable(after_date_var)
+            
+            if after_date_str:
+                date_constraint = f"must be after {after_date_str}"
+            else:
+                date_constraint = f"must be in the future (after {current_date})"
+            
             return {
                 "type": "function",
                 "function": {
                     "name": f"collect_{var.key}",
-                    "description": f"Record the {var.description}. Date must be in the future (after {current_date}). Format: YYYY-MM-DD.",
+                    "description": f"Record the {var.description}. Date {date_constraint}. Format: YYYY-MM-DD.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             var.key: {
                                 "type": "string",
-                                "description": f"{var.description} (YYYY-MM-DD format, must be after {current_date})"
+                                "description": f"{var.description} (YYYY-MM-DD format, {date_constraint})"
                             }
                         },
                         "required": [var.key]
@@ -797,13 +941,38 @@ You are executing a structured conversation flow. Follow these guidelines:
             
             collecting_node_id = None
             slot_config = None
-            for node in self.flow_config.nodes:
-                if node.type == NodeType.COLLECT_SLOT:
-                    slot = node.data.get("slot", {})
-                    if slot.get("variableKey") == var_key:
-                        collecting_node_id = node.id
-                        slot_config = slot
-                        break
+            
+            current_node = self.state.get_current_node()
+            if current_node and current_node.type == NodeType.COLLECT_SLOT:
+                slot = current_node.data.get("slot", {})
+                if slot.get("variableKey") == var_key:
+                    collecting_node_id = current_node.id
+                    slot_config = slot
+            
+            if not collecting_node_id:
+                next_collect_node, next_collect_var = self._find_next_reachable_collect_slot()
+                
+                if next_collect_node and next_collect_var != var_key:
+                    expected_info = None
+                    for v in self.flow_config.variables:
+                        if v.key == next_collect_var:
+                            expected_info = v
+                            break
+                    expected_desc = expected_info.description if expected_info else next_collect_var
+                    return {
+                        "success": False,
+                        "message": f"Please collect {expected_desc} first before moving to {var_info.description if var_info else var_key}.",
+                        "action": None,
+                        "out_of_order": True,
+                        "expected_variable": next_collect_var,
+                        "current_node_id": self.state.current_node_id
+                    }
+                
+                if next_collect_node and next_collect_var == var_key:
+                    slot = next_collect_node.data.get("slot", {})
+                    collecting_node_id = next_collect_node.id
+                    slot_config = slot
+                    self.state.advance_to(next_collect_node.id)
             
             validation_error = self._validate_slot_value(var_info, slot_config, value)
             if validation_error:
@@ -825,14 +994,17 @@ You are executing a structured conversation flow. Follow these guidelines:
                     next_node_id = next_node.id
                     self.state.advance_to(next_node.id)
                 else:
-                    self.state.advance_to(collecting_node_id)
+                    pass
+            
+            next_slot_instructions = self._get_next_slot_instructions()
             
             return {
                 "success": True,
                 "message": f"Recorded {var_info.description if var_info else var_key}: {value}",
                 "action": None,
                 "collected": {var_key: value},
-                "current_node_id": next_node_id or collecting_node_id
+                "current_node_id": next_node_id or collecting_node_id or self.state.current_node_id,
+                "next_slot": next_slot_instructions
             }
         
         return {
@@ -847,7 +1019,7 @@ You are executing a structured conversation flow. Follow these guidelines:
         if not var_info:
             return None
         
-        validation = slot_config.get("validation", {}) if slot_config else {}
+        validation = (slot_config.get("validation") or {}) if slot_config else {}
         
         if var_info.type == SlotType.NUMBER:
             try:
@@ -866,6 +1038,17 @@ You are executing a structured conversation flow. Follow these guidelines:
                     today = datetime.now(timezone.utc).date()
                     if date_value < today:
                         return f"Date must be today or in the future (on or after {today})."
+                    
+                    after_date_var = validation.get("afterDateVariable") or validation.get("after_date_variable")
+                    if after_date_var:
+                        after_date_str = self.state.get_variable(after_date_var)
+                        if after_date_str:
+                            try:
+                                after_date = datetime.strptime(after_date_str, "%Y-%m-%d").date()
+                                if date_value <= after_date:
+                                    return f"Date must be after {after_date_str}."
+                            except ValueError:
+                                pass
                 except ValueError:
                     return "Please provide a date in YYYY-MM-DD format."
         
@@ -1182,13 +1365,60 @@ You are executing a structured conversation flow. Follow these guidelines:
         }
     
     async def _handle_confirm_booking(self, arguments: dict) -> dict:
-        """Handle booking confirmation."""
+        """Handle booking confirmation - tries to find a CONFIRMATION node in the flow."""
         confirmed = arguments.get("confirmed", False)
+        
+        confirmation_node = None
+        for node in self.flow_config.nodes:
+            if node.type == NodeType.CONFIRMATION:
+                confirmation_node = node
+                break
+        
+        if confirmation_node:
+            confirmation_data = confirmation_node.data.get("confirmation", {})
+            
+            if confirmed:
+                next_node = self.state.get_next_node(confirmation_node.id, handle="confirmed")
+                if next_node:
+                    self.state.advance_to(next_node.id)
+                    return {
+                        "success": True,
+                        "message": "Details confirmed. Proceeding with your reservation.",
+                        "action": "confirmed",
+                        "booking_data": self.state.collected_slots.copy(),
+                        "current_node_id": next_node.id
+                    }
+                return {
+                    "success": True,
+                    "message": "Details confirmed. Proceeding with your reservation.",
+                    "action": "confirmed",
+                    "booking_data": self.state.collected_slots.copy(),
+                    "current_node_id": confirmation_node.id
+                }
+            else:
+                edit_prompt = confirmation_data.get("editPrompt", confirmation_data.get("edit_prompt", "What would you like to change?"))
+                next_node = self.state.get_next_node(confirmation_node.id, handle="edit")
+                if next_node:
+                    self.state.advance_to(next_node.id)
+                    return {
+                        "success": True,
+                        "message": edit_prompt,
+                        "action": None,
+                        "confirmed": False,
+                        "current_node_id": next_node.id
+                    }
+                return {
+                    "success": True,
+                    "message": edit_prompt,
+                    "action": None,
+                    "confirmed": False,
+                    "current_node_id": confirmation_node.id
+                }
         
         if confirmed:
             return {
                 "success": True,
-                "message": "Booking confirmed. Processing your reservation.",
+                "message": "Details confirmed. Proceeding with your reservation.",
                 "action": "confirmed",
                 "booking_data": self.state.collected_slots.copy(),
                 "current_node_id": self.state.current_node_id
@@ -1196,7 +1426,7 @@ You are executing a structured conversation flow. Follow these guidelines:
         else:
             return {
                 "success": True,
-                "message": "No problem. Let me know what you'd like to change.",
+                "message": "No problem. What would you like to change?",
                 "action": None,
                 "current_node_id": self.state.current_node_id
             }

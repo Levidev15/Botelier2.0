@@ -280,6 +280,10 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
     
     state.add_llm_message("user", user_message)
     
+    updated_system_prompt = state.executor.get_system_prompt()
+    if state.llm_messages and state.llm_messages[0]["role"] == "system":
+        state.llm_messages[0]["content"] = updated_system_prompt
+    
     function_schemas = state.executor.get_function_schemas()
     tools = [
         {
