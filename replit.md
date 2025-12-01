@@ -3,7 +3,18 @@
 ## Overview
 Botelier is a multi-tenant SaaS platform providing hotels with custom voice AI agents for guest services. It offers a hotel-centric interface for configuring conversational AI, abstracting complex underlying frameworks. The platform aims to streamline hotel operations, enhance guest experiences, and deliver a scalable solution for AI-powered guest interaction. The business vision is to become the leading provider of voice AI for the hospitality industry, offering a robust and intuitive platform that significantly improves operational efficiency and guest satisfaction.
 
-## Recent Changes (November 26, 2025)
+## Recent Changes (December 1, 2025)
+
+**Flow Execution Bug Fixes** - Critical fixes for production-ready slot collection:
+- **Flow Order Enforcement**: `_find_next_reachable_collect_slot()` uses BFS to find the next uncollected slot; attempts to skip ahead return `out_of_order: true` error
+- **Dynamic Date Constraints**: Check-out date validation uses `afterDateVariable` to reference collected check-in date dynamically; system prompt updates each turn
+- **Next Slot Instructions**: Tool responses include `next_slot` with dynamic constraints based on already-collected values
+- **Voice-Friendly Prompts**: System prompt includes rules to never use markdown formatting (asterisks, bullets) since TTS reads them aloud
+- **Confirmation Node Integration**: Properly locates CONFIRMATION nodes in flow graph for pre-submission reviews; fallback `confirm_booking` only when no CONFIRMATION node exists
+- **Variable Substitution**: Node instructions use `{{variable}}` syntax resolved with collected slot values
+- **Simulation System Prompt Refresh**: Simulation API updates system prompt each turn to reflect collected values and dynamic constraints
+
+## Previous Changes (November 26, 2025)
 
 **Flow Versioning System** - Draft/Publish workflow for production safety:
 - **Draft/Publish Workflow**: Flows are saved as drafts, tested in simulator, then explicitly published to go live
