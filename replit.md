@@ -13,6 +13,7 @@ Botelier is a multi-tenant SaaS platform providing hotels with custom voice AI a
 - **Confirmation Node Integration**: Properly locates CONFIRMATION nodes in flow graph for pre-submission reviews; fallback `confirm_booking` only when no CONFIRMATION node exists
 - **Variable Substitution**: Node instructions use `{{variable}}` syntax resolved with collected slot values
 - **Simulation System Prompt Refresh**: Simulation API updates system prompt each turn to reflect collected values and dynamic constraints
+- **Internal Date Format**: YYYY-MM-DD format kept in function schemas (LLM internal) but removed from guest-facing messages; validation errors now conversational
 
 ## Previous Changes (November 26, 2025)
 
