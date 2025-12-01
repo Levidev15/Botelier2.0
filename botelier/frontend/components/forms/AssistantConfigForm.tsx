@@ -318,35 +318,37 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
   const pageTitle = mode === "create" ? "Create New Assistant" : assistant?.name || "Edit Assistant";
 
   return (
-    <div className="h-full pb-48">
-      {/* Header */}
-      <div className="border-b border-gray-800 bg-[#0a0a0a] sticky top-0 z-30">
-        <div className="px-8 py-6">
-          <div className="flex items-center space-x-4">
-            <Link
-              href="/dashboard/assistants"
-              className="text-gray-400 hover:text-white transition"
-            >
-              <ArrowLeft className="h-5 w-5" />
-            </Link>
-            <div>
-              <h1 className="text-2xl font-bold">{pageTitle}</h1>
-              <p className="text-sm text-gray-400 mt-1">
-                Configure your voice assistant
-              </p>
+    <div className={`h-full ${isDirty || saving ? 'pb-24' : 'pb-12'}`}>
+      {/* Sticky Header + Tabs Container */}
+      <div className="sticky top-0 z-30 bg-[#0a0a0a]">
+        {/* Header */}
+        <div className="border-b border-gray-800">
+          <div className="px-8 py-6">
+            <div className="flex items-center space-x-4">
+              <Link
+                href="/dashboard/assistants"
+                className="text-gray-400 hover:text-white transition"
+              >
+                <ArrowLeft className="h-5 w-5" />
+              </Link>
+              <div>
+                <h1 className="text-2xl font-bold">{pageTitle}</h1>
+                <p className="text-sm text-gray-400 mt-1">
+                  Configure your voice assistant
+                </p>
+              </div>
             </div>
           </div>
         </div>
-      </div>
 
-      {/* Tab Navigation */}
-      <TabNavigation
-        tabs={TABS}
-        activeTab={activeTab}
-        onTabChange={scrollToSection}
-        sticky={true}
-        topOffset={89}
-      />
+        {/* Tab Navigation - now inside sticky container */}
+        <TabNavigation
+          tabs={TABS}
+          activeTab={activeTab}
+          onTabChange={scrollToSection}
+          sticky={false}
+        />
+      </div>
 
       {/* Content */}
       <div className="px-8 py-8 space-y-12">
