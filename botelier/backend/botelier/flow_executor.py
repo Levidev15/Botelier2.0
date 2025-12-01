@@ -394,11 +394,11 @@ You are executing a structured conversation flow. Follow these guidelines:
                     if after_date_var:
                         after_date_str = self.state.get_variable(after_date_var)
                         if after_date_str:
-                            slot_info += f" [must be after {after_date_str}, use YYYY-MM-DD format]"
+                            slot_info += f" [must be after {after_date_str}]"
                         else:
-                            slot_info += f" [must be after {current_date}, use YYYY-MM-DD format]"
+                            slot_info += f" [must be today or later]"
                     else:
-                        slot_info += f" [must be after {current_date}, use YYYY-MM-DD format]"
+                        slot_info += f" [must be today or later]"
                 
                 if node_instructions:
                     node_instructions_resolved = substitute_variables(node_instructions, self.state.collected_slots)
@@ -517,10 +517,9 @@ You are executing a structured conversation flow. Follow these guidelines:
                 if after_date_str:
                     constraints.append(f"must be after {after_date_str}")
                 else:
-                    constraints.append(f"must be after {current_date}")
+                    constraints.append("must be today or later")
             else:
-                constraints.append(f"must be after {current_date}")
-            constraints.append("use YYYY-MM-DD format")
+                constraints.append("must be today or later")
         
         instructions = current_node.data.get("instructions")
         if instructions:
@@ -1050,7 +1049,7 @@ You are executing a structured conversation flow. Follow these guidelines:
                             except ValueError:
                                 pass
                 except ValueError:
-                    return "Please provide a date in YYYY-MM-DD format."
+                    return "I didn't quite catch that date. Could you please tell me the date again?"
         
         return None
     
