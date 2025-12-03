@@ -107,7 +107,8 @@ export interface TransferConfig {
 export type NodeType = 
   | "initial" 
   | "message" 
-  | "collect_slot" 
+  | "collect_slot"
+  | "collect_form"
   | "api_request" 
   | "condition" 
   | "router"
@@ -139,6 +140,16 @@ export interface MessageNodeData extends BaseNodeData {
 
 export interface CollectSlotNodeData extends BaseNodeData {
   slot: SlotConfig;
+}
+
+export interface FormSlotConfig extends SlotConfig {
+  id: string;
+  order: number;
+}
+
+export interface CollectFormNodeData extends BaseNodeData {
+  introMessage?: string;
+  slots: FormSlotConfig[];
 }
 
 export interface APIRequestNodeData extends BaseNodeData {
@@ -274,6 +285,42 @@ const getDefaultNodeData = (type: NodeType): NodeData => {
           maxRetries: 3,
         },
       } as CollectSlotNodeData;
+    
+    case "collect_form":
+      return {
+        name: "Booking Details",
+        introMessage: "I'll need to collect a few details from you.",
+        slots: [
+          {
+            id: "slot_1",
+            order: 0,
+            variableKey: "guest_name",
+            prompt: "May I have your full name?",
+            type: "text",
+            retryPrompt: "Could you please spell your name?",
+            maxRetries: 3,
+          },
+          {
+            id: "slot_2",
+            order: 1,
+            variableKey: "check_in_date",
+            prompt: "What date would you like to check in?",
+            type: "date",
+            retryPrompt: "Please provide a valid date.",
+            maxRetries: 3,
+          },
+          {
+            id: "slot_3",
+            order: 2,
+            variableKey: "guest_count",
+            prompt: "How many guests will be staying?",
+            type: "number",
+            retryPrompt: "Please tell me the number of guests.",
+            maxRetries: 2,
+            validation: { min: 1, max: 10 },
+          },
+        ],
+      } as CollectFormNodeData;
     
     case "api_request":
       return {
