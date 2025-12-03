@@ -18,6 +18,7 @@ import {
   SlotType,
   NodeType,
   RouterOption,
+  DeliveryMode,
 } from "./store";
 
 const slotTypes: { value: SlotType; label: string }[] = [
@@ -150,6 +151,7 @@ function InitialNodePanel({ data, nodeId }: { data: InitialNodeData; nodeId: str
 
 function MessageNodePanel({ data, nodeId }: { data: MessageNodeData; nodeId: string }) {
   const { updateNodeData, variables } = useFlowStore();
+  const deliveryMode = data.deliveryMode || "guided";
 
   return (
     <div className="space-y-4">
@@ -179,6 +181,34 @@ function MessageNodePanel({ data, nodeId }: { data: MessageNodeData; nodeId: str
             ))}
           </div>
         )}
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-400 mb-1">Delivery Mode</label>
+        <div className="flex gap-2">
+          <button
+            onClick={() => updateNodeData(nodeId, { deliveryMode: "guided" })}
+            className={`flex-1 px-3 py-2 text-xs rounded-lg border transition ${
+              deliveryMode === "guided"
+                ? "bg-blue-600/20 border-blue-500 text-blue-400"
+                : "bg-[#1a1a1a] border-gray-700 text-gray-400 hover:border-gray-600"
+            }`}
+          >
+            <span className="font-medium">Guided</span>
+            <p className="text-gray-500 mt-0.5">AI follows intent naturally</p>
+          </button>
+          <button
+            onClick={() => updateNodeData(nodeId, { deliveryMode: "static" })}
+            className={`flex-1 px-3 py-2 text-xs rounded-lg border transition ${
+              deliveryMode === "static"
+                ? "bg-blue-600/20 border-blue-500 text-blue-400"
+                : "bg-[#1a1a1a] border-gray-700 text-gray-400 hover:border-gray-600"
+            }`}
+          >
+            <span className="font-medium">Static</span>
+            <p className="text-gray-500 mt-0.5">AI says exact text</p>
+          </button>
+        </div>
       </div>
       
       <div className="flex items-center gap-2">
@@ -633,8 +663,10 @@ function ConfirmationNodePanel({ data, nodeId }: { data: ConfirmationNodeData; n
     confirmPrompt: "Is this correct?",
     editPrompt: "What would you like to change?",
     variablesToConfirm: [],
-    allowEdit: true
+    allowEdit: true,
+    deliveryMode: "guided" as DeliveryMode
   };
+  const deliveryMode = confirmation.deliveryMode || "guided";
 
   const updateConfirmation = (updates: Partial<typeof confirmation>) => {
     updateNodeData(nodeId, { confirmation: { ...confirmation, ...updates } });
@@ -696,6 +728,34 @@ function ConfirmationNodePanel({ data, nodeId }: { data: ConfirmationNodeData; n
           className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none"
           placeholder="Is this information correct?"
         />
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-400 mb-1">Delivery Mode</label>
+        <div className="flex gap-2">
+          <button
+            onClick={() => updateConfirmation({ deliveryMode: "guided" })}
+            className={`flex-1 px-3 py-2 text-xs rounded-lg border transition ${
+              deliveryMode === "guided"
+                ? "bg-emerald-600/20 border-emerald-500 text-emerald-400"
+                : "bg-[#1a1a1a] border-gray-700 text-gray-400 hover:border-gray-600"
+            }`}
+          >
+            <span className="font-medium">Guided</span>
+            <p className="text-gray-500 mt-0.5">AI follows intent naturally</p>
+          </button>
+          <button
+            onClick={() => updateConfirmation({ deliveryMode: "static" })}
+            className={`flex-1 px-3 py-2 text-xs rounded-lg border transition ${
+              deliveryMode === "static"
+                ? "bg-emerald-600/20 border-emerald-500 text-emerald-400"
+                : "bg-[#1a1a1a] border-gray-700 text-gray-400 hover:border-gray-600"
+            }`}
+          >
+            <span className="font-medium">Static</span>
+            <p className="text-gray-500 mt-0.5">AI says exact text</p>
+          </button>
+        </div>
       </div>
 
       <div className="flex items-center gap-2">

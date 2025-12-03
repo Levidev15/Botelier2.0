@@ -70,6 +70,7 @@ export interface ConfirmationConfig {
   editPrompt?: string;
   variablesToConfirm: string[];
   allowEdit?: boolean;
+  deliveryMode?: DeliveryMode;
 }
 
 export interface SetVariableConfig {
@@ -128,9 +129,12 @@ export interface InitialNodeData extends BaseNodeData {
   awaitResponse?: boolean;
 }
 
+export type DeliveryMode = "guided" | "static";
+
 export interface MessageNodeData extends BaseNodeData {
   message: string;
   waitForResponse?: boolean;
+  deliveryMode?: DeliveryMode;
 }
 
 export interface CollectSlotNodeData extends BaseNodeData {

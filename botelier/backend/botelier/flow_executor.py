@@ -347,13 +347,13 @@ Current date/time: {current_date} {current_time} UTC ({current_date_human})
 You are executing a structured conversation flow. Follow these guidelines:
 1. Collect information in the order specified by the flow
 2. Use the provided functions to progress through the flow
-3. CRITICAL: When a function returns a "message" field, speak that message content to the guest. Do not paraphrase or improvise - use the configured text.
-4. When CURRENT NODE instructions say "Say exactly" or "Ask the guest", speak that exact text.
+3. Follow the CURRENT NODE instructions - they tell you what to say or ask
+4. When instructions say "Say exactly", speak that text verbatim. When they say "Guidance" or "naturally", you may phrase it in your own words while keeping the meaning.
 5. If the guest provides information proactively, acknowledge and record it
 6. When a guest provides a date without a year (e.g., "Dec 12th"), interpret it as the next occurrence after today ({current_date}). Never assume a past year.
 7. For number fields, respect the minimum and maximum limits specified.
 8. IMPORTANT: Never use markdown formatting (no asterisks, bold, bullets, etc). This is a voice conversation - speak naturally without any special formatting.
-9. When confirming details, use the exact summary template provided - do not create your own summary.
+9. When a function returns a "speak_exactly" field, speak that text verbatim without paraphrasing.
 
 {flow_context}"""
     
@@ -420,26 +420,44 @@ You are executing a structured conversation flow. Follow these guidelines:
         
         return "\n\n".join(context_parts)
     
+    def _get_node_delivery_mode(self, node: FlowNode) -> str:
+        """Get the delivery mode for a node (guided or static). Default is guided."""
+        if node.type == NodeType.MESSAGE:
+            return node.data.get("deliveryMode", "guided")
+        elif node.type == NodeType.CONFIRMATION:
+            confirmation_data = node.data.get("confirmation", {})
+            return confirmation_data.get("deliveryMode", "guided")
+        return "guided"
+    
     def _get_current_node_context(self) -> Optional[str]:
-        """Get context about the current node including any configured messages to say."""
+        """Get context about the current node including any configured messages.
+        
+        In 'guided' mode: Provides guidance that AI can follow naturally
+        In 'static' mode: Provides exact text that must be spoken verbatim
+        """
         current_node = self.state.get_current_node()
         if not current_node:
             return None
         
         context_lines = []
+        delivery_mode = self._get_node_delivery_mode(current_node)
+        is_static = delivery_mode == "static"
         
         if current_node.type == NodeType.MESSAGE:
             message = current_node.data.get("message", "")
             if message:
                 resolved = substitute_variables(message, self.state.collected_slots)
-                context_lines.append(f"CURRENT NODE: Say exactly: \"{resolved}\"")
+                if is_static:
+                    context_lines.append(f"CURRENT NODE: Say exactly: \"{resolved}\"")
+                else:
+                    context_lines.append(f"CURRENT NODE: Guidance - Convey this message naturally: \"{resolved}\"")
         
         elif current_node.type == NodeType.COLLECT_SLOT:
             slot = current_node.data.get("slot", {})
             prompt = slot.get("prompt", "")
             if prompt:
                 resolved = substitute_variables(prompt, self.state.collected_slots)
-                context_lines.append(f"CURRENT NODE: Ask the guest: \"{resolved}\"")
+                context_lines.append(f"CURRENT NODE: Ask the guest (you may phrase naturally): \"{resolved}\"")
         
         elif current_node.type == NodeType.CONFIRMATION:
             confirmation_data = current_node.data.get("confirmation", {})
@@ -448,10 +466,16 @@ You are executing a structured conversation flow. Follow these guidelines:
             
             if summary_template:
                 resolved_summary = substitute_variables(summary_template, self.state.collected_slots)
-                context_lines.append(f"CURRENT NODE: First say the summary: \"{resolved_summary}\"")
+                if is_static:
+                    context_lines.append(f"CURRENT NODE: Say exactly the summary: \"{resolved_summary}\"")
+                else:
+                    context_lines.append(f"CURRENT NODE: Summarize these details naturally: \"{resolved_summary}\"")
             if confirm_prompt:
                 resolved_confirm = substitute_variables(confirm_prompt, self.state.collected_slots)
-                context_lines.append(f"Then ask for confirmation: \"{resolved_confirm}\"")
+                if is_static:
+                    context_lines.append(f"Then ask for confirmation: \"{resolved_confirm}\"")
+                else:
+                    context_lines.append(f"Then ask if this is correct (naturally): \"{resolved_confirm}\"")
         
         elif current_node.type == NodeType.END:
             closing = current_node.data.get("closingMessage", "")
@@ -674,7 +698,7 @@ You are executing a structured conversation flow. Follow these guidelines:
         Generate Pipecat-compatible function schemas from the flow.
         
         This creates functions for:
-        1. Collecting each slot variable
+        1. Collecting each slot variable (only if not already collected)
         2. API requests
         3. Transfer calls
         4. Ending the call
@@ -682,8 +706,9 @@ You are executing a structured conversation flow. Follow these guidelines:
         functions = []
         
         for var in self.flow_config.variables:
-            func_schema = self._create_slot_function(var)
-            functions.append(func_schema)
+            if var.key not in self.state.collected_slots:
+                func_schema = self._create_slot_function(var)
+                functions.append(func_schema)
         
         for node in self.flow_config.nodes:
             if node.type == NodeType.API_REQUEST:
@@ -1070,7 +1095,7 @@ You are executing a structured conversation flow. Follow these guidelines:
             
             next_slot_instructions = self._get_next_slot_instructions()
             
-            next_node_message = self._get_next_node_configured_message(next_node) if next_node else None
+            next_node_message, is_static = self._get_next_node_configured_message(next_node) if next_node else (None, False)
             
             result = {
                 "success": True,
@@ -1082,9 +1107,10 @@ You are executing a structured conversation flow. Follow these guidelines:
             
             if next_node_message:
                 result["message"] = next_node_message
-                result["speak_exactly"] = next_node_message
+                if is_static:
+                    result["speak_exactly"] = next_node_message
             else:
-                result["message"] = f"Got it."
+                result["message"] = "Got it."
             
             return result
         
@@ -1310,13 +1336,16 @@ You are executing a structured conversation flow. Follow these guidelines:
         confirm_message = substitute_variables(confirm_prompt, self.state.collected_slots) if confirm_prompt else ""
         edit_message = substitute_variables(edit_prompt, self.state.collected_slots) if edit_prompt else "What would you like to change?"
         
+        delivery_mode = confirmation_data.get("deliveryMode", "guided")
+        is_static = delivery_mode == "static"
+        
         if confirmed:
             next_node = self.state.get_next_node(node_id, handle="confirmed")
             next_node_id = next_node.id if next_node else node_id
             if next_node:
                 self.state.advance_to(next_node.id)
             
-            next_node_message = self._get_next_node_configured_message(next_node) if next_node else None
+            next_node_message, next_is_static = self._get_next_node_configured_message(next_node) if next_node else (None, False)
             
             result = {
                 "success": True,
@@ -1327,11 +1356,13 @@ You are executing a structured conversation flow. Follow these guidelines:
             
             if next_node_message:
                 result["message"] = next_node_message
-                result["speak_exactly"] = next_node_message
-            elif summary_message or confirm_message:
-                confirmed_text = f"Thank you for confirming. {summary_message}" if summary_message else "Thank you for confirming."
+                if next_is_static:
+                    result["speak_exactly"] = next_node_message
+            elif summary_message:
+                confirmed_text = f"Thank you for confirming. {summary_message}"
                 result["message"] = confirmed_text
-                result["speak_exactly"] = confirmed_text
+                if is_static:
+                    result["speak_exactly"] = confirmed_text
             else:
                 result["message"] = "Thank you for confirming."
             
@@ -1350,23 +1381,30 @@ You are executing a structured conversation flow. Follow these guidelines:
                 "message": edit_message
             }
             
-            if edit_prompt:
-                result["speak_exactly"] = edit_message
-            
             return result
     
-    def _get_next_node_configured_message(self, node: Optional[FlowNode]) -> Optional[str]:
-        """Get the configured message from a node if it has one."""
+    def _get_next_node_configured_message(self, node: Optional[FlowNode]) -> tuple[Optional[str], bool]:
+        """Get the configured message from a node and whether to speak it exactly.
+        
+        Returns: (message, is_static) tuple
+        - message: The resolved message text, or None if no message
+        - is_static: True if the node is in static delivery mode (speak exactly)
+        """
         if not node:
-            return None
+            return (None, False)
+        
+        delivery_mode = self._get_node_delivery_mode(node)
+        is_static = delivery_mode == "static"
         
         if node.type == NodeType.MESSAGE:
             message = node.data.get("message", "")
-            return substitute_variables(message, self.state.collected_slots) if message else None
+            resolved = substitute_variables(message, self.state.collected_slots) if message else None
+            return (resolved, is_static)
         elif node.type == NodeType.COLLECT_SLOT:
             slot = node.data.get("slot", {})
             prompt = slot.get("prompt", "")
-            return substitute_variables(prompt, self.state.collected_slots) if prompt else None
+            resolved = substitute_variables(prompt, self.state.collected_slots) if prompt else None
+            return (resolved, False)
         elif node.type == NodeType.CONFIRMATION:
             confirmation_data = node.data.get("confirmation", {})
             summary_template = confirmation_data.get("summaryTemplate", confirmation_data.get("summary_template", ""))
@@ -1376,19 +1414,22 @@ You are executing a structured conversation flow. Follow these guidelines:
                 parts.append(substitute_variables(summary_template, self.state.collected_slots))
             if confirm_prompt:
                 parts.append(substitute_variables(confirm_prompt, self.state.collected_slots))
-            return " ".join(parts) if parts else None
+            resolved = " ".join(parts) if parts else None
+            return (resolved, is_static)
         elif node.type == NodeType.END:
             message = node.data.get("closingMessage", "")
-            return substitute_variables(message, self.state.collected_slots) if message else None
+            resolved = substitute_variables(message, self.state.collected_slots) if message else None
+            return (resolved, False)
         elif node.type == NodeType.TRANSFER:
             transfer = node.data.get("transfer", {})
             message = transfer.get("preTransferMessage", "")
-            return substitute_variables(message, self.state.collected_slots) if message else None
+            resolved = substitute_variables(message, self.state.collected_slots) if message else None
+            return (resolved, False)
         elif node.type == NodeType.API_REQUEST:
             api_config = node.data.get("api", {})
-            return api_config.get("onSuccess", None)
+            return (api_config.get("onSuccess", None), False)
         
-        return None
+        return (None, False)
     
     async def _handle_set_variable(self, function_name: str, arguments: dict) -> dict:
         """Handle setting a variable value."""
@@ -1507,13 +1548,16 @@ You are executing a structured conversation flow. Follow these guidelines:
             edit_prompt = confirmation_data.get("editPrompt", confirmation_data.get("edit_prompt", ""))
             edit_message = substitute_variables(edit_prompt, self.state.collected_slots) if edit_prompt else "What would you like to change?"
             
+            delivery_mode = confirmation_data.get("deliveryMode", "guided")
+            is_static = delivery_mode == "static"
+            
             if confirmed:
                 next_node = self.state.get_next_node(confirmation_node.id, handle="confirmed")
                 next_node_id = next_node.id if next_node else confirmation_node.id
                 if next_node:
                     self.state.advance_to(next_node.id)
                 
-                next_node_message = self._get_next_node_configured_message(next_node) if next_node else None
+                next_node_message, next_is_static = self._get_next_node_configured_message(next_node) if next_node else (None, False)
                 
                 summary_template = confirmation_data.get("summaryTemplate", confirmation_data.get("summary_template", ""))
                 summary_message = substitute_variables(summary_template, self.state.collected_slots) if summary_template else ""
@@ -1527,11 +1571,13 @@ You are executing a structured conversation flow. Follow these guidelines:
                 
                 if next_node_message:
                     result["message"] = next_node_message
-                    result["speak_exactly"] = next_node_message
+                    if next_is_static:
+                        result["speak_exactly"] = next_node_message
                 elif summary_message:
                     confirmed_text = f"Thank you for confirming. {summary_message}"
                     result["message"] = confirmed_text
-                    result["speak_exactly"] = confirmed_text
+                    if is_static:
+                        result["speak_exactly"] = confirmed_text
                 else:
                     result["message"] = "Thank you for confirming."
                 
@@ -1549,9 +1595,6 @@ You are executing a structured conversation flow. Follow these guidelines:
                     "current_node_id": next_node_id,
                     "message": edit_message
                 }
-                
-                if edit_prompt:
-                    result["speak_exactly"] = edit_message
                 
                 return result
         

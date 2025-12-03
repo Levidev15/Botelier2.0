@@ -31,7 +31,11 @@ Botelier is built with a clean architectural separation, where the core SaaS app
 - **Twilio Call Transfer:** Implemented via Twilio REST API to update active calls.
 - **Flow Versioning System:** Implements a draft/publish workflow, version history, and revert capability for conversational flows. Includes database model (`FlowVersion`), API endpoints for managing drafts and published versions, and publish-time validation.
 - **Flow Execution Runtime:** `FlowExecutor` class converts visual flows to Pipecat function schemas, handles variable substitution, slot collection, and manages flow state.
-- **Configured Text Enforcement:** Ensures AI speaks exactly what's configured in flow nodes using `speak_exactly` fields, system prompt guidelines, and variable substitution. This includes dynamic validation and voice-friendly prompts without markdown.
+- **Delivery Mode System:** Each Message and Confirmation node has a "Delivery Mode" toggle:
+  - **Guided (default):** AI receives the configured text as guidance and can phrase naturally while keeping the meaning
+  - **Static:** AI must speak the exact configured text verbatim, with `speak_exactly` field enforcing exact output
+  - System prompt dynamically adapts instructions per node based on delivery mode
+- **Smart Function Schemas:** Already-collected slot functions are filtered from schemas to prevent re-asking for the same information
 - **Enhanced Node Types:** Includes Initial, Message (with auto-advance), CollectSlot, APIRequest, Condition, Router, Transfer, End, Confirmation (for pre-submission reviews), and SetVariable (for mid-flow data transformations).
 - **Flows as Tools Architecture:** Introduces a "FLOW" tool type activated by LLM intent, generating multiple Pipecat functions, with API endpoints for flow configurations.
 
