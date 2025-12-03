@@ -525,12 +525,8 @@ def revert_to_version(
     """
     Revert to a previous version.
     
-    Creates a new draft pre-filled with the content from the selected version.
-    Does not affect the currently published version until the new draft is published.
-    
-    Body (optional):
-        - description: Description for the new draft
-        - publish_immediately: If true, publishes immediately as a new version
+    Updates the current draft with content from the selected version.
+    Does not create a new version number - simply restores the content.
     """
     tool = db.query(Tool).filter(
         Tool.id == tool_id,
@@ -560,53 +556,58 @@ def revert_to_version(
             detail=f"Version {version_number} not found"
         )
     
-    description = f"Reverted from version {version_number}"
-    if revert_data and revert_data.get("description"):
-        description = revert_data["description"]
-    
-    publish_immediately = revert_data.get("publish_immediately", False) if revert_data else False
-    
     if tool.draft_version_id:
         existing_draft = db.query(FlowVersion).filter(
             FlowVersion.id == tool.draft_version_id
         ).first()
         if existing_draft:
-            db.delete(existing_draft)
+            existing_draft.flow_config = source_version.flow_config
+            existing_draft.description = f"Restored from version {version_number}"
+            tool.config = source_version.flow_config
+            db.commit()
+            db.refresh(existing_draft)
+            return {
+                "tool_id": tool_id,
+                "version_id": str(existing_draft.id),
+                "version_number": existing_draft.version_number,
+                "status": existing_draft.status.value,
+                "description": existing_draft.description,
+                "message": f"Restored content from version {version_number}",
+                "flow_config": existing_draft.flow_config
+            }
     
     next_version = (tool.published_version_number or 0) + 1
     
-    new_version = FlowVersion(
+    max_version = db.query(FlowVersion).filter(
+        FlowVersion.tool_id == tool_id
+    ).order_by(desc(FlowVersion.version_number)).first()
+    
+    if max_version and max_version.version_number >= next_version:
+        next_version = max_version.version_number + 1
+    
+    new_draft = FlowVersion(
         id=uuid.uuid4(),
         tool_id=tool_id,
         version_number=next_version,
-        status=FlowVersionStatus.PUBLISHED if publish_immediately else FlowVersionStatus.DRAFT,
-        description=description,
+        status=FlowVersionStatus.DRAFT,
+        description=f"Restored from version {version_number}",
         flow_config=source_version.flow_config,
-        published_at=datetime.now(timezone.utc) if publish_immediately else None,
     )
-    db.add(new_version)
-    db.flush()
+    db.add(new_draft)
     
-    if publish_immediately:
-        tool.published_version_id = new_version.id
-        tool.published_version_number = next_version
-        tool.draft_version_id = None
-        tool.config = new_version.flow_config
-        message = f"Reverted to version {version_number} and published as version {next_version}"
-    else:
-        tool.draft_version_id = new_version.id
-        message = f"Created draft from version {version_number}"
-    
+    tool.draft_version_id = new_draft.id
+    tool.config = source_version.flow_config
     db.commit()
-    db.refresh(new_version)
+    db.refresh(new_draft)
     
     return {
         "tool_id": tool_id,
-        "version_id": str(new_version.id),
-        "version_number": new_version.version_number,
-        "status": new_version.status.value,
-        "description": new_version.description,
-        "message": message
+        "version_id": str(new_draft.id),
+        "version_number": new_draft.version_number,
+        "status": new_draft.status.value,
+        "description": new_draft.description,
+        "message": f"Restored content from version {version_number}",
+        "flow_config": new_draft.flow_config
     }
 
 

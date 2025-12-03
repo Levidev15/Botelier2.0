@@ -150,16 +150,16 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
   };
 
   const handleRevert = async (versionNumber: number) => {
-    if (!confirm(`Revert to version ${versionNumber}? This will create a new draft with that version's content.`)) {
+    if (!confirm(`Restore version ${versionNumber}? This will replace your current draft with that version's content.`)) {
       return;
     }
     
     try {
       await revertToVersion(versionNumber);
-      toast.success(`Reverted to version ${versionNumber}`);
+      toast.success(`Restored version ${versionNumber}`);
       setShowVersionMenu(false);
     } catch (error) {
-      toast.error("Failed to revert");
+      toast.error("Failed to restore version");
     }
   };
 
