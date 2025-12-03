@@ -342,10 +342,14 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                     if result.get("action") in ["end", "transfer"]:
                         is_ended = True
                     
+                    tool_content = dict(result)
+                    if result.get("speak_exactly"):
+                        tool_content["INSTRUCTION"] = f"Say exactly to the guest: \"{result['speak_exactly']}\""
+                    
                     state.llm_messages.append({
                         "role": "tool",
                         "tool_call_id": tool_call.id,
-                        "content": json.dumps(result)
+                        "content": json.dumps(tool_content)
                     })
                 
                 if is_ended:

@@ -347,17 +347,24 @@ Current date/time: {current_date} {current_time} UTC ({current_date_human})
 You are executing a structured conversation flow. Follow these guidelines:
 1. Collect information in the order specified by the flow
 2. Use the provided functions to progress through the flow
-3. Be natural and conversational while following the flow structure
-4. If the guest provides information proactively, acknowledge and record it
-5. When a guest provides a date without a year (e.g., "Dec 12th"), interpret it as the next occurrence after today ({current_date}). Never assume a past year.
-6. For number fields, respect the minimum and maximum limits specified.
-7. IMPORTANT: Never use markdown formatting (no asterisks, bold, bullets, etc). This is a voice conversation - speak naturally without any special formatting.
-8. When confirming details, list them conversationally without formatting (e.g., "Your name is John Smith, checking in December 8th, checking out December 10th, for 2 guests").
+3. CRITICAL: When a function returns a "message" field, speak that message content to the guest. Do not paraphrase or improvise - use the configured text.
+4. When CURRENT NODE instructions say "Say exactly" or "Ask the guest", speak that exact text.
+5. If the guest provides information proactively, acknowledge and record it
+6. When a guest provides a date without a year (e.g., "Dec 12th"), interpret it as the next occurrence after today ({current_date}). Never assume a past year.
+7. For number fields, respect the minimum and maximum limits specified.
+8. IMPORTANT: Never use markdown formatting (no asterisks, bold, bullets, etc). This is a voice conversation - speak naturally without any special formatting.
+9. When confirming details, use the exact summary template provided - do not create your own summary.
 
 {flow_context}"""
     
     def _generate_flow_context(self) -> str:
-        """Generate context about what information needs to be collected."""
+        """Generate context about what information needs to be collected and current node instructions."""
+        context_parts = []
+        
+        current_node_context = self._get_current_node_context()
+        if current_node_context:
+            context_parts.append(current_node_context)
+        
         ordered_vars = self.get_variables_in_flow_order()
         slots_to_collect = []
         
@@ -406,9 +413,60 @@ You are executing a structured conversation flow. Follow these guidelines:
                 slots_to_collect.append(slot_info)
         
         if slots_to_collect:
-            return f"""Information to collect (in order):
-{chr(10).join(slots_to_collect)}"""
-        return "All required information has been collected."
+            context_parts.append(f"""Information to collect (in order):
+{chr(10).join(slots_to_collect)}""")
+        else:
+            context_parts.append("All required information has been collected.")
+        
+        return "\n\n".join(context_parts)
+    
+    def _get_current_node_context(self) -> Optional[str]:
+        """Get context about the current node including any configured messages to say."""
+        current_node = self.state.get_current_node()
+        if not current_node:
+            return None
+        
+        context_lines = []
+        
+        if current_node.type == NodeType.MESSAGE:
+            message = current_node.data.get("message", "")
+            if message:
+                resolved = substitute_variables(message, self.state.collected_slots)
+                context_lines.append(f"CURRENT NODE: Say exactly: \"{resolved}\"")
+        
+        elif current_node.type == NodeType.COLLECT_SLOT:
+            slot = current_node.data.get("slot", {})
+            prompt = slot.get("prompt", "")
+            if prompt:
+                resolved = substitute_variables(prompt, self.state.collected_slots)
+                context_lines.append(f"CURRENT NODE: Ask the guest: \"{resolved}\"")
+        
+        elif current_node.type == NodeType.CONFIRMATION:
+            confirmation_data = current_node.data.get("confirmation", {})
+            summary_template = confirmation_data.get("summaryTemplate", confirmation_data.get("summary_template", ""))
+            confirm_prompt = confirmation_data.get("confirmPrompt", confirmation_data.get("confirm_prompt", ""))
+            
+            if summary_template:
+                resolved_summary = substitute_variables(summary_template, self.state.collected_slots)
+                context_lines.append(f"CURRENT NODE: First say the summary: \"{resolved_summary}\"")
+            if confirm_prompt:
+                resolved_confirm = substitute_variables(confirm_prompt, self.state.collected_slots)
+                context_lines.append(f"Then ask for confirmation: \"{resolved_confirm}\"")
+        
+        elif current_node.type == NodeType.END:
+            closing = current_node.data.get("closingMessage", "")
+            if closing:
+                resolved = substitute_variables(closing, self.state.collected_slots)
+                context_lines.append(f"CURRENT NODE: Say goodbye: \"{resolved}\"")
+        
+        elif current_node.type == NodeType.TRANSFER:
+            transfer = current_node.data.get("transfer", {})
+            pre_message = transfer.get("preTransferMessage", "")
+            if pre_message:
+                resolved = substitute_variables(pre_message, self.state.collected_slots)
+                context_lines.append(f"CURRENT NODE: Before transfer, say: \"{resolved}\"")
+        
+        return "\n".join(context_lines) if context_lines else None
     
     def _get_validation_for_variable(self, var_key: str) -> Optional[dict]:
         """Get the validation config for the node that collects a specific variable."""
@@ -857,15 +915,27 @@ You are executing a structured conversation flow. Follow these guidelines:
         """Create a function schema for a confirmation node."""
         confirmation_data = node.data.get("confirmation", {})
         summary_template = confirmation_data.get("summaryTemplate", confirmation_data.get("summary_template", ""))
+        confirm_prompt = confirmation_data.get("confirmPrompt", confirmation_data.get("confirm_prompt", ""))
         variables_to_confirm = confirmation_data.get("variablesToConfirm", confirmation_data.get("variables_to_confirm", []))
         
         var_list = ", ".join(variables_to_confirm) if variables_to_confirm else "collected details"
+        
+        resolved_summary = substitute_variables(summary_template, self.state.collected_slots) if summary_template else ""
+        resolved_confirm = substitute_variables(confirm_prompt, self.state.collected_slots) if confirm_prompt else ""
+        
+        description = f"Confirm or edit {var_list}. "
+        if resolved_summary:
+            description += f"First say exactly: \"{resolved_summary}\" "
+        if resolved_confirm:
+            description += f"Then ask: \"{resolved_confirm}\""
+        else:
+            description += "Then ask if this is correct."
         
         return {
             "type": "function",
             "function": {
                 "name": f"confirm_{node.id}",
-                "description": f"Confirm or edit {var_list}. Call after presenting the summary to the guest.",
+                "description": description,
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -975,7 +1045,11 @@ You are executing a structured conversation flow. Follow these guidelines:
             
             validation_error = self._validate_slot_value(var_info, slot_config, value)
             if validation_error:
-                retry_prompt = slot_config.get("retryPrompt", "Please try again.") if slot_config else "Please try again."
+                retry_prompt_template = slot_config.get("retryPrompt", "") if slot_config else ""
+                if retry_prompt_template:
+                    retry_prompt = substitute_variables(retry_prompt_template, self.state.collected_slots)
+                else:
+                    retry_prompt = "Please try again."
                 return {
                     "success": False,
                     "message": f"{validation_error} {retry_prompt}",
@@ -986,25 +1060,33 @@ You are executing a structured conversation flow. Follow these guidelines:
             
             self.state.set_variable(var_key, value)
             
+            next_node = None
             next_node_id = None
             if collecting_node_id:
                 next_node = self.state.get_next_node(collecting_node_id)
                 if next_node:
                     next_node_id = next_node.id
                     self.state.advance_to(next_node.id)
-                else:
-                    pass
             
             next_slot_instructions = self._get_next_slot_instructions()
             
-            return {
+            next_node_message = self._get_next_node_configured_message(next_node) if next_node else None
+            
+            result = {
                 "success": True,
-                "message": f"Recorded {var_info.description if var_info else var_key}: {value}",
                 "action": None,
                 "collected": {var_key: value},
                 "current_node_id": next_node_id or collecting_node_id or self.state.current_node_id,
                 "next_slot": next_slot_instructions
             }
+            
+            if next_node_message:
+                result["message"] = next_node_message
+                result["speak_exactly"] = next_node_message
+            else:
+                result["message"] = f"Got it."
+            
+            return result
         
         return {
             "success": False,
@@ -1220,46 +1302,93 @@ You are executing a structured conversation flow. Follow these guidelines:
         confirmed = arguments.get("confirmed", True)
         confirmation_data = node.data.get("confirmation", {})
         
-        summary_template = confirmation_data.get("summaryTemplate", "")
-        summary_message = substitute_variables(summary_template, self.state.collected_slots)
+        summary_template = confirmation_data.get("summaryTemplate", confirmation_data.get("summary_template", ""))
+        confirm_prompt = confirmation_data.get("confirmPrompt", confirmation_data.get("confirm_prompt", ""))
+        edit_prompt = confirmation_data.get("editPrompt", confirmation_data.get("edit_prompt", ""))
+        
+        summary_message = substitute_variables(summary_template, self.state.collected_slots) if summary_template else ""
+        confirm_message = substitute_variables(confirm_prompt, self.state.collected_slots) if confirm_prompt else ""
+        edit_message = substitute_variables(edit_prompt, self.state.collected_slots) if edit_prompt else "What would you like to change?"
         
         if confirmed:
             next_node = self.state.get_next_node(node_id, handle="confirmed")
+            next_node_id = next_node.id if next_node else node_id
             if next_node:
                 self.state.advance_to(next_node.id)
-                return {
-                    "success": True,
-                    "message": "Details confirmed. Proceeding.",
-                    "action": None,
-                    "confirmed": True,
-                    "current_node_id": next_node.id
-                }
-            return {
+            
+            next_node_message = self._get_next_node_configured_message(next_node) if next_node else None
+            
+            result = {
                 "success": True,
-                "message": "Details confirmed.",
                 "action": None,
                 "confirmed": True,
-                "current_node_id": node_id
+                "current_node_id": next_node_id
             }
+            
+            if next_node_message:
+                result["message"] = next_node_message
+                result["speak_exactly"] = next_node_message
+            elif summary_message or confirm_message:
+                confirmed_text = f"Thank you for confirming. {summary_message}" if summary_message else "Thank you for confirming."
+                result["message"] = confirmed_text
+                result["speak_exactly"] = confirmed_text
+            else:
+                result["message"] = "Thank you for confirming."
+            
+            return result
         else:
-            edit_prompt = confirmation_data.get("editPrompt", confirmation_data.get("edit_prompt", "What would you like to change?"))
             next_node = self.state.get_next_node(node_id, handle="edit")
+            next_node_id = next_node.id if next_node else node_id
             if next_node:
                 self.state.advance_to(next_node.id)
-                return {
-                    "success": True,
-                    "message": edit_prompt,
-                    "action": None,
-                    "confirmed": False,
-                    "current_node_id": next_node.id
-                }
-            return {
+            
+            result = {
                 "success": True,
-                "message": edit_prompt,
                 "action": None,
                 "confirmed": False,
-                "current_node_id": node_id
+                "current_node_id": next_node_id,
+                "message": edit_message
             }
+            
+            if edit_prompt:
+                result["speak_exactly"] = edit_message
+            
+            return result
+    
+    def _get_next_node_configured_message(self, node: Optional[FlowNode]) -> Optional[str]:
+        """Get the configured message from a node if it has one."""
+        if not node:
+            return None
+        
+        if node.type == NodeType.MESSAGE:
+            message = node.data.get("message", "")
+            return substitute_variables(message, self.state.collected_slots) if message else None
+        elif node.type == NodeType.COLLECT_SLOT:
+            slot = node.data.get("slot", {})
+            prompt = slot.get("prompt", "")
+            return substitute_variables(prompt, self.state.collected_slots) if prompt else None
+        elif node.type == NodeType.CONFIRMATION:
+            confirmation_data = node.data.get("confirmation", {})
+            summary_template = confirmation_data.get("summaryTemplate", confirmation_data.get("summary_template", ""))
+            confirm_prompt = confirmation_data.get("confirmPrompt", confirmation_data.get("confirm_prompt", ""))
+            parts = []
+            if summary_template:
+                parts.append(substitute_variables(summary_template, self.state.collected_slots))
+            if confirm_prompt:
+                parts.append(substitute_variables(confirm_prompt, self.state.collected_slots))
+            return " ".join(parts) if parts else None
+        elif node.type == NodeType.END:
+            message = node.data.get("closingMessage", "")
+            return substitute_variables(message, self.state.collected_slots) if message else None
+        elif node.type == NodeType.TRANSFER:
+            transfer = node.data.get("transfer", {})
+            message = transfer.get("preTransferMessage", "")
+            return substitute_variables(message, self.state.collected_slots) if message else None
+        elif node.type == NodeType.API_REQUEST:
+            api_config = node.data.get("api", {})
+            return api_config.get("onSuccess", None)
+        
+        return None
     
     async def _handle_set_variable(self, function_name: str, arguments: dict) -> dict:
         """Handle setting a variable value."""
@@ -1375,49 +1504,61 @@ You are executing a structured conversation flow. Follow these guidelines:
         
         if confirmation_node:
             confirmation_data = confirmation_node.data.get("confirmation", {})
+            edit_prompt = confirmation_data.get("editPrompt", confirmation_data.get("edit_prompt", ""))
+            edit_message = substitute_variables(edit_prompt, self.state.collected_slots) if edit_prompt else "What would you like to change?"
             
             if confirmed:
                 next_node = self.state.get_next_node(confirmation_node.id, handle="confirmed")
+                next_node_id = next_node.id if next_node else confirmation_node.id
                 if next_node:
                     self.state.advance_to(next_node.id)
-                    return {
-                        "success": True,
-                        "message": "Details confirmed. Proceeding with your reservation.",
-                        "action": "confirmed",
-                        "booking_data": self.state.collected_slots.copy(),
-                        "current_node_id": next_node.id
-                    }
-                return {
+                
+                next_node_message = self._get_next_node_configured_message(next_node) if next_node else None
+                
+                summary_template = confirmation_data.get("summaryTemplate", confirmation_data.get("summary_template", ""))
+                summary_message = substitute_variables(summary_template, self.state.collected_slots) if summary_template else ""
+                
+                result = {
                     "success": True,
-                    "message": "Details confirmed. Proceeding with your reservation.",
                     "action": "confirmed",
                     "booking_data": self.state.collected_slots.copy(),
-                    "current_node_id": confirmation_node.id
+                    "current_node_id": next_node_id
                 }
+                
+                if next_node_message:
+                    result["message"] = next_node_message
+                    result["speak_exactly"] = next_node_message
+                elif summary_message:
+                    confirmed_text = f"Thank you for confirming. {summary_message}"
+                    result["message"] = confirmed_text
+                    result["speak_exactly"] = confirmed_text
+                else:
+                    result["message"] = "Thank you for confirming."
+                
+                return result
             else:
-                edit_prompt = confirmation_data.get("editPrompt", confirmation_data.get("edit_prompt", "What would you like to change?"))
                 next_node = self.state.get_next_node(confirmation_node.id, handle="edit")
+                next_node_id = next_node.id if next_node else confirmation_node.id
                 if next_node:
                     self.state.advance_to(next_node.id)
-                    return {
-                        "success": True,
-                        "message": edit_prompt,
-                        "action": None,
-                        "confirmed": False,
-                        "current_node_id": next_node.id
-                    }
-                return {
+                
+                result = {
                     "success": True,
-                    "message": edit_prompt,
                     "action": None,
                     "confirmed": False,
-                    "current_node_id": confirmation_node.id
+                    "current_node_id": next_node_id,
+                    "message": edit_message
                 }
+                
+                if edit_prompt:
+                    result["speak_exactly"] = edit_message
+                
+                return result
         
         if confirmed:
             return {
                 "success": True,
-                "message": "Details confirmed. Proceeding with your reservation.",
+                "message": "Great, confirmed.",
                 "action": "confirmed",
                 "booking_data": self.state.collected_slots.copy(),
                 "current_node_id": self.state.current_node_id
@@ -1425,7 +1566,7 @@ You are executing a structured conversation flow. Follow these guidelines:
         else:
             return {
                 "success": True,
-                "message": "No problem. What would you like to change?",
+                "message": "What would you like to change?",
                 "action": None,
                 "current_node_id": self.state.current_node_id
             }
