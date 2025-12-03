@@ -1,10 +1,14 @@
 "use client";
 
+import React from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import dynamic from "next/dynamic";
 import { ArrowLeft, GitBranch } from "lucide-react";
+import { useFlowStore } from "@/components/flow-editor/store";
+import { useUnsavedChangesWarning } from "@/components/flow-editor/useUnsavedChangesWarning";
+import { UnsavedChangesModal } from "@/components/flow-editor/UnsavedChangesModal";
 
 const HOTEL_ID = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
 
@@ -39,6 +43,35 @@ export default function FlowToolEditorPage() {
   const [tool, setTool] = useState<Tool | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+  
+  const isDirty = useFlowStore((state) => state.isDirty);
+  const saveFlowFn = useFlowStore((state) => state.saveFlow);
+  
+  const handleSave = async () => {
+    setIsSaving(true);
+    try {
+      await saveFlowFn();
+    } finally {
+      setIsSaving(false);
+    }
+  };
+  
+  const {
+    showModal,
+    handleNavigate,
+    handleSaveAndNavigate,
+    handleDiscardAndNavigate,
+    handleCancelNavigation,
+  } = useUnsavedChangesWarning({ isDirty, onSave: handleSave });
+
+  const handleBackClick = (e: React.MouseEvent) => {
+    e.preventDefault();
+    if (!handleNavigate("/dashboard/tools")) {
+      return;
+    }
+    router.push("/dashboard/tools");
+  };
 
   useEffect(() => {
     const fetchTool = async () => {
@@ -94,16 +127,17 @@ export default function FlowToolEditorPage() {
   }
 
   return (
+    <>
     <div className="h-screen flex flex-col bg-[#0a0a0a]">
       <header className="h-14 border-b border-gray-800 flex items-center justify-between px-4 bg-[#141414]">
         <div className="flex items-center gap-4">
-          <Link
-            href="/dashboard/tools"
+          <button
+            onClick={handleBackClick}
             className="flex items-center gap-2 text-gray-400 hover:text-white transition"
           >
             <ArrowLeft className="h-4 w-4" />
             <span className="text-sm">Back to Tools</span>
-          </Link>
+          </button>
           
           <div className="h-6 w-px bg-gray-700" />
           
@@ -129,5 +163,14 @@ export default function FlowToolEditorPage() {
         />
       </main>
     </div>
+    
+    <UnsavedChangesModal
+      isOpen={showModal}
+      onSave={handleSaveAndNavigate}
+      onDiscard={handleDiscardAndNavigate}
+      onCancel={handleCancelNavigation}
+      isSaving={isSaving}
+    />
+    </>
   );
 }
