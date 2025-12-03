@@ -29,7 +29,8 @@ Botelier is built with a clean architectural separation, where the core SaaS app
 - **Phone Numbers System (Twilio Integration):** Database models for Hotels and Phone Numbers, with Twilio integration for sub-account management, number search, purchase, configuration, and release.
 - **Knowledge Base System (Simplified Q&A with RAG):** A flat database structure stores `KnowledgeEntry` associated with hotels. FastAPI CRUD endpoints support CSV bulk import. A RAG query handler, integrated with Pipecat and using OpenAI LLM (gpt-4o-mini), fetches active Q&A entries.
 - **Twilio Call Transfer:** Implemented via Twilio REST API to update active calls.
-- **Flow Versioning System:** Implements a draft/publish workflow, version history, and revert capability for conversational flows. Includes database model (`FlowVersion`), API endpoints for managing drafts and published versions, and publish-time validation.
+- **Flow Versioning System:** Implements a draft/publish workflow, version history, and revert capability for conversational flows. Includes database model (`FlowVersion`), API endpoints for managing drafts and published versions, and publish-time validation. Revert updates existing draft content (not version number) to avoid duplicate key errors.
+- **Unsaved Changes Warning:** Flow editor tracks dirty state and prompts users with Save/Discard/Cancel modal when navigating away with unsaved changes. Uses `useUnsavedChangesWarning` hook with `beforeunload` event handling.
 - **Flow Execution Runtime:** `FlowExecutor` class converts visual flows to Pipecat function schemas, handles variable substitution, slot collection, and manages flow state.
 - **Delivery Mode System:** Each Message and Confirmation node has a "Delivery Mode" toggle:
   - **Guided (default):** AI receives the configured text as guidance and can phrase naturally while keeping the meaning
