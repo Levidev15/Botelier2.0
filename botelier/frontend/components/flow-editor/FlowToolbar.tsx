@@ -24,7 +24,9 @@ import {
   History,
   FileEdit,
   RotateCcw,
-  Trash2
+  Trash2,
+  Info,
+  X
 } from "lucide-react";
 import { useFlowStore, NodeType, AVAILABLE_TEMPLATES, FlowVersionInfo } from "./store";
 import { toast } from "sonner";
@@ -36,18 +38,116 @@ interface FlowToolbarProps {
   onToggleSimulator?: () => void;
 }
 
-const nodeTypeConfig: { type: NodeType; label: string; icon: React.ReactNode; color: string }[] = [
-  { type: "initial", label: "Start", icon: <Play className="h-3 w-3" />, color: "bg-green-500" },
-  { type: "message", label: "Message", icon: <MessageSquare className="h-3 w-3" />, color: "bg-blue-500" },
-  { type: "collect_slot", label: "Collect Input", icon: <FormInput className="h-3 w-3" />, color: "bg-purple-500" },
-  { type: "collect_form", label: "Collect Form", icon: <ClipboardList className="h-3 w-3" />, color: "bg-violet-500" },
-  { type: "confirmation", label: "Confirmation", icon: <CheckCircle2 className="h-3 w-3" />, color: "bg-emerald-500" },
-  { type: "api_request", label: "API Request", icon: <Globe className="h-3 w-3" />, color: "bg-orange-500" },
-  { type: "condition", label: "Condition", icon: <GitBranch className="h-3 w-3" />, color: "bg-yellow-500" },
-  { type: "router", label: "Router", icon: <Route className="h-3 w-3" />, color: "bg-indigo-500" },
-  { type: "set_variable", label: "Set Variable", icon: <Variable className="h-3 w-3" />, color: "bg-teal-500" },
-  { type: "transfer", label: "Transfer Call", icon: <PhoneForwarded className="h-3 w-3" />, color: "bg-cyan-500" },
-  { type: "end", label: "End Call", icon: <PhoneOff className="h-3 w-3" />, color: "bg-red-500" },
+interface NodeInfo {
+  type: NodeType;
+  label: string;
+  icon: React.ReactNode;
+  color: string;
+  description: string;
+  whenToUse: string;
+  example: string;
+}
+
+const nodeTypeConfig: NodeInfo[] = [
+  { 
+    type: "initial", 
+    label: "Start", 
+    icon: <Play className="h-3 w-3" />, 
+    color: "bg-green-500",
+    description: "The entry point of your conversation flow. Every flow needs exactly one Start node.",
+    whenToUse: "Always required as the first node. Sets the greeting message and system instructions for the AI.",
+    example: "\"Thank you for calling Grand Hotel. How may I assist you today?\""
+  },
+  { 
+    type: "message", 
+    label: "Message", 
+    icon: <MessageSquare className="h-3 w-3" />, 
+    color: "bg-blue-500",
+    description: "Speaks a message to the guest without waiting for a response. Can include collected variables.",
+    whenToUse: "Use to provide information, confirmations, or transition messages between steps.",
+    example: "\"I'll now check availability for your requested dates.\""
+  },
+  { 
+    type: "collect_slot", 
+    label: "Collect Input", 
+    icon: <FormInput className="h-3 w-3" />, 
+    color: "bg-purple-500",
+    description: "Asks the guest for a single piece of information and stores it in a variable.",
+    whenToUse: "Use for collecting one data point like a name, date, or number. For multiple fields, consider Collect Form.",
+    example: "Collecting guest name: \"May I have your name please?\""
+  },
+  { 
+    type: "collect_form", 
+    label: "Collect Form", 
+    icon: <ClipboardList className="h-3 w-3" />, 
+    color: "bg-violet-500",
+    description: "Collects multiple pieces of information in sequence. Consolidates several inputs into one node.",
+    whenToUse: "Use for booking forms, registration, or any multi-field data collection. Keeps your flow clean.",
+    example: "Collecting check-in date, check-out date, and number of guests in one node."
+  },
+  { 
+    type: "confirmation", 
+    label: "Confirmation", 
+    icon: <CheckCircle2 className="h-3 w-3" />, 
+    color: "bg-emerald-500",
+    description: "Summarizes collected information and asks the guest to confirm before proceeding.",
+    whenToUse: "Use before submitting bookings or making changes to verify details are correct.",
+    example: "\"You're booking a Deluxe Room for Dec 15-18 for 2 guests. Is this correct?\""
+  },
+  { 
+    type: "api_request", 
+    label: "API Request", 
+    icon: <Globe className="h-3 w-3" />, 
+    color: "bg-orange-500",
+    description: "Calls an external API to check availability, submit bookings, or fetch data.",
+    whenToUse: "Use to integrate with your booking system, CRM, or other hotel services.",
+    example: "Calling your reservation system to check room availability for the selected dates."
+  },
+  { 
+    type: "condition", 
+    label: "Condition", 
+    icon: <GitBranch className="h-3 w-3" />, 
+    color: "bg-yellow-500",
+    description: "Branches the flow based on a condition. Routes to different paths based on variable values.",
+    whenToUse: "Use to handle different scenarios like available vs. sold out, member vs. non-member.",
+    example: "If rooms are available, continue to booking. If not, offer alternative dates."
+  },
+  { 
+    type: "router", 
+    label: "Router", 
+    icon: <Route className="h-3 w-3" />, 
+    color: "bg-indigo-500",
+    description: "Lets the AI decide which path to take based on what the guest wants.",
+    whenToUse: "Use for main menus or when the guest could have multiple intents.",
+    example: "Routes to booking, room service, concierge, or general inquiries based on guest request."
+  },
+  { 
+    type: "set_variable", 
+    label: "Set Variable", 
+    icon: <Variable className="h-3 w-3" />, 
+    color: "bg-teal-500",
+    description: "Creates or modifies a variable without asking the guest. Can combine, format, or calculate values.",
+    whenToUse: "Use to prepare data for APIs, combine fields, or set default values.",
+    example: "Combining first and last name into full_name, or calculating total nights from dates."
+  },
+  { 
+    type: "transfer", 
+    label: "Transfer Call", 
+    icon: <PhoneForwarded className="h-3 w-3" />, 
+    color: "bg-cyan-500",
+    description: "Transfers the call to a human agent or specific department.",
+    whenToUse: "Use when the guest needs human assistance or for complex requests the AI can't handle.",
+    example: "\"I'll transfer you to our reservations team. Please hold.\""
+  },
+  { 
+    type: "end", 
+    label: "End Call", 
+    icon: <PhoneOff className="h-3 w-3" />, 
+    color: "bg-red-500",
+    description: "Ends the conversation with a closing message. Every flow path should end with this node.",
+    whenToUse: "Use to gracefully close the conversation after completing the guest's request.",
+    example: "\"Thank you for booking with us! Your confirmation number is 12345. Goodbye!\""
+  },
 ];
 
 function formatDate(dateStr: string | null): string {
@@ -85,6 +185,7 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
   const [showPublishModal, setShowPublishModal] = useState(false);
   const [publishDescription, setPublishDescription] = useState("");
   const [isPublishing, setIsPublishing] = useState(false);
+  const [showNodeInfo, setShowNodeInfo] = useState<NodeInfo | null>(null);
 
   const handleAddNode = (type: NodeType) => {
     const lastNode = nodes[nodes.length - 1];
@@ -186,19 +287,34 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
             </button>
             
             {showAddMenu && (
-              <div className="absolute top-full left-0 mt-1 w-56 bg-[#1a1a1a] border border-gray-700 rounded-lg shadow-xl z-50 py-1">
+              <div className="absolute top-full left-0 mt-1 w-64 bg-[#1a1a1a] border border-gray-700 rounded-lg shadow-xl z-50 py-1">
                 <div className="px-3 py-1.5 text-xs text-gray-500 uppercase tracking-wider">Node Types</div>
                 {nodeTypeConfig.map((config) => (
-                  <button
+                  <div
                     key={config.type}
-                    onClick={() => handleAddNode(config.type)}
-                    className="w-full px-3 py-2 text-left text-sm text-gray-300 hover:bg-gray-800 flex items-center gap-3"
+                    className="flex items-center hover:bg-gray-800 group"
                   >
-                    <div className={`w-4 h-4 rounded flex items-center justify-center ${config.color}`}>
-                      {config.icon}
-                    </div>
-                    {config.label}
-                  </button>
+                    <button
+                      onClick={() => handleAddNode(config.type)}
+                      className="flex-1 px-3 py-2 text-left text-sm text-gray-300 flex items-center gap-3"
+                    >
+                      <div className={`w-4 h-4 rounded flex items-center justify-center ${config.color}`}>
+                        {config.icon}
+                      </div>
+                      {config.label}
+                    </button>
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        setShowAddMenu(false);
+                        setShowNodeInfo(config);
+                      }}
+                      className="p-2 text-gray-500 hover:text-blue-400 opacity-0 group-hover:opacity-100 transition-opacity"
+                      title={`Learn about ${config.label}`}
+                    >
+                      <Info className="h-3.5 w-3.5" />
+                    </button>
+                  </div>
                 ))}
               </div>
             )}
@@ -479,6 +595,74 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
               >
                 <Upload className="h-4 w-4" />
                 {isPublishing ? "Publishing..." : "Publish Now"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Node Info Modal */}
+      {showNodeInfo && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowNodeInfo(null)}>
+          <div 
+            className="bg-[#1a1a1a] border border-gray-700 rounded-lg shadow-xl w-[420px] max-w-[90vw] overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between p-4 border-b border-gray-700">
+              <div className="flex items-center gap-3">
+                <div className={`w-8 h-8 rounded-lg flex items-center justify-center ${showNodeInfo.color}`}>
+                  <div className="scale-125">
+                    {showNodeInfo.icon}
+                  </div>
+                </div>
+                <h3 className="text-lg font-semibold text-white">{showNodeInfo.label}</h3>
+              </div>
+              <button
+                onClick={() => setShowNodeInfo(null)}
+                className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            
+            {/* Content */}
+            <div className="p-4 space-y-4">
+              <div>
+                <h4 className="text-sm font-medium text-gray-400 mb-1">What it does</h4>
+                <p className="text-sm text-gray-200">{showNodeInfo.description}</p>
+              </div>
+              
+              <div>
+                <h4 className="text-sm font-medium text-gray-400 mb-1">When to use</h4>
+                <p className="text-sm text-gray-200">{showNodeInfo.whenToUse}</p>
+              </div>
+              
+              <div>
+                <h4 className="text-sm font-medium text-gray-400 mb-1">Example</h4>
+                <p className="text-sm text-gray-300 italic bg-gray-800/50 px-3 py-2 rounded-lg">
+                  {showNodeInfo.example}
+                </p>
+              </div>
+            </div>
+            
+            {/* Footer */}
+            <div className="p-4 border-t border-gray-700 flex justify-between items-center">
+              <button
+                onClick={() => {
+                  handleAddNode(showNodeInfo.type);
+                  setShowNodeInfo(null);
+                }}
+                className={`px-4 py-2 ${showNodeInfo.color} hover:opacity-90 text-white rounded-lg text-sm font-medium flex items-center gap-2`}
+              >
+                <Plus className="h-4 w-4" />
+                Add {showNodeInfo.label}
+              </button>
+              <button
+                onClick={() => setShowNodeInfo(null)}
+                className="px-4 py-2 text-gray-400 hover:text-white text-sm"
+              >
+                Close
               </button>
             </div>
           </div>
