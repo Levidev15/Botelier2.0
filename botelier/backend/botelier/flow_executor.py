@@ -21,6 +21,7 @@ class NodeType(str, Enum):
     INITIAL = "initial"
     MESSAGE = "message"
     COLLECT_SLOT = "collect_slot"
+    COLLECT_FORM = "collect_form"
     API_REQUEST = "api_request"
     CONDITION = "condition"
     ROUTER = "router"
@@ -302,6 +303,13 @@ class FlowExecutor:
                 var_key = slot.get("variableKey")
                 if var_key and var_key not in ordered_keys:
                     ordered_keys.append(var_key)
+            elif node.type == NodeType.COLLECT_FORM:
+                slots = node.data.get("slots", [])
+                sorted_slots = sorted(slots, key=lambda s: s.get("order", 0))
+                for slot in sorted_slots:
+                    var_key = slot.get("variableKey")
+                    if var_key and var_key not in ordered_keys:
+                        ordered_keys.append(var_key)
             
             for next_node in get_next_nodes(node_id):
                 traverse(next_node.id)
@@ -459,6 +467,21 @@ You are executing a structured conversation flow. Follow these guidelines:
                 resolved = substitute_variables(prompt, self.state.collected_slots)
                 context_lines.append(f"CURRENT NODE: Ask the guest (you may phrase naturally): \"{resolved}\"")
         
+        elif current_node.type == NodeType.COLLECT_FORM:
+            intro = current_node.data.get("introMessage", "")
+            if intro:
+                resolved = substitute_variables(intro, self.state.collected_slots)
+                context_lines.append(f"CURRENT NODE: Say introduction: \"{resolved}\"")
+            slots = current_node.data.get("slots", [])
+            sorted_slots = sorted(slots, key=lambda s: s.get("order", 0))
+            uncollected = [s for s in sorted_slots if s.get("variableKey") not in self.state.collected_slots]
+            if uncollected:
+                first_slot = uncollected[0]
+                prompt = first_slot.get("prompt", "")
+                if prompt:
+                    resolved = substitute_variables(prompt, self.state.collected_slots)
+                    context_lines.append(f"Then ask for {first_slot.get('variableKey')}: \"{resolved}\"")
+        
         elif current_node.type == NodeType.CONFIRMATION:
             confirmation_data = current_node.data.get("confirmation", {})
             summary_template = confirmation_data.get("summaryTemplate", confirmation_data.get("summary_template", ""))
@@ -499,6 +522,11 @@ You are executing a structured conversation flow. Follow these guidelines:
                 slot = node.data.get("slot", {})
                 if slot.get("variableKey") == var_key:
                     return slot.get("validation")
+            elif node.type == NodeType.COLLECT_FORM:
+                slots = node.data.get("slots", [])
+                for slot in slots:
+                    if slot.get("variableKey") == var_key:
+                        return slot.get("validation")
         return None
     
     def _get_instructions_for_variable(self, var_key: str) -> Optional[str]:
@@ -508,14 +536,19 @@ You are executing a structured conversation flow. Follow these guidelines:
                 slot = node.data.get("slot", {})
                 if slot.get("variableKey") == var_key:
                     return node.data.get("instructions")
+            elif node.type == NodeType.COLLECT_FORM:
+                slots = node.data.get("slots", [])
+                for slot in slots:
+                    if slot.get("variableKey") == var_key:
+                        return node.data.get("instructions")
         return None
     
     def _find_next_reachable_collect_slot(self) -> tuple:
         """
-        Find the next COLLECT_SLOT node reachable from the current position.
-        Traverses edges from current node without skipping collect_slots.
+        Find the next COLLECT_SLOT or COLLECT_FORM node reachable from the current position.
+        Traverses edges from current node without skipping collect nodes.
         
-        Returns: (node, variable_key) or (None, None) if no collect_slot reachable
+        Returns: (node, variable_key) or (None, None) if no collect node reachable
         """
         current_node = self.state.get_current_node()
         if not current_node:
@@ -524,6 +557,14 @@ You are executing a structured conversation flow. Follow these guidelines:
         if current_node.type == NodeType.COLLECT_SLOT:
             slot = current_node.data.get("slot", {})
             return (current_node, slot.get("variableKey"))
+        
+        if current_node.type == NodeType.COLLECT_FORM:
+            slots = current_node.data.get("slots", [])
+            sorted_slots = sorted(slots, key=lambda s: s.get("order", 0))
+            for slot in sorted_slots:
+                var_key = slot.get("variableKey")
+                if var_key and var_key not in self.state.collected_slots:
+                    return (current_node, var_key)
         
         visited = set()
         queue = [current_node.id]
@@ -549,6 +590,14 @@ You are executing a structured conversation flow. Follow these guidelines:
                 if var_key and var_key not in self.state.collected_slots:
                     return (node, var_key)
             
+            if node.type == NodeType.COLLECT_FORM:
+                slots = node.data.get("slots", [])
+                sorted_slots = sorted(slots, key=lambda s: s.get("order", 0))
+                for slot in sorted_slots:
+                    var_key = slot.get("variableKey")
+                    if var_key and var_key not in self.state.collected_slots:
+                        return (node, var_key)
+            
             for edge in self.flow_config.edges:
                 if edge.source == node_id and edge.target not in visited:
                     queue.append(edge.target)
@@ -561,12 +610,26 @@ You are executing a structured conversation flow. Follow these guidelines:
         if not current_node:
             return None
         
-        if current_node.type != NodeType.COLLECT_SLOT:
+        slot = None
+        var_key = None
+        
+        if current_node.type == NodeType.COLLECT_SLOT:
+            slot = current_node.data.get("slot", {})
+            var_key = slot.get("variableKey")
+        elif current_node.type == NodeType.COLLECT_FORM:
+            slots = current_node.data.get("slots", [])
+            sorted_slots = sorted(slots, key=lambda s: s.get("order", 0))
+            for s in sorted_slots:
+                v_key = s.get("variableKey")
+                if v_key and v_key not in self.state.collected_slots:
+                    slot = s
+                    var_key = v_key
+                    break
+        
+        if not slot or not var_key:
             return None
         
-        slot = current_node.data.get("slot", {})
-        var_key = slot.get("variableKey")
-        if not var_key or var_key in self.state.collected_slots:
+        if var_key in self.state.collected_slots:
             return None
         
         var_info = None
@@ -662,7 +725,7 @@ You are executing a structured conversation flow. Follow these guidelines:
             
             self.state.advance_to(current_node.id)
             
-            if current_node.type in [NodeType.COLLECT_SLOT, NodeType.END, NodeType.TRANSFER]:
+            if current_node.type in [NodeType.COLLECT_SLOT, NodeType.COLLECT_FORM, NodeType.END, NodeType.TRANSFER]:
                 break
             
             node_await = current_node.data.get("awaitResponse", current_node.data.get("waitForResponse", True))
@@ -683,6 +746,14 @@ You are executing a structured conversation flow. Follow these guidelines:
         elif node.type == NodeType.COLLECT_SLOT:
             slot = node.data.get("slot", {})
             return slot.get("prompt", "")
+        elif node.type == NodeType.COLLECT_FORM:
+            intro = node.data.get("introMessage", "")
+            if intro:
+                return substitute_variables(intro, self.state.collected_slots)
+            slots = node.data.get("slots", [])
+            sorted_slots = sorted(slots, key=lambda s: s.get("order", 0))
+            if sorted_slots:
+                return sorted_slots[0].get("prompt", "")
         elif node.type == NodeType.END:
             return substitute_variables(
                 node.data.get("closingMessage", "Thank you for calling. Goodbye!"),
@@ -1042,6 +1113,13 @@ You are executing a structured conversation flow. Follow these guidelines:
                 if slot.get("variableKey") == var_key:
                     collecting_node_id = current_node.id
                     slot_config = slot
+            elif current_node and current_node.type == NodeType.COLLECT_FORM:
+                slots = current_node.data.get("slots", [])
+                for slot in slots:
+                    if slot.get("variableKey") == var_key:
+                        collecting_node_id = current_node.id
+                        slot_config = slot
+                        break
             
             if not collecting_node_id:
                 next_collect_node, next_collect_var = self._find_next_reachable_collect_slot()
@@ -1063,9 +1141,16 @@ You are executing a structured conversation flow. Follow these guidelines:
                     }
                 
                 if next_collect_node and next_collect_var == var_key:
-                    slot = next_collect_node.data.get("slot", {})
+                    if next_collect_node.type == NodeType.COLLECT_SLOT:
+                        slot = next_collect_node.data.get("slot", {})
+                        slot_config = slot
+                    elif next_collect_node.type == NodeType.COLLECT_FORM:
+                        slots = next_collect_node.data.get("slots", [])
+                        for slot in slots:
+                            if slot.get("variableKey") == var_key:
+                                slot_config = slot
+                                break
                     collecting_node_id = next_collect_node.id
-                    slot_config = slot
                     self.state.advance_to(next_collect_node.id)
             
             validation_error = self._validate_slot_value(var_info, slot_config, value)
@@ -1087,11 +1172,33 @@ You are executing a structured conversation flow. Follow these guidelines:
             
             next_node = None
             next_node_id = None
+            form_next_slot_prompt = None
             if collecting_node_id:
-                next_node = self.state.get_next_node(collecting_node_id)
-                if next_node:
-                    next_node_id = next_node.id
-                    self.state.advance_to(next_node.id)
+                collecting_node = None
+                for n in self.flow_config.nodes:
+                    if n.id == collecting_node_id:
+                        collecting_node = n
+                        break
+                
+                if collecting_node and collecting_node.type == NodeType.COLLECT_FORM:
+                    slots = collecting_node.data.get("slots", [])
+                    sorted_slots = sorted(slots, key=lambda s: s.get("order", 0))
+                    remaining = [s for s in sorted_slots if s.get("variableKey") not in self.state.collected_slots]
+                    if remaining:
+                        next_node_id = collecting_node_id
+                        prompt = remaining[0].get("prompt", "")
+                        if prompt:
+                            form_next_slot_prompt = substitute_variables(prompt, self.state.collected_slots)
+                    else:
+                        next_node = self.state.get_next_node(collecting_node_id)
+                        if next_node:
+                            next_node_id = next_node.id
+                            self.state.advance_to(next_node.id)
+                else:
+                    next_node = self.state.get_next_node(collecting_node_id)
+                    if next_node:
+                        next_node_id = next_node.id
+                        self.state.advance_to(next_node.id)
             
             next_slot_instructions = self._get_next_slot_instructions()
             
@@ -1109,6 +1216,8 @@ You are executing a structured conversation flow. Follow these guidelines:
                 result["message"] = next_node_message
                 if is_static:
                     result["speak_exactly"] = next_node_message
+            elif form_next_slot_prompt:
+                result["message"] = f"Got it. {form_next_slot_prompt}"
             else:
                 result["message"] = "Got it."
             
@@ -1405,6 +1514,19 @@ You are executing a structured conversation flow. Follow these guidelines:
             prompt = slot.get("prompt", "")
             resolved = substitute_variables(prompt, self.state.collected_slots) if prompt else None
             return (resolved, False)
+        elif node.type == NodeType.COLLECT_FORM:
+            intro = node.data.get("introMessage", "")
+            if intro:
+                resolved = substitute_variables(intro, self.state.collected_slots)
+                return (resolved, False)
+            slots = node.data.get("slots", [])
+            sorted_slots = sorted(slots, key=lambda s: s.get("order", 0))
+            uncollected = [s for s in sorted_slots if s.get("variableKey") not in self.state.collected_slots]
+            if uncollected:
+                prompt = uncollected[0].get("prompt", "")
+                resolved = substitute_variables(prompt, self.state.collected_slots) if prompt else None
+                return (resolved, False)
+            return (None, False)
         elif node.type == NodeType.CONFIRMATION:
             confirmation_data = node.data.get("confirmation", {})
             summary_template = confirmation_data.get("summaryTemplate", confirmation_data.get("summary_template", ""))
