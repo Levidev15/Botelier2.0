@@ -39,6 +39,11 @@ Botelier is built with a clean architectural separation, where the core SaaS app
 - **Smart Function Schemas:** Already-collected slot functions are filtered from schemas to prevent re-asking for the same information
 - **Enhanced Node Types:** Includes Initial, Message (with auto-advance), CollectSlot, APIRequest, Condition, Router, Transfer, End, Confirmation (for pre-submission reviews), and SetVariable (for mid-flow data transformations).
 - **Flows as Tools Architecture:** Introduces a "FLOW" tool type activated by LLM intent, generating multiple Pipecat functions, with API endpoints for flow configurations.
+- **Call Logs System:** Comprehensive call logging with multi-tenant isolation:
+  - **CallLog Model:** Tracks each incoming call with hotel_id, call_sid, phone_number_id, assistant_id, caller_number, status, outcome, timestamps, duration, transcript, and recording_url
+  - **CallLeg Model:** Tracks transfer segments (AI conversation, external transfer, SIP transfer) with individual durations for accurate billing
+  - **UI Features:** Modern table view with expandable rows for calls with transfers, filters (date range, status, assistant, timezone), search, transcript popup modal, CSV export
+  - **Twilio Integration:** Status callbacks automatically create/update call logs and track parent-child call relationships for transfers
 
 ### System Design Choices
 - **Clean Branding:** "Botelier" branding is prioritized, with Pipecat treated as a hidden backend dependency.
