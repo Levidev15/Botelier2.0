@@ -375,6 +375,31 @@ class CallHandler:
         else:
             logger.warning(f"Call {call_sid} not found in active calls")
     
+    async def save_transcript_for_call(self, call_sid: str) -> bool:
+        """
+        Save transcript for a call from external context (e.g., connect-complete webhook).
+        
+        This is called when Twilio confirms the call has ended, allowing transcript
+        capture even if the pipeline didn't exit cleanly.
+        
+        Args:
+            call_sid: Twilio Call SID
+            
+        Returns:
+            True if transcript was saved, False otherwise
+        """
+        if call_sid not in self.call_contexts:
+            logger.debug(f"No context stored for call {call_sid}, transcript may have already been saved")
+            return False
+        
+        try:
+            llm_context = self.call_contexts[call_sid]
+            await self._save_call_transcript(call_sid, llm_context)
+            return True
+        except Exception as e:
+            logger.exception(f"Error saving transcript for call {call_sid}: {e}")
+            return False
+    
     async def _save_call_transcript(self, call_sid: str, llm_context: Optional[Any]):
         """
         Save call transcript to database.
