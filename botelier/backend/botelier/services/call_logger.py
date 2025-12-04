@@ -227,3 +227,142 @@ class CallLogger:
             logger.exception(f"Error recording transfer: {e}")
             self.db.rollback()
             return False
+    
+    def update_leg_status(
+        self,
+        leg_call_sid: str,
+        status: str,
+        duration_seconds: Optional[int] = None
+    ) -> bool:
+        """
+        Update a specific call leg's status.
+        
+        Called when we receive status updates for transfer calls.
+        
+        Args:
+            leg_call_sid: The call SID of the specific leg
+            status: New status
+            duration_seconds: Duration if available
+            
+        Returns:
+            True if update was successful
+        """
+        try:
+            status_mapping = {
+                "initiated": CallStatus.INITIATED.value,
+                "ringing": CallStatus.RINGING.value,
+                "in-progress": CallStatus.IN_PROGRESS.value,
+                "completed": CallStatus.COMPLETED.value,
+                "busy": CallStatus.BUSY.value,
+                "failed": CallStatus.FAILED.value,
+                "no-answer": CallStatus.NO_ANSWER.value,
+                "canceled": CallStatus.CANCELED.value,
+            }
+            
+            new_status = status_mapping.get(status, status)
+            
+            leg = self.db.query(CallLeg).filter(CallLeg.call_sid == leg_call_sid).first()
+            if not leg:
+                logger.warning(f"Call leg not found for SID: {leg_call_sid}")
+                return False
+            
+            leg.status = new_status
+            
+            if status in ("completed", "busy", "failed", "no-answer", "canceled"):
+                leg.ended_at = datetime.utcnow()
+                if duration_seconds is not None:
+                    leg.duration_seconds = duration_seconds
+            
+            self.db.commit()
+            logger.info(f"Updated leg {leg.leg_number} status to {new_status}")
+            return True
+            
+        except Exception as e:
+            logger.exception(f"Error updating leg status: {e}")
+            self.db.rollback()
+            return False
+    
+    def create_transfer_leg_from_callback(
+        self,
+        parent_call_sid: str,
+        child_call_sid: str,
+        to_number: str,
+        status: str
+    ) -> bool:
+        """
+        Create a transfer leg when receiving a callback for a child call.
+        
+        This handles the case where Twilio sends us a callback for a child call
+        created by the transfer, and we need to track it as a leg.
+        
+        Args:
+            parent_call_sid: Original call SID
+            child_call_sid: Transfer call SID
+            to_number: Number being called
+            status: Initial status
+            
+        Returns:
+            True if created successfully
+        """
+        try:
+            call_log = self.db.query(CallLog).filter(
+                CallLog.call_sid == parent_call_sid
+            ).first()
+            
+            if not call_log:
+                logger.warning(f"Parent call log not found: {parent_call_sid}")
+                return False
+            
+            existing_leg = self.db.query(CallLeg).filter(
+                CallLeg.call_log_id == call_log.id,
+                CallLeg.call_sid == child_call_sid
+            ).first()
+            
+            if existing_leg:
+                return True
+            
+            max_leg = self.db.query(CallLeg).filter(
+                CallLeg.call_log_id == call_log.id
+            ).order_by(CallLeg.leg_number.desc()).first()
+            
+            next_leg_num = (max_leg.leg_number + 1) if max_leg else 1
+            
+            status_mapping = {
+                "initiated": CallStatus.INITIATED.value,
+                "ringing": CallStatus.RINGING.value,
+                "in-progress": CallStatus.IN_PROGRESS.value,
+                "completed": CallStatus.COMPLETED.value,
+                "busy": CallStatus.BUSY.value,
+                "failed": CallStatus.FAILED.value,
+                "no-answer": CallStatus.NO_ANSWER.value,
+                "canceled": CallStatus.CANCELED.value,
+            }
+            
+            new_status = status_mapping.get(status, status) if status else CallStatus.INITIATED.value
+            
+            transfer_leg = CallLeg(
+                call_log_id=call_log.id,
+                leg_number=next_leg_num,
+                leg_type=LegType.TRANSFER_EXTERNAL.value,
+                call_sid=child_call_sid,
+                participant=to_number,
+                status=new_status,
+                started_at=datetime.utcnow(),
+            )
+            self.db.add(transfer_leg)
+            
+            call_log.has_transfer = True
+            
+            self.db.commit()
+            logger.info(f"Created transfer leg {next_leg_num} for call {parent_call_sid}")
+            return True
+            
+        except Exception as e:
+            logger.exception(f"Error creating transfer leg: {e}")
+            self.db.rollback()
+            return False
+    
+    def has_transfer(self, call_sid: str) -> bool:
+        """Check if a call has an active transfer."""
+        call_log = self.get_call_log(call_sid)
+        return bool(call_log and call_log.has_transfer)

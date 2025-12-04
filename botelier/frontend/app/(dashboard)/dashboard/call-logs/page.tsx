@@ -637,9 +637,9 @@ function CallLogRow({
         <td className="px-4 py-3">
           <div className="flex items-center gap-2">
             <span
-              className={`px-2 py-0.5 text-xs rounded-full border ${getStatusBadge(log.status)}`}
+              className={`px-2 py-0.5 text-xs rounded-full border ${getStatusBadge(log.status || 'unknown')}`}
             >
-              {log.status.charAt(0).toUpperCase() + log.status.slice(1).replace("_", " ")}
+              {log.status ? (log.status.charAt(0).toUpperCase() + log.status.slice(1).replace("_", " ")) : "Unknown"}
             </span>
             {log.has_transfer && (
               <span className="flex items-center gap-1 text-xs text-purple-400">

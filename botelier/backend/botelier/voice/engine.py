@@ -12,6 +12,7 @@ Key Design Principle:
 
 import os
 from typing import Optional, Dict, Any
+from loguru import logger
 
 # Lazy imports for provider services to avoid startup issues with optional dependencies
 # Services will be imported only when actually used
