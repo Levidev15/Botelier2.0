@@ -9,7 +9,7 @@ import os
 import json
 import asyncio
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
 from fastapi import WebSocket
 from sqlalchemy.orm import Session
 from loguru import logger
@@ -375,7 +375,7 @@ class CallHandler:
         else:
             logger.warning(f"Call {call_sid} not found in active calls")
     
-    async def _save_call_transcript(self, call_sid: str, context_aggregator: Any):
+    async def _save_call_transcript(self, call_sid: str, context_aggregator: Optional[Any]):
         """
         Save call transcript to database.
         
@@ -384,23 +384,15 @@ class CallHandler:
         
         Args:
             call_sid: Twilio call SID
-            context_aggregator: Pipecat's LLMContextAggregatorPair with conversation context
+            context_aggregator: Pipecat's LLMContextAggregatorPair with conversation context (may be None)
         """
-        try:
-            transcript = []
+        if not context_aggregator:
+            logger.warning(f"No context aggregator available for call {call_sid}, skipping transcript")
+            return
             
-            if context_aggregator and hasattr(context_aggregator, '_context'):
-                context = context_aggregator._context
-                if hasattr(context, 'messages'):
-                    messages = context.messages
-                    for msg in messages:
-                        role = msg.get("role")
-                        content = msg.get("content")
-                        if role in ("user", "assistant") and content:
-                            transcript.append({
-                                "role": role,
-                                "content": content
-                            })
+        db = None
+        try:
+            transcript = self._extract_transcript(context_aggregator)
             
             if not transcript:
                 logger.warning(f"No transcript messages found for call {call_sid}")
@@ -409,22 +401,72 @@ class CallHandler:
             duration_seconds = None
             if call_sid in self.call_start_times:
                 start_time = self.call_start_times[call_sid]
-                duration_seconds = int((datetime.utcnow() - start_time).total_seconds())
+                duration_seconds = max(0, int((datetime.utcnow() - start_time).total_seconds()))
             
             db = SessionLocal()
-            try:
-                call_logger = CallLogger(db)
-                success = call_logger.complete_call(
-                    call_sid=call_sid,
-                    transcript=transcript,
-                    duration_seconds=duration_seconds
-                )
-                if success:
-                    logger.info(f"📝 Saved transcript ({len(transcript)} messages) for call {call_sid}")
-                else:
-                    logger.warning(f"Failed to save transcript for call {call_sid}")
-            finally:
-                db.close()
+            call_logger = CallLogger(db)
+            success = call_logger.complete_call(
+                call_sid=call_sid,
+                transcript=transcript,
+                duration_seconds=duration_seconds
+            )
+            if success:
+                logger.info(f"📝 Saved transcript ({len(transcript)} messages) for call {call_sid}")
+            else:
+                logger.warning(f"Failed to save transcript for call {call_sid}")
                 
         except Exception as e:
             logger.exception(f"Error saving transcript for call {call_sid}: {e}")
+        finally:
+            if db:
+                db.close()
+    
+    def _extract_transcript(self, context_aggregator: Any) -> List[Dict[str, str]]:
+        """
+        Extract conversation messages from Pipecat's context aggregator.
+        
+        Filters to only user and assistant messages, excluding system prompts
+        and tool/function call messages.
+        
+        Args:
+            context_aggregator: Pipecat's LLMContextAggregatorPair
+            
+        Returns:
+            List of transcript entries with role and content
+        """
+        transcript = []
+        
+        try:
+            context = None
+            if hasattr(context_aggregator, 'get_context'):
+                context = context_aggregator.get_context()
+            elif hasattr(context_aggregator, '_context'):
+                context = context_aggregator._context
+            
+            if not context or not hasattr(context, 'messages'):
+                return transcript
+                
+            messages = context.messages
+            for msg in messages:
+                if not isinstance(msg, dict):
+                    continue
+                    
+                role = msg.get("role")
+                content = msg.get("content")
+                
+                if role not in ("user", "assistant"):
+                    continue
+                if not content or not isinstance(content, str):
+                    continue
+                if role == "assistant" and msg.get("tool_calls"):
+                    continue
+                    
+                transcript.append({
+                    "role": role,
+                    "content": content.strip()
+                })
+                
+        except Exception as e:
+            logger.error(f"Error extracting transcript: {e}")
+            
+        return transcript
