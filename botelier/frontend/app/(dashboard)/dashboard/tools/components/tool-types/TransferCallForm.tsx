@@ -1,14 +1,27 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { Phone } from "lucide-react";
 import { notify } from "@/lib/notifications";
 
 const HOTEL_ID = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
 
+interface Tool {
+  id: string;
+  name: string;
+  description: string;
+  tool_type: string;
+  config: {
+    phone_number?: string;
+    pre_transfer_message?: string;
+  };
+  is_active: boolean;
+}
+
 interface TransferCallFormProps {
   onSuccess: (tool: any) => void;
   onCancel: () => void;
+  tool?: Tool;
 }
 
 interface FormData {
@@ -18,7 +31,9 @@ interface FormData {
   pre_transfer_message: string;
 }
 
-export default function TransferCallForm({ onSuccess, onCancel }: TransferCallFormProps) {
+export default function TransferCallForm({ onSuccess, onCancel, tool }: TransferCallFormProps) {
+  const isEditMode = !!tool;
+  
   const [formData, setFormData] = useState<FormData>({
     name: "",
     description: "",
@@ -28,6 +43,17 @@ export default function TransferCallForm({ onSuccess, onCancel }: TransferCallFo
 
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<Partial<FormData>>({});
+
+  useEffect(() => {
+    if (tool) {
+      setFormData({
+        name: tool.name || "",
+        description: tool.description || "",
+        phone_number: tool.config?.phone_number || "",
+        pre_transfer_message: tool.config?.pre_transfer_message || "Let me connect you with someone who can help...",
+      });
+    }
+  }, [tool]);
 
   const validateForm = (): boolean => {
     const newErrors: Partial<FormData> = {};
@@ -70,8 +96,11 @@ export default function TransferCallForm({ onSuccess, onCancel }: TransferCallFo
         is_active: true,
       };
 
-      const response = await fetch("/api/tools", {
-        method: "POST",
+      const url = isEditMode ? `/api/tools/${tool.id}?hotel_id=${HOTEL_ID}` : "/api/tools";
+      const method = isEditMode ? "PUT" : "POST";
+
+      const response = await fetch(url, {
+        method,
         headers: {
           "Content-Type": "application/json",
         },
@@ -79,14 +108,16 @@ export default function TransferCallForm({ onSuccess, onCancel }: TransferCallFo
       });
 
       if (!response.ok) {
-        throw new Error("Failed to create tool");
+        const errorData = await response.json();
+        throw new Error(errorData.detail || `Failed to ${isEditMode ? 'update' : 'create'} tool`);
       }
 
-      const newTool = await response.json();
-      onSuccess(newTool);
+      const savedTool = await response.json();
+      notify.success(`Tool ${isEditMode ? 'updated' : 'created'} successfully`);
+      onSuccess(savedTool);
     } catch (error) {
-      console.error("Error creating tool:", error);
-      notify.error("Failed to create tool. Please try again.");
+      console.error(`Error ${isEditMode ? 'updating' : 'creating'} tool:`, error);
+      notify.error(error instanceof Error ? error.message : `Failed to ${isEditMode ? 'update' : 'create'} tool. Please try again.`);
     } finally {
       setSaving(false);
     }
@@ -94,7 +125,6 @@ export default function TransferCallForm({ onSuccess, onCancel }: TransferCallFo
 
   const handleChange = (field: keyof FormData, value: string) => {
     setFormData({ ...formData, [field]: value });
-    // Clear error when user starts typing
     if (errors[field]) {
       setErrors({ ...errors, [field]: undefined });
     }
@@ -102,20 +132,18 @@ export default function TransferCallForm({ onSuccess, onCancel }: TransferCallFo
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
-      {/* Header */}
       <div className="flex items-center gap-3 pb-4 border-b border-gray-800">
         <div className="w-12 h-12 rounded-lg bg-blue-600/20 flex items-center justify-center">
           <Phone className="text-blue-500" size={24} />
         </div>
         <div>
-          <h3 className="font-semibold">Transfer Call Configuration</h3>
+          <h3 className="font-semibold">{isEditMode ? 'Edit' : 'Create'} Transfer Call Tool</h3>
           <p className="text-sm text-gray-400">
             Route calls to human agents or other phone numbers
           </p>
         </div>
       </div>
 
-      {/* Tool Name */}
       <div>
         <label className="block text-sm font-medium mb-2">
           Tool Name <span className="text-red-500">*</span>
@@ -137,7 +165,6 @@ export default function TransferCallForm({ onSuccess, onCancel }: TransferCallFo
         )}
       </div>
 
-      {/* Description */}
       <div>
         <label className="block text-sm font-medium mb-2">
           Description <span className="text-red-500">*</span>
@@ -159,7 +186,6 @@ export default function TransferCallForm({ onSuccess, onCancel }: TransferCallFo
         )}
       </div>
 
-      {/* Phone Number */}
       <div>
         <label className="block text-sm font-medium mb-2">
           Transfer to Phone Number <span className="text-red-500">*</span>
@@ -181,7 +207,6 @@ export default function TransferCallForm({ onSuccess, onCancel }: TransferCallFo
         )}
       </div>
 
-      {/* Pre-transfer Message */}
       <div>
         <label className="block text-sm font-medium mb-2">
           Pre-Transfer Message
@@ -198,7 +223,6 @@ export default function TransferCallForm({ onSuccess, onCancel }: TransferCallFo
         </p>
       </div>
 
-      {/* Actions */}
       <div className="flex gap-3 pt-4">
         <button
           type="button"
@@ -212,7 +236,7 @@ export default function TransferCallForm({ onSuccess, onCancel }: TransferCallFo
           disabled={saving}
           className="flex-1 px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
-          {saving ? "Creating..." : "Create Tool"}
+          {saving ? (isEditMode ? "Saving..." : "Creating...") : (isEditMode ? "Save Changes" : "Create Tool")}
         </button>
       </div>
     </form>

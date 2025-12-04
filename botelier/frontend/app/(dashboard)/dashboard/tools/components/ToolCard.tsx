@@ -5,21 +5,24 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { notify, confirmAction } from "@/lib/notifications";
 
+interface Tool {
+  id: string;
+  name: string;
+  description: string;
+  tool_type: string;
+  config: any;
+  is_active: boolean;
+}
+
 interface ToolCardProps {
-  tool: {
-    id: string;
-    name: string;
-    description: string;
-    tool_type: string;
-    config: any;
-    is_active: boolean;
-  };
+  tool: Tool;
   icon: LucideIcon;
   typeLabel: string;
   onDelete: (toolId: string) => void;
+  onEdit?: (tool: Tool) => void;
 }
 
-export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete }: ToolCardProps) {
+export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit }: ToolCardProps) {
   const router = useRouter();
   const [deleting, setDeleting] = useState(false);
 
@@ -32,6 +35,12 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete }: Tool
 
   const handleTestFlow = () => {
     router.push(`/dashboard/tools/${tool.id}/flow`);
+  };
+
+  const handleEdit = () => {
+    if (onEdit) {
+      onEdit(tool);
+    }
   };
 
   const handleDelete = async () => {
@@ -138,6 +147,7 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete }: Tool
           </>
         ) : (
           <button
+            onClick={handleEdit}
             className="flex-1 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800 rounded transition-colors flex items-center justify-center gap-2"
           >
             <Edit size={14} />
