@@ -158,8 +158,20 @@ export default function CallLogsPage() {
   const [assistantFilter, setAssistantFilter] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
-  const [timezone, setTimezone] = useState("UTC");
+  const [timezone, setTimezone] = useState(() => {
+    if (typeof window !== "undefined") {
+      return localStorage.getItem("botelier_call_logs_timezone") || "UTC";
+    }
+    return "UTC";
+  });
   const [showFilters, setShowFilters] = useState(false);
+
+  const handleTimezoneChange = (newTimezone: string) => {
+    setTimezone(newTimezone);
+    if (typeof window !== "undefined") {
+      localStorage.setItem("botelier_call_logs_timezone", newTimezone);
+    }
+  };
 
   const [page, setPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
@@ -406,7 +418,7 @@ export default function CallLogsPage() {
                   <label className="block text-xs text-gray-500 mb-1">Timezone</label>
                   <select
                     value={timezone}
-                    onChange={(e) => setTimezone(e.target.value)}
+                    onChange={(e) => handleTimezoneChange(e.target.value)}
                     className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
                   >
                     {TIMEZONE_OPTIONS.map((tz) => (
