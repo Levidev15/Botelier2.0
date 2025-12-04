@@ -376,18 +376,15 @@ You are executing a structured conversation flow. Follow these guidelines:
         ordered_vars = self.get_variables_in_flow_order()
         slots_to_collect = []
         
-        now = datetime.now(timezone.utc)
-        current_date = now.strftime("%Y-%m-%d")
-        
         for var in ordered_vars:
             if var.key not in self.state.collected_slots:
                 node_instructions = self._get_instructions_for_variable(var.key)
                 validation = self._get_validation_for_variable(var.key)
                 
                 slot_info = f"- {var.key}: {var.description} ({var.type.value})"
+                constraints = []
                 
                 if validation:
-                    constraints = []
                     if "min" in validation:
                         constraints.append(f"minimum: {validation['min']}")
                     if "max" in validation:
@@ -398,22 +395,12 @@ You are executing a structured conversation flow. Follow these guidelines:
                         after_date_str = self.state.get_variable(after_date_var)
                         if after_date_str:
                             constraints.append(f"must be after {after_date_str}")
-                    
-                    if constraints:
-                        slot_info += f" [{', '.join(constraints)}]"
                 
-                if var.type == SlotType.DATE:
-                    after_date_var = None
-                    if validation:
-                        after_date_var = validation.get("afterDateVariable") or validation.get("after_date_variable")
-                    if after_date_var:
-                        after_date_str = self.state.get_variable(after_date_var)
-                        if after_date_str:
-                            slot_info += f" [must be after {after_date_str}]"
-                        else:
-                            slot_info += f" [must be today or later]"
-                    else:
-                        slot_info += f" [must be today or later]"
+                if var.type == SlotType.DATE and not any("after" in c for c in constraints):
+                    constraints.append("must be today or later")
+                
+                if constraints:
+                    slot_info += f" [{', '.join(constraints)}]"
                 
                 if node_instructions:
                     node_instructions_resolved = substitute_variables(node_instructions, self.state.collected_slots)
@@ -886,19 +873,19 @@ You are executing a structured conversation flow. Follow these guidelines:
             if after_date_str:
                 date_constraint = f"must be after {after_date_str}"
             else:
-                date_constraint = f"must be in the future (after {current_date})"
+                date_constraint = f"must be today ({current_date}) or later"
             
             return {
                 "type": "function",
                 "function": {
                     "name": f"collect_{var.key}",
-                    "description": f"Record the {var.description}. Date {date_constraint}. Format: YYYY-MM-DD.",
+                    "description": f"Record the {var.description}. Constraint: {date_constraint}. Accept any reasonable date format the caller provides and convert to YYYY-MM-DD internally.",
                     "parameters": {
                         "type": "object",
                         "properties": {
                             var.key: {
                                 "type": "string",
-                                "description": f"{var.description} (YYYY-MM-DD format, {date_constraint})"
+                                "description": f"{var.description} ({date_constraint})"
                             }
                         },
                         "required": [var.key]
