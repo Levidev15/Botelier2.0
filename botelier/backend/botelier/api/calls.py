@@ -21,6 +21,12 @@ from ..services.call_logger import CallLogger
 router = APIRouter(prefix="/api/calls", tags=["Calls"])
 
 
+def _get_call_handler():
+    """Lazy import to avoid circular dependencies"""
+    from .websockets import call_handler
+    return call_handler
+
+
 @router.post("/incoming")
 @router.get("/incoming")
 async def incoming_call_webhook(request: Request, db: Session = Depends(get_db)):
@@ -169,13 +175,16 @@ async def connect_complete(request: Request, db: Session = Depends(get_db)):
     This is the action URL for <Connect>, called when the media stream ends.
     We can return TwiML here to continue the call (e.g., for transfers).
     
-    Uses CallLogger service for status updates.
+    Uses CallLogger service for status updates and saves conversation transcript.
     """
     try:
         form_data = await request.form()
         call_sid = str(form_data.get("CallSid", ""))
         
         logger.info(f"Connect complete - SID: {call_sid}")
+        
+        call_handler = _get_call_handler()
+        await call_handler.save_transcript_for_call(call_sid)
         
         call_logger = CallLogger(db)
         
