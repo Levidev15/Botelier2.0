@@ -1,15 +1,26 @@
 "use client";
 
 import { X } from "lucide-react";
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import ToolTypeSelector from "./ToolTypeSelector";
 import TransferCallForm from "./tool-types/TransferCallForm";
 import FlowForm from "./tool-types/FlowForm";
+
+interface Tool {
+  id: string;
+  name: string;
+  description: string;
+  tool_type: string;
+  config: any;
+  is_active: boolean;
+}
 
 interface ToolDrawerProps {
   isOpen: boolean;
   onClose: () => void;
   onToolCreated: (tool: any) => void;
+  onToolUpdated?: (tool: any) => void;
+  editTool?: Tool | null;
 }
 
 export type ToolType =
@@ -20,15 +31,30 @@ export type ToolType =
   | "SEND_EMAIL"
   | "FLOW";
 
-export default function ToolDrawer({ isOpen, onClose, onToolCreated }: ToolDrawerProps) {
+export default function ToolDrawer({ isOpen, onClose, onToolCreated, onToolUpdated, editTool }: ToolDrawerProps) {
   const [selectedType, setSelectedType] = useState<ToolType | null>(null);
+
+  const isEditMode = !!editTool;
+
+  useEffect(() => {
+    if (editTool) {
+      setSelectedType(editTool.tool_type as ToolType);
+    } else {
+      setSelectedType(null);
+    }
+  }, [editTool, isOpen]);
 
   const handleReset = () => {
     setSelectedType(null);
+    onClose();
   };
 
-  const handleToolCreated = (tool: any) => {
-    onToolCreated(tool);
+  const handleToolSaved = (tool: any) => {
+    if (isEditMode && onToolUpdated) {
+      onToolUpdated(tool);
+    } else {
+      onToolCreated(tool);
+    }
     handleReset();
   };
 
@@ -36,35 +62,34 @@ export default function ToolDrawer({ isOpen, onClose, onToolCreated }: ToolDrawe
 
   return (
     <>
-      {/* Backdrop */}
       <div
         className="fixed inset-0 bg-black/50 z-40"
         onClick={onClose}
       />
 
-      {/* Drawer */}
       <div className="fixed right-0 top-0 h-full w-full max-w-4xl bg-[#0a0a0a] border-l border-gray-800 z-50 flex overflow-hidden">
-        {/* Left Sidebar - Tool Type Selector */}
-        <div className="w-64 bg-[#141414] border-r border-gray-800 p-4 overflow-y-auto">
-          <div className="mb-6">
-            <h3 className="text-sm font-semibold text-gray-400 mb-4">TOOL TYPES</h3>
-            <ToolTypeSelector
-              selectedType={selectedType}
-              onSelectType={setSelectedType}
-            />
+        {!isEditMode && (
+          <div className="w-64 bg-[#141414] border-r border-gray-800 p-4 overflow-y-auto">
+            <div className="mb-6">
+              <h3 className="text-sm font-semibold text-gray-400 mb-4">TOOL TYPES</h3>
+              <ToolTypeSelector
+                selectedType={selectedType}
+                onSelectType={setSelectedType}
+              />
+            </div>
           </div>
-        </div>
+        )}
 
-        {/* Right Panel - Tool Configuration Form */}
         <div className="flex-1 flex flex-col overflow-hidden">
-          {/* Header */}
           <div className="flex items-center justify-between p-6 border-b border-gray-800">
             <div>
               <h2 className="text-xl font-bold">
-                {selectedType ? "Configure Tool" : "Select Tool Type"}
+                {isEditMode ? `Edit ${editTool?.name}` : selectedType ? "Configure Tool" : "Select Tool Type"}
               </h2>
               <p className="text-sm text-gray-400 mt-1">
-                {selectedType
+                {isEditMode
+                  ? "Update the tool configuration"
+                  : selectedType
                   ? "Fill in the configuration details"
                   : "Choose a tool type from the left sidebar"}
               </p>
@@ -77,12 +102,12 @@ export default function ToolDrawer({ isOpen, onClose, onToolCreated }: ToolDrawe
             </button>
           </div>
 
-          {/* Form Content */}
           <div className="flex-1 overflow-y-auto p-6">
             {selectedType === "TRANSFER_CALL" && (
               <TransferCallForm
-                onSuccess={handleToolCreated}
+                onSuccess={handleToolSaved}
                 onCancel={handleReset}
+                tool={editTool || undefined}
               />
             )}
 
@@ -110,14 +135,14 @@ export default function ToolDrawer({ isOpen, onClose, onToolCreated }: ToolDrawe
               </div>
             )}
 
-            {selectedType === "FLOW" && (
+            {selectedType === "FLOW" && !isEditMode && (
               <FlowForm
-                onSuccess={handleToolCreated}
+                onSuccess={handleToolSaved}
                 onCancel={handleReset}
               />
             )}
 
-            {!selectedType && (
+            {!selectedType && !isEditMode && (
               <div className="text-center py-12 text-gray-400">
                 <p>Select a tool type from the left sidebar to get started</p>
               </div>

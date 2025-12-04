@@ -20,9 +20,9 @@ interface Tool {
 export default function ToolsPage() {
   const [tools, setTools] = useState<Tool[]>([]);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
+  const [editingTool, setEditingTool] = useState<Tool | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // Fetch tools from backend
   useEffect(() => {
     fetchTools();
   }, []);
@@ -43,10 +43,27 @@ export default function ToolsPage() {
   const handleToolCreated = (newTool: Tool) => {
     setTools([...tools, newTool]);
     setIsDrawerOpen(false);
+    setEditingTool(null);
+  };
+
+  const handleToolUpdated = (updatedTool: Tool) => {
+    setTools(tools.map(t => t.id === updatedTool.id ? updatedTool : t));
+    setIsDrawerOpen(false);
+    setEditingTool(null);
   };
 
   const handleToolDeleted = (toolId: string) => {
     setTools(tools.filter(t => t.id !== toolId));
+  };
+
+  const handleEditTool = (tool: Tool) => {
+    setEditingTool(tool);
+    setIsDrawerOpen(true);
+  };
+
+  const handleCloseDrawer = () => {
+    setIsDrawerOpen(false);
+    setEditingTool(null);
   };
 
   const getToolIcon = (toolType: string) => {
@@ -89,7 +106,6 @@ export default function ToolsPage() {
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] text-white p-8">
-      {/* Header */}
       <div className="max-w-7xl mx-auto mb-8">
         <div className="flex items-center justify-between">
           <div>
@@ -108,7 +124,6 @@ export default function ToolsPage() {
         </div>
       </div>
 
-      {/* Tools Grid */}
       <div className="max-w-7xl mx-auto">
         {loading ? (
           <div className="text-center py-12 text-gray-400">
@@ -140,17 +155,19 @@ export default function ToolsPage() {
                 icon={getToolIcon(tool.tool_type)}
                 typeLabel={getToolTypeLabel(tool.tool_type)}
                 onDelete={handleToolDeleted}
+                onEdit={handleEditTool}
               />
             ))}
           </div>
         )}
       </div>
 
-      {/* Tool Creation Drawer */}
       <ToolDrawer
         isOpen={isDrawerOpen}
-        onClose={() => setIsDrawerOpen(false)}
+        onClose={handleCloseDrawer}
         onToolCreated={handleToolCreated}
+        onToolUpdated={handleToolUpdated}
+        editTool={editingTool}
       />
     </div>
   );
