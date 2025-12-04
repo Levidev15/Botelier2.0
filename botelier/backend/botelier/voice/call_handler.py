@@ -437,32 +437,40 @@ class CallHandler:
         transcript = []
         
         try:
-            # LLMContextAggregatorPair stores context in _context attribute
-            context = None
-            
-            # Try multiple ways to access the context (Pipecat versions may differ)
-            if hasattr(context_aggregator, '_context'):
-                context = context_aggregator._context
-            elif hasattr(context_aggregator, 'context'):
-                context = context_aggregator.context
-            elif hasattr(context_aggregator, 'get_context'):
-                context = context_aggregator.get_context()
-                
-            if not context:
-                logger.debug("No context found in aggregator")
-                return transcript
-            
-            # Access messages from the context
             messages = None
-            if hasattr(context, 'messages'):
-                messages = context.messages
-            elif hasattr(context, 'get_messages'):
-                messages = context.get_messages()
-            elif isinstance(context, dict):
-                messages = context.get('messages', [])
-                
+            
+            # LLMContextAggregatorPair has _user and _assistant aggregators
+            # Both share the same context, so we can access it through either
+            if hasattr(context_aggregator, '_user'):
+                user_agg = context_aggregator._user
+                if hasattr(user_agg, '_context'):
+                    context = user_agg._context
+                    if hasattr(context, 'get_messages'):
+                        messages = context.get_messages()
+                    elif hasattr(context, 'messages'):
+                        messages = context.messages
+            
+            # Fallback: try _assistant aggregator
+            if not messages and hasattr(context_aggregator, '_assistant'):
+                asst_agg = context_aggregator._assistant
+                if hasattr(asst_agg, '_context'):
+                    context = asst_agg._context
+                    if hasattr(context, 'get_messages'):
+                        messages = context.get_messages()
+                    elif hasattr(context, 'messages'):
+                        messages = context.messages
+            
+            # Fallback: direct context access (older Pipecat versions)
             if not messages:
-                logger.debug(f"No messages in context. Context type: {type(context)}")
+                if hasattr(context_aggregator, '_context'):
+                    context = context_aggregator._context
+                    if hasattr(context, 'get_messages'):
+                        messages = context.get_messages()
+                    elif hasattr(context, 'messages'):
+                        messages = context.messages
+            
+            if not messages:
+                logger.debug(f"No messages found. Aggregator type: {type(context_aggregator)}")
                 return transcript
             
             logger.debug(f"Found {len(messages)} raw messages in context")
