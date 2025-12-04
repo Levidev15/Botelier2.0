@@ -171,7 +171,7 @@ class VoiceEngineFactory:
         transport,
         function_schemas: Optional[list] = None,
         function_handlers: Optional[Dict[str, Any]] = None,
-    ) -> tuple[Pipeline, PipelineTask, Any, Any]:
+    ) -> tuple[Pipeline, PipelineTask, Any, Any, Any]:
         """
         Create complete voice pipeline from agent configuration
         
@@ -186,7 +186,8 @@ class VoiceEngineFactory:
             function_handlers: Optional dict mapping function names to async handlers
             
         Returns:
-            Tuple of (pipeline, task, llm, context_aggregator) for external access
+            Tuple of (pipeline, task, llm, context_aggregator, context) for external access
+            The context is returned separately for transcript extraction
         """
         from pipecat.adapters.schemas.tools_schema import ToolsSchema
         
@@ -235,7 +236,7 @@ class VoiceEngineFactory:
             ),
         )
         
-        return pipeline, task, llm, context_aggregator
+        return pipeline, task, llm, context_aggregator, context
     
     @staticmethod
     def create_transport_params(config: VoiceAgentConfig):

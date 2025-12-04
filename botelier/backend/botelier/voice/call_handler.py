@@ -43,7 +43,7 @@ class CallHandler:
     Call-scoped state:
     - active_calls: Tracks running call sessions
     - call_mappers: Stores FunctionMapper per call_sid for state persistence
-    - call_context: Stores LLM context for transcript extraction
+    - call_contexts: Stores LLMContext per call_sid for transcript extraction
     - call_start_times: Tracks call start times for duration calculation
     """
     
@@ -148,7 +148,7 @@ class CallHandler:
             )
             
             # 6. Create Pipecat pipeline with function calling support
-            pipeline, task, llm, context_aggregator = VoiceEngineFactory.create_pipeline(
+            pipeline, task, llm, context_aggregator, llm_context = VoiceEngineFactory.create_pipeline(
                 config=config,
                 api_keys=api_keys,
                 transport=transport,
@@ -158,7 +158,7 @@ class CallHandler:
             
             # 7. Update active call with task and context
             self.active_calls[call_sid] = task
-            self.call_contexts[call_sid] = context_aggregator
+            self.call_contexts[call_sid] = llm_context  # Store LLMContext directly for transcript extraction
             self.call_start_times[call_sid] = datetime.utcnow()
             
             # 8. Queue greeting message
@@ -174,7 +174,7 @@ class CallHandler:
             logger.info(f"✅ Call {call_sid} ended")
             
             # 10. Capture transcript and save to call log
-            await self._save_call_transcript(call_sid, context_aggregator)
+            await self._save_call_transcript(call_sid, llm_context)
             
         except Exception as e:
             logger.exception(f"Error handling call {call_sid}: {e}")
@@ -375,7 +375,7 @@ class CallHandler:
         else:
             logger.warning(f"Call {call_sid} not found in active calls")
     
-    async def _save_call_transcript(self, call_sid: str, context_aggregator: Optional[Any]):
+    async def _save_call_transcript(self, call_sid: str, llm_context: Optional[Any]):
         """
         Save call transcript to database.
         
@@ -384,15 +384,15 @@ class CallHandler:
         
         Args:
             call_sid: Twilio call SID
-            context_aggregator: Pipecat's LLMContextAggregatorPair with conversation context (may be None)
+            llm_context: Pipecat's LLMContext object with conversation history (may be None)
         """
-        if not context_aggregator:
-            logger.warning(f"No context aggregator available for call {call_sid}, skipping transcript")
+        if not llm_context:
+            logger.warning(f"No LLM context available for call {call_sid}, skipping transcript")
             return
             
         db = None
         try:
-            transcript = self._extract_transcript(context_aggregator)
+            transcript = self._extract_transcript(llm_context)
             
             if not transcript:
                 logger.warning(f"No transcript messages found for call {call_sid}")
@@ -421,15 +421,15 @@ class CallHandler:
             if db:
                 db.close()
     
-    def _extract_transcript(self, context_aggregator: Any) -> List[Dict[str, str]]:
+    def _extract_transcript(self, llm_context: Any) -> List[Dict[str, str]]:
         """
-        Extract conversation messages from Pipecat's context aggregator.
+        Extract conversation messages from Pipecat's LLMContext.
         
         Filters to only user and assistant messages, excluding system prompts
         and tool/function call messages.
         
         Args:
-            context_aggregator: Pipecat's LLMContextAggregatorPair
+            llm_context: Pipecat's LLMContext object (passed directly from create_pipeline)
             
         Returns:
             List of transcript entries with role and content
@@ -439,38 +439,19 @@ class CallHandler:
         try:
             messages = None
             
-            # LLMContextAggregatorPair has _user and _assistant aggregators
-            # Both share the same context, so we can access it through either
-            if hasattr(context_aggregator, '_user'):
-                user_agg = context_aggregator._user
-                if hasattr(user_agg, '_context'):
-                    context = user_agg._context
-                    if hasattr(context, 'get_messages'):
-                        messages = context.get_messages()
-                    elif hasattr(context, 'messages'):
-                        messages = context.messages
-            
-            # Fallback: try _assistant aggregator
-            if not messages and hasattr(context_aggregator, '_assistant'):
-                asst_agg = context_aggregator._assistant
-                if hasattr(asst_agg, '_context'):
-                    context = asst_agg._context
-                    if hasattr(context, 'get_messages'):
-                        messages = context.get_messages()
-                    elif hasattr(context, 'messages'):
-                        messages = context.messages
-            
-            # Fallback: direct context access (older Pipecat versions)
-            if not messages:
-                if hasattr(context_aggregator, '_context'):
-                    context = context_aggregator._context
-                    if hasattr(context, 'get_messages'):
-                        messages = context.get_messages()
-                    elif hasattr(context, 'messages'):
-                        messages = context.messages
+            # LLMContext provides get_messages() method
+            if hasattr(llm_context, 'get_messages'):
+                messages = llm_context.get_messages()
+                logger.debug(f"Got {len(messages) if messages else 0} messages via get_messages()")
+            elif hasattr(llm_context, 'messages'):
+                messages = llm_context.messages
+                logger.debug(f"Got {len(messages) if messages else 0} messages via messages attr")
+            elif isinstance(llm_context, dict):
+                messages = llm_context.get('messages', [])
+                logger.debug(f"Got {len(messages) if messages else 0} messages from dict")
             
             if not messages:
-                logger.debug(f"No messages found. Aggregator type: {type(context_aggregator)}")
+                logger.debug(f"No messages found. Context type: {type(llm_context)}")
                 return transcript
             
             logger.debug(f"Found {len(messages)} raw messages in context")
