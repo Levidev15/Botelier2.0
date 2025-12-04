@@ -116,35 +116,63 @@ class FunctionMapper:
             
             Flow:
                 1. AI says pre-transfer message
-                2. Transfer call via Twilio REST API
-                3. End bot session
+                2. Record transfer in call log (so connect-complete won't hang up)
+                3. Transfer call via Twilio REST API (will redirect the call)
+                
+            Note: We do NOT push EndFrame here. Twilio will close the WebSocket
+            when it redirects the call to the new TwiML. The pipeline will end
+            naturally when Twilio sends the 'stop' event.
             """
             # Tell user what's happening
             await params.llm.push_frame(
                 TTSSpeakFrame(pre_message)
             )
             
-            # Perform Twilio call transfer
+            # Record transfer in database BEFORE Twilio redirect
+            # This tells connect-complete endpoint to not hang up
             transfer_success = False
             if self.twilio_client and self.call_sid:
                 try:
-                    # Use Twilio REST API to update the call with new TwiML that dials the transfer number
-                    self.twilio_client.calls(self.call_sid).update(
-                        twiml=f'<Response><Dial>{phone_number}</Dial></Response>'
-                    )
+                    # Update call log to record transfer
+                    from ..database import SessionLocal
+                    from ..services.call_logger import CallLogger
+                    
+                    db = SessionLocal()
+                    try:
+                        call_logger = CallLogger(db)
+                        call_logger.record_transfer(
+                            call_sid=self.call_sid,
+                            transfer_to=phone_number,
+                            transfer_type="external"
+                        )
+                        logger.info(f"📝 Recorded transfer for call {self.call_sid}")
+                    finally:
+                        db.close()
+                    
+                    # Get base URL for status callback
+                    base_url = os.environ.get("PUBLIC_BASE_URL", "")
+                    status_callback = f"{base_url}/api/calls/transfer-status" if base_url else ""
+                    
+                    # Use Twilio REST API to update the call with TwiML that dials the transfer number
+                    # The Dial verb will connect the caller to the transfer number
+                    dial_twiml = f'''<Response>
+                        <Dial callerId="{os.environ.get("TWILIO_PHONE_NUMBER", "")}">
+                            <Number statusCallback="{status_callback}" statusCallbackEvent="initiated ringing answered completed">{phone_number}</Number>
+                        </Dial>
+                    </Response>'''
+                    
+                    self.twilio_client.calls(self.call_sid).update(twiml=dial_twiml)
                     transfer_success = True
-                    logger.info(f"✅ Call {self.call_sid} transferred to {phone_number}")
+                    logger.info(f"✅ Call {self.call_sid} being transferred to {phone_number}")
+                    
                 except Exception as e:
                     logger.error(f"❌ Twilio transfer failed for call {self.call_sid}: {e}")
             else:
                 logger.warning(f"⚠️ Cannot transfer call: Twilio client or call_sid missing")
             
-            # End bot's session (call will continue with transferred party)
-            await params.llm.push_frame(EndFrame())
-            
-            # Return result to LLM
+            # Return result to LLM (pipeline will end when Twilio closes WebSocket)
             await params.result_callback({
-                "status": "transferred" if transfer_success else "failed",
+                "status": "transferring" if transfer_success else "failed",
                 "to": phone_number
             })
         

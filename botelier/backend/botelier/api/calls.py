@@ -92,8 +92,8 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
         
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
-    <Connect>
-        <Stream url="{ws_url}">
+    <Connect action="{base_url}/api/calls/connect-complete">
+        <Stream url="{ws_url}" statusCallback="{status_callback_url}" statusCallbackMethod="POST">
             <Parameter name="to" value="{to_number}" />
             <Parameter name="from" value="{from_number}" />
         </Stream>
@@ -215,6 +215,62 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
     except Exception as e:
         logger.exception(f"Error handling call status callback: {e}")
         return {"status": "error", "message": str(e)}
+
+
+@router.post("/connect-complete")
+@router.get("/connect-complete")
+async def connect_complete(request: Request, db: Session = Depends(get_db)):
+    """
+    Called when <Connect> completes (Stream ends).
+    
+    This is the action URL for <Connect>, called when the media stream ends.
+    We can return TwiML here to continue the call (e.g., for transfers).
+    """
+    try:
+        form_data = await request.form()
+        call_sid = form_data.get("CallSid")
+        call_status = form_data.get("CallStatus")
+        
+        logger.info(f"Connect complete - SID: {call_sid}, Status: {call_status}")
+        
+        call_log = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
+        
+        if call_log:
+            if call_log.has_transfer:
+                logger.info(f"Call {call_sid} had transfer, not hanging up")
+                return Response(content="", media_type="application/xml")
+            
+            if call_log.status != CallStatus.COMPLETED.value:
+                call_log.status = CallStatus.COMPLETED.value
+                call_log.ended_at = datetime.utcnow()
+                
+                if call_log.started_at:
+                    call_log.duration_seconds = int((call_log.ended_at - call_log.started_at).total_seconds())
+                
+                ai_leg = db.query(CallLeg).filter(
+                    CallLeg.call_log_id == call_log.id,
+                    CallLeg.leg_type == LegType.AI_CONVERSATION.value
+                ).first()
+                
+                if ai_leg:
+                    ai_leg.status = CallStatus.COMPLETED.value
+                    ai_leg.ended_at = call_log.ended_at
+                    if ai_leg.started_at:
+                        ai_leg.duration_seconds = int((ai_leg.ended_at - ai_leg.started_at).total_seconds())
+                
+                db.commit()
+                logger.info(f"Marked call {call_sid} as completed via connect-complete")
+        
+        hangup_twiml = """<?xml version="1.0" encoding="UTF-8"?>
+<Response>
+    <Hangup/>
+</Response>"""
+        
+        return Response(content=hangup_twiml, media_type="application/xml")
+        
+    except Exception as e:
+        logger.exception(f"Error in connect-complete: {e}")
+        return Response(content="<Response><Hangup/></Response>", media_type="application/xml")
 
 
 @router.post("/transfer-status")
