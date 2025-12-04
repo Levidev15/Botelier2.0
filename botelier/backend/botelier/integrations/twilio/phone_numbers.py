@@ -180,7 +180,9 @@ class PhoneNumberManager:
         phone_number_sid: str,
         voice_url: Optional[str] = None,
         voice_method: Optional[str] = None,
-        friendly_name: Optional[str] = None
+        friendly_name: Optional[str] = None,
+        status_callback: Optional[str] = None,
+        status_callback_method: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Update configuration for an existing phone number.
@@ -190,6 +192,8 @@ class PhoneNumberManager:
             voice_url: New webhook URL for incoming calls
             voice_method: HTTP method (POST/GET)
             friendly_name: New label
+            status_callback: URL for call status updates (completed, failed, etc.)
+            status_callback_method: HTTP method for status callback (POST/GET)
             
         Returns:
             Updated number details
@@ -203,6 +207,10 @@ class PhoneNumberManager:
                 update_params["voice_method"] = voice_method
             if friendly_name is not None:
                 update_params["friendly_name"] = friendly_name
+            if status_callback is not None:
+                update_params["status_callback"] = status_callback
+            if status_callback_method is not None:
+                update_params["status_callback_method"] = status_callback_method
             
             updated = self.client.client.incoming_phone_numbers(phone_number_sid).update(
                 **update_params
@@ -213,6 +221,7 @@ class PhoneNumberManager:
                 "phone_number": updated.phone_number,
                 "friendly_name": updated.friendly_name,
                 "voice_url": updated.voice_url,
+                "status_callback": getattr(updated, 'status_callback', None),
             }
             
         except TwilioRestException as e:

@@ -343,3 +343,63 @@ async def release_phone_number(
             status_code=500,
             detail=f"Failed to release number: {str(e)}"
         )
+
+
+@router.post("/{phone_number_id}/reconfigure")
+async def reconfigure_phone_number_webhooks(
+    phone_number_id: str,
+    db: Session = Depends(get_db)
+):
+    """
+    Reconfigure phone number webhooks to use correct voice and status callback URLs.
+    
+    This is useful for fixing phone numbers that were purchased before
+    status callbacks were properly configured.
+    
+    Path params:
+    - phone_number_id: Phone number UUID
+    
+    Returns:
+    - Updated webhook configuration
+    """
+    phone_number = db.query(PhoneNumber).filter(PhoneNumber.id == phone_number_id).first()
+    if not phone_number:
+        raise HTTPException(status_code=404, detail="Phone number not found")
+    
+    hotel = db.query(Hotel).filter(Hotel.id == phone_number.hotel_id).first()
+    if not hotel or not hotel.twilio_sub_account_sid or not hotel.twilio_sub_auth_token:
+        raise HTTPException(
+            status_code=400,
+            detail="Hotel sub-account not configured"
+        )
+    
+    try:
+        manager = PhoneNumberManager(
+            sub_account_sid=hotel.twilio_sub_account_sid,
+            sub_auth_token=hotel.twilio_sub_auth_token
+        )
+        
+        base_url = get_public_base_url()
+        voice_url = f"{base_url}/api/calls/incoming"
+        status_callback = f"{base_url}/api/calls/status"
+        
+        result = manager.update_number_config(
+            phone_number_sid=phone_number.twilio_sid,
+            voice_url=voice_url,
+            voice_method="POST",
+            status_callback=status_callback,
+            status_callback_method="POST"
+        )
+        
+        return {
+            "message": "Phone number webhooks reconfigured",
+            "voice_url": voice_url,
+            "status_callback": status_callback,
+            "twilio_result": result
+        }
+        
+    except Exception as e:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to reconfigure webhooks: {str(e)}"
+        )
