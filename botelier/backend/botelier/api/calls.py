@@ -14,7 +14,7 @@ from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 from loguru import logger
 
-from ..config.domain import get_websocket_url
+from ..config.domain import get_websocket_url, get_public_base_url
 from ..database import get_db
 from ..models import CallLog, CallLeg, PhoneNumber, CallStatus, LegType
 
@@ -84,7 +84,11 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
         fallback_host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host")
         ws_url = get_websocket_url(path="/api/ws/call", fallback_host=fallback_host)
         
+        base_url = get_public_base_url(fallback_host=fallback_host)
+        status_callback_url = f"{base_url}/api/calls/status"
+        
         logger.info(f"Directing call to WebSocket: {ws_url}")
+        logger.info(f"Status callback URL: {status_callback_url}")
         
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>

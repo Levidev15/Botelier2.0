@@ -8,7 +8,8 @@ Pipecat pipelines with TwilioFrameSerializer for real-time audio streaming.
 import os
 import json
 import asyncio
-from typing import Optional, Dict, Any
+from datetime import datetime
+from typing import Optional, Dict, Any, List
 from fastapi import WebSocket
 from sqlalchemy.orm import Session
 from loguru import logger
@@ -23,6 +24,8 @@ from .agent import VoiceAgentConfig
 from .function_mapper import FunctionMapper
 from ..models.assistant import Assistant
 from ..models.phone_number import PhoneNumber
+from ..database import SessionLocal
+from ..services.call_logger import CallLogger
 
 
 class CallHandler:
@@ -35,16 +38,21 @@ class CallHandler:
     - Real-time audio streaming via WebSocket
     - Call session lifecycle management
     - Function calling and knowledge base integration
+    - Transcript capture on call end
     
     Call-scoped state:
     - active_calls: Tracks running call sessions
     - call_mappers: Stores FunctionMapper per call_sid for state persistence
+    - call_context: Stores LLM context for transcript extraction
+    - call_start_times: Tracks call start times for duration calculation
     """
     
     def __init__(self):
         """Initialize call handler."""
         self.active_calls = {}
         self.call_mappers: Dict[str, FunctionMapper] = {}
+        self.call_contexts: Dict[str, Any] = {}
+        self.call_start_times: Dict[str, datetime] = {}
     
     async def handle_call(self, websocket: WebSocket, to_number: str, stream_sid: str, call_sid: str, db: Session):
         """
@@ -148,8 +156,10 @@ class CallHandler:
                 function_handlers=function_handlers if function_handlers else None,
             )
             
-            # 7. Update active call with task
+            # 7. Update active call with task and context
             self.active_calls[call_sid] = task
+            self.call_contexts[call_sid] = context_aggregator
+            self.call_start_times[call_sid] = datetime.utcnow()
             
             # 8. Queue greeting message
             await task.queue_frames([TTSSpeakFrame(text=config.greeting_message)])
@@ -163,10 +173,20 @@ class CallHandler:
             
             logger.info(f"✅ Call {call_sid} ended")
             
+            # 10. Capture transcript and save to call log
+            await self._save_call_transcript(call_sid, context_aggregator)
+            
         except Exception as e:
             logger.exception(f"Error handling call {call_sid}: {e}")
             if websocket.client_state.name == "CONNECTED":
                 await websocket.close()
+            
+            # Still try to save transcript on error
+            if call_sid in self.call_contexts:
+                try:
+                    await self._save_call_transcript(call_sid, self.call_contexts[call_sid])
+                except Exception as save_error:
+                    logger.error(f"Failed to save transcript on error: {save_error}")
         finally:
             # Cleanup call session state
             if call_sid in self.active_calls:
@@ -174,6 +194,10 @@ class CallHandler:
             if call_sid in self.call_mappers:
                 del self.call_mappers[call_sid]
                 logger.debug(f"Cleaned up FunctionMapper for call {call_sid}")
+            if call_sid in self.call_contexts:
+                del self.call_contexts[call_sid]
+            if call_sid in self.call_start_times:
+                del self.call_start_times[call_sid]
     
     def _create_agent_config(self, assistant: Assistant) -> VoiceAgentConfig:
         """
@@ -350,3 +374,57 @@ class CallHandler:
             logger.info(f"Terminated call {call_sid}")
         else:
             logger.warning(f"Call {call_sid} not found in active calls")
+    
+    async def _save_call_transcript(self, call_sid: str, context_aggregator: Any):
+        """
+        Save call transcript to database.
+        
+        Extracts conversation messages from Pipecat's LLM context
+        and saves them to the call log using CallLogger service.
+        
+        Args:
+            call_sid: Twilio call SID
+            context_aggregator: Pipecat's LLMContextAggregatorPair with conversation context
+        """
+        try:
+            transcript = []
+            
+            if context_aggregator and hasattr(context_aggregator, '_context'):
+                context = context_aggregator._context
+                if hasattr(context, 'messages'):
+                    messages = context.messages
+                    for msg in messages:
+                        role = msg.get("role")
+                        content = msg.get("content")
+                        if role in ("user", "assistant") and content:
+                            transcript.append({
+                                "role": role,
+                                "content": content
+                            })
+            
+            if not transcript:
+                logger.warning(f"No transcript messages found for call {call_sid}")
+                return
+            
+            duration_seconds = None
+            if call_sid in self.call_start_times:
+                start_time = self.call_start_times[call_sid]
+                duration_seconds = int((datetime.utcnow() - start_time).total_seconds())
+            
+            db = SessionLocal()
+            try:
+                call_logger = CallLogger(db)
+                success = call_logger.complete_call(
+                    call_sid=call_sid,
+                    transcript=transcript,
+                    duration_seconds=duration_seconds
+                )
+                if success:
+                    logger.info(f"📝 Saved transcript ({len(transcript)} messages) for call {call_sid}")
+                else:
+                    logger.warning(f"Failed to save transcript for call {call_sid}")
+            finally:
+                db.close()
+                
+        except Exception as e:
+            logger.exception(f"Error saving transcript for call {call_sid}: {e}")
