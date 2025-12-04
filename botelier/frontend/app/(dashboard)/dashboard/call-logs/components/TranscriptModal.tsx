@@ -4,7 +4,8 @@ import { X, Bot, User, Clock, Phone, PhoneForwarded } from "lucide-react";
 
 interface TranscriptEntry {
   role: string;
-  text: string;
+  content?: string;
+  text?: string;
   timestamp?: string;
 }
 
@@ -154,7 +155,7 @@ export default function TranscriptModal({ log, onClose }: TranscriptModalProps) 
                         </span>
                       )}
                     </div>
-                    <p className="text-sm leading-relaxed">{entry.text}</p>
+                    <p className="text-sm leading-relaxed">{entry.content || entry.text}</p>
                   </div>
                 </div>
               ))}
