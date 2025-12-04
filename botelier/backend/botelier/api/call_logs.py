@@ -101,7 +101,7 @@ async def get_call_logs(
         
         logs_with_names = []
         for log in call_logs:
-            log_dict = log.to_dict(include_legs=True)
+            log_dict = log.to_dict(include_legs=True, include_transcript=True)
             log_dict["assistant_name"] = assistants.get(str(log.assistant_id)) if log.assistant_id else None
             log_dict["phone_number_display"] = phone_numbers.get(str(log.phone_number_id)) if log.phone_number_id else None
             logs_with_names.append(log_dict)

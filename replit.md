@@ -32,6 +32,11 @@ Botelier is built with a clean architectural separation, where the core SaaS app
 - **Flow Versioning System:** Implements a draft/publish workflow, version history, and revert capability for conversational flows. Includes database model (`FlowVersion`), API endpoints for managing drafts and published versions, and publish-time validation. Revert updates existing draft content (not version number) to avoid duplicate key errors.
 - **Unsaved Changes Warning:** Flow editor tracks dirty state and prompts users with Save/Discard/Cancel modal when navigating away with unsaved changes. Uses `useUnsavedChangesWarning` hook with `beforeunload` event handling.
 - **Flow Execution Runtime:** `FlowExecutor` class converts visual flows to Pipecat function schemas, handles variable substitution, slot collection, and manages flow state.
+- **Global Prompt System:** Flow-level instructions that apply to the entire conversation:
+  - **FlowConfig.global_prompt:** Optional field stored in flow configuration
+  - **Settings Modal:** Accessible via toolbar button, allows users to set flow-wide AI instructions
+  - **LLM Integration:** Global prompt is injected into system prompt as "FLOW-LEVEL INSTRUCTIONS" section
+  - **Use Cases:** Style guidelines (formal language, spell out names), consistent behaviors across all nodes
 - **Delivery Mode System:** Each Message and Confirmation node has a "Delivery Mode" toggle:
   - **Guided (default):** AI receives the configured text as guidance and can phrase naturally while keeping the meaning
   - **Static:** AI must speak the exact configured text verbatim, with `speak_exactly` field enforcing exact output

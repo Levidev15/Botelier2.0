@@ -140,6 +140,7 @@ class FlowConfig:
     nodes: list[FlowNode]
     edges: list[FlowEdge]
     variables: list[FlowVariable]
+    global_prompt: Optional[str] = None
 
 
 class FlowState:
@@ -239,7 +240,8 @@ def parse_flow_config(config_dict: dict) -> FlowConfig:
         initial_node=config_dict.get("initial_node"),
         nodes=nodes,
         edges=edges,
-        variables=variables
+        variables=variables,
+        global_prompt=config_dict.get("global_prompt") or config_dict.get("globalPrompt")
     )
 
 
@@ -341,6 +343,8 @@ class FlowExecutor:
         if initial_node and initial_node.data.get("systemPrompt"):
             base_prompt = initial_node.data["systemPrompt"]
         
+        global_prompt = self.flow_config.global_prompt or ""
+        
         flow_context = self._generate_flow_context()
         
         now = datetime.now(timezone.utc)
@@ -348,10 +352,17 @@ class FlowExecutor:
         current_time = now.strftime("%H:%M")
         current_date_human = now.strftime("%B %d, %Y")
         
+        global_section = ""
+        if global_prompt.strip():
+            global_section = f"""
+FLOW-LEVEL INSTRUCTIONS (apply to entire conversation):
+{global_prompt.strip()}
+"""
+        
         return f"""{base_prompt}
 
 Current date/time: {current_date} {current_time} UTC ({current_date_human})
-
+{global_section}
 You are executing a structured conversation flow. Follow these guidelines:
 1. Collect information in the order specified by the flow
 2. Use the provided functions to progress through the flow
@@ -1065,6 +1076,8 @@ You are executing a structured conversation flow. Follow these guidelines:
             return await self._handle_api_request(function_name, arguments)
         elif function_name.startswith("route_"):
             return await self._handle_router(function_name, arguments)
+        elif function_name == "confirm_booking":
+            return await self._handle_confirm_booking(arguments)
         elif function_name.startswith("confirm_"):
             return await self._handle_confirmation(function_name, arguments)
         elif function_name.startswith("set_var_"):
@@ -1073,8 +1086,6 @@ You are executing a structured conversation flow. Follow these guidelines:
             return await self._handle_transfer(function_name, arguments)
         elif function_name.startswith("end_call_"):
             return await self._handle_end_call(function_name, arguments)
-        elif function_name == "confirm_booking":
-            return await self._handle_confirm_booking(arguments)
         else:
             return {"success": False, "message": "Unknown function", "action": None}
     
