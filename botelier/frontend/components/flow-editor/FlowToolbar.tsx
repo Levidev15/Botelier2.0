@@ -26,7 +26,8 @@ import {
   RotateCcw,
   Trash2,
   Info,
-  X
+  X,
+  Settings
 } from "lucide-react";
 import { useFlowStore, NodeType, AVAILABLE_TEMPLATES, FlowVersionInfo } from "./store";
 import { toast } from "sonner";
@@ -177,6 +178,8 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
     publishFlow,
     discardDraft,
     revertToVersion,
+    globalPrompt,
+    setGlobalPrompt,
   } = useFlowStore();
   
   const [showAddMenu, setShowAddMenu] = useState(false);
@@ -186,6 +189,8 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
   const [publishDescription, setPublishDescription] = useState("");
   const [isPublishing, setIsPublishing] = useState(false);
   const [showNodeInfo, setShowNodeInfo] = useState<NodeInfo | null>(null);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
+  const [tempGlobalPrompt, setTempGlobalPrompt] = useState("");
 
   const handleAddNode = (type: NodeType) => {
     const lastNode = nodes[nodes.length - 1];
@@ -479,6 +484,18 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
             <span className="text-xs text-yellow-500">Unsaved changes</span>
           )}
 
+          <button
+            onClick={() => {
+              setTempGlobalPrompt(globalPrompt);
+              setShowSettingsModal(true);
+            }}
+            className="flex items-center gap-2 px-3 py-1.5 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm font-medium transition"
+            title="Flow Settings"
+          >
+            <Settings className="h-4 w-4" />
+            Settings
+          </button>
+
           {onToggleSimulator && (
             <button
               onClick={onToggleSimulator}
@@ -663,6 +680,70 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
                 className="px-4 py-2 text-gray-400 hover:text-white text-sm"
               >
                 Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Settings Modal */}
+      {showSettingsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50" onClick={() => setShowSettingsModal(false)}>
+          <div 
+            className="bg-[#1a1a1a] border border-gray-700 rounded-lg shadow-xl w-[500px] max-w-[90vw] overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            {/* Header */}
+            <div className="flex items-center justify-between p-4 border-b border-gray-700">
+              <div className="flex items-center gap-3">
+                <div className="w-8 h-8 rounded-lg flex items-center justify-center bg-gray-700">
+                  <Settings className="h-4 w-4 text-gray-300" />
+                </div>
+                <h3 className="text-lg font-semibold text-white">Flow Settings</h3>
+              </div>
+              <button
+                onClick={() => setShowSettingsModal(false)}
+                className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            
+            {/* Content */}
+            <div className="p-4 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-2">
+                  Global Prompt
+                </label>
+                <p className="text-xs text-gray-500 mb-2">
+                  Add instructions that apply to the entire flow. These supplement the system prompt and affect AI behavior throughout the conversation.
+                </p>
+                <textarea
+                  value={tempGlobalPrompt}
+                  onChange={(e) => setTempGlobalPrompt(e.target.value)}
+                  placeholder="Example: Always spell out guest names letter by letter for confirmation. Use formal language throughout the conversation."
+                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-white text-sm resize-none h-32 focus:border-blue-500 focus:outline-none"
+                />
+              </div>
+            </div>
+            
+            {/* Footer */}
+            <div className="p-4 border-t border-gray-700 flex justify-end gap-2">
+              <button
+                onClick={() => setShowSettingsModal(false)}
+                className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-white rounded-lg text-sm"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={() => {
+                  setGlobalPrompt(tempGlobalPrompt);
+                  setShowSettingsModal(false);
+                  toast.success("Flow settings updated");
+                }}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium"
+              >
+                Save Settings
               </button>
             </div>
           </div>

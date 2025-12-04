@@ -195,6 +195,7 @@ export interface FlowState {
   nodes: Node<NodeData>[];
   edges: Edge[];
   variables: FlowVariable[];
+  globalPrompt: string;
   selectedNode: Node<NodeData> | null;
   activeNodeId: string | null; // For simulator highlighting
   isDirty: boolean;
@@ -228,6 +229,8 @@ export interface FlowState {
   updateVariable: (key: string, variable: Partial<FlowVariable>) => void;
   deleteVariable: (key: string) => void;
   
+  setGlobalPrompt: (prompt: string) => void;
+  
   loadFlow: (toolId: string, hotelId: string, source?: "draft" | "published") => Promise<void>;
   saveFlow: (description?: string) => Promise<void>;
   publishFlow: (description?: string) => Promise<void>;
@@ -247,6 +250,7 @@ export interface FlowState {
     edges: any[]; 
     variables: FlowVariable[];
     initial_node: string | null;
+    globalPrompt: string;
   };
 }
 
@@ -683,6 +687,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   nodes: [],
   edges: [],
   variables: [],
+  globalPrompt: "",
   selectedNode: null,
   activeNodeId: null,
   isDirty: false,
@@ -809,6 +814,13 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     });
   },
 
+  setGlobalPrompt: (prompt: string) => {
+    set({
+      globalPrompt: prompt,
+      isDirty: true,
+    });
+  },
+
   loadFlow: async (toolId: string, hotelId: string, source?: "draft" | "published") => {
     set({ isLoading: true, toolId, hotelId });
     try {
@@ -835,6 +847,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
           })),
           edges: loadedEdges,
           variables: data.flow_config.variables || [],
+          globalPrompt: data.flow_config.globalPrompt || data.flow_config.global_prompt || "",
           isDirty: false,
           currentSource: data.source || "legacy",
           currentVersionNumber: data.version_number || 0,
@@ -847,6 +860,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         set({
           nodes: [],
           edges: [],
+          globalPrompt: "",
           variables: [],
           isDirty: false,
           currentSource: "legacy",
@@ -867,7 +881,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   saveFlow: async (description?: string) => {
-    const { toolId, hotelId, nodes, edges, variables, draftDescription } = get();
+    const { toolId, hotelId, nodes, edges, variables, globalPrompt, draftDescription } = get();
     if (!toolId || !hotelId) return;
 
     set({ isLoading: true });
@@ -877,6 +891,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       const flowConfig = {
         initial_node: initialNode?.id || null,
         variables,
+        globalPrompt,
         nodes: nodes.map((n) => ({
           id: n.id,
           type: n.type,
@@ -1075,12 +1090,13 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   setHotelId: (id) => set({ hotelId: id }),
 
   getFlowConfig: () => {
-    const { nodes, edges, variables } = get();
+    const { nodes, edges, variables, globalPrompt } = get();
     const initialNode = nodes.find((n) => n.type === "initial");
     
     return {
       initial_node: initialNode?.id || null,
       variables,
+      globalPrompt,
       nodes: nodes.map((n) => ({
         id: n.id,
         type: n.type,
