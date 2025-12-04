@@ -7,16 +7,15 @@ receives an incoming call. It returns TwiML to start a Media Stream.
 Also handles call status updates and creates call log records for analytics.
 """
 
-import os
 from datetime import datetime
 from fastapi import APIRouter, Request, Response, Depends
-from fastapi.responses import PlainTextResponse
 from sqlalchemy.orm import Session
 from loguru import logger
 
 from ..config.domain import get_websocket_url, get_public_base_url
 from ..database import get_db
 from ..models import CallLog, CallLeg, PhoneNumber, CallStatus, LegType
+from ..services.call_logger import CallLogger
 
 
 router = APIRouter(prefix="/api/calls", tags=["Calls"])
@@ -88,7 +87,6 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
         status_callback_url = f"{base_url}/api/calls/status"
         
         logger.info(f"Directing call to WebSocket: {ws_url}")
-        logger.info(f"Status callback URL: {status_callback_url}")
         
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -122,93 +120,38 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
     Twilio POSTs here when call status changes:
     - initiated, ringing, in-progress, completed, busy, failed, no-answer, canceled
     
-    Updates the CallLog record with the new status and duration.
+    Uses CallLogger service to update the CallLog record.
     """
     try:
         form_data = await request.form()
-        call_sid = form_data.get("CallSid")
-        call_status = form_data.get("CallStatus")
+        call_sid = str(form_data.get("CallSid", ""))
+        call_status = str(form_data.get("CallStatus", "")) if form_data.get("CallStatus") else None
         call_duration = form_data.get("CallDuration")
-        parent_call_sid = form_data.get("ParentCallSid")
-        from_number = form_data.get("From")
-        to_number = form_data.get("To")
+        parent_call_sid = str(form_data.get("ParentCallSid", "")) if form_data.get("ParentCallSid") else None
+        to_number = str(form_data.get("To", "")) if form_data.get("To") else None
         
         logger.info(f"Call status update - SID: {call_sid}, Status: {call_status}, Duration: {call_duration}s")
         
+        if not call_status:
+            logger.debug("No CallStatus in callback, likely a stream status event")
+            return {"status": "received"}
+        
+        call_logger = CallLogger(db)
+        duration_seconds = int(call_duration) if call_duration else None
+        
         if parent_call_sid:
             logger.info(f"Child call detected - Parent: {parent_call_sid}")
-        
-        call_log = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
-        
-        if not call_log and parent_call_sid:
-            call_log = db.query(CallLog).filter(CallLog.call_sid == parent_call_sid).first()
-            
-            if call_log:
-                existing_leg = db.query(CallLeg).filter(
-                    CallLeg.call_log_id == call_log.id,
-                    CallLeg.call_sid == call_sid
-                ).first()
-                
-                if not existing_leg:
-                    max_leg = db.query(CallLeg).filter(
-                        CallLeg.call_log_id == call_log.id
-                    ).order_by(CallLeg.leg_number.desc()).first()
-                    
-                    next_leg_num = (max_leg.leg_number + 1) if max_leg else 1
-                    
-                    transfer_leg = CallLeg(
-                        call_log_id=call_log.id,
-                        leg_number=next_leg_num,
-                        leg_type=LegType.TRANSFER_EXTERNAL.value,
-                        call_sid=call_sid,
-                        participant=to_number,
-                        participant_name=None,
-                        status=call_status or CallStatus.INITIATED.value,
-                        started_at=datetime.utcnow(),
-                    )
-                    db.add(transfer_leg)
-                    
-                    call_log.has_transfer = True
-                    
-                    logger.info(f"Created transfer leg {next_leg_num} for call {parent_call_sid}")
-        
-        if call_log:
-            status_mapping = {
-                "initiated": CallStatus.INITIATED.value,
-                "ringing": CallStatus.RINGING.value,
-                "in-progress": CallStatus.IN_PROGRESS.value,
-                "completed": CallStatus.COMPLETED.value,
-                "busy": CallStatus.BUSY.value,
-                "failed": CallStatus.FAILED.value,
-                "no-answer": CallStatus.NO_ANSWER.value,
-                "canceled": CallStatus.CANCELED.value,
-            }
-            
-            new_status = status_mapping.get(call_status, call_status)
-            
-            if not parent_call_sid:
-                call_log.status = new_status
-                
-                if call_status == "in-progress" and not call_log.answered_at:
-                    call_log.answered_at = datetime.utcnow()
-                
-                if call_status in ("completed", "busy", "failed", "no-answer", "canceled"):
-                    call_log.ended_at = datetime.utcnow()
-                    if call_duration:
-                        call_log.duration_seconds = int(call_duration)
-            
-            leg = db.query(CallLeg).filter(CallLeg.call_sid == call_sid).first()
-            if leg:
-                leg.status = new_status
-                if call_status in ("completed", "busy", "failed", "no-answer", "canceled"):
-                    leg.ended_at = datetime.utcnow()
-                    if call_duration:
-                        leg.duration_seconds = int(call_duration)
-            
-            db.commit()
-            logger.info(f"Updated call log {call_log.id} with status {new_status}")
+            call_logger.create_transfer_leg_from_callback(
+                parent_call_sid=parent_call_sid,
+                child_call_sid=call_sid,
+                to_number=to_number or "",
+                status=call_status
+            )
+            call_logger.update_leg_status(call_sid, call_status, duration_seconds)
         else:
-            logger.warning(f"No call log found for SID: {call_sid}")
+            call_logger.update_status(call_sid, call_status, duration_seconds)
+            if call_status in ("completed", "busy", "failed", "no-answer", "canceled"):
+                call_logger.update_leg_status(call_sid, call_status, duration_seconds)
         
         return {"status": "received"}
         
@@ -225,41 +168,23 @@ async def connect_complete(request: Request, db: Session = Depends(get_db)):
     
     This is the action URL for <Connect>, called when the media stream ends.
     We can return TwiML here to continue the call (e.g., for transfers).
+    
+    Uses CallLogger service for status updates.
     """
     try:
         form_data = await request.form()
-        call_sid = form_data.get("CallSid")
-        call_status = form_data.get("CallStatus")
+        call_sid = str(form_data.get("CallSid", ""))
         
-        logger.info(f"Connect complete - SID: {call_sid}, Status: {call_status}")
+        logger.info(f"Connect complete - SID: {call_sid}")
         
-        call_log = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
+        call_logger = CallLogger(db)
         
-        if call_log:
-            if call_log.has_transfer:
-                logger.info(f"Call {call_sid} had transfer, not hanging up")
-                return Response(content="", media_type="application/xml")
-            
-            if call_log.status != CallStatus.COMPLETED.value:
-                call_log.status = CallStatus.COMPLETED.value
-                call_log.ended_at = datetime.utcnow()
-                
-                if call_log.started_at:
-                    call_log.duration_seconds = int((call_log.ended_at - call_log.started_at).total_seconds())
-                
-                ai_leg = db.query(CallLeg).filter(
-                    CallLeg.call_log_id == call_log.id,
-                    CallLeg.leg_type == LegType.AI_CONVERSATION.value
-                ).first()
-                
-                if ai_leg:
-                    ai_leg.status = CallStatus.COMPLETED.value
-                    ai_leg.ended_at = call_log.ended_at
-                    if ai_leg.started_at:
-                        ai_leg.duration_seconds = int((ai_leg.ended_at - ai_leg.started_at).total_seconds())
-                
-                db.commit()
-                logger.info(f"Marked call {call_sid} as completed via connect-complete")
+        if call_logger.has_transfer(call_sid):
+            logger.info(f"Call {call_sid} had transfer, not hanging up")
+            return Response(content="", media_type="application/xml")
+        
+        call_logger.complete_call(call_sid)
+        logger.info(f"Marked call {call_sid} as completed via connect-complete")
         
         hangup_twiml = """<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -280,30 +205,22 @@ async def transfer_status_callback(request: Request, db: Session = Depends(get_d
     
     When a call is transferred using Twilio's update call API,
     this endpoint receives status updates for the transferred leg.
+    
+    Uses CallLogger service to update leg status.
     """
     try:
         form_data = await request.form()
-        call_sid = form_data.get("CallSid")
-        call_status = form_data.get("CallStatus")
+        call_sid = str(form_data.get("CallSid", ""))
+        call_status = str(form_data.get("CallStatus", "")) if form_data.get("CallStatus") else None
         call_duration = form_data.get("CallDuration")
-        parent_call_sid = form_data.get("ParentCallSid")
+        parent_call_sid = str(form_data.get("ParentCallSid", "")) if form_data.get("ParentCallSid") else None
         
         logger.info(f"Transfer status update - SID: {call_sid}, Parent: {parent_call_sid}, Status: {call_status}")
         
-        if parent_call_sid:
-            call_log = db.query(CallLog).filter(CallLog.call_sid == parent_call_sid).first()
-            
-            if call_log:
-                leg = db.query(CallLeg).filter(CallLeg.call_sid == call_sid).first()
-                
-                if leg:
-                    leg.status = call_status
-                    if call_status in ("completed", "busy", "failed", "no-answer", "canceled"):
-                        leg.ended_at = datetime.utcnow()
-                        if call_duration:
-                            leg.duration_seconds = int(call_duration)
-                    db.commit()
-                    logger.info(f"Updated transfer leg {leg.leg_number} with status {call_status}")
+        if call_status:
+            call_logger = CallLogger(db)
+            duration_seconds = int(call_duration) if call_duration else None
+            call_logger.update_leg_status(call_sid, call_status, duration_seconds)
         
         return {"status": "received"}
         
