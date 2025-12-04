@@ -437,27 +437,72 @@ class CallHandler:
         transcript = []
         
         try:
+            # LLMContextAggregatorPair stores context in _context attribute
             context = None
-            if hasattr(context_aggregator, 'get_context'):
-                context = context_aggregator.get_context()
-            elif hasattr(context_aggregator, '_context'):
-                context = context_aggregator._context
             
-            if not context or not hasattr(context, 'messages'):
-                return transcript
+            # Try multiple ways to access the context (Pipecat versions may differ)
+            if hasattr(context_aggregator, '_context'):
+                context = context_aggregator._context
+            elif hasattr(context_aggregator, 'context'):
+                context = context_aggregator.context
+            elif hasattr(context_aggregator, 'get_context'):
+                context = context_aggregator.get_context()
                 
-            messages = context.messages
+            if not context:
+                logger.debug("No context found in aggregator")
+                return transcript
+            
+            # Access messages from the context
+            messages = None
+            if hasattr(context, 'messages'):
+                messages = context.messages
+            elif hasattr(context, 'get_messages'):
+                messages = context.get_messages()
+            elif isinstance(context, dict):
+                messages = context.get('messages', [])
+                
+            if not messages:
+                logger.debug(f"No messages in context. Context type: {type(context)}")
+                return transcript
+            
+            logger.debug(f"Found {len(messages)} raw messages in context")
+                
             for msg in messages:
                 if not isinstance(msg, dict):
-                    continue
+                    # Some messages might be objects, try to convert
+                    if hasattr(msg, '__dict__'):
+                        msg = msg.__dict__
+                    else:
+                        continue
                     
                 role = msg.get("role")
-                content = msg.get("content")
                 
+                # Handle both 'content' and 'text' field names
+                content = msg.get("content") or msg.get("text")
+                
+                # Skip non-conversation messages
                 if role not in ("user", "assistant"):
                     continue
-                if not content or not isinstance(content, str):
+                    
+                # Skip empty content
+                if not content:
                     continue
+                    
+                # Handle content that might be a list (OpenAI format for multimodal)
+                if isinstance(content, list):
+                    # Extract text from content parts
+                    text_parts = []
+                    for part in content:
+                        if isinstance(part, dict) and part.get("type") == "text":
+                            text_parts.append(part.get("text", ""))
+                        elif isinstance(part, str):
+                            text_parts.append(part)
+                    content = " ".join(text_parts)
+                
+                if not isinstance(content, str) or not content.strip():
+                    continue
+                    
+                # Skip assistant messages that are tool calls (no actual spoken content)
                 if role == "assistant" and msg.get("tool_calls"):
                     continue
                     
@@ -465,8 +510,10 @@ class CallHandler:
                     "role": role,
                     "content": content.strip()
                 })
+            
+            logger.debug(f"Extracted {len(transcript)} conversation messages")
                 
         except Exception as e:
-            logger.error(f"Error extracting transcript: {e}")
+            logger.exception(f"Error extracting transcript: {e}")
             
         return transcript
