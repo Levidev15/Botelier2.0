@@ -15,7 +15,6 @@ import {
   PhoneMissed,
   FileText,
   Filter,
-  Calendar,
   Globe,
   X,
   Loader2,
@@ -37,6 +36,13 @@ interface CallLeg {
   duration_seconds: number;
 }
 
+interface TranscriptEntry {
+  role: string;
+  content?: string;
+  text?: string;
+  timestamp?: string;
+}
+
 interface CallLog {
   id: string;
   hotel_id: string;
@@ -55,7 +61,7 @@ interface CallLog {
   flow_id: string | null;
   flow_name: string | null;
   recording_url: string | null;
-  transcript: Array<{ role: string; text: string; timestamp?: string }> | null;
+  transcript: TranscriptEntry[] | null;
   legs: CallLeg[];
   assistant_name: string | null;
   phone_number_display: string | null;
@@ -118,6 +124,7 @@ function getStatusBadge(status: string) {
     no_answer: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
     busy: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
     in_progress: "bg-blue-500/10 text-blue-400 border-blue-500/20",
+    initiated: "bg-gray-500/10 text-gray-400 border-gray-500/20",
     transferred: "bg-purple-500/10 text-purple-400 border-purple-500/20",
   };
   return styles[status] || "bg-gray-500/10 text-gray-400 border-gray-500/20";
@@ -158,7 +165,7 @@ export default function CallLogsPage() {
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
 
-  const hotelId = "6b410bcc-f843-40df-b32d-078d3e01ac7f"; // TODO: Get from auth context when authentication is implemented
+  const hotelId = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
 
   const fetchCallLogs = useCallback(async () => {
     setLoading(true);
@@ -242,7 +249,7 @@ export default function CallLogsPage() {
   };
 
   const openTranscript = async (log: CallLog) => {
-    if (log.transcript) {
+    if (log.transcript && log.transcript.length > 0) {
       setSelectedLog(log);
       setShowTranscript(true);
     } else {
@@ -464,17 +471,44 @@ export default function CallLogsPage() {
               </div>
             </div>
 
-            <div className="space-y-2">
-              {callLogs.map((log) => (
-                <CallLogRow
-                  key={log.id}
-                  log={log}
-                  isExpanded={expandedRows.has(log.id)}
-                  onToggleExpand={() => toggleRowExpanded(log.id)}
-                  onViewTranscript={() => openTranscript(log)}
-                  formatDateTime={formatDateTime}
-                />
-              ))}
+            <div className="bg-[#141414] border border-gray-800 rounded-lg overflow-hidden">
+              <table className="w-full">
+                <thead>
+                  <tr className="border-b border-gray-800 bg-[#0f0f0f]">
+                    <th className="w-10 px-4 py-3"></th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                      Date / Duration
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                      Caller
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                      Phone Number
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                      Assistant
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                      Status
+                    </th>
+                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-400 uppercase tracking-wider">
+                      Actions
+                    </th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-800">
+                  {callLogs.map((log) => (
+                    <CallLogRow
+                      key={log.id}
+                      log={log}
+                      isExpanded={expandedRows.has(log.id)}
+                      onToggleExpand={() => toggleRowExpanded(log.id)}
+                      onViewTranscript={() => openTranscript(log)}
+                      formatDateTime={formatDateTime}
+                    />
+                  ))}
+                </tbody>
+              </table>
             </div>
 
             {totalPages > 1 && (
@@ -528,16 +562,17 @@ function CallLogRow({
   onViewTranscript: () => void;
   formatDateTime: (date: string | null) => string;
 }) {
-  const hasLegs = log.legs && log.legs.length > 0;
+  const hasLegs = log.legs && log.legs.length > 1;
+  const hasTranscript = log.transcript && log.transcript.length > 0;
 
   return (
-    <div className="bg-[#141414] border border-gray-800 rounded-lg overflow-hidden hover:border-gray-700 transition">
-      <div className="p-4">
-        <div className="flex items-center gap-4">
+    <>
+      <tr className="hover:bg-[#1a1a1a] transition">
+        <td className="px-4 py-3">
           {hasLegs ? (
             <button
               onClick={onToggleExpand}
-              className="p-1 text-gray-400 hover:text-white hover:bg-gray-800 rounded transition"
+              className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition"
             >
               {isExpanded ? (
                 <ChevronDown className="h-4 w-4" />
@@ -548,112 +583,115 @@ function CallLogRow({
           ) : (
             <div className="w-6" />
           )}
-
-          <div className="flex items-center gap-3 min-w-[140px]">
+        </td>
+        <td className="px-4 py-3">
+          <div className="flex items-center gap-3">
             {getStatusIcon(log.status)}
             <div>
               <div className="text-sm font-medium text-white">
                 {formatDateTime(log.started_at)}
               </div>
-              <div className="text-xs text-gray-500">
+              <div className="text-xs text-gray-500 flex items-center gap-1">
+                <Clock className="h-3 w-3" />
                 {formatDuration(log.duration_seconds)}
               </div>
             </div>
           </div>
-
-          <div className="flex items-center gap-2 min-w-[120px]">
+        </td>
+        <td className="px-4 py-3">
+          <div className="flex items-center gap-2">
             <User className="h-4 w-4 text-gray-500" />
             <span className="text-sm text-gray-300">
               {formatPhoneNumber(log.caller_number)}
             </span>
           </div>
-
-          <div className="flex items-center gap-2 min-w-[140px]">
+        </td>
+        <td className="px-4 py-3">
+          <div className="flex items-center gap-2">
             <Phone className="h-4 w-4 text-gray-500" />
             <span className="text-sm text-gray-300">
               {log.phone_number_display || log.to_number || "-"}
             </span>
           </div>
-
-          <div className="flex items-center gap-2 min-w-[140px]">
+        </td>
+        <td className="px-4 py-3">
+          <div className="flex items-center gap-2">
             <Bot className="h-4 w-4 text-gray-500" />
             <span className="text-sm text-gray-300">
               {log.assistant_name || "-"}
             </span>
           </div>
-
-          <div className="flex-1 flex items-center gap-3">
+        </td>
+        <td className="px-4 py-3">
+          <div className="flex items-center gap-2">
             <span
-              className={`px-2 py-0.5 text-xs rounded-full border ${getStatusBadge(
-                log.status
-              )}`}
+              className={`px-2 py-0.5 text-xs rounded-full border ${getStatusBadge(log.status)}`}
             >
               {log.status.charAt(0).toUpperCase() + log.status.slice(1).replace("_", " ")}
             </span>
             {log.has_transfer && (
               <span className="flex items-center gap-1 text-xs text-purple-400">
                 <PhoneForwarded className="h-3 w-3" />
-                Transferred
               </span>
             )}
           </div>
-
-          <div className="flex items-center gap-2">
-            {log.transcript && (
-              <button
-                onClick={onViewTranscript}
-                className="p-2 text-gray-400 hover:text-blue-400 hover:bg-gray-800 rounded-lg transition"
-                title="View transcript"
-              >
-                <FileText className="h-4 w-4" />
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-
+        </td>
+        <td className="px-4 py-3 text-right">
+          {hasTranscript && (
+            <button
+              onClick={onViewTranscript}
+              className="p-2 text-gray-400 hover:text-blue-400 hover:bg-gray-700 rounded-lg transition"
+              title="View transcript"
+            >
+              <FileText className="h-4 w-4" />
+            </button>
+          )}
+        </td>
+      </tr>
       {isExpanded && hasLegs && (
-        <div className="border-t border-gray-800 bg-[#0f0f0f] px-4 py-3">
-          <div className="text-xs text-gray-500 mb-2 pl-10">Call Legs</div>
-          <div className="space-y-2 pl-10">
-            {log.legs.map((leg) => (
-              <div
-                key={leg.id}
-                className="flex items-center gap-4 text-sm bg-[#1a1a1a] rounded-lg px-3 py-2"
-              >
-                <div className="flex items-center gap-2 min-w-[40px]">
-                  <span className="text-gray-500">#{leg.leg_number}</span>
-                </div>
-                <div className="flex items-center gap-2 min-w-[140px]">
-                  <span
-                    className={`px-2 py-0.5 text-xs rounded ${
-                      leg.leg_type === "ai_conversation"
-                        ? "bg-blue-500/10 text-blue-400"
-                        : "bg-purple-500/10 text-purple-400"
-                    }`}
-                  >
-                    {getLegTypeLabel(leg.leg_type)}
-                  </span>
-                </div>
-                <div className="flex-1 text-gray-300">
-                  {leg.participant_name || leg.participant || "-"}
-                </div>
-                <div className="flex items-center gap-1 text-gray-400">
-                  <Clock className="h-3 w-3" />
-                  {formatDuration(leg.duration_seconds)}
-                </div>
-                <span
-                  className={`px-2 py-0.5 text-xs rounded-full border ${getStatusBadge(
-                    leg.status
-                  )}`}
-                >
-                  {leg.status}
-                </span>
+        <tr>
+          <td colSpan={7} className="bg-[#0f0f0f] px-4 py-3">
+            <div className="ml-10">
+              <div className="text-xs text-gray-500 mb-2 font-medium uppercase tracking-wider">
+                Call Segments
               </div>
-            ))}
-          </div>
-        </div>
+              <div className="space-y-2">
+                {log.legs.map((leg) => (
+                  <div
+                    key={leg.id}
+                    className="flex items-center gap-4 text-sm bg-[#1a1a1a] rounded-lg px-4 py-2 border border-gray-800"
+                  >
+                    <div className="w-8 text-gray-500 font-mono">
+                      #{leg.leg_number}
+                    </div>
+                    <div className="min-w-[120px]">
+                      <span className={`px-2 py-0.5 text-xs rounded ${
+                        leg.leg_type === "ai_conversation"
+                          ? "bg-blue-500/10 text-blue-400"
+                          : "bg-purple-500/10 text-purple-400"
+                      }`}>
+                        {getLegTypeLabel(leg.leg_type)}
+                      </span>
+                    </div>
+                    <div className="flex-1 text-gray-400">
+                      {leg.participant_name || leg.participant || "-"}
+                    </div>
+                    <div className="text-gray-500 flex items-center gap-1">
+                      <Clock className="h-3 w-3" />
+                      {formatDuration(leg.duration_seconds)}
+                    </div>
+                    <div>
+                      <span className={`px-2 py-0.5 text-xs rounded-full border ${getStatusBadge(leg.status)}`}>
+                        {leg.status}
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </td>
+        </tr>
       )}
-    </div>
+    </>
   );
 }
