@@ -46,11 +46,14 @@ class FunctionMapper:
         
         # Twilio client for call transfers
         self.twilio_client = None
-        if os.environ.get("TWILIO_ACCOUNT_SID") and os.environ.get("TWILIO_AUTH_TOKEN"):
-            self.twilio_client = TwilioClient(
-                os.environ.get("TWILIO_ACCOUNT_SID"),
-                os.environ.get("TWILIO_AUTH_TOKEN")
-            )
+        twilio_sid = os.environ.get("TWILIO_ACCOUNT_SID")
+        twilio_token = os.environ.get("TWILIO_AUTH_TOKEN")
+        
+        if twilio_sid and twilio_token:
+            self.twilio_client = TwilioClient(twilio_sid, twilio_token)
+            logger.info(f"✅ Twilio client initialized for call {call_sid}")
+        else:
+            logger.warning(f"⚠️ Twilio client NOT initialized - missing credentials (SID: {'set' if twilio_sid else 'missing'}, Token: {'set' if twilio_token else 'missing'})")
     
     def map_tool_to_function(self, tool: Tool) -> tuple[Dict[str, Any], Callable]:
         """
@@ -151,15 +154,31 @@ class FunctionMapper:
                     
                     # Get base URL for status callback
                     base_url = os.environ.get("PUBLIC_BASE_URL", "")
-                    status_callback = f"{base_url}/api/calls/transfer-status" if base_url else ""
                     
-                    # Use Twilio REST API to update the call with TwiML that dials the transfer number
-                    # The Dial verb will connect the caller to the transfer number
+                    # Build TwiML attributes properly (avoid malformed XML)
+                    twilio_phone = os.environ.get("TWILIO_PHONE_NUMBER", "")
+                    
+                    # Build Dial element with optional callerId
+                    if twilio_phone:
+                        dial_open = f'<Dial callerId="{twilio_phone}">'
+                    else:
+                        dial_open = '<Dial>'
+                    
+                    # Build Number element with optional status callback
+                    if base_url:
+                        status_callback = f"{base_url}/api/calls/transfer-status"
+                        number_elem = f'<Number statusCallback="{status_callback}" statusCallbackEvent="initiated ringing answered completed">{phone_number}</Number>'
+                    else:
+                        number_elem = f'<Number>{phone_number}</Number>'
+                    
                     dial_twiml = f'''<Response>
-                        <Dial callerId="{os.environ.get("TWILIO_PHONE_NUMBER", "")}">
-                            <Number statusCallback="{status_callback}" statusCallbackEvent="initiated ringing answered completed">{phone_number}</Number>
+                        {dial_open}
+                            {number_elem}
                         </Dial>
                     </Response>'''
+                    
+                    logger.info(f"🔄 Transferring call {self.call_sid} to {phone_number}")
+                    logger.debug(f"Transfer TwiML: {dial_twiml}")
                     
                     self.twilio_client.calls(self.call_sid).update(twiml=dial_twiml)
                     transfer_success = True
