@@ -24,7 +24,14 @@ class FunctionMapper:
     Usage:
         # At voice agent initialization
         tools = db.query(Tool).filter(Tool.is_active == "true").all()
-        mapper = FunctionMapper(call_sid="CA1234...")
+        mapper = FunctionMapper(
+            call_sid="CA1234...",
+            stream_sid="MZ1234...",
+            from_number="+15551234567",
+            to_number="+15559876543",
+            twilio_account_sid="AC...",  # Hotel's sub-account
+            twilio_auth_token="xxx",      # Hotel's sub-account token
+        )
         
         # Register all tools with LLM
         for tool in tools:
@@ -32,28 +39,44 @@ class FunctionMapper:
             llm.register_function(function_schema['name'], handler)
     """
     
-    def __init__(self, call_sid: str = None):
+    def __init__(
+        self,
+        call_sid: str = None,
+        stream_sid: str = None,
+        from_number: str = None,
+        to_number: str = None,
+        twilio_account_sid: str = None,
+        twilio_auth_token: str = None,
+    ):
         """
-        Initialize function mapper with necessary clients.
+        Initialize function mapper with call context and Twilio credentials.
         
         Args:
             call_sid: Twilio call SID (required for call transfers)
+            stream_sid: Twilio stream SID (for stopping the media stream)
+            from_number: Original caller's phone number (for callerId on transfer)
+            to_number: The hotel's phone number that was called
+            twilio_account_sid: Hotel's Twilio sub-account SID
+            twilio_auth_token: Hotel's Twilio sub-account auth token
         """
         self.call_sid = call_sid
+        self.stream_sid = stream_sid
+        self.from_number = from_number
+        self.to_number = to_number
         
         # Store flow executors by tool name for state persistence across turns
         self._flow_executors: Dict[str, FlowExecutor] = {}
         
-        # Twilio client for call transfers
+        # Twilio client for call transfers - use hotel's sub-account credentials
         self.twilio_client = None
-        twilio_sid = os.environ.get("TWILIO_ACCOUNT_SID")
-        twilio_token = os.environ.get("TWILIO_AUTH_TOKEN")
+        self.twilio_account_sid = twilio_account_sid or os.environ.get("TWILIO_ACCOUNT_SID")
+        self.twilio_auth_token = twilio_auth_token or os.environ.get("TWILIO_AUTH_TOKEN")
         
-        if twilio_sid and twilio_token:
-            self.twilio_client = TwilioClient(twilio_sid, twilio_token)
-            logger.info(f"✅ Twilio client initialized for call {call_sid}")
+        if self.twilio_account_sid and self.twilio_auth_token:
+            self.twilio_client = TwilioClient(self.twilio_account_sid, self.twilio_auth_token)
+            logger.info(f"✅ Twilio client initialized for call {call_sid} (Account: {self.twilio_account_sid[:10]}...)")
         else:
-            logger.warning(f"⚠️ Twilio client NOT initialized - missing credentials (SID: {'set' if twilio_sid else 'missing'}, Token: {'set' if twilio_token else 'missing'})")
+            logger.warning(f"⚠️ Twilio client NOT initialized - missing credentials")
     
     def map_tool_to_function(self, tool: Tool) -> tuple[Dict[str, Any], Callable]:
         """
@@ -117,26 +140,27 @@ class FunctionMapper:
             """
             Handler called when LLM decides to transfer call.
             
-            Flow:
-                1. AI says pre-transfer message
-                2. Record transfer in call log (so connect-complete won't hang up)
-                3. Transfer call via Twilio REST API (will redirect the call)
+            Transfer Flow (matching working pattern):
+                1. AI says pre-transfer message via TTS
+                2. Record transfer in database (so connect-complete won't hang up)
+                3. Build TwiML with:
+                   - <Stop><Stream> to close the media stream
+                   - <Say> for transfer message (plays AFTER stream stops)
+                   - <Dial> to connect to the transfer target
+                4. Update call via Twilio REST API
                 
-            Note: We do NOT push EndFrame here. Twilio will close the WebSocket
-            when it redirects the call to the new TwiML. The pipeline will end
-            naturally when Twilio sends the 'stop' event.
+            The pipeline ends when Twilio closes the WebSocket after receiving
+            the update. Twilio executes the TwiML and bridges the caller.
             """
-            # Tell user what's happening
+            # Tell user what's happening via the AI (they'll hear this first)
             await params.llm.push_frame(
                 TTSSpeakFrame(pre_message)
             )
             
-            # Record transfer in database BEFORE Twilio redirect
-            # This tells connect-complete endpoint to not hang up
             transfer_success = False
             if self.twilio_client and self.call_sid:
                 try:
-                    # Update call log to record transfer
+                    # Record transfer in database BEFORE Twilio redirect
                     from ..database import SessionLocal
                     from ..services.call_logger import CallLogger
                     
@@ -152,44 +176,61 @@ class FunctionMapper:
                     finally:
                         db.close()
                     
-                    # Get base URL for status callback
-                    base_url = os.environ.get("PUBLIC_BASE_URL", "")
+                    # Build the transfer TwiML
+                    twiml_parts = ['<?xml version="1.0" encoding="UTF-8"?>', '<Response>']
                     
-                    # Build TwiML attributes properly (avoid malformed XML)
-                    twilio_phone = os.environ.get("TWILIO_PHONE_NUMBER", "")
+                    # 1. Stop the media stream (critical for transfer to work)
+                    if self.stream_sid:
+                        twiml_parts.append(f'<Stop><Stream name="{self.stream_sid}"/></Stop>')
                     
-                    # Build Dial element with optional callerId
-                    if twilio_phone:
-                        dial_open = f'<Dial callerId="{twilio_phone}">'
+                    # 2. Say the transfer message (plays after stream stops)
+                    twiml_parts.append(f'<Say>{pre_message}</Say>')
+                    
+                    # 3. Build Dial element
+                    # Use the caller's original number as callerId (they called us)
+                    # Or fall back to the hotel's number (the number that was called)
+                    caller_id = self.to_number or os.environ.get("TWILIO_PHONE_NUMBER", "")
+                    if caller_id:
+                        twiml_parts.append(f'<Dial timeout="30" callerId="{caller_id}">')
                     else:
-                        dial_open = '<Dial>'
+                        twiml_parts.append('<Dial timeout="30">')
                     
-                    # Build Number element with optional status callback
+                    # 4. Add the Number element with status callback
+                    base_url = os.environ.get("PUBLIC_BASE_URL", "")
                     if base_url:
                         status_callback = f"{base_url}/api/calls/transfer-status"
-                        number_elem = f'<Number statusCallback="{status_callback}" statusCallbackEvent="initiated ringing answered completed">{phone_number}</Number>'
+                        twiml_parts.append(
+                            f'<Number statusCallback="{status_callback}" '
+                            f'statusCallbackEvent="initiated ringing answered completed">'
+                            f'{phone_number}</Number>'
+                        )
                     else:
-                        number_elem = f'<Number>{phone_number}</Number>'
+                        twiml_parts.append(f'<Number>{phone_number}</Number>')
                     
-                    dial_twiml = f'''<Response>
-                        {dial_open}
-                            {number_elem}
-                        </Dial>
-                    </Response>'''
+                    twiml_parts.append('</Dial>')
+                    twiml_parts.append('</Response>')
+                    
+                    dial_twiml = '\n'.join(twiml_parts)
                     
                     logger.info(f"🔄 Transferring call {self.call_sid} to {phone_number}")
-                    logger.debug(f"Transfer TwiML: {dial_twiml}")
+                    logger.debug(f"Transfer TwiML:\n{dial_twiml}")
                     
+                    # Update the call with the new TwiML
                     self.twilio_client.calls(self.call_sid).update(twiml=dial_twiml)
                     transfer_success = True
-                    logger.info(f"✅ Call {self.call_sid} being transferred to {phone_number}")
+                    logger.info(f"✅ Call {self.call_sid} transfer initiated to {phone_number}")
                     
                 except Exception as e:
                     logger.error(f"❌ Twilio transfer failed for call {self.call_sid}: {e}")
             else:
-                logger.warning(f"⚠️ Cannot transfer call: Twilio client or call_sid missing")
+                missing = []
+                if not self.twilio_client:
+                    missing.append("Twilio client")
+                if not self.call_sid:
+                    missing.append("call_sid")
+                logger.warning(f"⚠️ Cannot transfer call: missing {', '.join(missing)}")
             
-            # Return result to LLM (pipeline will end when Twilio closes WebSocket)
+            # Return result to LLM
             await params.result_callback({
                 "status": "transferring" if transfer_success else "failed",
                 "to": phone_number

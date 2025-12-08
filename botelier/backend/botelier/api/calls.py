@@ -153,11 +153,21 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                 to_number=to_number or "",
                 status=call_status
             )
-            call_logger.update_leg_status(call_sid, call_status, duration_seconds)
+            call_logger.update_leg_status(
+                leg_call_sid=call_sid,
+                status=call_status,
+                duration_seconds=duration_seconds,
+                parent_call_sid=parent_call_sid,
+                to_number=to_number,
+            )
         else:
             call_logger.update_status(call_sid, call_status, duration_seconds)
             if call_status in ("completed", "busy", "failed", "no-answer", "canceled"):
-                call_logger.update_leg_status(call_sid, call_status, duration_seconds)
+                call_logger.update_leg_status(
+                    leg_call_sid=call_sid,
+                    status=call_status,
+                    duration_seconds=duration_seconds,
+                )
         
         return {"status": "received"}
         
@@ -215,6 +225,12 @@ async def transfer_status_callback(request: Request, db: Session = Depends(get_d
     When a call is transferred using Twilio's update call API,
     this endpoint receives status updates for the transferred leg.
     
+    Twilio sends these events: initiated, ringing, answered, completed
+    This lets us track:
+    - When the transfer started ringing
+    - When it was answered (transfer leg duration starts)
+    - When it ended (transfer leg duration ends)
+    
     Uses CallLogger service to update leg status.
     """
     try:
@@ -223,13 +239,20 @@ async def transfer_status_callback(request: Request, db: Session = Depends(get_d
         call_status = str(form_data.get("CallStatus", "")) if form_data.get("CallStatus") else None
         call_duration = form_data.get("CallDuration")
         parent_call_sid = str(form_data.get("ParentCallSid", "")) if form_data.get("ParentCallSid") else None
+        to_number = str(form_data.get("To", "")) if form_data.get("To") else None
         
-        logger.info(f"Transfer status update - SID: {call_sid}, Parent: {parent_call_sid}, Status: {call_status}")
+        logger.info(f"Transfer status update - SID: {call_sid}, Parent: {parent_call_sid}, To: {to_number}, Status: {call_status}")
         
         if call_status:
             call_logger = CallLogger(db)
             duration_seconds = int(call_duration) if call_duration else None
-            call_logger.update_leg_status(call_sid, call_status, duration_seconds)
+            call_logger.update_leg_status(
+                leg_call_sid=call_sid,
+                status=call_status,
+                duration_seconds=duration_seconds,
+                parent_call_sid=parent_call_sid,
+                to_number=to_number,
+            )
         
         return {"status": "received"}
         

@@ -90,7 +90,8 @@ async def websocket_call_endpoint(
             to_number=to_number,
             stream_sid=stream_sid,
             call_sid=call_sid,
-            db=db
+            db=db,
+            from_number=from_number,
         )
         
     except Exception as e:

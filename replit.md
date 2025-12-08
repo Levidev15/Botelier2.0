@@ -28,7 +28,13 @@ Botelier is built with a clean architectural separation, where the core SaaS app
 - **Tools System (Function Calling):** PostgreSQL stores various tool types (Transfer Call, API Request, End Call, SMS, Email) with `hotel_id` scoping. FastAPI CRUD endpoints enforce multi-tenant isolation.
 - **Phone Numbers System (Twilio Integration):** Database models for Hotels and Phone Numbers, with Twilio integration for sub-account management, number search, purchase, configuration, and release.
 - **Knowledge Base System (Simplified Q&A with RAG):** A flat database structure stores `KnowledgeEntry` associated with hotels. FastAPI CRUD endpoints support CSV bulk import. A RAG query handler, integrated with Pipecat and using OpenAI LLM (gpt-4o-mini), fetches active Q&A entries.
-- **Twilio Call Transfer:** Implemented via Twilio REST API to update active calls.
+- **Twilio Call Transfer System:** Comprehensive transfer implementation with proper call leg tracking:
+  - **Transfer Flow:** AI speaks pre-transfer message → Stop media stream → Dial transfer target
+  - **TwiML Construction:** Dynamically built with `<Stop><Stream>`, `<Say>`, and `<Dial>` verbs
+  - **Sub-account Support:** Uses hotel's `twilio_sub_account_sid` and `twilio_sub_auth_token` for API calls
+  - **CallerId Handling:** Uses the hotel's phone number (the `to` number) as callerId for outbound transfer
+  - **Status Callbacks:** Transfer-status endpoint receives initiated, ringing, answered, completed events
+  - **Leg Tracking:** Transfer leg linked to child call_sid, with accurate timestamps and duration
 - **Flow Versioning System:** Implements a draft/publish workflow, version history, and revert capability for conversational flows. Includes database model (`FlowVersion`), API endpoints for managing drafts and published versions, and publish-time validation. Revert updates existing draft content (not version number) to avoid duplicate key errors.
 - **Unsaved Changes Warning:** Flow editor tracks dirty state and prompts users with Save/Discard/Cancel modal when navigating away with unsaved changes. Uses `useUnsavedChangesWarning` hook with `beforeunload` event handling.
 - **Flow Execution Runtime:** `FlowExecutor` class converts visual flows to Pipecat function schemas, handles variable substitution, slot collection, and manages flow state.
@@ -66,7 +72,6 @@ Botelier is built with a clean architectural separation, where the core SaaS app
 - PostgreSQL
 
 ### Third-Party Integrations
-- **Twilio:** For phone number management, call handling, and sub-account isolation.
+- **Twilio:** For phone number management, call handling, sub-account isolation, and call transfers via REST API.
 - **Pipecat Framework:** Underlying framework for the voice AI engine.
-- **Daily:** For call transfers (via Pipecat integration).
 - **Sonner:** For React toast notifications.
