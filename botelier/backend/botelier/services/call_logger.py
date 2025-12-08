@@ -201,6 +201,19 @@ class CallLogger:
             call_log.has_transfer = True
             call_log.outcome = CallOutcome.TRANSFERRED.value
             
+            # Mark the AI conversation leg as completed (transfer ends the AI portion)
+            ai_leg = self.db.query(CallLeg).filter(
+                CallLeg.call_log_id == call_log.id,
+                CallLeg.leg_type == LegType.AI_CONVERSATION.value
+            ).first()
+            
+            if ai_leg and ai_leg.status != CallStatus.COMPLETED.value:
+                ai_leg.status = CallStatus.COMPLETED.value
+                ai_leg.ended_at = datetime.utcnow()
+                if ai_leg.started_at and ai_leg.ended_at:
+                    ai_leg.duration_seconds = int((ai_leg.ended_at - ai_leg.started_at).total_seconds())
+                logger.info(f"Marked AI leg as completed (duration: {ai_leg.duration_seconds}s)")
+            
             max_leg = self.db.query(CallLeg).filter(
                 CallLeg.call_log_id == call_log.id
             ).order_by(CallLeg.leg_number.desc()).first()
@@ -232,7 +245,9 @@ class CallLogger:
         self,
         leg_call_sid: str,
         status: str,
-        duration_seconds: Optional[int] = None
+        duration_seconds: Optional[int] = None,
+        parent_call_sid: str = None,
+        to_number: str = None,
     ) -> bool:
         """
         Update a specific call leg's status.
@@ -240,9 +255,11 @@ class CallLogger:
         Called when we receive status updates for transfer calls.
         
         Args:
-            leg_call_sid: The call SID of the specific leg
-            status: New status
+            leg_call_sid: The call SID of the specific leg (the child/transfer call)
+            status: New status (initiated, ringing, in-progress, completed, etc.)
             duration_seconds: Duration if available
+            parent_call_sid: The original call's SID (to find the leg if call_sid not set)
+            to_number: The number being called (to match leg by participant)
             
         Returns:
             True if update was successful
@@ -261,20 +278,44 @@ class CallLogger:
             
             new_status = status_mapping.get(status, status)
             
+            # First try to find leg by call_sid
             leg = self.db.query(CallLeg).filter(CallLeg.call_sid == leg_call_sid).first()
+            
+            # If not found, try to find by parent call + participant (transfer-to number)
+            if not leg and parent_call_sid and to_number:
+                call_log = self.get_call_log(parent_call_sid)
+                if call_log:
+                    leg = self.db.query(CallLeg).filter(
+                        CallLeg.call_log_id == call_log.id,
+                        CallLeg.participant == to_number,
+                        CallLeg.call_sid.is_(None),  # Leg created but not yet linked to child call
+                    ).first()
+                    
+                    # If found, link the child call_sid to the leg
+                    if leg:
+                        leg.call_sid = leg_call_sid
+                        logger.info(f"Linked child call {leg_call_sid} to transfer leg {leg.leg_number}")
+            
             if not leg:
                 logger.warning(f"Call leg not found for SID: {leg_call_sid}")
                 return False
             
             leg.status = new_status
             
+            # Mark in_progress when call is answered
+            if status == "in-progress" and not leg.started_at:
+                leg.started_at = datetime.utcnow()
+            
+            # Mark ended and calculate duration when call ends
             if status in ("completed", "busy", "failed", "no-answer", "canceled"):
                 leg.ended_at = datetime.utcnow()
                 if duration_seconds is not None:
                     leg.duration_seconds = duration_seconds
+                elif leg.started_at and leg.ended_at:
+                    leg.duration_seconds = int((leg.ended_at - leg.started_at).total_seconds())
             
             self.db.commit()
-            logger.info(f"Updated leg {leg.leg_number} status to {new_status}")
+            logger.info(f"Updated leg {leg.leg_number} status to {new_status} (duration: {leg.duration_seconds}s)")
             return True
             
         except Exception as e:

@@ -54,16 +54,25 @@ class CallHandler:
         self.call_contexts: Dict[str, Any] = {}
         self.call_start_times: Dict[str, datetime] = {}
     
-    async def handle_call(self, websocket: WebSocket, to_number: str, stream_sid: str, call_sid: str, db: Session):
+    async def handle_call(
+        self,
+        websocket: WebSocket,
+        to_number: str,
+        stream_sid: str,
+        call_sid: str,
+        db: Session,
+        from_number: str = None,
+    ):
         """
         Handle incoming call using Pipecat - Official Pattern.
         
         Args:
             websocket: FastAPI WebSocket (ALREADY ACCEPTED, 'start' event already read)
-            to_number: Phone number being called
+            to_number: Phone number being called (hotel's number)
             stream_sid: Twilio stream SID (from 'start' event)
             call_sid: Twilio call SID (from 'start' event)
             db: Database session
+            from_number: Caller's phone number (for transfer callerId)
         
         Pattern (from Pipecat docs):
             1. WebSocket already accepted, 'start' event already consumed
@@ -77,6 +86,9 @@ class CallHandler:
             
             # 1. Look up which assistant is assigned to this phone number
             # Query database and close session immediately to avoid connection pool exhaustion
+            hotel_twilio_sid = None
+            hotel_twilio_token = None
+            
             try:
                 phone_record = db.query(PhoneNumber).filter(
                     PhoneNumber.phone_number == to_number
@@ -100,6 +112,15 @@ class CallHandler:
                 
                 logger.info(f"🤖 Assistant: '{assistant.name}' (ID: {assistant.id})")
                 
+                # Fetch hotel's Twilio sub-account credentials (for transfers)
+                from ..models.hotel import Hotel
+                hotel = db.query(Hotel).filter(Hotel.id == assistant.hotel_id).first()
+                if hotel:
+                    hotel_twilio_sid = hotel.twilio_sub_account_sid
+                    hotel_twilio_token = hotel.twilio_sub_auth_token
+                    if hotel_twilio_sid:
+                        logger.info(f"🏨 Using hotel sub-account: {hotel_twilio_sid[:10]}...")
+                
                 # Convert database model to VoiceAgentConfig
                 config = self._create_agent_config(assistant)
                 
@@ -122,7 +143,15 @@ class CallHandler:
             
             # 3. Build function schemas and handlers (knowledge base ALWAYS available)
             function_schemas, function_handlers = self._build_function_schemas_and_handlers(
-                assistant, tools, api_keys, call_sid
+                assistant=assistant,
+                tools=tools,
+                api_keys=api_keys,
+                call_sid=call_sid,
+                stream_sid=stream_sid,
+                from_number=from_number,
+                to_number=to_number,
+                twilio_account_sid=hotel_twilio_sid,
+                twilio_auth_token=hotel_twilio_token,
             )
             
             # 4. Create TwilioFrameSerializer (Pipecat pattern)
@@ -263,7 +292,12 @@ class CallHandler:
         assistant: Assistant,
         tools: list,
         api_keys: Dict[str, str],
-        call_sid: str
+        call_sid: str,
+        stream_sid: str = None,
+        from_number: str = None,
+        to_number: str = None,
+        twilio_account_sid: str = None,
+        twilio_auth_token: str = None,
     ) -> tuple[list, Dict[str, Any]]:
         """
         Build FunctionSchema objects and handlers for knowledge base and tools.
@@ -275,6 +309,11 @@ class CallHandler:
             tools: List of Tool models (already fetched from database)
             api_keys: API keys for external services
             call_sid: Twilio call SID (for call transfers)
+            stream_sid: Twilio stream SID (for stopping media stream on transfer)
+            from_number: Caller's phone number
+            to_number: Hotel's phone number that was called
+            twilio_account_sid: Hotel's Twilio sub-account SID
+            twilio_auth_token: Hotel's Twilio sub-account auth token
             
         Returns:
             Tuple of (function_schemas, function_handlers)
@@ -315,7 +354,14 @@ class CallHandler:
                 mapper = self.call_mappers[call_sid]
                 logger.debug(f"Reusing FunctionMapper for call {call_sid}")
             else:
-                mapper = FunctionMapper(call_sid=call_sid)
+                mapper = FunctionMapper(
+                    call_sid=call_sid,
+                    stream_sid=stream_sid,
+                    from_number=from_number,
+                    to_number=to_number,
+                    twilio_account_sid=twilio_account_sid,
+                    twilio_auth_token=twilio_auth_token,
+                )
                 self.call_mappers[call_sid] = mapper
                 logger.info(f"Created FunctionMapper for call {call_sid}")
             
