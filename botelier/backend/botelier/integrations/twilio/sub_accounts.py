@@ -126,3 +126,17 @@ class SubAccountManager:
         except TwilioRestException as e:
             print(f"Failed to close sub-account {sub_account_sid}: {e}")
             return False
+
+
+def create_sub_account(account_name: str) -> Dict[str, Any]:
+    """
+    Convenience function to create a Twilio sub-account.
+    
+    Args:
+        account_name: Name of the account
+        
+    Returns:
+        Dictionary with sub-account details (sid, auth_token, etc.)
+    """
+    manager = SubAccountManager()
+    return manager.create_sub_account(account_name)
