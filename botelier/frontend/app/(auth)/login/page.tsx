@@ -34,7 +34,8 @@ export default function LoginPage() {
       const data = await res.json();
       
       if (data.valid) {
-        router.push(callbackUrl);
+        const redirectUrl = data.user?.user_type === "platform_admin" ? "/admin" : callbackUrl;
+        router.push(redirectUrl);
       } else {
         localStorage.removeItem("botelier_token");
         localStorage.removeItem("botelier_user");
@@ -62,7 +63,8 @@ export default function LoginPage() {
       if (res.ok) {
         localStorage.setItem("botelier_token", data.access_token);
         localStorage.setItem("botelier_user", JSON.stringify(data.user));
-        router.push(callbackUrl);
+        const redirectUrl = data.user?.user_type === "platform_admin" ? "/admin" : callbackUrl;
+        router.push(redirectUrl);
       } else {
         setError(data.detail || "Invalid email or password");
       }

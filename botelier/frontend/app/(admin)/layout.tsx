@@ -1,6 +1,5 @@
 "use client";
 
-import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import Link from "next/link";
@@ -15,7 +14,6 @@ import {
   Shield,
   Mail,
 } from "lucide-react";
-import { signOut } from "next-auth/react";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 const adminNavItems = [
@@ -31,46 +29,48 @@ export default function AdminLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const { data: session, status } = useSession();
-  const { token, loading: tokenLoading, authFetch } = useAuthToken();
+  const { token, loading: tokenLoading, authFetch, logout } = useAuthToken();
   const router = useRouter();
   const pathname = usePathname();
   const [userInfo, setUserInfo] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [isAuthenticated, setIsAuthenticated] = useState(false);
 
   useEffect(() => {
-    if (status === "unauthenticated") {
-      router.push("/login?callbackUrl=/admin");
-      return;
-    }
-
-    if (status === "authenticated" && token) {
-      fetchUserInfo();
-    }
-  }, [status, token, router]);
-
-  const fetchUserInfo = async () => {
-    if (!token) return;
-    try {
-      const res = await authFetch("/api/admin/me");
-      if (res.ok) {
-        const data = await res.json();
-        setUserInfo(data);
-        if (!data.is_platform_admin) {
-          router.push("/dashboard");
-        }
-      } else {
-        router.push("/dashboard");
+    const checkAuth = async () => {
+      const storedToken = localStorage.getItem("botelier_token");
+      const storedUser = localStorage.getItem("botelier_user");
+      
+      if (!storedToken || !storedUser) {
+        router.push("/login?callbackUrl=/admin");
+        return;
       }
-    } catch (err) {
-      console.error("Error fetching user info:", err);
-      router.push("/dashboard");
-    } finally {
-      setLoading(false);
-    }
+      
+      try {
+        const user = JSON.parse(storedUser);
+        if (user.user_type !== "platform_admin") {
+          router.push("/dashboard");
+          return;
+        }
+        
+        setUserInfo(user);
+        setIsAuthenticated(true);
+        setLoading(false);
+      } catch (err) {
+        console.error("Error parsing user:", err);
+        router.push("/login?callbackUrl=/admin");
+      }
+    };
+    
+    checkAuth();
+  }, [router]);
+
+  const handleLogout = () => {
+    logout();
+    router.push("/login");
   };
 
-  if (status === "loading" || tokenLoading || loading) {
+  if (tokenLoading || loading) {
     return (
       <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
         <div className="text-center">
@@ -149,7 +149,7 @@ export default function AdminLayout({
           </div>
 
           <button
-            onClick={() => signOut({ callbackUrl: "/login" })}
+            onClick={handleLogout}
             className="w-full flex items-center gap-3 px-3 py-2 mt-2 text-red-400 hover:text-red-300 hover:bg-red-900/20 rounded-lg transition-colors"
           >
             <LogOut className="h-5 w-5" />
