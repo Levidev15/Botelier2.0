@@ -73,6 +73,12 @@ Botelier is built with a clean architectural separation, where the core SaaS app
   - `Role`: Permission templates, can be system or custom
   - `AccountMembership`: Links users to accounts with specific roles
 - **Platform Admin Panel:** `/admin` routes for managing all accounts, users, and platform settings
+- **Invitation-Only Access System (Dec 2024):**
+  - **AccountInvitation Model:** Secure token-based invitations with expiration (7 days default), status lifecycle (pending/accepted/revoked/expired)
+  - **Platform Admin Endpoints:** Create, list, resend, and revoke invitations with RBAC protection
+  - **Invitation Acceptance Flow:** Public `/invite/[token]` page verifies tokens, enforces email matching with Replit profile, creates account memberships
+  - **No Open Sign-Up:** Users can only access the platform through Platform Admin invitations
+  - **UI:** Platform Admin invitations management page with create modal, status filters, copy invite link, resend/revoke actions
 - **Environment Variables:**
   - `NEXTAUTH_SECRET`: JWT signing secret
   - `NEXTAUTH_URL`: Base URL for auth callbacks
