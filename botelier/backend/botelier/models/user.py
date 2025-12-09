@@ -60,7 +60,12 @@ class User(Base):
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
     last_login_at = Column(DateTime, nullable=True)
     
-    account_memberships = relationship("AccountMembership", back_populates="user", cascade="all, delete-orphan")
+    account_memberships = relationship(
+        "AccountMembership", 
+        back_populates="user", 
+        cascade="all, delete-orphan",
+        foreign_keys="[AccountMembership.user_id]"
+    )
     
     @property
     def is_platform_admin(self) -> bool:
