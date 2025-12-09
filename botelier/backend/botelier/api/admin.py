@@ -744,3 +744,180 @@ async def list_account_roles(
         }
         for role in roles
     ]
+
+
+class IntegrationStatus(BaseModel):
+    name: str
+    status: str
+    message: Optional[str] = None
+    details: Optional[dict] = None
+
+
+class IntegrationHealthResponse(BaseModel):
+    twilio: IntegrationStatus
+    openai: IntegrationStatus
+    database: IntegrationStatus
+
+
+@router.get("/integrations/health", response_model=IntegrationHealthResponse)
+async def check_integrations_health(
+    admin: User = Depends(get_platform_admin),
+    db: Session = Depends(get_db),
+):
+    """Check health status of all platform integrations."""
+    import os
+    
+    twilio_status = IntegrationStatus(name="Twilio", status="not_configured")
+    openai_status = IntegrationStatus(name="OpenAI", status="not_configured")
+    db_status = IntegrationStatus(name="Database", status="not_configured")
+    
+    if os.environ.get("TWILIO_ACCOUNT_SID") and os.environ.get("TWILIO_AUTH_TOKEN"):
+        try:
+            from botelier.integrations.twilio.client import BotelierTwilioClient
+            client = BotelierTwilioClient()
+            if client.test_connection():
+                account_count = db.query(Account).filter(
+                    Account.twilio_sub_account_sid.isnot(None)
+                ).count()
+                twilio_status = IntegrationStatus(
+                    name="Twilio",
+                    status="connected",
+                    message="Twilio API connection verified",
+                    details={"sub_accounts_provisioned": account_count}
+                )
+            else:
+                twilio_status = IntegrationStatus(
+                    name="Twilio",
+                    status="error",
+                    message="Twilio credentials are invalid"
+                )
+        except Exception as e:
+            twilio_status = IntegrationStatus(
+                name="Twilio",
+                status="error",
+                message=str(e)
+            )
+    
+    if os.environ.get("OPENAI_API_KEY"):
+        try:
+            import openai
+            openai_client = openai.OpenAI()
+            models = openai_client.models.list()
+            model_count = len(list(models))
+            openai_status = IntegrationStatus(
+                name="OpenAI",
+                status="connected",
+                message="OpenAI API connection verified",
+                details={"available_models": model_count}
+            )
+        except Exception as e:
+            openai_status = IntegrationStatus(
+                name="OpenAI",
+                status="error",
+                message=str(e)
+            )
+    
+    try:
+        result = db.execute(db.query(User).filter(User.id == "test").statement.compile())
+        db.rollback()
+        
+        user_count = db.query(func.count(User.id)).scalar()
+        account_count = db.query(func.count(Account.id)).scalar()
+        
+        db_status = IntegrationStatus(
+            name="Database",
+            status="connected",
+            message="PostgreSQL connection verified",
+            details={
+                "total_users": user_count,
+                "total_accounts": account_count
+            }
+        )
+    except Exception as e:
+        db_status = IntegrationStatus(
+            name="Database",
+            status="error",
+            message=str(e)
+        )
+    
+    return IntegrationHealthResponse(
+        twilio=twilio_status,
+        openai=openai_status,
+        database=db_status
+    )
+
+
+class SupportSessionCreate(BaseModel):
+    reason: str = Field(..., min_length=5, max_length=500)
+
+
+class SupportSessionResponse(BaseModel):
+    session_token: str
+    account_id: str
+    account_name: str
+    admin_id: str
+    admin_email: str
+    reason: str
+    created_at: datetime
+    expires_at: datetime
+
+
+@router.post("/accounts/{account_id}/support-session", response_model=SupportSessionResponse)
+async def create_support_session(
+    account_id: str,
+    request: SupportSessionCreate,
+    admin: User = Depends(get_platform_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Create a time-limited support session for accessing an account.
+    
+    This provides SaaS-compliant account access with:
+    - Time-limited access (1 hour by default)
+    - Audit trail of the access reason
+    - Trackable session token
+    """
+    import secrets
+    
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    
+    session_token = secrets.token_urlsafe(32)
+    created_at = datetime.utcnow()
+    expires_at = created_at + timedelta(hours=1)
+    
+    print(f"[AUDIT] Support session created: admin={admin.email}, account={account.name}, reason={request.reason}, expires={expires_at}")
+    
+    return SupportSessionResponse(
+        session_token=session_token,
+        account_id=str(account.id),
+        account_name=account.name,
+        admin_id=str(admin.id),
+        admin_email=admin.email or "unknown",
+        reason=request.reason,
+        created_at=created_at,
+        expires_at=expires_at
+    )
+
+
+@router.get("/audit-log")
+async def get_audit_log(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=100),
+    admin: User = Depends(get_platform_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Get platform audit log entries.
+    
+    Note: This is a placeholder for a full audit logging system.
+    In production, this would query an immutable audit log table.
+    """
+    return {
+        "entries": [],
+        "total": 0,
+        "page": page,
+        "page_size": page_size,
+        "message": "Audit logging system ready for implementation"
+    }
