@@ -75,7 +75,17 @@ Botelier is built with a clean architectural separation, where the core SaaS app
   - `Account`: Generic multi-tenant support (replaces legacy Hotel model)
   - `Role`: Permission templates, can be system or custom
   - `AccountMembership`: Links users to accounts with specific roles
-- **Platform Admin Panel:** `/admin` routes for managing all accounts, users, and platform settings
+- **Platform Admin Panel (Dec 2024):**
+  - **Dashboard Routes:** `/admin` for main dashboard, `/admin/accounts` for account management, `/admin/users` for user management, `/admin/settings` for platform settings, `/admin/invitations` for invitation management
+  - **Account Management:** Create, view, edit, suspend, and cancel accounts with full CRUD operations
+  - **Integration Health Checks:** Real-time status verification for Twilio, OpenAI, and PostgreSQL via `/api/admin/integrations/health` endpoint
+  - **Support Session System (SaaS-Compliant Account Access):**
+    - Time-bound access tokens (1 hour expiry) for Platform Admins to access tenant accounts
+    - Requires documented reason for audit trail compliance
+    - Session tokens are tracked and logged for security auditing
+    - "Enter Account" button in account detail page with purpose/duration modal
+  - **Audit Logging:** Console logging of privileged actions with `/api/admin/audit-log` endpoint ready for production implementation
+  - **Twilio Sub-Account Provisioning:** One-click provisioning for tenant Twilio sub-accounts via `/api/admin/accounts/{id}/provision-twilio`
 - **Invitation-Only Access System (Dec 2024):**
   - **AccountInvitation Model:** Secure token-based invitations with expiration (7 days default), status lifecycle (pending/accepted/revoked/expired)
   - **Platform Admin Endpoints:** Create, list, resend, and revoke invitations with RBAC protection
