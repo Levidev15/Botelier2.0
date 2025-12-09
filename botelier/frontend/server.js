@@ -32,7 +32,10 @@ app.prepare().then(() => {
       const parsedUrl = parse(req.url, true);
       const { pathname } = parsedUrl;
 
-      if (pathname.startsWith('/api/')) {
+      if (pathname.startsWith('/api/auth/')) {
+        console.log(`🔐 NextAuth: ${req.method} ${pathname}`);
+        await handle(req, res, parsedUrl);
+      } else if (pathname.startsWith('/api/')) {
         apiProxy(req, res);
       } else {
         await handle(req, res, parsedUrl);

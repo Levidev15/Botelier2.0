@@ -2,13 +2,19 @@
 
 import { useEffect } from "react";
 import { useRouter } from "next/navigation";
+import { useSession } from "next-auth/react";
 
 export default function Home() {
+  const { status } = useSession();
   const router = useRouter();
 
   useEffect(() => {
-    router.push("/dashboard/assistants");
-  }, [router]);
+    if (status === "authenticated") {
+      router.push("/dashboard/assistants");
+    } else if (status === "unauthenticated") {
+      router.push("/login");
+    }
+  }, [status, router]);
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">

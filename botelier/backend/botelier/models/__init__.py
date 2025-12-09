@@ -5,6 +5,9 @@ All SQLAlchemy models should be imported here for database initialization.
 """
 
 from botelier.models.hotel import Hotel
+from botelier.models.account import Account, AccountStatus, SubscriptionTier
+from botelier.models.user import User, UserType
+from botelier.models.role import Role, AccountMembership
 from botelier.models.phone_number import PhoneNumber
 from botelier.models.tool import Tool
 from botelier.models.assistant import Assistant
@@ -14,6 +17,13 @@ from botelier.models.call_log import CallLog, CallLeg, CallStatus, CallOutcome, 
 
 __all__ = [
     "Hotel",
+    "Account",
+    "AccountStatus",
+    "SubscriptionTier",
+    "User",
+    "UserType",
+    "Role",
+    "AccountMembership",
     "PhoneNumber",
     "Tool",
     "Assistant",
