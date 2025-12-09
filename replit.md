@@ -57,9 +57,12 @@ Botelier is built with a clean architectural separation, where the core SaaS app
   - **UI Features:** Modern table view with expandable rows for calls with transfers, filters (date range, status, assistant, timezone), search, transcript popup modal, CSV export
   - **Twilio Integration:** Status callbacks automatically create/update call logs and track parent-child call relationships for transfers
 
-### Authentication & Authorization System (NEW - Dec 2024)
-- **Replit Auth Integration:** Uses NextAuth.js with Replit as OIDC provider for login/logout
-- **JWT Token Flow:** Frontend (NextAuth) → JWT → Backend (FastAPI validates)
+### Authentication & Authorization System (Updated - Dec 2024)
+- **Email/Password Authentication:** Platform-owned authentication with bcrypt password hashing and JWT tokens
+  - **Backend Auth API:** `/api/auth/login`, `/api/auth/register`, `/api/auth/validate` endpoints
+  - **JWT Tokens:** HS256 signed tokens with python-jose library, 30-day expiration
+  - **Password Security:** bcrypt hashing with salt, password strength validation on frontend
+  - **Dual Auth Support:** Middleware handles both email/password JWT tokens and legacy NextAuth/Replit tokens
 - **User Types:**
   - `platform_admin`: Full access to all accounts and platform settings
   - `account_user`: Belongs to specific accounts with assigned roles
@@ -68,19 +71,19 @@ Botelier is built with a clean architectural separation, where the core SaaS app
   - **Granular Permissions:** Feature-level permissions (assistants.create, call_logs.export, etc.)
   - **Permission Overrides:** Individual users can have permissions added/removed from their role
 - **Database Models:**
-  - `User`: Linked to Replit Auth via replit_id, stores user type and profile
-  - `Account`: Replaces Hotel model for generic multi-tenant support
+  - `User`: Stores email, password_hash, auth_provider, first_name, last_name, user_type, and profile
+  - `Account`: Generic multi-tenant support (replaces legacy Hotel model)
   - `Role`: Permission templates, can be system or custom
   - `AccountMembership`: Links users to accounts with specific roles
 - **Platform Admin Panel:** `/admin` routes for managing all accounts, users, and platform settings
 - **Invitation-Only Access System (Dec 2024):**
   - **AccountInvitation Model:** Secure token-based invitations with expiration (7 days default), status lifecycle (pending/accepted/revoked/expired)
   - **Platform Admin Endpoints:** Create, list, resend, and revoke invitations with RBAC protection
-  - **Invitation Acceptance Flow:** Public `/invite/[token]` page verifies tokens, enforces email matching with Replit profile, creates account memberships
+  - **Invitation Acceptance Flow:** Public `/invite/[token]` page with full registration form (first name, last name, password)
   - **No Open Sign-Up:** Users can only access the platform through Platform Admin invitations
   - **UI:** Platform Admin invitations management page with create modal, status filters, copy invite link, resend/revoke actions
 - **Environment Variables:**
-  - `NEXTAUTH_SECRET`: JWT signing secret
+  - `NEXTAUTH_SECRET`: JWT signing secret (shared between frontend and backend)
   - `NEXTAUTH_URL`: Base URL for auth callbacks
 
 ### System Design Choices
