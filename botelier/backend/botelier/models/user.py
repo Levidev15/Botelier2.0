@@ -1,7 +1,9 @@
 """
 User Model - Represents users in the system with role-based access control.
 
-Users are linked to Replit Auth (OIDC) and can have roles at platform or account level.
+Users can authenticate via email/password or OAuth (Replit, etc.).
+Platform admins can access all accounts.
+Account users belong to specific accounts with assigned roles.
 """
 
 import uuid
@@ -20,11 +22,17 @@ class UserType(str, enum.Enum):
     ACCOUNT_USER = "account_user"
 
 
+class AuthProvider(str, enum.Enum):
+    """Authentication provider used by the user."""
+    EMAIL = "email"
+    REPLIT = "replit"
+
+
 class User(Base):
     """
     User model representing authenticated users.
     
-    Links to Replit Auth via the 'sub' claim (stable user ID).
+    Supports both email/password and OAuth authentication.
     Platform admins can access all accounts.
     Account users belong to specific accounts with assigned roles.
     """
@@ -32,12 +40,17 @@ class User(Base):
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     
-    replit_id = Column(String, unique=True, nullable=False, index=True)
+    replit_id = Column(String, unique=True, nullable=True, index=True)
     
-    email = Column(String, nullable=True)
+    email = Column(String, unique=True, nullable=False, index=True)
+    email_verified = Column(Boolean, default=False)
+    password_hash = Column(String, nullable=True)
+    
     first_name = Column(String, nullable=True)
     last_name = Column(String, nullable=True)
     profile_image_url = Column(String, nullable=True)
+    
+    auth_provider = Column(SQLEnum(AuthProvider), default=AuthProvider.EMAIL, nullable=False)
     
     user_type = Column(SQLEnum(UserType), default=UserType.ACCOUNT_USER, nullable=False)
     

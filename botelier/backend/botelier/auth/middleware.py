@@ -45,12 +45,14 @@ def derive_encryption_key(secret: str) -> bytes:
     return hkdf.derive(secret.encode())
 
 
-def decode_nextauth_token(token: str) -> Optional[dict]:
+def decode_jwt_token(token: str) -> Optional[dict]:
     """
-    Decode a NextAuth JWT token.
+    Decode a JWT token.
     
-    NextAuth can use either signed (JWS) or encrypted (JWE) tokens.
-    This handles both cases.
+    Supports:
+    1. Plain HS256 tokens (from email/password auth)
+    2. NextAuth signed (JWS) tokens
+    3. NextAuth encrypted (JWE) tokens
     """
     if not NEXTAUTH_SECRET:
         return None
@@ -64,13 +66,30 @@ def decode_nextauth_token(token: str) -> Optional[dict]:
         )
         return payload
     except JWTError:
-        try:
-            from jose import jwe
-            key = derive_encryption_key(NEXTAUTH_SECRET)
-            decrypted = jwe.decrypt(token, key)
-            return json.loads(decrypted)
-        except Exception:
-            return None
+        pass
+    
+    try:
+        from jose import jwe
+        key = derive_encryption_key(NEXTAUTH_SECRET)
+        decrypted = jwe.decrypt(token, key)
+        return json.loads(decrypted)
+    except Exception:
+        return None
+
+
+def decode_nextauth_token(token: str) -> Optional[dict]:
+    """Alias for backward compatibility."""
+    return decode_jwt_token(token)
+
+
+def is_valid_uuid(val: str) -> bool:
+    """Check if a string is a valid UUID."""
+    try:
+        import uuid
+        uuid.UUID(str(val))
+        return True
+    except (ValueError, AttributeError):
+        return False
 
 
 async def get_current_user_optional(
@@ -80,6 +99,10 @@ async def get_current_user_optional(
 ) -> Optional[User]:
     """
     Get current user from JWT token (optional - returns None if not authenticated).
+    
+    Supports both:
+    - Email/password JWT tokens (sub = user UUID)
+    - NextAuth tokens (sub = Replit ID)
     """
     if not credentials:
         return None
@@ -90,29 +113,52 @@ async def get_current_user_optional(
     if not payload:
         return None
     
-    replit_id = payload.get("sub")
-    if not replit_id:
+    sub = payload.get("sub")
+    if not sub:
         return None
     
-    user = db.query(User).filter(User.replit_id == replit_id).first()
+    if is_valid_uuid(sub):
+        user = db.query(User).filter(User.id == sub).first()
+        
+        if user:
+            user.last_login_at = datetime.utcnow()
+            db.commit()
+        
+        return user
+    
+    user = db.query(User).filter(User.replit_id == sub).first()
     
     if not user:
-        user = User(
-            replit_id=replit_id,
-            email=payload.get("email"),
-            first_name=payload.get("first_name") or payload.get("name", "").split()[0] if payload.get("name") else None,
-            last_name=payload.get("last_name") or " ".join(payload.get("name", "").split()[1:]) if payload.get("name") else None,
-            profile_image_url=payload.get("picture") or payload.get("image"),
-            user_type=UserType.ACCOUNT_USER,
-            last_login_at=datetime.utcnow(),
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
+        email = payload.get("email")
+        if email:
+            user = db.query(User).filter(User.email == email).first()
+        
+        if not user:
+            from botelier.models.user import AuthProvider
+            user = User(
+                replit_id=sub,
+                email=payload.get("email") or f"{sub}@replit.user",
+                first_name=payload.get("first_name") or payload.get("name", "").split()[0] if payload.get("name") else None,
+                last_name=payload.get("last_name") or " ".join(payload.get("name", "").split()[1:]) if payload.get("name") else None,
+                profile_image_url=payload.get("picture") or payload.get("image"),
+                auth_provider=AuthProvider.REPLIT,
+                user_type=UserType.ACCOUNT_USER,
+                last_login_at=datetime.utcnow(),
+            )
+            db.add(user)
+            db.commit()
+            db.refresh(user)
+        else:
+            if not user.replit_id:
+                user.replit_id = sub
+            user.last_login_at = datetime.utcnow()
+            if payload.get("picture") or payload.get("image"):
+                user.profile_image_url = payload.get("picture") or payload.get("image")
+            db.commit()
     else:
         user.last_login_at = datetime.utcnow()
-        if payload.get("email"):
-            user.email = payload.get("email")
+        if payload.get("email") and user.email != payload.get("email"):
+            pass
         if payload.get("picture") or payload.get("image"):
             user.profile_image_url = payload.get("picture") or payload.get("image")
         db.commit()
