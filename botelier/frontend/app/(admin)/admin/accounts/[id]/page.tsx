@@ -15,6 +15,10 @@ import {
   Loader2,
   Shield,
   Plus,
+  LogIn,
+  AlertTriangle,
+  Clock,
+  ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
@@ -34,14 +38,15 @@ interface Account {
   created_at: string;
 }
 
-interface Member {
-  id: string;
-  user_id: string;
-  user_email: string;
-  user_name: string;
-  role_name: string;
-  is_owner: boolean;
-  joined_at: string;
+interface SupportSession {
+  session_token: string;
+  account_id: string;
+  account_name: string;
+  admin_id: string;
+  admin_email: string;
+  reason: string;
+  created_at: string;
+  expires_at: string;
 }
 
 export default function AccountDetailPage() {
@@ -51,10 +56,13 @@ export default function AccountDetailPage() {
   const accountId = params.id as string;
 
   const [account, setAccount] = useState<Account | null>(null);
-  const [members, setMembers] = useState<Member[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [showSupportModal, setShowSupportModal] = useState(false);
+  const [supportReason, setSupportReason] = useState("");
+  const [creatingSupportSession, setCreatingSupportSession] = useState(false);
+  const [activeSession, setActiveSession] = useState<SupportSession | null>(null);
   const [editForm, setEditForm] = useState({
     name: "",
     email: "",
@@ -160,6 +168,43 @@ export default function AccountDetailPage() {
     }
   };
 
+  const handleCreateSupportSession = async () => {
+    if (!supportReason.trim() || supportReason.length < 5) {
+      toast.error("Please provide a reason (at least 5 characters)");
+      return;
+    }
+
+    setCreatingSupportSession(true);
+    try {
+      const res = await authFetch(`/api/admin/accounts/${accountId}/support-session`, {
+        method: "POST",
+        body: JSON.stringify({ reason: supportReason }),
+      });
+
+      if (res.ok) {
+        const session: SupportSession = await res.json();
+        setActiveSession(session);
+        setShowSupportModal(false);
+        setSupportReason("");
+        toast.success(`Support session created for ${session.account_name}`);
+      } else {
+        const error = await res.json();
+        toast.error(error.detail || "Failed to create support session");
+      }
+    } catch (err) {
+      console.error("Error creating support session:", err);
+      toast.error("Failed to create support session");
+    } finally {
+      setCreatingSupportSession(false);
+    }
+  };
+
+  const handleEnterAccount = () => {
+    if (activeSession) {
+      router.push(`/${account?.slug}/dashboard?support_session=${activeSession.session_token}`);
+    }
+  };
+
   const statusColors: Record<string, string> = {
     trial: "bg-yellow-600/20 text-yellow-400 border-yellow-600/30",
     active: "bg-green-600/20 text-green-400 border-green-600/30",
@@ -206,6 +251,13 @@ export default function AccountDetailPage() {
           <p className="text-gray-400 mt-1">Account ID: {account.id}</p>
         </div>
         <div className="flex items-center gap-3">
+          <button
+            onClick={() => setShowSupportModal(true)}
+            className="flex items-center gap-2 px-4 py-2 bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 rounded-lg transition-colors border border-purple-600/30"
+          >
+            <LogIn className="h-4 w-4" />
+            Enter Account
+          </button>
           {!editing ? (
             <button
               onClick={() => setEditing(true)}
@@ -249,6 +301,35 @@ export default function AccountDetailPage() {
           )}
         </div>
       </div>
+
+      {activeSession && (
+        <div className="mb-6 p-4 bg-purple-600/10 border border-purple-600/30 rounded-xl">
+          <div className="flex items-start justify-between">
+            <div className="flex items-start gap-3">
+              <Shield className="h-5 w-5 text-purple-400 mt-0.5" />
+              <div>
+                <h3 className="text-white font-medium">Active Support Session</h3>
+                <p className="text-gray-400 text-sm mt-1">
+                  Reason: {activeSession.reason}
+                </p>
+                <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
+                  <span className="flex items-center gap-1">
+                    <Clock className="h-3 w-3" />
+                    Expires: {new Date(activeSession.expires_at).toLocaleTimeString()}
+                  </span>
+                </div>
+              </div>
+            </div>
+            <button
+              onClick={handleEnterAccount}
+              className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors"
+            >
+              <ExternalLink className="h-4 w-4" />
+              Open Dashboard
+            </button>
+          </div>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         <div className="lg:col-span-2 space-y-6">
@@ -464,8 +545,101 @@ export default function AccountDetailPage() {
               </div>
             )}
           </div>
+
+          <div className="bg-[#111111] border border-[#222222] rounded-xl p-6">
+            <h3 className="text-sm font-medium text-gray-400 uppercase tracking-wider mb-4">
+              Quick Actions
+            </h3>
+            <div className="space-y-2">
+              <button
+                onClick={() => setShowSupportModal(true)}
+                className="w-full flex items-center gap-2 px-4 py-2 bg-purple-600/20 hover:bg-purple-600/30 text-purple-400 rounded-lg transition-colors text-sm"
+              >
+                <LogIn className="h-4 w-4" />
+                Enter Account
+              </button>
+              <button
+                onClick={() => router.push(`/admin/invitations?account_id=${accountId}`)}
+                className="w-full flex items-center gap-2 px-4 py-2 bg-[#1a1a1a] hover:bg-[#222222] text-gray-300 rounded-lg transition-colors text-sm"
+              >
+                <Users className="h-4 w-4" />
+                Manage Invitations
+              </button>
+            </div>
+          </div>
         </div>
       </div>
+
+      {showSupportModal && (
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-[#111111] border border-[#222222] rounded-xl p-6 max-w-md w-full mx-4">
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-semibold text-white">Create Support Session</h2>
+              <button
+                onClick={() => {
+                  setShowSupportModal(false);
+                  setSupportReason("");
+                }}
+                className="text-gray-400 hover:text-white p-1"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="mb-6 p-4 bg-yellow-600/10 border border-yellow-600/30 rounded-lg">
+              <div className="flex items-start gap-3">
+                <AlertTriangle className="h-5 w-5 text-yellow-400 mt-0.5 flex-shrink-0" />
+                <div className="text-sm">
+                  <p className="text-yellow-400 font-medium">SaaS Compliance Notice</p>
+                  <p className="text-gray-400 mt-1">
+                    This action will be logged for audit purposes. Support sessions expire after 1 hour and require a documented reason.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            <div className="mb-6">
+              <label className="block text-sm font-medium text-gray-400 mb-2">
+                Reason for Access <span className="text-red-400">*</span>
+              </label>
+              <textarea
+                value={supportReason}
+                onChange={(e) => setSupportReason(e.target.value)}
+                placeholder="Describe why you need to access this account (e.g., 'Assisting with flow configuration per support ticket #1234')"
+                rows={3}
+                className="w-full px-4 py-2 bg-[#0a0a0a] border border-[#222222] rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-600 resize-none"
+              />
+              <p className="text-gray-500 text-xs mt-1">
+                Minimum 5 characters required
+              </p>
+            </div>
+
+            <div className="flex gap-3">
+              <button
+                onClick={() => {
+                  setShowSupportModal(false);
+                  setSupportReason("");
+                }}
+                className="flex-1 px-4 py-2 bg-[#1a1a1a] text-gray-300 rounded-lg hover:bg-[#222222] transition-colors"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleCreateSupportSession}
+                disabled={creatingSupportSession || supportReason.length < 5}
+                className="flex-1 flex items-center justify-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 disabled:bg-purple-600/50 text-white rounded-lg transition-colors"
+              >
+                {creatingSupportSession ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <LogIn className="h-4 w-4" />
+                )}
+                Create Session
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
