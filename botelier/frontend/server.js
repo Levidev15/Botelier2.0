@@ -32,7 +32,19 @@ app.prepare().then(() => {
       const parsedUrl = parse(req.url, true);
       const { pathname } = parsedUrl;
 
-      if (pathname.startsWith('/api/auth/')) {
+      // Email/password auth endpoints go to backend
+      const backendAuthRoutes = [
+        '/api/auth/login',
+        '/api/auth/register', 
+        '/api/auth/validate',
+        '/api/auth/verify-invitation'
+      ];
+      
+      if (backendAuthRoutes.some(route => pathname.startsWith(route))) {
+        console.log(`🔑 Backend Auth: ${req.method} ${pathname}`);
+        apiProxy(req, res);
+      } else if (pathname.startsWith('/api/auth/')) {
+        // NextAuth routes (session, providers, etc.)
         console.log(`🔐 NextAuth: ${req.method} ${pathname}`);
         await handle(req, res, parsedUrl);
       } else if (pathname.startsWith('/api/')) {
