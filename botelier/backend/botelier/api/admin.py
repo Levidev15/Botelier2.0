@@ -18,6 +18,7 @@ from botelier.database import get_db
 from botelier.models.account import Account, AccountStatus, SubscriptionTier
 from botelier.models.user import User, UserType
 from botelier.models.role import Role, AccountMembership
+from botelier.models.invitation import AccountInvitation, InvitationStatus
 from botelier.auth.permissions import DEFAULT_ROLES
 from botelier.auth.middleware import get_platform_admin, get_current_user
 
@@ -91,6 +92,38 @@ class UserResponse(BaseModel):
 
 class MakePlatformAdminRequest(BaseModel):
     user_id: str
+
+
+class InvitationCreate(BaseModel):
+    account_id: str
+    email: EmailStr
+    role_id: str
+
+
+class InvitationResponse(BaseModel):
+    id: str
+    account_id: str
+    account_name: str
+    invitee_email: str
+    role_id: str
+    role_name: str
+    invited_by_id: str
+    invited_by_name: str
+    status: str
+    token: str
+    expires_at: datetime
+    accepted_at: Optional[datetime]
+    created_at: datetime
+    
+    class Config:
+        from_attributes = True
+
+
+class InvitationListResponse(BaseModel):
+    invitations: List[InvitationResponse]
+    total: int
+    page: int
+    page_size: int
 
 
 def generate_slug(name: str) -> str:
@@ -494,3 +527,220 @@ async def get_current_admin_user(
         "is_active": user.is_active,
         "memberships": memberships,
     }
+
+
+def build_invitation_response(invitation: AccountInvitation) -> InvitationResponse:
+    """Build invitation response from model."""
+    return InvitationResponse(
+        id=str(invitation.id),
+        account_id=str(invitation.account_id),
+        account_name=invitation.account.name if invitation.account else "Unknown",
+        invitee_email=invitation.invitee_email,
+        role_id=str(invitation.role_id),
+        role_name=invitation.role.name if invitation.role else "Unknown",
+        invited_by_id=str(invitation.invited_by_id),
+        invited_by_name=invitation.invited_by.display_name if invitation.invited_by else "Unknown",
+        status=invitation.status.value,
+        token=invitation.token,
+        expires_at=invitation.expires_at,
+        accepted_at=invitation.accepted_at,
+        created_at=invitation.created_at,
+    )
+
+
+@router.get("/invitations", response_model=InvitationListResponse)
+async def list_invitations(
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
+    status: Optional[InvitationStatus] = None,
+    account_id: Optional[str] = None,
+    search: Optional[str] = None,
+    admin: User = Depends(get_platform_admin),
+    db: Session = Depends(get_db),
+):
+    """List all invitations with pagination and filtering."""
+    query = db.query(AccountInvitation)
+    
+    if status:
+        query = query.filter(AccountInvitation.status == status)
+    
+    if account_id:
+        query = query.filter(AccountInvitation.account_id == account_id)
+    
+    if search:
+        search_term = f"%{search}%"
+        query = query.filter(AccountInvitation.invitee_email.ilike(search_term))
+    
+    total = query.count()
+    
+    invitations = query.order_by(AccountInvitation.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    
+    return InvitationListResponse(
+        invitations=[build_invitation_response(inv) for inv in invitations],
+        total=total,
+        page=page,
+        page_size=page_size,
+    )
+
+
+@router.post("/invitations", response_model=InvitationResponse)
+async def create_invitation(
+    data: InvitationCreate,
+    admin: User = Depends(get_platform_admin),
+    db: Session = Depends(get_db),
+):
+    """Create a new invitation to join an account."""
+    account = db.query(Account).filter(Account.id == data.account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    
+    role = db.query(Role).filter(Role.id == data.role_id).first()
+    if not role:
+        raise HTTPException(status_code=404, detail="Role not found")
+    
+    existing_user = db.query(User).filter(User.email == data.email).first()
+    if existing_user:
+        existing_membership = db.query(AccountMembership).filter(
+            AccountMembership.user_id == existing_user.id,
+            AccountMembership.account_id == account.id,
+            AccountMembership.is_active == True,
+        ).first()
+        if existing_membership:
+            raise HTTPException(status_code=400, detail="User is already a member of this account")
+    
+    pending_invitation = db.query(AccountInvitation).filter(
+        AccountInvitation.account_id == account.id,
+        AccountInvitation.invitee_email == data.email,
+        AccountInvitation.status == InvitationStatus.PENDING,
+    ).first()
+    if pending_invitation:
+        raise HTTPException(status_code=400, detail="An invitation is already pending for this email")
+    
+    invitation = AccountInvitation(
+        account_id=account.id,
+        invitee_email=data.email,
+        role_id=role.id,
+        invited_by_id=admin.id,
+        token=AccountInvitation.generate_token(),
+        expires_at=AccountInvitation.default_expiration(days=7),
+    )
+    
+    db.add(invitation)
+    db.commit()
+    db.refresh(invitation)
+    
+    return build_invitation_response(invitation)
+
+
+@router.get("/invitations/{invitation_id}", response_model=InvitationResponse)
+async def get_invitation(
+    invitation_id: str,
+    admin: User = Depends(get_platform_admin),
+    db: Session = Depends(get_db),
+):
+    """Get invitation details."""
+    invitation = db.query(AccountInvitation).filter(AccountInvitation.id == invitation_id).first()
+    
+    if not invitation:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    
+    return build_invitation_response(invitation)
+
+
+@router.post("/invitations/{invitation_id}/resend")
+async def resend_invitation(
+    invitation_id: str,
+    admin: User = Depends(get_platform_admin),
+    db: Session = Depends(get_db),
+):
+    """Resend an invitation with a new expiration date."""
+    invitation = db.query(AccountInvitation).filter(AccountInvitation.id == invitation_id).first()
+    
+    if not invitation:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    
+    if invitation.status != InvitationStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Can only resend pending invitations")
+    
+    invitation.token = AccountInvitation.generate_token()
+    invitation.expires_at = AccountInvitation.default_expiration(days=7)
+    
+    db.commit()
+    db.refresh(invitation)
+    
+    return {
+        "success": True,
+        "message": f"Invitation resent to {invitation.invitee_email}",
+        "new_expires_at": invitation.expires_at.isoformat(),
+    }
+
+
+@router.post("/invitations/{invitation_id}/revoke")
+async def revoke_invitation(
+    invitation_id: str,
+    admin: User = Depends(get_platform_admin),
+    db: Session = Depends(get_db),
+):
+    """Revoke a pending invitation."""
+    invitation = db.query(AccountInvitation).filter(AccountInvitation.id == invitation_id).first()
+    
+    if not invitation:
+        raise HTTPException(status_code=404, detail="Invitation not found")
+    
+    if invitation.status != InvitationStatus.PENDING:
+        raise HTTPException(status_code=400, detail="Can only revoke pending invitations")
+    
+    invitation.revoke()
+    db.commit()
+    
+    return {
+        "success": True,
+        "message": f"Invitation to {invitation.invitee_email} has been revoked",
+    }
+
+
+@router.get("/accounts/{account_id}/invitations", response_model=List[InvitationResponse])
+async def list_account_invitations(
+    account_id: str,
+    status: Optional[InvitationStatus] = None,
+    admin: User = Depends(get_platform_admin),
+    db: Session = Depends(get_db),
+):
+    """List all invitations for a specific account."""
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    
+    query = db.query(AccountInvitation).filter(AccountInvitation.account_id == account_id)
+    
+    if status:
+        query = query.filter(AccountInvitation.status == status)
+    
+    invitations = query.order_by(AccountInvitation.created_at.desc()).all()
+    
+    return [build_invitation_response(inv) for inv in invitations]
+
+
+@router.get("/accounts/{account_id}/roles", response_model=List[dict])
+async def list_account_roles(
+    account_id: str,
+    admin: User = Depends(get_platform_admin),
+    db: Session = Depends(get_db),
+):
+    """List all roles available for an account."""
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    
+    roles = db.query(Role).filter(Role.account_id == account_id).all()
+    
+    return [
+        {
+            "id": str(role.id),
+            "name": role.name,
+            "slug": role.slug,
+            "description": role.description,
+            "is_system_role": role.is_system_role,
+        }
+        for role in roles
+    ]
