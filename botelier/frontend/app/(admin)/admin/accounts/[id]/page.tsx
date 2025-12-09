@@ -201,7 +201,10 @@ export default function AccountDetailPage() {
 
   const handleEnterAccount = () => {
     if (activeSession) {
-      router.push(`/${account?.slug}/dashboard?support_session=${activeSession.session_token}`);
+      toast.info(
+        `Support session active. Session token: ${activeSession.session_token.slice(0, 8)}...`,
+        { duration: 5000 }
+      );
     }
   };
 
@@ -304,29 +307,26 @@ export default function AccountDetailPage() {
 
       {activeSession && (
         <div className="mb-6 p-4 bg-purple-600/10 border border-purple-600/30 rounded-xl">
-          <div className="flex items-start justify-between">
-            <div className="flex items-start gap-3">
-              <Shield className="h-5 w-5 text-purple-400 mt-0.5" />
-              <div>
-                <h3 className="text-white font-medium">Active Support Session</h3>
-                <p className="text-gray-400 text-sm mt-1">
-                  Reason: {activeSession.reason}
-                </p>
-                <div className="flex items-center gap-4 mt-2 text-xs text-gray-500">
-                  <span className="flex items-center gap-1">
-                    <Clock className="h-3 w-3" />
-                    Expires: {new Date(activeSession.expires_at).toLocaleTimeString()}
-                  </span>
-                </div>
+          <div className="flex items-start gap-3">
+            <Shield className="h-5 w-5 text-purple-400 mt-0.5" />
+            <div className="flex-1">
+              <h3 className="text-white font-medium">Active Support Session</h3>
+              <p className="text-gray-400 text-sm mt-1">
+                Reason: {activeSession.reason}
+              </p>
+              <div className="flex flex-wrap items-center gap-4 mt-2 text-xs text-gray-500">
+                <span className="flex items-center gap-1">
+                  <Clock className="h-3 w-3" />
+                  Expires: {new Date(activeSession.expires_at).toLocaleTimeString()}
+                </span>
+                <span className="text-purple-400 font-mono">
+                  Token: {activeSession.session_token.slice(0, 16)}...
+                </span>
               </div>
+              <p className="text-xs text-gray-500 mt-2">
+                This session is logged for audit compliance. You have delegated access to configure this account.
+              </p>
             </div>
-            <button
-              onClick={handleEnterAccount}
-              className="flex items-center gap-2 px-4 py-2 bg-purple-600 hover:bg-purple-700 text-white rounded-lg transition-colors"
-            >
-              <ExternalLink className="h-4 w-4" />
-              Open Dashboard
-            </button>
           </div>
         </div>
       )}

@@ -818,8 +818,8 @@ async def check_integrations_health(
             )
     
     try:
-        result = db.execute(db.query(User).filter(User.id == "test").statement.compile())
-        db.rollback()
+        from sqlalchemy import text
+        db.execute(text("SELECT 1"))
         
         user_count = db.query(func.count(User.id)).scalar()
         account_count = db.query(func.count(Account.id)).scalar()
