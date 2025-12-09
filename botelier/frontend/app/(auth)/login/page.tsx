@@ -1,43 +1,78 @@
 "use client";
 
-import { signIn, useSession } from "next-auth/react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
+import { Eye, EyeOff, Lock, Mail } from "lucide-react";
 
 export default function LoginPage() {
-  const { data: session, status } = useSession();
   const router = useRouter();
   const searchParams = useSearchParams();
   const [isLoading, setIsLoading] = useState(false);
-  const error = searchParams.get("error");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [showPassword, setShowPassword] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
 
   useEffect(() => {
-    if (status === "authenticated" && session) {
-      router.push(callbackUrl);
+    const storedToken = localStorage.getItem("botelier_token");
+    const storedUser = localStorage.getItem("botelier_user");
+    
+    if (storedToken && storedUser) {
+      validateAndRedirect(storedToken);
     }
-  }, [status, session, router, callbackUrl]);
+  }, []);
 
-  const handleSignIn = async () => {
-    setIsLoading(true);
+  const validateAndRedirect = async (token: string) => {
     try {
-      await signIn("replit", { callbackUrl });
+      const res = await fetch("/api/auth/validate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ token }),
+      });
+      
+      const data = await res.json();
+      
+      if (data.valid) {
+        router.push(callbackUrl);
+      } else {
+        localStorage.removeItem("botelier_token");
+        localStorage.removeItem("botelier_user");
+      }
     } catch (err) {
-      console.error("Sign in error:", err);
-      setIsLoading(false);
+      localStorage.removeItem("botelier_token");
+      localStorage.removeItem("botelier_user");
     }
   };
 
-  if (status === "loading") {
-    return (
-      <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin h-8 w-8 border-4 border-blue-600 border-t-transparent rounded-full mx-auto"></div>
-          <p className="mt-4 text-gray-400">Loading...</p>
-        </div>
-      </div>
-    );
-  }
+  const handleSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setIsLoading(true);
+    setError(null);
+
+    try {
+      const res = await fetch("/api/auth/login", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email, password }),
+      });
+
+      const data = await res.json();
+
+      if (res.ok) {
+        localStorage.setItem("botelier_token", data.access_token);
+        localStorage.setItem("botelier_user", JSON.stringify(data.user));
+        router.push(callbackUrl);
+      } else {
+        setError(data.detail || "Invalid email or password");
+      }
+    } catch (err) {
+      console.error("Login error:", err);
+      setError("An error occurred. Please try again.");
+    } finally {
+      setIsLoading(false);
+    }
+  };
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
@@ -54,46 +89,67 @@ export default function LoginPage() {
 
           {error && (
             <div className="mb-6 p-4 bg-red-900/20 border border-red-900/50 rounded-lg">
-              <p className="text-red-400 text-sm text-center">
-                {error === "OAuthSignin"
-                  ? "Error starting sign in. Please try again."
-                  : error === "OAuthCallback"
-                  ? "Error during sign in callback. Please try again."
-                  : error === "OAuthAccountNotLinked"
-                  ? "This email is already linked to another account."
-                  : "An error occurred during sign in. Please try again."}
-              </p>
+              <p className="text-red-400 text-sm text-center">{error}</p>
             </div>
           )}
 
-          <button
-            onClick={handleSignIn}
-            disabled={isLoading}
-            className="w-full flex items-center justify-center gap-3 px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 text-white font-medium rounded-lg transition-colors"
-          >
-            {isLoading ? (
-              <>
-                <div className="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></div>
-                <span>Signing in...</span>
-              </>
-            ) : (
-              <>
-                <svg
-                  className="w-5 h-5"
-                  viewBox="0 0 24 24"
-                  fill="none"
-                  stroke="currentColor"
-                  strokeWidth="2"
-                  strokeLinecap="round"
-                  strokeLinejoin="round"
+          <form onSubmit={handleSubmit} className="space-y-4">
+            <div>
+              <label className="block text-sm font-medium text-gray-400 mb-1">
+                Email
+              </label>
+              <div className="relative">
+                <Mail className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                <input
+                  type="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                  className="w-full pl-10 pr-3 py-2 bg-[#0a0a0a] border border-[#333333] rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  placeholder="you@example.com"
+                />
+              </div>
+            </div>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-400 mb-1">
+                Password
+              </label>
+              <div className="relative">
+                <Lock className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                <input
+                  type={showPassword ? "text" : "password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  className="w-full pl-10 pr-10 py-2 bg-[#0a0a0a] border border-[#333333] rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  placeholder="Enter your password"
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPassword(!showPassword)}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
                 >
-                  <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
-                  <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
-                </svg>
+                  {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                </button>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={isLoading || !email || !password}
+              className="w-full flex items-center justify-center gap-3 px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors mt-6"
+            >
+              {isLoading ? (
+                <>
+                  <div className="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></div>
+                  <span>Signing in...</span>
+                </>
+              ) : (
                 <span>Sign In</span>
-              </>
-            )}
-          </button>
+              )}
+            </button>
+          </form>
 
           <p className="mt-6 text-xs text-gray-500 text-center">
             By signing in, you agree to our Terms of Service and Privacy Policy.
