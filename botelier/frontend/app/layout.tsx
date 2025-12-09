@@ -1,13 +1,14 @@
 import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import { Toaster } from "sonner";
+import { SessionProvider } from "@/components/providers/SessionProvider";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "Botelier - Hotel Voice AI Platform",
-  description: "Manage your hotel's voice AI agents",
+  title: "Botelier - Voice AI Platform",
+  description: "Manage your voice AI assistants",
 };
 
 export default function RootLayout({
@@ -18,8 +19,10 @@ export default function RootLayout({
   return (
     <html lang="en">
       <body className={inter.className}>
-        {children}
-        <Toaster theme="dark" position="top-right" richColors closeButton />
+        <SessionProvider>
+          {children}
+          <Toaster theme="dark" position="top-right" richColors closeButton />
+        </SessionProvider>
       </body>
     </html>
   );

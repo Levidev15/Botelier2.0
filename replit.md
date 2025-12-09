@@ -1,13 +1,14 @@
-# Botelier - Hotel Voice AI SaaS Platform
+# Botelier - Voice AI SaaS Platform
 
 ## Overview
-Botelier is a multi-tenant SaaS platform that provides hotels with custom voice AI agents for guest services. Its primary purpose is to offer a hotel-centric interface for configuring conversational AI, abstracting complex underlying frameworks. The platform aims to streamline hotel operations, enhance guest experiences, and deliver a scalable solution for AI-powered guest interaction. The business vision is to become the leading provider of voice AI for the hospitality industry, significantly improving operational efficiency and guest satisfaction. Key capabilities include a visual flow editor for designing conversational AI, a robust versioning system for flow management, and integration with various AI providers for STT, LLM, and TTS.
+Botelier is a multi-tenant SaaS platform that provides businesses with custom voice AI agents. Its primary purpose is to offer a business-centric interface for configuring conversational AI, abstracting complex underlying frameworks. The platform aims to streamline operations, enhance customer experiences, and deliver a scalable solution for AI-powered voice interaction. Key capabilities include a visual flow editor for designing conversational AI, a robust versioning system for flow management, integration with various AI providers for STT, LLM, and TTS, and comprehensive role-based access control.
 
 ## User Preferences
 - **Branding:** All customer-facing code should be branded as "Botelier"
 - **Architecture:** Clean separation - Pipecat as hidden dependency
 - **Code Quality:** Organized, maintainable, no duplication
 - **Future-proof:** Easy to update and extend
+- **Naming:** Use generic terms (Account, not Hotel) to support various business types
 
 ## System Architecture
 Botelier is built with a clean architectural separation, where the core SaaS application interacts with the Pipecat framework as a hidden dependency. The frontend uses Next.js with a Vapi.ai-style dark theme.
@@ -56,10 +57,31 @@ Botelier is built with a clean architectural separation, where the core SaaS app
   - **UI Features:** Modern table view with expandable rows for calls with transfers, filters (date range, status, assistant, timezone), search, transcript popup modal, CSV export
   - **Twilio Integration:** Status callbacks automatically create/update call logs and track parent-child call relationships for transfers
 
+### Authentication & Authorization System (NEW - Dec 2024)
+- **Replit Auth Integration:** Uses NextAuth.js with Replit as OIDC provider for login/logout
+- **JWT Token Flow:** Frontend (NextAuth) → JWT → Backend (FastAPI validates)
+- **User Types:**
+  - `platform_admin`: Full access to all accounts and platform settings
+  - `account_user`: Belongs to specific accounts with assigned roles
+- **Role-Based Access Control (RBAC):**
+  - **Role Templates:** account_admin, staff, viewer (system roles with default permissions)
+  - **Granular Permissions:** Feature-level permissions (assistants.create, call_logs.export, etc.)
+  - **Permission Overrides:** Individual users can have permissions added/removed from their role
+- **Database Models:**
+  - `User`: Linked to Replit Auth via replit_id, stores user type and profile
+  - `Account`: Replaces Hotel model for generic multi-tenant support
+  - `Role`: Permission templates, can be system or custom
+  - `AccountMembership`: Links users to accounts with specific roles
+- **Platform Admin Panel:** `/admin` routes for managing all accounts, users, and platform settings
+- **Environment Variables:**
+  - `NEXTAUTH_SECRET`: JWT signing secret
+  - `NEXTAUTH_URL`: Base URL for auth callbacks
+
 ### System Design Choices
 - **Clean Branding:** "Botelier" branding is prioritized, with Pipecat treated as a hidden backend dependency.
 - **Provider Configuration:** Flexible system for choosing AI providers (STT, LLM, TTS), models, voices, languages, and behavioral parameters.
-- **Multi-tenancy with Complete Isolation:** All hotel resources are strictly isolated by `hotel_id` in database queries, API operations, and Twilio sub-accounts.
+- **Multi-tenancy with Complete Isolation:** All account resources are strictly isolated by `account_id` in database queries, API operations, and Twilio sub-accounts.
+- **Dual Model Support:** Both `Hotel` (legacy) and `Account` (new) models exist during transition
 
 ## External Dependencies
 

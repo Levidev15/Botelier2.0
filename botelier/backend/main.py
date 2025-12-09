@@ -21,6 +21,7 @@ from botelier.api.websockets import router as websockets_router
 from botelier.api.flow_templates import router as flow_templates_router
 from botelier.api.simulation import router as simulation_router
 from botelier.api.flow_versions import router as flow_versions_router
+from botelier.api.admin import router as admin_router
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -41,6 +42,7 @@ app.add_middleware(
 )
 
 # Register API routers
+app.include_router(admin_router)  # Platform admin endpoints
 app.include_router(tools_router)
 app.include_router(flow_versions_router)  # Flow versioning endpoints (before tools for route priority)
 app.include_router(phone_numbers_router)

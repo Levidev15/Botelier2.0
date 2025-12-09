@@ -50,9 +50,11 @@ def init_db():
     Initialize database tables.
     Call this once at application startup.
     """
-    # Import all models here to ensure they're registered
     from botelier.models import tool  # noqa: F401
     from botelier.models import hotel  # noqa: F401
+    from botelier.models import account  # noqa: F401
+    from botelier.models import user  # noqa: F401
+    from botelier.models import role  # noqa: F401
     from botelier.models import phone_number  # noqa: F401
     from botelier.models import assistant  # noqa: F401
     from botelier.models import knowledge_entry  # noqa: F401
