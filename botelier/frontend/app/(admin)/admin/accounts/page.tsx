@@ -1,16 +1,16 @@
 "use client";
 
-import { useSession } from "next-auth/react";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   Building2,
   Plus,
   Search,
-  MoreVertical,
   Phone,
   Users,
   ExternalLink,
+  X,
+  AlertCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
@@ -38,8 +38,7 @@ interface AccountListResponse {
 }
 
 export default function AccountsPage() {
-  const { data: session } = useSession();
-  const { token, authFetch } = useAuthToken();
+  const { token, user, loading: authLoading, authFetch } = useAuthToken();
   const router = useRouter();
   const [accounts, setAccounts] = useState<Account[]>([]);
   const [total, setTotal] = useState(0);
@@ -59,13 +58,22 @@ export default function AccountsPage() {
   });
 
   useEffect(() => {
-    if (session && token) {
-      fetchAccounts();
+    if (authLoading) return;
+    
+    if (!token) {
+      router.push("/login?callbackUrl=/admin/accounts");
+      return;
     }
-  }, [session, token, page, statusFilter]);
+    
+    if (user?.user_type !== "platform_admin") {
+      router.push("/dashboard");
+      return;
+    }
+    
+    fetchAccounts();
+  }, [token, user, authLoading, page, statusFilter]);
 
   const fetchAccounts = async () => {
-    if (!token) return;
     try {
       setLoading(true);
       const params = new URLSearchParams({
@@ -80,6 +88,9 @@ export default function AccountsPage() {
         const data: AccountListResponse = await res.json();
         setAccounts(data.accounts);
         setTotal(data.total);
+      } else {
+        const error = await res.json();
+        toast.error(error.detail || "Failed to load accounts");
       }
     } catch (err) {
       console.error("Error fetching accounts:", err);
@@ -145,7 +156,6 @@ export default function AccountsPage() {
   };
 
   const handleProvisionTwilio = async (accountId: string) => {
-    if (!token) return;
     try {
       const res = await authFetch(`/api/admin/accounts/${accountId}/provision-twilio`, {
         method: "POST",
@@ -165,10 +175,10 @@ export default function AccountsPage() {
   };
 
   const statusColors: Record<string, string> = {
-    trial: "bg-yellow-600/20 text-yellow-400",
-    active: "bg-green-600/20 text-green-400",
-    suspended: "bg-red-600/20 text-red-400",
-    cancelled: "bg-gray-600/20 text-gray-400",
+    trial: "bg-yellow-600/20 text-yellow-400 border-yellow-600/30",
+    active: "bg-green-600/20 text-green-400 border-green-600/30",
+    suspended: "bg-red-600/20 text-red-400 border-red-600/30",
+    cancelled: "bg-gray-600/20 text-gray-400 border-gray-600/30",
   };
 
   const tierLabels: Record<string, string> = {
@@ -178,13 +188,28 @@ export default function AccountsPage() {
     enterprise: "Enterprise",
   };
 
+  const tierColors: Record<string, string> = {
+    free: "text-gray-400",
+    starter: "text-blue-400",
+    professional: "text-purple-400",
+    enterprise: "text-orange-400",
+  };
+
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
+        <div className="animate-spin h-8 w-8 border-4 border-blue-600 border-t-transparent rounded-full"></div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-8">
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold text-white">Accounts</h1>
           <p className="text-gray-400 mt-1">
-            Manage all accounts on the platform
+            Manage all accounts on the platform ({total} total)
           </p>
         </div>
         <button
@@ -234,11 +259,20 @@ export default function AccountsPage() {
         <div className="bg-[#111111] border border-[#222222] rounded-xl p-12 text-center">
           <Building2 className="h-12 w-12 text-gray-600 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-white mb-2">No accounts found</h3>
-          <p className="text-gray-400">
+          <p className="text-gray-400 mb-6">
             {search || statusFilter
               ? "Try adjusting your filters"
               : "Create your first account to get started"}
           </p>
+          {!search && !statusFilter && (
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+            >
+              <Plus className="h-4 w-4" />
+              Create Account
+            </button>
+          )}
         </div>
       ) : (
         <>
@@ -271,45 +305,49 @@ export default function AccountsPage() {
               </thead>
               <tbody className="divide-y divide-[#222222]">
                 {accounts.map((account) => (
-                  <tr key={account.id} className="hover:bg-[#1a1a1a]">
+                  <tr key={account.id} className="hover:bg-[#1a1a1a] transition-colors">
                     <td className="px-6 py-4">
                       <div>
                         <p className="text-white font-medium">{account.name}</p>
                         <p className="text-gray-500 text-sm">{account.email}</p>
+                        {account.business_type && (
+                          <p className="text-gray-600 text-xs mt-1">{account.business_type}</p>
+                        )}
                       </div>
                     </td>
                     <td className="px-6 py-4">
                       <span
-                        className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
+                        className={`inline-flex px-2.5 py-1 text-xs font-medium rounded-full border ${
                           statusColors[account.status] || statusColors.cancelled
                         }`}
                       >
-                        {account.status}
+                        {account.status.charAt(0).toUpperCase() + account.status.slice(1)}
                       </span>
                     </td>
-                    <td className="px-6 py-4 text-gray-300">
-                      {tierLabels[account.subscription_tier] ||
-                        account.subscription_tier}
+                    <td className="px-6 py-4">
+                      <span className={`font-medium ${tierColors[account.subscription_tier] || "text-gray-400"}`}>
+                        {tierLabels[account.subscription_tier] || account.subscription_tier}
+                      </span>
                     </td>
                     <td className="px-6 py-4">
                       {account.has_twilio ? (
-                        <span className="inline-flex items-center gap-1 text-green-400 text-sm">
+                        <span className="inline-flex items-center gap-1.5 text-green-400 text-sm">
                           <Phone className="h-4 w-4" />
-                          Configured
+                          <span>Active</span>
                         </span>
                       ) : (
                         <button
                           onClick={() => handleProvisionTwilio(account.id)}
-                          className="text-sm text-blue-400 hover:text-blue-300"
+                          className="text-sm text-blue-400 hover:text-blue-300 transition-colors"
                         >
                           Provision
                         </button>
                       )}
                     </td>
                     <td className="px-6 py-4">
-                      <div className="flex items-center gap-1 text-gray-300">
-                        <Users className="h-4 w-4" />
-                        {account.member_count}
+                      <div className="flex items-center gap-1.5 text-gray-300">
+                        <Users className="h-4 w-4 text-gray-500" />
+                        <span>{account.member_count}</span>
                       </div>
                     </td>
                     <td className="px-6 py-4 text-gray-400 text-sm">
@@ -317,10 +355,9 @@ export default function AccountsPage() {
                     </td>
                     <td className="px-6 py-4 text-right">
                       <button
-                        onClick={() =>
-                          router.push(`/admin/accounts/${account.id}`)
-                        }
-                        className="text-gray-400 hover:text-white p-2"
+                        onClick={() => router.push(`/admin/accounts/${account.id}`)}
+                        className="text-gray-400 hover:text-white p-2 hover:bg-[#222222] rounded-lg transition-colors"
+                        title="View Details"
                       >
                         <ExternalLink className="h-4 w-4" />
                       </button>
@@ -334,21 +371,20 @@ export default function AccountsPage() {
           {total > 20 && (
             <div className="mt-4 flex items-center justify-between">
               <p className="text-gray-400 text-sm">
-                Showing {(page - 1) * 20 + 1} to {Math.min(page * 20, total)} of{" "}
-                {total} accounts
+                Showing {(page - 1) * 20 + 1} to {Math.min(page * 20, total)} of {total} accounts
               </p>
               <div className="flex gap-2">
                 <button
                   onClick={() => setPage(page - 1)}
                   disabled={page === 1}
-                  className="px-3 py-1 bg-[#111111] border border-[#222222] rounded text-gray-400 disabled:opacity-50"
+                  className="px-3 py-1 bg-[#111111] border border-[#222222] rounded text-gray-400 disabled:opacity-50 hover:border-[#333333] transition-colors"
                 >
                   Previous
                 </button>
                 <button
                   onClick={() => setPage(page + 1)}
                   disabled={page * 20 >= total}
-                  className="px-3 py-1 bg-[#111111] border border-[#222222] rounded text-gray-400 disabled:opacity-50"
+                  className="px-3 py-1 bg-[#111111] border border-[#222222] rounded text-gray-400 disabled:opacity-50 hover:border-[#333333] transition-colors"
                 >
                   Next
                 </button>
@@ -361,13 +397,21 @@ export default function AccountsPage() {
       {showCreateModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
           <div className="bg-[#111111] border border-[#222222] rounded-xl p-6 max-w-md w-full mx-4">
-            <h2 className="text-xl font-semibold text-white mb-6">
-              Create New Account
-            </h2>
+            <div className="flex items-center justify-between mb-6">
+              <h2 className="text-xl font-semibold text-white">
+                Create New Account
+              </h2>
+              <button
+                onClick={() => setShowCreateModal(false)}
+                className="text-gray-400 hover:text-white p-1"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
             <form onSubmit={handleCreateAccount} className="space-y-4">
               <div>
                 <label className="block text-sm font-medium text-gray-400 mb-1">
-                  Account Name *
+                  Account Name <span className="text-red-400">*</span>
                 </label>
                 <input
                   type="text"
@@ -383,7 +427,7 @@ export default function AccountsPage() {
 
               <div>
                 <label className="block text-sm font-medium text-gray-400 mb-1">
-                  Email *
+                  Email <span className="text-red-400">*</span>
                 </label>
                 <input
                   type="email"
@@ -451,7 +495,7 @@ export default function AccountsPage() {
                 </select>
               </div>
 
-              <div className="flex items-center gap-3">
+              <div className="flex items-center gap-3 p-3 bg-[#0a0a0a] border border-[#1a1a1a] rounded-lg">
                 <input
                   type="checkbox"
                   id="provision_twilio"
@@ -466,9 +510,10 @@ export default function AccountsPage() {
                 />
                 <label
                   htmlFor="provision_twilio"
-                  className="text-sm text-gray-400"
+                  className="text-sm text-gray-300"
                 >
-                  Provision Twilio sub-account automatically
+                  <span className="font-medium">Provision Twilio</span>
+                  <p className="text-gray-500 text-xs mt-0.5">Create a dedicated phone number sub-account</p>
                 </label>
               </div>
 

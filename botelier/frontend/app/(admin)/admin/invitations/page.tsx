@@ -1,18 +1,18 @@
 "use client";
 
-import { useSession } from "next-auth/react";
 import { useEffect, useState } from "react";
+import { useRouter } from "next/navigation";
 import {
   Mail,
   Plus,
   Search,
-  MoreVertical,
   Send,
   X,
   Clock,
   CheckCircle,
   XCircle,
   Copy,
+  RefreshCw,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
@@ -52,8 +52,8 @@ interface InvitationListResponse {
 }
 
 export default function InvitationsPage() {
-  const { data: session } = useSession();
-  const { token, authFetch } = useAuthToken();
+  const { token, user, loading: authLoading, authFetch } = useAuthToken();
+  const router = useRouter();
   const [invitations, setInvitations] = useState<Invitation[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -71,14 +71,23 @@ export default function InvitationsPage() {
   });
 
   useEffect(() => {
-    if (session && token) {
-      fetchInvitations();
-      fetchAccounts();
+    if (authLoading) return;
+    
+    if (!token) {
+      router.push("/login?callbackUrl=/admin/invitations");
+      return;
     }
-  }, [session, token, page, statusFilter]);
+    
+    if (user?.user_type !== "platform_admin") {
+      router.push("/dashboard");
+      return;
+    }
+    
+    fetchInvitations();
+    fetchAccounts();
+  }, [token, user, authLoading, page, statusFilter]);
 
   const fetchInvitations = async () => {
-    if (!token) return;
     try {
       setLoading(true);
       const params = new URLSearchParams({
@@ -103,7 +112,6 @@ export default function InvitationsPage() {
   };
 
   const fetchAccounts = async () => {
-    if (!token) return;
     try {
       const res = await authFetch("/api/admin/accounts?page_size=100");
       if (res.ok) {
@@ -116,7 +124,7 @@ export default function InvitationsPage() {
   };
 
   const fetchAccountRoles = async (accountId: string) => {
-    if (!token || !accountId) return;
+    if (!accountId) return;
     try {
       const res = await authFetch(`/api/admin/accounts/${accountId}/roles`);
       if (res.ok) {
@@ -159,9 +167,10 @@ export default function InvitationsPage() {
 
       if (res.ok) {
         const data = await res.json();
-        toast.success(`Invitation sent to ${data.invitee_email}`);
+        toast.success(`Invitation created for ${data.invitee_email}`);
         setShowCreateModal(false);
         setNewInvitation({ account_id: "", email: "", role_id: "" });
+        setRoles([]);
         fetchInvitations();
       } else {
         const error = await res.json();
@@ -176,7 +185,6 @@ export default function InvitationsPage() {
   };
 
   const handleResend = async (invitationId: string) => {
-    if (!token) return;
     try {
       const res = await authFetch(`/api/admin/invitations/${invitationId}/resend`, {
         method: "POST",
@@ -196,7 +204,6 @@ export default function InvitationsPage() {
   };
 
   const handleRevoke = async (invitationId: string) => {
-    if (!token) return;
     try {
       const res = await authFetch(`/api/admin/invitations/${invitationId}/revoke`, {
         method: "POST",
@@ -215,57 +222,71 @@ export default function InvitationsPage() {
     }
   };
 
-  const copyInviteLink = (token: string) => {
-    const link = `${window.location.origin}/invite/${token}`;
+  const copyInviteLink = (inviteToken: string) => {
+    const link = `${window.location.origin}/invite/${inviteToken}`;
     navigator.clipboard.writeText(link);
     toast.success("Invite link copied to clipboard");
   };
 
-  const getStatusBadge = (status: string) => {
+  const getStatusBadge = (status: string, expiresAt: string) => {
+    const isExpired = new Date(expiresAt) < new Date() && status === "pending";
+    
+    if (isExpired) {
+      return (
+        <span className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-gray-400 bg-gray-400/10 rounded-full border border-gray-600/30">
+          <Clock className="w-3 h-3" />
+          Expired
+        </span>
+      );
+    }
+    
     switch (status) {
       case "pending":
         return (
-          <span className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-yellow-400 bg-yellow-400/10 rounded-full">
+          <span className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-yellow-400 bg-yellow-400/10 rounded-full border border-yellow-600/30">
             <Clock className="w-3 h-3" />
             Pending
           </span>
         );
       case "accepted":
         return (
-          <span className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-green-400 bg-green-400/10 rounded-full">
+          <span className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-green-400 bg-green-400/10 rounded-full border border-green-600/30">
             <CheckCircle className="w-3 h-3" />
             Accepted
           </span>
         );
-      case "expired":
-        return (
-          <span className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-gray-400 bg-gray-400/10 rounded-full">
-            <Clock className="w-3 h-3" />
-            Expired
-          </span>
-        );
       case "revoked":
         return (
-          <span className="flex items-center gap-1 px-2 py-1 text-xs font-medium text-red-400 bg-red-400/10 rounded-full">
+          <span className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-red-400 bg-red-400/10 rounded-full border border-red-600/30">
             <XCircle className="w-3 h-3" />
             Revoked
           </span>
         );
       default:
         return (
-          <span className="px-2 py-1 text-xs font-medium text-gray-400 bg-gray-400/10 rounded-full">
+          <span className="px-2.5 py-1 text-xs font-medium text-gray-400 bg-gray-400/10 rounded-full">
             {status}
           </span>
         );
     }
   };
 
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
+        <div className="animate-spin h-8 w-8 border-4 border-blue-600 border-t-transparent rounded-full"></div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-8">
       <div className="flex items-center justify-between mb-8">
         <div>
           <h1 className="text-2xl font-bold text-white">Invitations</h1>
-          <p className="text-gray-400 mt-1">Manage user invitations to accounts</p>
+          <p className="text-gray-400 mt-1">
+            Manage user invitations to accounts ({total} total)
+          </p>
         </div>
         <button
           onClick={() => setShowCreateModal(true)}
@@ -300,7 +321,6 @@ export default function InvitationsPage() {
           <option value="">All Statuses</option>
           <option value="pending">Pending</option>
           <option value="accepted">Accepted</option>
-          <option value="expired">Expired</option>
           <option value="revoked">Revoked</option>
         </select>
       </div>
@@ -310,22 +330,29 @@ export default function InvitationsPage() {
           <div className="animate-spin h-8 w-8 border-4 border-blue-600 border-t-transparent rounded-full"></div>
         </div>
       ) : invitations.length === 0 ? (
-        <div className="text-center py-12">
+        <div className="bg-[#111111] border border-[#222222] rounded-xl p-12 text-center">
           <Mail className="w-12 h-12 text-gray-600 mx-auto mb-4" />
           <h3 className="text-lg font-medium text-white mb-2">No invitations found</h3>
-          <p className="text-gray-400 mb-6">Get started by inviting users to accounts</p>
-          <button
-            onClick={() => setShowCreateModal(true)}
-            className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
-          >
-            Invite User
-          </button>
+          <p className="text-gray-400 mb-6">
+            {search || statusFilter
+              ? "Try adjusting your filters"
+              : "Get started by inviting users to accounts"}
+          </p>
+          {!search && !statusFilter && (
+            <button
+              onClick={() => setShowCreateModal(true)}
+              className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              Invite User
+            </button>
+          )}
         </div>
       ) : (
         <div className="bg-[#111111] border border-[#222222] rounded-xl overflow-hidden">
           <table className="w-full">
-            <thead>
-              <tr className="border-b border-[#222222]">
+            <thead className="bg-[#0a0a0a] border-b border-[#222222]">
+              <tr>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
                   Email
                 </th>
@@ -339,9 +366,6 @@ export default function InvitationsPage() {
                   Status
                 </th>
                 <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                  Invited By
-                </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
                   Created
                 </th>
                 <th className="px-6 py-3 text-right text-xs font-medium text-gray-400 uppercase tracking-wider">
@@ -351,51 +375,48 @@ export default function InvitationsPage() {
             </thead>
             <tbody className="divide-y divide-[#222222]">
               {invitations.map((invitation) => (
-                <tr key={invitation.id} className="hover:bg-[#1a1a1a]">
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span className="text-white">{invitation.invitee_email}</span>
+                <tr key={invitation.id} className="hover:bg-[#1a1a1a] transition-colors">
+                  <td className="px-6 py-4">
+                    <span className="text-white font-medium">{invitation.invitee_email}</span>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
+                  <td className="px-6 py-4">
                     <span className="text-gray-300">{invitation.account_name}</span>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span className="text-gray-300">{invitation.role_name}</span>
+                  <td className="px-6 py-4">
+                    <span className="text-gray-400">{invitation.role_name}</span>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    {getStatusBadge(invitation.status)}
+                  <td className="px-6 py-4">
+                    {getStatusBadge(invitation.status, invitation.expires_at)}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span className="text-gray-400">{invitation.invited_by_name}</span>
-                  </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
-                    <span className="text-gray-400">
+                  <td className="px-6 py-4">
+                    <span className="text-gray-400 text-sm">
                       {new Date(invitation.created_at).toLocaleDateString()}
                     </span>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right">
-                    <div className="flex items-center justify-end gap-2">
+                  <td className="px-6 py-4">
+                    <div className="flex items-center justify-end gap-1">
                       {invitation.status === "pending" && (
                         <>
                           <button
                             onClick={() => copyInviteLink(invitation.token)}
-                            className="p-1 text-gray-400 hover:text-white transition-colors"
+                            className="p-2 text-gray-400 hover:text-white hover:bg-[#222222] rounded-lg transition-colors"
                             title="Copy invite link"
                           >
                             <Copy className="w-4 h-4" />
                           </button>
                           <button
                             onClick={() => handleResend(invitation.id)}
-                            className="p-1 text-gray-400 hover:text-blue-400 transition-colors"
+                            className="p-2 text-gray-400 hover:text-blue-400 hover:bg-blue-900/20 rounded-lg transition-colors"
                             title="Resend invitation"
                           >
-                            <Send className="w-4 h-4" />
+                            <RefreshCw className="w-4 h-4" />
                           </button>
                           <button
                             onClick={() => handleRevoke(invitation.id)}
-                            className="p-1 text-gray-400 hover:text-red-400 transition-colors"
+                            className="p-2 text-gray-400 hover:text-red-400 hover:bg-red-900/20 rounded-lg transition-colors"
                             title="Revoke invitation"
                           >
-                            <X className="w-4 h-4" />
+                            <XCircle className="w-4 h-4" />
                           </button>
                         </>
                       )}
@@ -409,30 +430,32 @@ export default function InvitationsPage() {
       )}
 
       {total > 20 && (
-        <div className="flex justify-center gap-2 mt-6">
-          <button
-            onClick={() => setPage(Math.max(1, page - 1))}
-            disabled={page === 1}
-            className="px-4 py-2 bg-[#222222] hover:bg-[#333333] disabled:opacity-50 text-white rounded-lg transition-colors"
-          >
-            Previous
-          </button>
-          <span className="px-4 py-2 text-gray-400">
-            Page {page} of {Math.ceil(total / 20)}
-          </span>
-          <button
-            onClick={() => setPage(page + 1)}
-            disabled={page >= Math.ceil(total / 20)}
-            className="px-4 py-2 bg-[#222222] hover:bg-[#333333] disabled:opacity-50 text-white rounded-lg transition-colors"
-          >
-            Next
-          </button>
+        <div className="mt-4 flex items-center justify-between">
+          <p className="text-gray-400 text-sm">
+            Showing {(page - 1) * 20 + 1} to {Math.min(page * 20, total)} of {total}
+          </p>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setPage(Math.max(1, page - 1))}
+              disabled={page === 1}
+              className="px-3 py-1 bg-[#111111] border border-[#222222] rounded text-gray-400 disabled:opacity-50 hover:border-[#333333] transition-colors"
+            >
+              Previous
+            </button>
+            <button
+              onClick={() => setPage(page + 1)}
+              disabled={page >= Math.ceil(total / 20)}
+              className="px-3 py-1 bg-[#111111] border border-[#222222] rounded text-gray-400 disabled:opacity-50 hover:border-[#333333] transition-colors"
+            >
+              Next
+            </button>
+          </div>
         </div>
       )}
 
       {showCreateModal && (
-        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50">
-          <div className="bg-[#111111] border border-[#222222] rounded-xl p-6 w-full max-w-md">
+        <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+          <div className="bg-[#111111] border border-[#222222] rounded-xl p-6 w-full max-w-md mx-4">
             <div className="flex items-center justify-between mb-6">
               <h2 className="text-xl font-bold text-white">Invite User</h2>
               <button
@@ -441,79 +464,77 @@ export default function InvitationsPage() {
                   setNewInvitation({ account_id: "", email: "", role_id: "" });
                   setRoles([]);
                 }}
-                className="text-gray-400 hover:text-white"
+                className="text-gray-400 hover:text-white p-1"
               >
                 <X className="w-5 h-5" />
               </button>
             </div>
 
-            <form onSubmit={handleCreateInvitation}>
-              <div className="space-y-4">
-                <div>
-                  <label className="block text-sm font-medium text-gray-400 mb-1">
-                    Account
-                  </label>
-                  <select
-                    value={newInvitation.account_id}
-                    onChange={(e) => handleAccountChange(e.target.value)}
-                    required
-                    className="w-full px-3 py-2 bg-[#0a0a0a] border border-[#333333] rounded-lg text-white focus:outline-none focus:border-blue-500"
-                  >
-                    <option value="">Select an account</option>
-                    {accounts.map((account) => (
-                      <option key={account.id} value={account.id}>
-                        {account.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-400 mb-1">
-                    Email Address
-                  </label>
-                  <input
-                    type="email"
-                    value={newInvitation.email}
-                    onChange={(e) =>
-                      setNewInvitation({ ...newInvitation, email: e.target.value })
-                    }
-                    required
-                    placeholder="user@example.com"
-                    className="w-full px-3 py-2 bg-[#0a0a0a] border border-[#333333] rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                  />
-                </div>
-
-                <div>
-                  <label className="block text-sm font-medium text-gray-400 mb-1">
-                    Role
-                  </label>
-                  <select
-                    value={newInvitation.role_id}
-                    onChange={(e) =>
-                      setNewInvitation({ ...newInvitation, role_id: e.target.value })
-                    }
-                    required
-                    disabled={!newInvitation.account_id || roles.length === 0}
-                    className="w-full px-3 py-2 bg-[#0a0a0a] border border-[#333333] rounded-lg text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
-                  >
-                    <option value="">
-                      {!newInvitation.account_id
-                        ? "Select an account first"
-                        : roles.length === 0
-                        ? "Loading roles..."
-                        : "Select a role"}
+            <form onSubmit={handleCreateInvitation} className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-400 mb-1">
+                  Account <span className="text-red-400">*</span>
+                </label>
+                <select
+                  value={newInvitation.account_id}
+                  onChange={(e) => handleAccountChange(e.target.value)}
+                  required
+                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-[#222222] rounded-lg text-white focus:outline-none focus:border-blue-500"
+                >
+                  <option value="">Select an account</option>
+                  {accounts.map((account) => (
+                    <option key={account.id} value={account.id}>
+                      {account.name}
                     </option>
-                    {roles.map((role) => (
-                      <option key={role.id} value={role.id}>
-                        {role.name}
-                      </option>
-                    ))}
-                  </select>
-                </div>
+                  ))}
+                </select>
               </div>
 
-              <div className="flex justify-end gap-3 mt-6">
+              <div>
+                <label className="block text-sm font-medium text-gray-400 mb-1">
+                  Email Address <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="email"
+                  value={newInvitation.email}
+                  onChange={(e) =>
+                    setNewInvitation({ ...newInvitation, email: e.target.value })
+                  }
+                  required
+                  placeholder="user@example.com"
+                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-[#222222] rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-400 mb-1">
+                  Role <span className="text-red-400">*</span>
+                </label>
+                <select
+                  value={newInvitation.role_id}
+                  onChange={(e) =>
+                    setNewInvitation({ ...newInvitation, role_id: e.target.value })
+                  }
+                  required
+                  disabled={!newInvitation.account_id || roles.length === 0}
+                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-[#222222] rounded-lg text-white focus:outline-none focus:border-blue-500 disabled:opacity-50"
+                >
+                  <option value="">
+                    {!newInvitation.account_id
+                      ? "Select an account first"
+                      : roles.length === 0
+                      ? "Loading roles..."
+                      : "Select a role"}
+                  </option>
+                  {roles.map((role) => (
+                    <option key={role.id} value={role.id}>
+                      {role.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+
+              <div className="flex gap-3 pt-4">
                 <button
                   type="button"
                   onClick={() => {
@@ -521,16 +542,16 @@ export default function InvitationsPage() {
                     setNewInvitation({ account_id: "", email: "", role_id: "" });
                     setRoles([]);
                   }}
-                  className="px-4 py-2 text-gray-400 hover:text-white transition-colors"
+                  className="flex-1 px-4 py-2 bg-[#1a1a1a] text-gray-300 rounded-lg hover:bg-[#222222] transition-colors"
                 >
                   Cancel
                 </button>
                 <button
                   type="submit"
                   disabled={creating}
-                  className="px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 text-white rounded-lg transition-colors"
+                  className="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 text-white rounded-lg transition-colors"
                 >
-                  {creating ? "Sending..." : "Send Invitation"}
+                  {creating ? "Creating..." : "Send Invitation"}
                 </button>
               </div>
             </form>

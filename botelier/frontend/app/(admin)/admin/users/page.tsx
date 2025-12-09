@@ -1,8 +1,8 @@
 "use client";
 
-import { useSession } from "next-auth/react";
 import { useEffect, useState } from "react";
-import { Users, Search, Shield, User as UserIcon } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Users, Search, Shield, User as UserIcon, CheckCircle, XCircle } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 
@@ -20,21 +20,30 @@ interface User {
 }
 
 export default function UsersPage() {
-  const { data: session } = useSession();
-  const { token, authFetch } = useAuthToken();
+  const { token, user: currentUser, loading: authLoading, authFetch } = useAuthToken();
+  const router = useRouter();
   const [users, setUsers] = useState<User[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [typeFilter, setTypeFilter] = useState("");
 
   useEffect(() => {
-    if (session && token) {
-      fetchUsers();
+    if (authLoading) return;
+    
+    if (!token) {
+      router.push("/login?callbackUrl=/admin/users");
+      return;
     }
-  }, [session, token, typeFilter]);
+    
+    if (currentUser?.user_type !== "platform_admin") {
+      router.push("/dashboard");
+      return;
+    }
+    
+    fetchUsers();
+  }, [token, currentUser, authLoading, typeFilter]);
 
   const fetchUsers = async () => {
-    if (!token) return;
     try {
       setLoading(true);
       const params = new URLSearchParams();
@@ -59,7 +68,6 @@ export default function UsersPage() {
   };
 
   const handleTogglePlatformAdmin = async (user: User) => {
-    if (!token) return;
     const endpoint =
       user.user_type === "platform_admin"
         ? `/api/admin/users/${user.id}/remove-platform-admin`
@@ -96,12 +104,20 @@ export default function UsersPage() {
     return `User ${user.id.slice(0, 8)}`;
   };
 
+  if (authLoading) {
+    return (
+      <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
+        <div className="animate-spin h-8 w-8 border-4 border-blue-600 border-t-transparent rounded-full"></div>
+      </div>
+    );
+  }
+
   return (
     <div className="p-8">
       <div className="mb-8">
         <h1 className="text-2xl font-bold text-white">Users</h1>
         <p className="text-gray-400 mt-1">
-          Manage all users on the platform
+          Manage all users on the platform ({users.length} total)
         </p>
       </div>
 
@@ -113,7 +129,7 @@ export default function UsersPage() {
               type="text"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              placeholder="Search users..."
+              placeholder="Search users by name or email..."
               className="w-full pl-10 pr-4 py-2 bg-[#111111] border border-[#222222] rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-600"
             />
           </div>
@@ -171,7 +187,7 @@ export default function UsersPage() {
             </thead>
             <tbody className="divide-y divide-[#222222]">
               {users.map((user) => (
-                <tr key={user.id} className="hover:bg-[#1a1a1a]">
+                <tr key={user.id} className="hover:bg-[#1a1a1a] transition-colors">
                   <td className="px-6 py-4">
                     <div className="flex items-center gap-3">
                       {user.profile_image_url ? (
@@ -197,26 +213,28 @@ export default function UsersPage() {
                   </td>
                   <td className="px-6 py-4">
                     {user.user_type === "platform_admin" ? (
-                      <span className="inline-flex items-center gap-1 px-2 py-1 bg-purple-600/20 text-purple-400 text-xs font-medium rounded-full">
+                      <span className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-purple-600/20 text-purple-400 text-xs font-medium rounded-full border border-purple-600/30">
                         <Shield className="h-3 w-3" />
                         Platform Admin
                       </span>
                     ) : (
-                      <span className="inline-flex px-2 py-1 bg-gray-600/20 text-gray-400 text-xs font-medium rounded-full">
+                      <span className="inline-flex px-2.5 py-1 bg-gray-600/20 text-gray-400 text-xs font-medium rounded-full border border-gray-600/30">
                         Account User
                       </span>
                     )}
                   </td>
                   <td className="px-6 py-4">
-                    <span
-                      className={`inline-flex px-2 py-1 text-xs font-medium rounded-full ${
-                        user.is_active
-                          ? "bg-green-600/20 text-green-400"
-                          : "bg-red-600/20 text-red-400"
-                      }`}
-                    >
-                      {user.is_active ? "Active" : "Disabled"}
-                    </span>
+                    {user.is_active ? (
+                      <span className="inline-flex items-center gap-1.5 text-green-400 text-sm">
+                        <CheckCircle className="h-4 w-4" />
+                        Active
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1.5 text-red-400 text-sm">
+                        <XCircle className="h-4 w-4" />
+                        Disabled
+                      </span>
+                    )}
                   </td>
                   <td className="px-6 py-4 text-gray-400 text-sm">
                     {user.last_login_at
@@ -229,10 +247,10 @@ export default function UsersPage() {
                   <td className="px-6 py-4 text-right">
                     <button
                       onClick={() => handleTogglePlatformAdmin(user)}
-                      className={`text-sm px-3 py-1 rounded transition-colors ${
+                      className={`text-sm px-3 py-1.5 rounded-lg transition-colors ${
                         user.user_type === "platform_admin"
-                          ? "text-red-400 hover:bg-red-900/20"
-                          : "text-blue-400 hover:bg-blue-900/20"
+                          ? "text-red-400 hover:bg-red-900/20 border border-red-600/30"
+                          : "text-blue-400 hover:bg-blue-900/20 border border-blue-600/30"
                       }`}
                     >
                       {user.user_type === "platform_admin"
