@@ -8,6 +8,7 @@ from botelier.models.hotel import Hotel
 from botelier.models.account import Account, AccountStatus, SubscriptionTier
 from botelier.models.user import User, UserType
 from botelier.models.role import Role, AccountMembership
+from botelier.models.invitation import AccountInvitation, InvitationStatus
 from botelier.models.phone_number import PhoneNumber
 from botelier.models.tool import Tool
 from botelier.models.assistant import Assistant
@@ -24,6 +25,8 @@ __all__ = [
     "UserType",
     "Role",
     "AccountMembership",
+    "AccountInvitation",
+    "InvitationStatus",
     "PhoneNumber",
     "Tool",
     "Assistant",

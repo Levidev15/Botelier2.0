@@ -13,6 +13,7 @@ import {
   LogOut,
   ChevronRight,
   Shield,
+  Mail,
 } from "lucide-react";
 import { signOut } from "next-auth/react";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
@@ -20,6 +21,7 @@ import { useAuthToken } from "@/lib/auth/useAuthToken";
 const adminNavItems = [
   { href: "/admin", label: "Dashboard", icon: BarChart3 },
   { href: "/admin/accounts", label: "Accounts", icon: Building2 },
+  { href: "/admin/invitations", label: "Invitations", icon: Mail },
   { href: "/admin/users", label: "Users", icon: Users },
   { href: "/admin/settings", label: "Settings", icon: Settings },
 ];
