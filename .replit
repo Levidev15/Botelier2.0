@@ -86,3 +86,8 @@ externalPort = 5000
 [userenv.shared]
 NEXTAUTH_SECRET = "l8K81CV1IxcdLFABbGPh0qvZCv0RdqLj8MOjKw+ud9s="
 NEXTAUTH_URL = "https://7862d0f9-746c-4a00-bc3b-fe2d01757149-00-34304m7qlgqdq.riker.replit.dev"
+
+[deployment]
+deploymentTarget = "vm"
+run = ["bash", "-c", "cd botelier/backend && python -m uvicorn main:app --host 0.0.0.0 --port 3001 & cd botelier/frontend && NODE_ENV=production node server.js"]
+build = ["bash", "-c", "cd botelier/frontend && npm run build"]
