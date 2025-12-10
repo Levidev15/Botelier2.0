@@ -7,7 +7,8 @@ All endpoints require platform_admin user type.
 
 import uuid
 import re
-from typing import Optional, List
+import secrets
+from typing import Optional, List, Dict
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, EmailStr, Field, validator
@@ -16,7 +17,7 @@ from sqlalchemy import func
 
 from botelier.database import get_db
 from botelier.models.account import Account, AccountStatus, SubscriptionTier
-from botelier.models.user import User, UserType
+from botelier.models.user import User, UserType, SupportSession
 from botelier.models.role import Role, AccountMembership
 from botelier.models.invitation import AccountInvitation, InvitationStatus
 from botelier.auth.permissions import DEFAULT_ROLES
@@ -877,8 +878,6 @@ async def create_support_session(
     - Audit trail of the access reason
     - Trackable session token
     """
-    import secrets
-    
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
@@ -886,6 +885,17 @@ async def create_support_session(
     session_token = secrets.token_urlsafe(32)
     created_at = datetime.utcnow()
     expires_at = created_at + timedelta(hours=1)
+    
+    support_session = SupportSession(
+        session_token=session_token,
+        admin_id=admin.id,
+        account_id=account.id,
+        reason=request.reason,
+        created_at=created_at,
+        expires_at=expires_at,
+    )
+    db.add(support_session)
+    db.commit()
     
     print(f"[AUDIT] Support session created: admin={admin.email}, account={account.name}, reason={request.reason}, expires={expires_at}")
     

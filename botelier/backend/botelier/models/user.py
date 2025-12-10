@@ -85,3 +85,45 @@ class User(Base):
     
     def __repr__(self):
         return f"<User {self.display_name} ({self.user_type.value})>"
+
+
+class SupportSession(Base):
+    """
+    Support session for platform admins accessing tenant accounts.
+    
+    Provides SaaS-compliant account access with:
+    - Time-limited access (1 hour by default)
+    - Audit trail of access reason
+    - Trackable session token
+    """
+    __tablename__ = "support_sessions"
+    
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_token = Column(String, unique=True, nullable=False, index=True)
+    
+    admin_id = Column(UUID(as_uuid=True), ForeignKey("users.id"), nullable=False)
+    account_id = Column(UUID(as_uuid=True), nullable=False)
+    
+    reason = Column(Text, nullable=False)
+    
+    created_at = Column(DateTime, default=datetime.utcnow)
+    expires_at = Column(DateTime, nullable=False)
+    revoked_at = Column(DateTime, nullable=True)
+    
+    is_active = Column(Boolean, default=True)
+    
+    admin = relationship("User", foreign_keys=[admin_id])
+    
+    @property
+    def is_valid(self) -> bool:
+        """Check if session is still valid."""
+        if not self.is_active:
+            return False
+        if self.revoked_at:
+            return False
+        if datetime.utcnow() > self.expires_at:
+            return False
+        return True
+    
+    def __repr__(self):
+        return f"<SupportSession admin={self.admin_id} account={self.account_id}>"
