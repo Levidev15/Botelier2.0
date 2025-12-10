@@ -17,17 +17,20 @@ interface Tool {
 }
 
 export default function ToolsPage() {
-  const { accountId } = useAccountContext();
+  const { accountId, loading: contextLoading } = useAccountContext();
   const [tools, setTools] = useState<Tool[]>([]);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [editingTool, setEditingTool] = useState<Tool | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchTools();
-  }, [accountId]);
+    if (!contextLoading && accountId) {
+      fetchTools();
+    }
+  }, [accountId, contextLoading]);
 
   const fetchTools = async () => {
+    if (!accountId) return;
     try {
       const response = await fetch(`/api/tools?hotel_id=${accountId}`);
       const data = await response.json();
