@@ -20,9 +20,10 @@ interface ToolCardProps {
   typeLabel: string;
   onDelete: (toolId: string) => void;
   onEdit?: (tool: Tool) => void;
+  hotelId: string;
 }
 
-export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit }: ToolCardProps) {
+export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit, hotelId }: ToolCardProps) {
   const router = useRouter();
   const [deleting, setDeleting] = useState(false);
 
@@ -52,7 +53,6 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit
     if (!confirmed) return;
 
     setDeleting(true);
-    const hotelId = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
 
     try {
       const response = await fetch(`/api/tools/${tool.id}?hotel_id=${hotelId}`, {

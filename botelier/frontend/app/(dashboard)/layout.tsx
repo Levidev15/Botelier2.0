@@ -20,6 +20,7 @@ export default function DashboardLayout({
   const router = useRouter();
   const pathname = usePathname();
   const [userInfo, setUserInfo] = useState<any>(null);
+  const [authChecked, setAuthChecked] = useState(false);
 
   const handleExitAccount = () => {
     exitAccount();
@@ -27,10 +28,23 @@ export default function DashboardLayout({
   };
 
   useEffect(() => {
-    if (status === "unauthenticated") {
-      router.push("/login?callbackUrl=/dashboard");
+    // Skip auth check while still loading
+    if (status === "loading" || tokenLoading || accountLoading) {
+      return;
     }
-  }, [status, router]);
+    
+    // Allow access if:
+    // 1. NextAuth session exists (regular users), OR
+    // 2. JWT token exists AND admin is viewing an account (support session)
+    const hasNextAuthSession = status === "authenticated";
+    const hasAdminSupportSession = !!token && isAdminSession;
+    
+    if (!hasNextAuthSession && !hasAdminSupportSession) {
+      router.push("/login?callbackUrl=/dashboard");
+    } else {
+      setAuthChecked(true);
+    }
+  }, [status, token, tokenLoading, accountLoading, isAdminSession, router]);
 
   useEffect(() => {
     if (session && token) {
@@ -50,7 +64,7 @@ export default function DashboardLayout({
     }
   };
 
-  if (status === "loading" || tokenLoading || accountLoading) {
+  if (status === "loading" || tokenLoading || accountLoading || !authChecked) {
     return (
       <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
         <div className="text-center">
