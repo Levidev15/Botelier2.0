@@ -1,12 +1,13 @@
 "use client";
 
-import { Bot, LayoutDashboard, Phone, BarChart, Settings, Key, Users, Wrench, BookOpen, Shield, LogOut } from "lucide-react";
+import { Bot, LayoutDashboard, Phone, BarChart, Settings, Key, Users, Wrench, BookOpen, Shield, LogOut, ArrowLeft, Building2 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useSession, signOut } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
+import { useAccountContext } from "@/lib/auth/useAccountContext";
 
 export default function DashboardLayout({
   children,
@@ -15,9 +16,15 @@ export default function DashboardLayout({
 }) {
   const { data: session, status } = useSession();
   const { token, loading: tokenLoading, authFetch } = useAuthToken();
+  const { accountId, accountName, isAdminSession, exitAccount } = useAccountContext();
   const router = useRouter();
   const pathname = usePathname();
   const [userInfo, setUserInfo] = useState<any>(null);
+
+  const handleExitAccount = () => {
+    exitAccount();
+    router.push("/admin/accounts");
+  };
 
   useEffect(() => {
     if (status === "unauthenticated") {
@@ -64,6 +71,21 @@ export default function DashboardLayout({
   return (
     <div className="flex h-screen bg-[#0a0a0a] text-gray-100">
       <aside className="w-64 bg-[#141414] border-r border-gray-800 flex flex-col">
+        {isAdminSession && (
+          <div className="p-3 bg-purple-600/20 border-b border-purple-600/30">
+            <div className="flex items-center gap-2 text-purple-400 text-sm">
+              <Building2 className="h-4 w-4" />
+              <span className="font-medium truncate">{accountName}</span>
+            </div>
+            <button
+              onClick={handleExitAccount}
+              className="mt-2 w-full flex items-center justify-center gap-1 px-2 py-1.5 text-xs bg-purple-600/30 hover:bg-purple-600/50 text-purple-300 rounded transition-colors"
+            >
+              <ArrowLeft className="h-3 w-3" />
+              Exit Account
+            </button>
+          </div>
+        )}
         <div className="p-6 border-b border-gray-800">
           <Link href="/" className="flex items-center space-x-2">
             <Bot className="h-8 w-8 text-blue-500" />
