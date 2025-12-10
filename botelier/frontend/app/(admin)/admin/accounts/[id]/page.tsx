@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
+import { setAccountContext } from "@/lib/auth/accountContext";
 
 interface Account {
   id: string;
@@ -186,7 +187,18 @@ export default function AccountDetailPage() {
         setActiveSession(session);
         setShowSupportModal(false);
         setSupportReason("");
-        toast.success(`Support session created for ${session.account_name}`);
+        
+        setAccountContext({
+          accountId: session.account_id,
+          accountName: session.account_name,
+          accountSlug: account?.slug || "",
+          sessionToken: session.session_token,
+          sessionExpires: session.expires_at,
+          isAdminSession: true,
+        });
+        
+        toast.success(`Entering ${session.account_name}...`);
+        router.push("/dashboard");
       } else {
         const error = await res.json();
         toast.error(error.detail || "Failed to create support session");
