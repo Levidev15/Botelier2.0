@@ -453,7 +453,7 @@ export default function CallLogsPage() {
       </div>
 
       <div className="flex-1 overflow-auto p-8">
-        {loading ? (
+        {contextLoading || loading ? (
           <div className="flex items-center justify-center py-12">
             <Loader2 className="h-6 w-6 text-gray-400 animate-spin" />
             <span className="ml-2 text-gray-400">Loading call logs...</span>
