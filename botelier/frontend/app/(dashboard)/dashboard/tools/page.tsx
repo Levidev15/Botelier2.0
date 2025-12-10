@@ -4,8 +4,7 @@ import { useState, useEffect } from "react";
 import { Plus, Phone, Globe, PhoneOff, Mail, MessageSquare, GitBranch } from "lucide-react";
 import ToolCard from "./components/ToolCard";
 import ToolDrawer from "./components/ToolDrawer";
-
-const HOTEL_ID = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
+import { useAccountContext } from "@/lib/auth/useAccountContext";
 
 interface Tool {
   id: string;
@@ -18,6 +17,7 @@ interface Tool {
 }
 
 export default function ToolsPage() {
+  const { accountId } = useAccountContext();
   const [tools, setTools] = useState<Tool[]>([]);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [editingTool, setEditingTool] = useState<Tool | null>(null);
@@ -25,11 +25,11 @@ export default function ToolsPage() {
 
   useEffect(() => {
     fetchTools();
-  }, []);
+  }, [accountId]);
 
   const fetchTools = async () => {
     try {
-      const response = await fetch(`/api/tools?hotel_id=${HOTEL_ID}`);
+      const response = await fetch(`/api/tools?hotel_id=${accountId}`);
       const data = await response.json();
       setTools(data.tools || []);
     } catch (error) {
@@ -156,6 +156,7 @@ export default function ToolsPage() {
                 typeLabel={getToolTypeLabel(tool.tool_type)}
                 onDelete={handleToolDeleted}
                 onEdit={handleEditTool}
+                hotelId={accountId}
               />
             ))}
           </div>
@@ -168,6 +169,7 @@ export default function ToolsPage() {
         onToolCreated={handleToolCreated}
         onToolUpdated={handleToolUpdated}
         editTool={editingTool}
+        accountId={accountId}
       />
     </div>
   );

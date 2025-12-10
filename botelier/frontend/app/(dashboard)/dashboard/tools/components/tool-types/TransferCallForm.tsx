@@ -4,8 +4,6 @@ import { useState, useEffect } from "react";
 import { Phone } from "lucide-react";
 import { notify } from "@/lib/notifications";
 
-const HOTEL_ID = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
-
 interface Tool {
   id: string;
   name: string;
@@ -22,6 +20,7 @@ interface TransferCallFormProps {
   onSuccess: (tool: any) => void;
   onCancel: () => void;
   tool?: Tool;
+  accountId: string;
 }
 
 interface FormData {
@@ -31,7 +30,7 @@ interface FormData {
   pre_transfer_message: string;
 }
 
-export default function TransferCallForm({ onSuccess, onCancel, tool }: TransferCallFormProps) {
+export default function TransferCallForm({ onSuccess, onCancel, tool, accountId }: TransferCallFormProps) {
   const isEditMode = !!tool;
   
   const [formData, setFormData] = useState<FormData>({
@@ -92,11 +91,11 @@ export default function TransferCallForm({ onSuccess, onCancel, tool }: Transfer
           phone_number: formData.phone_number,
           pre_transfer_message: formData.pre_transfer_message,
         },
-        hotel_id: HOTEL_ID,
+        hotel_id: accountId,
         is_active: true,
       };
 
-      const url = isEditMode ? `/api/tools/${tool.id}?hotel_id=${HOTEL_ID}` : "/api/tools";
+      const url = isEditMode ? `/api/tools/${tool.id}?hotel_id=${accountId}` : "/api/tools";
       const method = isEditMode ? "PUT" : "POST";
 
       const response = await fetch(url, {

@@ -5,11 +5,10 @@ import { useRouter } from "next/navigation";
 import { GitBranch } from "lucide-react";
 import { notify } from "@/lib/notifications";
 
-const HOTEL_ID = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
-
 interface FlowFormProps {
   onSuccess: (tool: any) => void;
   onCancel: () => void;
+  accountId: string;
 }
 
 interface FormData {
@@ -17,7 +16,7 @@ interface FormData {
   description: string;
 }
 
-export default function FlowForm({ onSuccess, onCancel }: FlowFormProps) {
+export default function FlowForm({ onSuccess, onCancel, accountId }: FlowFormProps) {
   const router = useRouter();
   const [formData, setFormData] = useState<FormData>({
     name: "",
@@ -59,7 +58,7 @@ export default function FlowForm({ onSuccess, onCancel }: FlowFormProps) {
           nodes: [],
           edges: [],
         },
-        hotel_id: HOTEL_ID,
+        hotel_id: accountId,
         is_active: true,
       };
 

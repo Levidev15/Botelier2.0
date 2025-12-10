@@ -3,8 +3,7 @@
 import { useState, useEffect, useMemo } from "react";
 import { BookOpen, Plus, Grid3x3, List, Upload, Pencil, Trash2, AlertCircle, X, Search, Tag } from "lucide-react";
 import { notify, confirmAction } from "@/lib/notifications";
-
-const HOTEL_ID = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
+import { useAccountContext } from "@/lib/auth/useAccountContext";
 
 interface Entry {
   id: string;
@@ -37,6 +36,7 @@ function formatDate(dateString: string): string {
 }
 
 export default function KnowledgeBasesPage() {
+  const { accountId } = useAccountContext();
   const [view, setView] = useState<"grid" | "table">("grid");
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -52,12 +52,12 @@ export default function KnowledgeBasesPage() {
 
   useEffect(() => {
     fetchEntries();
-  }, [showExpired]);
+  }, [showExpired, accountId]);
 
   const fetchEntries = async () => {
     try {
       setLoading(true);
-      const res = await fetch(`/api/entries?hotel_id=${HOTEL_ID}&include_expired=${showExpired}`);
+      const res = await fetch(`/api/entries?hotel_id=${accountId}&include_expired=${showExpired}`);
       const data = await res.json();
       setEntries(data.entries || []);
       setSelectedIds(new Set());
@@ -459,15 +459,15 @@ export default function KnowledgeBasesPage() {
           </div>
         )}
 
-        {showAddModal && <AddEntryModal entry={editEntry} categories={uniqueCategories} onClose={() => { setShowAddModal(false); setEditEntry(null); }} onSaved={() => { setShowAddModal(false); setEditEntry(null); fetchEntries(); }} />}
-        {showCSVModal && <CSVModal onClose={() => setShowCSVModal(false)} onUploaded={() => { setShowCSVModal(false); fetchEntries(); }} />}
+        {showAddModal && <AddEntryModal entry={editEntry} categories={uniqueCategories} accountId={accountId} onClose={() => { setShowAddModal(false); setEditEntry(null); }} onSaved={() => { setShowAddModal(false); setEditEntry(null); fetchEntries(); }} />}
+        {showCSVModal && <CSVModal accountId={accountId} onClose={() => setShowCSVModal(false)} onUploaded={() => { setShowCSVModal(false); fetchEntries(); }} />}
         {showBulkCategorizeModal && <BulkCategorizeModal categories={uniqueCategories} onClose={() => setShowBulkCategorizeModal(false)} onSubmit={handleBulkCategorize} />}
       </div>
     </div>
   );
 }
 
-function AddEntryModal({ entry, categories, onClose, onSaved }: any) {
+function AddEntryModal({ entry, categories, accountId, onClose, onSaved }: any) {
   const [question, setQuestion] = useState(entry?.question || "");
   const [answer, setAnswer] = useState(entry?.answer || "");
   const [category, setCategory] = useState(entry?.category || "");
@@ -488,7 +488,7 @@ function AddEntryModal({ entry, categories, onClose, onSaved }: any) {
         method: entry ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          hotel_id: HOTEL_ID,
+          hotel_id: accountId,
           question: question.trim(),
           answer: answer.trim(),
           category: category.trim() || null,
@@ -563,7 +563,7 @@ function AddEntryModal({ entry, categories, onClose, onSaved }: any) {
   );
 }
 
-function CSVModal({ onClose, onUploaded }: any) {
+function CSVModal({ accountId, onClose, onUploaded }: any) {
   const [file, setFile] = useState<File | null>(null);
   const [loading, setLoading] = useState(false);
 
@@ -578,7 +578,7 @@ function CSVModal({ onClose, onUploaded }: any) {
       const formData = new FormData();
       formData.append("file", file);
 
-      const res = await fetch(`/api/entries/import-csv?hotel_id=${HOTEL_ID}`, {
+      const res = await fetch(`/api/entries/import-csv?hotel_id=${accountId}`, {
         method: "POST",
         body: formData
       });

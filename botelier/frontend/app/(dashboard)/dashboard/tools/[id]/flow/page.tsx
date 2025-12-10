@@ -9,8 +9,7 @@ import { ArrowLeft, GitBranch } from "lucide-react";
 import { useFlowStore } from "@/components/flow-editor/store";
 import { useUnsavedChangesWarning } from "@/components/flow-editor/useUnsavedChangesWarning";
 import { UnsavedChangesModal } from "@/components/flow-editor/UnsavedChangesModal";
-
-const HOTEL_ID = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
+import { useAccountContext } from "@/lib/auth/useAccountContext";
 
 interface Tool {
   id: string;
@@ -39,6 +38,7 @@ const FlowEditor = dynamic(
 export default function FlowToolEditorPage() {
   const params = useParams();
   const router = useRouter();
+  const { accountId } = useAccountContext();
   const toolId = params.id as string;
   const [tool, setTool] = useState<Tool | null>(null);
   const [loading, setLoading] = useState(true);
@@ -76,7 +76,7 @@ export default function FlowToolEditorPage() {
   useEffect(() => {
     const fetchTool = async () => {
       try {
-        const response = await fetch(`/api/tools/${toolId}?hotel_id=${HOTEL_ID}`);
+        const response = await fetch(`/api/tools/${toolId}?hotel_id=${accountId}`);
         if (!response.ok) {
           throw new Error("Tool not found");
         }
@@ -158,7 +158,7 @@ export default function FlowToolEditorPage() {
       <main className="flex-1 overflow-hidden">
         <FlowEditor 
           toolId={toolId} 
-          hotelId={HOTEL_ID}
+          hotelId={accountId}
           toolName={tool.name}
         />
       </main>
