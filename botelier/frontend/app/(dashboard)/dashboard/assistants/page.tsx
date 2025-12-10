@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { Plus, Search, MoreVertical, Play, Pause, Copy, Bot, Trash2, GitBranch } from "lucide-react";
 import Link from "next/link";
 import { notify, confirmAction } from "@/lib/notifications";
+import { useAccountContext } from "@/lib/auth/useAccountContext";
 
 interface Assistant {
   id: string;
@@ -27,17 +28,19 @@ interface Assistant {
 }
 
 export default function AssistantsPage() {
+  const { accountId, loading: contextLoading } = useAccountContext();
   const [assistants, setAssistants] = useState<Assistant[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    fetchAssistants();
-  }, []);
+    if (!contextLoading && accountId) {
+      fetchAssistants();
+    }
+  }, [accountId, contextLoading]);
 
   const fetchAssistants = async () => {
     try {
-      const hotelId = "6b410bcc-f843-40df-b32d-078d3e01ac7f"; // Demo Hotel - will come from auth context later
-      const response = await fetch(`/api/assistants?hotel_id=${hotelId}`);
+      const response = await fetch(`/api/assistants?hotel_id=${accountId}`);
       const data = await response.json();
       setAssistants(data.assistants || []);
     } catch (error) {

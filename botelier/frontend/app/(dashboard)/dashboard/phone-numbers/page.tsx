@@ -5,6 +5,7 @@ import { Plus, Phone } from "lucide-react";
 import PhoneNumberCard from "./components/PhoneNumberCard";
 import AddNumberDrawer from "./components/AddNumberDrawer";
 import { notify, confirmAction } from "@/lib/notifications";
+import { useAccountContext } from "@/lib/auth/useAccountContext";
 
 interface PhoneNumber {
   id: string;
@@ -23,16 +24,17 @@ interface Assistant {
 }
 
 export default function PhoneNumbersPage() {
+  const { accountId, loading: contextLoading } = useAccountContext();
   const [phoneNumbers, setPhoneNumbers] = useState<PhoneNumber[]>([]);
   const [assistants, setAssistants] = useState<Assistant[]>([]);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
   const [loading, setLoading] = useState(true);
 
   const fetchPhoneNumbers = async () => {
+    if (!accountId) return;
     try {
       setLoading(true);
-      // TODO: Replace with actual hotel_id from auth context when available
-      const response = await fetch(`/api/phone-numbers`);
+      const response = await fetch(`/api/phone-numbers?hotel_id=${accountId}`);
       const data = await response.json();
       setPhoneNumbers(data.phone_numbers || []);
     } catch (error) {
@@ -43,9 +45,10 @@ export default function PhoneNumbersPage() {
     }
   };
 
-  const fetchAssistants = async (hotelId: string) => {
+  const fetchAssistants = async () => {
+    if (!accountId) return;
     try {
-      const response = await fetch(`/api/assistants?hotel_id=${hotelId}`);
+      const response = await fetch(`/api/assistants?hotel_id=${accountId}`);
       const data = await response.json();
       setAssistants(data.assistants || []);
     } catch (error) {
@@ -55,11 +58,11 @@ export default function PhoneNumbersPage() {
   };
 
   useEffect(() => {
-    fetchPhoneNumbers();
-    // Fetch assistants on mount - using Demo Hotel ID until auth is implemented
-    const hotelId = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
-    fetchAssistants(hotelId);
-  }, []);
+    if (!contextLoading && accountId) {
+      fetchPhoneNumbers();
+      fetchAssistants();
+    }
+  }, [accountId, contextLoading]);
 
   const handleNumberAdded = () => {
     setIsDrawerOpen(false);

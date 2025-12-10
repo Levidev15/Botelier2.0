@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Search, Phone, MapPin } from "lucide-react";
 import { notify } from "@/lib/notifications";
+import { useAccountContext } from "@/lib/auth/useAccountContext";
 
 interface AvailableNumber {
   phone_number: string;
@@ -18,6 +19,7 @@ interface BuyBotelierFormProps {
 }
 
 export default function BuyBotelierForm({ onNumberAdded, onClose }: BuyBotelierFormProps) {
+  const { accountId } = useAccountContext();
   const [areaCode, setAreaCode] = useState("");
   const [country, setCountry] = useState("US");
   const [searching, setSearching] = useState(false);
@@ -32,9 +34,8 @@ export default function BuyBotelierForm({ onNumberAdded, onClose }: BuyBotelierF
     setSelectedNumber(null);
     
     try {
-      const hotelId = "6b410bcc-f843-40df-b32d-078d3e01ac7f"; // Demo Hotel ID
       const params = new URLSearchParams({
-        hotel_id: hotelId,
+        hotel_id: accountId,
         country,
         limit: "10",
       });
@@ -75,14 +76,13 @@ export default function BuyBotelierForm({ onNumberAdded, onClose }: BuyBotelierF
 
     setPurchasing(true);
     try {
-      const hotelId = "6b410bcc-f843-40df-b32d-078d3e01ac7f"; // Demo Hotel ID
       const response = await fetch("/api/phone-numbers/purchase", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           phone_number: selectedNumber,
           friendly_name: friendlyName || null,
-          hotel_id: hotelId,
+          hotel_id: accountId,
         }),
       });
 
