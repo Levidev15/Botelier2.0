@@ -82,8 +82,11 @@ Botelier is built with a clean architectural separation, where the core SaaS app
   - **Support Session System (SaaS-Compliant Account Access):**
     - Time-bound access tokens (1 hour expiry) for Platform Admins to access tenant accounts
     - Requires documented reason for audit trail compliance
-    - Session tokens are tracked and logged for security auditing
-    - "Enter Account" button in account detail page with purpose/duration modal
+    - Session tokens stored in `SupportSession` database model for validation
+    - "Enter Account" button in account detail page with purpose modal → creates session → redirects to tenant dashboard
+    - Frontend: `accountContext.ts` stores session in localStorage, `useAuthToken.ts` sends `X-Support-Session` and `X-Account-Id` headers with all API calls
+    - Backend: Middleware validates session tokens via `validate_support_session()` helper
+    - Dashboard shows purple admin banner with account name and "Exit Account" button when viewing tenant
   - **Audit Logging:** Console logging of privileged actions with `/api/admin/audit-log` endpoint ready for production implementation
   - **Twilio Sub-Account Provisioning:** One-click provisioning for tenant Twilio sub-accounts via `/api/admin/accounts/{id}/provision-twilio`
 - **Invitation-Only Access System (Dec 2024):**
