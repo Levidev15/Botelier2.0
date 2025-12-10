@@ -6,12 +6,13 @@ const { createProxyMiddleware } = require('http-proxy-middleware');
 const dev = process.env.NODE_ENV !== 'production';
 const hostname = '0.0.0.0';
 const port = parseInt(process.env.PORT || '5000', 10);
+const backendUrl = process.env.BACKEND_URL || 'http://localhost:3001';
 
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
 const apiProxy = createProxyMiddleware({
-  target: 'http://localhost:3001',
+  target: backendUrl,
   changeOrigin: true,
   logLevel: 'silent',
   onProxyReq: (proxyReq, req, res) => {
@@ -62,7 +63,7 @@ app.prepare().then(() => {
   server.listen(port, hostname, (err) => {
     if (err) throw err;
     console.log(`✅ Custom Next.js server ready on http://${hostname}:${port}`);
-    console.log(`🔧 Proxying HTTP /api/* to http://localhost:3001`);
-    console.log(`📞 Twilio WebSocket connects directly to backend:3001 (no proxy)`);
+    console.log(`🔧 Proxying HTTP /api/* to ${backendUrl}`);
+    console.log(`📞 Twilio WebSocket connects directly to backend (no proxy)`);
   });
 });

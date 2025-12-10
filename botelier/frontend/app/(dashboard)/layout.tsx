@@ -16,7 +16,7 @@ export default function DashboardLayout({
 }) {
   const { data: session, status } = useSession();
   const { token, loading: tokenLoading, authFetch } = useAuthToken();
-  const { accountId, accountName, isAdminSession, exitAccount } = useAccountContext();
+  const { accountId, accountName, isAdminSession, exitAccount, loading: accountLoading } = useAccountContext();
   const router = useRouter();
   const pathname = usePathname();
   const [userInfo, setUserInfo] = useState<any>(null);
@@ -50,7 +50,7 @@ export default function DashboardLayout({
     }
   };
 
-  if (status === "loading" || tokenLoading) {
+  if (status === "loading" || tokenLoading || accountLoading) {
     return (
       <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
         <div className="text-center">
