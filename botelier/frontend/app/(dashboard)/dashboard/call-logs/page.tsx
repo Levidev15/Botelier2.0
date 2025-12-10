@@ -22,6 +22,7 @@ import {
 } from "lucide-react";
 import { notify } from "@/lib/notifications";
 import TranscriptModal from "./components/TranscriptModal";
+import { useAccountContext } from "@/lib/auth/useAccountContext";
 
 interface CallLeg {
   id: string;
@@ -148,6 +149,7 @@ function getLegTypeLabel(legType: string): string {
 }
 
 export default function CallLogsPage() {
+  const { accountId, loading: contextLoading } = useAccountContext();
   const [callLogs, setCallLogs] = useState<CallLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null);
@@ -179,12 +181,11 @@ export default function CallLogsPage() {
   const [totalPages, setTotalPages] = useState(1);
   const [total, setTotal] = useState(0);
 
-  const hotelId = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
-
   const fetchCallLogs = useCallback(async () => {
+    if (!accountId) return;
     setLoading(true);
     try {
-      const params = new URLSearchParams({ hotel_id: hotelId, page: page.toString() });
+      const params = new URLSearchParams({ hotel_id: accountId, page: page.toString() });
       if (search) params.append("search", search);
       if (statusFilter) params.append("status", statusFilter);
       if (assistantFilter) params.append("assistant_id", assistantFilter);
@@ -204,11 +205,12 @@ export default function CallLogsPage() {
     } finally {
       setLoading(false);
     }
-  }, [hotelId, page, search, statusFilter, assistantFilter, dateFrom, dateTo]);
+  }, [accountId, page, search, statusFilter, assistantFilter, dateFrom, dateTo]);
 
-  const fetchFilterOptions = async () => {
+  const fetchFilterOptions = useCallback(async () => {
+    if (!accountId) return;
     try {
-      const response = await fetch(`/api/call-logs/filters/options?hotel_id=${hotelId}`);
+      const response = await fetch(`/api/call-logs/filters/options?hotel_id=${accountId}`);
       if (response.ok) {
         const data = await response.json();
         setFilterOptions(data);
@@ -216,16 +218,19 @@ export default function CallLogsPage() {
     } catch (error) {
       console.error("Failed to fetch filter options:", error);
     }
-  };
+  }, [accountId]);
 
   useEffect(() => {
-    fetchCallLogs();
-    fetchFilterOptions();
-  }, [fetchCallLogs]);
+    if (!contextLoading && accountId) {
+      fetchCallLogs();
+      fetchFilterOptions();
+    }
+  }, [contextLoading, accountId, fetchCallLogs, fetchFilterOptions]);
 
   const handleExport = async () => {
+    if (!accountId) return;
     try {
-      const params = new URLSearchParams({ hotel_id: hotelId });
+      const params = new URLSearchParams({ hotel_id: accountId });
       if (statusFilter) params.append("status", statusFilter);
       if (assistantFilter) params.append("assistant_id", assistantFilter);
       if (dateFrom) params.append("date_from", new Date(dateFrom).toISOString());
@@ -268,7 +273,7 @@ export default function CallLogsPage() {
       setShowTranscript(true);
     } else {
       try {
-        const response = await fetch(`/api/call-logs/${log.id}?hotel_id=${hotelId}`);
+        const response = await fetch(`/api/call-logs/${log.id}?hotel_id=${accountId}`);
         if (response.ok) {
           const fullLog = await response.json();
           setSelectedLog(fullLog);

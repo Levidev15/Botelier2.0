@@ -10,6 +10,7 @@ import FormField from "@/components/forms/FormField";
 import ProviderSelector from "@/components/forms/ProviderSelector";
 import SaveBar from "@/components/ui/SaveBar";
 import { notify } from "@/lib/notifications";
+import { useAccountContext } from "@/lib/auth/useAccountContext";
 
 interface Assistant {
   id: string;
@@ -56,10 +57,9 @@ const TABS: Tab[] = [
   { id: "vad", label: "Voice Activity Detection", icon: <Activity className="h-4 w-4" /> },
 ];
 
-const DEMO_HOTEL_ID = "6b410bcc-f843-40df-b32d-078d3e01ac7f";
-
 export default function AssistantConfigForm({ mode, assistantId }: AssistantConfigFormProps) {
   const router = useRouter();
+  const { accountId, loading: contextLoading } = useAccountContext();
   const scrollContainerRef = useRef<HTMLElement | null>(null);
   const [activeTab, setActiveTab] = useState("info");
   const [loading, setLoading] = useState(true);
@@ -240,7 +240,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             ...formData,
-            hotel_id: DEMO_HOTEL_ID,
+            hotel_id: accountId,
             is_active: true,
           }),
         });

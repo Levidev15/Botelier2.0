@@ -57,7 +57,25 @@ export default function DashboardLayout({
     try {
       const res = await authFetch("/api/admin/me");
       if (res.ok) {
-        setUserInfo(await res.json());
+        const data = await res.json();
+        setUserInfo(data);
+        
+        // If not in an admin support session, set account context from user's membership
+        if (!isAdminSession && data.memberships?.length > 0) {
+          const firstMembership = data.memberships[0];
+          // Only set if we don't have a context already
+          if (!accountId) {
+            const { setAccountContext } = await import("@/lib/auth/accountContext");
+            setAccountContext({
+              accountId: firstMembership.account_id,
+              accountName: firstMembership.account_name,
+              accountSlug: firstMembership.account_slug,
+              isAdminSession: false,
+            });
+            // Force reload to pick up new context
+            window.location.reload();
+          }
+        }
       }
     } catch (err) {
       console.error("Error fetching user info:", err);
