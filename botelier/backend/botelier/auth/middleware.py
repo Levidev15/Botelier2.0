@@ -17,7 +17,7 @@ from sqlalchemy.orm import Session
 from jose import jwt, JWTError
 
 from botelier.database import get_db
-from botelier.models.user import User, UserType
+from botelier.models.user import User, UserType, SupportSession
 from botelier.models.account import Account
 from botelier.models.role import AccountMembership
 
@@ -202,6 +202,29 @@ async def get_platform_admin(
     return user
 
 
+def validate_support_session(
+    session_token: str,
+    account_id: str,
+    db: Session,
+) -> Optional[SupportSession]:
+    """
+    Validate a support session token.
+    
+    Returns the SupportSession if valid, None otherwise.
+    """
+    support_session = db.query(SupportSession).filter(
+        SupportSession.session_token == session_token,
+        SupportSession.account_id == account_id,
+        SupportSession.is_active == True,
+    ).first()
+    
+    if support_session and support_session.is_valid:
+        print(f"[AUDIT] Support session used: admin_id={support_session.admin_id}, account_id={account_id}")
+        return support_session
+    
+    return None
+
+
 class AccountContext:
     """Context object containing user and their account membership."""
     def __init__(
@@ -284,3 +307,63 @@ def get_account_context(account_id_param: str = "account_id"):
         return AccountContext(user=user, account=account, membership=membership)
     
     return _get_account_context
+
+
+async def get_account_from_support_session(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Optional[Account]:
+    """
+    Get account from support session headers if present.
+    
+    Checks X-Support-Session and X-Account-Id headers.
+    Returns the account if the support session is valid, None otherwise.
+    """
+    session_token = request.headers.get("X-Support-Session")
+    account_id = request.headers.get("X-Account-Id")
+    
+    if not session_token or not account_id:
+        return None
+    
+    if not user.is_platform_admin:
+        return None
+    
+    support_session = validate_support_session(session_token, account_id, db)
+    
+    if not support_session:
+        return None
+    
+    account = db.query(Account).filter(Account.id == account_id).first()
+    return account
+
+
+async def get_current_account_id(
+    request: Request,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> Optional[str]:
+    """
+    Get the current account ID from support session headers or user's default account.
+    
+    Priority:
+    1. Support session headers (X-Support-Session + X-Account-Id)
+    2. User's first account membership
+    """
+    session_token = request.headers.get("X-Support-Session")
+    account_id = request.headers.get("X-Account-Id")
+    
+    if session_token and account_id and user.is_platform_admin:
+        support_session = validate_support_session(session_token, account_id, db)
+        if support_session:
+            return account_id
+    
+    if user.account_memberships:
+        first_membership = next(
+            (m for m in user.account_memberships if m.is_active),
+            None
+        )
+        if first_membership:
+            return str(first_membership.account_id)
+    
+    return None
