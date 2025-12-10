@@ -38,7 +38,7 @@ const FlowEditor = dynamic(
 export default function FlowToolEditorPage() {
   const params = useParams();
   const router = useRouter();
-  const { accountId } = useAccountContext();
+  const { accountId, loading: contextLoading } = useAccountContext();
   const toolId = params.id as string;
   const [tool, setTool] = useState<Tool | null>(null);
   const [loading, setLoading] = useState(true);
@@ -74,6 +74,8 @@ export default function FlowToolEditorPage() {
   };
 
   useEffect(() => {
+    if (contextLoading || !accountId) return;
+    
     const fetchTool = async () => {
       try {
         const response = await fetch(`/api/tools/${toolId}?hotel_id=${accountId}`);
@@ -97,7 +99,7 @@ export default function FlowToolEditorPage() {
     };
 
     fetchTool();
-  }, [toolId]);
+  }, [toolId, accountId, contextLoading]);
 
   if (loading) {
     return (

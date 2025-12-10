@@ -36,7 +36,7 @@ function formatDate(dateString: string): string {
 }
 
 export default function KnowledgeBasesPage() {
-  const { accountId } = useAccountContext();
+  const { accountId, loading: contextLoading } = useAccountContext();
   const [view, setView] = useState<"grid" | "table">("grid");
   const [entries, setEntries] = useState<Entry[]>([]);
   const [loading, setLoading] = useState(true);
@@ -51,10 +51,13 @@ export default function KnowledgeBasesPage() {
   const [sortBy, setSortBy] = useState<SortOption>("newest");
 
   useEffect(() => {
-    fetchEntries();
-  }, [showExpired, accountId]);
+    if (!contextLoading && accountId) {
+      fetchEntries();
+    }
+  }, [showExpired, accountId, contextLoading]);
 
   const fetchEntries = async () => {
+    if (!accountId) return;
     try {
       setLoading(true);
       const res = await fetch(`/api/entries?hotel_id=${accountId}&include_expired=${showExpired}`);
