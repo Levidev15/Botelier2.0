@@ -13,12 +13,14 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 from sqlalchemy import desc, or_, func
 from sqlalchemy.orm import Session, joinedload
 from loguru import logger
+from openai import OpenAI
 
 from botelier.database import get_db
-from botelier.models import CallLog, CallLeg, CallStatus, Assistant, PhoneNumber
+from botelier.models import CallLog, CallLeg, CallStatus, Assistant, PhoneNumber, AssistantDisposition
 
 
 router = APIRouter(prefix="/api/call-logs", tags=["Call Logs"])
@@ -329,3 +331,178 @@ async def get_filter_options(
     except Exception as e:
         logger.exception(f"Error fetching filter options: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch filter options")
+
+
+class GenerateSummaryRequest(BaseModel):
+    hotel_id: str
+
+
+class UpdateCallLogRequest(BaseModel):
+    disposition_id: Optional[str] = None
+    ai_summary: Optional[str] = None
+
+
+@router.post("/{call_log_id}/generate-summary")
+async def generate_summary(
+    call_log_id: UUID,
+    request: GenerateSummaryRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Generate an AI summary of the call transcript.
+    
+    Uses OpenAI to analyze the transcript and produce a concise summary.
+    Also auto-selects a disposition based on the conversation if dispositions are configured.
+    """
+    try:
+        hotel_id = UUID(request.hotel_id)
+        
+        call_log = db.query(CallLog).filter(
+            CallLog.id == call_log_id,
+            CallLog.hotel_id == hotel_id
+        ).first()
+        
+        if not call_log:
+            raise HTTPException(status_code=404, detail="Call log not found")
+        
+        if not call_log.transcript:
+            raise HTTPException(status_code=400, detail="No transcript available for this call")
+        
+        transcript_text = ""
+        for msg in call_log.transcript:
+            role = msg.get("role", "unknown").capitalize()
+            content = msg.get("content", "")
+            transcript_text += f"{role}: {content}\n"
+        
+        dispositions = []
+        if call_log.assistant_id:
+            disposition_records = db.query(AssistantDisposition).filter(
+                AssistantDisposition.assistant_id == call_log.assistant_id,
+                AssistantDisposition.is_active == True
+            ).order_by(AssistantDisposition.display_order).all()
+            dispositions = [d.to_dict() for d in disposition_records]
+        
+        disposition_prompt = ""
+        if dispositions:
+            disposition_list = "\n".join([
+                f"- {d['name']}: {d['description'] or 'No description'}"
+                for d in dispositions
+            ])
+            disposition_prompt = f"""
+
+Also select the most appropriate disposition from this list based on the conversation outcome:
+{disposition_list}
+
+Return the disposition name exactly as written above."""
+        
+        prompt = f"""Analyze this phone call transcript and provide:
+1. A concise 2-3 sentence summary of what happened during the call
+2. Key points: caller intent, actions taken, and outcome{disposition_prompt}
+
+Transcript:
+{transcript_text}
+
+Respond in JSON format:
+{{
+    "summary": "...",
+    "key_points": ["...", "..."],
+    "disposition": "..." or null if no dispositions provided
+}}"""
+        
+        import os
+        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+        
+        response = client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": "You are a call center analyst. Provide clear, professional summaries."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"},
+            temperature=0.3,
+        )
+        
+        import json
+        result = json.loads(response.choices[0].message.content)
+        
+        summary = result.get("summary", "")
+        key_points = result.get("key_points", [])
+        disposition_name = result.get("disposition")
+        
+        full_summary = summary
+        if key_points:
+            full_summary += "\n\nKey Points:\n" + "\n".join([f"- {p}" for p in key_points])
+        
+        call_log.ai_summary = full_summary
+        
+        selected_disposition = None
+        if disposition_name and dispositions:
+            for d in dispositions:
+                if d["name"].lower() == disposition_name.lower():
+                    call_log.disposition_id = UUID(d["id"])
+                    selected_disposition = d
+                    break
+        
+        db.commit()
+        
+        logger.info(f"Generated summary for call {call_log_id}")
+        
+        return {
+            "success": True,
+            "summary": full_summary,
+            "disposition": selected_disposition,
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error generating summary: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate summary")
+
+
+@router.patch("/{call_log_id}")
+async def update_call_log(
+    call_log_id: UUID,
+    request: UpdateCallLogRequest,
+    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    db: Session = Depends(get_db),
+):
+    """
+    Update a call log's disposition or summary.
+    
+    Allows manual override of AI-selected disposition or summary edits.
+    """
+    try:
+        call_log = db.query(CallLog).filter(
+            CallLog.id == call_log_id,
+            CallLog.hotel_id == hotel_id
+        ).first()
+        
+        if not call_log:
+            raise HTTPException(status_code=404, detail="Call log not found")
+        
+        if request.disposition_id is not None:
+            if request.disposition_id == "":
+                call_log.disposition_id = None
+            else:
+                disposition = db.query(AssistantDisposition).filter(
+                    AssistantDisposition.id == UUID(request.disposition_id)
+                ).first()
+                if not disposition:
+                    raise HTTPException(status_code=404, detail="Disposition not found")
+                call_log.disposition_id = UUID(request.disposition_id)
+        
+        if request.ai_summary is not None:
+            call_log.ai_summary = request.ai_summary
+        
+        db.commit()
+        db.refresh(call_log)
+        
+        logger.info(f"Updated call log {call_log_id}")
+        return call_log.to_dict(include_legs=True)
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error updating call log: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update call log")

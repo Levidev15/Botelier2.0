@@ -282,6 +282,7 @@ class CallLogger:
             leg = self.db.query(CallLeg).filter(CallLeg.call_sid == leg_call_sid).first()
             
             # If not found, try to find by parent call + participant (transfer-to number)
+            call_log = None
             if not leg and parent_call_sid and to_number:
                 call_log = self.get_call_log(parent_call_sid)
                 if call_log:
@@ -313,6 +314,29 @@ class CallLogger:
                     leg.duration_seconds = duration_seconds
                 elif leg.started_at and leg.ended_at:
                     leg.duration_seconds = int((leg.ended_at - leg.started_at).total_seconds())
+                
+                # When transfer leg ends (success or fail), mark parent call as completed
+                if leg.leg_type in (LegType.TRANSFER_EXTERNAL.value, LegType.TRANSFER_SIP.value):
+                    if not call_log and parent_call_sid:
+                        call_log = self.get_call_log(parent_call_sid)
+                    if not call_log:
+                        call_log = self.db.query(CallLog).filter(CallLog.id == leg.call_log_id).first()
+                    
+                    if call_log and call_log.status != CallStatus.COMPLETED.value:
+                        call_log.status = CallStatus.COMPLETED.value
+                        call_log.ended_at = datetime.utcnow()
+                        
+                        # Set outcome based on transfer result
+                        if status == "failed":
+                            call_log.outcome = "transfer_failed"
+                        elif status in ("busy", "no-answer", "canceled"):
+                            call_log.outcome = f"transfer_{status.replace('-', '_')}"
+                        # If completed successfully, keep "transferred" outcome
+                        
+                        if call_log.started_at and call_log.ended_at:
+                            call_log.duration_seconds = int((call_log.ended_at - call_log.started_at).total_seconds())
+                        
+                        logger.info(f"Marked parent call {call_log.call_sid} as completed after transfer {status}")
             
             self.db.commit()
             logger.info(f"Updated leg {leg.leg_number} status to {new_status} (duration: {leg.duration_seconds}s)")

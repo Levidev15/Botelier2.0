@@ -15,6 +15,7 @@ from botelier.models.assistant import Assistant
 from botelier.models.knowledge_entry import KnowledgeEntry
 from botelier.models.flow_version import FlowVersion, FlowVersionStatus
 from botelier.models.call_log import CallLog, CallLeg, CallStatus, CallOutcome, LegType
+from botelier.models.disposition import AssistantDisposition
 
 __all__ = [
     "Hotel",
@@ -38,4 +39,5 @@ __all__ = [
     "CallStatus",
     "CallOutcome",
     "LegType",
+    "AssistantDisposition",
 ]

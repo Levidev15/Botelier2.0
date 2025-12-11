@@ -24,6 +24,7 @@ from botelier.api.flow_versions import router as flow_versions_router
 from botelier.api.admin import router as admin_router
 from botelier.api.invitations import router as invitations_router
 from botelier.api.auth import router as auth_router
+from botelier.api.dispositions import router as dispositions_router
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -58,6 +59,7 @@ app.include_router(flow_templates_router)
 app.include_router(simulation_router)
 app.include_router(invitations_router)  # Public invitation endpoints
 app.include_router(auth_router)  # Email/password auth endpoints
+app.include_router(dispositions_router)  # Assistant dispositions
 
 
 @app.on_event("startup")
