@@ -21,6 +21,9 @@ import {
   RefreshCw,
   Sparkles,
   MessageSquareText,
+  Play,
+  Wrench,
+  Tag,
 } from "lucide-react";
 import { notify } from "@/lib/notifications";
 import TranscriptModal from "./components/TranscriptModal";
@@ -70,7 +73,10 @@ interface CallLog {
   assistant_name: string | null;
   phone_number_display: string | null;
   disposition_id: string | null;
+  disposition_name: string | null;
+  disposition_color: string | null;
   ai_summary: string | null;
+  tool_name: string | null;
 }
 
 interface FilterOptions {
@@ -549,10 +555,13 @@ export default function CallLogsPage() {
                       Caller
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                      Phone Number
+                      Assistant
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                      Assistant
+                      Tool / Flow
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                      Disposition
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
                       Status
@@ -680,19 +689,41 @@ function CallLogRow({
         </td>
         <td className="px-4 py-3">
           <div className="flex items-center gap-2">
-            <Phone className="h-4 w-4 text-gray-500" />
-            <span className="text-sm text-gray-300">
-              {log.phone_number_display || log.to_number || "-"}
-            </span>
-          </div>
-        </td>
-        <td className="px-4 py-3">
-          <div className="flex items-center gap-2">
             <Bot className="h-4 w-4 text-gray-500" />
             <span className="text-sm text-gray-300">
               {log.assistant_name || "-"}
             </span>
           </div>
+        </td>
+        <td className="px-4 py-3">
+          <div className="flex items-center gap-2">
+            {(log.tool_name || log.flow_name) ? (
+              <>
+                <Wrench className="h-4 w-4 text-gray-500" />
+                <span className="text-sm text-gray-300">
+                  {log.tool_name || log.flow_name}
+                </span>
+              </>
+            ) : (
+              <span className="text-sm text-gray-500">-</span>
+            )}
+          </div>
+        </td>
+        <td className="px-4 py-3">
+          {log.disposition_name ? (
+            <span
+              className="px-2 py-0.5 text-xs rounded-full border"
+              style={{
+                backgroundColor: `${log.disposition_color || '#6366f1'}15`,
+                borderColor: `${log.disposition_color || '#6366f1'}40`,
+                color: log.disposition_color || '#6366f1',
+              }}
+            >
+              {log.disposition_name}
+            </span>
+          ) : (
+            <span className="text-sm text-gray-500">-</span>
+          )}
         </td>
         <td className="px-4 py-3">
           <div className="flex items-center gap-2">
@@ -710,12 +741,26 @@ function CallLogRow({
         </td>
         <td className="px-4 py-3 text-right">
           <div className="flex items-center justify-end gap-1">
-            {log.ai_summary && (
-              <span className="p-2 text-green-400" title="Has AI summary">
-                <MessageSquareText className="h-4 w-4" />
-              </span>
+            {log.recording_url && (
+              <a
+                href={log.recording_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="p-2 text-gray-400 hover:text-green-400 hover:bg-gray-700 rounded-lg transition"
+                title="Play recording"
+              >
+                <Play className="h-4 w-4" />
+              </a>
             )}
-            {hasTranscript && !log.ai_summary && (
+            {log.ai_summary ? (
+              <button
+                onClick={onViewTranscript}
+                className="p-2 text-green-400 hover:bg-gray-700 rounded-lg transition"
+                title="View summary & transcript"
+              >
+                <MessageSquareText className="h-4 w-4" />
+              </button>
+            ) : hasTranscript ? (
               <button
                 onClick={onGenerateSummary}
                 disabled={isGeneratingSummary}
@@ -728,7 +773,7 @@ function CallLogRow({
                   <Sparkles className="h-4 w-4" />
                 )}
               </button>
-            )}
+            ) : null}
             {hasTranscript && (
               <button
                 onClick={onViewTranscript}
@@ -743,7 +788,7 @@ function CallLogRow({
       </tr>
       {isExpanded && hasLegs && (
         <tr>
-          <td colSpan={7} className="bg-[#0f0f0f] px-4 py-3">
+          <td colSpan={8} className="bg-[#0f0f0f] px-4 py-3">
             <div className="ml-10">
               <div className="text-xs text-gray-500 mb-2 font-medium uppercase tracking-wider">
                 Call Segments
