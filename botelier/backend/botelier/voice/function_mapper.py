@@ -162,10 +162,11 @@ class FunctionMapper:
             
             # Wait for TTS audio to finish streaming to the caller
             # This ensures the caller hears the complete message before transfer
-            # Estimate ~100ms per word + 500ms buffer for TTS processing
+            # Conservative estimate: ~400ms per word (typical speech rate) + 1.5s buffer
+            # for TTS generation latency and network streaming
             word_count = len(pre_message.split())
-            wait_time = max(1.5, (word_count * 0.15) + 0.5)
-            logger.info(f"⏳ Waiting {wait_time:.1f}s for TTS to complete before transfer")
+            wait_time = max(2.5, (word_count * 0.4) + 1.5)
+            logger.info(f"⏳ Waiting {wait_time:.1f}s for TTS to complete before transfer ({word_count} words)")
             await asyncio.sleep(wait_time)
             
             transfer_success = False
