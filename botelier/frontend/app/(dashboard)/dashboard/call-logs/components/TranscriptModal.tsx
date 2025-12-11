@@ -1,6 +1,6 @@
 "use client";
 
-import { X, Bot, User, Clock, Phone, PhoneForwarded } from "lucide-react";
+import { X, Bot, User, Clock, Phone, PhoneForwarded, Sparkles, Tag, Wrench } from "lucide-react";
 
 interface TranscriptEntry {
   role: string;
@@ -31,6 +31,11 @@ interface CallLog {
   legs: CallLeg[];
   assistant_name: string | null;
   phone_number_display: string | null;
+  ai_summary: string | null;
+  disposition_name: string | null;
+  disposition_color: string | null;
+  tool_name: string | null;
+  flow_name: string | null;
 }
 
 interface TranscriptModalProps {
@@ -116,6 +121,34 @@ export default function TranscriptModal({ log, onClose }: TranscriptModalProps) 
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4">
+          {log.ai_summary && (
+            <div className="mb-6 p-4 bg-gradient-to-r from-purple-900/20 to-blue-900/20 border border-purple-800/30 rounded-lg">
+              <div className="flex items-center gap-2 mb-2">
+                <Sparkles className="h-4 w-4 text-purple-400" />
+                <span className="text-sm font-medium text-purple-300">AI Summary</span>
+                {log.disposition_name && (
+                  <span
+                    className="ml-auto px-2 py-0.5 text-xs rounded-full border"
+                    style={{
+                      backgroundColor: `${log.disposition_color || '#6366f1'}15`,
+                      borderColor: `${log.disposition_color || '#6366f1'}40`,
+                      color: log.disposition_color || '#6366f1',
+                    }}
+                  >
+                    {log.disposition_name}
+                  </span>
+                )}
+              </div>
+              <p className="text-sm text-gray-300 whitespace-pre-wrap">{log.ai_summary}</p>
+              {(log.tool_name || log.flow_name) && (
+                <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
+                  <Wrench className="h-3 w-3" />
+                  <span>{log.tool_name || log.flow_name}</span>
+                </div>
+              )}
+            </div>
+          )}
+
           {transcript.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-gray-500">
               <Clock className="h-8 w-8 mb-2" />

@@ -75,7 +75,7 @@ async def get_call_logs(
         
         call_logs = (
             query
-            .options(joinedload(CallLog.legs))
+            .options(joinedload(CallLog.legs), joinedload(CallLog.disposition))
             .order_by(desc(CallLog.started_at))
             .offset((page - 1) * limit)
             .limit(limit)
@@ -262,7 +262,7 @@ async def get_call_log(
     try:
         call_log = (
             db.query(CallLog)
-            .options(joinedload(CallLog.legs))
+            .options(joinedload(CallLog.legs), joinedload(CallLog.disposition))
             .filter(
                 CallLog.id == call_log_id,
                 CallLog.hotel_id == hotel_id
