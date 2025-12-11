@@ -71,10 +71,6 @@ localPort = 35781
 externalPort = 3000
 
 [[ports]]
-localPort = 35815
-externalPort = 5000
-
-[[ports]]
 localPort = 41311
 externalPort = 4200
 
@@ -86,6 +82,9 @@ localPort = 42349
 [userenv.shared]
 NEXTAUTH_SECRET = "l8K81CV1IxcdLFABbGPh0qvZCv0RdqLj8MOjKw+ud9s="
 NEXTAUTH_URL = "https://7862d0f9-746c-4a00-bc3b-fe2d01757149-00-34304m7qlgqdq.riker.replit.dev"
+
+[userenv.development]
+PUBLIC_BASE_URL = "https://7862d0f9-746c-4a00-bc3b-fe2d01757149-00-34304m7qlgqdq.riker.replit.dev"
 
 [deployment]
 deploymentTarget = "vm"
