@@ -140,22 +140,33 @@ class FunctionMapper:
             """
             Handler called when LLM decides to transfer call.
             
-            Transfer Flow (matching working pattern):
-                1. AI says pre-transfer message via TTS
-                2. Record transfer in database (so connect-complete won't hang up)
-                3. Build TwiML with:
+            Transfer Flow:
+                1. AI says pre-transfer message via Pipecat TTS (uses assistant's configured voice)
+                2. Wait for TTS audio to complete streaming to caller
+                3. Record transfer in database (so connect-complete won't hang up)
+                4. Build TwiML with:
                    - <Stop><Stream> to close the media stream
-                   - <Say> for transfer message (plays AFTER stream stops)
                    - <Dial> to connect to the transfer target
-                4. Update call via Twilio REST API
+                   - NOTE: No <Say> tag - the pre-transfer message was already spoken via TTS
+                5. Update call via Twilio REST API
                 
             The pipeline ends when Twilio closes the WebSocket after receiving
             the update. Twilio executes the TwiML and bridges the caller.
             """
-            # Tell user what's happening via the AI (they'll hear this first)
+            import asyncio
+            
+            # Speak pre-transfer message using the assistant's configured TTS voice
             await params.llm.push_frame(
                 TTSSpeakFrame(pre_message)
             )
+            
+            # Wait for TTS audio to finish streaming to the caller
+            # This ensures the caller hears the complete message before transfer
+            # Estimate ~100ms per word + 500ms buffer for TTS processing
+            word_count = len(pre_message.split())
+            wait_time = max(1.5, (word_count * 0.15) + 0.5)
+            logger.info(f"⏳ Waiting {wait_time:.1f}s for TTS to complete before transfer")
+            await asyncio.sleep(wait_time)
             
             transfer_success = False
             if self.twilio_client and self.call_sid:
@@ -177,16 +188,15 @@ class FunctionMapper:
                         db.close()
                     
                     # Build the transfer TwiML
+                    # NOTE: We do NOT include <Say> because the pre-transfer message
+                    # was already spoken via Pipecat TTS using the assistant's configured voice
                     twiml_parts = ['<?xml version="1.0" encoding="UTF-8"?>', '<Response>']
                     
                     # 1. Stop the media stream (critical for transfer to work)
                     if self.stream_sid:
                         twiml_parts.append(f'<Stop><Stream name="{self.stream_sid}"/></Stop>')
                     
-                    # 2. Say the transfer message (plays after stream stops)
-                    twiml_parts.append(f'<Say>{pre_message}</Say>')
-                    
-                    # 3. Build Dial element
+                    # 2. Build Dial element
                     # Use the caller's original number as callerId (they called us)
                     # Or fall back to the hotel's number (the number that was called)
                     caller_id = self.to_number or os.environ.get("TWILIO_PHONE_NUMBER", "")
@@ -195,7 +205,7 @@ class FunctionMapper:
                     else:
                         twiml_parts.append('<Dial timeout="30">')
                     
-                    # 4. Add the Number element with status callback
+                    # 3. Add the Number element with status callback
                     base_url = os.environ.get("PUBLIC_BASE_URL", "")
                     if base_url:
                         status_callback = f"{base_url}/api/calls/transfer-status"

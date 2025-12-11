@@ -30,11 +30,11 @@ Botelier is built with a clean architectural separation, where the core SaaS app
 - **Phone Numbers System (Twilio Integration):** Database models for Hotels and Phone Numbers, with Twilio integration for sub-account management, number search, purchase, configuration, and release.
 - **Knowledge Base System (Simplified Q&A with RAG):** A flat database structure stores `KnowledgeEntry` associated with hotels. FastAPI CRUD endpoints support CSV bulk import. A RAG query handler, integrated with Pipecat and using OpenAI LLM (gpt-4o-mini), fetches active Q&A entries.
 - **Twilio Call Transfer System:** Comprehensive transfer implementation with proper call leg tracking:
-  - **Transfer Flow:** AI speaks pre-transfer message → Stop media stream → Dial transfer target
-  - **TwiML Construction:** Dynamically built with `<Stop><Stream>`, `<Say>`, and `<Dial>` verbs
+  - **Transfer Flow:** AI speaks pre-transfer message via Pipecat TTS (using assistant's configured voice) → Wait for audio completion → Stop media stream → Dial transfer target
+  - **TwiML Construction:** Dynamically built with `<Stop><Stream>` and `<Dial>` verbs (no `<Say>` - pre-transfer message uses Pipecat TTS for voice consistency)
   - **Sub-account Support:** Uses hotel's `twilio_sub_account_sid` and `twilio_sub_auth_token` for API calls
   - **CallerId Handling:** Uses the hotel's phone number (the `to` number) as callerId for outbound transfer
-  - **Status Callbacks:** Transfer-status endpoint receives initiated, ringing, answered, completed events
+  - **Status Callbacks:** Transfer-status endpoint receives initiated, ringing, answered, completed events (requires PUBLIC_BASE_URL)
   - **Leg Tracking:** Transfer leg linked to child call_sid, with accurate timestamps and duration
 - **Flow Versioning System:** Implements a draft/publish workflow, version history, and revert capability for conversational flows. Includes database model (`FlowVersion`), API endpoints for managing drafts and published versions, and publish-time validation. Revert updates existing draft content (not version number) to avoid duplicate key errors.
 - **Unsaved Changes Warning:** Flow editor tracks dirty state and prompts users with Save/Discard/Cancel modal when navigating away with unsaved changes. Uses `useUnsavedChangesWarning` hook with `beforeunload` event handling.
@@ -98,6 +98,8 @@ Botelier is built with a clean architectural separation, where the core SaaS app
 - **Environment Variables:**
   - `NEXTAUTH_SECRET`: JWT signing secret (shared between frontend and backend)
   - `NEXTAUTH_URL`: Base URL for auth callbacks
+  - `PUBLIC_BASE_URL`: Public URL of the backend for Twilio callbacks (required for transfer status tracking)
+  - `CARTESIA_API_KEY`: Optional - enables Cartesia TTS (faster than Deepgram for voice AI)
 
 ### System Design Choices
 - **Clean Branding:** "Botelier" branding is prioritized, with Pipecat treated as a hidden backend dependency.
