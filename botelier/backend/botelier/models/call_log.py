@@ -94,6 +94,9 @@ class CallLog(Base):
     flow_id = Column(UUID(as_uuid=True), nullable=True)
     flow_name = Column(String, nullable=True)
     
+    disposition_id = Column(UUID(as_uuid=True), ForeignKey("assistant_dispositions.id"), nullable=True)
+    ai_summary = Column(Text, nullable=True)
+    
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
     
@@ -127,6 +130,8 @@ class CallLog(Base):
             "flow_id": str(self.flow_id) if self.flow_id else None,
             "flow_name": self.flow_name,
             "recording_url": self.recording_url,
+            "disposition_id": str(self.disposition_id) if self.disposition_id else None,
+            "ai_summary": self.ai_summary,
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
             "updated_at": self.updated_at.isoformat() + "Z" if self.updated_at else None,
         }

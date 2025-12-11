@@ -19,10 +19,13 @@ import {
   X,
   Loader2,
   RefreshCw,
+  Sparkles,
+  MessageSquareText,
 } from "lucide-react";
 import { notify } from "@/lib/notifications";
 import TranscriptModal from "./components/TranscriptModal";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface CallLeg {
   id: string;
@@ -66,6 +69,8 @@ interface CallLog {
   legs: CallLeg[];
   assistant_name: string | null;
   phone_number_display: string | null;
+  disposition_id: string | null;
+  ai_summary: string | null;
 }
 
 interface FilterOptions {
@@ -150,12 +155,14 @@ function getLegTypeLabel(legType: string): string {
 
 export default function CallLogsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
+  const { authHeaders } = useAuthToken();
   const [callLogs, setCallLogs] = useState<CallLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null);
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [selectedLog, setSelectedLog] = useState<CallLog | null>(null);
   const [showTranscript, setShowTranscript] = useState(false);
+  const [generatingIds, setGeneratingIds] = useState<Set<string>>(new Set());
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -282,6 +289,46 @@ export default function CallLogsPage() {
       } catch (error) {
         notify.error("Failed to load transcript");
       }
+    }
+  };
+
+  const generateSummary = async (log: CallLog) => {
+    if (!accountId) return;
+    
+    setGeneratingIds((prev) => new Set(prev).add(log.id));
+    
+    try {
+      const response = await fetch(`/api/call-logs/${log.id}/generate-summary`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...authHeaders,
+        },
+        body: JSON.stringify({ hotel_id: accountId }),
+      });
+
+      if (response.ok) {
+        const result = await response.json();
+        setCallLogs((prev) =>
+          prev.map((l) =>
+            l.id === log.id
+              ? { ...l, ai_summary: result.summary, disposition_id: result.disposition?.id || null }
+              : l
+          )
+        );
+        notify.success("Summary generated");
+      } else {
+        const error = await response.json();
+        notify.error(error.detail || "Failed to generate summary");
+      }
+    } catch (error) {
+      notify.error("Error generating summary");
+    } finally {
+      setGeneratingIds((prev) => {
+        const next = new Set(prev);
+        next.delete(log.id);
+        return next;
+      });
     }
   };
 
@@ -523,6 +570,8 @@ export default function CallLogsPage() {
                       isExpanded={expandedRows.has(log.id)}
                       onToggleExpand={() => toggleRowExpanded(log.id)}
                       onViewTranscript={() => openTranscript(log)}
+                      onGenerateSummary={() => generateSummary(log)}
+                      isGeneratingSummary={generatingIds.has(log.id)}
                       formatDateTime={formatDateTime}
                     />
                   ))}
@@ -573,12 +622,16 @@ function CallLogRow({
   isExpanded,
   onToggleExpand,
   onViewTranscript,
+  onGenerateSummary,
+  isGeneratingSummary,
   formatDateTime,
 }: {
   log: CallLog;
   isExpanded: boolean;
   onToggleExpand: () => void;
   onViewTranscript: () => void;
+  onGenerateSummary: () => void;
+  isGeneratingSummary: boolean;
   formatDateTime: (date: string | null) => string;
 }) {
   const hasLegs = log.legs && log.legs.length > 1;
@@ -656,15 +709,36 @@ function CallLogRow({
           </div>
         </td>
         <td className="px-4 py-3 text-right">
-          {hasTranscript && (
-            <button
-              onClick={onViewTranscript}
-              className="p-2 text-gray-400 hover:text-blue-400 hover:bg-gray-700 rounded-lg transition"
-              title="View transcript"
-            >
-              <FileText className="h-4 w-4" />
-            </button>
-          )}
+          <div className="flex items-center justify-end gap-1">
+            {log.ai_summary && (
+              <span className="p-2 text-green-400" title="Has AI summary">
+                <MessageSquareText className="h-4 w-4" />
+              </span>
+            )}
+            {hasTranscript && !log.ai_summary && (
+              <button
+                onClick={onGenerateSummary}
+                disabled={isGeneratingSummary}
+                className="p-2 text-gray-400 hover:text-purple-400 hover:bg-gray-700 rounded-lg transition disabled:opacity-50"
+                title="Generate AI summary"
+              >
+                {isGeneratingSummary ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Sparkles className="h-4 w-4" />
+                )}
+              </button>
+            )}
+            {hasTranscript && (
+              <button
+                onClick={onViewTranscript}
+                className="p-2 text-gray-400 hover:text-blue-400 hover:bg-gray-700 rounded-lg transition"
+                title="View transcript"
+              >
+                <FileText className="h-4 w-4" />
+              </button>
+            )}
+          </div>
         </td>
       </tr>
       {isExpanded && hasLegs && (
