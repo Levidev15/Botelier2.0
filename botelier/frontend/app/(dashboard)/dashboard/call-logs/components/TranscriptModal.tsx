@@ -7,6 +7,7 @@ interface TranscriptEntry {
   content?: string;
   text?: string;
   timestamp?: string;
+  interrupted?: boolean;
 }
 
 interface CallLeg {
@@ -173,8 +174,10 @@ export default function TranscriptModal({ log, onClose }: TranscriptModalProps) 
                     <div className="flex items-center gap-2 mb-1">
                       {entry.role === "assistant" ? (
                         <>
-                          <Bot className="h-3 w-3 text-blue-400" />
-                          <span className="text-xs text-blue-400 font-medium">Assistant</span>
+                          <Bot className={`h-3 w-3 ${entry.interrupted ? 'text-red-400' : 'text-blue-400'}`} />
+                          <span className={`text-xs font-medium ${entry.interrupted ? 'text-red-400' : 'text-blue-400'}`}>
+                            {entry.interrupted ? '[Interrupted] Assistant' : 'Assistant'}
+                          </span>
                         </>
                       ) : (
                         <>
@@ -188,7 +191,9 @@ export default function TranscriptModal({ log, onClose }: TranscriptModalProps) 
                         </span>
                       )}
                     </div>
-                    <p className="text-sm leading-relaxed">{entry.content || entry.text}</p>
+                    <p className={`text-sm leading-relaxed ${entry.interrupted ? 'italic' : ''}`}>
+                      {entry.content || entry.text}
+                    </p>
                   </div>
                 </div>
               ))}

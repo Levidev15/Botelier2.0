@@ -48,6 +48,7 @@ interface TranscriptEntry {
   content?: string;
   text?: string;
   timestamp?: string;
+  interrupted?: boolean;
 }
 
 interface CallLog {

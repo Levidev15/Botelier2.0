@@ -45,7 +45,7 @@ class CallHandler:
     - call_mappers: Stores FunctionMapper per call_sid for state persistence
     - call_contexts: Stores LLMContext per call_sid for transcript extraction
     - call_start_times: Tracks call start times for duration calculation
-    - call_transcripts: Tracks actual spoken content (TTS output + STT final)
+    - interrupted_responses: Tracks which assistant responses were interrupted
     """
     
     def __init__(self):
@@ -54,7 +54,7 @@ class CallHandler:
         self.call_mappers: Dict[str, FunctionMapper] = {}
         self.call_contexts: Dict[str, Any] = {}
         self.call_start_times: Dict[str, datetime] = {}
-        self.call_transcripts: Dict[str, List[Dict[str, str]]] = {}  # Track actual spoken content
+        self.interrupted_responses: Dict[str, set] = {}  # call_sid -> set of interrupted message contents
     
     async def handle_call(
         self,
@@ -231,31 +231,27 @@ class CallHandler:
                 del self.call_contexts[call_sid]
             if call_sid in self.call_start_times:
                 del self.call_start_times[call_sid]
-            if call_sid in self.call_transcripts:
-                del self.call_transcripts[call_sid]
+            if call_sid in self.interrupted_responses:
+                del self.interrupted_responses[call_sid]
     
-    def add_to_transcript(self, call_sid: str, role: str, content: str):
+    def mark_response_interrupted(self, call_sid: str, content: str):
         """
-        Add a message to the call transcript.
+        Mark an assistant response as interrupted.
         
-        Call this when:
-        - STT produces final transcription (user message)
-        - TTS speaks a message (assistant message)
+        Called when the user interrupts the AI mid-response.
         
         Args:
             call_sid: Twilio call SID
-            role: "user" or "assistant"
-            content: The spoken text
+            content: The content that was being spoken when interrupted
         """
-        if call_sid not in self.call_transcripts:
-            self.call_transcripts[call_sid] = []
+        if call_sid not in self.interrupted_responses:
+            self.interrupted_responses[call_sid] = set()
         
         if content and content.strip():
-            self.call_transcripts[call_sid].append({
-                "role": role,
-                "content": content.strip()
-            })
-            logger.debug(f"📝 Transcript [{role}]: {content[:50]}...")
+            # Store first 100 chars as key (enough to match uniquely)
+            key = content.strip()[:100]
+            self.interrupted_responses[call_sid].add(key)
+            logger.debug(f"🛑 Marked interrupted: {key[:50]}...")
     
     def _create_agent_config(self, assistant: Assistant) -> VoiceAgentConfig:
         """
@@ -383,10 +379,6 @@ class CallHandler:
                 mapper = self.call_mappers[call_sid]
                 logger.debug(f"Reusing FunctionMapper for call {call_sid}")
             else:
-                # Create callback to track TTS output in transcript
-                def transcript_callback(role: str, content: str):
-                    self.add_to_transcript(call_sid, role, content)
-                
                 mapper = FunctionMapper(
                     call_sid=call_sid,
                     stream_sid=stream_sid,
@@ -394,7 +386,6 @@ class CallHandler:
                     to_number=to_number,
                     twilio_account_sid=twilio_account_sid,
                     twilio_auth_token=twilio_auth_token,
-                    transcript_callback=transcript_callback,
                     call_handler=self,
                 )
                 self.call_mappers[call_sid] = mapper
@@ -494,23 +485,13 @@ class CallHandler:
         """
         db = None
         try:
-            # Check tracked transcript for completeness
-            tracked = self.call_transcripts.get(call_sid, [])
-            has_user_messages = any(msg.get("role") == "user" for msg in tracked)
-            has_assistant_messages = any(msg.get("role") == "assistant" for msg in tracked)
-            
-            # Use tracked transcript only if it has both user and assistant messages
-            if has_user_messages and has_assistant_messages:
-                transcript = self._consolidate_transcript(tracked)
-                logger.info(f"Using tracked transcript ({len(transcript)} messages) for call {call_sid}")
-            elif llm_context:
-                # Fall back to LLM context extraction (has both user and assistant messages)
-                transcript = self._extract_transcript(llm_context)
-                logger.info(f"Using LLM context transcript ({len(transcript)} messages) for call {call_sid}")
+            # Extract transcript from LLM context
+            if llm_context:
+                transcript = self._extract_transcript(call_sid, llm_context)
+                logger.info(f"Extracted transcript ({len(transcript)} messages) for call {call_sid}")
             else:
-                # Last resort: use whatever we have tracked
-                transcript = self._consolidate_transcript(tracked) if tracked else []
-                logger.warning(f"Using incomplete tracked transcript ({len(transcript)} messages) for call {call_sid}")
+                transcript = []
+                logger.warning(f"No LLM context available for call {call_sid}")
             
             if not transcript:
                 logger.warning(f"No transcript messages found for call {call_sid}")
@@ -539,20 +520,22 @@ class CallHandler:
             if db:
                 db.close()
     
-    def _extract_transcript(self, llm_context: Any) -> List[Dict[str, str]]:
+    def _extract_transcript(self, call_sid: str, llm_context: Any) -> List[Dict[str, str]]:
         """
         Extract conversation messages from Pipecat's LLMContext.
         
         Filters to only user and assistant messages, excluding system prompts
-        and tool/function call messages.
+        and tool/function call messages. Marks interrupted responses.
         
         Args:
+            call_sid: Twilio call SID (for checking interrupted responses)
             llm_context: Pipecat's LLMContext object (passed directly from create_pipeline)
             
         Returns:
-            List of transcript entries with role and content
+            List of transcript entries with role, content, and interrupted flag
         """
         transcript = []
+        interrupted_set = self.interrupted_responses.get(call_sid, set())
         
         try:
             messages = None
@@ -612,65 +595,28 @@ class CallHandler:
                 # Skip assistant messages that are tool calls (no actual spoken content)
                 if role == "assistant" and msg.get("tool_calls"):
                     continue
+                
+                content = content.strip()
+                
+                # Check if this assistant message was interrupted
+                is_interrupted = False
+                if role == "assistant" and interrupted_set:
+                    # Check if the first 100 chars match any interrupted message
+                    key = content[:100]
+                    if key in interrupted_set:
+                        is_interrupted = True
+                        logger.debug(f"Marking message as interrupted: {key[:50]}...")
                     
                 transcript.append({
                     "role": role,
-                    "content": content.strip()
+                    "content": content,
+                    "interrupted": is_interrupted
                 })
             
-            # Consolidate consecutive messages from the same role
-            transcript = self._consolidate_transcript(transcript)
-            
-            logger.debug(f"Extracted {len(transcript)} conversation messages after consolidation")
+            logger.debug(f"Extracted {len(transcript)} conversation messages")
                 
         except Exception as e:
             logger.exception(f"Error extracting transcript: {e}")
             
         return transcript
     
-    def _consolidate_transcript(self, transcript: List[Dict[str, str]]) -> List[Dict[str, str]]:
-        """
-        Consolidate consecutive messages from the same role into single messages.
-        
-        This handles STT fragmentation where user speech is split into multiple
-        messages (e.g., "Is there" + "a hold." becomes "Is there a hold.").
-        Works with any STT provider.
-        
-        Args:
-            transcript: List of transcript entries with role and content
-            
-        Returns:
-            Consolidated transcript with merged consecutive same-role messages
-        """
-        if not transcript:
-            return transcript
-        
-        consolidated = []
-        current_role = None
-        current_content_parts = []
-        
-        for msg in transcript:
-            role = msg.get("role")
-            content = msg.get("content", "")
-            
-            if role == current_role:
-                # Same role as previous, accumulate content
-                current_content_parts.append(content)
-            else:
-                # Different role, save previous and start new
-                if current_role and current_content_parts:
-                    consolidated.append({
-                        "role": current_role,
-                        "content": " ".join(current_content_parts)
-                    })
-                current_role = role
-                current_content_parts = [content]
-        
-        # Don't forget the last message
-        if current_role and current_content_parts:
-            consolidated.append({
-                "role": current_role,
-                "content": " ".join(current_content_parts)
-            })
-        
-        return consolidated
