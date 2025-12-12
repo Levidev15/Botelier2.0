@@ -366,9 +366,9 @@ class CallLogger:
             # Mark ended and calculate duration when call ends
             if status in ("completed", "busy", "failed", "no-answer", "canceled"):
                 leg.ended_at = datetime.utcnow()
-                if duration_seconds is not None:
-                    leg.duration_seconds = duration_seconds
-                elif leg.started_at and leg.ended_at:
+                # Always calculate duration from our tracked start time (includes ringing)
+                # Ignore Twilio's duration_seconds as it only counts from answer
+                if leg.started_at and leg.ended_at:
                     leg.duration_seconds = int((leg.ended_at - leg.started_at).total_seconds())
                 
                 # When transfer leg ends (success or fail), mark parent call as completed

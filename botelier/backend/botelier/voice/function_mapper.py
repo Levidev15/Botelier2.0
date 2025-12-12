@@ -7,8 +7,11 @@ and the actual Pipecat function calling system during voice conversations.
 
 import os
 import httpx
-from typing import Dict, Any, List, Callable
+from typing import Dict, Any, List, Callable, TYPE_CHECKING
 from loguru import logger
+
+if TYPE_CHECKING:
+    from .call_handler import CallHandler
 from pipecat.frames.frames import EndFrame, TTSSpeakFrame
 from pipecat.services.llm_service import FunctionCallParams
 from twilio.rest import Client as TwilioClient
@@ -48,6 +51,7 @@ class FunctionMapper:
         twilio_account_sid: str = None,
         twilio_auth_token: str = None,
         transcript_callback: Callable[[str, str], None] = None,
+        call_handler: "CallHandler" = None,
     ):
         """
         Initialize function mapper with call context and Twilio credentials.
@@ -60,12 +64,14 @@ class FunctionMapper:
             twilio_account_sid: Hotel's Twilio sub-account SID
             twilio_auth_token: Hotel's Twilio sub-account auth token
             transcript_callback: Callback(role, content) to track spoken text
+            call_handler: Reference to CallHandler for transcript saving
         """
         self.call_sid = call_sid
         self.stream_sid = stream_sid
         self.from_number = from_number
         self.to_number = to_number
         self.transcript_callback = transcript_callback
+        self.call_handler = call_handler
         
         # Store flow executors by tool name for state persistence across turns
         self._flow_executors: Dict[str, FlowExecutor] = {}
@@ -210,6 +216,17 @@ class FunctionMapper:
                     db = SessionLocal()
                     try:
                         call_logger = CallLogger(db)
+                        
+                        # Save transcript BEFORE transfer (WebSocket closes after)
+                        if self.call_handler and hasattr(self.call_handler, '_save_call_transcript'):
+                            try:
+                                # Get LLM context if available
+                                llm_context = self.call_handler.call_contexts.get(self.call_sid)
+                                await self.call_handler._save_call_transcript(self.call_sid, llm_context)
+                                logger.info(f"📝 Saved transcript before transfer for call {self.call_sid}")
+                            except Exception as e:
+                                logger.error(f"Error saving transcript before transfer: {e}")
+                        
                         call_logger.record_transfer(
                             call_sid=self.call_sid,
                             transfer_to=phone_number,
