@@ -3,7 +3,6 @@
 import { Bot, LayoutDashboard, Phone, BarChart, Settings, Key, Users, Wrench, BookOpen, Shield, LogOut, ArrowLeft, Building2 } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { useSession, signOut } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
@@ -14,7 +13,6 @@ export default function DashboardLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const { data: session, status } = useSession();
   const { token, loading: tokenLoading, authFetch } = useAuthToken();
   const { accountId, accountName, isAdminSession, exitAccount, loading: accountLoading } = useAccountContext();
   const router = useRouter();
@@ -27,30 +25,32 @@ export default function DashboardLayout({
     router.push("/admin/accounts");
   };
 
+  const handleLogout = () => {
+    localStorage.removeItem("botelier_token");
+    localStorage.removeItem("botelier_user");
+    router.push("/login");
+  };
+
   useEffect(() => {
-    // Skip auth check while still loading
-    if (status === "loading" || tokenLoading || accountLoading) {
+    if (tokenLoading || accountLoading) {
       return;
     }
     
-    // Allow access if:
-    // 1. NextAuth session exists (regular users), OR
-    // 2. JWT token exists AND admin is viewing an account (support session)
-    const hasNextAuthSession = status === "authenticated";
     const hasAdminSupportSession = !!token && isAdminSession;
+    const hasRegularSession = !!token && !isAdminSession;
     
-    if (!hasNextAuthSession && !hasAdminSupportSession) {
+    if (!hasAdminSupportSession && !hasRegularSession) {
       router.push("/login?callbackUrl=/dashboard");
     } else {
       setAuthChecked(true);
     }
-  }, [status, token, tokenLoading, accountLoading, isAdminSession, router]);
+  }, [token, tokenLoading, accountLoading, isAdminSession, router]);
 
   useEffect(() => {
-    if (session && token) {
+    if (token && authChecked) {
       fetchUserInfo();
     }
-  }, [session, token]);
+  }, [token, authChecked]);
 
   const fetchUserInfo = async () => {
     if (!token) return;
@@ -60,10 +60,8 @@ export default function DashboardLayout({
         const data = await res.json();
         setUserInfo(data);
         
-        // If not in an admin support session, set account context from user's membership
         if (!isAdminSession && data.memberships?.length > 0) {
           const firstMembership = data.memberships[0];
-          // Only set if we don't have a context already
           if (!accountId) {
             const { setAccountContext } = await import("@/lib/auth/accountContext");
             setAccountContext({
@@ -72,7 +70,6 @@ export default function DashboardLayout({
               accountSlug: firstMembership.account_slug,
               isAdminSession: false,
             });
-            // Force reload to pick up new context
             window.location.reload();
           }
         }
@@ -82,12 +79,21 @@ export default function DashboardLayout({
     }
   };
 
-  if (status === "loading" || tokenLoading || accountLoading || !authChecked) {
+  if (tokenLoading || accountLoading || !authChecked) {
     return (
       <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin h-8 w-8 border-4 border-blue-600 border-t-transparent rounded-full mx-auto"></div>
-          <p className="mt-4 text-gray-400">Loading...</p>
+        <div className="flex flex-col items-center gap-6">
+          <div className="relative">
+            <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
+              <span className="text-xl font-bold text-white">B</span>
+            </div>
+            <div className="absolute inset-0 rounded-xl bg-gradient-to-br from-blue-500/30 to-purple-600/30 blur-lg animate-pulse" />
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-bounce" style={{ animationDelay: "0ms" }} />
+            <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: "150ms" }} />
+            <div className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: "300ms" }} />
+          </div>
         </div>
       </div>
     );
@@ -99,6 +105,9 @@ export default function DashboardLayout({
     }
     return pathname.startsWith(href);
   };
+
+  const storedUser = typeof window !== "undefined" ? localStorage.getItem("botelier_user") : null;
+  const parsedUser = storedUser ? JSON.parse(storedUser) : null;
 
   return (
     <div className="flex h-screen bg-[#0a0a0a] text-gray-100">
@@ -161,7 +170,7 @@ export default function DashboardLayout({
             Settings
           </NavItem>
 
-          {userInfo?.is_platform_admin && (
+          {(userInfo?.is_platform_admin || parsedUser?.user_type === "platform_admin") && (
             <>
               <div className="pt-4 pb-2">
                 <div className="px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">
@@ -185,16 +194,16 @@ export default function DashboardLayout({
               />
             ) : (
               <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-sm font-semibold">
-                {userInfo?.display_name?.[0] || session?.user?.name?.[0] || "?"}
+                {userInfo?.display_name?.[0] || parsedUser?.first_name?.[0] || "?"}
               </div>
             )}
             <div className="flex-1">
-              <div className="text-sm font-medium">{userInfo?.display_name || session?.user?.name || "User"}</div>
-              <div className="text-xs text-gray-400">{userInfo?.email || session?.user?.email || ""}</div>
+              <div className="text-sm font-medium">{userInfo?.display_name || parsedUser?.first_name || "User"}</div>
+              <div className="text-xs text-gray-400">{userInfo?.email || parsedUser?.email || ""}</div>
             </div>
           </div>
           <button
-            onClick={() => signOut({ callbackUrl: "/login" })}
+            onClick={handleLogout}
             className="w-full mt-3 flex items-center gap-2 px-3 py-2 text-sm text-red-400 hover:text-red-300 hover:bg-red-900/20 rounded-lg transition-colors"
           >
             <LogOut className="h-4 w-4" />
