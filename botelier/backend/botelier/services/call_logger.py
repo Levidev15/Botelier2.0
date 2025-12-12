@@ -154,17 +154,33 @@ class CallLogger:
             elif call_log.started_at and call_log.ended_at:
                 call_log.duration_seconds = int((call_log.ended_at - call_log.started_at).total_seconds())
             
-            ai_leg = self.db.query(CallLeg).filter(
-                CallLeg.call_log_id == call_log.id,
-                CallLeg.leg_type == LegType.AI_CONVERSATION.value
-            ).first()
+            # Update all legs when call ends
+            all_legs = self.db.query(CallLeg).filter(
+                CallLeg.call_log_id == call_log.id
+            ).all()
             
-            if ai_leg:
-                ai_leg.status = CallStatus.COMPLETED.value
-                if not ai_leg.ended_at:
-                    ai_leg.ended_at = datetime.utcnow()
-                if ai_leg.started_at and ai_leg.ended_at:
-                    ai_leg.duration_seconds = int((ai_leg.ended_at - ai_leg.started_at).total_seconds())
+            non_terminal_statuses = [
+                CallStatus.INITIATED.value,
+                CallStatus.RINGING.value,
+                CallStatus.IN_PROGRESS.value,
+            ]
+            
+            for leg in all_legs:
+                # Only change status for legs in non-terminal states
+                if leg.status in non_terminal_statuses:
+                    leg.status = CallStatus.COMPLETED.value
+                
+                # For transfer legs, update end time to match call end time
+                if leg.leg_type in (LegType.TRANSFER_EXTERNAL.value, LegType.TRANSFER_SIP.value):
+                    if call_log.ended_at and (not leg.ended_at or leg.ended_at < call_log.ended_at):
+                        leg.ended_at = call_log.ended_at
+                        if leg.started_at:
+                            leg.duration_seconds = int((leg.ended_at - leg.started_at).total_seconds())
+                # For other legs, just ensure they have an end time
+                elif not leg.ended_at:
+                    leg.ended_at = call_log.ended_at or datetime.utcnow()
+                    if leg.started_at:
+                        leg.duration_seconds = int((leg.ended_at - leg.started_at).total_seconds())
             
             self.db.commit()
             logger.info(f"Completed call {call_sid} with outcome: {call_log.outcome}")
