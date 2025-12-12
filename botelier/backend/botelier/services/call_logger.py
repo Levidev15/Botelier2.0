@@ -182,6 +182,12 @@ class CallLogger:
                     if leg.started_at:
                         leg.duration_seconds = int((leg.ended_at - leg.started_at).total_seconds())
             
+            # Calculate total duration by summing all leg durations
+            # This ensures transfer time is included in total call duration
+            total_leg_duration = sum(leg.duration_seconds or 0 for leg in all_legs)
+            if total_leg_duration > 0:
+                call_log.duration_seconds = total_leg_duration
+            
             self.db.commit()
             logger.info(f"Completed call {call_sid} with outcome: {call_log.outcome}")
             return True
