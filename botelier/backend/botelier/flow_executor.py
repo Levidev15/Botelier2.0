@@ -767,15 +767,53 @@ You are executing a structured conversation flow. Follow these guidelines:
         Generate Pipecat-compatible function schemas from the flow.
         
         This creates functions for:
-        1. Collecting each slot variable (only if not already collected)
+        1. Collecting slot variables - ONLY for the current/next collect node (enforces flow order)
         2. API requests
         3. Transfer calls
         4. Ending the call
+        
+        For collect_slot nodes: Only exposes the single slot function for that node
+        For collect_form nodes: Exposes all slots in the form for flexible collection
         """
         functions = []
         
+        # Only expose slot functions for the current collect node (strict flow order)
+        current_node = self.state.get_current_node()
+        
+        # Determine which slot functions to expose based on current node type
+        slots_to_expose = set()
+        
+        if current_node and current_node.type == NodeType.COLLECT_SLOT:
+            # For collect_slot: only expose this single slot
+            slot = current_node.data.get("slot", {})
+            var_key = slot.get("variableKey")
+            if var_key and var_key not in self.state.collected_slots:
+                slots_to_expose.add(var_key)
+        elif current_node and current_node.type == NodeType.COLLECT_FORM:
+            # For collect_form: expose all uncollected slots in the form (flexible within form)
+            form_slots = current_node.data.get("slots", [])
+            for slot in form_slots:
+                var_key = slot.get("variableKey")
+                if var_key and var_key not in self.state.collected_slots:
+                    slots_to_expose.add(var_key)
+        else:
+            # Not on a collect node - find next reachable collect node
+            next_collect_node, next_var_key = self._find_next_reachable_collect_slot()
+            if next_collect_node:
+                if next_collect_node.type == NodeType.COLLECT_SLOT:
+                    if next_var_key and next_var_key not in self.state.collected_slots:
+                        slots_to_expose.add(next_var_key)
+                elif next_collect_node.type == NodeType.COLLECT_FORM:
+                    # Expose all form slots
+                    form_slots = next_collect_node.data.get("slots", [])
+                    for slot in form_slots:
+                        var_key = slot.get("variableKey")
+                        if var_key and var_key not in self.state.collected_slots:
+                            slots_to_expose.add(var_key)
+        
+        # Create function schemas only for slots we should expose
         for var in self.flow_config.variables:
-            if var.key not in self.state.collected_slots:
+            if var.key in slots_to_expose:
                 func_schema = self._create_slot_function(var)
                 functions.append(func_schema)
         
