@@ -4,47 +4,73 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff, Lock, Mail } from "lucide-react";
 
+function LoadingScreen() {
+  return (
+    <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
+      <div className="flex flex-col items-center gap-8">
+        <div className="relative">
+          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center animate-pulse">
+            <span className="text-2xl font-bold text-white">B</span>
+          </div>
+          <div className="absolute -inset-2 rounded-3xl bg-gradient-to-br from-blue-500/20 to-purple-600/20 blur-xl animate-pulse" />
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div className="w-2 h-2 rounded-full bg-blue-500 animate-bounce" style={{ animationDelay: "0ms" }} />
+          <div className="w-2 h-2 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: "150ms" }} />
+          <div className="w-2 h-2 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: "300ms" }} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function LoginPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
+  const [checkingSession, setCheckingSession] = useState(true);
   const [isLoading, setIsLoading] = useState(false);
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showForm, setShowForm] = useState(false);
   const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
 
   useEffect(() => {
-    const storedToken = localStorage.getItem("botelier_token");
-    const storedUser = localStorage.getItem("botelier_user");
-    
-    if (storedToken && storedUser) {
-      validateAndRedirect(storedToken);
-    }
-  }, []);
-
-  const validateAndRedirect = async (token: string) => {
-    try {
-      const res = await fetch("/api/auth/validate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ token }),
-      });
+    const checkSession = async () => {
+      const storedToken = localStorage.getItem("botelier_token");
+      const storedUser = localStorage.getItem("botelier_user");
       
-      const data = await res.json();
-      
-      if (data.valid) {
-        const redirectUrl = data.user?.user_type === "platform_admin" ? "/admin" : callbackUrl;
-        router.push(redirectUrl);
-      } else {
-        localStorage.removeItem("botelier_token");
-        localStorage.removeItem("botelier_user");
+      if (storedToken && storedUser) {
+        try {
+          const res = await fetch("/api/auth/validate", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ token: storedToken }),
+          });
+          
+          const data = await res.json();
+          
+          if (data.valid) {
+            const redirectUrl = data.user?.user_type === "platform_admin" ? "/admin" : callbackUrl;
+            router.replace(redirectUrl);
+            return;
+          } else {
+            localStorage.removeItem("botelier_token");
+            localStorage.removeItem("botelier_user");
+          }
+        } catch (err) {
+          localStorage.removeItem("botelier_token");
+          localStorage.removeItem("botelier_user");
+        }
       }
-    } catch (err) {
-      localStorage.removeItem("botelier_token");
-      localStorage.removeItem("botelier_user");
-    }
-  };
+      
+      setCheckingSession(false);
+      setTimeout(() => setShowForm(true), 50);
+    };
+    
+    checkSession();
+  }, [callbackUrl, router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -64,7 +90,7 @@ export default function LoginPage() {
         localStorage.setItem("botelier_token", data.access_token);
         localStorage.setItem("botelier_user", JSON.stringify(data.user));
         const redirectUrl = data.user?.user_type === "platform_admin" ? "/admin" : callbackUrl;
-        router.push(redirectUrl);
+        router.replace(redirectUrl);
       } else {
         setError(data.detail || "Invalid email or password");
       }
@@ -76,11 +102,22 @@ export default function LoginPage() {
     }
   };
 
+  if (checkingSession) {
+    return <LoadingScreen />;
+  }
+
   return (
     <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
-      <div className="max-w-md w-full px-6">
+      <div 
+        className={`max-w-md w-full px-6 transition-all duration-500 ease-out ${
+          showForm ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"
+        }`}
+      >
         <div className="bg-[#111111] border border-[#222222] rounded-xl p-8">
           <div className="text-center mb-8">
+            <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center mx-auto mb-4">
+              <span className="text-xl font-bold text-white">B</span>
+            </div>
             <h1 className="text-2xl font-bold text-white mb-2">
               Welcome to Botelier
             </h1>
@@ -107,7 +144,7 @@ export default function LoginPage() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
-                  className="w-full pl-10 pr-3 py-2 bg-[#0a0a0a] border border-[#333333] rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  className="w-full pl-10 pr-3 py-2 bg-[#0a0a0a] border border-[#333333] rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
                   placeholder="you@example.com"
                 />
               </div>
@@ -124,13 +161,13 @@ export default function LoginPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
-                  className="w-full pl-10 pr-10 py-2 bg-[#0a0a0a] border border-[#333333] rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
+                  className="w-full pl-10 pr-10 py-2 bg-[#0a0a0a] border border-[#333333] rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
                   placeholder="Enter your password"
                 />
                 <button
                   type="button"
                   onClick={() => setShowPassword(!showPassword)}
-                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300 transition-colors"
                 >
                   {showPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
                 </button>
@@ -140,7 +177,7 @@ export default function LoginPage() {
             <button
               type="submit"
               disabled={isLoading || !email || !password}
-              className="w-full flex items-center justify-center gap-3 px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:bg-blue-600/50 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-colors mt-6"
+              className="w-full flex items-center justify-center gap-3 px-4 py-3 bg-gradient-to-r from-blue-600 to-purple-600 hover:from-blue-700 hover:to-purple-700 disabled:from-blue-600/50 disabled:to-purple-600/50 disabled:cursor-not-allowed text-white font-medium rounded-lg transition-all mt-6"
             >
               {isLoading ? (
                 <>
