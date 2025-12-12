@@ -37,7 +37,7 @@ class InterruptionTracker(FrameProcessor):
     """
     Tracks TTS content being spoken and detects when it's interrupted.
     
-    Placed after TTS in the pipeline to monitor what's being spoken.
+    Placed before TTS in the pipeline to monitor text frames.
     When an InterruptionFrame is detected, calls the callback with the
     content that was interrupted.
     """
@@ -50,7 +50,7 @@ class InterruptionTracker(FrameProcessor):
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         
-        # Track outgoing TTS content
+        # Track outgoing TTS content (text frames from LLM)
         if isinstance(frame, (TextFrame, TTSSpeakFrame)):
             if hasattr(frame, 'text') and frame.text:
                 self._current_text = frame.text
@@ -62,6 +62,9 @@ class InterruptionTracker(FrameProcessor):
                 logger.info(f"🛑 Interruption detected for: {self._current_text[:50]}...")
                 self._on_interruption(self._current_text)
             self._current_text = ""  # Reset after interruption
+        
+        # CRITICAL: Always push frames through to next processor
+        await self.push_frame(frame, direction)
 
 
 class VoiceEngineFactory:
