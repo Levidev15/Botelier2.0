@@ -45,6 +45,7 @@ class CallHandler:
     - call_mappers: Stores FunctionMapper per call_sid for state persistence
     - call_contexts: Stores LLMContext per call_sid for transcript extraction
     - call_start_times: Tracks call start times for duration calculation
+    - call_transcripts: Tracks actual spoken content (TTS output + STT final)
     """
     
     def __init__(self):
@@ -53,6 +54,7 @@ class CallHandler:
         self.call_mappers: Dict[str, FunctionMapper] = {}
         self.call_contexts: Dict[str, Any] = {}
         self.call_start_times: Dict[str, datetime] = {}
+        self.call_transcripts: Dict[str, List[Dict[str, str]]] = {}  # Track actual spoken content
     
     async def handle_call(
         self,
@@ -189,9 +191,11 @@ class CallHandler:
             self.active_calls[call_sid] = task
             self.call_contexts[call_sid] = llm_context  # Store LLMContext directly for transcript extraction
             self.call_start_times[call_sid] = datetime.utcnow()
+            self.call_transcripts[call_sid] = []  # Initialize transcript tracking
             
-            # 8. Queue greeting message
+            # 8. Queue greeting message and track it
             await task.queue_frames([TTSSpeakFrame(text=config.greeting_message)])
+            self.add_to_transcript(call_sid, "assistant", config.greeting_message)
             
             logger.info(f"▶️ Pipeline starting: STT ({config.stt_provider}) → LLM ({config.llm_provider}) → TTS ({config.tts_provider})")
             
@@ -227,6 +231,31 @@ class CallHandler:
                 del self.call_contexts[call_sid]
             if call_sid in self.call_start_times:
                 del self.call_start_times[call_sid]
+            if call_sid in self.call_transcripts:
+                del self.call_transcripts[call_sid]
+    
+    def add_to_transcript(self, call_sid: str, role: str, content: str):
+        """
+        Add a message to the call transcript.
+        
+        Call this when:
+        - STT produces final transcription (user message)
+        - TTS speaks a message (assistant message)
+        
+        Args:
+            call_sid: Twilio call SID
+            role: "user" or "assistant"
+            content: The spoken text
+        """
+        if call_sid not in self.call_transcripts:
+            self.call_transcripts[call_sid] = []
+        
+        if content and content.strip():
+            self.call_transcripts[call_sid].append({
+                "role": role,
+                "content": content.strip()
+            })
+            logger.debug(f"📝 Transcript [{role}]: {content[:50]}...")
     
     def _create_agent_config(self, assistant: Assistant) -> VoiceAgentConfig:
         """
@@ -354,6 +383,10 @@ class CallHandler:
                 mapper = self.call_mappers[call_sid]
                 logger.debug(f"Reusing FunctionMapper for call {call_sid}")
             else:
+                # Create callback to track TTS output in transcript
+                def transcript_callback(role: str, content: str):
+                    self.add_to_transcript(call_sid, role, content)
+                
                 mapper = FunctionMapper(
                     call_sid=call_sid,
                     stream_sid=stream_sid,
@@ -361,6 +394,7 @@ class CallHandler:
                     to_number=to_number,
                     twilio_account_sid=twilio_account_sid,
                     twilio_auth_token=twilio_auth_token,
+                    transcript_callback=transcript_callback,
                 )
                 self.call_mappers[call_sid] = mapper
                 logger.info(f"Created FunctionMapper for call {call_sid}")
@@ -450,20 +484,32 @@ class CallHandler:
         """
         Save call transcript to database.
         
-        Extracts conversation messages from Pipecat's LLM context
-        and saves them to the call log using CallLogger service.
+        Uses tracked transcript (actual spoken content) if available,
+        falls back to extracting from LLM context.
         
         Args:
             call_sid: Twilio call SID
             llm_context: Pipecat's LLMContext object with conversation history (may be None)
         """
-        if not llm_context:
-            logger.warning(f"No LLM context available for call {call_sid}, skipping transcript")
-            return
-            
         db = None
         try:
-            transcript = self._extract_transcript(llm_context)
+            # Check tracked transcript for completeness
+            tracked = self.call_transcripts.get(call_sid, [])
+            has_user_messages = any(msg.get("role") == "user" for msg in tracked)
+            has_assistant_messages = any(msg.get("role") == "assistant" for msg in tracked)
+            
+            # Use tracked transcript only if it has both user and assistant messages
+            if has_user_messages and has_assistant_messages:
+                transcript = self._consolidate_transcript(tracked)
+                logger.info(f"Using tracked transcript ({len(transcript)} messages) for call {call_sid}")
+            elif llm_context:
+                # Fall back to LLM context extraction (has both user and assistant messages)
+                transcript = self._extract_transcript(llm_context)
+                logger.info(f"Using LLM context transcript ({len(transcript)} messages) for call {call_sid}")
+            else:
+                # Last resort: use whatever we have tracked
+                transcript = self._consolidate_transcript(tracked) if tracked else []
+                logger.warning(f"Using incomplete tracked transcript ({len(transcript)} messages) for call {call_sid}")
             
             if not transcript:
                 logger.warning(f"No transcript messages found for call {call_sid}")
@@ -571,9 +617,59 @@ class CallHandler:
                     "content": content.strip()
                 })
             
-            logger.debug(f"Extracted {len(transcript)} conversation messages")
+            # Consolidate consecutive messages from the same role
+            transcript = self._consolidate_transcript(transcript)
+            
+            logger.debug(f"Extracted {len(transcript)} conversation messages after consolidation")
                 
         except Exception as e:
             logger.exception(f"Error extracting transcript: {e}")
             
         return transcript
+    
+    def _consolidate_transcript(self, transcript: List[Dict[str, str]]) -> List[Dict[str, str]]:
+        """
+        Consolidate consecutive messages from the same role into single messages.
+        
+        This handles STT fragmentation where user speech is split into multiple
+        messages (e.g., "Is there" + "a hold." becomes "Is there a hold.").
+        Works with any STT provider.
+        
+        Args:
+            transcript: List of transcript entries with role and content
+            
+        Returns:
+            Consolidated transcript with merged consecutive same-role messages
+        """
+        if not transcript:
+            return transcript
+        
+        consolidated = []
+        current_role = None
+        current_content_parts = []
+        
+        for msg in transcript:
+            role = msg.get("role")
+            content = msg.get("content", "")
+            
+            if role == current_role:
+                # Same role as previous, accumulate content
+                current_content_parts.append(content)
+            else:
+                # Different role, save previous and start new
+                if current_role and current_content_parts:
+                    consolidated.append({
+                        "role": current_role,
+                        "content": " ".join(current_content_parts)
+                    })
+                current_role = role
+                current_content_parts = [content]
+        
+        # Don't forget the last message
+        if current_role and current_content_parts:
+            consolidated.append({
+                "role": current_role,
+                "content": " ".join(current_content_parts)
+            })
+        
+        return consolidated
