@@ -47,6 +47,7 @@ class FunctionMapper:
         to_number: str = None,
         twilio_account_sid: str = None,
         twilio_auth_token: str = None,
+        transcript_callback: Callable[[str, str], None] = None,
     ):
         """
         Initialize function mapper with call context and Twilio credentials.
@@ -58,11 +59,13 @@ class FunctionMapper:
             to_number: The hotel's phone number that was called
             twilio_account_sid: Hotel's Twilio sub-account SID
             twilio_auth_token: Hotel's Twilio sub-account auth token
+            transcript_callback: Callback(role, content) to track spoken text
         """
         self.call_sid = call_sid
         self.stream_sid = stream_sid
         self.from_number = from_number
         self.to_number = to_number
+        self.transcript_callback = transcript_callback
         
         # Store flow executors by tool name for state persistence across turns
         self._flow_executors: Dict[str, FlowExecutor] = {}
@@ -75,8 +78,32 @@ class FunctionMapper:
         if self.twilio_account_sid and self.twilio_auth_token:
             self.twilio_client = TwilioClient(self.twilio_account_sid, self.twilio_auth_token)
             logger.info(f"✅ Twilio client initialized for call {call_sid} (Account: {self.twilio_account_sid[:10]}...)")
-        else:
-            logger.warning(f"⚠️ Twilio client NOT initialized - missing credentials")
+    
+    def track_tts(self, text: str):
+        """Track TTS output in transcript."""
+        if self.transcript_callback and text:
+            self.transcript_callback("assistant", text)
+    
+    def track_tool_usage(self, tool_name: str, is_flow: bool = False):
+        """Record tool usage in call log."""
+        if not self.call_sid:
+            return
+        try:
+            from ..database import SessionLocal
+            from ..services.call_logger import CallLogger
+            
+            db = SessionLocal()
+            try:
+                call_logger = CallLogger(db)
+                call_logger.record_tool_usage(
+                    call_sid=self.call_sid,
+                    tool_name=tool_name,
+                    is_flow=is_flow
+                )
+            finally:
+                db.close()
+        except Exception as e:
+            logger.warning(f"Failed to track tool usage: {e}")
     
     def map_tool_to_function(self, tool: Tool) -> tuple[Dict[str, Any], Callable]:
         """
@@ -155,10 +182,14 @@ class FunctionMapper:
             """
             import asyncio
             
+            # Track tool usage
+            self.track_tool_usage(tool.name)
+            
             # Speak pre-transfer message using the assistant's configured TTS voice
             await params.llm.push_frame(
                 TTSSpeakFrame(pre_message)
             )
+            self.track_tts(pre_message)
             
             # Wait for TTS audio to finish streaming to the caller
             # This ensures the caller hears the complete message before transfer
@@ -334,10 +365,14 @@ class FunctionMapper:
         
         async def end_call_handler(params: FunctionCallParams):
             """End the call gracefully."""
+            # Track tool usage
+            self.track_tool_usage(tool.name)
+            
             # Say goodbye
             await params.llm.push_frame(
                 TTSSpeakFrame(goodbye_message)
             )
+            self.track_tts(goodbye_message)
             
             # End session
             await params.llm.push_frame(EndFrame())
@@ -413,11 +448,15 @@ class FunctionMapper:
             """Handler for starting the flow."""
             logger.info(f"🎬 Starting flow: {tool.name}")
             
+            # Track flow usage
+            self.track_tool_usage(tool.name, is_flow=True)
+            
             # Get greeting from the flow
             greeting = executor.get_greeting()
             
             # Speak the greeting
             await params.llm.push_frame(TTSSpeakFrame(greeting))
+            self.track_tts(greeting)
             
             # Return flow info to LLM so it knows what to collect
             progress = executor.get_progress()
@@ -542,7 +581,9 @@ class FunctionMapper:
                 await params.llm.push_frame(EndFrame())
             
             elif result.get("action") == "end":
-                await params.llm.push_frame(TTSSpeakFrame(result.get("message", "Goodbye!")))
+                end_msg = result.get("message", "Goodbye!")
+                await params.llm.push_frame(TTSSpeakFrame(end_msg))
+                self.track_tts(end_msg)
                 await params.llm.push_frame(EndFrame())
             
             # Add current progress to result for LLM context

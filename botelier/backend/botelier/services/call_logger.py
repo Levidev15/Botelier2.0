@@ -191,6 +191,46 @@ class CallLogger:
             self.db.rollback()
             return False
     
+    def record_tool_usage(
+        self,
+        call_sid: str,
+        tool_name: str,
+        is_flow: bool = False
+    ) -> bool:
+        """
+        Record that a tool or flow was used during a call.
+        
+        Args:
+            call_sid: Twilio call SID
+            tool_name: Name of the tool or flow
+            is_flow: True if this is a flow, False if a regular tool
+            
+        Returns:
+            True if update was successful
+        """
+        try:
+            call_log = self.get_call_log(call_sid)
+            if not call_log:
+                logger.warning(f"Call log not found for SID: {call_sid}")
+                return False
+            
+            # Store tool/flow name (first tool takes precedence)
+            if is_flow:
+                if not call_log.flow_name:
+                    call_log.flow_name = tool_name
+            else:
+                if not call_log.tool_name:
+                    call_log.tool_name = tool_name
+            
+            self.db.commit()
+            logger.info(f"Recorded {'flow' if is_flow else 'tool'} usage: {tool_name} for call {call_sid}")
+            return True
+            
+        except Exception as e:
+            logger.exception(f"Error recording tool usage: {e}")
+            self.db.rollback()
+            return False
+    
     def record_transfer(
         self,
         call_sid: str,
