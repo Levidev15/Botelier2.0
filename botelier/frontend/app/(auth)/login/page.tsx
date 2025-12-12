@@ -4,26 +4,6 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff, Lock, Mail } from "lucide-react";
 
-function LoadingScreen() {
-  return (
-    <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
-      <div className="flex flex-col items-center gap-8">
-        <div className="relative">
-          <div className="w-16 h-16 rounded-2xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center animate-pulse">
-            <span className="text-2xl font-bold text-white">B</span>
-          </div>
-          <div className="absolute -inset-2 rounded-3xl bg-gradient-to-br from-blue-500/20 to-purple-600/20 blur-xl animate-pulse" />
-        </div>
-        <div className="flex items-center gap-1.5">
-          <div className="w-2 h-2 rounded-full bg-blue-500 animate-bounce" style={{ animationDelay: "0ms" }} />
-          <div className="w-2 h-2 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: "150ms" }} />
-          <div className="w-2 h-2 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: "300ms" }} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
 export default function LoginPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
@@ -33,43 +13,38 @@ export default function LoginPage() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [showForm, setShowForm] = useState(false);
   const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
 
   useEffect(() => {
-    const checkSession = async () => {
-      const storedToken = localStorage.getItem("botelier_token");
-      const storedUser = localStorage.getItem("botelier_user");
-      
-      if (storedToken && storedUser) {
-        try {
-          const res = await fetch("/api/auth/validate", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ token: storedToken }),
-          });
-          
-          const data = await res.json();
-          
-          if (data.valid) {
-            const redirectUrl = data.user?.user_type === "platform_admin" ? "/admin" : callbackUrl;
-            router.replace(redirectUrl);
-            return;
-          } else {
-            localStorage.removeItem("botelier_token");
-            localStorage.removeItem("botelier_user");
-          }
-        } catch (err) {
+    const storedToken = localStorage.getItem("botelier_token");
+    const storedUser = localStorage.getItem("botelier_user");
+    
+    if (!storedToken || !storedUser) {
+      setCheckingSession(false);
+      return;
+    }
+
+    fetch("/api/auth/validate", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token: storedToken }),
+    })
+      .then((res) => res.json())
+      .then((data) => {
+        if (data.valid) {
+          const redirectUrl = data.user?.user_type === "platform_admin" ? "/admin" : callbackUrl;
+          router.replace(redirectUrl);
+        } else {
           localStorage.removeItem("botelier_token");
           localStorage.removeItem("botelier_user");
+          setCheckingSession(false);
         }
-      }
-      
-      setCheckingSession(false);
-      setTimeout(() => setShowForm(true), 50);
-    };
-    
-    checkSession();
+      })
+      .catch(() => {
+        localStorage.removeItem("botelier_token");
+        localStorage.removeItem("botelier_user");
+        setCheckingSession(false);
+      });
   }, [callbackUrl, router]);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -103,16 +78,28 @@ export default function LoginPage() {
   };
 
   if (checkingSession) {
-    return <LoadingScreen />;
+    return (
+      <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
+        <div className="flex flex-col items-center gap-6">
+          <div className="relative">
+            <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
+              <span className="text-xl font-bold text-white">B</span>
+            </div>
+            <div className="absolute inset-0 rounded-xl bg-gradient-to-br from-blue-500/30 to-purple-600/30 blur-lg animate-pulse" />
+          </div>
+          <div className="flex items-center gap-1">
+            <div className="w-1.5 h-1.5 rounded-full bg-blue-500 animate-bounce" style={{ animationDelay: "0ms" }} />
+            <div className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-bounce" style={{ animationDelay: "150ms" }} />
+            <div className="w-1.5 h-1.5 rounded-full bg-purple-500 animate-bounce" style={{ animationDelay: "300ms" }} />
+          </div>
+        </div>
+      </div>
+    );
   }
 
   return (
     <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
-      <div 
-        className={`max-w-md w-full px-6 transition-all duration-500 ease-out ${
-          showForm ? "opacity-100 translate-y-0" : "opacity-0 translate-y-4"
-        }`}
-      >
+      <div className="max-w-md w-full px-6 animate-in fade-in slide-in-from-bottom-4 duration-500">
         <div className="bg-[#111111] border border-[#222222] rounded-xl p-8">
           <div className="text-center mb-8">
             <div className="w-12 h-12 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center mx-auto mb-4">
@@ -144,6 +131,7 @@ export default function LoginPage() {
                   value={email}
                   onChange={(e) => setEmail(e.target.value)}
                   required
+                  autoComplete="email"
                   className="w-full pl-10 pr-3 py-2 bg-[#0a0a0a] border border-[#333333] rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
                   placeholder="you@example.com"
                 />
@@ -161,6 +149,7 @@ export default function LoginPage() {
                   value={password}
                   onChange={(e) => setPassword(e.target.value)}
                   required
+                  autoComplete="current-password"
                   className="w-full pl-10 pr-10 py-2 bg-[#0a0a0a] border border-[#333333] rounded-lg text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 transition-colors"
                   placeholder="Enter your password"
                 />
@@ -181,7 +170,7 @@ export default function LoginPage() {
             >
               {isLoading ? (
                 <>
-                  <div className="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full"></div>
+                  <div className="animate-spin h-5 w-5 border-2 border-white border-t-transparent rounded-full" />
                   <span>Signing in...</span>
                 </>
               ) : (
