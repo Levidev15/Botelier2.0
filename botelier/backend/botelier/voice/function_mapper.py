@@ -14,6 +14,8 @@ if TYPE_CHECKING:
     from .call_handler import CallHandler
 from pipecat.frames.frames import EndFrame, TTSSpeakFrame
 from pipecat.services.llm_service import FunctionCallParams
+from pipecat.adapters.schemas.tools_schema import ToolsSchema
+from pipecat.adapters.schemas.function_schema import FunctionSchema
 from twilio.rest import Client as TwilioClient
 
 from botelier.models.tool import Tool, ToolType
@@ -73,6 +75,10 @@ class FunctionMapper:
         # Store flow executors by tool name for state persistence across turns
         self._flow_executors: Dict[str, FlowExecutor] = {}
         
+        # Store non-flow tool schemas for inclusion in dynamic tool updates
+        # These tools should always remain available even during flow execution
+        self._non_flow_tool_schemas: List[Dict[str, Any]] = []
+        
         # Twilio client for call transfers - use hotel's sub-account credentials
         self.twilio_client = None
         self.twilio_account_sid = twilio_account_sid or os.environ.get("TWILIO_ACCOUNT_SID")
@@ -103,6 +109,96 @@ class FunctionMapper:
                 db.close()
         except Exception as e:
             logger.warning(f"Failed to track tool usage: {e}")
+    
+    def register_non_flow_tool_schema(self, schema_dict: Dict[str, Any]):
+        """
+        Register a non-flow tool schema for inclusion in dynamic tool updates.
+        
+        These tools remain available during flow execution.
+        """
+        self._non_flow_tool_schemas.append(schema_dict)
+    
+    def update_llm_tools_for_flow(self, tool_name: str):
+        """
+        Update the LLM context tools to only expose the current/next slot function.
+        
+        This is called after each slot collection to enforce strict flow order.
+        The LLM will only see the function for the current slot, preventing it
+        from calling functions for slots that should be collected later.
+        
+        Non-flow tools (transfer, end call, etc.) and knowledge base remain available.
+        """
+        if not self.call_handler or not self.call_sid:
+            logger.warning("Cannot update LLM tools: missing call_handler or call_sid")
+            return
+        
+        llm_context = self.call_handler.call_contexts.get(self.call_sid)
+        if not llm_context:
+            logger.warning(f"Cannot update LLM tools: no context for call {self.call_sid}")
+            return
+        
+        executor = self._flow_executors.get(tool_name)
+        if not executor:
+            logger.warning(f"Cannot update LLM tools: no executor for flow {tool_name}")
+            return
+        
+        try:
+            flow_schemas = executor.get_function_schemas()
+            
+            function_schema_objects = []
+            
+            # 1. Always include knowledge base
+            knowledge_schema = FunctionSchema(
+                name="query_hotel_knowledge",
+                description="Query the hotel's knowledge base to answer guest questions about the hotel, amenities, policies, services, and local information.",
+                properties={
+                    "question": {
+                        "type": "string",
+                        "description": "The guest's question to look up in the knowledge base",
+                    },
+                },
+                required=["question"],
+            )
+            function_schema_objects.append(knowledge_schema)
+            
+            # 2. Include non-flow tools (transfer, end call, etc.)
+            for non_flow_schema in self._non_flow_tool_schemas:
+                func_schema = FunctionSchema(
+                    name=non_flow_schema["name"],
+                    description=non_flow_schema.get("description", ""),
+                    properties=non_flow_schema.get("parameters", {}).get("properties", {}),
+                    required=non_flow_schema.get("parameters", {}).get("required", []),
+                )
+                function_schema_objects.append(func_schema)
+            
+            # 3. Include flow trigger function
+            trigger_schema = FunctionSchema(
+                name=f"start_{tool_name}",
+                description=f"Start the {tool_name} conversation flow",
+                properties={},
+                required=[],
+            )
+            function_schema_objects.append(trigger_schema)
+            
+            # 4. Include current flow functions (only current slot due to get_function_schemas logic)
+            for schema in flow_schemas:
+                func_def = schema.get("function", schema)
+                func_schema = FunctionSchema(
+                    name=func_def["name"],
+                    description=func_def.get("description", ""),
+                    properties=func_def.get("parameters", {}).get("properties", {}),
+                    required=func_def.get("parameters", {}).get("required", []),
+                )
+                function_schema_objects.append(func_schema)
+            
+            new_tools = ToolsSchema(standard_tools=function_schema_objects)
+            llm_context.set_tools(new_tools)
+            
+            func_names = [f.name for f in function_schema_objects]
+            logger.info(f"🔄 Updated LLM tools for flow {tool_name}: {func_names}")
+            
+        except Exception as e:
+            logger.error(f"Failed to update LLM tools for flow {tool_name}: {e}")
     
     def map_tool_to_function(self, tool: Tool) -> tuple[Dict[str, Any], Callable]:
         """
@@ -573,6 +669,10 @@ class FunctionMapper:
             # Log collected data for debugging
             if result.get("collected"):
                 logger.info(f"Flow {tool_name} collected: {result['collected']}")
+                
+                # CRITICAL: Update LLM tools to only expose the next slot's function
+                # This enforces strict flow order by dynamically updating available tools
+                self.update_llm_tools_for_flow(tool_name)
             
             # Handle special actions
             if result.get("action") == "transfer":
@@ -620,6 +720,10 @@ class FunctionMapper:
             
             greeting = executor.get_greeting()
             progress = executor.get_progress()
+            
+            # Update LLM tools to only expose the first slot's function
+            # This ensures strict flow order from the start
+            self.update_llm_tools_for_flow(tool_name)
             
             # Get list of variables to collect for context
             variables_to_collect = [
