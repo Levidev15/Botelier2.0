@@ -11,7 +11,7 @@ Key Design Principle:
 """
 
 import os
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Callable
 from loguru import logger
 
 # Lazy imports for provider services to avoid startup issues with optional dependencies
@@ -21,6 +21,8 @@ from pipecat.pipeline.task import PipelineTask, PipelineParams
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.transcriptions.language import Language
+from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
+from pipecat.frames.frames import Frame, InterruptionFrame, TextFrame, TTSSpeakFrame
 
 from .agent import VoiceAgentConfig
 from ..config.providers import is_flux_model
@@ -29,6 +31,37 @@ try:
     from deepgram import LiveOptions
 except ImportError:
     LiveOptions = None
+
+
+class InterruptionTracker(FrameProcessor):
+    """
+    Tracks TTS content being spoken and detects when it's interrupted.
+    
+    Placed after TTS in the pipeline to monitor what's being spoken.
+    When an InterruptionFrame is detected, calls the callback with the
+    content that was interrupted.
+    """
+    
+    def __init__(self, on_interruption: Optional[Callable[[str], None]] = None, **kwargs):
+        super().__init__(**kwargs)
+        self._current_text = ""
+        self._on_interruption = on_interruption
+    
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        
+        # Track outgoing TTS content
+        if isinstance(frame, (TextFrame, TTSSpeakFrame)):
+            if hasattr(frame, 'text') and frame.text:
+                self._current_text = frame.text
+                logger.debug(f"🎤 Tracking TTS: {frame.text[:50]}...")
+        
+        # Detect interruption
+        if isinstance(frame, InterruptionFrame):
+            if self._current_text and self._on_interruption:
+                logger.info(f"🛑 Interruption detected for: {self._current_text[:50]}...")
+                self._on_interruption(self._current_text)
+            self._current_text = ""  # Reset after interruption
 
 
 class VoiceEngineFactory:
@@ -171,6 +204,7 @@ class VoiceEngineFactory:
         transport,
         function_schemas: Optional[list] = None,
         function_handlers: Optional[Dict[str, Any]] = None,
+        on_interruption: Optional[Callable[[str], None]] = None,
     ) -> tuple[Pipeline, PipelineTask, Any, Any, Any]:
         """
         Create complete voice pipeline from agent configuration
@@ -184,6 +218,7 @@ class VoiceEngineFactory:
             transport: WebSocket transport
             function_schemas: Optional list of FunctionSchema objects for function calling
             function_handlers: Optional dict mapping function names to async handlers
+            on_interruption: Optional callback called when user interrupts (receives interrupted text)
             
         Returns:
             Tuple of (pipeline, task, llm, context_aggregator, context) for external access
@@ -194,6 +229,9 @@ class VoiceEngineFactory:
         stt = VoiceEngineFactory.create_stt_service(config, api_keys)
         llm = VoiceEngineFactory.create_llm_service(config, api_keys)
         tts = VoiceEngineFactory.create_tts_service(config, api_keys)
+        
+        # Create interruption tracker to detect when user interrupts
+        interruption_tracker = InterruptionTracker(on_interruption=on_interruption)
         
         messages = [
             {
@@ -222,6 +260,7 @@ class VoiceEngineFactory:
                 stt,
                 context_aggregator.user(),
                 llm,
+                interruption_tracker,  # Track text frames before TTS and detect interruptions
                 tts,
                 transport.output(),
                 context_aggregator.assistant(),
