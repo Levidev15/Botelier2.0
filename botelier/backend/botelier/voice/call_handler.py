@@ -419,6 +419,10 @@ class CallHandler:
                         # Regular tool - single function
                         function_schema_dict, handler = mapper.map_tool_to_function(tool)
                         
+                        # Register non-flow tool schema for dynamic tool updates
+                        # These tools remain available during flow execution
+                        mapper.register_non_flow_tool_schema(function_schema_dict)
+                        
                         # Convert dict to FunctionSchema
                         tool_schema = FunctionSchema(
                             name=function_schema_dict["name"],
