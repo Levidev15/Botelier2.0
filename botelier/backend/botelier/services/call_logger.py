@@ -408,6 +408,19 @@ class CallLogger:
             
             next_leg_num = (max_leg.leg_number + 1) if max_leg else 1
             
+            # Use the AI leg's ended_at as the transfer leg's start time
+            # This captures the ringing/bridging time that would otherwise be lost
+            ai_leg = self.db.query(CallLeg).filter(
+                CallLeg.call_log_id == call_log.id,
+                CallLeg.leg_type == LegType.AI_CONVERSATION.value
+            ).first()
+            
+            transfer_started_at = datetime.utcnow()
+            if ai_leg and ai_leg.ended_at:
+                transfer_started_at = ai_leg.ended_at
+            elif call_log.answered_at:
+                transfer_started_at = call_log.answered_at
+            
             status_mapping = {
                 "initiated": CallStatus.INITIATED.value,
                 "ringing": CallStatus.RINGING.value,
@@ -428,7 +441,7 @@ class CallLogger:
                 call_sid=child_call_sid,
                 participant=to_number,
                 status=new_status,
-                started_at=datetime.utcnow(),
+                started_at=transfer_started_at,
             )
             self.db.add(transfer_leg)
             
