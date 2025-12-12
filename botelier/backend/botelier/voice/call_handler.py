@@ -179,23 +179,27 @@ class CallHandler:
             )
             
             # 6. Create Pipecat pipeline with function calling support
+            # Create interruption callback to track interrupted responses
+            def on_interruption(content: str):
+                self.mark_response_interrupted(call_sid, content)
+            
             pipeline, task, llm, context_aggregator, llm_context = VoiceEngineFactory.create_pipeline(
                 config=config,
                 api_keys=api_keys,
                 transport=transport,
                 function_schemas=function_schemas if function_schemas else None,
                 function_handlers=function_handlers if function_handlers else None,
+                on_interruption=on_interruption,
             )
             
             # 7. Update active call with task and context
             self.active_calls[call_sid] = task
             self.call_contexts[call_sid] = llm_context  # Store LLMContext directly for transcript extraction
             self.call_start_times[call_sid] = datetime.utcnow()
-            self.call_transcripts[call_sid] = []  # Initialize transcript tracking
+            self.interrupted_responses[call_sid] = set()  # Initialize interruption tracking
             
-            # 8. Queue greeting message and track it
+            # 8. Queue greeting message
             await task.queue_frames([TTSSpeakFrame(text=config.greeting_message)])
-            self.add_to_transcript(call_sid, "assistant", config.greeting_message)
             
             logger.info(f"▶️ Pipeline starting: STT ({config.stt_provider}) → LLM ({config.llm_provider}) → TTS ({config.tts_provider})")
             
