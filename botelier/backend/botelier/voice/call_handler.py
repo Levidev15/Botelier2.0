@@ -395,6 +395,7 @@ class CallHandler:
                     twilio_account_sid=twilio_account_sid,
                     twilio_auth_token=twilio_auth_token,
                     transcript_callback=transcript_callback,
+                    call_handler=self,
                 )
                 self.call_mappers[call_sid] = mapper
                 logger.info(f"Created FunctionMapper for call {call_sid}")
