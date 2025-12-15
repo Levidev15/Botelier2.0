@@ -617,15 +617,17 @@ class FunctionMapper:
             self._flow_executors[tool_name] = executor
             logger.info(f"Created new FlowExecutor for {tool_name}")
         
-        # Get all function schemas from the executor
-        function_schemas = executor.get_function_schemas()
+        # Get ALL function schemas for handler registration (so all handlers exist)
+        all_function_schemas = executor.get_all_function_schemas()
         
-        # Create handlers for each function - handlers reference the stored executor
+        # Create handlers for ALL functions (handlers must exist for any function LLM might call)
         handlers = {}
-        for schema in function_schemas:
+        for schema in all_function_schemas:
             func_name = schema["function"]["name"]
-            # Create handler that uses the stored executor (closure captures tool_name)
             handlers[func_name] = self._create_flow_function_handler(tool_name, func_name)
+        
+        # Get current function schemas for initial tool exposure (only current slot)
+        function_schemas = executor.get_function_schemas()
         
         # Add trigger function
         trigger_schema = {

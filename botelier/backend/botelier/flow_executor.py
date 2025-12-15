@@ -859,6 +859,63 @@ You are executing a structured conversation flow. Follow these guidelines:
         
         return functions
     
+    def get_all_function_schemas(self) -> list[dict]:
+        """
+        Generate ALL function schemas from the flow (for handler registration).
+        
+        Unlike get_function_schemas() which only returns the current slot,
+        this method returns ALL possible functions. Use this at initialization
+        to register all handlers, while get_function_schemas() is used for
+        dynamic tool updates.
+        """
+        functions = []
+        
+        for var in self.flow_config.variables:
+            func_schema = self._create_slot_function(var)
+            functions.append(func_schema)
+        
+        for node in self.flow_config.nodes:
+            if node.type == NodeType.API_REQUEST:
+                func_schema = self._create_api_function(node)
+                functions.append(func_schema)
+            elif node.type == NodeType.ROUTER:
+                func_schema = self._create_router_function(node)
+                functions.append(func_schema)
+            elif node.type == NodeType.CONFIRMATION:
+                func_schema = self._create_confirmation_function(node)
+                functions.append(func_schema)
+            elif node.type == NodeType.SET_VARIABLE:
+                func_schema = self._create_set_variable_function(node)
+                functions.append(func_schema)
+            elif node.type == NodeType.TRANSFER:
+                func_schema = self._create_transfer_function(node)
+                functions.append(func_schema)
+            elif node.type == NodeType.END:
+                func_schema = self._create_end_function(node)
+                functions.append(func_schema)
+        
+        has_confirmation_node = any(node.type == NodeType.CONFIRMATION for node in self.flow_config.nodes)
+        if not has_confirmation_node:
+            functions.append({
+                "type": "function",
+                "function": {
+                    "name": "confirm_booking",
+                    "description": "Confirm the booking details with the guest after all information is collected.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "confirmed": {
+                                "type": "boolean",
+                                "description": "Whether the guest confirmed the booking details"
+                            }
+                        },
+                        "required": ["confirmed"]
+                    }
+                }
+            })
+        
+        return functions
+    
     def _create_slot_function(self, var: FlowVariable) -> dict:
         """Create a function schema for collecting a slot."""
         validation = self._get_validation_for_variable(var.key) or {}
