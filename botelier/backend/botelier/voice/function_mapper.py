@@ -710,6 +710,9 @@ class FunctionMapper:
         async def handler(params: FunctionCallParams):
             logger.info(f"🎬 Starting flow: {tool_name}")
             
+            # Track flow usage in call logs
+            self.track_tool_usage(tool_name, is_flow=True)
+            
             # Look up the stored executor
             executor = self._flow_executors.get(tool_name)
             if not executor:
