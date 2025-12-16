@@ -1,8 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useAccountContext } from "@/components/AccountContext";
-import { notify } from "@/lib/notify";
+import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { 
   Plug, 
   Check, 
@@ -84,7 +83,6 @@ export default function IntegrationsPage() {
       }
     } catch (error) {
       console.error("Failed to fetch integrations:", error);
-      notify.error("Failed to load integrations");
     } finally {
       setLoading(false);
     }
@@ -112,14 +110,12 @@ export default function IntegrationsPage() {
       );
 
       if (response.ok) {
-        notify.success("Integration disconnected");
         fetchIntegrations();
       } else {
-        notify.error("Failed to disconnect integration");
+        console.error("Failed to disconnect integration");
       }
     } catch (error) {
       console.error("Failed to disconnect:", error);
-      notify.error("Failed to disconnect integration");
     }
   };
 
@@ -134,14 +130,11 @@ export default function IntegrationsPage() {
 
       const result = await response.json();
 
-      if (result.success) {
-        notify.success("Connection test successful!");
-      } else {
-        notify.error(result.message || "Connection test failed");
+      if (!result.success) {
+        console.error(result.message || "Connection test failed");
       }
     } catch (error) {
       console.error("Test failed:", error);
-      notify.error("Failed to test connection");
     } finally {
       setTesting(null);
     }
@@ -155,7 +148,7 @@ export default function IntegrationsPage() {
       .map(f => f.label);
 
     if (missingFields.length > 0) {
-      notify.error(`Missing required fields: ${missingFields.join(", ")}`);
+      alert(`Missing required fields: ${missingFields.join(", ")}`);
       return;
     }
 
@@ -174,17 +167,15 @@ export default function IntegrationsPage() {
       const result = await response.json();
 
       if (result.status === "connected") {
-        notify.success("Integration connected successfully!");
         setShowConnectModal(false);
         fetchIntegrations();
       } else if (result.last_error) {
-        notify.error(`Connection failed: ${result.last_error}`);
+        alert(`Connection failed: ${result.last_error}`);
       } else {
-        notify.error("Failed to connect integration");
+        console.error("Failed to connect integration");
       }
     } catch (error) {
       console.error("Failed to connect:", error);
-      notify.error("Failed to connect integration");
     } finally {
       setConnecting(false);
     }
