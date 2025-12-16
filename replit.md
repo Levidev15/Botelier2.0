@@ -42,3 +42,11 @@ The architecture emphasizes clean branding ("Botelier"), flexible provider confi
 - **Twilio:** For phone number management, call handling, sub-account isolation, and call transfers.
 - **Pipecat Framework:** Underlying framework for the voice AI engine.
 - **Sonner:** For React toast notifications.
+
+### Multi-Tenant Integration System
+A platform-level integration registry allows accounts to connect their own third-party services (e.g., Oracle Opera Cloud PMS). Key features:
+- **IntegrationType Model:** Platform seeds available integration types with auth configs, required credential fields, and pre-configured API endpoints.
+- **AccountIntegration Model:** Per-account connections with encrypted credential storage using Fernet encryption.
+- **Flow Editor Integration:** API Request nodes support both Custom URL and Integration sources. When Integration is selected, users can choose from connected integrations and select pre-configured endpoints.
+- **Endpoints:** `/api/integrations/connections` returns account integrations with full integration type details including endpoints for flow editor dropdowns.
+- **Oracle Opera Cloud (OHIP):** First integration type seeded with OAuth 2.0 auth config and hospitality API endpoints (reservations, guests, profiles, etc.).

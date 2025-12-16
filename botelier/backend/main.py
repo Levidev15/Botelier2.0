@@ -9,7 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 import os
 
-from botelier.database import init_db
+from botelier.database import init_db, SessionLocal
 from botelier.api import tools_router
 from botelier.api.phone_numbers import router as phone_numbers_router
 from botelier.api.assistants import router as assistants_router
@@ -25,6 +25,7 @@ from botelier.api.admin import router as admin_router
 from botelier.api.invitations import router as invitations_router
 from botelier.api.auth import router as auth_router
 from botelier.api.dispositions import router as dispositions_router
+from botelier.api.integrations import router as integrations_router
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -60,6 +61,7 @@ app.include_router(simulation_router)
 app.include_router(invitations_router)  # Public invitation endpoints
 app.include_router(auth_router)  # Email/password auth endpoints
 app.include_router(dispositions_router)  # Assistant dispositions
+app.include_router(integrations_router)  # Third-party integrations (Opera Cloud, etc.)
 
 
 @app.on_event("startup")
@@ -69,6 +71,14 @@ async def startup_event():
     print(f"📊 Database: {os.environ.get('DATABASE_URL', 'Not configured')[:50]}...")
     init_db()
     print("✅ Database initialized")
+    
+    from botelier.seeds.opera_integration import seed_opera_integration
+    db = SessionLocal()
+    try:
+        seed_opera_integration(db)
+        print("✅ Integration types seeded")
+    finally:
+        db.close()
 
 
 @app.get("/api/health")
