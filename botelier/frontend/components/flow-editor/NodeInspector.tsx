@@ -664,43 +664,207 @@ function CollectFormNodePanel({ data, nodeId }: { data: CollectFormNodeData; nod
   );
 }
 
+interface AccountIntegration {
+  id: string;
+  integration_type_id: string;
+  integration_type: {
+    id: string;
+    name: string;
+    slug: string;
+    endpoints: Array<{
+      id: string;
+      name: string;
+      method: string;
+      path: string;
+      description?: string;
+      request_schema?: Record<string, unknown>;
+      response_schema?: Record<string, unknown>;
+    }>;
+  };
+  status: string;
+}
+
 function APIRequestNodePanel({ data, nodeId }: { data: APIRequestNodeData; nodeId: string }) {
   const { updateNodeData, variables } = useFlowStore();
-  const api = data.api || { method: "GET" as const, url: "" };
+  const api = data.api || { method: "GET" as const, url: "", apiSource: "custom" as const };
   const [showResponseMapping, setShowResponseMapping] = useState(false);
+  const [integrations, setIntegrations] = useState<AccountIntegration[]>([]);
+  const [loadingIntegrations, setLoadingIntegrations] = useState(false);
+
+  useEffect(() => {
+    const fetchIntegrations = async () => {
+      setLoadingIntegrations(true);
+      try {
+        const response = await fetch("/api/integrations/connections");
+        if (response.ok) {
+          const data = await response.json();
+          setIntegrations(data.filter((i: AccountIntegration) => i.status === "active"));
+        }
+      } catch (error) {
+        console.error("Failed to fetch integrations:", error);
+      } finally {
+        setLoadingIntegrations(false);
+      }
+    };
+    fetchIntegrations();
+  }, []);
 
   const updateApi = (updates: Partial<typeof api>) => {
     updateNodeData(nodeId, { api: { ...api, ...updates } });
   };
 
+  const selectedIntegration = integrations.find(i => i.id === api.integrationId);
+  const selectedEndpoint = selectedIntegration?.integration_type.endpoints.find(e => e.id === api.endpointId);
+
+  const handleIntegrationChange = (integrationId: string) => {
+    const integration = integrations.find(i => i.id === integrationId);
+    updateApi({
+      integrationId,
+      integrationSlug: integration?.integration_type.slug,
+      endpointId: undefined,
+      endpointName: undefined,
+      url: "",
+      method: "GET" as const,
+      bodyTemplate: "",
+    });
+  };
+
+  const handleEndpointChange = (endpointId: string) => {
+    const endpoint = selectedIntegration?.integration_type.endpoints.find(e => e.id === endpointId);
+    if (endpoint) {
+      let bodyTemplate = "";
+      if (endpoint.request_schema && (endpoint.method === "POST" || endpoint.method === "PUT")) {
+        bodyTemplate = JSON.stringify(endpoint.request_schema, null, 2);
+      }
+      updateApi({
+        endpointId,
+        endpointName: endpoint.name,
+        method: endpoint.method as "GET" | "POST" | "PUT" | "DELETE",
+        url: endpoint.path,
+        bodyTemplate,
+      });
+    }
+  };
+
+  const apiSource = api.apiSource || "custom";
+
   return (
     <div className="space-y-4">
-      <div className="grid grid-cols-3 gap-2">
-        <div>
-          <label className="block text-sm font-medium text-gray-400 mb-1">Method</label>
-          <select
-            value={api.method}
-            onChange={(e) => updateApi({ method: e.target.value as typeof api.method })}
-            className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-orange-500 focus:outline-none"
-          >
-            <option value="GET">GET</option>
-            <option value="POST">POST</option>
-            <option value="PUT">PUT</option>
-            <option value="DELETE">DELETE</option>
-          </select>
-        </div>
-        
-        <div className="col-span-2">
-          <label className="block text-sm font-medium text-gray-400 mb-1">URL</label>
-          <input
-            type="text"
-            value={api.url || ""}
-            onChange={(e) => updateApi({ url: e.target.value })}
-            className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-orange-500 focus:outline-none font-mono text-xs"
-            placeholder="https://api.example.com/endpoint"
-          />
-        </div>
+      <div>
+        <label className="block text-sm font-medium text-gray-400 mb-1">API Source</label>
+        <select
+          value={apiSource}
+          onChange={(e) => {
+            const newSource = e.target.value as "custom" | "integration";
+            updateApi({ 
+              apiSource: newSource,
+              integrationId: undefined,
+              integrationSlug: undefined,
+              endpointId: undefined,
+              endpointName: undefined,
+              url: newSource === "custom" ? api.url : "",
+            });
+          }}
+          className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-orange-500 focus:outline-none"
+        >
+          <option value="custom">Custom URL</option>
+          <option value="integration">Integration</option>
+        </select>
       </div>
+
+      {apiSource === "integration" && (
+        <>
+          <div>
+            <label className="block text-sm font-medium text-gray-400 mb-1">Connected Integration</label>
+            <select
+              value={api.integrationId || ""}
+              onChange={(e) => handleIntegrationChange(e.target.value)}
+              className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-orange-500 focus:outline-none"
+              disabled={loadingIntegrations}
+            >
+              <option value="">
+                {loadingIntegrations ? "Loading..." : integrations.length === 0 ? "No integrations connected" : "Select integration..."}
+              </option>
+              {integrations.map((integration) => (
+                <option key={integration.id} value={integration.id}>
+                  {integration.integration_type.name}
+                </option>
+              ))}
+            </select>
+            {integrations.length === 0 && !loadingIntegrations && (
+              <p className="text-xs text-gray-500 mt-1">
+                Connect integrations in the Integrations page to use them here.
+              </p>
+            )}
+          </div>
+
+          {selectedIntegration && (
+            <div>
+              <label className="block text-sm font-medium text-gray-400 mb-1">Endpoint</label>
+              <select
+                value={api.endpointId || ""}
+                onChange={(e) => handleEndpointChange(e.target.value)}
+                className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-orange-500 focus:outline-none"
+              >
+                <option value="">Select endpoint...</option>
+                {selectedIntegration.integration_type.endpoints.map((endpoint) => (
+                  <option key={endpoint.id} value={endpoint.id}>
+                    {endpoint.method} - {endpoint.name}
+                  </option>
+                ))}
+              </select>
+            </div>
+          )}
+
+          {selectedEndpoint && (
+            <div className="bg-[#1a1a1a] rounded-lg p-3 border border-gray-700">
+              <div className="flex items-center gap-2 mb-2">
+                <span className={`px-2 py-0.5 rounded text-xs font-medium ${
+                  selectedEndpoint.method === "GET" ? "bg-green-900/50 text-green-400" :
+                  selectedEndpoint.method === "POST" ? "bg-blue-900/50 text-blue-400" :
+                  selectedEndpoint.method === "PUT" ? "bg-yellow-900/50 text-yellow-400" :
+                  "bg-red-900/50 text-red-400"
+                }`}>
+                  {selectedEndpoint.method}
+                </span>
+                <code className="text-xs text-gray-400 font-mono">{selectedEndpoint.path}</code>
+              </div>
+              {selectedEndpoint.description && (
+                <p className="text-xs text-gray-500">{selectedEndpoint.description}</p>
+              )}
+            </div>
+          )}
+        </>
+      )}
+
+      {apiSource === "custom" && (
+        <div className="grid grid-cols-3 gap-2">
+          <div>
+            <label className="block text-sm font-medium text-gray-400 mb-1">Method</label>
+            <select
+              value={api.method}
+              onChange={(e) => updateApi({ method: e.target.value as typeof api.method })}
+              className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-orange-500 focus:outline-none"
+            >
+              <option value="GET">GET</option>
+              <option value="POST">POST</option>
+              <option value="PUT">PUT</option>
+              <option value="DELETE">DELETE</option>
+            </select>
+          </div>
+          
+          <div className="col-span-2">
+            <label className="block text-sm font-medium text-gray-400 mb-1">URL</label>
+            <input
+              type="text"
+              value={api.url || ""}
+              onChange={(e) => updateApi({ url: e.target.value })}
+              className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-orange-500 focus:outline-none font-mono text-xs"
+              placeholder="https://api.example.com/endpoint"
+            />
+          </div>
+        </div>
+      )}
       
       {(api.method === "POST" || api.method === "PUT") && (
         <div>

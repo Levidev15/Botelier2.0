@@ -62,6 +62,11 @@ export interface APIRequestConfig {
   timeout?: number;
   retries?: number;
   retryDelay?: number;
+  apiSource?: "custom" | "integration";
+  integrationId?: string;
+  integrationSlug?: string;
+  endpointId?: string;
+  endpointName?: string;
 }
 
 export interface ConfirmationConfig {
