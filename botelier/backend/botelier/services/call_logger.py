@@ -74,8 +74,8 @@ class CallLogger:
             
             if status in ("completed", "busy", "failed", "no-answer", "canceled"):
                 call_log.ended_at = datetime.utcnow()
-                if duration_seconds is not None:
-                    call_log.duration_seconds = duration_seconds
+                if call_log.started_at:
+                    call_log.duration_seconds = int((call_log.ended_at - call_log.started_at).total_seconds())
             
             ai_leg = self.db.query(CallLeg).filter(
                 CallLeg.call_log_id == call_log.id,
@@ -85,9 +85,10 @@ class CallLogger:
             if ai_leg:
                 ai_leg.status = new_status
                 if status in ("completed", "busy", "failed", "no-answer", "canceled"):
-                    ai_leg.ended_at = datetime.utcnow()
-                    if duration_seconds is not None:
-                        ai_leg.duration_seconds = duration_seconds
+                    if not ai_leg.ended_at:
+                        ai_leg.ended_at = datetime.utcnow()
+                    if ai_leg.started_at:
+                        ai_leg.duration_seconds = int((ai_leg.ended_at - ai_leg.started_at).total_seconds())
             
             self.db.commit()
             logger.info(f"Updated call {call_sid} status to {new_status}")
