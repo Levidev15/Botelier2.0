@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useMemo } from "react";
-import { BookOpen, Plus, Grid3x3, List, Upload, Pencil, Trash2, AlertCircle, X, Search, Tag } from "lucide-react";
+import { BookOpen, Plus, Grid3x3, List, Upload, Download, Pencil, Trash2, AlertCircle, X, Search, Tag } from "lucide-react";
 import { notify, confirmAction } from "@/lib/notifications";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 
@@ -209,6 +209,30 @@ export default function KnowledgeBasesPage() {
   const activeCount = entries.filter(e => !e.is_expired).length;
   const expiredCount = entries.filter(e => e.is_expired).length;
 
+  const handleExportCSV = async () => {
+    if (!accountId) return;
+    try {
+      const res = await fetch(`/api/entries/export-csv?hotel_id=${accountId}&include_expired=true`);
+      if (!res.ok) {
+        notify.error("Failed to export entries");
+        return;
+      }
+      const blob = await res.blob();
+      const url = window.URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `knowledge_base_export_${new Date().toISOString().split("T")[0]}.csv`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      window.URL.revokeObjectURL(url);
+      notify.success("Knowledge base exported successfully");
+    } catch (error) {
+      console.error("Export failed:", error);
+      notify.error("Failed to export entries");
+    }
+  };
+
   return (
     <div className="flex-1 overflow-auto bg-[#0a0a0a]">
       <div className="max-w-7xl mx-auto px-6 py-8">
@@ -221,6 +245,14 @@ export default function KnowledgeBasesPage() {
             <p className="text-gray-400">Manage Q&A entries for AI assistants</p>
           </div>
           <div className="flex space-x-3">
+            <button 
+              onClick={handleExportCSV}
+              disabled={entries.length === 0}
+              className="flex items-center px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Download className="h-4 w-4 mr-2" />
+              Export CSV
+            </button>
             <button 
               onClick={() => setShowCSVModal(true)}
               className="flex items-center px-4 py-2 bg-gray-800 hover:bg-gray-700 text-white rounded-lg transition-colors"

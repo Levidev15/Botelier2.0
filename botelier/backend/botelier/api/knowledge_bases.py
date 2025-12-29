@@ -12,6 +12,7 @@ Endpoints:
 - DELETE /api/entries/bulk - Bulk delete entries
 - PUT /api/entries/bulk - Bulk update entries
 - POST /api/entries/import-csv - Bulk CSV import
+- GET /api/entries/export-csv - Export all entries to CSV
 """
 
 import csv
@@ -19,6 +20,7 @@ import io
 from datetime import date, datetime
 from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -153,6 +155,58 @@ async def list_entries(
         "entries": [entry.to_dict() for entry in entries],
         "total": len(entries)
     }
+
+
+@router.get("/export-csv")
+async def export_entries_csv(
+    hotel_id: str = Query(..., description="Hotel UUID"),
+    include_expired: bool = Query(True, description="Include expired entries"),
+    db: Session = Depends(get_db)
+):
+    """
+    Export all Q&A entries to CSV file.
+    
+    Query params:
+    - hotel_id: Hotel UUID (required)
+    - include_expired: Include expired entries (default: true)
+    
+    Returns:
+    - CSV file download
+    """
+    query = db.query(KnowledgeEntry).filter(KnowledgeEntry.hotel_id == hotel_id)
+    
+    if not include_expired:
+        today = date.today()
+        query = query.filter(
+            (KnowledgeEntry.expiration_date.is_(None)) | 
+            (KnowledgeEntry.expiration_date >= today)
+        )
+    
+    entries = query.order_by(KnowledgeEntry.created_at.desc()).all()
+    
+    output = io.StringIO()
+    writer = csv.writer(output)
+    
+    writer.writerow(["question", "answer", "category", "expiration_date", "created_at"])
+    
+    for entry in entries:
+        writer.writerow([
+            entry.question,
+            entry.answer,
+            entry.category or "",
+            entry.expiration_date.isoformat() if entry.expiration_date else "",
+            entry.created_at.isoformat() if entry.created_at else ""
+        ])
+    
+    output.seek(0)
+    
+    filename = f"knowledge_base_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+    
+    return StreamingResponse(
+        iter([output.getvalue()]),
+        media_type="text/csv",
+        headers={"Content-Disposition": f"attachment; filename={filename}"}
+    )
 
 
 @router.delete("/bulk", status_code=200)
