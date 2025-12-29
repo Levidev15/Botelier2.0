@@ -260,10 +260,21 @@ class CallLogger:
                 logger.warning(f"Call log not found for SID: {call_sid}")
                 return False
             
+            leg_type = LegType.TRANSFER_SIP.value if transfer_type == "sip" else LegType.TRANSFER_EXTERNAL.value
+            
+            existing_transfer = self.db.query(CallLeg).filter(
+                CallLeg.call_log_id == call_log.id,
+                CallLeg.leg_type == leg_type,
+                CallLeg.participant == transfer_to
+            ).first()
+            
+            if existing_transfer:
+                logger.info(f"Transfer leg to {transfer_to} already exists for call {call_sid}, skipping duplicate")
+                return True
+            
             call_log.has_transfer = True
             call_log.outcome = CallOutcome.TRANSFERRED.value
             
-            # Mark the AI conversation leg as completed (transfer ends the AI portion)
             ai_leg = self.db.query(CallLeg).filter(
                 CallLeg.call_log_id == call_log.id,
                 CallLeg.leg_type == LegType.AI_CONVERSATION.value
@@ -281,8 +292,6 @@ class CallLogger:
             ).order_by(CallLeg.leg_number.desc()).first()
             
             next_leg_num = (max_leg.leg_number + 1) if max_leg else 1
-            
-            leg_type = LegType.TRANSFER_SIP.value if transfer_type == "sip" else LegType.TRANSFER_EXTERNAL.value
             
             transfer_leg = CallLeg(
                 call_log_id=call_log.id,
