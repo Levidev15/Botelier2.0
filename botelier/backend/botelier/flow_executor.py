@@ -62,6 +62,13 @@ class SlotConfig:
 
 
 @dataclass
+class ResponseVariableMapping:
+    variable_key: str
+    json_path: str
+    default_value: Optional[str] = None
+
+
+@dataclass
 class APIRequestConfig:
     method: str
     url: str
@@ -70,6 +77,14 @@ class APIRequestConfig:
     response_mapping: Optional[dict[str, str]] = None
     on_success: Optional[str] = None
     on_error: Optional[str] = None
+    api_source: str = "custom"
+    integration_id: Optional[str] = None
+    endpoint_id: Optional[str] = None
+    timeout: int = 30
+    retry_count: int = 2
+    response_variables: list[ResponseVariableMapping] = field(default_factory=list)
+    on_not_found: Optional[str] = None
+    on_auth_error: Optional[str] = None
 
 
 @dataclass
@@ -259,12 +274,16 @@ class FlowExecutor:
         speak_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         transfer_callback: Optional[Callable[[str, str], Awaitable[None]]] = None,
         end_call_callback: Optional[Callable[[str], Awaitable[None]]] = None,
+        db_session: Optional[Any] = None,
+        account_id: Optional[str] = None,
     ):
         self.flow_config = flow_config
         self.state = FlowState(flow_config)
         self.speak_callback = speak_callback
         self.transfer_callback = transfer_callback
         self.end_call_callback = end_call_callback
+        self.db_session = db_session
+        self.account_id = account_id
     
     def get_variables_in_flow_order(self) -> list[FlowVariable]:
         """
@@ -1364,7 +1383,13 @@ You are executing a structured conversation flow. Follow these guidelines:
         return None
     
     async def _handle_api_request(self, function_name: str, arguments: dict) -> dict:
-        """Execute an API request."""
+        """
+        Execute an API request.
+        
+        Supports two modes:
+        1. Custom URL - Direct HTTP request to a specified URL
+        2. Integration - Uses IntegrationClient for authenticated requests to connected services
+        """
         node_id = function_name.replace("execute_", "")
         node = None
         for n in self.flow_config.nodes:
@@ -1376,67 +1401,246 @@ You are executing a structured conversation flow. Follow these guidelines:
             return {"success": False, "message": "API node not found", "action": None}
         
         api_config = node.data.get("api", {})
+        api_source = api_config.get("apiSource", "custom")
+        
+        if api_source == "integration" and api_config.get("integrationId"):
+            return await self._handle_integration_api_request(node_id, node, api_config)
+        else:
+            return await self._handle_custom_api_request(node_id, node, api_config)
+    
+    async def _handle_integration_api_request(self, node_id: str, node: FlowNode, api_config: dict) -> dict:
+        """Handle API request using IntegrationClient for connected integrations."""
+        from botelier.services.integration_client import (
+            IntegrationClient, IntegrationAPIConfig, ResponseVariable,
+            APIErrorType, get_llm_friendly_error_message
+        )
+        
+        if not self.account_id:
+            return {
+                "success": False,
+                "message": "Integration API calls require account context",
+                "action": None,
+                "current_node_id": node_id
+            }
+        
+        response_vars = []
+        for rv in api_config.get("responseVariables", []):
+            response_vars.append(ResponseVariable(
+                variable_key=rv.get("variableKey", ""),
+                json_path=rv.get("jsonPath", ""),
+                default_value=rv.get("defaultValue")
+            ))
+        
+        config = IntegrationAPIConfig(
+            integration_id=api_config.get("integrationId", ""),
+            endpoint_id=api_config.get("endpointId"),
+            method=api_config.get("method", "GET"),
+            path=api_config.get("path", api_config.get("url", "")),
+            headers=api_config.get("headers"),
+            body_template=api_config.get("bodyTemplate"),
+            timeout=api_config.get("timeout", 30),
+            retry_count=api_config.get("retryCount", 2),
+            response_variables=response_vars,
+            on_success_message=api_config.get("onSuccess", "Request completed successfully"),
+            on_error_message=api_config.get("onError", "There was an issue processing your request"),
+            on_not_found_message=api_config.get("onNotFound", "The requested information was not found"),
+            on_auth_error_message=api_config.get("onAuthError", "There was an authentication issue")
+        )
+        
+        client = IntegrationClient(self.account_id, db=self.db_session)
+        response = await client.execute_request(config, self.state.collected_slots)
+        
+        if response.success:
+            for var_key, value in response.extracted_variables.items():
+                self.state.set_variable(var_key, value)
+            
+            if api_config.get("responseMapping"):
+                for var_key, json_path in api_config["responseMapping"].items():
+                    value = self._extract_json_value(response.data, json_path)
+                    if value is not None:
+                        self.state.set_variable(var_key, value)
+            
+            next_node = self.state.get_next_node(node_id)
+            if next_node:
+                self.state.advance_to(next_node.id)
+                next_node_id = next_node.id
+            else:
+                self.state.advance_to(node_id)
+                next_node_id = node_id
+            
+            success_msg = config.on_success_message
+            success_msg = substitute_variables(success_msg, self.state.collected_slots)
+            
+            return {
+                "success": True,
+                "message": success_msg,
+                "action": None,
+                "response": response.data,
+                "extracted_variables": response.extracted_variables,
+                "current_node_id": next_node_id
+            }
+        else:
+            error_msg = get_llm_friendly_error_message(response, config)
+            error_msg = substitute_variables(error_msg, self.state.collected_slots)
+            
+            return {
+                "success": False,
+                "message": error_msg,
+                "action": None,
+                "error_type": response.error_type.value,
+                "status_code": response.status_code,
+                "current_node_id": node_id
+            }
+    
+    async def _handle_custom_api_request(self, node_id: str, node: FlowNode, api_config: dict) -> dict:
+        """Handle direct custom URL API request."""
         url = substitute_variables(api_config.get("url", ""), self.state.collected_slots)
+        timeout = api_config.get("timeout", 30)
+        retry_count = api_config.get("retryCount", 2)
+        
+        last_error = None
+        attempt = 0
+        
+        while attempt <= retry_count:
+            try:
+                async with httpx.AsyncClient(timeout=timeout) as client:
+                    method = api_config.get("method", "GET").upper()
+                    headers = api_config.get("headers", {})
+                    
+                    body = None
+                    if api_config.get("bodyTemplate"):
+                        body_str = substitute_variables(api_config["bodyTemplate"], self.state.collected_slots)
+                        body = json.loads(body_str)
+                    
+                    if method == "GET":
+                        response = await client.get(url, headers=headers)
+                    elif method == "POST":
+                        response = await client.post(url, headers=headers, json=body)
+                    elif method == "PUT":
+                        response = await client.put(url, headers=headers, json=body)
+                    elif method == "PATCH":
+                        response = await client.patch(url, headers=headers, json=body)
+                    elif method == "DELETE":
+                        response = await client.delete(url, headers=headers)
+                    else:
+                        return {"success": False, "message": f"Unsupported method: {method}", "action": None}
+                    
+                    return self._process_custom_api_response(node_id, api_config, response)
+            
+            except httpx.TimeoutException:
+                last_error = "Request timed out"
+                attempt += 1
+            except httpx.NetworkError as e:
+                last_error = str(e)
+                attempt += 1
+            except json.JSONDecodeError as e:
+                return {
+                    "success": False,
+                    "message": "Invalid request body format",
+                    "action": None,
+                    "error": str(e),
+                    "current_node_id": node_id
+                }
+            except Exception as e:
+                return {
+                    "success": False,
+                    "message": api_config.get("onError", "There was an issue processing your request"),
+                    "action": None,
+                    "error": str(e),
+                    "current_node_id": node_id
+                }
+        
+        return {
+            "success": False,
+            "message": api_config.get("onError", "Request failed after multiple attempts"),
+            "action": None,
+            "error": last_error,
+            "current_node_id": node_id
+        }
+    
+    def _process_custom_api_response(self, node_id: str, api_config: dict, response: httpx.Response) -> dict:
+        """Process response from custom API request."""
+        status_code = response.status_code
         
         try:
-            async with httpx.AsyncClient() as client:
-                method = api_config.get("method", "GET").upper()
-                headers = api_config.get("headers", {})
-                
-                body = None
-                if api_config.get("bodyTemplate"):
-                    body_str = substitute_variables(api_config["bodyTemplate"], self.state.collected_slots)
-                    body = json.loads(body_str)
-                
-                if method == "GET":
-                    response = await client.get(url, headers=headers)
-                elif method == "POST":
-                    response = await client.post(url, headers=headers, json=body)
-                elif method == "PUT":
-                    response = await client.put(url, headers=headers, json=body)
-                elif method == "DELETE":
-                    response = await client.delete(url, headers=headers)
-                else:
-                    return {"success": False, "message": f"Unsupported method: {method}", "action": None}
-                
-                if response.status_code >= 200 and response.status_code < 300:
-                    response_data = response.json()
-                    
-                    if api_config.get("responseMapping"):
-                        for var_key, json_path in api_config["responseMapping"].items():
-                            value = self._extract_json_value(response_data, json_path)
-                            if value is not None:
-                                self.state.set_variable(var_key, value)
-                    
-                    next_node = self.state.get_next_node(node_id)
-                    if next_node:
-                        self.state.advance_to(next_node.id)
-                        next_node_id = next_node.id
-                    else:
-                        self.state.advance_to(node_id)
-                        next_node_id = node_id
-                    
-                    return {
-                        "success": True,
-                        "message": api_config.get("onSuccess", "API request completed successfully"),
-                        "action": None,
-                        "response": response_data,
-                        "current_node_id": next_node_id
-                    }
-                else:
-                    return {
-                        "success": False,
-                        "message": api_config.get("onError", "There was an issue processing your request"),
-                        "action": None,
-                        "current_node_id": node_id
-                    }
+            response_data = response.json()
+        except json.JSONDecodeError:
+            response_data = response.text
         
-        except Exception as e:
+        if 200 <= status_code < 300:
+            if api_config.get("responseVariables"):
+                for rv in api_config["responseVariables"]:
+                    var_key = rv.get("variableKey")
+                    json_path = rv.get("jsonPath")
+                    if var_key and json_path:
+                        value = self._extract_json_value(response_data, json_path)
+                        if value is not None:
+                            self.state.set_variable(var_key, value)
+                        elif rv.get("defaultValue") is not None:
+                            self.state.set_variable(var_key, rv["defaultValue"])
+            
+            if api_config.get("responseMapping"):
+                for var_key, json_path in api_config["responseMapping"].items():
+                    value = self._extract_json_value(response_data, json_path)
+                    if value is not None:
+                        self.state.set_variable(var_key, value)
+            
+            next_node = self.state.get_next_node(node_id)
+            if next_node:
+                self.state.advance_to(next_node.id)
+                next_node_id = next_node.id
+            else:
+                self.state.advance_to(node_id)
+                next_node_id = node_id
+            
+            success_msg = api_config.get("onSuccess", "Request completed successfully")
+            success_msg = substitute_variables(success_msg, self.state.collected_slots)
+            
+            return {
+                "success": True,
+                "message": success_msg,
+                "action": None,
+                "response": response_data,
+                "current_node_id": next_node_id
+            }
+        
+        elif status_code == 401 or status_code == 403:
+            return {
+                "success": False,
+                "message": api_config.get("onAuthError", "There was an authentication issue with the request"),
+                "action": None,
+                "error_type": "auth_error",
+                "status_code": status_code,
+                "current_node_id": node_id
+            }
+        
+        elif status_code == 404:
+            return {
+                "success": False,
+                "message": api_config.get("onNotFound", "The requested information was not found"),
+                "action": None,
+                "error_type": "not_found",
+                "status_code": status_code,
+                "current_node_id": node_id
+            }
+        
+        elif status_code >= 500:
+            return {
+                "success": False,
+                "message": api_config.get("onError", "The server is experiencing difficulties"),
+                "action": None,
+                "error_type": "server_error",
+                "status_code": status_code,
+                "current_node_id": node_id
+            }
+        
+        else:
             return {
                 "success": False,
                 "message": api_config.get("onError", "There was an issue processing your request"),
                 "action": None,
-                "error": str(e),
+                "error_type": "unknown",
+                "status_code": status_code,
                 "current_node_id": node_id
             }
     

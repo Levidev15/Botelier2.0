@@ -53,6 +53,8 @@ class FunctionMapper:
         twilio_account_sid: str = None,
         twilio_auth_token: str = None,
         call_handler: "CallHandler" = None,
+        db_session = None,
+        account_id: str = None,
     ):
         """
         Initialize function mapper with call context and Twilio credentials.
@@ -65,12 +67,16 @@ class FunctionMapper:
             twilio_account_sid: Hotel's Twilio sub-account SID
             twilio_auth_token: Hotel's Twilio sub-account auth token
             call_handler: Reference to CallHandler for transcript saving
+            db_session: SQLAlchemy database session for integration API calls
+            account_id: Account ID for multi-tenant integration access
         """
         self.call_sid = call_sid
         self.stream_sid = stream_sid
         self.from_number = from_number
         self.to_number = to_number
         self.call_handler = call_handler
+        self.db_session = db_session
+        self.account_id = account_id
         
         # Store flow executors by tool name for state persistence across turns
         self._flow_executors: Dict[str, FlowExecutor] = {}
@@ -528,8 +534,12 @@ class FunctionMapper:
         # Parse the flow config into typed objects
         flow_config = parse_flow_config(flow_config_dict)
         
-        # Create flow executor
-        executor = FlowExecutor(flow_config)
+        # Create flow executor with db context for integration API calls
+        executor = FlowExecutor(
+            flow_config,
+            db_session=self.db_session,
+            account_id=self.account_id
+        )
         
         # Store executor for this flow (we might need to access collected data)
         if not hasattr(self, '_flow_executors'):
@@ -611,9 +621,13 @@ class FunctionMapper:
             executor = self._flow_executors[tool_name]
             logger.debug(f"Reusing existing FlowExecutor for {tool_name}")
         else:
-            # Parse and create new executor
+            # Parse and create new executor with db context for integration API calls
             flow_config = parse_flow_config(dict(flow_config_dict))
-            executor = FlowExecutor(flow_config)
+            executor = FlowExecutor(
+                flow_config,
+                db_session=self.db_session,
+                account_id=self.account_id
+            )
             self._flow_executors[tool_name] = executor
             logger.info(f"Created new FlowExecutor for {tool_name}")
         
