@@ -1,15 +1,17 @@
 """
-Knowledge Base RAG Handler - Query hotel knowledge bases via function calling.
+Knowledge Base Handler - Load and format hotel knowledge bases for voice AI.
 
-This module provides the RAG (Retrieval-Augmented Generation) function
-that Pipecat voice assistants can call to answer guest questions using
-the hotel's knowledge base Q&A entries.
+This module provides:
+1. load_knowledge_for_prompt() - Synchronously loads KB content for system prompt injection
+2. Legacy RAG functions (kept for backward compatibility but no longer primary)
 
-Pattern follows Pipecat's function calling standard (FunctionCallParams).
+The primary pattern is now direct KB injection into the LLM's system prompt,
+which leverages prompt caching and eliminates tool-call latency.
 """
 
 import os
-from typing import Dict, Any
+from datetime import date
+from typing import Dict, Any, Optional
 from loguru import logger
 from openai import AsyncOpenAI
 
@@ -19,6 +21,59 @@ from pipecat.services.llm_service import FunctionCallParams
 RAG_MODEL = "gpt-4o-mini"
 RAG_MAX_TOKENS = 100
 MAX_KNOWLEDGE_CHARS = 50000  # ~12.5k tokens - safe limit for context window
+
+
+def load_knowledge_for_prompt(hotel_id: str) -> str:
+    """
+    Load hotel knowledge base content for system prompt injection.
+    
+    This is the primary method for KB integration - content is injected directly
+    into the LLM's system prompt at call start, enabling:
+    - Prompt caching (KB content cached after first turn)
+    - No tool-call latency (LLM has context immediately)
+    - Consistent behavior (LLM always has KB available)
+    
+    Args:
+        hotel_id: Hotel UUID
+        
+    Returns:
+        Formatted KB content ready for system prompt injection.
+        Returns empty string if no entries found.
+    """
+    from botelier.database import SessionLocal
+    from botelier.models.knowledge_entry import KnowledgeEntry
+    
+    db = SessionLocal()
+    
+    try:
+        today = date.today()
+        entries = db.query(KnowledgeEntry).filter(
+            KnowledgeEntry.hotel_id == hotel_id,
+            (KnowledgeEntry.expiration_date.is_(None)) | 
+            (KnowledgeEntry.expiration_date >= today)
+        ).all()
+        
+        if not entries:
+            logger.info(f"No KB entries found for hotel {hotel_id}")
+            return ""
+        
+        qa_blocks = []
+        for entry in entries:
+            category_tag = f"[{entry.category}] " if entry.category else ""
+            qa_block = f"{category_tag}Q: {entry.question}\nA: {entry.answer}"
+            qa_blocks.append(qa_block)
+        
+        content = "\n\n".join(qa_blocks)
+        
+        if len(content) > MAX_KNOWLEDGE_CHARS:
+            logger.warning(f"KB too large ({len(content)} chars), truncating")
+            content = content[:MAX_KNOWLEDGE_CHARS] + "\n\n[... truncated]"
+        
+        logger.info(f"Loaded {len(entries)} KB entries ({len(content)} chars) for hotel {hotel_id}")
+        return content
+        
+    finally:
+        db.close()
 
 
 async def query_hotel_knowledge(params: FunctionCallParams) -> None:
@@ -74,7 +129,8 @@ async def load_hotel_knowledge(hotel_id: str) -> str:
     """
     Load all active (non-expired) Q&A entries for a hotel.
     
-    Simplified architecture: Entries belong directly to hotels.
+    DEPRECATED: Use load_knowledge_for_prompt() instead for system prompt injection.
+    This async version is kept for backward compatibility with tool-based RAG.
     
     Args:
         hotel_id: Hotel UUID
@@ -82,7 +138,6 @@ async def load_hotel_knowledge(hotel_id: str) -> str:
     Returns:
         Formatted Q&A entries ready for RAG context
     """
-    from datetime import date
     from botelier.database import SessionLocal
     from botelier.models.knowledge_entry import KnowledgeEntry
     
