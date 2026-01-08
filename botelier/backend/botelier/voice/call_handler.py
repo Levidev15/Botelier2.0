@@ -261,6 +261,11 @@ class CallHandler:
         """
         Convert database Assistant model to VoiceAgentConfig.
         
+        Injects knowledge base content directly into the system prompt for:
+        - Immediate access without tool-call latency
+        - Prompt caching on subsequent turns
+        - Better answer quality (LLM has full context)
+        
         Args:
             assistant: Database assistant model
             
@@ -268,8 +273,31 @@ class CallHandler:
             VoiceAgentConfig for pipeline creation
         """
         from botelier.voice.agent import AgentStatus
+        from botelier.voice.knowledge_handler import load_knowledge_for_prompt
         
         status = AgentStatus.ACTIVE if assistant.is_active else AgentStatus.PAUSED
+        
+        base_prompt = assistant.system_prompt or "You are a friendly hotel assistant."
+        
+        kb_content = load_knowledge_for_prompt(str(assistant.hotel_id))
+        
+        if kb_content:
+            enhanced_prompt = f"""{base_prompt}
+
+## KNOWLEDGE BASE
+You have access to the following Q&A knowledge base. Use this information to answer guest questions directly and confidently. Do NOT transfer the call or say you don't have information if the answer is in this knowledge base.
+
+{kb_content}
+
+## RESPONSE GUIDELINES
+- Answer questions from the knowledge base naturally and conversationally
+- Keep responses concise (under 50 words) since this is a phone call
+- Only transfer to a human if: (1) the caller explicitly requests to speak with someone, OR (2) the question requires information NOT in the knowledge base AND the caller needs urgent assistance
+- For general questions covered by the knowledge base, answer directly without offering to transfer"""
+            logger.info(f"📚 Injected KB ({len(kb_content)} chars) into system prompt for assistant {assistant.id}")
+        else:
+            enhanced_prompt = base_prompt
+            logger.info(f"📚 No KB content found for assistant {assistant.id}")
         
         return VoiceAgentConfig(
             agent_id=str(assistant.id),
@@ -291,7 +319,7 @@ class CallHandler:
             tts_model=assistant.tts_model,
             tts_speed=1.0,
             tts_config=assistant.tts_config or {},
-            system_prompt=assistant.system_prompt or "You are a friendly hotel assistant.",
+            system_prompt=enhanced_prompt,
             greeting_message=assistant.first_message or "Hello! How can I help you today?",
             enable_function_calling=True,
             enable_interruptions=True,
