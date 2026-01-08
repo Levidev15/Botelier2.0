@@ -376,34 +376,15 @@ You have access to the following Q&A knowledge base. Use this information to ans
             Tuple of (function_schemas, function_handlers)
         """
         from pipecat.adapters.schemas.function_schema import FunctionSchema
-        from botelier.voice.knowledge_handler import query_hotel_knowledge
         
         function_schemas = []
         function_handlers = {}
         
-        # 1. Add knowledge base function (ALWAYS available, even with zero custom tools)
-        knowledge_schema = FunctionSchema(
-            name="query_hotel_knowledge",
-            description="Query the hotel's knowledge base to answer guest questions about the hotel, amenities, policies, services, and local information. Use this when guests ask questions about the hotel.",
-            properties={
-                "question": {
-                    "type": "string",
-                    "description": "The guest's question to look up in the knowledge base",
-                },
-            },
-            required=["question"],
-        )
-        function_schemas.append(knowledge_schema)
+        # NOTE: Knowledge base is now injected directly into the system prompt
+        # in _create_agent_config() for faster response times and prompt caching.
+        # The query_hotel_knowledge tool is no longer registered here.
         
-        async def knowledge_handler_wrapper(params):
-            """Wrapper to inject hotel_id into knowledge base queries."""
-            params.arguments["hotel_id"] = str(assistant.hotel_id)
-            await query_hotel_knowledge(params)
-        
-        function_handlers["query_hotel_knowledge"] = knowledge_handler_wrapper
-        logger.info(f"✅ Built knowledge base function schema for hotel {assistant.hotel_id}")
-        
-        # 2. Add database tools
+        # Add database tools
         if tools:
             # Get or create FunctionMapper for this call session
             # This ensures FlowExecutor state persists across function calls
