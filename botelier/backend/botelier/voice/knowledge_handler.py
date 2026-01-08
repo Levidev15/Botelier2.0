@@ -38,8 +38,12 @@ def load_knowledge_for_prompt(hotel_id: str) -> str:
         
     Returns:
         Formatted KB content ready for system prompt injection.
-        Returns empty string if no entries found.
+        Returns empty string if no entries found or hotel_id is invalid.
     """
+    if not hotel_id or not hotel_id.strip():
+        logger.warning("load_knowledge_for_prompt called without hotel_id - returning empty KB")
+        return ""
+    
     from botelier.database import SessionLocal
     from botelier.models.knowledge_entry import KnowledgeEntry
     
