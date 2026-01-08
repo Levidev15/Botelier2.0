@@ -279,7 +279,11 @@ class CallHandler:
         
         base_prompt = assistant.system_prompt or "You are a friendly hotel assistant."
         
-        kb_content = load_knowledge_for_prompt(str(assistant.hotel_id))
+        try:
+            kb_content = load_knowledge_for_prompt(str(assistant.hotel_id))
+        except Exception as e:
+            logger.error(f"Failed to load KB for assistant {assistant.id}: {e}")
+            kb_content = ""
         
         if kb_content:
             enhanced_prompt = f"""{base_prompt}
