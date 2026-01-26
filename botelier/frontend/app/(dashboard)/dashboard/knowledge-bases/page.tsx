@@ -190,6 +190,7 @@ export default function KnowledgeBasesPage() {
       }
 
       let imported = 0;
+      let failed = 0;
       for (let i = 1; i < lines.length; i++) {
         const values = lines[i].match(/("([^"]|"")*"|[^,]+)/g) || [];
         const cleanValue = (v: string) => v?.replace(/^"|"$/g, '').replace(/""/g, '"').trim() || '';
@@ -200,16 +201,24 @@ export default function KnowledgeBasesPage() {
         const expiration_date = cleanValue(values[3]) || null;
 
         if (question && answer) {
-          await fetch(`/api/knowledge-bases/${selectedKB.id}/entries`, {
+          const res = await fetch(`/api/knowledge-bases/${selectedKB.id}/entries`, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ question, answer, category, expiration_date }),
           });
-          imported++;
+          if (res.ok) {
+            imported++;
+          } else {
+            failed++;
+          }
         }
       }
 
-      notify.success(`Imported ${imported} entries`);
+      if (failed > 0) {
+        notify.info(`Imported ${imported} entries, ${failed} failed`);
+      } else {
+        notify.success(`Imported ${imported} entries`);
+      }
       fetchEntries(selectedKB.id);
     } catch (error) {
       notify.error("Failed to import CSV");
