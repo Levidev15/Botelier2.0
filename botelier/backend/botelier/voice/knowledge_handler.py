@@ -23,9 +23,9 @@ RAG_MAX_TOKENS = 100
 MAX_KNOWLEDGE_CHARS = 50000  # ~12.5k tokens - safe limit for context window
 
 
-def load_knowledge_for_prompt(hotel_id: str) -> str:
+def load_knowledge_for_prompt(knowledge_base_id: str) -> str:
     """
-    Load hotel knowledge base content for system prompt injection.
+    Load knowledge base content for system prompt injection.
     
     This is the primary method for KB integration - content is injected directly
     into the LLM's system prompt at call start, enabling:
@@ -34,14 +34,14 @@ def load_knowledge_for_prompt(hotel_id: str) -> str:
     - Consistent behavior (LLM always has KB available)
     
     Args:
-        hotel_id: Hotel UUID
+        knowledge_base_id: Knowledge base UUID
         
     Returns:
         Formatted KB content ready for system prompt injection.
-        Returns empty string if no entries found or hotel_id is invalid.
+        Returns empty string if no entries found or knowledge_base_id is invalid.
     """
-    if not hotel_id or not hotel_id.strip():
-        logger.warning("load_knowledge_for_prompt called without hotel_id - returning empty KB")
+    if not knowledge_base_id or not knowledge_base_id.strip():
+        logger.warning("load_knowledge_for_prompt called without knowledge_base_id - returning empty KB")
         return ""
     
     from botelier.database import SessionLocal
@@ -52,13 +52,13 @@ def load_knowledge_for_prompt(hotel_id: str) -> str:
     try:
         today = date.today()
         entries = db.query(KnowledgeEntry).filter(
-            KnowledgeEntry.hotel_id == hotel_id,
+            KnowledgeEntry.knowledge_base_id == knowledge_base_id,
             (KnowledgeEntry.expiration_date.is_(None)) | 
             (KnowledgeEntry.expiration_date >= today)
         ).all()
         
         if not entries:
-            logger.info(f"No KB entries found for hotel {hotel_id}")
+            logger.info(f"No KB entries found for knowledge_base {knowledge_base_id}")
             return ""
         
         qa_blocks = []
@@ -73,7 +73,7 @@ def load_knowledge_for_prompt(hotel_id: str) -> str:
             logger.warning(f"KB too large ({len(content)} chars), truncating")
             content = content[:MAX_KNOWLEDGE_CHARS] + "\n\n[... truncated]"
         
-        logger.info(f"Loaded {len(entries)} KB entries ({len(content)} chars) for hotel {hotel_id}")
+        logger.info(f"Loaded {len(entries)} KB entries ({len(content)} chars) for knowledge_base {knowledge_base_id}")
         return content
         
     finally:

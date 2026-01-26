@@ -128,12 +128,15 @@ class CallHandler:
                 
                 # Fetch tools for function calling (if enabled) before closing session
                 tools = []
-                if config.enable_function_calling:
+                if config.enable_function_calling and assistant.tool_set_id:
                     from ..models.tool import Tool
                     tools = db.query(Tool).filter(
-                        Tool.hotel_id == assistant.hotel_id,
-                        Tool.is_active == "true"
+                        Tool.tool_set_id == assistant.tool_set_id,
+                        Tool.is_active == True
                     ).all()
+                    logger.info(f"Loaded {len(tools)} tools from tool_set {assistant.tool_set_id}")
+                elif config.enable_function_calling:
+                    logger.info(f"No tool set assigned to assistant {assistant.id}")
                 
             finally:
                 # CRITICAL: Close database session immediately after fetching data
@@ -279,11 +282,15 @@ class CallHandler:
         
         base_prompt = assistant.system_prompt or "You are a friendly hotel assistant."
         
-        try:
-            kb_content = load_knowledge_for_prompt(str(assistant.hotel_id))
-        except Exception as e:
-            logger.error(f"Failed to load KB for assistant {assistant.id}: {e}")
-            kb_content = ""
+        kb_content = ""
+        if assistant.knowledge_base_id:
+            try:
+                kb_content = load_knowledge_for_prompt(str(assistant.knowledge_base_id))
+            except Exception as e:
+                logger.error(f"Failed to load KB for assistant {assistant.id}: {e}")
+                kb_content = ""
+        else:
+            logger.info(f"No knowledge base assigned to assistant {assistant.id}")
         
         if kb_content:
             enhanced_prompt = f"""{base_prompt}

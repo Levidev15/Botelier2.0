@@ -37,6 +37,22 @@ interface Assistant {
   temperature: number | null;
   max_tokens: number | null;
   is_active: boolean;
+  knowledge_base_id: string | null;
+  tool_set_id: string | null;
+}
+
+interface KnowledgeBase {
+  id: string;
+  name: string;
+  description: string | null;
+  entry_count: number;
+}
+
+interface ToolSet {
+  id: string;
+  name: string;
+  description: string | null;
+  tool_count: number;
 }
 
 interface ProviderConfig {
@@ -91,10 +107,19 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
   });
   
   const [providers, setProviders] = useState<ProviderConfig>({ stt: {}, llm: {}, tts: {} });
+  const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
+  const [toolSets, setToolSets] = useState<ToolSet[]>([]);
 
   useEffect(() => {
     loadData();
   }, [mode, assistantId]);
+
+  useEffect(() => {
+    if (accountId) {
+      fetchKnowledgeBases();
+      fetchToolSets();
+    }
+  }, [accountId]);
 
   const loadData = async () => {
     if (mode === "edit" && assistantId) {
@@ -212,6 +237,28 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
       }
     } catch (error) {
       console.error("Failed to fetch providers:", error);
+    }
+  };
+
+  const fetchKnowledgeBases = async () => {
+    if (!accountId) return;
+    try {
+      const res = await fetch(`/api/knowledge-bases?account_id=${accountId}`);
+      const data = await res.json();
+      setKnowledgeBases(data.knowledge_bases || []);
+    } catch (error) {
+      console.error("Failed to fetch knowledge bases:", error);
+    }
+  };
+
+  const fetchToolSets = async () => {
+    if (!accountId) return;
+    try {
+      const res = await fetch(`/api/tool-sets?account_id=${accountId}`);
+      const data = await res.json();
+      setToolSets(data.tool_sets || []);
+    } catch (error) {
+      console.error("Failed to fetch tool sets:", error);
     }
   };
 
@@ -403,6 +450,42 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
               <option value="es">Spanish</option>
               <option value="fr">French</option>
               <option value="de">German</option>
+            </select>
+          </FormField>
+
+          <FormField 
+            label="Knowledge Base" 
+            description="Assign a knowledge base for the assistant to reference during calls"
+          >
+            <select
+              value={formData.knowledge_base_id || ""}
+              onChange={(e) => handleFieldChange("knowledge_base_id", e.target.value || null)}
+              className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+            >
+              <option value="">No knowledge base</option>
+              {knowledgeBases.map((kb) => (
+                <option key={kb.id} value={kb.id}>
+                  {kb.name} ({kb.entry_count} entries)
+                </option>
+              ))}
+            </select>
+          </FormField>
+
+          <FormField 
+            label="Tool Set" 
+            description="Assign a set of tools (actions) the assistant can perform during calls"
+          >
+            <select
+              value={formData.tool_set_id || ""}
+              onChange={(e) => handleFieldChange("tool_set_id", e.target.value || null)}
+              className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+            >
+              <option value="">No tool set</option>
+              {toolSets.map((ts) => (
+                <option key={ts.id} value={ts.id}>
+                  {ts.name} ({ts.tool_count} tools)
+                </option>
+              ))}
             </select>
           </FormField>
         </FormSection>
