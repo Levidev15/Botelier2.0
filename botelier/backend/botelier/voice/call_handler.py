@@ -132,7 +132,7 @@ class CallHandler:
                     from ..models.tool import Tool
                     tools = db.query(Tool).filter(
                         Tool.tool_set_id == assistant.tool_set_id,
-                        Tool.is_active == True
+                        Tool.is_active == "true"
                     ).all()
                     logger.info(f"Loaded {len(tools)} tools from tool_set {assistant.tool_set_id}")
                 elif config.enable_function_calling:
