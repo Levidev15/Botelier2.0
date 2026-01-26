@@ -96,7 +96,7 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
         is_active: true,
       };
 
-      const url = isEditMode ? `/api/tools/${tool.id}?hotel_id=${accountId}` : "/api/tools";
+      const url = isEditMode ? `/api/tools/${tool.id}` : "/api/tools";
       const method = isEditMode ? "PUT" : "POST";
 
       const response = await fetch(url, {
