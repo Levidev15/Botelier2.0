@@ -59,6 +59,7 @@ export default function KnowledgeBasesPage() {
   const [editingEntry, setEditingEntry] = useState<Entry | null>(null);
   const [searchQuery, setSearchQuery] = useState("");
   const [view, setView] = useState<"grid" | "table">("grid");
+  const [categoryFilter, setCategoryFilter] = useState<string>("");
 
   useEffect(() => {
     if (!contextLoading && accountId) {
@@ -144,7 +145,83 @@ export default function KnowledgeBasesPage() {
     }
   };
 
+  const handleExportCSV = () => {
+    if (!entries.length) {
+      notify.error("No entries to export");
+      return;
+    }
+
+    const headers = ["question", "answer", "category", "expiration_date"];
+    const csvContent = [
+      headers.join(","),
+      ...entries.map(e => [
+        `"${e.question.replace(/"/g, '""')}"`,
+        `"${e.answer.replace(/"/g, '""')}"`,
+        `"${(e.category || '').replace(/"/g, '""')}"`,
+        `"${e.expiration_date || ''}"`
+      ].join(","))
+    ].join("\n");
+
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const link = document.createElement("a");
+    link.href = URL.createObjectURL(blob);
+    link.download = `${selectedKB?.name || 'knowledge-base'}-entries.csv`;
+    link.click();
+    notify.success("Entries exported successfully");
+  };
+
+  const handleImportCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file || !selectedKB) return;
+
+    try {
+      const text = await file.text();
+      const lines = text.split("\n").filter(line => line.trim());
+      
+      if (lines.length < 2) {
+        notify.error("CSV file must have a header row and at least one data row");
+        return;
+      }
+
+      const header = lines[0].toLowerCase();
+      if (!header.includes("question") || !header.includes("answer")) {
+        notify.error("CSV must have 'question' and 'answer' columns");
+        return;
+      }
+
+      let imported = 0;
+      for (let i = 1; i < lines.length; i++) {
+        const values = lines[i].match(/("([^"]|"")*"|[^,]+)/g) || [];
+        const cleanValue = (v: string) => v?.replace(/^"|"$/g, '').replace(/""/g, '"').trim() || '';
+        
+        const question = cleanValue(values[0]);
+        const answer = cleanValue(values[1]);
+        const category = cleanValue(values[2]) || null;
+        const expiration_date = cleanValue(values[3]) || null;
+
+        if (question && answer) {
+          await fetch(`/api/knowledge-bases/${selectedKB.id}/entries`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ question, answer, category, expiration_date }),
+          });
+          imported++;
+        }
+      }
+
+      notify.success(`Imported ${imported} entries`);
+      fetchEntries(selectedKB.id);
+    } catch (error) {
+      notify.error("Failed to import CSV");
+    }
+
+    e.target.value = "";
+  };
+
+  const uniqueCategories = Array.from(new Set(entries.filter(e => e.category).map(e => e.category as string)));
+
   const filteredEntries = entries.filter(e => {
+    if (categoryFilter && e.category !== categoryFilter) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
     return e.question.toLowerCase().includes(q) || e.answer.toLowerCase().includes(q) || (e.category && e.category.toLowerCase().includes(q));
@@ -179,18 +256,39 @@ export default function KnowledgeBasesPage() {
                 placeholder="Search entries..."
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10 pr-4 py-2 bg-[#2A2A2A] border border-white/10 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#22C55E]/50 w-64"
+                className="pl-10 pr-4 py-2 bg-[#2A2A2A] border border-white/10 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#3B82F6]/50 w-64"
               />
             </div>
+            {uniqueCategories.length > 0 && (
+              <select
+                value={categoryFilter}
+                onChange={(e) => setCategoryFilter(e.target.value)}
+                className="px-3 py-2 bg-[#2A2A2A] border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-[#3B82F6]/50"
+              >
+                <option value="">All Categories</option>
+                {uniqueCategories.map((cat) => (
+                  <option key={cat} value={cat}>{cat}</option>
+                ))}
+              </select>
+            )}
             <div className="flex items-center bg-[#2A2A2A] border border-white/10 rounded-lg">
-              <button onClick={() => setView("grid")} className={`p-2 ${view === "grid" ? "text-[#22C55E]" : "text-white/60"}`}>
+              <button onClick={() => setView("grid")} className={`p-2 ${view === "grid" ? "text-[#3B82F6]" : "text-white/60"}`}>
                 <Grid3x3 className="w-4 h-4" />
               </button>
-              <button onClick={() => setView("table")} className={`p-2 ${view === "table" ? "text-[#22C55E]" : "text-white/60"}`}>
+              <button onClick={() => setView("table")} className={`p-2 ${view === "table" ? "text-[#3B82F6]" : "text-white/60"}`}>
                 <List className="w-4 h-4" />
               </button>
             </div>
-            <button onClick={() => setShowAddEntryModal(true)} className="flex items-center gap-2 px-4 py-2 bg-[#22C55E] hover:bg-[#22C55E]/80 text-black font-medium rounded-lg transition-colors">
+            <button onClick={handleExportCSV} className="flex items-center gap-2 px-3 py-2 bg-[#2A2A2A] border border-white/10 rounded-lg text-white/80 hover:text-white hover:border-white/20 transition-colors">
+              <Download className="w-4 h-4" />
+              Export
+            </button>
+            <label className="flex items-center gap-2 px-3 py-2 bg-[#2A2A2A] border border-white/10 rounded-lg text-white/80 hover:text-white hover:border-white/20 transition-colors cursor-pointer">
+              <Upload className="w-4 h-4" />
+              Import
+              <input type="file" accept=".csv" onChange={handleImportCSV} className="hidden" />
+            </label>
+            <button onClick={() => setShowAddEntryModal(true)} className="flex items-center gap-2 px-4 py-2 bg-[#3B82F6] hover:bg-[#3B82F6]/80 text-white font-medium rounded-lg transition-colors">
               <Plus className="w-4 h-4" />
               Add Entry
             </button>
@@ -202,7 +300,7 @@ export default function KnowledgeBasesPage() {
             <BookOpen className="w-12 h-12 text-white/20 mb-4" />
             <h3 className="text-lg font-medium text-white/80 mb-2">No entries yet</h3>
             <p className="text-white/40 text-sm mb-4">Add Q&A entries to build your knowledge base</p>
-            <button onClick={() => setShowAddEntryModal(true)} className="flex items-center gap-2 px-4 py-2 bg-[#22C55E] hover:bg-[#22C55E]/80 text-black font-medium rounded-lg transition-colors">
+            <button onClick={() => setShowAddEntryModal(true)} className="flex items-center gap-2 px-4 py-2 bg-[#3B82F6] hover:bg-[#3B82F6]/80 text-black font-medium rounded-lg transition-colors">
               <Plus className="w-4 h-4" />
               Add First Entry
             </button>
@@ -225,7 +323,7 @@ export default function KnowledgeBasesPage() {
                 <p className="text-white/60 text-sm line-clamp-3 mb-3">{entry.answer}</p>
                 <div className="flex items-center justify-between">
                   {entry.category && (
-                    <span className="inline-flex items-center gap-1 px-2 py-1 bg-[#22C55E]/10 text-[#22C55E] text-xs rounded-full">
+                    <span className="inline-flex items-center gap-1 px-2 py-1 bg-[#3B82F6]/10 text-[#3B82F6] text-xs rounded-full">
                       <Tag className="w-3 h-3" />
                       {entry.category}
                     </span>
@@ -243,6 +341,7 @@ export default function KnowledgeBasesPage() {
                   <th className="text-left text-xs text-white/60 font-medium px-4 py-3">Question</th>
                   <th className="text-left text-xs text-white/60 font-medium px-4 py-3">Answer</th>
                   <th className="text-left text-xs text-white/60 font-medium px-4 py-3 w-24">Category</th>
+                  <th className="text-left text-xs text-white/60 font-medium px-4 py-3 w-28">Expiration</th>
                   <th className="text-left text-xs text-white/60 font-medium px-4 py-3 w-24">Updated</th>
                   <th className="w-20"></th>
                 </tr>
@@ -254,9 +353,19 @@ export default function KnowledgeBasesPage() {
                     <td className="px-4 py-3 text-white/60 text-sm line-clamp-2">{entry.answer}</td>
                     <td className="px-4 py-3">
                       {entry.category && (
-                        <span className="inline-flex items-center gap-1 px-2 py-1 bg-[#22C55E]/10 text-[#22C55E] text-xs rounded-full">
+                        <span className="inline-flex items-center gap-1 px-2 py-1 bg-[#3B82F6]/10 text-[#3B82F6] text-xs rounded-full">
                           {entry.category}
                         </span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3">
+                      {entry.expiration_date ? (
+                        <span className={`text-xs ${entry.is_expired ? 'text-red-400' : 'text-white/60'}`}>
+                          {new Date(entry.expiration_date).toLocaleDateString()}
+                          {entry.is_expired && <AlertCircle className="w-3 h-3 inline ml-1" />}
+                        </span>
+                      ) : (
+                        <span className="text-white/30 text-xs">-</span>
                       )}
                     </td>
                     <td className="px-4 py-3 text-white/40 text-xs">{formatDate(entry.updated_at)}</td>
@@ -296,7 +405,7 @@ export default function KnowledgeBasesPage() {
           <h1 className="text-2xl font-semibold text-white">Knowledge Bases</h1>
           <p className="text-white/60 text-sm mt-1">Manage Q&A knowledge for your AI assistants</p>
         </div>
-        <button onClick={() => setShowCreateModal(true)} className="flex items-center gap-2 px-4 py-2 bg-[#22C55E] hover:bg-[#22C55E]/80 text-black font-medium rounded-lg transition-colors">
+        <button onClick={() => setShowCreateModal(true)} className="flex items-center gap-2 px-4 py-2 bg-[#3B82F6] hover:bg-[#3B82F6]/80 text-black font-medium rounded-lg transition-colors">
           <Plus className="w-4 h-4" />
           Create Knowledge Base
         </button>
@@ -307,7 +416,7 @@ export default function KnowledgeBasesPage() {
           <BookOpen className="w-12 h-12 text-white/20 mb-4" />
           <h3 className="text-lg font-medium text-white/80 mb-2">No knowledge bases yet</h3>
           <p className="text-white/40 text-sm mb-4">Create a knowledge base to store Q&A content for your assistants</p>
-          <button onClick={() => setShowCreateModal(true)} className="flex items-center gap-2 px-4 py-2 bg-[#22C55E] hover:bg-[#22C55E]/80 text-black font-medium rounded-lg transition-colors">
+          <button onClick={() => setShowCreateModal(true)} className="flex items-center gap-2 px-4 py-2 bg-[#3B82F6] hover:bg-[#3B82F6]/80 text-black font-medium rounded-lg transition-colors">
             <Plus className="w-4 h-4" />
             Create First Knowledge Base
           </button>
@@ -315,10 +424,10 @@ export default function KnowledgeBasesPage() {
       ) : (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
           {knowledgeBases.map((kb) => (
-            <div key={kb.id} onClick={() => selectKnowledgeBase(kb)} className="bg-[#1A1A1A] border border-white/10 rounded-xl p-5 hover:border-[#22C55E]/50 transition-colors cursor-pointer group">
+            <div key={kb.id} onClick={() => selectKnowledgeBase(kb)} className="bg-[#1A1A1A] border border-white/10 rounded-xl p-5 hover:border-[#3B82F6]/50 transition-colors cursor-pointer group">
               <div className="flex items-start justify-between mb-3">
-                <div className="p-2 bg-[#22C55E]/10 rounded-lg">
-                  <BookOpen className="w-5 h-5 text-[#22C55E]" />
+                <div className="p-2 bg-[#3B82F6]/10 rounded-lg">
+                  <BookOpen className="w-5 h-5 text-[#3B82F6]" />
                 </div>
                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
                   <button onClick={(e) => { e.stopPropagation(); setEditingKB(kb); setShowCreateModal(true); }} className="p-1.5 hover:bg-white/5 rounded">
@@ -333,7 +442,7 @@ export default function KnowledgeBasesPage() {
               <p className="text-white/60 text-sm mb-4 line-clamp-2">{kb.description || "No description"}</p>
               <div className="flex items-center justify-between">
                 <span className="text-white/40 text-sm">{kb.entry_count} entries</span>
-                <ChevronRight className="w-4 h-4 text-white/40 group-hover:text-[#22C55E] transition-colors" />
+                <ChevronRight className="w-4 h-4 text-white/40 group-hover:text-[#3B82F6] transition-colors" />
               </div>
             </div>
           ))}
@@ -406,7 +515,7 @@ function KBModal({ kb, accountId, onClose, onSave }: { kb: KnowledgeBase | null;
               value={name}
               onChange={(e) => setName(e.target.value)}
               placeholder="e.g., Front Desk FAQs"
-              className="w-full px-4 py-3 bg-[#2A2A2A] border border-white/10 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#22C55E]/50"
+              className="w-full px-4 py-3 bg-[#2A2A2A] border border-white/10 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#3B82F6]/50"
             />
           </div>
           <div>
@@ -416,14 +525,14 @@ function KBModal({ kb, accountId, onClose, onSave }: { kb: KnowledgeBase | null;
               onChange={(e) => setDescription(e.target.value)}
               placeholder="What topics does this knowledge base cover?"
               rows={3}
-              className="w-full px-4 py-3 bg-[#2A2A2A] border border-white/10 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#22C55E]/50 resize-none"
+              className="w-full px-4 py-3 bg-[#2A2A2A] border border-white/10 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#3B82F6]/50 resize-none"
             />
           </div>
         </div>
 
         <div className="flex justify-end gap-3 mt-6">
           <button onClick={onClose} className="px-4 py-2 text-white/60 hover:text-white transition-colors">Cancel</button>
-          <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-[#22C55E] hover:bg-[#22C55E]/80 text-black font-medium rounded-lg transition-colors disabled:opacity-50">
+          <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-[#3B82F6] hover:bg-[#3B82F6]/80 text-black font-medium rounded-lg transition-colors disabled:opacity-50">
             {saving ? "Saving..." : kb ? "Update" : "Create"}
           </button>
         </div>
@@ -436,6 +545,7 @@ function EntryModal({ entry, knowledgeBaseId, onClose, onSave }: { entry: Entry 
   const [question, setQuestion] = useState(entry?.question || "");
   const [answer, setAnswer] = useState(entry?.answer || "");
   const [category, setCategory] = useState(entry?.category || "");
+  const [expirationDate, setExpirationDate] = useState(entry?.expiration_date ? entry.expiration_date.split('T')[0] : "");
   const [saving, setSaving] = useState(false);
 
   const handleSave = async () => {
@@ -452,7 +562,12 @@ function EntryModal({ entry, knowledgeBaseId, onClose, onSave }: { entry: Entry 
       const res = await fetch(url, {
         method,
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ question, answer, category: category || null }),
+        body: JSON.stringify({ 
+          question, 
+          answer, 
+          category: category || null,
+          expiration_date: expirationDate || null
+        }),
       });
 
       if (res.ok) {
@@ -486,7 +601,7 @@ function EntryModal({ entry, knowledgeBaseId, onClose, onSave }: { entry: Entry 
               value={question}
               onChange={(e) => setQuestion(e.target.value)}
               placeholder="What is your question?"
-              className="w-full px-4 py-3 bg-[#2A2A2A] border border-white/10 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#22C55E]/50"
+              className="w-full px-4 py-3 bg-[#2A2A2A] border border-white/10 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#3B82F6]/50"
             />
           </div>
           <div>
@@ -496,7 +611,7 @@ function EntryModal({ entry, knowledgeBaseId, onClose, onSave }: { entry: Entry 
               onChange={(e) => setAnswer(e.target.value)}
               placeholder="Enter the answer..."
               rows={4}
-              className="w-full px-4 py-3 bg-[#2A2A2A] border border-white/10 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#22C55E]/50 resize-none"
+              className="w-full px-4 py-3 bg-[#2A2A2A] border border-white/10 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#3B82F6]/50 resize-none"
             />
           </div>
           <div>
@@ -506,14 +621,24 @@ function EntryModal({ entry, knowledgeBaseId, onClose, onSave }: { entry: Entry 
               value={category}
               onChange={(e) => setCategory(e.target.value)}
               placeholder="e.g., Amenities, Check-in, Policies"
-              className="w-full px-4 py-3 bg-[#2A2A2A] border border-white/10 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#22C55E]/50"
+              className="w-full px-4 py-3 bg-[#2A2A2A] border border-white/10 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#3B82F6]/50"
             />
+          </div>
+          <div>
+            <label className="block text-sm text-white/60 mb-2">Expiration Date</label>
+            <input
+              type="date"
+              value={expirationDate}
+              onChange={(e) => setExpirationDate(e.target.value)}
+              className="w-full px-4 py-3 bg-[#2A2A2A] border border-white/10 rounded-lg text-white focus:outline-none focus:border-[#3B82F6]/50"
+            />
+            <p className="text-white/40 text-xs mt-1">Optional - for time-limited promos or seasonal info</p>
           </div>
         </div>
 
         <div className="flex justify-end gap-3 mt-6">
           <button onClick={onClose} className="px-4 py-2 text-white/60 hover:text-white transition-colors">Cancel</button>
-          <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-[#22C55E] hover:bg-[#22C55E]/80 text-black font-medium rounded-lg transition-colors disabled:opacity-50">
+          <button onClick={handleSave} disabled={saving} className="px-4 py-2 bg-[#3B82F6] hover:bg-[#3B82F6]/80 text-black font-medium rounded-lg transition-colors disabled:opacity-50">
             {saving ? "Saving..." : entry ? "Update" : "Add Entry"}
           </button>
         </div>
