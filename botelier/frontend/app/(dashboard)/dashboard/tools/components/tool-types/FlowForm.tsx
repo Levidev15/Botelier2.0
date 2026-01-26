@@ -9,6 +9,7 @@ interface FlowFormProps {
   onSuccess: (tool: any) => void;
   onCancel: () => void;
   accountId: string;
+  toolSetId?: string;
 }
 
 interface FormData {
@@ -16,7 +17,7 @@ interface FormData {
   description: string;
 }
 
-export default function FlowForm({ onSuccess, onCancel, accountId }: FlowFormProps) {
+export default function FlowForm({ onSuccess, onCancel, accountId, toolSetId }: FlowFormProps) {
   const router = useRouter();
   const [formData, setFormData] = useState<FormData>({
     name: "",
@@ -58,7 +59,7 @@ export default function FlowForm({ onSuccess, onCancel, accountId }: FlowFormPro
           nodes: [],
           edges: [],
         },
-        hotel_id: accountId,
+        tool_set_id: toolSetId,
         is_active: true,
       };
 

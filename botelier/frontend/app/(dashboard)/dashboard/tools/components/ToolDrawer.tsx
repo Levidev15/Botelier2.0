@@ -22,6 +22,7 @@ interface ToolDrawerProps {
   onToolUpdated?: (tool: any) => void;
   editTool?: Tool | null;
   accountId: string;
+  toolSetId?: string;
 }
 
 export type ToolType =
@@ -32,7 +33,7 @@ export type ToolType =
   | "SEND_EMAIL"
   | "FLOW";
 
-export default function ToolDrawer({ isOpen, onClose, onToolCreated, onToolUpdated, editTool, accountId }: ToolDrawerProps) {
+export default function ToolDrawer({ isOpen, onClose, onToolCreated, onToolUpdated, editTool, accountId, toolSetId }: ToolDrawerProps) {
   const [selectedType, setSelectedType] = useState<ToolType | null>(null);
 
   const isEditMode = !!editTool;
@@ -110,6 +111,7 @@ export default function ToolDrawer({ isOpen, onClose, onToolCreated, onToolUpdat
                 onCancel={handleReset}
                 tool={editTool || undefined}
                 accountId={accountId}
+                toolSetId={toolSetId}
               />
             )}
 
@@ -142,6 +144,7 @@ export default function ToolDrawer({ isOpen, onClose, onToolCreated, onToolUpdat
                 onSuccess={handleToolSaved}
                 onCancel={handleReset}
                 accountId={accountId}
+                toolSetId={toolSetId}
               />
             )}
 
