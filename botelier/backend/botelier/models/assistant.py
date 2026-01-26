@@ -32,6 +32,10 @@ class Assistant(Base):
     # Ownership
     hotel_id = Column(UUID(as_uuid=True), ForeignKey("hotels.id"), nullable=False)
     
+    # Assigned collections (named KB and ToolSet)
+    knowledge_base_id = Column(UUID(as_uuid=True), ForeignKey("knowledge_bases.id"), nullable=True)
+    tool_set_id = Column(UUID(as_uuid=True), ForeignKey("tool_sets.id"), nullable=True)
+    
     # Basic info
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
@@ -88,6 +92,8 @@ class Assistant(Base):
         return {
             "id": str(self.id),
             "hotel_id": str(self.hotel_id),
+            "knowledge_base_id": str(self.knowledge_base_id) if self.knowledge_base_id else None,
+            "tool_set_id": str(self.tool_set_id) if self.tool_set_id else None,
             "name": self.name,
             "description": self.description,
             "stt_provider": self.stt_provider,

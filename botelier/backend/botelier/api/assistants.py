@@ -25,6 +25,8 @@ router = APIRouter(prefix="/api/assistants", tags=["assistants"])
 class AssistantCreate(BaseModel):
     """Assistant creation model."""
     hotel_id: str
+    knowledge_base_id: Optional[str] = None
+    tool_set_id: Optional[str] = None
     name: str
     description: Optional[str] = None
     stt_provider: str = "deepgram"
@@ -50,6 +52,8 @@ class AssistantCreate(BaseModel):
 
 class AssistantUpdate(BaseModel):
     """Assistant update model."""
+    knowledge_base_id: Optional[str] = None
+    tool_set_id: Optional[str] = None
     name: Optional[str] = None
     description: Optional[str] = None
     stt_provider: Optional[str] = None
@@ -83,6 +87,8 @@ class AssistantResponse(BaseModel):
     """Assistant response model."""
     id: str
     hotel_id: str
+    knowledge_base_id: Optional[str] = None
+    tool_set_id: Optional[str] = None
     name: str
     description: Optional[str]
     stt_provider: str
@@ -186,6 +192,8 @@ async def create_assistant(
     """
     assistant = Assistant(
         hotel_id=data.hotel_id,
+        knowledge_base_id=data.knowledge_base_id,
+        tool_set_id=data.tool_set_id,
         name=data.name,
         description=data.description,
         stt_provider=data.stt_provider,
