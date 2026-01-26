@@ -8,6 +8,7 @@ Tools define what actions the AI can perform during conversations
 from sqlalchemy import Column, String, Text, JSON, DateTime, Integer, ForeignKey, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
+from sqlalchemy.orm import relationship
 from datetime import datetime
 import enum
 import uuid as uuid_pkg
@@ -72,9 +73,12 @@ class Tool(Base):
     # For FLOW tools, this is kept for backwards compatibility but versions are preferred
     config = Column(JSON, nullable=False, default={})
     
-    # Multi-tenancy
-    hotel_id = Column(UUID(as_uuid=True), nullable=False, index=True)
-    assistant_id = Column(String(36), nullable=True, index=True)
+    # Multi-tenancy - tools belong to a ToolSet collection
+    tool_set_id = Column(UUID(as_uuid=True), ForeignKey("tool_sets.id"), nullable=True, index=True)
+    hotel_id = Column(UUID(as_uuid=True), nullable=True, index=True)  # Legacy, nullable during migration
+    assistant_id = Column(String(36), nullable=True, index=True)  # Legacy
+    
+    tool_set = relationship("ToolSet", back_populates="tools")
     
     # Flow versioning (only used for FLOW type tools)
     published_version_id = Column(UUID(as_uuid=True), nullable=True)
@@ -99,7 +103,8 @@ class Tool(Base):
             "description": self.description,
             "tool_type": self.tool_type.value,
             "config": self.config,
-            "hotel_id": str(self.hotel_id),
+            "tool_set_id": str(self.tool_set_id) if self.tool_set_id else None,
+            "hotel_id": str(self.hotel_id) if self.hotel_id else None,  # Legacy
             "assistant_id": self.assistant_id,
             "is_active": self.is_active == "true",
             "created_at": self.created_at.isoformat() if self.created_at else None,
