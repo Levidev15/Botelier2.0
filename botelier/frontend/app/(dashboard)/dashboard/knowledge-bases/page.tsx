@@ -60,6 +60,7 @@ export default function KnowledgeBasesPage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [view, setView] = useState<"grid" | "table">("grid");
   const [categoryFilter, setCategoryFilter] = useState<string>("");
+  const [showExpired, setShowExpired] = useState(false);
 
   useEffect(() => {
     if (!contextLoading && accountId) {
@@ -228,8 +229,10 @@ export default function KnowledgeBasesPage() {
   };
 
   const uniqueCategories = Array.from(new Set(entries.filter(e => e.category).map(e => e.category as string)));
+  const expiredCount = entries.filter(e => e.is_expired).length;
 
   const filteredEntries = entries.filter(e => {
+    if (!showExpired && e.is_expired) return false;
     if (categoryFilter && e.category !== categoryFilter) return false;
     if (!searchQuery) return true;
     const q = searchQuery.toLowerCase();
@@ -279,6 +282,19 @@ export default function KnowledgeBasesPage() {
                   <option key={cat} value={cat}>{cat}</option>
                 ))}
               </select>
+            )}
+            {expiredCount > 0 && (
+              <button
+                onClick={() => setShowExpired(!showExpired)}
+                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
+                  showExpired 
+                    ? "bg-red-500/20 border border-red-500/50 text-red-400" 
+                    : "bg-[#2A2A2A] border border-white/10 text-white/60 hover:text-white"
+                }`}
+              >
+                <AlertCircle className="w-4 h-4" />
+                {showExpired ? "Hide" : "Show"} Expired ({expiredCount})
+              </button>
             )}
             <div className="flex items-center bg-[#2A2A2A] border border-white/10 rounded-lg">
               <button onClick={() => setView("grid")} className={`p-2 ${view === "grid" ? "text-[#3B82F6]" : "text-white/60"}`}>
