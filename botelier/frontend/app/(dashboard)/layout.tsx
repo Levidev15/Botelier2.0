@@ -144,9 +144,6 @@ export default function DashboardLayout({
           <NavItem href="/dashboard/tools" icon={<Wrench className="h-5 w-5" />} active={isActive("/dashboard/tools")}>
             Tools
           </NavItem>
-          <NavItem href="/dashboard/tool-sets" icon={<Wrench className="h-5 w-5" />} active={isActive("/dashboard/tool-sets")}>
-            Tool Sets
-          </NavItem>
           <NavItem href="/dashboard/knowledge-bases" icon={<BookOpen className="h-5 w-5" />} active={isActive("/dashboard/knowledge-bases")}>
             Knowledge Bases
           </NavItem>

@@ -21,6 +21,7 @@ interface TransferCallFormProps {
   onCancel: () => void;
   tool?: Tool;
   accountId: string;
+  toolSetId?: string;
 }
 
 interface FormData {
@@ -30,7 +31,7 @@ interface FormData {
   pre_transfer_message: string;
 }
 
-export default function TransferCallForm({ onSuccess, onCancel, tool, accountId }: TransferCallFormProps) {
+export default function TransferCallForm({ onSuccess, onCancel, tool, accountId, toolSetId }: TransferCallFormProps) {
   const isEditMode = !!tool;
   
   const [formData, setFormData] = useState<FormData>({
@@ -91,7 +92,7 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId 
           phone_number: formData.phone_number,
           pre_transfer_message: formData.pre_transfer_message,
         },
-        hotel_id: accountId,
+        tool_set_id: toolSetId,
         is_active: true,
       };
 
