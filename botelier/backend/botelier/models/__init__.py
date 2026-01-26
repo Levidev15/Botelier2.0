@@ -10,6 +10,7 @@ from botelier.models.user import User, UserType
 from botelier.models.role import Role, AccountMembership
 from botelier.models.invitation import AccountInvitation, InvitationStatus
 from botelier.models.phone_number import PhoneNumber
+from botelier.models.tool_set import ToolSet
 from botelier.models.tool import Tool
 from botelier.models.assistant import Assistant
 from botelier.models.knowledge_base import KnowledgeBase
@@ -30,6 +31,7 @@ __all__ = [
     "AccountInvitation",
     "InvitationStatus",
     "PhoneNumber",
+    "ToolSet",
     "Tool",
     "Assistant",
     "KnowledgeBase",
