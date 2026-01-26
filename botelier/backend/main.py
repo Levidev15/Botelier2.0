@@ -13,7 +13,7 @@ from botelier.database import init_db, SessionLocal
 from botelier.api import tools_router
 from botelier.api.phone_numbers import router as phone_numbers_router
 from botelier.api.assistants import router as assistants_router
-from botelier.api.knowledge_bases import router as entries_router
+from botelier.api.knowledge_bases import router as knowledge_bases_router, legacy_router as entries_legacy_router
 from botelier.api.providers import router as providers_router
 from botelier.api.calls import router as calls_router
 from botelier.api.call_logs import router as call_logs_router
@@ -51,7 +51,8 @@ app.include_router(tools_router)
 app.include_router(flow_versions_router)  # Flow versioning endpoints (before tools for route priority)
 app.include_router(phone_numbers_router)
 app.include_router(assistants_router)
-app.include_router(entries_router)
+app.include_router(knowledge_bases_router)
+app.include_router(entries_legacy_router)  # Legacy /api/entries for backward compatibility
 app.include_router(providers_router)
 app.include_router(calls_router)
 app.include_router(call_logs_router)

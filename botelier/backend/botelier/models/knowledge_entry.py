@@ -1,8 +1,8 @@
 """
-Knowledge Entry Model - Individual Q&A entries for hotel knowledge base.
+Knowledge Entry Model - Individual Q&A entries within a knowledge base.
 
 Each entry:
-- Belongs directly to a hotel (simplified from knowledge_base grouping)
+- Belongs to a knowledge base (which belongs to an account)
 - Contains a question and answer pair
 - Can have an optional category/tag for organization
 - Can have an optional expiration date for time-sensitive info
@@ -12,6 +12,7 @@ import uuid
 from datetime import datetime, date
 from sqlalchemy import Column, String, Text, DateTime, Date, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
 from botelier.database import Base
 
 
@@ -20,7 +21,7 @@ class KnowledgeEntry(Base):
     Knowledge Entry model for storing Q&A pairs.
     
     Each entry is:
-    - Owned directly by a hotel
+    - Owned by a knowledge base
     - Question/answer pair for structured RAG
     - Optionally categorized with free-text tags
     - Optionally expires for time-sensitive information
@@ -29,8 +30,10 @@ class KnowledgeEntry(Base):
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     
-    # Direct hotel ownership (simplified from knowledge_base_id)
-    hotel_id = Column(UUID(as_uuid=True), ForeignKey("hotels.id", ondelete="CASCADE"), nullable=False)
+    knowledge_base_id = Column(UUID(as_uuid=True), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    # Legacy: hotel_id kept temporarily for migration (nullable)
+    hotel_id = Column(UUID(as_uuid=True), ForeignKey("hotels.id", ondelete="SET NULL"), nullable=True)
     
     # Q&A content
     question = Column(Text, nullable=False)
@@ -46,6 +49,8 @@ class KnowledgeEntry(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
     
+    knowledge_base = relationship("KnowledgeBase", back_populates="entries")
+    
     def __repr__(self):
         return f"<KnowledgeEntry {self.question[:50]}...>"
     
@@ -60,7 +65,7 @@ class KnowledgeEntry(Base):
         """Convert to dictionary for API responses."""
         return {
             "id": str(self.id),
-            "hotel_id": str(self.hotel_id),
+            "knowledge_base_id": str(self.knowledge_base_id),
             "question": self.question,
             "answer": self.answer,
             "category": self.category,
