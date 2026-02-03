@@ -36,6 +36,10 @@ class Assistant(Base):
     knowledge_base_id = Column(UUID(as_uuid=True), ForeignKey("knowledge_bases.id"), nullable=True)
     tool_set_id = Column(UUID(as_uuid=True), ForeignKey("tool_sets.id"), nullable=True)
     
+    # MCP connection for dynamic external tools
+    mcp_connection_id = Column(UUID(as_uuid=True), ForeignKey("mcp_connections.id", ondelete="SET NULL"), nullable=True)
+    mcp_enabled_tools = Column(JSONB, nullable=True, default=list)
+    
     # Basic info
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
@@ -94,6 +98,8 @@ class Assistant(Base):
             "hotel_id": str(self.hotel_id),
             "knowledge_base_id": str(self.knowledge_base_id) if self.knowledge_base_id else None,
             "tool_set_id": str(self.tool_set_id) if self.tool_set_id else None,
+            "mcp_connection_id": str(self.mcp_connection_id) if self.mcp_connection_id else None,
+            "mcp_enabled_tools": self.mcp_enabled_tools or [],
             "name": self.name,
             "description": self.description,
             "stt_provider": self.stt_provider,

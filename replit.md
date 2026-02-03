@@ -57,3 +57,36 @@ A platform-level integration registry allows accounts to connect their own third
 - **Flow Editor Integration:** API Request nodes support both Custom URL and Integration sources. When Integration is selected, users can choose from connected integrations and select pre-configured endpoints.
 - **Endpoints:** `/api/integrations/connections` returns account integrations with full integration type details including endpoints for flow editor dropdowns.
 - **Oracle Opera Cloud (OHIP):** First integration type seeded with OAuth 2.0 auth config and hospitality API endpoints (reservations, guests, profiles, etc.).
+
+### MCP (Model Context Protocol) Integration System
+The MCP integration enables assistants to connect to external MCP servers for dynamic, hotel-specific tools (like property management systems or booking engines). This follows the named collections architecture pattern.
+
+**Data Model:**
+- **MCPConnection Model:** Per-account MCP server connections (id, account_id, name, server_url, auth_type, encrypted_credentials, status, discovered_tools, is_active). Credentials encrypted with Fernet.
+- **Assistant.mcp_connection_id:** Foreign key linking assistant to an MCP connection.
+- **Assistant.mcp_enabled_tools:** JSONB array of tool names enabled for the assistant (per-assistant tool toggling).
+
+**MCP Client Service (`botelier/backend/botelier/services/mcp_client.py`):**
+- Uses official MCP Python SDK (v1.26.0) with SSE transport for connecting to remote MCP servers.
+- `MCPClient` class: Handles connection, tool discovery, and tool execution.
+- `MCPClientPool`: Singleton pool for efficient connection reuse across calls.
+- `test_mcp_connection()`: Convenience function for testing connections and discovering tools.
+
+**API Endpoints (`/api/mcp-connections`):**
+- `GET /api/mcp-connections`: List connections for an account (optional `include_tools=true` for discovered tools).
+- `POST /api/mcp-connections`: Create new connection.
+- `GET /api/mcp-connections/{id}`: Get single connection details.
+- `PUT /api/mcp-connections/{id}`: Update connection.
+- `DELETE /api/mcp-connections/{id}`: Delete connection.
+- `POST /api/mcp-connections/{id}/test`: Test connection and refresh discovered tools.
+- `POST /api/mcp-connections/{id}/discover-tools`: Re-discover tools from the server.
+
+**UI Integration:**
+- MCP Connections section in Integrations tab with create/edit modal, connection testing, and tool display.
+- MCP Connection dropdown in Assistant configuration form with per-tool enable/disable checkboxes.
+
+**Call Handler Integration:**
+- At call start, if assistant has `mcp_connection_id`, the MCP client is connected via the pool.
+- Enabled MCP tools are converted to Pipecat FunctionSchema objects.
+- MCP tool handlers execute via `client.execute_tool()` when the LLM invokes them.
+- MCP client references cleaned up when call ends.

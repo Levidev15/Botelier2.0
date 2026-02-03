@@ -26,6 +26,7 @@ from ..models.assistant import Assistant
 from ..models.phone_number import PhoneNumber
 from ..database import SessionLocal
 from ..services.call_logger import CallLogger
+from ..services.mcp_client import mcp_client_pool, MCPClient
 
 
 class CallHandler:
@@ -55,6 +56,7 @@ class CallHandler:
         self.call_contexts: Dict[str, Any] = {}
         self.call_start_times: Dict[str, datetime] = {}
         self.interrupted_responses: Dict[str, set] = {}  # call_sid -> set of interrupted message contents
+        self.call_mcp_clients: Dict[str, MCPClient] = {}  # call_sid -> MCPClient for MCP tool execution
     
     async def handle_call(
         self,
@@ -138,6 +140,26 @@ class CallHandler:
                 elif config.enable_function_calling:
                     logger.info(f"No tool set assigned to assistant {assistant.id}")
                 
+                # Fetch MCP connection data if assistant has one configured
+                mcp_connection_data = None
+                mcp_enabled_tools = []
+                if assistant.mcp_connection_id:
+                    from ..models.mcp_connection import MCPConnection, MCPConnectionStatus
+                    mcp_conn = db.query(MCPConnection).filter(
+                        MCPConnection.id == assistant.mcp_connection_id,
+                        MCPConnection.is_active == True
+                    ).first()
+                    if mcp_conn and mcp_conn.status == MCPConnectionStatus.CONNECTED:
+                        mcp_connection_data = {
+                            "id": str(mcp_conn.id),
+                            "server_url": mcp_conn.server_url,
+                            "auth_type": mcp_conn.auth_type.value if mcp_conn.auth_type else "none",
+                            "credentials": mcp_conn.get_credentials() if mcp_conn.credentials_encrypted else None,
+                            "discovered_tools": mcp_conn.discovered_tools or [],
+                        }
+                        mcp_enabled_tools = assistant.mcp_enabled_tools or []
+                        logger.info(f"Loaded MCP connection {mcp_conn.name} with {len(mcp_enabled_tools)} enabled tools")
+                
             finally:
                 # CRITICAL: Close database session immediately after fetching data
                 # WebSocket connections are long-lived - keeping sessions open exhausts the connection pool
@@ -145,6 +167,22 @@ class CallHandler:
             
             # 2. Get API keys
             api_keys = self._get_api_keys()
+            
+            # 2.5. Connect to MCP server if configured
+            mcp_client = None
+            if mcp_connection_data:
+                try:
+                    mcp_client = await mcp_client_pool.get_or_create_client(
+                        connection_id=mcp_connection_data["id"],
+                        server_url=mcp_connection_data["server_url"],
+                        auth_type=mcp_connection_data["auth_type"],
+                        credentials=mcp_connection_data["credentials"],
+                    )
+                    self.call_mcp_clients[call_sid] = mcp_client
+                    logger.info(f"🔌 MCP client connected for call {call_sid}")
+                except Exception as e:
+                    logger.error(f"Failed to connect to MCP server: {e}")
+                    mcp_client = None
             
             # 3. Build function schemas and handlers (knowledge base ALWAYS available)
             function_schemas, function_handlers = self._build_function_schemas_and_handlers(
@@ -157,6 +195,9 @@ class CallHandler:
                 to_number=to_number,
                 twilio_account_sid=hotel_twilio_sid,
                 twilio_auth_token=hotel_twilio_token,
+                mcp_client=mcp_client,
+                mcp_enabled_tools=mcp_enabled_tools,
+                mcp_connection_data=mcp_connection_data,
             )
             
             # 4. Create TwilioFrameSerializer (Pipecat pattern)
@@ -240,6 +281,9 @@ class CallHandler:
                 del self.call_start_times[call_sid]
             if call_sid in self.interrupted_responses:
                 del self.interrupted_responses[call_sid]
+            if call_sid in self.call_mcp_clients:
+                del self.call_mcp_clients[call_sid]
+                logger.debug(f"Cleaned up MCP client reference for call {call_sid}")
     
     def mark_response_interrupted(self, call_sid: str, content: str):
         """
@@ -366,6 +410,9 @@ You have access to the following Q&A knowledge base. Use this information to ans
         to_number: str = None,
         twilio_account_sid: str = None,
         twilio_auth_token: str = None,
+        mcp_client: Optional[MCPClient] = None,
+        mcp_enabled_tools: Optional[List[str]] = None,
+        mcp_connection_data: Optional[Dict[str, Any]] = None,
     ) -> tuple[list, Dict[str, Any]]:
         """
         Build FunctionSchema objects and handlers for knowledge base and tools.
@@ -382,6 +429,9 @@ You have access to the following Q&A knowledge base. Use this information to ans
             to_number: Hotel's phone number that was called
             twilio_account_sid: Hotel's Twilio sub-account SID
             twilio_auth_token: Hotel's Twilio sub-account auth token
+            mcp_client: Connected MCP client (if any)
+            mcp_enabled_tools: List of enabled MCP tool names
+            mcp_connection_data: MCP connection configuration data
             
         Returns:
             Tuple of (function_schemas, function_handlers)
@@ -458,7 +508,59 @@ You have access to the following Q&A knowledge base. Use this information to ans
                 except Exception as e:
                     logger.error(f"Failed to build schema for tool {tool.name}: {e}")
         
-        logger.info(f"📋 Built {len(function_schemas)} function schemas (1 knowledge base + {len(tools)} tools)")
+        # Add MCP tools if client is connected and tools are enabled
+        # Track existing tool names to avoid collisions
+        existing_tool_names = set(function_handlers.keys())
+        mcp_tool_count = 0
+        
+        if mcp_client and mcp_connection_data and mcp_enabled_tools:
+            discovered_tools = mcp_connection_data.get("discovered_tools", [])
+            
+            for mcp_tool in discovered_tools:
+                tool_name = mcp_tool.get("name")
+                if not tool_name or tool_name not in mcp_enabled_tools:
+                    continue
+                
+                # Skip tools that conflict with platform tools (platform tools take priority)
+                if tool_name in existing_tool_names:
+                    logger.warning(f"⚠️ Skipping MCP tool '{tool_name}': name collision with platform tool")
+                    continue
+                
+                try:
+                    # Build function schema from MCP tool definition
+                    parameters = mcp_tool.get("parameters", {})
+                    tool_schema = FunctionSchema(
+                        name=tool_name,
+                        description=mcp_tool.get("description", f"Execute {tool_name}"),
+                        properties=parameters.get("properties", {}),
+                        required=parameters.get("required", []),
+                    )
+                    function_schemas.append(tool_schema)
+                    
+                    # Create async handler that executes MCP tool
+                    # Use closure to capture mcp_client and tool_name
+                    def create_mcp_handler(client: MCPClient, name: str):
+                        async def mcp_tool_handler(**kwargs):
+                            try:
+                                result = await client.execute_tool(name, kwargs)
+                                if result.get("success"):
+                                    return result.get("result", "Tool executed successfully")
+                                else:
+                                    return f"Error: {result.get('error', 'Unknown error')}"
+                            except Exception as e:
+                                logger.error(f"MCP tool {name} execution failed: {e}")
+                                return f"Error executing tool: {str(e)}"
+                        return mcp_tool_handler
+                    
+                    function_handlers[tool_name] = create_mcp_handler(mcp_client, tool_name)
+                    existing_tool_names.add(tool_name)
+                    mcp_tool_count += 1
+                    logger.info(f"✅ Built MCP function schema for tool: {tool_name}")
+                    
+                except Exception as e:
+                    logger.error(f"Failed to build MCP tool schema for {tool_name}: {e}")
+        
+        logger.info(f"📋 Built {len(function_schemas)} function schemas ({len(tools)} platform tools + {mcp_tool_count} MCP tools)")
         
         return function_schemas, function_handlers
     

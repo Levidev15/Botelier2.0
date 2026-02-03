@@ -10,7 +10,12 @@ import {
   RefreshCw,
   Loader2,
   X,
-  ChevronRight
+  ChevronRight,
+  Plus,
+  Server,
+  Trash2,
+  Pencil,
+  Wrench
 } from "lucide-react";
 
 interface IntegrationType {
@@ -46,6 +51,34 @@ interface AccountIntegration {
   last_error: string | null;
 }
 
+interface MCPConnection {
+  id: string;
+  account_id: string;
+  name: string;
+  description: string | null;
+  transport_type: string;
+  server_url: string;
+  auth_type: string;
+  status: string;
+  last_connected_at: string | null;
+  last_error: string | null;
+  is_active: boolean;
+  discovered_tools: MCPTool[];
+  created_at: string;
+  updated_at: string | null;
+}
+
+interface MCPTool {
+  name: string;
+  description: string;
+  parameters: {
+    type: string;
+    properties: Record<string, unknown>;
+    required: string[];
+  };
+  source: string;
+}
+
 export default function IntegrationsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
   const [integrationTypes, setIntegrationTypes] = useState<IntegrationType[]>([]);
@@ -56,10 +89,24 @@ export default function IntegrationsPage() {
   const [connecting, setConnecting] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
+  
+  const [mcpConnections, setMcpConnections] = useState<MCPConnection[]>([]);
+  const [showMcpModal, setShowMcpModal] = useState(false);
+  const [editingMcp, setEditingMcp] = useState<MCPConnection | null>(null);
+  const [testingMcp, setTestingMcp] = useState<string | null>(null);
+  const [mcpForm, setMcpForm] = useState({
+    name: "",
+    description: "",
+    server_url: "",
+    auth_type: "none",
+    api_key: "",
+    token: "",
+  });
 
   useEffect(() => {
     if (!contextLoading && accountId) {
       fetchIntegrations();
+      fetchMCPConnections();
     }
   }, [accountId, contextLoading]);
 
@@ -85,6 +132,167 @@ export default function IntegrationsPage() {
       console.error("Failed to fetch integrations:", error);
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchMCPConnections = async () => {
+    try {
+      const response = await fetch(`/api/mcp-connections?account_id=${accountId}&include_tools=true`);
+      if (response.ok) {
+        const connections = await response.json();
+        setMcpConnections(connections);
+      }
+    } catch (error) {
+      console.error("Failed to fetch MCP connections:", error);
+    }
+  };
+
+  const handleCreateMcp = () => {
+    setEditingMcp(null);
+    setMcpForm({
+      name: "",
+      description: "",
+      server_url: "",
+      auth_type: "none",
+      api_key: "",
+      token: "",
+    });
+    setShowMcpModal(true);
+  };
+
+  const handleEditMcp = (mcp: MCPConnection) => {
+    setEditingMcp(mcp);
+    setMcpForm({
+      name: mcp.name,
+      description: mcp.description || "",
+      server_url: mcp.server_url,
+      auth_type: mcp.auth_type,
+      api_key: "",
+      token: "",
+    });
+    setShowMcpModal(true);
+  };
+
+  const handleSaveMcp = async () => {
+    if (!mcpForm.name || !mcpForm.server_url) {
+      alert("Name and Server URL are required");
+      return;
+    }
+
+    setConnecting(true);
+
+    try {
+      const credentials: Record<string, string> = {};
+      if (mcpForm.auth_type === "api_key" && mcpForm.api_key) {
+        credentials.api_key = mcpForm.api_key;
+      } else if (mcpForm.auth_type === "bearer" && mcpForm.token) {
+        credentials.token = mcpForm.token;
+      }
+
+      const payload = {
+        account_id: accountId,
+        name: mcpForm.name,
+        description: mcpForm.description || null,
+        server_url: mcpForm.server_url,
+        auth_type: mcpForm.auth_type,
+        credentials: Object.keys(credentials).length > 0 ? credentials : null,
+      };
+
+      const url = editingMcp
+        ? `/api/mcp-connections/${editingMcp.id}`
+        : "/api/mcp-connections";
+      const method = editingMcp ? "PUT" : "POST";
+
+      const response = await fetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+
+      if (response.ok) {
+        setShowMcpModal(false);
+        fetchMCPConnections();
+      } else {
+        const error = await response.json();
+        alert(`Failed to save: ${error.detail || "Unknown error"}`);
+      }
+    } catch (error) {
+      console.error("Failed to save MCP connection:", error);
+    } finally {
+      setConnecting(false);
+    }
+  };
+
+  const handleDeleteMcp = async (mcp: MCPConnection) => {
+    if (!confirm(`Are you sure you want to delete "${mcp.name}"?`)) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`/api/mcp-connections/${mcp.id}`, {
+        method: "DELETE",
+      });
+
+      if (response.ok) {
+        fetchMCPConnections();
+      }
+    } catch (error) {
+      console.error("Failed to delete MCP connection:", error);
+    }
+  };
+
+  const handleTestMcp = async (mcp: MCPConnection) => {
+    setTestingMcp(mcp.id);
+
+    try {
+      const response = await fetch(`/api/mcp-connections/${mcp.id}/test`, {
+        method: "POST",
+      });
+
+      const result = await response.json();
+
+      if (result.success) {
+        fetchMCPConnections();
+      } else {
+        alert(`Connection failed: ${result.error}`);
+        fetchMCPConnections();
+      }
+    } catch (error) {
+      console.error("Failed to test MCP connection:", error);
+    } finally {
+      setTestingMcp(null);
+    }
+  };
+
+  const getMcpStatusBadge = (status: string) => {
+    switch (status) {
+      case "connected":
+        return (
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-900/50 text-green-400 border border-green-700">
+            <Check className="h-3 w-3 mr-1" />
+            Connected
+          </span>
+        );
+      case "error":
+        return (
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-900/50 text-red-400 border border-red-700">
+            <AlertCircle className="h-3 w-3 mr-1" />
+            Error
+          </span>
+        );
+      case "connecting":
+        return (
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-900/50 text-yellow-400 border border-yellow-700">
+            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
+            Connecting
+          </span>
+        );
+      default:
+        return (
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-800 text-gray-400 border border-gray-700">
+            Not Tested
+          </span>
+        );
     }
   };
 
@@ -324,6 +532,257 @@ export default function IntegrationsPage() {
           </div>
         )}
       </div>
+
+      {/* MCP Connections Section */}
+      <div className="mt-10">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-xl font-bold flex items-center gap-2">
+              <Server className="h-5 w-5" />
+              MCP Connections
+            </h2>
+            <p className="text-sm text-gray-400 mt-1">
+              Connect to external MCP servers to enable dynamic tools for your assistants
+            </p>
+          </div>
+          <button
+            onClick={handleCreateMcp}
+            className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition"
+          >
+            <Plus className="h-4 w-4 mr-2" />
+            Add Connection
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          {mcpConnections.map((mcp) => (
+            <div
+              key={mcp.id}
+              className="bg-[#141414] border border-gray-800 rounded-lg p-6 hover:border-gray-700 transition"
+            >
+              <div className="flex items-start justify-between">
+                <div className="flex items-start gap-4">
+                  <div className="w-12 h-12 bg-gradient-to-br from-purple-500 to-blue-600 rounded-lg flex items-center justify-center text-white">
+                    <Server className="h-6 w-6" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-3">
+                      <h3 className="text-lg font-semibold">{mcp.name}</h3>
+                      {getMcpStatusBadge(mcp.status)}
+                      {!mcp.is_active && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-800 text-gray-500">
+                          Inactive
+                        </span>
+                      )}
+                    </div>
+                    {mcp.description && (
+                      <p className="text-sm text-gray-400 mt-1">{mcp.description}</p>
+                    )}
+                    <p className="text-xs text-gray-500 mt-2 font-mono">{mcp.server_url}</p>
+                    {mcp.last_error && (
+                      <p className="text-xs text-red-400 mt-1">Error: {mcp.last_error}</p>
+                    )}
+                    {mcp.discovered_tools && mcp.discovered_tools.length > 0 && (
+                      <div className="mt-3">
+                        <p className="text-xs text-gray-500 mb-1 flex items-center gap-1">
+                          <Wrench className="h-3 w-3" />
+                          {mcp.discovered_tools.length} tool{mcp.discovered_tools.length !== 1 ? "s" : ""} available
+                        </p>
+                        <div className="flex flex-wrap gap-1">
+                          {mcp.discovered_tools.slice(0, 5).map((tool) => (
+                            <span
+                              key={tool.name}
+                              className="px-2 py-0.5 text-xs bg-gray-800 text-gray-300 rounded"
+                              title={tool.description}
+                            >
+                              {tool.name}
+                            </span>
+                          ))}
+                          {mcp.discovered_tools.length > 5 && (
+                            <span className="px-2 py-0.5 text-xs text-gray-500">
+                              +{mcp.discovered_tools.length - 5} more
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleTestMcp(mcp)}
+                    disabled={testingMcp === mcp.id}
+                    className="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition disabled:opacity-50"
+                    title="Test Connection"
+                  >
+                    {testingMcp === mcp.id ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-4 w-4" />
+                    )}
+                  </button>
+                  <button
+                    onClick={() => handleEditMcp(mcp)}
+                    className="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition"
+                    title="Edit"
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </button>
+                  <button
+                    onClick={() => handleDeleteMcp(mcp)}
+                    className="p-2 text-gray-400 hover:text-red-400 hover:bg-gray-800 rounded-lg transition"
+                    title="Delete"
+                  >
+                    <Trash2 className="h-4 w-4" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+
+          {mcpConnections.length === 0 && (
+            <div className="bg-[#141414] border border-gray-800 rounded-lg p-12 text-center">
+              <Server className="h-12 w-12 text-gray-600 mx-auto mb-4" />
+              <p className="text-gray-400 mb-2">No MCP connections yet</p>
+              <p className="text-sm text-gray-500">
+                Connect to an MCP server to provide external tools for your voice assistants
+              </p>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* MCP Connection Modal */}
+      {showMcpModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-[#1a1a1a] border border-gray-800 rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between p-4 border-b border-gray-800">
+              <h2 className="text-lg font-semibold">
+                {editingMcp ? "Edit MCP Connection" : "Add MCP Connection"}
+              </h2>
+              <button
+                onClick={() => setShowMcpModal(false)}
+                className="p-1 hover:bg-gray-800 rounded-lg transition"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="p-6 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Name <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="My MCP Server"
+                  value={mcpForm.name}
+                  onChange={(e) => setMcpForm(prev => ({ ...prev, name: e.target.value }))}
+                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Description
+                </label>
+                <input
+                  type="text"
+                  placeholder="Optional description"
+                  value={mcpForm.description}
+                  onChange={(e) => setMcpForm(prev => ({ ...prev, description: e.target.value }))}
+                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                />
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Server URL <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="https://your-mcp-server.com/sse"
+                  value={mcpForm.server_url}
+                  onChange={(e) => setMcpForm(prev => ({ ...prev, server_url: e.target.value }))}
+                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm font-mono"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  The SSE endpoint of your MCP server
+                </p>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Authentication
+                </label>
+                <select
+                  value={mcpForm.auth_type}
+                  onChange={(e) => setMcpForm(prev => ({ ...prev, auth_type: e.target.value }))}
+                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                >
+                  <option value="none">No Authentication</option>
+                  <option value="api_key">API Key</option>
+                  <option value="bearer">Bearer Token</option>
+                </select>
+              </div>
+
+              {mcpForm.auth_type === "api_key" && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">
+                    API Key
+                  </label>
+                  <input
+                    type="password"
+                    placeholder={editingMcp ? "Leave empty to keep existing" : "Enter API key"}
+                    value={mcpForm.api_key}
+                    onChange={(e) => setMcpForm(prev => ({ ...prev, api_key: e.target.value }))}
+                    className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                  />
+                </div>
+              )}
+
+              {mcpForm.auth_type === "bearer" && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-300 mb-1">
+                    Bearer Token
+                  </label>
+                  <input
+                    type="password"
+                    placeholder={editingMcp ? "Leave empty to keep existing" : "Enter token"}
+                    value={mcpForm.token}
+                    onChange={(e) => setMcpForm(prev => ({ ...prev, token: e.target.value }))}
+                    className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                  />
+                </div>
+              )}
+            </div>
+
+            <div className="flex items-center justify-end gap-3 p-4 border-t border-gray-800">
+              <button
+                onClick={() => setShowMcpModal(false)}
+                className="px-4 py-2 text-sm font-medium text-gray-300 hover:text-white transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveMcp}
+                disabled={connecting}
+                className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition disabled:opacity-50"
+              >
+                {connecting ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  editingMcp ? "Update" : "Create"
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showConnectModal && selectedType && (
         <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
