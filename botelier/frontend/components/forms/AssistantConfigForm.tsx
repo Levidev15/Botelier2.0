@@ -39,6 +39,8 @@ interface Assistant {
   is_active: boolean;
   knowledge_base_id: string | null;
   tool_set_id: string | null;
+  mcp_connection_id: string | null;
+  mcp_enabled_tools: string[];
 }
 
 interface KnowledgeBase {
@@ -53,6 +55,15 @@ interface ToolSet {
   name: string;
   description: string | null;
   tool_count: number;
+}
+
+interface MCPConnection {
+  id: string;
+  name: string;
+  description: string | null;
+  status: string;
+  is_active: boolean;
+  discovered_tools: Array<{ name: string; description: string }>;
 }
 
 interface ProviderConfig {
@@ -104,11 +115,15 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
     language: "en",
     temperature: 0.7,
     max_tokens: 150,
+    mcp_connection_id: null,
+    mcp_enabled_tools: [],
   });
   
   const [providers, setProviders] = useState<ProviderConfig>({ stt: {}, llm: {}, tts: {} });
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [toolSets, setToolSets] = useState<ToolSet[]>([]);
+  const [mcpConnections, setMcpConnections] = useState<MCPConnection[]>([]);
+  const [selectedMcpTools, setSelectedMcpTools] = useState<string[]>([]);
 
   useEffect(() => {
     loadData();
@@ -118,6 +133,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
     if (accountId) {
       fetchKnowledgeBases();
       fetchToolSets();
+      fetchMcpConnections();
     }
   }, [accountId]);
 
@@ -196,6 +212,9 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
       const data = await response.json();
       setAssistant(data);
       setFormData(data);
+      if (data.mcp_enabled_tools) {
+        setSelectedMcpTools(data.mcp_enabled_tools);
+      }
     } catch (error) {
       console.error("Failed to fetch assistant:", error);
       setAssistant(null);
@@ -259,6 +278,19 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
       setToolSets(data.tool_sets || []);
     } catch (error) {
       console.error("Failed to fetch tool sets:", error);
+    }
+  };
+
+  const fetchMcpConnections = async () => {
+    if (!accountId) return;
+    try {
+      const res = await fetch(`/api/mcp-connections?account_id=${accountId}&include_tools=true`);
+      if (res.ok) {
+        const data = await res.json();
+        setMcpConnections(data.filter((mcp: MCPConnection) => mcp.is_active && mcp.status === "connected"));
+      }
+    } catch (error) {
+      console.error("Failed to fetch MCP connections:", error);
     }
   };
 
@@ -488,6 +520,78 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
               ))}
             </select>
           </FormField>
+
+          <FormField 
+            label="MCP Connection" 
+            description="Connect to an external MCP server to provide additional dynamic tools"
+          >
+            <select
+              value={formData.mcp_connection_id || ""}
+              onChange={(e) => {
+                const newId = e.target.value || null;
+                handleFieldChange("mcp_connection_id", newId);
+                if (!newId) {
+                  handleFieldChange("mcp_enabled_tools", []);
+                  setSelectedMcpTools([]);
+                } else {
+                  const mcp = mcpConnections.find(m => m.id === newId);
+                  if (mcp) {
+                    const allTools = mcp.discovered_tools.map(t => t.name);
+                    handleFieldChange("mcp_enabled_tools", allTools);
+                    setSelectedMcpTools(allTools);
+                  }
+                }
+              }}
+              className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+            >
+              <option value="">No MCP connection</option>
+              {mcpConnections.map((mcp) => (
+                <option key={mcp.id} value={mcp.id}>
+                  {mcp.name} ({mcp.discovered_tools?.length || 0} tools)
+                </option>
+              ))}
+            </select>
+          </FormField>
+
+          {formData.mcp_connection_id && (() => {
+            const mcp = mcpConnections.find(m => m.id === formData.mcp_connection_id);
+            if (!mcp || !mcp.discovered_tools?.length) return null;
+            return (
+              <FormField 
+                label="Enabled MCP Tools" 
+                description="Select which tools from this MCP connection should be available to the assistant"
+              >
+                <div className="space-y-2 max-h-48 overflow-y-auto p-3 bg-[#0a0a0a] border border-gray-800 rounded-lg">
+                  {mcp.discovered_tools.map((tool) => {
+                    const isEnabled = (formData.mcp_enabled_tools || []).includes(tool.name);
+                    return (
+                      <label key={tool.name} className="flex items-start gap-3 cursor-pointer hover:bg-gray-800/50 p-2 rounded">
+                        <input
+                          type="checkbox"
+                          checked={isEnabled}
+                          onChange={(e) => {
+                            const current = formData.mcp_enabled_tools || [];
+                            const updated = e.target.checked
+                              ? [...current, tool.name]
+                              : current.filter((t: string) => t !== tool.name);
+                            handleFieldChange("mcp_enabled_tools", updated);
+                            setSelectedMcpTools(updated);
+                          }}
+                          className="mt-1 h-4 w-4 rounded border-gray-700 bg-[#141414] text-blue-600 focus:ring-blue-600"
+                        />
+                        <div>
+                          <div className="text-sm font-medium">{tool.name}</div>
+                          {tool.description && (
+                            <div className="text-xs text-gray-500">{tool.description}</div>
+                          )}
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
+              </FormField>
+            );
+          })()}
         </FormSection>
 
         {/* Language Model Section */}

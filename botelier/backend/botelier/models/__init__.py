@@ -18,6 +18,7 @@ from botelier.models.knowledge_entry import KnowledgeEntry
 from botelier.models.flow_version import FlowVersion, FlowVersionStatus
 from botelier.models.call_log import CallLog, CallLeg, CallStatus, CallOutcome, LegType
 from botelier.models.disposition import AssistantDisposition
+from botelier.models.mcp_connection import MCPConnection, MCPConnectionStatus, MCPAuthType, MCPTransportType
 
 __all__ = [
     "Hotel",
@@ -44,4 +45,8 @@ __all__ = [
     "CallOutcome",
     "LegType",
     "AssistantDisposition",
+    "MCPConnection",
+    "MCPConnectionStatus",
+    "MCPAuthType",
+    "MCPTransportType",
 ]
