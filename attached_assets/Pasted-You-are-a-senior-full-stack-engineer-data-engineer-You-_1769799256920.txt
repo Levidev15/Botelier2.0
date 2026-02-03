@@ -1,0 +1,84 @@
+You are a senior full-stack engineer + data engineer. You are helping me plan and implement analytics for Botelier (AI voice now; SMS/chat later). We already have a “Disposition” feature where the AI summarizes the call and selects a disposition from an admin-defined list.
+
+Goal:
+Build a clean analytics architecture that supports:
+1) Primary/secondary intents (what the guest wanted)
+2) Dispositions/outcomes (what happened)
+3) AI After-Call Evaluation (resolved/contained/success with confidence + reasons)
+4) Reliable metrics dashboard (Twilio telemetry + Botelier events + evaluator AI + human QA sampling)
+
+Constraints / Context:
+- Telephony: Twilio Voice (Call SID available). We have call logs and can store transcripts/summaries.
+- We want to add SMS and chat soon. Design should be channel-agnostic (voice/sms/chat share core “session” model).
+- Some metrics are objective (Twilio + tool/API results). Some are inferred (evaluator AI). Some require human QA sampling.
+- We want a database schema + event taxonomy that makes every KPI traceable to its source (Twilio vs Botelier events vs evaluator vs human QA).
+- We care about auditability: store model version, confidence, rubric version, and allow human overrides.
+
+What I want you to produce (deliverables):
+A) Definitions
+- Clearly define: intent vs disposition vs outcome vs resolved vs contained vs success rate
+- Provide a mapping approach: Intent + Outcome -> Disposition, but store both independently
+
+B) Data model (DB schema)
+Design tables (Postgres preferred, but keep SQL generic):
+- sessions (channel-agnostic interaction record)
+- calls (voice-specific details, Twilio fields)
+- messages (sms/chat messages)
+- events (typed events emitted by Botelier services)
+- intents (per session, supports multi-intent with confidence + timestamps)
+- dispositions (per session, final disposition + reason + confidence)
+- tool_runs (booking/cancel/modify API attempts + responses + timing)
+- evaluator_results (resolved/contained/success + confidence + reason codes + model/rubric versions)
+- qa_reviews (human labels + notes + reviewer + disagreement tracking)
+Include indexes, foreign keys, and example rows.
+
+C) Event taxonomy
+Define a minimal set of events we must log to compute KPIs:
+Examples: session_started, session_ended, intent_detected, transfer_initiated, transfer_completed, booking_quote_returned, booking_confirmed, tool_failure, abandoned, survey_sent, survey_response, etc.
+Each event should specify:
+- required fields
+- who emits it (voice service, sms service, evaluator job, etc.)
+- when it’s emitted
+
+D) Evaluator AI design
+We want an “After Call Evaluator” that reads:
+- transcript, summary, intents, disposition, tool_runs, transfer info, end reason
+Outputs:
+- resolved_label (yes/no/unknown)
+- contained_label (yes/no)
+- success_objective (yes/no if confirmed)
+- success_inferred (yes/no)
+- reason codes (enum list)
+- confidence score 0–1
+- notes (short)
+- model_version + rubric_version
+Also define:
+- Rubric rules and signals
+- Thresholds for “send to human QA”
+- Sampling strategy (e.g., 5–10% weighted toward low confidence, transfers, complaints, booking intent)
+
+E) KPI mapping
+Take this KPI list and map each to:
+- Source (Twilio / Botelier events / evaluator / human QA)
+- Exact formula
+- SQL query example
+KPIs: total calls, inbound calls, transfers, transfer %, bookings, cancels, changes, booking conversion, abandonment %, number abandoned, avg call duration, avg handle time, total handle time, total transfer time, avg transfer time, contained, calls resolved by AI, success rate, CSAT, service level/uptime, plus any missing KPIs you recommend (latency, tool failure rate, fallback rate, repeat intent rate, cost per call, etc.)
+
+F) Implementation plan
+Create a step-by-step plan with milestones:
+1) DB migrations
+2) Logging/events in code
+3) Evaluator job (queue + worker)
+4) QA workflow UI endpoints (simple)
+5) Dashboard queries and aggregation jobs
+6) Testing + validation
+
+G) Output format
+- Start with a one-page architecture overview
+- Then detailed schema + event taxonomy + evaluator rubric + KPI mapping tables
+- Provide example SQL queries
+- Provide example JSON payloads for events and evaluator output
+
+Ask me ONLY if you need a critical missing detail (e.g., what DB we use). Otherwise make reasonable assumptions and proceed.
+
+Now produce the full plan and artifacts.
