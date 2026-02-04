@@ -150,11 +150,18 @@ class CallHandler:
                         MCPConnection.is_active == True
                     ).first()
                     if mcp_conn and mcp_conn.status == MCPConnectionStatus.CONNECTED:
+                        credentials = None
+                        if mcp_conn.credentials_encrypted:
+                            try:
+                                credentials = mcp_conn.get_credentials()
+                            except Exception as cred_error:
+                                logger.warning(f"Failed to decrypt MCP credentials (may be stale): {cred_error}")
+                        
                         mcp_connection_data = {
                             "id": str(mcp_conn.id),
                             "server_url": mcp_conn.server_url,
                             "auth_type": mcp_conn.auth_type.value if mcp_conn.auth_type else "none",
-                            "credentials": mcp_conn.get_credentials() if mcp_conn.credentials_encrypted else None,
+                            "credentials": credentials,
                             "discovered_tools": mcp_conn.discovered_tools or [],
                         }
                         mcp_enabled_tools = assistant.mcp_enabled_tools or []
