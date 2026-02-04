@@ -27,6 +27,8 @@ class AssistantCreate(BaseModel):
     hotel_id: str
     knowledge_base_id: Optional[str] = None
     tool_set_id: Optional[str] = None
+    mcp_connection_id: Optional[str] = None
+    mcp_enabled_tools: Optional[List[str]] = None
     name: str
     description: Optional[str] = None
     stt_provider: str = "deepgram"
@@ -54,6 +56,8 @@ class AssistantUpdate(BaseModel):
     """Assistant update model."""
     knowledge_base_id: Optional[str] = None
     tool_set_id: Optional[str] = None
+    mcp_connection_id: Optional[str] = None
+    mcp_enabled_tools: Optional[List[str]] = None
     name: Optional[str] = None
     description: Optional[str] = None
     stt_provider: Optional[str] = None
@@ -89,6 +93,8 @@ class AssistantResponse(BaseModel):
     hotel_id: str
     knowledge_base_id: Optional[str] = None
     tool_set_id: Optional[str] = None
+    mcp_connection_id: Optional[str] = None
+    mcp_enabled_tools: Optional[List[str]] = None
     name: str
     description: Optional[str]
     stt_provider: str
