@@ -11,7 +11,7 @@ from datetime import datetime
 from typing import Any
 
 from starlette.applications import Starlette
-from starlette.routing import Route
+from starlette.routing import Route, Mount
 from starlette.responses import JSONResponse
 from mcp.server import Server
 from mcp.server.sse import SseServerTransport
@@ -161,18 +161,26 @@ async def root_handler(request):
     })
 
 
-async def sse_handler(request):
-    """Handle SSE connections."""
+async def handle_sse(scope, receive, send):
+    """Raw ASGI handler for SSE GET connections."""
     require_auth = os.environ.get("TEST_MCP_REQUIRE_AUTH", "false").lower() == "true"
     
     if require_auth:
-        api_key = request.headers.get("X-API-Key", "")
+        headers = dict(scope.get("headers", []))
+        api_key = headers.get(b"x-api-key", b"").decode()
         if api_key != TEST_API_KEY:
-            return JSONResponse({"error": "Invalid API key"}, status_code=401)
+            await send({
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [[b"content-type", b"application/json"]],
+            })
+            await send({
+                "type": "http.response.body",
+                "body": b'{"error": "Invalid API key"}',
+            })
+            return
     
-    async with sse_transport.connect_sse(
-        request.scope, request.receive, request._send
-    ) as streams:
+    async with sse_transport.connect_sse(scope, receive, send) as streams:
         await mcp_server.run(
             streams[0],
             streams[1],
@@ -180,23 +188,55 @@ async def sse_handler(request):
         )
 
 
-async def sse_post_handler(request):
-    """Handle POST messages for SSE transport."""
+async def handle_sse_post(scope, receive, send):
+    """Raw ASGI handler for SSE POST messages."""
     require_auth = os.environ.get("TEST_MCP_REQUIRE_AUTH", "false").lower() == "true"
     
     if require_auth:
-        api_key = request.headers.get("X-API-Key", "")
+        headers = dict(scope.get("headers", []))
+        api_key = headers.get(b"x-api-key", b"").decode()
         if api_key != TEST_API_KEY:
-            return JSONResponse({"error": "Invalid API key"}, status_code=401)
+            await send({
+                "type": "http.response.start",
+                "status": 401,
+                "headers": [[b"content-type", b"application/json"]],
+            })
+            await send({
+                "type": "http.response.body",
+                "body": b'{"error": "Invalid API key"}',
+            })
+            return
     
-    await sse_transport.handle_post_message(request.scope, request.receive, request._send)
+    await sse_transport.handle_post_message(scope, receive, send)
+
+
+async def sse_app(scope, receive, send):
+    """ASGI app that routes SSE requests by method."""
+    if scope["type"] != "http":
+        return
+    
+    method = scope.get("method", "GET")
+    
+    if method == "GET":
+        await handle_sse(scope, receive, send)
+    elif method == "POST":
+        await handle_sse_post(scope, receive, send)
+    else:
+        await send({
+            "type": "http.response.start",
+            "status": 405,
+            "headers": [[b"content-type", b"application/json"]],
+        })
+        await send({
+            "type": "http.response.body",
+            "body": b'{"error": "Method not allowed"}',
+        })
 
 
 app = Starlette(
     routes=[
         Route("/", endpoint=root_handler),
-        Route("/sse", endpoint=sse_handler),
-        Route("/sse", endpoint=sse_post_handler, methods=["POST"]),
+        Mount("/sse", app=sse_app),
     ]
 )
 
