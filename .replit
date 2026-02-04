@@ -22,6 +22,10 @@ args = "botelier-dashboard"
 task = "workflow.run"
 args = "botelier-backend"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "test-mcp-server"
+
 [[workflows.workflow]]
 name = "botelier-dashboard"
 author = "agent"
@@ -46,9 +50,25 @@ task = "shell.exec"
 args = "cd botelier/backend && python -m uvicorn main:app --host 0.0.0.0 --port 3001 --reload"
 waitForPort = 3001
 
+[[workflows.workflow]]
+name = "test-mcp-server"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd botelier/test_mcp_server && python server.py"
+waitForPort = 3002
+
+[workflows.workflow.metadata]
+outputType = "console"
+
 [[ports]]
 localPort = 3001
 externalPort = 3001
+
+[[ports]]
+localPort = 3002
+externalPort = 3002
 
 [[ports]]
 localPort = 5000
