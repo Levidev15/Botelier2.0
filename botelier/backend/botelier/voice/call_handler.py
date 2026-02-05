@@ -26,7 +26,15 @@ from ..models.assistant import Assistant
 from ..models.phone_number import PhoneNumber
 from ..database import SessionLocal
 from ..services.call_logger import CallLogger
-from ..services.mcp_client import mcp_client_pool, MCPClient
+
+try:
+    from pipecat.services.mcp_service import MCPClient as PipecatMCPClient
+    from mcp.client.session_group import SseServerParameters
+    PIPECAT_MCP_AVAILABLE = True
+except ImportError:
+    PIPECAT_MCP_AVAILABLE = False
+    PipecatMCPClient = None
+    SseServerParameters = None
 
 
 class CallHandler:
@@ -56,7 +64,7 @@ class CallHandler:
         self.call_contexts: Dict[str, Any] = {}
         self.call_start_times: Dict[str, datetime] = {}
         self.interrupted_responses: Dict[str, set] = {}  # call_sid -> set of interrupted message contents
-        self.call_mcp_clients: Dict[str, MCPClient] = {}  # call_sid -> MCPClient for MCP tool execution
+        self.call_mcp_clients: Dict[str, PipecatMCPClient] = {}  # call_sid -> Pipecat MCPClient for MCP tool execution
     
     async def handle_call(
         self,
@@ -175,23 +183,8 @@ class CallHandler:
             # 2. Get API keys
             api_keys = self._get_api_keys()
             
-            # 2.5. Connect to MCP server if configured
-            mcp_client = None
-            if mcp_connection_data:
-                try:
-                    mcp_client = await mcp_client_pool.get_or_create_client(
-                        connection_id=mcp_connection_data["id"],
-                        server_url=mcp_connection_data["server_url"],
-                        auth_type=mcp_connection_data["auth_type"],
-                        credentials=mcp_connection_data["credentials"],
-                    )
-                    self.call_mcp_clients[call_sid] = mcp_client
-                    logger.info(f"🔌 MCP client connected for call {call_sid}")
-                except Exception as e:
-                    logger.error(f"Failed to connect to MCP server: {e}")
-                    mcp_client = None
-            
             # 3. Build function schemas and handlers (knowledge base ALWAYS available)
+            # Note: MCP tools are registered separately after pipeline creation using Pipecat's MCPClient
             function_schemas, function_handlers = self._build_function_schemas_and_handlers(
                 assistant=assistant,
                 tools=tools,
@@ -202,9 +195,6 @@ class CallHandler:
                 to_number=to_number,
                 twilio_account_sid=hotel_twilio_sid,
                 twilio_auth_token=hotel_twilio_token,
-                mcp_client=mcp_client,
-                mcp_enabled_tools=mcp_enabled_tools,
-                mcp_connection_data=mcp_connection_data,
             )
             
             # 4. Create TwilioFrameSerializer (Pipecat pattern)
@@ -242,6 +232,52 @@ class CallHandler:
                 function_handlers=function_handlers if function_handlers else None,
                 on_interruption=on_interruption,
             )
+            
+            # 6.5 Register MCP tools if connection is configured (must happen AFTER pipeline creation)
+            if mcp_connection_data and mcp_enabled_tools and PIPECAT_MCP_AVAILABLE:
+                try:
+                    # Build authentication headers based on auth_type
+                    mcp_headers = self._build_mcp_headers(
+                        auth_type=mcp_connection_data.get("auth_type", "none"),
+                        credentials=mcp_connection_data.get("credentials"),
+                    )
+                    
+                    # Create Pipecat MCP client with SSE parameters
+                    sse_params = SseServerParameters(
+                        url=mcp_connection_data["server_url"],
+                        headers=mcp_headers if mcp_headers else None,
+                        timeout=10.0,
+                        sse_read_timeout=300.0,
+                    )
+                    
+                    mcp_client = PipecatMCPClient(server_params=sse_params)
+                    
+                    # Get all available tools from MCP server
+                    all_tools_schema = await mcp_client.get_tools_schema()
+                    
+                    # Filter to only enabled tools for this assistant
+                    if all_tools_schema.standard_tools:
+                        from pipecat.adapters.schemas.tools_schema import ToolsSchema
+                        
+                        filtered_tools = [
+                            tool for tool in all_tools_schema.standard_tools
+                            if tool.name in mcp_enabled_tools
+                        ]
+                        
+                        if filtered_tools:
+                            filtered_schema = ToolsSchema(standard_tools=filtered_tools)
+                            await mcp_client.register_tools_schema(filtered_schema, llm)
+                            logger.info(f"🔌 Registered {len(filtered_tools)} MCP tools with LLM for call {call_sid}: {[t.name for t in filtered_tools]}")
+                        else:
+                            logger.warning(f"No MCP tools matched enabled list: {mcp_enabled_tools}")
+                    else:
+                        logger.warning(f"MCP server returned no tools")
+                    
+                    # Store client for cleanup
+                    self.call_mcp_clients[call_sid] = mcp_client
+                    
+                except Exception as e:
+                    logger.error(f"Failed to register MCP tools: {e}")
             
             # 7. Update active call with task and context
             self.active_calls[call_sid] = task
@@ -406,6 +442,44 @@ You have access to the following Q&A knowledge base. Use this information to ans
             "google_api_key": os.environ.get("GOOGLE_API_KEY"),
         }
     
+    def _build_mcp_headers(
+        self,
+        auth_type: str,
+        credentials: Optional[Dict[str, str]],
+    ) -> Optional[Dict[str, str]]:
+        """
+        Build authentication headers for MCP server connection.
+        
+        Args:
+            auth_type: Authentication type (none, api_key, bearer, basic)
+            credentials: Authentication credentials dictionary
+            
+        Returns:
+            Dictionary of headers, or None if no auth needed
+        """
+        if not auth_type or auth_type == "none" or not credentials:
+            return None
+        
+        headers = {}
+        
+        if auth_type == "api_key":
+            api_key = credentials.get("api_key", "")
+            header_name = credentials.get("header_name", "X-API-Key")
+            headers[header_name] = api_key
+        
+        elif auth_type == "bearer":
+            token = credentials.get("token", "")
+            headers["Authorization"] = f"Bearer {token}"
+        
+        elif auth_type == "basic":
+            import base64
+            username = credentials.get("username", "")
+            password = credentials.get("password", "")
+            encoded = base64.b64encode(f"{username}:{password}".encode()).decode()
+            headers["Authorization"] = f"Basic {encoded}"
+        
+        return headers if headers else None
+    
     def _build_function_schemas_and_handlers(
         self,
         assistant: Assistant,
@@ -417,14 +491,12 @@ You have access to the following Q&A knowledge base. Use this information to ans
         to_number: str = None,
         twilio_account_sid: str = None,
         twilio_auth_token: str = None,
-        mcp_client: Optional[MCPClient] = None,
-        mcp_enabled_tools: Optional[List[str]] = None,
-        mcp_connection_data: Optional[Dict[str, Any]] = None,
     ) -> tuple[list, Dict[str, Any]]:
         """
-        Build FunctionSchema objects and handlers for knowledge base and tools.
+        Build FunctionSchema objects and handlers for platform tools.
         
         This follows Pipecat's proper pattern of creating schemas before pipeline initialization.
+        Note: MCP tools are registered separately after pipeline creation using Pipecat's MCPClient.
         
         Args:
             assistant: Database assistant model
@@ -436,9 +508,6 @@ You have access to the following Q&A knowledge base. Use this information to ans
             to_number: Hotel's phone number that was called
             twilio_account_sid: Hotel's Twilio sub-account SID
             twilio_auth_token: Hotel's Twilio sub-account auth token
-            mcp_client: Connected MCP client (if any)
-            mcp_enabled_tools: List of enabled MCP tool names
-            mcp_connection_data: MCP connection configuration data
             
         Returns:
             Tuple of (function_schemas, function_handlers)
@@ -515,59 +584,8 @@ You have access to the following Q&A knowledge base. Use this information to ans
                 except Exception as e:
                     logger.error(f"Failed to build schema for tool {tool.name}: {e}")
         
-        # Add MCP tools if client is connected and tools are enabled
-        # Track existing tool names to avoid collisions
-        existing_tool_names = set(function_handlers.keys())
-        mcp_tool_count = 0
-        
-        if mcp_client and mcp_connection_data and mcp_enabled_tools:
-            discovered_tools = mcp_connection_data.get("discovered_tools", [])
-            
-            for mcp_tool in discovered_tools:
-                tool_name = mcp_tool.get("name")
-                if not tool_name or tool_name not in mcp_enabled_tools:
-                    continue
-                
-                # Skip tools that conflict with platform tools (platform tools take priority)
-                if tool_name in existing_tool_names:
-                    logger.warning(f"⚠️ Skipping MCP tool '{tool_name}': name collision with platform tool")
-                    continue
-                
-                try:
-                    # Build function schema from MCP tool definition
-                    parameters = mcp_tool.get("parameters", {})
-                    tool_schema = FunctionSchema(
-                        name=tool_name,
-                        description=mcp_tool.get("description", f"Execute {tool_name}"),
-                        properties=parameters.get("properties", {}),
-                        required=parameters.get("required", []),
-                    )
-                    function_schemas.append(tool_schema)
-                    
-                    # Create async handler that executes MCP tool
-                    # Use closure to capture mcp_client and tool_name
-                    def create_mcp_handler(client: MCPClient, name: str):
-                        async def mcp_tool_handler(**kwargs):
-                            try:
-                                result = await client.execute_tool(name, kwargs)
-                                if result.get("success"):
-                                    return result.get("result", "Tool executed successfully")
-                                else:
-                                    return f"Error: {result.get('error', 'Unknown error')}"
-                            except Exception as e:
-                                logger.error(f"MCP tool {name} execution failed: {e}")
-                                return f"Error executing tool: {str(e)}"
-                        return mcp_tool_handler
-                    
-                    function_handlers[tool_name] = create_mcp_handler(mcp_client, tool_name)
-                    existing_tool_names.add(tool_name)
-                    mcp_tool_count += 1
-                    logger.info(f"✅ Built MCP function schema for tool: {tool_name}")
-                    
-                except Exception as e:
-                    logger.error(f"Failed to build MCP tool schema for {tool_name}: {e}")
-        
-        logger.info(f"📋 Built {len(function_schemas)} function schemas ({len(tools)} platform tools + {mcp_tool_count} MCP tools)")
+        # Note: MCP tools are registered separately after pipeline creation using Pipecat's MCPClient.register_tools()
+        logger.info(f"📋 Built {len(function_schemas)} platform function schemas")
         
         return function_schemas, function_handlers
     
