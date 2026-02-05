@@ -151,6 +151,7 @@ class CallHandler:
                 # Fetch MCP connection data if assistant has one configured
                 mcp_connection_data = None
                 mcp_enabled_tools = []
+                logger.info(f"🔍 Checking MCP: assistant.mcp_connection_id = {assistant.mcp_connection_id}, PIPECAT_MCP_AVAILABLE = {PIPECAT_MCP_AVAILABLE}")
                 if assistant.mcp_connection_id:
                     from ..models.mcp_connection import MCPConnection, MCPConnectionStatus
                     mcp_conn = db.query(MCPConnection).filter(
@@ -234,6 +235,7 @@ class CallHandler:
             )
             
             # 6.5 Register MCP tools if connection is configured (must happen AFTER pipeline creation)
+            logger.info(f"🔍 MCP registration check: mcp_connection_data={mcp_connection_data is not None}, mcp_enabled_tools={mcp_enabled_tools}, PIPECAT_MCP_AVAILABLE={PIPECAT_MCP_AVAILABLE}")
             if mcp_connection_data and mcp_enabled_tools and PIPECAT_MCP_AVAILABLE:
                 try:
                     # Build authentication headers based on auth_type
