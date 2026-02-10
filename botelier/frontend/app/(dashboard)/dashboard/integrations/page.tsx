@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { 
   Plug, 
   Check, 
@@ -85,6 +86,7 @@ interface MCPTool {
 
 export default function IntegrationsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
+  const { authFetch } = useAuthToken();
   const [integrationTypes, setIntegrationTypes] = useState<IntegrationType[]>([]);
   const [accountIntegrations, setAccountIntegrations] = useState<AccountIntegration[]>([]);
   const [loading, setLoading] = useState(true);
@@ -119,8 +121,8 @@ export default function IntegrationsPage() {
       setLoading(true);
       
       const [typesRes, accountRes] = await Promise.all([
-        fetch("/api/integrations/types"),
-        fetch(`/api/integrations/account/${accountId}`)
+        authFetch("/api/integrations/types"),
+        authFetch(`/api/integrations/account/${accountId}`)
       ]);
 
       if (typesRes.ok) {
@@ -131,9 +133,13 @@ export default function IntegrationsPage() {
       if (accountRes.ok) {
         const integrations = await accountRes.json();
         setAccountIntegrations(integrations);
+      } else if (accountRes.status === 401) {
+        console.error("Authentication failed - please log in again");
       }
-    } catch (error) {
-      console.error("Failed to fetch integrations:", error);
+    } catch (error: any) {
+      if (error?.message !== "Not authenticated") {
+        console.error("Failed to fetch integrations:", error);
+      }
     } finally {
       setLoading(false);
     }
@@ -141,7 +147,7 @@ export default function IntegrationsPage() {
 
   const fetchMCPConnections = async () => {
     try {
-      const response = await fetch(`/api/mcp-connections?account_id=${accountId}&include_tools=true`);
+      const response = await authFetch(`/api/mcp-connections?account_id=${accountId}&include_tools=true`);
       if (response.ok) {
         const connections = await response.json();
         setMcpConnections(connections);
@@ -207,9 +213,8 @@ export default function IntegrationsPage() {
         : "/api/mcp-connections";
       const method = editingMcp ? "PUT" : "POST";
 
-      const response = await fetch(url, {
+      const response = await authFetch(url, {
         method,
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
@@ -233,7 +238,7 @@ export default function IntegrationsPage() {
     }
 
     try {
-      const response = await fetch(`/api/mcp-connections/${mcp.id}`, {
+      const response = await authFetch(`/api/mcp-connections/${mcp.id}`, {
         method: "DELETE",
       });
 
@@ -249,7 +254,7 @@ export default function IntegrationsPage() {
     setTestingMcp(mcp.id);
 
     try {
-      const response = await fetch(`/api/mcp-connections/${mcp.id}/test`, {
+      const response = await authFetch(`/api/mcp-connections/${mcp.id}/test`, {
         method: "POST",
       });
 
@@ -322,7 +327,7 @@ export default function IntegrationsPage() {
     }
 
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `/api/integrations/account/${accountId}/integration/${integration.id}`,
         { method: "DELETE" }
       );
@@ -341,7 +346,7 @@ export default function IntegrationsPage() {
     setTesting(integration.id);
     
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `/api/integrations/account/${accountId}/integration/${integration.id}/test`,
         { method: "POST" }
       );
@@ -387,9 +392,8 @@ export default function IntegrationsPage() {
     const { _connection_name, ...apiCredentials } = credentials;
 
     try {
-      const response = await fetch(`/api/integrations/account/${accountId}/connect`, {
+      const response = await authFetch(`/api/integrations/account/${accountId}/connect`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           integration_type_id: selectedType.id,
           credentials: apiCredentials,

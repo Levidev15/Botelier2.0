@@ -189,6 +189,18 @@ class IntegrationClient:
 
         return await self._refresh_oauth_token(integration, credentials, auth_config)
 
+    def _compute_jwt_expires_in(self, token_data: dict, max_lifetime_hours: int) -> int:
+        expired_time_str = token_data.get("expired_time")
+        if expired_time_str:
+            try:
+                expired_dt = datetime.strptime(expired_time_str, "%Y-%m-%d %H:%M:%S")
+                seconds_remaining = int((expired_dt - datetime.utcnow()).total_seconds())
+                if seconds_remaining > 0:
+                    return seconds_remaining
+            except (ValueError, TypeError):
+                pass
+        return token_data.get("expires_in", max_lifetime_hours * 3600)
+
     async def _refresh_jwt_token(self, integration: AccountIntegration, credentials: dict, auth_config: dict) -> bool:
         base_url = auth_config.get("base_url", "").rstrip("/")
         refresh_endpoint = auth_config.get("jwt_refresh_endpoint", "/authentication/refresh")
@@ -196,6 +208,7 @@ class IntegrationClient:
         max_lifetime_hours = auth_config.get("jwt_max_lifetime_hours", 3)
 
         refresh_token = integration.get_refresh_token()
+        expired_time = (datetime.utcnow() + timedelta(hours=max_lifetime_hours)).strftime("%Y-%m-%d %H:%M:%S")
 
         db = self._get_db_session()
         try:
@@ -204,7 +217,7 @@ class IntegrationClient:
                     async with httpx.AsyncClient() as client:
                         response = await client.post(
                             f"{base_url}{refresh_endpoint}",
-                            json={"refresh_token": refresh_token},
+                            json={"refresh_token": refresh_token, "expired_time": expired_time},
                             headers={"Content-Type": "application/json", "Accept": "application/json"},
                             timeout=30.0
                         )
@@ -214,7 +227,7 @@ class IntegrationClient:
                             integration.set_access_token(token_data.get("token") or token_data.get("access_token"))
                             if token_data.get("refresh_token"):
                                 integration.set_refresh_token(token_data["refresh_token"])
-                            expires_in = token_data.get("expires_in", max_lifetime_hours * 3600)
+                            expires_in = self._compute_jwt_expires_in(token_data, max_lifetime_hours)
                             integration.token_expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
                             integration.status = IntegrationStatus.CONNECTED
                             integration.last_error = None
@@ -236,7 +249,7 @@ class IntegrationClient:
                 async with httpx.AsyncClient() as client:
                     response = await client.post(
                         f"{base_url}{login_endpoint}",
-                        json={"username": username, "password": password},
+                        json={"username": username, "password": password, "expired_time": expired_time},
                         headers={"Content-Type": "application/json", "Accept": "application/json"},
                         timeout=30.0
                     )
@@ -246,7 +259,7 @@ class IntegrationClient:
                         integration.set_access_token(token_data.get("token") or token_data.get("access_token"))
                         if token_data.get("refresh_token"):
                             integration.set_refresh_token(token_data["refresh_token"])
-                        expires_in = token_data.get("expires_in", max_lifetime_hours * 3600)
+                        expires_in = self._compute_jwt_expires_in(token_data, max_lifetime_hours)
                         integration.token_expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
                         integration.status = IntegrationStatus.CONNECTED
                         integration.last_error = None
