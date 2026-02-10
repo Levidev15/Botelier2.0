@@ -35,9 +35,11 @@ interface RequiredField {
   key: string;
   label: string;
   type: string;
-  placeholder: string;
-  description: string;
+  placeholder?: string;
+  description?: string;
   required: boolean;
+  options?: string[];
+  option_labels?: Record<string, string>;
 }
 
 interface AccountIntegration {
@@ -809,13 +811,27 @@ export default function IntegrationsPage() {
                     {field.label}
                     {field.required && <span className="text-red-400 ml-1">*</span>}
                   </label>
-                  <input
-                    type={field.type === "password" ? "password" : "text"}
-                    placeholder={field.placeholder}
-                    value={credentials[field.key] || ""}
-                    onChange={(e) => setCredentials(prev => ({ ...prev, [field.key]: e.target.value }))}
-                    className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                  />
+                  {field.type === "select" && field.options ? (
+                    <select
+                      value={credentials[field.key] || field.options[0] || ""}
+                      onChange={(e) => setCredentials(prev => ({ ...prev, [field.key]: e.target.value }))}
+                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                    >
+                      {field.options.map((opt) => (
+                        <option key={opt} value={opt}>
+                          {field.option_labels?.[opt] || opt.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type={field.type === "password" ? "password" : "text"}
+                      placeholder={field.placeholder}
+                      value={credentials[field.key] || ""}
+                      onChange={(e) => setCredentials(prev => ({ ...prev, [field.key]: e.target.value }))}
+                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                    />
+                  )}
                   {field.description && (
                     <p className="text-xs text-gray-500 mt-1">{field.description}</p>
                   )}

@@ -80,9 +80,11 @@ async def startup_event():
     print("✅ Database initialized")
     
     from botelier.seeds.opera_integration import seed_opera_integration
+    from botelier.seeds.guestcentric_integration import seed_guestcentric_integration
     db = SessionLocal()
     try:
         seed_opera_integration(db)
+        seed_guestcentric_integration(db)
         print("✅ Integration types seeded")
     finally:
         db.close()
