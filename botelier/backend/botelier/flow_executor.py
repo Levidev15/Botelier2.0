@@ -1596,13 +1596,19 @@ You are executing a structured conversation flow. Follow these guidelines:
             success_msg = api_config.get("onSuccess", "Request completed successfully")
             success_msg = substitute_variables(success_msg, self.state.collected_slots)
             
-            return {
+            response_instructions = api_config.get("responseInstructions", "")
+            
+            result = {
                 "success": True,
                 "message": success_msg,
                 "action": None,
                 "response": response_data,
                 "current_node_id": next_node_id
             }
+            if response_instructions:
+                result["response_instructions"] = response_instructions
+            
+            return result
         
         elif status_code == 401 or status_code == 403:
             return {

@@ -5,6 +5,7 @@ import { useState, useEffect } from "react";
 import ToolTypeSelector from "./ToolTypeSelector";
 import TransferCallForm from "./tool-types/TransferCallForm";
 import FlowForm from "./tool-types/FlowForm";
+import ApiRequestForm from "./tool-types/ApiRequestForm";
 
 interface Tool {
   id: string;
@@ -116,9 +117,13 @@ export default function ToolDrawer({ isOpen, onClose, onToolCreated, onToolUpdat
             )}
 
             {selectedType === "API_REQUEST" && (
-              <div className="text-center py-12 text-gray-400">
-                API Request form coming soon...
-              </div>
+              <ApiRequestForm
+                onSuccess={handleToolSaved}
+                onCancel={handleReset}
+                tool={editTool || undefined}
+                accountId={accountId}
+                toolSetId={toolSetId}
+              />
             )}
 
             {selectedType === "END_CALL" && (

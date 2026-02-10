@@ -391,29 +391,67 @@ class FunctionMapper:
         
         return function_schema, transfer_handler
     
+    def _extract_nested_value(self, data: Any, path: str) -> Any:
+        """Extract a value from nested data using dot notation (e.g., 'data.guest.name')."""
+        parts = path.replace("[", ".").replace("]", "").split(".")
+        current = data
+        for part in parts:
+            if current is None:
+                return None
+            if isinstance(current, dict):
+                current = current.get(part)
+            elif isinstance(current, list):
+                try:
+                    current = current[int(part)]
+                except (ValueError, IndexError):
+                    return None
+            else:
+                return None
+        return current
+
+    def _apply_response_mapping(self, data: Any, response_mapping: Dict[str, str]) -> Dict[str, Any]:
+        """Apply response mapping to extract specific fields from API response."""
+        result = {}
+        for variable_name, json_path in response_mapping.items():
+            value = self._extract_nested_value(data, json_path)
+            result[variable_name] = value
+        return result
+
     def _map_api_request(self, tool: Tool) -> tuple[Dict[str, Any], Callable]:
         """
         Map API request tool to Pipecat function.
         
         This allows AI to call external APIs during conversations.
         Parameters are extracted from the API config.
+        Supports response mapping (extracting specific fields) and
+        response instructions (telling the LLM how to present data).
         """
         url = tool.config.get("url")
         method = tool.config.get("method", "GET")
         headers = tool.config.get("headers", {})
         parameters = tool.config.get("parameters", {})
         body = tool.config.get("body")
+        body_template = tool.config.get("body_template")
+        response_mapping = tool.config.get("response_mapping", {})
+        response_instructions = tool.config.get("response_instructions", "")
+        request_timeout = tool.config.get("timeout", 30)
         
         # Build function schema with parameters from config
+        description = tool.description
+        if response_instructions:
+            description = f"{tool.description}\n\nWhen you receive the result, follow these instructions: {response_instructions}"
+        
         function_schema = {
             "name": tool.name,
-            "description": tool.description,
+            "description": description,
             "parameters": {
                 "type": "object",
                 "properties": parameters,
                 "required": [k for k, v in parameters.items() if v.get("required", False)]
             }
         }
+        
+        mapper = self
         
         async def api_handler(params: FunctionCallParams):
             """
@@ -423,23 +461,46 @@ class FunctionMapper:
             """
             arguments = params.arguments
             
-            # Substitute argument values into URL/body
-            formatted_url = url.format(**arguments)
-            formatted_headers = {k: v.format(**arguments) for k, v in headers.items()}
+            import re as re_module
+            import json as json_module
             
-            # Make API request
-            async with httpx.AsyncClient() as client:
+            def substitute_placeholders(template: str, values: dict) -> str:
+                def replacer(match):
+                    key = match.group(1).strip()
+                    return str(values.get(key, match.group(0)))
+                result = re_module.sub(r'\{\{(\w+)\}\}', replacer, template)
+                try:
+                    result = result.format(**values)
+                except (KeyError, ValueError, IndexError):
+                    pass
+                return result
+            
+            formatted_url = substitute_placeholders(url, arguments)
+            formatted_headers = {k: substitute_placeholders(v, arguments) for k, v in headers.items()}
+            
+            request_body = None
+            if body_template:
+                try:
+                    formatted_body_str = substitute_placeholders(body_template, arguments)
+                    request_body = json_module.loads(formatted_body_str)
+                except (KeyError, json_module.JSONDecodeError):
+                    request_body = body
+            elif body:
+                request_body = body
+            
+            async with httpx.AsyncClient(timeout=request_timeout) as client:
                 try:
                     if method == "GET":
                         response = await client.get(formatted_url, headers=formatted_headers)
                     elif method == "POST":
-                        response = await client.post(formatted_url, headers=formatted_headers, json=body)
+                        response = await client.post(formatted_url, headers=formatted_headers, json=request_body)
                     elif method == "PUT":
-                        response = await client.put(formatted_url, headers=formatted_headers, json=body)
+                        response = await client.put(formatted_url, headers=formatted_headers, json=request_body)
+                    elif method == "PATCH":
+                        response = await client.patch(formatted_url, headers=formatted_headers, json=request_body)
                     elif method == "DELETE":
                         response = await client.delete(formatted_url, headers=formatted_headers)
                     else:
-                        # Unsupported HTTP method
                         await params.result_callback({
                             "error": f"Unsupported HTTP method: {method}",
                             "status": "failed"
@@ -449,9 +510,17 @@ class FunctionMapper:
                     response.raise_for_status()
                     data = response.json()
                     
-                    # Return result to LLM so it can continue conversation
-                    await params.result_callback(data)
+                    if response_mapping:
+                        shaped_data = mapper._apply_response_mapping(data, response_mapping)
+                        await params.result_callback(shaped_data)
+                    else:
+                        await params.result_callback(data)
                     
+                except httpx.TimeoutException:
+                    await params.result_callback({
+                        "error": "API request timed out",
+                        "status": "failed"
+                    })
                 except httpx.HTTPError as e:
                     await params.result_callback({
                         "error": str(e),

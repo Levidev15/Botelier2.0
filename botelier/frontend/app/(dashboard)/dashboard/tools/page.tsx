@@ -1,9 +1,10 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Plus, Phone, Globe, PhoneOff, Mail, MessageSquare, GitBranch, ChevronDown, FolderPlus, X } from "lucide-react";
+import { Plus, Phone, Globe, PhoneOff, Mail, MessageSquare, GitBranch, ChevronDown, FolderPlus, X, Play } from "lucide-react";
 import ToolCard from "./components/ToolCard";
 import ToolDrawer from "./components/ToolDrawer";
+import ApiTester from "./components/ApiTester";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { notify } from "@/lib/notifications";
 
@@ -38,6 +39,7 @@ export default function ToolsPage() {
   const [newToolSetName, setNewToolSetName] = useState("");
   const [newToolSetDescription, setNewToolSetDescription] = useState("");
   const [creatingToolSet, setCreatingToolSet] = useState(false);
+  const [activeTab, setActiveTab] = useState<"tools" | "tester">("tools");
 
   useEffect(() => {
     if (!contextLoading && accountId) {
@@ -201,17 +203,57 @@ export default function ToolsPage() {
               Configure functions your AI assistant can perform during conversations
             </p>
           </div>
+          {activeTab === "tools" && (
+            <button
+              onClick={() => setIsDrawerOpen(true)}
+              disabled={!selectedToolSet}
+              className="flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            >
+              <Plus size={20} />
+              Create Tool
+            </button>
+          )}
+        </div>
+
+        <div className="flex gap-1 mt-6 border-b border-gray-800">
           <button
-            onClick={() => setIsDrawerOpen(true)}
-            disabled={!selectedToolSet}
-            className="flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+            onClick={() => setActiveTab("tools")}
+            className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
+              activeTab === "tools"
+                ? "text-white"
+                : "text-gray-400 hover:text-gray-300"
+            }`}
           >
-            <Plus size={20} />
-            Create Tool
+            Tools
+            {activeTab === "tools" && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500" />
+            )}
+          </button>
+          <button
+            onClick={() => setActiveTab("tester")}
+            className={`px-4 py-2.5 text-sm font-medium transition-colors relative flex items-center gap-2 ${
+              activeTab === "tester"
+                ? "text-white"
+                : "text-gray-400 hover:text-gray-300"
+            }`}
+          >
+            <Play size={14} />
+            API Tester
+            {activeTab === "tester" && (
+              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-purple-500" />
+            )}
           </button>
         </div>
       </div>
 
+      {activeTab === "tester" && (
+        <div className="max-w-4xl mx-auto">
+          <ApiTester />
+        </div>
+      )}
+
+      {activeTab === "tools" && (
+      <>
       {/* Tool Set Selector */}
       <div className="max-w-7xl mx-auto mb-6">
         <div className="flex items-center gap-4">
@@ -315,6 +357,9 @@ export default function ToolsPage() {
           </div>
         )}
       </div>
+
+      </>
+      )}
 
       <ToolDrawer
         isOpen={isDrawerOpen}
