@@ -25,7 +25,6 @@ from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.frames.frames import Frame, InterruptionFrame, TextFrame, TTSSpeakFrame
 
 from .agent import VoiceAgentConfig
-from .tts_normalizer import TTSTextNormalizer
 from ..config.providers import is_flux_model
 
 try:
@@ -258,16 +257,13 @@ class VoiceEngineFactory:
             for function_name, handler in function_handlers.items():
                 llm.register_function(function_name, handler)
         
-        tts_normalizer = TTSTextNormalizer()
-
         pipeline = Pipeline(
             [
                 transport.input(),
                 stt,
                 context_aggregator.user(),
                 llm,
-                interruption_tracker,
-                tts_normalizer,
+                interruption_tracker,  # Track text frames before TTS and detect interruptions
                 tts,
                 transport.output(),
                 context_aggregator.assistant(),
