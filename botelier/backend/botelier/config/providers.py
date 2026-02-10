@@ -154,11 +154,11 @@ LLM_PROVIDERS: Dict[LLMProvider, LLMConfig] = {
     LLMProvider.OPENAI: LLMConfig(
         provider_type="llm",
         display_name="OpenAI",
-        description="GPT-4 and GPT-3.5 models for conversational AI",
+        description="GPT-4 and GPT-4.1 models for conversational AI",
         requires_api_key=True,
         supported_languages=["en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh"],
         default_model="gpt-4o-mini",
-        available_models=["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"],
+        available_models=["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo"],
         supports_function_calling=True,
         supports_streaming=True,
         max_context_tokens=128000,
