@@ -27,6 +27,7 @@ GUESTCENTRIC_INTEGRATION = {
             "label": "Authentication Method",
             "type": "select",
             "options": ["basic_auth", "jwt"],
+            "option_labels": {"basic_auth": "Basic Auth", "jwt": "JWT Token"},
             "description": "Choose Basic Auth for simpler setup or JWT for token-based auth",
             "required": True
         },
@@ -50,15 +51,17 @@ GUESTCENTRIC_INTEGRATION = {
             "type": "text",
             "placeholder": "Your API key",
             "description": "API key provided by GuestCentric integrations team",
-            "required": True
+            "required": True,
+            "show_when": {"auth_method": "basic_auth"}
         },
         {
             "key": "hotelId",
-            "label": "Hotel ID (optional)",
+            "label": "Hotel ID",
             "type": "text",
             "placeholder": "Hotel ID",
-            "description": "Hotel ID provided by GuestCentric. Can also be set per-assistant in API request configuration.",
-            "required": False
+            "description": "Hotel ID provided by GuestCentric for this property",
+            "required": False,
+            "show_when": {"auth_method": "basic_auth"}
         }
     ],
 

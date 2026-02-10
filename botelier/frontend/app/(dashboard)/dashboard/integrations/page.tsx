@@ -40,6 +40,7 @@ interface RequiredField {
   required: boolean;
   options?: string[];
   option_labels?: Record<string, string>;
+  show_when?: Record<string, string>;
 }
 
 interface AccountIntegration {
@@ -47,6 +48,7 @@ interface AccountIntegration {
   integration_type_id: string;
   integration_slug: string;
   integration_name: string;
+  connection_name: string | null;
   status: string;
   connected_at: string | null;
   last_sync_at: string | null;
@@ -298,8 +300,8 @@ export default function IntegrationsPage() {
     }
   };
 
-  const getIntegrationStatus = (typeId: string): AccountIntegration | undefined => {
-    return accountIntegrations.find(i => i.integration_type_id === typeId);
+  const getIntegrationConnections = (typeId: string): AccountIntegration[] => {
+    return accountIntegrations.filter(i => i.integration_type_id === typeId);
   };
 
   const handleConnect = (type: IntegrationType) => {
@@ -353,7 +355,19 @@ export default function IntegrationsPage() {
   const handleSubmitConnect = async () => {
     if (!selectedType) return;
 
-    const missingFields = selectedType.required_fields
+    if (!credentials["_connection_name"]?.trim()) {
+      alert("Please enter a connection name");
+      return;
+    }
+
+    const visibleFields = selectedType.required_fields.filter(field => {
+      if (!field.show_when) return true;
+      return Object.entries(field.show_when).every(
+        ([key, value]) => (credentials[key] || selectedType.required_fields.find(f => f.key === key)?.options?.[0]) === value
+      );
+    });
+
+    const missingFields = visibleFields
       .filter(f => f.required && !credentials[f.key])
       .map(f => f.label);
 
@@ -364,13 +378,16 @@ export default function IntegrationsPage() {
 
     setConnecting(true);
 
+    const { _connection_name, ...apiCredentials } = credentials;
+
     try {
       const response = await fetch(`/api/integrations/account/${accountId}/connect`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           integration_type_id: selectedType.id,
-          credentials: credentials
+          credentials: apiCredentials,
+          connection_name: _connection_name
         })
       });
 
@@ -446,8 +463,9 @@ export default function IntegrationsPage() {
 
       <div className="space-y-4">
         {integrationTypes.map((type) => {
-          const connection = getIntegrationStatus(type.id);
-          const isConnected = connection?.status === "connected";
+          const connections = getIntegrationConnections(type.id);
+          const slugInitials = type.slug === "opera-cloud" ? "OC" : type.slug === "guestcentric-crs" ? "GC" : type.name.slice(0, 2).toUpperCase();
+          const gradientClass = type.slug === "opera-cloud" ? "from-orange-500 to-red-600" : "from-emerald-500 to-teal-600";
 
           return (
             <div
@@ -456,14 +474,11 @@ export default function IntegrationsPage() {
             >
               <div className="flex items-start justify-between">
                 <div className="flex items-start gap-4">
-                  <div className="w-12 h-12 bg-gradient-to-br from-orange-500 to-red-600 rounded-lg flex items-center justify-center text-white font-bold text-lg">
-                    OC
+                  <div className={`w-12 h-12 bg-gradient-to-br ${gradientClass} rounded-lg flex items-center justify-center text-white font-bold text-lg`}>
+                    {slugInitials}
                   </div>
                   <div>
-                    <div className="flex items-center gap-3">
-                      <h3 className="text-lg font-semibold">{type.name}</h3>
-                      {connection && getStatusBadge(connection.status)}
-                    </div>
+                    <h3 className="text-lg font-semibold">{type.name}</h3>
                     <p className="text-sm text-gray-400 mt-1 max-w-lg">
                       {type.description}
                     </p>
@@ -478,51 +493,67 @@ export default function IntegrationsPage() {
                         <ExternalLink className="h-3 w-3 ml-1" />
                       </a>
                     )}
-                    {connection?.last_error && (
-                      <p className="text-xs text-red-400 mt-2">
-                        Error: {connection.last_error}
-                      </p>
-                    )}
-                    {connection?.connected_at && (
-                      <p className="text-xs text-gray-500 mt-1">
-                        Connected {new Date(connection.connected_at).toLocaleDateString()}
-                      </p>
-                    )}
                   </div>
                 </div>
 
-                <div className="flex items-center gap-2">
-                  {isConnected ? (
-                    <>
-                      <button
-                        onClick={() => handleTestConnection(connection)}
-                        disabled={testing === connection.id}
-                        className="px-3 py-1.5 text-sm font-medium text-gray-300 bg-gray-800 hover:bg-gray-700 rounded-lg transition disabled:opacity-50"
-                      >
-                        {testing === connection.id ? (
-                          <Loader2 className="h-4 w-4 animate-spin" />
-                        ) : (
-                          <RefreshCw className="h-4 w-4" />
-                        )}
-                      </button>
-                      <button
-                        onClick={() => handleDisconnect(connection)}
-                        className="px-4 py-1.5 text-sm font-medium text-red-400 hover:text-red-300 border border-red-800 hover:border-red-700 rounded-lg transition"
-                      >
-                        Disconnect
-                      </button>
-                    </>
-                  ) : (
-                    <button
-                      onClick={() => handleConnect(type)}
-                      className="inline-flex items-center px-4 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition"
-                    >
-                      Connect
-                      <ChevronRight className="h-4 w-4 ml-1" />
-                    </button>
-                  )}
-                </div>
+                <button
+                  onClick={() => handleConnect(type)}
+                  className="inline-flex items-center px-4 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition"
+                >
+                  <Plus className="h-4 w-4 mr-1" />
+                  Add Connection
+                </button>
               </div>
+
+              {connections.length > 0 && (
+                <div className="mt-4 space-y-2 border-t border-gray-800 pt-4">
+                  {connections.map((conn) => (
+                    <div
+                      key={conn.id}
+                      className="flex items-center justify-between bg-[#0a0a0a] border border-gray-800 rounded-lg px-4 py-3"
+                    >
+                      <div className="flex items-center gap-3">
+                        <Plug className="h-4 w-4 text-gray-500" />
+                        <div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium">{conn.connection_name || conn.integration_name}</span>
+                            {getStatusBadge(conn.status)}
+                          </div>
+                          {conn.last_error && (
+                            <p className="text-xs text-red-400 mt-0.5">{conn.last_error}</p>
+                          )}
+                          {conn.connected_at && (
+                            <p className="text-xs text-gray-500 mt-0.5">
+                              Connected {new Date(conn.connected_at).toLocaleDateString()}
+                            </p>
+                          )}
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          onClick={() => handleTestConnection(conn)}
+                          disabled={testing === conn.id}
+                          className="px-2.5 py-1 text-sm text-gray-300 bg-gray-800 hover:bg-gray-700 rounded-lg transition disabled:opacity-50"
+                          title="Test connection"
+                        >
+                          {testing === conn.id ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <RefreshCw className="h-3.5 w-3.5" />
+                          )}
+                        </button>
+                        <button
+                          onClick={() => handleDisconnect(conn)}
+                          className="px-2.5 py-1 text-sm text-red-400 hover:text-red-300 bg-gray-800 hover:bg-gray-700 rounded-lg transition"
+                          title="Remove connection"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
             </div>
           );
         })}
@@ -805,38 +836,61 @@ export default function IntegrationsPage() {
                 Your credentials are encrypted and stored securely.
               </p>
 
-              {selectedType.required_fields.map((field) => (
-                <div key={field.key}>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
-                    {field.label}
-                    {field.required && <span className="text-red-400 ml-1">*</span>}
-                  </label>
-                  {field.type === "select" && field.options ? (
-                    <select
-                      value={credentials[field.key] || field.options[0] || ""}
-                      onChange={(e) => setCredentials(prev => ({ ...prev, [field.key]: e.target.value }))}
-                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                    >
-                      {field.options.map((opt) => (
-                        <option key={opt} value={opt}>
-                          {field.option_labels?.[opt] || opt.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}
-                        </option>
-                      ))}
-                    </select>
-                  ) : (
-                    <input
-                      type={field.type === "password" ? "password" : "text"}
-                      placeholder={field.placeholder}
-                      value={credentials[field.key] || ""}
-                      onChange={(e) => setCredentials(prev => ({ ...prev, [field.key]: e.target.value }))}
-                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                    />
-                  )}
-                  {field.description && (
-                    <p className="text-xs text-gray-500 mt-1">{field.description}</p>
-                  )}
-                </div>
-              ))}
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Connection Name <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder={`e.g., ${selectedType.name} - Hotel Name`}
+                  value={credentials["_connection_name"] || ""}
+                  onChange={(e) => setCredentials(prev => ({ ...prev, _connection_name: e.target.value }))}
+                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                />
+                <p className="text-xs text-gray-500 mt-1">A label to identify this connection (e.g., hotel or property name)</p>
+              </div>
+
+              {selectedType.required_fields.map((field) => {
+                if (field.show_when) {
+                  const shouldShow = Object.entries(field.show_when).every(
+                    ([key, value]) => (credentials[key] || selectedType.required_fields.find(f => f.key === key)?.options?.[0]) === value
+                  );
+                  if (!shouldShow) return null;
+                }
+
+                return (
+                  <div key={field.key}>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">
+                      {field.label}
+                      {field.required && <span className="text-red-400 ml-1">*</span>}
+                    </label>
+                    {field.type === "select" && field.options ? (
+                      <select
+                        value={credentials[field.key] || field.options[0] || ""}
+                        onChange={(e) => setCredentials(prev => ({ ...prev, [field.key]: e.target.value }))}
+                        className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                      >
+                        {field.options.map((opt) => (
+                          <option key={opt} value={opt}>
+                            {field.option_labels?.[opt] || opt.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}
+                          </option>
+                        ))}
+                      </select>
+                    ) : (
+                      <input
+                        type={field.type === "password" ? "password" : "text"}
+                        placeholder={field.placeholder}
+                        value={credentials[field.key] || ""}
+                        onChange={(e) => setCredentials(prev => ({ ...prev, [field.key]: e.target.value }))}
+                        className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                      />
+                    )}
+                    {field.description && (
+                      <p className="text-xs text-gray-500 mt-1">{field.description}</p>
+                    )}
+                  </div>
+                );
+              })}
 
               {selectedType.documentation_url && (
                 <a

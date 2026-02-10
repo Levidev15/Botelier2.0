@@ -53,7 +53,7 @@ The architecture emphasizes clean branding ("Botelier"), flexible provider confi
 ### Multi-Tenant Integration System
 A platform-level integration registry allows accounts to connect their own third-party services. The system is designed to be universal — adding a new integration type is just a matter of creating a seed file with endpoints and auth config. Key features:
 - **IntegrationType Model:** Platform seeds available integration types with auth configs, required credential fields, and pre-configured API endpoints.
-- **AccountIntegration Model:** Per-account connections with encrypted credential storage using Fernet encryption.
+- **AccountIntegration Model:** Per-account connections with encrypted credential storage using Fernet encryption. Supports **multiple connections per integration type** (e.g., one per hotel/property). Each connection has a `connection_name` for identification.
 - **Flow Editor Integration:** API Request nodes support both Custom URL and Integration sources. When Integration is selected, users can choose from connected integrations and select pre-configured endpoints.
 - **Endpoints:** `/api/integrations/connections` returns account integrations with full integration type details including endpoints for flow editor dropdowns.
 - **Universal Auth Support:** The IntegrationClient (`botelier/backend/botelier/services/integration_client.py`) supports three auth methods:
@@ -61,7 +61,7 @@ A platform-level integration registry allows accounts to connect their own third
   - **Basic Auth** (`basic_auth`): HTTP Basic Auth header with optional query parameters (apikey, hotelId). No token management needed.
   - **JWT** (`jwt`): Auto-login to get token, cache it, refresh on expiry. Token lifecycle managed automatically.
   - Integrations can support multiple auth methods (e.g., `basic_or_jwt`) — user selects their preferred method via a `select` field in required_fields.
-- **Required Fields:** Support `text`, `password`, `url`, and `select` (with `options` array) field types. The frontend connect modal renders these dynamically.
+- **Required Fields:** Support `text`, `password`, `url`, and `select` (with `options` array) field types. Fields support `show_when` conditional visibility (e.g., show API Key field only when Basic Auth is selected). The frontend connect modal renders these dynamically.
 
 **Seeded Integration Types:**
 - **Oracle Opera Cloud (OHIP)** (`opera-cloud`): OAuth 2.0 auth, 10 endpoints (reservations, profiles, availability, configuration, front desk).
