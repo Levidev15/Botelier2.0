@@ -57,6 +57,7 @@ export interface APIRequestConfig {
   headers?: Record<string, string>;
   bodyTemplate?: string;
   responseMapping?: Record<string, string>;
+  responseInstructions?: string;
   successMessage?: string;
   errorMessage?: string;
   timeout?: number;

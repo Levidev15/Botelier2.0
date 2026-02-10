@@ -50,6 +50,10 @@ class ApiRequestConfig(BaseModel):
     headers: Optional[Dict[str, str]] = Field(default={}, description="HTTP headers")
     parameters: Optional[Dict[str, Any]] = Field(default={}, description="Request parameters")
     body: Optional[Dict[str, Any]] = Field(default=None, description="Request body (for POST/PUT)")
+    body_template: Optional[str] = Field(default=None, description="Request body as template string with {{variable}} placeholders")
+    response_mapping: Optional[Dict[str, str]] = Field(default=None, description="Map response JSON paths to variable names, e.g. {'guest_name': 'data.guest.name'}")
+    response_instructions: Optional[str] = Field(default=None, description="Instructions telling the AI how to format/present the API response to the caller")
+    timeout: Optional[int] = Field(default=30, description="Request timeout in seconds")
     
     @validator('method')
     def validate_method(cls, v):

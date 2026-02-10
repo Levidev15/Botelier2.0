@@ -28,6 +28,7 @@ from botelier.api.dispositions import router as dispositions_router
 from botelier.api.integrations import router as integrations_router
 from botelier.api.tool_sets import router as tool_sets_router
 from botelier.api.mcp_connections import router as mcp_connections_router
+from botelier.api.api_tester import router as api_tester_router
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -67,6 +68,7 @@ app.include_router(dispositions_router)  # Assistant dispositions
 app.include_router(integrations_router)  # Third-party integrations (Opera Cloud, etc.)
 app.include_router(tool_sets_router)  # Tool collection management
 app.include_router(mcp_connections_router)  # MCP server connections for dynamic tools
+app.include_router(api_tester_router)  # API testing proxy for tool configuration
 
 
 @app.on_event("startup")

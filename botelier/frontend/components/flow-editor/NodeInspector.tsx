@@ -687,7 +687,12 @@ interface AccountIntegration {
 function APIRequestNodePanel({ data, nodeId }: { data: APIRequestNodeData; nodeId: string }) {
   const { updateNodeData, variables } = useFlowStore();
   const api = data.api || { method: "GET" as const, url: "", apiSource: "custom" as const };
-  const [showResponseMapping, setShowResponseMapping] = useState(false);
+  const [showHeaders, setShowHeaders] = useState(
+    !!(api.headers && Object.keys(api.headers).length > 0)
+  );
+  const [showResponseMapping, setShowResponseMapping] = useState(
+    !!(api.responseMapping && Object.keys(api.responseMapping).length > 0)
+  );
   const [integrations, setIntegrations] = useState<AccountIntegration[]>([]);
   const [loadingIntegrations, setLoadingIntegrations] = useState(false);
 
@@ -746,7 +751,61 @@ function APIRequestNodePanel({ data, nodeId }: { data: APIRequestNodeData; nodeI
     }
   };
 
+  const headerEntries = Object.entries(api.headers || {});
+  const addHeader = () => {
+    const newHeaders = { ...(api.headers || {}), "": "" };
+    updateApi({ headers: newHeaders });
+  };
+  const updateHeader = (oldKey: string, newKey: string, value: string, index: number) => {
+    const entries = Object.entries(api.headers || {});
+    const newHeaders: Record<string, string> = {};
+    entries.forEach(([k, v], i) => {
+      if (i === index) {
+        newHeaders[newKey] = value;
+      } else {
+        newHeaders[k] = v;
+      }
+    });
+    updateApi({ headers: newHeaders });
+  };
+  const removeHeader = (index: number) => {
+    const entries = Object.entries(api.headers || {});
+    const newHeaders: Record<string, string> = {};
+    entries.forEach(([k, v], i) => {
+      if (i !== index) newHeaders[k] = v;
+    });
+    updateApi({ headers: newHeaders });
+  };
+
+  const responseMappingEntries = Object.entries(api.responseMapping || {});
+  const addResponseMapping = () => {
+    const newMapping = { ...(api.responseMapping || {}), "": "" };
+    updateApi({ responseMapping: newMapping });
+  };
+  const updateResponseMapping = (oldKey: string, newKey: string, value: string, index: number) => {
+    const entries = Object.entries(api.responseMapping || {});
+    const newMapping: Record<string, string> = {};
+    entries.forEach(([k, v], i) => {
+      if (i === index) {
+        newMapping[newKey] = value;
+      } else {
+        newMapping[k] = v;
+      }
+    });
+    updateApi({ responseMapping: newMapping });
+  };
+  const removeResponseMapping = (index: number) => {
+    const entries = Object.entries(api.responseMapping || {});
+    const newMapping: Record<string, string> = {};
+    entries.forEach(([k, v], i) => {
+      if (i !== index) newMapping[k] = v;
+    });
+    updateApi({ responseMapping: newMapping });
+  };
+
   const apiSource = api.apiSource || "custom";
+  const inputCls = "w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-orange-500 focus:outline-none";
+  const smallInputCls = "flex-1 bg-[#1a1a1a] border border-gray-700 rounded px-2 py-1 text-white text-xs focus:border-orange-500 focus:outline-none font-mono";
 
   return (
     <div className="space-y-4">
@@ -765,7 +824,7 @@ function APIRequestNodePanel({ data, nodeId }: { data: APIRequestNodeData; nodeI
               url: newSource === "custom" ? api.url : "",
             });
           }}
-          className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-orange-500 focus:outline-none"
+          className={inputCls}
         >
           <option value="custom">Custom URL</option>
           <option value="integration">Integration</option>
@@ -779,7 +838,7 @@ function APIRequestNodePanel({ data, nodeId }: { data: APIRequestNodeData; nodeI
             <select
               value={api.integrationId || ""}
               onChange={(e) => handleIntegrationChange(e.target.value)}
-              className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-orange-500 focus:outline-none"
+              className={inputCls}
               disabled={loadingIntegrations}
             >
               <option value="">
@@ -804,7 +863,7 @@ function APIRequestNodePanel({ data, nodeId }: { data: APIRequestNodeData; nodeI
               <select
                 value={api.endpointId || ""}
                 onChange={(e) => handleEndpointChange(e.target.value)}
-                className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-orange-500 focus:outline-none"
+                className={inputCls}
               >
                 <option value="">Select endpoint...</option>
                 {selectedIntegration.integration_type.endpoints.map((endpoint) => (
@@ -844,7 +903,7 @@ function APIRequestNodePanel({ data, nodeId }: { data: APIRequestNodeData; nodeI
             <select
               value={api.method}
               onChange={(e) => updateApi({ method: e.target.value as typeof api.method })}
-              className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-orange-500 focus:outline-none"
+              className={inputCls}
             >
               <option value="GET">GET</option>
               <option value="POST">POST</option>
@@ -859,12 +918,59 @@ function APIRequestNodePanel({ data, nodeId }: { data: APIRequestNodeData; nodeI
               type="text"
               value={api.url || ""}
               onChange={(e) => updateApi({ url: e.target.value })}
-              className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-orange-500 focus:outline-none font-mono text-xs"
+              className={`${inputCls} font-mono text-xs`}
               placeholder="https://api.example.com/endpoint"
             />
           </div>
         </div>
       )}
+
+      <div>
+        <button
+          onClick={() => setShowHeaders(!showHeaders)}
+          className="flex items-center gap-2 text-sm font-medium text-gray-300"
+        >
+          {showHeaders ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+          Headers
+          {headerEntries.length > 0 && <span className="text-xs text-gray-500">({headerEntries.length})</span>}
+        </button>
+
+        {showHeaders && (
+          <div className="mt-2 space-y-2">
+            <p className="text-xs text-gray-500">Add custom HTTP headers for the request</p>
+            {headerEntries.map(([key, value], i) => (
+              <div key={i} className="flex gap-2 items-center">
+                <input
+                  type="text"
+                  value={key}
+                  onChange={(e) => updateHeader(key, e.target.value, value, i)}
+                  className={smallInputCls}
+                  placeholder="Header-Name"
+                />
+                <input
+                  type="text"
+                  value={value}
+                  onChange={(e) => updateHeader(key, key, e.target.value, i)}
+                  className={smallInputCls}
+                  placeholder="value"
+                />
+                <button
+                  onClick={() => removeHeader(i)}
+                  className="text-red-400 hover:text-red-300 p-1"
+                >
+                  <X className="h-3 w-3" />
+                </button>
+              </div>
+            ))}
+            <button
+              onClick={addHeader}
+              className="text-xs text-orange-400 hover:text-orange-300 flex items-center gap-1"
+            >
+              <Plus className="h-3 w-3" /> Add Header
+            </button>
+          </div>
+        )}
+      </div>
       
       {(api.method === "POST" || api.method === "PUT") && (
         <div>
@@ -876,7 +982,7 @@ function APIRequestNodePanel({ data, nodeId }: { data: APIRequestNodeData; nodeI
             value={api.bodyTemplate || ""}
             onChange={(e) => updateApi({ bodyTemplate: e.target.value })}
             rows={4}
-            className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-orange-500 focus:outline-none resize-none font-mono text-xs"
+            className={`${inputCls} resize-none font-mono text-xs`}
             placeholder='{"check_in": "{{check_in_date}}", "guests": {{guest_count}}}'
           />
           
@@ -903,32 +1009,61 @@ function APIRequestNodePanel({ data, nodeId }: { data: APIRequestNodeData; nodeI
         >
           {showResponseMapping ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
           Response Mapping
+          {responseMappingEntries.length > 0 && <span className="text-xs text-gray-500">({responseMappingEntries.length})</span>}
         </button>
         
         {showResponseMapping && (
           <div className="mt-2 space-y-2">
-            <p className="text-xs text-gray-500">Map response fields to variables</p>
-            {Object.entries(api.responseMapping || {}).map(([key, path], i) => (
-              <div key={i} className="flex gap-2">
+            <p className="text-xs text-gray-500">Extract response fields into flow variables (dot notation: data.guest.name)</p>
+            {responseMappingEntries.map(([key, path], i) => (
+              <div key={i} className="flex gap-2 items-center">
                 <input
                   type="text"
                   value={key}
-                  className="flex-1 bg-[#1a1a1a] border border-gray-700 rounded px-2 py-1 text-white text-xs focus:border-orange-500 focus:outline-none font-mono"
+                  onChange={(e) => updateResponseMapping(key, e.target.value, path, i)}
+                  className={smallInputCls}
                   placeholder="variable_name"
-                  readOnly
                 />
                 <span className="text-gray-500">=</span>
                 <input
                   type="text"
                   value={path}
-                  className="flex-1 bg-[#1a1a1a] border border-gray-700 rounded px-2 py-1 text-white text-xs focus:border-orange-500 focus:outline-none font-mono"
-                  placeholder="response.data.id"
-                  readOnly
+                  onChange={(e) => updateResponseMapping(key, key, e.target.value, i)}
+                  className={smallInputCls}
+                  placeholder="data.guest.name"
                 />
+                <button
+                  onClick={() => removeResponseMapping(i)}
+                  className="text-red-400 hover:text-red-300 p-1"
+                >
+                  <X className="h-3 w-3" />
+                </button>
               </div>
             ))}
+            <button
+              onClick={addResponseMapping}
+              className="text-xs text-orange-400 hover:text-orange-300 flex items-center gap-1"
+            >
+              <Plus className="h-3 w-3" /> Add Mapping
+            </button>
           </div>
         )}
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium text-gray-400 mb-1">
+          Response Instructions
+        </label>
+        <textarea
+          value={api.responseInstructions || ""}
+          onChange={(e) => updateApi({ responseInstructions: e.target.value })}
+          rows={3}
+          className={`${inputCls} resize-none text-xs`}
+          placeholder="Tell the AI how to present the API response to the caller (e.g., 'Summarize the reservation details including room type, dates, and price')"
+        />
+        <p className="text-xs text-gray-500 mt-1">
+          Instructions for how the AI should format and present the response
+        </p>
       </div>
     </div>
   );
