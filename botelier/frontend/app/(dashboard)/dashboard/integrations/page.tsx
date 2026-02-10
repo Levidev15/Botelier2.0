@@ -306,7 +306,13 @@ export default function IntegrationsPage() {
 
   const handleConnect = (type: IntegrationType) => {
     setSelectedType(type);
-    setCredentials({});
+    const defaults: Record<string, string> = {};
+    type.required_fields.forEach(field => {
+      if (field.type === "select" && field.options && field.options.length > 0) {
+        defaults[field.key] = field.options[0];
+      }
+    });
+    setCredentials(defaults);
     setShowConnectModal(true);
   };
 
