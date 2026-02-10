@@ -1,13 +1,7 @@
-"""
-Integration Management API.
-
-Endpoints for managing third-party integrations like Oracle Opera Cloud.
-Supports multi-tenant access where each account manages their own connections.
-"""
-
 from datetime import datetime, timedelta
 from typing import Optional, List
 from uuid import UUID
+import base64
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
@@ -106,12 +100,6 @@ async def get_my_connections(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Get current user's account integrations with full integration type details.
-    
-    Used by the flow editor to show available integration endpoints.
-    Returns active integrations with their integration type and endpoints.
-    """
     account_id = current_user.get("account_id")
     if not account_id:
         return []
@@ -155,11 +143,6 @@ async def get_my_connections(
 async def list_integration_types(
     db: Session = Depends(get_db)
 ):
-    """
-    List all available integration types.
-    
-    Returns all enabled integration types that accounts can connect to.
-    """
     types = db.query(IntegrationType).filter(
         IntegrationType.is_enabled == True
     ).all()
@@ -187,7 +170,6 @@ async def get_integration_type(
     type_id: str,
     db: Session = Depends(get_db)
 ):
-    """Get details of a specific integration type."""
     integration_type = db.query(IntegrationType).filter(
         IntegrationType.id == type_id
     ).first()
@@ -215,11 +197,6 @@ async def list_account_integrations(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    List all integrations for an account.
-    
-    Returns both connected and available integrations.
-    """
     integrations = db.query(AccountIntegration).filter(
         AccountIntegration.account_id == account_id
     ).all()
@@ -246,11 +223,6 @@ async def list_connected_integrations(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    List only connected integrations for an account.
-    
-    Used by flow editor to show available integration endpoints.
-    """
     integrations = db.query(AccountIntegration).filter(
         AccountIntegration.account_id == account_id,
         AccountIntegration.status == IntegrationStatus.CONNECTED
@@ -279,12 +251,6 @@ async def get_integration_endpoints(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Get available endpoints for a connected integration.
-    
-    Returns the pre-configured API endpoints for the integration type.
-    Only works for connected integrations.
-    """
     integration = db.query(AccountIntegration).filter(
         AccountIntegration.id == integration_id,
         AccountIntegration.account_id == account_id
@@ -320,12 +286,6 @@ async def connect_integration(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Connect an integration for an account.
-    
-    Validates credentials by attempting to obtain an OAuth token,
-    then stores encrypted credentials.
-    """
     integration_type = db.query(IntegrationType).filter(
         IntegrationType.id == request.integration_type_id
     ).first()
@@ -355,26 +315,72 @@ async def connect_integration(
         db.commit()
     
     try:
-        token_result = await obtain_oauth_token(integration_type, request.credentials)
-        
-        if token_result.get("success"):
-            integration.set_access_token(token_result["access_token"])
-            if token_result.get("refresh_token"):
-                integration.set_refresh_token(token_result["refresh_token"])
-            if token_result.get("expires_in"):
-                integration.token_expires_at = datetime.utcnow() + timedelta(seconds=token_result["expires_in"])
-            
-            integration.status = IntegrationStatus.CONNECTED
-            integration.connected_at = datetime.utcnow()
-            integration.connected_by_user_id = UUID(current_user["id"]) if current_user.get("id") else None
-            integration.last_error = None
-            
-            logger.info(f"Successfully connected integration {integration_type.slug} for account {account_id}")
+        auth_type = integration_type.auth_type
+
+        if auth_type == "oauth2_client_credentials":
+            token_result = await obtain_oauth_token(integration_type, request.credentials)
+
+            if token_result.get("success"):
+                integration.set_access_token(token_result["access_token"])
+                if token_result.get("refresh_token"):
+                    integration.set_refresh_token(token_result["refresh_token"])
+                if token_result.get("expires_in"):
+                    integration.token_expires_at = datetime.utcnow() + timedelta(seconds=token_result["expires_in"])
+
+                integration.status = IntegrationStatus.CONNECTED
+                integration.connected_at = datetime.utcnow()
+                integration.connected_by_user_id = UUID(current_user["id"]) if current_user.get("id") else None
+                integration.last_error = None
+                logger.info(f"Successfully connected integration {integration_type.slug} for account {account_id}")
+            else:
+                integration.status = IntegrationStatus.ERROR
+                integration.last_error = token_result.get("error", "Failed to obtain access token")
+                logger.error(f"Failed to connect integration {integration_type.slug}: {integration.last_error}")
+
+        elif auth_type == "basic_or_jwt":
+            auth_method = request.credentials.get("auth_method", "basic_auth")
+
+            if auth_method == "basic_auth":
+                validation_result = await validate_basic_auth(integration_type, request.credentials)
+
+                if validation_result.get("success"):
+                    integration.status = IntegrationStatus.CONNECTED
+                    integration.connected_at = datetime.utcnow()
+                    integration.connected_by_user_id = UUID(current_user["id"]) if current_user.get("id") else None
+                    integration.last_error = None
+                    logger.info(f"Successfully connected integration {integration_type.slug} (basic_auth) for account {account_id}")
+                else:
+                    integration.status = IntegrationStatus.ERROR
+                    integration.last_error = validation_result.get("error", "Basic auth validation failed")
+                    logger.error(f"Failed to connect integration {integration_type.slug}: {integration.last_error}")
+
+            elif auth_method == "jwt":
+                token_result = await obtain_jwt_token(integration_type, request.credentials)
+
+                if token_result.get("success"):
+                    integration.set_access_token(token_result["access_token"])
+                    if token_result.get("refresh_token"):
+                        integration.set_refresh_token(token_result["refresh_token"])
+                    if token_result.get("expires_in"):
+                        integration.token_expires_at = datetime.utcnow() + timedelta(seconds=token_result["expires_in"])
+
+                    integration.status = IntegrationStatus.CONNECTED
+                    integration.connected_at = datetime.utcnow()
+                    integration.connected_by_user_id = UUID(current_user["id"]) if current_user.get("id") else None
+                    integration.last_error = None
+                    logger.info(f"Successfully connected integration {integration_type.slug} (jwt) for account {account_id}")
+                else:
+                    integration.status = IntegrationStatus.ERROR
+                    integration.last_error = token_result.get("error", "Failed to obtain JWT token")
+                    logger.error(f"Failed to connect integration {integration_type.slug}: {integration.last_error}")
+            else:
+                integration.status = IntegrationStatus.ERROR
+                integration.last_error = f"Unsupported auth method: {auth_method}"
+
         else:
             integration.status = IntegrationStatus.ERROR
-            integration.last_error = token_result.get("error", "Failed to obtain access token")
-            logger.error(f"Failed to connect integration {integration_type.slug}: {integration.last_error}")
-        
+            integration.last_error = f"Unsupported auth type: {auth_type}"
+
         db.commit()
         
     except Exception as e:
@@ -404,11 +410,6 @@ async def test_integration_connection(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Test an integration connection.
-    
-    Verifies the stored credentials are still valid by making a test API call.
-    """
     integration = db.query(AccountIntegration).filter(
         AccountIntegration.id == integration_id,
         AccountIntegration.account_id == account_id
@@ -421,17 +422,23 @@ async def test_integration_connection(
     integration_type = integration.integration_type
     
     try:
-        if integration.is_token_expired():
-            refresh_result = await refresh_oauth_token(integration_type, integration)
-            if not refresh_result.get("success"):
-                return TestConnectionResponse(
-                    success=False,
-                    message="Token expired and refresh failed",
-                    details={"error": refresh_result.get("error")}
-                )
-            db.commit()
-        
-        test_result = await test_api_connection(integration_type, integration, credentials)
+        auth_type = integration_type.auth_type
+        auth_method = credentials.get("auth_method", "")
+
+        if auth_type == "basic_or_jwt" and auth_method == "basic_auth":
+            test_result = await test_basic_auth_connection(integration_type, credentials)
+        else:
+            if integration.is_token_expired():
+                refresh_result = await refresh_oauth_token(integration_type, integration)
+                if not refresh_result.get("success"):
+                    return TestConnectionResponse(
+                        success=False,
+                        message="Token expired and refresh failed",
+                        details={"error": refresh_result.get("error")}
+                    )
+                db.commit()
+
+            test_result = await test_api_connection(integration_type, integration, credentials)
         
         return TestConnectionResponse(
             success=test_result.get("success", False),
@@ -454,11 +461,6 @@ async def disconnect_integration(
     current_user: dict = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    """
-    Disconnect an integration.
-    
-    Removes stored credentials and marks the integration as disconnected.
-    """
     integration = db.query(AccountIntegration).filter(
         AccountIntegration.id == integration_id,
         AccountIntegration.account_id == account_id
@@ -483,11 +485,6 @@ async def disconnect_integration(
 
 
 async def obtain_oauth_token(integration_type: IntegrationType, credentials: dict) -> dict:
-    """
-    Obtain OAuth access token for OHIP.
-    
-    Uses OAuth 2.0 Resource Owner Password Grant as per OHIP documentation.
-    """
     auth_config = integration_type.get_auth_config()
     
     gateway_url = credentials.get("gateway_url", "").rstrip("/")
@@ -541,11 +538,137 @@ async def obtain_oauth_token(integration_type: IntegrationType, credentials: dic
         return {"success": False, "error": str(e)}
 
 
+async def obtain_jwt_token(integration_type: IntegrationType, credentials: dict) -> dict:
+    auth_config = integration_type.get_auth_config()
+    base_url = auth_config.get("base_url", "").rstrip("/")
+    login_endpoint = auth_config.get("jwt_login_endpoint", "/authentication/login")
+    max_lifetime_hours = auth_config.get("jwt_max_lifetime_hours", 3)
+
+    username = credentials.get("username")
+    password = credentials.get("password")
+
+    if not all([base_url, username, password]):
+        return {"success": False, "error": "Missing required credentials (username, password)"}
+
+    login_url = f"{base_url}{login_endpoint}"
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                login_url,
+                json={"username": username, "password": password},
+                headers={"Content-Type": "application/json", "Accept": "application/json"},
+                timeout=30.0
+            )
+
+            if response.status_code == 200:
+                token_data = response.json()
+                expires_in = token_data.get("expires_in", max_lifetime_hours * 3600)
+                return {
+                    "success": True,
+                    "access_token": token_data.get("token") or token_data.get("access_token"),
+                    "refresh_token": token_data.get("refresh_token"),
+                    "expires_in": expires_in
+                }
+            else:
+                logger.error(f"JWT login request failed: {response.status_code} - {response.text}")
+                return {
+                    "success": False,
+                    "error": f"JWT login failed: {response.status_code} - {response.text}"
+                }
+
+    except Exception as e:
+        logger.error(f"JWT login request exception: {e}")
+        return {"success": False, "error": str(e)}
+
+
+async def validate_basic_auth(integration_type: IntegrationType, credentials: dict) -> dict:
+    auth_config = integration_type.get_auth_config()
+    base_url = auth_config.get("base_url", "").rstrip("/")
+
+    username = credentials.get("username")
+    password = credentials.get("password")
+    apikey = credentials.get("apikey")
+    hotel_id = credentials.get("hotelId")
+
+    if not all([base_url, username, password, apikey]):
+        return {"success": False, "error": "Missing required credentials (username, password, apikey)"}
+
+    test_url = f"{base_url}/hotels"
+    basic_token = base64.b64encode(f"{username}:{password}".encode()).decode()
+
+    headers = {
+        "Authorization": f"Basic {basic_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    params = {"apikey": apikey}
+    if hotel_id:
+        params["hotelId"] = hotel_id
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                test_url,
+                headers=headers,
+                params=params,
+                timeout=30.0
+            )
+
+            if response.status_code == 200:
+                return {"success": True}
+            elif response.status_code == 401:
+                return {"success": False, "error": "Invalid credentials"}
+            else:
+                return {
+                    "success": False,
+                    "error": f"Validation request failed: {response.status_code} - {response.text[:500]}"
+                }
+
+    except Exception as e:
+        logger.error(f"Basic auth validation exception: {e}")
+        return {"success": False, "error": str(e)}
+
+
 async def refresh_oauth_token(integration_type: IntegrationType, integration: AccountIntegration) -> dict:
-    """
-    Refresh an expired OAuth token.
-    """
     credentials = integration.get_credentials()
+    auth_type = integration_type.auth_type
+    auth_method = credentials.get("auth_method", "")
+
+    if auth_type == "basic_or_jwt" and auth_method == "basic_auth":
+        return {"success": True}
+
+    if auth_type == "basic_or_jwt" and auth_method == "jwt":
+        auth_config = integration_type.get_auth_config()
+        base_url = auth_config.get("base_url", "").rstrip("/")
+        refresh_endpoint = auth_config.get("jwt_refresh_endpoint", "/authentication/refresh")
+        refresh_token = integration.get_refresh_token()
+
+        if refresh_token:
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{base_url}{refresh_endpoint}",
+                        json={"refresh_token": refresh_token},
+                        headers={"Content-Type": "application/json", "Accept": "application/json"},
+                        timeout=30.0
+                    )
+
+                    if response.status_code == 200:
+                        token_data = response.json()
+                        integration.set_access_token(token_data.get("token") or token_data.get("access_token"))
+                        if token_data.get("refresh_token"):
+                            integration.set_refresh_token(token_data["refresh_token"])
+                        max_lifetime_hours = auth_config.get("jwt_max_lifetime_hours", 3)
+                        expires_in = token_data.get("expires_in", max_lifetime_hours * 3600)
+                        integration.token_expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
+                        return {"success": True}
+            except Exception as e:
+                logger.error(f"JWT refresh failed, falling back to login: {e}")
+
+        return await obtain_jwt_token(integration_type, credentials)
+
     refresh_token = integration.get_refresh_token()
     
     if not refresh_token:
@@ -596,9 +719,56 @@ async def refresh_oauth_token(integration_type: IntegrationType, integration: Ac
 
 
 async def test_api_connection(integration_type: IntegrationType, integration: AccountIntegration, credentials: dict) -> dict:
-    """
-    Test the API connection by making a simple request.
-    """
+    auth_type = integration_type.auth_type
+    auth_method = credentials.get("auth_method", "")
+
+    if auth_type == "basic_or_jwt" and auth_method == "basic_auth":
+        return await test_basic_auth_connection(integration_type, credentials)
+
+    if auth_type == "basic_or_jwt":
+        auth_config = integration_type.get_auth_config()
+        base_url = auth_config.get("base_url", "").rstrip("/")
+        access_token = integration.get_access_token()
+        apikey = credentials.get("apikey")
+
+        if not all([base_url, access_token]):
+            return {"success": False, "message": "Missing required credentials or token"}
+
+        test_url = f"{base_url}/hotels"
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+            "Accept": "application/json"
+        }
+        params = {"apikey": apikey} if apikey else {}
+        hotel_id = credentials.get("hotelId")
+        if hotel_id:
+            params["hotelId"] = hotel_id
+
+        try:
+            async with httpx.AsyncClient() as client:
+                response = await client.get(
+                    test_url,
+                    headers=headers,
+                    params=params,
+                    timeout=30.0
+                )
+
+                if response.status_code == 200:
+                    return {
+                        "success": True,
+                        "message": "Connection successful",
+                        "details": {"status_code": 200}
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "message": f"API returned {response.status_code}",
+                        "details": {"response": response.text[:500]}
+                    }
+        except Exception as e:
+            return {"success": False, "message": f"Connection failed: {str(e)}"}
+
     gateway_url = credentials.get("gateway_url", "").rstrip("/")
     hotel_id = credentials.get("hotel_id")
     app_key = credentials.get("app_key")
@@ -637,5 +807,56 @@ async def test_api_connection(integration_type: IntegrationType, integration: Ac
                     "details": {"response": response.text[:500]}
                 }
                 
+    except Exception as e:
+        return {"success": False, "message": f"Connection failed: {str(e)}"}
+
+
+async def test_basic_auth_connection(integration_type: IntegrationType, credentials: dict) -> dict:
+    auth_config = integration_type.get_auth_config()
+    base_url = auth_config.get("base_url", "").rstrip("/")
+
+    username = credentials.get("username")
+    password = credentials.get("password")
+    apikey = credentials.get("apikey")
+    hotel_id = credentials.get("hotelId")
+
+    if not all([base_url, username, password, apikey]):
+        return {"success": False, "message": "Missing required credentials"}
+
+    test_url = f"{base_url}/hotels"
+    basic_token = base64.b64encode(f"{username}:{password}".encode()).decode()
+
+    headers = {
+        "Authorization": f"Basic {basic_token}",
+        "Content-Type": "application/json",
+        "Accept": "application/json"
+    }
+
+    params = {"apikey": apikey}
+    if hotel_id:
+        params["hotelId"] = hotel_id
+
+    try:
+        async with httpx.AsyncClient() as client:
+            response = await client.get(
+                test_url,
+                headers=headers,
+                params=params,
+                timeout=30.0
+            )
+
+            if response.status_code == 200:
+                return {
+                    "success": True,
+                    "message": "Connection successful",
+                    "details": {"status_code": 200}
+                }
+            else:
+                return {
+                    "success": False,
+                    "message": f"API returned {response.status_code}",
+                    "details": {"response": response.text[:500]}
+                }
+
     except Exception as e:
         return {"success": False, "message": f"Connection failed: {str(e)}"}

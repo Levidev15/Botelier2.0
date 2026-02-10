@@ -392,7 +392,9 @@ class FunctionMapper:
         return function_schema, transfer_handler
     
     def _extract_nested_value(self, data: Any, path: str) -> Any:
-        """Extract a value from nested data using dot notation (e.g., 'data.guest.name')."""
+        """Extract a value from nested data using dot notation (e.g., 'data.guest.name'). Also supports JSONPath prefix ($.)."""
+        if path.startswith("$."):
+            path = path[2:]
         parts = path.replace("[", ".").replace("]", "").split(".")
         current = data
         for part in parts:

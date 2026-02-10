@@ -1,23 +1,12 @@
-"""
-Integration Client - Handles authenticated API requests to connected integrations.
-
-This service manages:
-- OAuth token caching and automatic refresh
-- Request authentication header injection
-- Retry logic with exponential backoff
-- Response extraction and error handling
-- Audit logging for API calls
-
-Used by FlowExecutor when API Request nodes reference integrations.
-"""
-
 import re
 import json
+import base64
 import httpx
 from datetime import datetime, timedelta
 from typing import Any, Optional
 from dataclasses import dataclass, field
 from enum import Enum
+from urllib.parse import urlencode, urlparse, parse_qs, urlunparse
 from loguru import logger
 from sqlalchemy.orm import Session
 
@@ -71,14 +60,6 @@ class IntegrationAPIConfig:
 
 
 class IntegrationClient:
-    """
-    Client for making authenticated API requests to connected integrations.
-    
-    Handles OAuth token management, request signing, and response processing.
-    
-    Note: This client creates its own database session for each operation to
-    support long-running voice calls without exhausting the connection pool.
-    """
     
     def __init__(self, account_id: str, db: Session = None):
         self.account_id = account_id
@@ -86,7 +67,6 @@ class IntegrationClient:
         self._integration_cache: dict[str, AccountIntegration] = {}
     
     def _get_db_session(self) -> Session:
-        """Get database session - use provided or create new one."""
         if self._external_db:
             return self._external_db
         from botelier.database import SessionLocal
@@ -97,16 +77,6 @@ class IntegrationClient:
         config: IntegrationAPIConfig,
         variables: dict[str, Any]
     ) -> APIResponse:
-        """
-        Execute an API request to a connected integration.
-        
-        Args:
-            config: The API request configuration
-            variables: Flow variables for URL/body substitution
-        
-        Returns:
-            APIResponse with success/failure info and extracted variables
-        """
         integration = await self._get_integration(config.integration_id)
         if not integration:
             return APIResponse(
@@ -124,7 +94,13 @@ class IntegrationClient:
                 error_message=f"Integration is not connected (status: {integration.status.value})"
             )
         
-        if integration.is_token_expired():
+        credentials = integration.get_credentials()
+        auth_method = credentials.get("auth_method", "")
+        auth_type = integration.integration_type.auth_type
+
+        needs_token = not (auth_type == "basic_or_jwt" and auth_method == "basic_auth")
+
+        if needs_token and integration.is_token_expired():
             refresh_success = await self._refresh_token(integration)
             if not refresh_success:
                 return APIResponse(
@@ -180,7 +156,6 @@ class IntegrationClient:
         )
     
     async def _get_integration(self, integration_id: str) -> Optional[AccountIntegration]:
-        """Get integration from cache or database."""
         if integration_id in self._integration_cache:
             return self._integration_cache[integration_id]
         
@@ -200,11 +175,103 @@ class IntegrationClient:
                 db.close()
     
     async def _refresh_token(self, integration: AccountIntegration) -> bool:
-        """Refresh OAuth token for integration."""
         credentials = integration.get_credentials()
         integration_type = integration.integration_type
         auth_config = integration_type.get_auth_config()
-        
+        auth_type = integration_type.auth_type
+        auth_method = credentials.get("auth_method", "")
+
+        if auth_type == "basic_or_jwt" and auth_method == "basic_auth":
+            return True
+
+        if auth_type == "basic_or_jwt" and auth_method == "jwt":
+            return await self._refresh_jwt_token(integration, credentials, auth_config)
+
+        return await self._refresh_oauth_token(integration, credentials, auth_config)
+
+    async def _refresh_jwt_token(self, integration: AccountIntegration, credentials: dict, auth_config: dict) -> bool:
+        base_url = auth_config.get("base_url", "").rstrip("/")
+        refresh_endpoint = auth_config.get("jwt_refresh_endpoint", "/authentication/refresh")
+        login_endpoint = auth_config.get("jwt_login_endpoint", "/authentication/login")
+        max_lifetime_hours = auth_config.get("jwt_max_lifetime_hours", 3)
+
+        refresh_token = integration.get_refresh_token()
+
+        db = self._get_db_session()
+        try:
+            if refresh_token:
+                try:
+                    async with httpx.AsyncClient() as client:
+                        response = await client.post(
+                            f"{base_url}{refresh_endpoint}",
+                            json={"refresh_token": refresh_token},
+                            headers={"Content-Type": "application/json", "Accept": "application/json"},
+                            timeout=30.0
+                        )
+
+                        if response.status_code == 200:
+                            token_data = response.json()
+                            integration.set_access_token(token_data.get("token") or token_data.get("access_token"))
+                            if token_data.get("refresh_token"):
+                                integration.set_refresh_token(token_data["refresh_token"])
+                            expires_in = token_data.get("expires_in", max_lifetime_hours * 3600)
+                            integration.token_expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
+                            integration.status = IntegrationStatus.CONNECTED
+                            integration.last_error = None
+                            db.add(integration)
+                            db.commit()
+                            logger.info(f"Successfully refreshed JWT token for integration {integration.id}")
+                            return True
+                except Exception as e:
+                    logger.error(f"JWT refresh failed, falling back to login: {e}")
+
+            username = credentials.get("username")
+            password = credentials.get("password")
+
+            if not all([base_url, username, password]):
+                logger.error("Missing credentials for JWT login")
+                return False
+
+            try:
+                async with httpx.AsyncClient() as client:
+                    response = await client.post(
+                        f"{base_url}{login_endpoint}",
+                        json={"username": username, "password": password},
+                        headers={"Content-Type": "application/json", "Accept": "application/json"},
+                        timeout=30.0
+                    )
+
+                    if response.status_code == 200:
+                        token_data = response.json()
+                        integration.set_access_token(token_data.get("token") or token_data.get("access_token"))
+                        if token_data.get("refresh_token"):
+                            integration.set_refresh_token(token_data["refresh_token"])
+                        expires_in = token_data.get("expires_in", max_lifetime_hours * 3600)
+                        integration.token_expires_at = datetime.utcnow() + timedelta(seconds=expires_in)
+                        integration.status = IntegrationStatus.CONNECTED
+                        integration.last_error = None
+                        db.add(integration)
+                        db.commit()
+                        logger.info(f"Successfully re-authenticated JWT for integration {integration.id}")
+                        return True
+                    else:
+                        logger.error(f"JWT login failed: {response.status_code} - {response.text}")
+                        integration.status = IntegrationStatus.TOKEN_EXPIRED
+                        integration.last_error = f"JWT login failed: {response.status_code}"
+                        db.add(integration)
+                        db.commit()
+                        return False
+            except Exception as e:
+                logger.error(f"JWT login exception: {e}")
+                integration.last_error = str(e)
+                db.add(integration)
+                db.commit()
+                return False
+        finally:
+            if not self._external_db:
+                db.close()
+
+    async def _refresh_oauth_token(self, integration: AccountIntegration, credentials: dict, auth_config: dict) -> bool:
         gateway_url = credentials.get("gateway_url", "").rstrip("/")
         client_id = credentials.get("client_id")
         client_secret = credentials.get("client_secret")
@@ -283,9 +350,14 @@ class IntegrationClient:
         config: IntegrationAPIConfig,
         variables: dict[str, Any]
     ) -> str:
-        """Build the full URL for the request."""
         credentials = integration.get_credentials()
-        gateway_url = credentials.get("gateway_url", "").rstrip("/")
+        auth_type = integration.integration_type.auth_type
+        auth_config = integration.integration_type.get_auth_config()
+
+        if auth_type == "basic_or_jwt":
+            base_url = auth_config.get("base_url", "").rstrip("/")
+        else:
+            base_url = credentials.get("gateway_url", "").rstrip("/")
         
         path = config.path
         if config.endpoint_id:
@@ -297,35 +369,60 @@ class IntegrationClient:
         
         path = self._substitute_variables(path, variables)
         
-        hotel_id = credentials.get("hotel_id")
+        hotel_id = credentials.get("hotel_id") or credentials.get("hotelId")
         if hotel_id:
             path = path.replace("{hotelId}", hotel_id)
             path = path.replace("{{hotelId}}", hotel_id)
+            path = path.replace("{hotel_id}", hotel_id)
+            path = path.replace("{{hotel_id}}", hotel_id)
+
+        url = f"{base_url}{path}"
+
+        if auth_type == "basic_or_jwt":
+            basic_auth_query_params = auth_config.get("basic_auth_query_params", [])
+            if basic_auth_query_params:
+                params = {}
+                for param_key in basic_auth_query_params:
+                    param_value = credentials.get(param_key)
+                    if param_value:
+                        params[param_key] = param_value
+                if params:
+                    separator = "&" if "?" in url else "?"
+                    url = f"{url}{separator}{urlencode(params)}"
         
-        return f"{gateway_url}{path}"
+        return url
     
     def _build_headers(
         self,
         integration: AccountIntegration,
         config: IntegrationAPIConfig
     ) -> dict[str, str]:
-        """Build request headers with authentication."""
         credentials = integration.get_credentials()
-        access_token = integration.get_access_token()
-        
+        auth_type = integration.integration_type.auth_type
+        auth_method = credentials.get("auth_method", "")
+
         headers = {
-            "Authorization": f"Bearer {access_token}",
             "Content-Type": "application/json",
             "Accept": "application/json"
         }
+
+        if auth_type == "basic_or_jwt" and auth_method == "basic_auth":
+            username = credentials.get("username", "")
+            password = credentials.get("password", "")
+            basic_token = base64.b64encode(f"{username}:{password}".encode()).decode()
+            headers["Authorization"] = f"Basic {basic_token}"
+        else:
+            access_token = integration.get_access_token()
+            if access_token:
+                headers["Authorization"] = f"Bearer {access_token}"
         
-        app_key = credentials.get("app_key")
-        if app_key:
-            headers["x-app-key"] = app_key
-        
-        hotel_id = credentials.get("hotel_id")
-        if hotel_id:
-            headers["x-hotelid"] = hotel_id
+        if auth_type == "oauth2_client_credentials":
+            app_key = credentials.get("app_key")
+            if app_key:
+                headers["x-app-key"] = app_key
+            hotel_id = credentials.get("hotel_id")
+            if hotel_id:
+                headers["x-hotelid"] = hotel_id
         
         if config.headers:
             headers.update(config.headers)
@@ -337,7 +434,6 @@ class IntegrationClient:
         config: IntegrationAPIConfig,
         variables: dict[str, Any]
     ) -> Optional[dict]:
-        """Build request body with variable substitution."""
         if not config.body_template:
             return None
         
@@ -350,7 +446,6 @@ class IntegrationClient:
             return None
     
     def _substitute_variables(self, template: str, variables: dict[str, Any]) -> str:
-        """Replace {{variable_name}} placeholders with actual values."""
         def replace_var(match):
             var_name = match.group(1)
             value = variables.get(var_name)
@@ -368,7 +463,6 @@ class IntegrationClient:
         body: Optional[dict],
         timeout: int
     ) -> httpx.Response:
-        """Make the HTTP request."""
         async with httpx.AsyncClient() as client:
             if method.upper() == "GET":
                 return await client.get(url, headers=headers, timeout=timeout)
@@ -388,7 +482,6 @@ class IntegrationClient:
         response: httpx.Response,
         config: IntegrationAPIConfig
     ) -> APIResponse:
-        """Process the HTTP response and extract variables."""
         status_code = response.status_code
         
         try:
@@ -457,7 +550,6 @@ class IntegrationClient:
         data: Any,
         response_variables: list[ResponseVariable]
     ) -> dict[str, Any]:
-        """Extract variables from response data using JSONPath-like notation."""
         extracted = {}
         
         for rv in response_variables:
@@ -470,16 +562,11 @@ class IntegrationClient:
         return extracted
     
     def _extract_json_value(self, data: Any, path: str) -> Any:
-        """
-        Extract a value from JSON using dot notation with array support.
-        
-        Supports:
-        - Simple paths: "name", "guest.firstName"
-        - Array indexing: "reservations.0.roomNumber"
-        - Nested arrays: "data.guests.0.addresses.0.city"
-        """
         if not path:
             return data
+        
+        if path.startswith("$."):
+            path = path[2:]
         
         parts = path.split(".")
         current = data
@@ -505,7 +592,6 @@ class IntegrationClient:
         return current
     
     def _extract_error_message(self, data: Any) -> Optional[str]:
-        """Try to extract a human-readable error message from error response."""
         if isinstance(data, dict):
             for key in ["message", "error", "detail", "error_description", "errorMessage"]:
                 if key in data:
@@ -517,12 +603,6 @@ class IntegrationClient:
 
 
 def get_llm_friendly_error_message(response: APIResponse, config: IntegrationAPIConfig) -> str:
-    """
-    Generate an LLM-friendly error message based on the API response.
-    
-    This message will be injected into the LLM context so it can respond
-    appropriately to the caller.
-    """
     if response.success:
         return config.on_success_message
     

@@ -51,12 +51,25 @@ The architecture emphasizes clean branding ("Botelier"), flexible provider confi
 - **Sonner:** For React toast notifications.
 
 ### Multi-Tenant Integration System
-A platform-level integration registry allows accounts to connect their own third-party services (e.g., Oracle Opera Cloud PMS). Key features:
+A platform-level integration registry allows accounts to connect their own third-party services. The system is designed to be universal — adding a new integration type is just a matter of creating a seed file with endpoints and auth config. Key features:
 - **IntegrationType Model:** Platform seeds available integration types with auth configs, required credential fields, and pre-configured API endpoints.
 - **AccountIntegration Model:** Per-account connections with encrypted credential storage using Fernet encryption.
 - **Flow Editor Integration:** API Request nodes support both Custom URL and Integration sources. When Integration is selected, users can choose from connected integrations and select pre-configured endpoints.
 - **Endpoints:** `/api/integrations/connections` returns account integrations with full integration type details including endpoints for flow editor dropdowns.
-- **Oracle Opera Cloud (OHIP):** First integration type seeded with OAuth 2.0 auth config and hospitality API endpoints (reservations, guests, profiles, etc.).
+- **Universal Auth Support:** The IntegrationClient (`botelier/backend/botelier/services/integration_client.py`) supports three auth methods:
+  - **OAuth 2.0** (`oauth2_client_credentials`): Client credentials grant with token refresh. Used by Opera Cloud.
+  - **Basic Auth** (`basic_auth`): HTTP Basic Auth header with optional query parameters (apikey, hotelId). No token management needed.
+  - **JWT** (`jwt`): Auto-login to get token, cache it, refresh on expiry. Token lifecycle managed automatically.
+  - Integrations can support multiple auth methods (e.g., `basic_or_jwt`) — user selects their preferred method via a `select` field in required_fields.
+- **Required Fields:** Support `text`, `password`, `url`, and `select` (with `options` array) field types. The frontend connect modal renders these dynamically.
+
+**Seeded Integration Types:**
+- **Oracle Opera Cloud (OHIP)** (`opera-cloud`): OAuth 2.0 auth, 10 endpoints (reservations, profiles, availability, configuration, front desk).
+- **GuestCentric CRS** (`guestcentric-crs`): Basic Auth or JWT, 15 endpoints (search, hotels, reservations). Seed file: `botelier/backend/botelier/seeds/guestcentric_integration.py`.
+
+**Adding New Integrations:** Create a new seed file following the pattern in `botelier/backend/botelier/seeds/opera_integration.py` or `guestcentric_integration.py`. Define slug, name, auth_type, auth_config, required_fields, and endpoints. Call the seed function in `main.py` startup. The frontend and backend handle the rest automatically.
+
+**API Request Tools (ToolSet):** Full configuration for direct API calls with method, URL, headers, body templates ({{variable}} substitution), parameters, response mapping (dot notation extraction), response instructions (LLM guidance), and configurable timeout. API Tester tab for testing endpoints with SSRF protection. Backend function_mapper handles response shaping and instruction injection during live calls.
 
 ### MCP (Model Context Protocol) Integration System
 The MCP integration enables assistants to connect to external MCP servers for dynamic, hotel-specific tools (like property management systems or booking engines). This follows the named collections architecture pattern.
