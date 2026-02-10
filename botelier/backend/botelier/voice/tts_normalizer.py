@@ -2,7 +2,7 @@ import re
 from loguru import logger
 
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-from pipecat.frames.frames import Frame, TextFrame, TTSSpeakFrame
+from pipecat.frames.frames import Frame, TextFrame, TTSSpeakFrame, LLMFullResponseEndFrame, InterruptionFrame, EndFrame, CancelFrame
 
 
 def normalize_currency(text: str) -> str:
@@ -27,7 +27,9 @@ def normalize_currency(text: str) -> str:
         dollar_word = "dollar" if whole_int == 1 else "dollars"
         return f"{whole_int} {dollar_word}"
 
+    text = re.sub(r'\$(\d+)\.(\d{2})\s*cents?\b', replace_with_cents, text)
     text = re.sub(r'\$(\d+)\.(\d{2})\b', replace_with_cents, text)
+    text = re.sub(r'\$(\d+)\s*dollars?\b', replace_whole, text)
     text = re.sub(r'\$(\d+)(?![\.\d])', replace_whole, text)
 
     return text
@@ -83,18 +85,53 @@ def normalize_text_for_tts(text: str) -> str:
     return text
 
 
+CURRENCY_START = re.compile(r'\$\d')
+
+
 class TTSTextNormalizer(FrameProcessor):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self._buffer = ""
+        self._buffering = False
+
+    async def _flush_buffer(self, direction: FrameDirection):
+        if self._buffer:
+            normalized = normalize_text_for_tts(self._buffer)
+            frame = TextFrame(text=normalized)
+            await self.push_frame(frame, direction)
+            self._buffer = ""
+            self._buffering = False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
-        if direction == FrameDirection.DOWNSTREAM:
-            if isinstance(frame, TextFrame) and hasattr(frame, 'text') and frame.text:
-                frame.text = normalize_text_for_tts(frame.text)
-            elif isinstance(frame, TTSSpeakFrame) and hasattr(frame, 'text') and frame.text:
-                frame.text = normalize_text_for_tts(frame.text)
+        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, TextFrame) and hasattr(frame, 'text') and frame.text:
+            text = frame.text
+
+            if self._buffering:
+                self._buffer += text
+                if re.search(r'\d[^$.\d]', self._buffer) or len(self._buffer) > 20:
+                    await self._flush_buffer(direction)
+                return
+
+            if CURRENCY_START.search(text) or text == '$':
+                self._buffering = True
+                self._buffer = text
+                return
+
+            if re.search(r'[\$%#]|\d+[:.]\d', text):
+                frame.text = normalize_text_for_tts(text)
+
+            await self.push_frame(frame, direction)
+            return
+
+        if isinstance(frame, (LLMFullResponseEndFrame, InterruptionFrame, EndFrame, CancelFrame)):
+            await self._flush_buffer(direction)
+            await self.push_frame(frame, direction)
+            return
+
+        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, TTSSpeakFrame) and hasattr(frame, 'text') and frame.text:
+            frame.text = normalize_text_for_tts(frame.text)
 
         await self.push_frame(frame, direction)

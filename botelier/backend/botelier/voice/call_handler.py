@@ -366,6 +366,7 @@ class CallHandler:
         """
         from botelier.voice.agent import AgentStatus
         from botelier.voice.knowledge_handler import load_knowledge_for_prompt
+        from botelier.voice.tts_normalizer import normalize_text_for_tts
         
         status = AgentStatus.ACTIVE if assistant.is_active else AgentStatus.PAUSED
         
@@ -375,6 +376,9 @@ class CallHandler:
         if assistant.knowledge_base_id:
             try:
                 kb_content = load_knowledge_for_prompt(str(assistant.knowledge_base_id))
+                if kb_content:
+                    kb_content = normalize_text_for_tts(kb_content)
+                    logger.info(f"📝 Normalized KB content for TTS-friendly speech")
             except Exception as e:
                 logger.error(f"Failed to load KB for assistant {assistant.id}: {e}")
                 kb_content = ""
