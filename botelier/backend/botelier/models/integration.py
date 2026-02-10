@@ -109,8 +109,8 @@ class AccountIntegration(Base):
     """
     Per-account connection to an integration type.
     
-    Each account can have at most one connection per integration type.
-    Credentials are encrypted at rest.
+    Accounts can have multiple connections per integration type (e.g., one per hotel).
+    Each connection has a name for identification. Credentials are encrypted at rest.
     """
     __tablename__ = "account_integrations"
     
@@ -119,6 +119,8 @@ class AccountIntegration(Base):
     account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False, index=True)
     
     integration_type_id = Column(UUID(as_uuid=True), ForeignKey("integration_types.id", ondelete="CASCADE"), nullable=False, index=True)
+    
+    connection_name = Column(String, nullable=True)
     
     status = Column(SQLEnum(IntegrationStatus), default=IntegrationStatus.DISCONNECTED, nullable=False)
     

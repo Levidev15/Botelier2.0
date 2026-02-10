@@ -37,6 +37,7 @@ class AccountIntegrationResponse(BaseModel):
     integration_type_id: str
     integration_slug: str
     integration_name: str
+    connection_name: Optional[str] = None
     status: str
     connected_at: Optional[datetime]
     last_sync_at: Optional[datetime]
@@ -49,6 +50,7 @@ class AccountIntegrationResponse(BaseModel):
 class ConnectIntegrationRequest(BaseModel):
     integration_type_id: str
     credentials: dict
+    connection_name: Optional[str] = None
 
 
 class IntegrationEndpointResponse(BaseModel):
@@ -88,6 +90,7 @@ class AccountIntegrationWithEndpoints(BaseModel):
     id: str
     integration_type_id: str
     integration_type: IntegrationTypeDetail
+    connection_name: Optional[str] = None
     status: str
     connected_at: Optional[datetime] = None
     
@@ -132,6 +135,7 @@ async def get_my_connections(
                 slug=i.integration_type.slug,
                 endpoints=endpoint_details
             ),
+            connection_name=i.connection_name,
             status=i.status.value,
             connected_at=i.connected_at
         ))
@@ -208,6 +212,7 @@ async def list_account_integrations(
             integration_type_id=str(i.integration_type_id),
             integration_slug=i.integration_type.slug,
             integration_name=i.integration_type.name,
+            connection_name=i.connection_name,
             status=i.status.value,
             connected_at=i.connected_at,
             last_sync_at=i.last_sync_at,
@@ -235,6 +240,7 @@ async def list_connected_integrations(
             integration_type_id=str(i.integration_type_id),
             integration_slug=i.integration_type.slug,
             integration_name=i.integration_type.name,
+            connection_name=i.connection_name,
             status=i.status.value,
             connected_at=i.connected_at,
             last_sync_at=i.last_sync_at,
@@ -293,26 +299,15 @@ async def connect_integration(
     if not integration_type:
         raise HTTPException(status_code=404, detail="Integration type not found")
     
-    existing = db.query(AccountIntegration).filter(
-        AccountIntegration.account_id == account_id,
-        AccountIntegration.integration_type_id == request.integration_type_id
-    ).first()
-    
-    if existing:
-        existing.set_credentials(request.credentials)
-        existing.status = IntegrationStatus.CONNECTING
-        existing.last_error = None
-        db.commit()
-        integration = existing
-    else:
-        integration = AccountIntegration(
-            account_id=account_id,
-            integration_type_id=request.integration_type_id,
-            status=IntegrationStatus.CONNECTING
-        )
-        integration.set_credentials(request.credentials)
-        db.add(integration)
-        db.commit()
+    integration = AccountIntegration(
+        account_id=account_id,
+        integration_type_id=request.integration_type_id,
+        connection_name=request.connection_name or integration_type.name,
+        status=IntegrationStatus.CONNECTING
+    )
+    integration.set_credentials(request.credentials)
+    db.add(integration)
+    db.commit()
     
     try:
         auth_type = integration_type.auth_type
@@ -396,6 +391,7 @@ async def connect_integration(
         integration_type_id=str(integration.integration_type_id),
         integration_slug=integration.integration_type.slug,
         integration_name=integration.integration_type.name,
+        connection_name=integration.connection_name,
         status=integration.status.value,
         connected_at=integration.connected_at,
         last_sync_at=integration.last_sync_at,
