@@ -104,7 +104,8 @@ class CallLogger:
         call_sid: str,
         transcript: Optional[List[Dict[str, Any]]] = None,
         outcome: Optional[str] = None,
-        duration_seconds: Optional[int] = None
+        duration_seconds: Optional[int] = None,
+        tools_used: Optional[List[str]] = None
     ) -> bool:
         """
         Mark a call as completed and save transcript.
@@ -149,6 +150,10 @@ class CallLogger:
                 call_log.outcome = outcome
             elif not call_log.outcome or call_log.outcome == CallOutcome.UNKNOWN.value:
                 call_log.outcome = CallOutcome.COMPLETED.value
+            
+            if tools_used:
+                call_log.tool_name = ", ".join(tools_used)
+                logger.info(f"Saved tools used for call {call_sid}: {call_log.tool_name}")
             
             if duration_seconds is not None:
                 call_log.duration_seconds = duration_seconds

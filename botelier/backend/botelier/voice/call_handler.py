@@ -643,16 +643,18 @@ You have access to the following Q&A knowledge base. Use this information to ans
         """
         db = None
         try:
-            # Extract transcript from LLM context
             if llm_context:
-                transcript = self._extract_transcript(call_sid, llm_context)
+                transcript, tools_used = self._extract_transcript(call_sid, llm_context)
                 logger.info(f"Extracted transcript ({len(transcript)} messages) for call {call_sid}")
+                if tools_used:
+                    logger.info(f"🔧 Tools used during call {call_sid}: {tools_used}")
             else:
                 transcript = []
+                tools_used = []
                 logger.warning(f"No LLM context available for call {call_sid}")
             
-            if not transcript:
-                logger.warning(f"No transcript messages found for call {call_sid}")
+            if not transcript and not tools_used:
+                logger.warning(f"No transcript messages or tools found for call {call_sid}")
                 return
             
             duration_seconds = None
@@ -664,8 +666,9 @@ You have access to the following Q&A knowledge base. Use this information to ans
             call_logger = CallLogger(db)
             success = call_logger.complete_call(
                 call_sid=call_sid,
-                transcript=transcript,
-                duration_seconds=duration_seconds
+                transcript=transcript if transcript else None,
+                duration_seconds=duration_seconds,
+                tools_used=tools_used
             )
             if success:
                 logger.info(f"📝 Saved transcript ({len(transcript)} messages) for call {call_sid}")
@@ -678,27 +681,30 @@ You have access to the following Q&A knowledge base. Use this information to ans
             if db:
                 db.close()
     
-    def _extract_transcript(self, call_sid: str, llm_context: Any) -> List[Dict[str, str]]:
+    def _extract_transcript(self, call_sid: str, llm_context: Any) -> tuple:
         """
-        Extract conversation messages from Pipecat's LLMContext.
+        Extract conversation messages and tool names from Pipecat's LLMContext.
         
         Filters to only user and assistant messages, excluding system prompts
         and tool/function call messages. Marks interrupted responses.
+        Also collects unique tool names that were called during the conversation.
         
         Args:
             call_sid: Twilio call SID (for checking interrupted responses)
             llm_context: Pipecat's LLMContext object (passed directly from create_pipeline)
             
         Returns:
-            List of transcript entries with role, content, and interrupted flag
+            Tuple of (transcript, tools_used) where:
+                - transcript: List of transcript entries with role, content, and interrupted flag
+                - tools_used: List of unique tool names called during the conversation
         """
         transcript = []
+        tools_used_set = set()
         interrupted_set = self.interrupted_responses.get(call_sid, set())
         
         try:
             messages = None
             
-            # LLMContext provides get_messages() method
             if hasattr(llm_context, 'get_messages'):
                 messages = llm_context.get_messages()
                 logger.debug(f"Got {len(messages) if messages else 0} messages via get_messages()")
@@ -711,13 +717,12 @@ You have access to the following Q&A knowledge base. Use this information to ans
             
             if not messages:
                 logger.debug(f"No messages found. Context type: {type(llm_context)}")
-                return transcript
+                return transcript, list(tools_used_set)
             
             logger.debug(f"Found {len(messages)} raw messages in context")
                 
             for msg in messages:
                 if not isinstance(msg, dict):
-                    # Some messages might be objects, try to convert
                     if hasattr(msg, '__dict__'):
                         msg = msg.__dict__
                     else:
@@ -725,20 +730,23 @@ You have access to the following Q&A knowledge base. Use this information to ans
                     
                 role = msg.get("role")
                 
-                # Handle both 'content' and 'text' field names
                 content = msg.get("content") or msg.get("text")
                 
-                # Skip non-conversation messages
+                if role == "assistant" and msg.get("tool_calls"):
+                    for tc in msg["tool_calls"]:
+                        fn = tc.get("function", {})
+                        name = fn.get("name")
+                        if name:
+                            tools_used_set.add(name)
+                    continue
+                
                 if role not in ("user", "assistant"):
                     continue
                     
-                # Skip empty content
                 if not content:
                     continue
                     
-                # Handle content that might be a list (OpenAI format for multimodal)
                 if isinstance(content, list):
-                    # Extract text from content parts
                     text_parts = []
                     for part in content:
                         if isinstance(part, dict) and part.get("type") == "text":
@@ -749,17 +757,11 @@ You have access to the following Q&A knowledge base. Use this information to ans
                 
                 if not isinstance(content, str) or not content.strip():
                     continue
-                    
-                # Skip assistant messages that are tool calls (no actual spoken content)
-                if role == "assistant" and msg.get("tool_calls"):
-                    continue
                 
                 content = content.strip()
                 
-                # Check if this assistant message was interrupted
                 is_interrupted = False
                 if role == "assistant" and interrupted_set:
-                    # Check if the first 100 chars match any interrupted message
                     key = content[:100]
                     if key in interrupted_set:
                         is_interrupted = True
@@ -771,10 +773,12 @@ You have access to the following Q&A knowledge base. Use this information to ans
                     "interrupted": is_interrupted
                 })
             
-            logger.debug(f"Extracted {len(transcript)} conversation messages")
+            tools_used = sorted(tools_used_set)
+            logger.debug(f"Extracted {len(transcript)} conversation messages, {len(tools_used)} unique tools: {tools_used}")
                 
         except Exception as e:
             logger.exception(f"Error extracting transcript: {e}")
+            tools_used = []
             
-        return transcript
+        return transcript, tools_used
     
