@@ -154,7 +154,10 @@ export default function ApiRequestForm({ onSuccess, onCancel, tool, accountId, t
         is_active: true,
       };
 
-      const apiUrl = isEditMode ? `/api/tools/${tool.id}` : "/api/tools";
+      const scopeParam = toolSetId ? `tool_set_id=${toolSetId}` : `hotel_id=${accountId}`;
+      const apiUrl = isEditMode
+        ? `/api/tools/${tool.id}?${scopeParam}`
+        : "/api/tools";
       const apiMethod = isEditMode ? "PUT" : "POST";
 
       const response = await fetch(apiUrl, {
@@ -165,7 +168,13 @@ export default function ApiRequestForm({ onSuccess, onCancel, tool, accountId, t
 
       if (!response.ok) {
         const errorData = await response.json();
-        throw new Error(errorData.detail || `Failed to ${isEditMode ? "update" : "create"} tool`);
+        let errorMsg = `Failed to ${isEditMode ? "update" : "create"} tool`;
+        if (typeof errorData.detail === "string") {
+          errorMsg = errorData.detail;
+        } else if (Array.isArray(errorData.detail)) {
+          errorMsg = errorData.detail.map((e: any) => e.msg || e.message || JSON.stringify(e)).join(", ");
+        }
+        throw new Error(errorMsg);
       }
 
       const savedTool = await response.json();

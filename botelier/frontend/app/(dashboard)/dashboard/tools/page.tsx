@@ -352,6 +352,7 @@ export default function ToolsPage() {
                 onDelete={handleToolDeleted}
                 onEdit={handleEditTool}
                 hotelId={accountId}
+                toolSetId={selectedToolSet?.id}
               />
             ))}
           </div>

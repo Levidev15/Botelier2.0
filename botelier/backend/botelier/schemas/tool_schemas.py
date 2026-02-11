@@ -90,23 +90,10 @@ class ToolCreate(BaseModel):
     description: str = Field(..., min_length=1, description="What this tool does (helps AI decide when to use it)")
     tool_type: ToolType
     config: Dict[str, Any] = Field(..., description="Tool-specific configuration")
-    hotel_id: str = Field(..., description="Hotel ID (multi-tenancy)")
+    tool_set_id: Optional[str] = Field(None, description="Tool set ID")
+    hotel_id: Optional[str] = Field(None, description="Legacy hotel ID")
     assistant_id: Optional[str] = Field(None, description="Associated assistant ID")
     is_active: bool = Field(True, description="Whether tool is enabled")
-    
-    class Config:
-        json_schema_extra = {
-            "example": {
-                "name": "transfer_to_front_desk",
-                "description": "Transfer call to hotel front desk when guest needs human assistance",
-                "tool_type": "transfer_call",
-                "config": {
-                    "phone_number": "+1-555-0123",
-                    "pre_transfer_message": "Let me connect you with our front desk team..."
-                },
-                "is_active": True
-            }
-        }
 
 
 class ToolUpdate(BaseModel):
@@ -128,14 +115,15 @@ class ToolResponse(BaseModel):
     description: str
     tool_type: str
     config: Dict[str, Any]
-    hotel_id: str
-    assistant_id: Optional[str]
+    tool_set_id: Optional[str] = None
+    hotel_id: Optional[str] = None
+    assistant_id: Optional[str] = None
     is_active: bool
-    created_at: Optional[datetime]
-    updated_at: Optional[datetime]
+    created_at: Optional[datetime] = None
+    updated_at: Optional[datetime] = None
     
     class Config:
-        from_attributes = True  # Allows creation from SQLAlchemy models
+        from_attributes = True
 
 
 class ToolListResponse(BaseModel):

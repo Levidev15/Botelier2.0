@@ -21,9 +21,10 @@ interface ToolCardProps {
   onDelete: (toolId: string) => void;
   onEdit?: (tool: Tool) => void;
   hotelId: string;
+  toolSetId?: string;
 }
 
-export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit, hotelId }: ToolCardProps) {
+export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit, hotelId, toolSetId }: ToolCardProps) {
   const router = useRouter();
   const [deleting, setDeleting] = useState(false);
 
@@ -55,7 +56,8 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit
     setDeleting(true);
 
     try {
-      const response = await fetch(`/api/tools/${tool.id}?hotel_id=${hotelId}`, {
+      const scopeParam = toolSetId ? `tool_set_id=${toolSetId}` : `hotel_id=${hotelId}`;
+      const response = await fetch(`/api/tools/${tool.id}?${scopeParam}`, {
         method: "DELETE",
       });
 
