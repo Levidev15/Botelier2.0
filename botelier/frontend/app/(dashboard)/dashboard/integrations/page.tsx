@@ -86,7 +86,7 @@ interface MCPTool {
 
 export default function IntegrationsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
-  const { authFetch } = useAuthToken();
+  const { authFetch, loading: authLoading, isAuthenticated } = useAuthToken();
   const [integrationTypes, setIntegrationTypes] = useState<IntegrationType[]>([]);
   const [accountIntegrations, setAccountIntegrations] = useState<AccountIntegration[]>([]);
   const [loading, setLoading] = useState(true);
@@ -95,6 +95,8 @@ export default function IntegrationsPage() {
   const [connecting, setConnecting] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
   const [credentials, setCredentials] = useState<Record<string, string>>({});
+  const [connectError, setConnectError] = useState<string | null>(null);
+  const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
   
   const [mcpConnections, setMcpConnections] = useState<MCPConnection[]>([]);
   const [showMcpModal, setShowMcpModal] = useState(false);
@@ -109,12 +111,17 @@ export default function IntegrationsPage() {
     token: "",
   });
 
+  const showNotification = (type: "success" | "error", message: string) => {
+    setNotification({ type, message });
+    setTimeout(() => setNotification(null), 5000);
+  };
+
   useEffect(() => {
-    if (!contextLoading && accountId) {
+    if (!contextLoading && !authLoading && isAuthenticated && accountId) {
       fetchIntegrations();
       fetchMCPConnections();
     }
-  }, [accountId, contextLoading]);
+  }, [accountId, contextLoading, authLoading, isAuthenticated]);
 
   const fetchIntegrations = async () => {
     try {
@@ -311,6 +318,7 @@ export default function IntegrationsPage() {
 
   const handleConnect = (type: IntegrationType) => {
     setSelectedType(type);
+    setConnectError(null);
     const defaults: Record<string, string> = {};
     type.required_fields.forEach(field => {
       if (field.type === "select" && field.options && field.options.length > 0) {
@@ -333,12 +341,14 @@ export default function IntegrationsPage() {
       );
 
       if (response.ok) {
+        showNotification("success", `${integration.connection_name || integration.integration_name} disconnected`);
         fetchIntegrations();
       } else {
-        console.error("Failed to disconnect integration");
+        const data = await response.json().catch(() => ({}));
+        showNotification("error", data.detail || "Failed to disconnect integration");
       }
     } catch (error) {
-      console.error("Failed to disconnect:", error);
+      showNotification("error", "Failed to disconnect — please try again");
     }
   };
 
@@ -353,11 +363,14 @@ export default function IntegrationsPage() {
 
       const result = await response.json();
 
-      if (!result.success) {
-        console.error(result.message || "Connection test failed");
+      if (result.success) {
+        showNotification("success", `${integration.connection_name || integration.integration_name} — connection test passed`);
+      } else {
+        showNotification("error", result.message || result.error || "Connection test failed");
       }
+      fetchIntegrations();
     } catch (error) {
-      console.error("Test failed:", error);
+      showNotification("error", "Connection test failed — please try again");
     } finally {
       setTesting(null);
     }
@@ -365,9 +378,10 @@ export default function IntegrationsPage() {
 
   const handleSubmitConnect = async () => {
     if (!selectedType) return;
+    setConnectError(null);
 
     if (!credentials["_connection_name"]?.trim()) {
-      alert("Please enter a connection name");
+      setConnectError("Please enter a connection name");
       return;
     }
 
@@ -383,7 +397,7 @@ export default function IntegrationsPage() {
       .map(f => f.label);
 
     if (missingFields.length > 0) {
-      alert(`Missing required fields: ${missingFields.join(", ")}`);
+      setConnectError(`Missing required fields: ${missingFields.join(", ")}`);
       return;
     }
 
@@ -405,14 +419,18 @@ export default function IntegrationsPage() {
 
       if (result.status === "connected") {
         setShowConnectModal(false);
+        showNotification("success", `${_connection_name} connected successfully`);
         fetchIntegrations();
-      } else if (result.last_error) {
-        alert(`Connection failed: ${result.last_error}`);
+      } else if (result.status === "error" || result.last_error) {
+        setConnectError(result.last_error || "Connection failed — check your credentials and try again");
+        fetchIntegrations();
+      } else if (result.detail) {
+        setConnectError(result.detail);
       } else {
-        console.error("Failed to connect integration");
+        setConnectError("Connection failed — an unexpected error occurred");
       }
-    } catch (error) {
-      console.error("Failed to connect:", error);
+    } catch (error: any) {
+      setConnectError(error?.message || "Connection failed — please check your network and try again");
     } finally {
       setConnecting(false);
     }
@@ -423,16 +441,22 @@ export default function IntegrationsPage() {
       case "connected":
         return (
           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-900/50 text-green-400 border border-green-700">
-            <Check className="h-3 w-3 mr-1" />
+            <span className="w-2 h-2 rounded-full bg-green-400 mr-1.5 animate-pulse" />
             Connected
           </span>
         );
       case "error":
-      case "token_expired":
         return (
           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-900/50 text-red-400 border border-red-700">
-            <AlertCircle className="h-3 w-3 mr-1" />
+            <span className="w-2 h-2 rounded-full bg-red-400 mr-1.5" />
             Error
+          </span>
+        );
+      case "token_expired":
+        return (
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-900/50 text-amber-400 border border-amber-700">
+            <AlertCircle className="h-3 w-3 mr-1" />
+            Token Expired
           </span>
         );
       case "connecting":
@@ -442,16 +466,23 @@ export default function IntegrationsPage() {
             Connecting
           </span>
         );
+      case "disconnected":
+        return (
+          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-800 text-gray-400 border border-gray-700">
+            <span className="w-2 h-2 rounded-full bg-gray-500 mr-1.5" />
+            Disconnected
+          </span>
+        );
       default:
         return (
           <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-800 text-gray-400 border border-gray-700">
-            Not Connected
+            {status.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}
           </span>
         );
     }
   };
 
-  if (loading || contextLoading) {
+  if (loading || contextLoading || authLoading) {
     return (
       <div className="p-8 flex items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
@@ -461,6 +492,24 @@ export default function IntegrationsPage() {
 
   return (
     <div className="p-8 max-w-4xl">
+      {notification && (
+        <div className={`fixed top-4 right-4 z-[60] flex items-center gap-3 px-4 py-3 rounded-lg border shadow-lg transition-all ${
+          notification.type === "success" 
+            ? "bg-green-900/90 border-green-700 text-green-200" 
+            : "bg-red-900/90 border-red-700 text-red-200"
+        }`}>
+          {notification.type === "success" ? (
+            <Check className="h-4 w-4 flex-shrink-0" />
+          ) : (
+            <AlertCircle className="h-4 w-4 flex-shrink-0" />
+          )}
+          <span className="text-sm">{notification.message}</span>
+          <button onClick={() => setNotification(null)} className="ml-2 hover:opacity-70">
+            <X className="h-3.5 w-3.5" />
+          </button>
+        </div>
+      )}
+
       <div className="mb-6">
         <h1 className="text-2xl font-bold flex items-center gap-2">
           <Plug className="h-6 w-6" />
@@ -902,6 +951,13 @@ export default function IntegrationsPage() {
                 );
               })}
 
+              {connectError && (
+                <div className="flex items-start gap-2 p-3 bg-red-900/30 border border-red-800 rounded-lg">
+                  <AlertCircle className="h-4 w-4 text-red-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-sm text-red-300">{connectError}</p>
+                </div>
+              )}
+
               {selectedType.documentation_url && (
                 <a
                   href={selectedType.documentation_url}
@@ -917,7 +973,7 @@ export default function IntegrationsPage() {
 
             <div className="flex items-center justify-end gap-3 p-4 border-t border-gray-800">
               <button
-                onClick={() => setShowConnectModal(false)}
+                onClick={() => { setShowConnectModal(false); setConnectError(null); }}
                 className="px-4 py-2 text-sm font-medium text-gray-300 hover:text-white transition"
               >
                 Cancel
