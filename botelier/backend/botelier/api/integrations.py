@@ -100,10 +100,14 @@ class AccountIntegrationWithEndpoints(BaseModel):
 
 @router.get("/connections", response_model=List[AccountIntegrationWithEndpoints])
 async def get_my_connections(
-    current_user: dict = Depends(get_current_user),
+    current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    account_id = current_user.get("account_id")
+    account_id = None
+    memberships = getattr(current_user, "account_memberships", None) or []
+    active = [m for m in memberships if getattr(m, "is_active", False)]
+    if active:
+        account_id = str(active[0].account_id)
     if not account_id:
         return []
     
@@ -198,7 +202,7 @@ async def get_integration_type(
 @router.get("/account/{account_id}", response_model=List[AccountIntegrationResponse])
 async def list_account_integrations(
     account_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     integrations = db.query(AccountIntegration).filter(
@@ -225,7 +229,7 @@ async def list_account_integrations(
 @router.get("/account/{account_id}/connected", response_model=List[AccountIntegrationResponse])
 async def list_connected_integrations(
     account_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     integrations = db.query(AccountIntegration).filter(
@@ -254,7 +258,7 @@ async def list_connected_integrations(
 async def get_integration_endpoints(
     account_id: str,
     integration_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     integration = db.query(AccountIntegration).filter(
@@ -289,7 +293,7 @@ async def get_integration_endpoints(
 async def connect_integration(
     account_id: str,
     request: ConnectIntegrationRequest,
-    current_user: dict = Depends(get_current_user),
+    current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     integration_type = db.query(IntegrationType).filter(
@@ -298,6 +302,8 @@ async def connect_integration(
     
     if not integration_type:
         raise HTTPException(status_code=404, detail="Integration type not found")
+    
+    user_id = getattr(current_user, "id", None)
     
     integration = AccountIntegration(
         account_id=account_id,
@@ -324,7 +330,7 @@ async def connect_integration(
 
                 integration.status = IntegrationStatus.CONNECTED
                 integration.connected_at = datetime.utcnow()
-                integration.connected_by_user_id = UUID(current_user["id"]) if current_user.get("id") else None
+                integration.connected_by_user_id = user_id
                 integration.last_error = None
                 logger.info(f"Successfully connected integration {integration_type.slug} for account {account_id}")
             else:
@@ -341,7 +347,7 @@ async def connect_integration(
                 if validation_result.get("success"):
                     integration.status = IntegrationStatus.CONNECTED
                     integration.connected_at = datetime.utcnow()
-                    integration.connected_by_user_id = UUID(current_user["id"]) if current_user.get("id") else None
+                    integration.connected_by_user_id = user_id
                     integration.last_error = None
                     logger.info(f"Successfully connected integration {integration_type.slug} (basic_auth) for account {account_id}")
                 else:
@@ -361,7 +367,7 @@ async def connect_integration(
 
                     integration.status = IntegrationStatus.CONNECTED
                     integration.connected_at = datetime.utcnow()
-                    integration.connected_by_user_id = UUID(current_user["id"]) if current_user.get("id") else None
+                    integration.connected_by_user_id = user_id
                     integration.last_error = None
                     logger.info(f"Successfully connected integration {integration_type.slug} (jwt) for account {account_id}")
                 else:
@@ -403,7 +409,7 @@ async def connect_integration(
 async def test_integration_connection(
     account_id: str,
     integration_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     integration = db.query(AccountIntegration).filter(
@@ -454,7 +460,7 @@ async def test_integration_connection(
 async def disconnect_integration(
     account_id: str,
     integration_id: str,
-    current_user: dict = Depends(get_current_user),
+    current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     integration = db.query(AccountIntegration).filter(
