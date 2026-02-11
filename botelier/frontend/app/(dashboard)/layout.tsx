@@ -1,6 +1,6 @@
 "use client";
 
-import { Bot, LayoutDashboard, Phone, BarChart, Settings, Key, Users, Wrench, BookOpen, Shield, LogOut, ArrowLeft, Building2, Plug } from "lucide-react";
+import { Bot, LayoutDashboard, Phone, BarChart, BarChart3, Settings, Key, Users, Wrench, BookOpen, Shield, LogOut, ArrowLeft, Building2, Plug } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRouter } from "next/navigation";
@@ -152,6 +152,9 @@ export default function DashboardLayout({
           </NavItem>
           <NavItem href="/dashboard/call-logs" icon={<BarChart className="h-5 w-5" />} active={isActive("/dashboard/call-logs")}>
             Call Logs
+          </NavItem>
+          <NavItem href="/dashboard/reports" icon={<BarChart3 className="h-5 w-5" />} active={isActive("/dashboard/reports")}>
+            Reports
           </NavItem>
           
           <div className="pt-4 pb-2">
