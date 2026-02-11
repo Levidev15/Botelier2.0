@@ -7,6 +7,8 @@ Provides REST endpoints for tools, integrations, and voice agent configuration.
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from contextlib import asynccontextmanager
+import asyncio
 import os
 
 from botelier.database import init_db, SessionLocal
@@ -29,6 +31,7 @@ from botelier.api.integrations import router as integrations_router
 from botelier.api.tool_sets import router as tool_sets_router
 from botelier.api.mcp_connections import router as mcp_connections_router
 from botelier.api.api_tester import router as api_tester_router
+from botelier.api.reports import router as reports_router
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -69,25 +72,55 @@ app.include_router(integrations_router)  # Third-party integrations (Opera Cloud
 app.include_router(tool_sets_router)  # Tool collection management
 app.include_router(mcp_connections_router)  # MCP server connections for dynamic tools
 app.include_router(api_tester_router)  # API testing proxy for tool configuration
+app.include_router(reports_router)  # Queue performance reports
+
+
+_scheduler_task = None
+
+
+async def _hourly_report_scheduler():
+    from botelier.services.zoom_reports import run_hourly_report_fetch
+    while True:
+        await asyncio.sleep(3600)
+        db = SessionLocal()
+        try:
+            await run_hourly_report_fetch(db)
+        except Exception as e:
+            print(f"⚠️ Scheduler error: {e}")
+        finally:
+            db.close()
 
 
 @app.on_event("startup")
 async def startup_event():
-    """Initialize database on startup."""
+    global _scheduler_task
     print("🚀 Initializing Botelier backend...")
     print(f"📊 Database: {os.environ.get('DATABASE_URL', 'Not configured')[:50]}...")
     init_db()
     print("✅ Database initialized")
-    
+
     from botelier.seeds.opera_integration import seed_opera_integration
     from botelier.seeds.guestcentric_integration import seed_guestcentric_integration
+    from botelier.seeds.zoom_cc_integration import seed_zoom_cc_integration
     db = SessionLocal()
     try:
         seed_opera_integration(db)
         seed_guestcentric_integration(db)
+        seed_zoom_cc_integration(db)
         print("✅ Integration types seeded")
     finally:
         db.close()
+
+    _scheduler_task = asyncio.create_task(_hourly_report_scheduler())
+    print("⏰ Hourly Zoom CC report scheduler started")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    global _scheduler_task
+    if _scheduler_task:
+        _scheduler_task.cancel()
+        print("⏰ Report scheduler stopped")
 
 
 @app.get("/api/health")
