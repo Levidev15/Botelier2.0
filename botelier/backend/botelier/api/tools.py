@@ -22,26 +22,30 @@ from botelier.schemas.tool_schemas import (
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
 
-@router.get("", response_model=ToolListResponse)
+@router.get("")
 def list_tools(
-    hotel_id: str,
+    hotel_id: str = None,
+    tool_set_id: str = None,
     assistant_id: str = None,
     tool_type: str = None,
     db: Session = Depends(get_db)
 ):
-    """
-    List all tools for a hotel with optional filtering.
-    
-    Query Parameters:
-        - hotel_id: Hotel ID (REQUIRED for multi-tenant isolation)
-        - assistant_id: Filter by assistant ID (optional)
-        - tool_type: Filter by tool type (optional)
-    """
-    query = db.query(Tool).filter(Tool.hotel_id == hotel_id)
-    
+    """List tools scoped by tool_set_id or hotel_id."""
+    if not tool_set_id and not hotel_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either tool_set_id or hotel_id is required"
+        )
+
+    query = db.query(Tool)
+    if tool_set_id:
+        query = query.filter(Tool.tool_set_id == tool_set_id)
+    elif hotel_id:
+        query = query.filter(Tool.hotel_id == hotel_id)
+
     if assistant_id:
         query = query.filter(Tool.assistant_id == assistant_id)
-    
+
     if tool_type:
         try:
             query = query.filter(Tool.tool_type == DBToolType(tool_type))
@@ -50,123 +54,112 @@ def list_tools(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"Invalid tool_type: {tool_type}"
             )
-    
+
     tools = query.all()
-    
-    return ToolListResponse(
-        tools=[ToolResponse(**tool.to_dict()) for tool in tools],
-        total=len(tools)
-    )
+
+    return {"tools": [tool.to_dict() for tool in tools], "total": len(tools)}
 
 
-@router.get("/{tool_id}", response_model=ToolResponse)
-def get_tool(tool_id: str, hotel_id: str, db: Session = Depends(get_db)):
-    """Get a specific tool by ID (multi-tenant scoped)."""
-    tool = db.query(Tool).filter(
-        Tool.id == tool_id,
-        Tool.hotel_id == hotel_id
-    ).first()
-    
+@router.get("/{tool_id}")
+def get_tool(
+    tool_id: str,
+    tool_set_id: str = None,
+    hotel_id: str = None,
+    db: Session = Depends(get_db)
+):
+    """Get a specific tool by ID, scoped by tool_set_id or hotel_id."""
+    if not tool_set_id and not hotel_id:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either tool_set_id or hotel_id is required"
+        )
+
+    query = db.query(Tool).filter(Tool.id == tool_id)
+    if tool_set_id:
+        query = query.filter(Tool.tool_set_id == tool_set_id)
+    elif hotel_id:
+        query = query.filter(Tool.hotel_id == hotel_id)
+
+    tool = query.first()
+
     if not tool:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tool with id {tool_id} not found for this hotel"
+            detail="Tool not found"
         )
-    
-    return ToolResponse(**tool.to_dict())
+
+    return tool.to_dict()
 
 
-@router.post("", response_model=ToolResponse, status_code=status.HTTP_201_CREATED)
+@router.post("", status_code=status.HTTP_201_CREATED)
 def create_tool(tool_data: ToolCreate, db: Session = Depends(get_db)):
     """
-    Create a new tool.
-    
-    TODO (SECURITY): Once authentication is implemented, hotel_id must be derived from 
-    authenticated user context rather than trusted from request body. This endpoint 
-    currently validates referential integrity but cannot prevent cross-tenant writes 
-    without auth. See backlog for tenant-scoped authentication implementation.
-    
-    Example request body for Transfer Call:
-    {
-        "name": "transfer_to_front_desk",
-        "description": "Transfer call to hotel front desk",
-        "tool_type": "transfer_call",
-        "config": {
-            "phone_number": "+1-555-0123",
-            "pre_transfer_message": "Let me connect you..."
-        },
-        "hotel_id": "uuid-from-auth-context"
-    }
+    Create a new tool, scoped to a tool set.
     """
-    # Validate hotel_id exists (referential integrity)
-    from ..models.hotel import Hotel
-    hotel = db.query(Hotel).filter(Hotel.id == tool_data.hotel_id).first()
-    if not hotel:
+    from ..models.tool_set import ToolSet
+
+    if not tool_data.tool_set_id and not tool_data.hotel_id:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Hotel with id {tool_data.hotel_id} not found"
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either tool_set_id or hotel_id is required"
         )
-    
-    # Validate assistant belongs to same hotel (if provided)
-    if tool_data.assistant_id:
-        from ..models.assistant import Assistant
-        assistant = db.query(Assistant).filter(Assistant.id == tool_data.assistant_id).first()
-        if not assistant:
+
+    if tool_data.tool_set_id:
+        tool_set = db.query(ToolSet).filter(ToolSet.id == tool_data.tool_set_id).first()
+        if not tool_set:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Assistant with id {tool_data.assistant_id} not found"
+                detail="Tool set not found"
             )
-        if assistant.hotel_id != tool_data.hotel_id:
-            raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="Assistant does not belong to the specified hotel"
-            )
-    
-    # Generate unique ID
+
     tool_id = str(uuid.uuid4())
-    
-    # Convert Pydantic enum to SQLAlchemy enum
     db_tool_type = DBToolType(tool_data.tool_type.value)
-    
-    # Create database model
+
     new_tool = Tool(
         id=tool_id,
         name=tool_data.name,
         description=tool_data.description,
         tool_type=db_tool_type,
         config=tool_data.config,
+        tool_set_id=tool_data.tool_set_id,
         hotel_id=tool_data.hotel_id,
-        assistant_id=tool_data.assistant_id,
         is_active="true" if tool_data.is_active else "false"
     )
-    
+
     db.add(new_tool)
     db.commit()
     db.refresh(new_tool)
-    
-    return ToolResponse(**new_tool.to_dict())
+
+    return new_tool.to_dict()
 
 
-@router.put("/{tool_id}", response_model=ToolResponse)
+@router.put("/{tool_id}")
 def update_tool(
     tool_id: str,
-    hotel_id: str,
     tool_data: ToolUpdate,
+    tool_set_id: str = None,
+    hotel_id: str = None,
     db: Session = Depends(get_db)
 ):
-    """Update an existing tool (multi-tenant scoped)."""
-    tool = db.query(Tool).filter(
-        Tool.id == tool_id,
-        Tool.hotel_id == hotel_id
-    ).first()
-    
+    """Update an existing tool, scoped by tool_set_id or hotel_id."""
+    query = db.query(Tool).filter(Tool.id == tool_id)
+    if tool_set_id:
+        query = query.filter(Tool.tool_set_id == tool_set_id)
+    elif hotel_id:
+        query = query.filter(Tool.hotel_id == hotel_id)
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either tool_set_id or hotel_id is required"
+        )
+    tool = query.first()
+
     if not tool:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tool with id {tool_id} not found for this hotel"
+            detail="Tool not found"
         )
-    
-    # Update fields if provided
+
     if tool_data.name is not None:
         tool.name = tool_data.name
     if tool_data.description is not None:
@@ -175,28 +168,40 @@ def update_tool(
         tool.config = tool_data.config
     if tool_data.is_active is not None:
         tool.is_active = "true" if tool_data.is_active else "false"
-    
+
     db.commit()
     db.refresh(tool)
-    
-    return ToolResponse(**tool.to_dict())
+
+    return tool.to_dict()
 
 
 @router.delete("/{tool_id}", status_code=status.HTTP_204_NO_CONTENT)
-def delete_tool(tool_id: str, hotel_id: str, db: Session = Depends(get_db)):
-    """Delete a tool (multi-tenant scoped)."""
-    tool = db.query(Tool).filter(
-        Tool.id == tool_id,
-        Tool.hotel_id == hotel_id
-    ).first()
-    
+def delete_tool(
+    tool_id: str,
+    tool_set_id: str = None,
+    hotel_id: str = None,
+    db: Session = Depends(get_db)
+):
+    """Delete a tool, scoped by tool_set_id or hotel_id."""
+    query = db.query(Tool).filter(Tool.id == tool_id)
+    if tool_set_id:
+        query = query.filter(Tool.tool_set_id == tool_set_id)
+    elif hotel_id:
+        query = query.filter(Tool.hotel_id == hotel_id)
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either tool_set_id or hotel_id is required"
+        )
+    tool = query.first()
+
     if not tool:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tool with id {tool_id} not found for this hotel"
+            detail="Tool not found"
         )
-    
+
     db.delete(tool)
     db.commit()
-    
+
     return None
