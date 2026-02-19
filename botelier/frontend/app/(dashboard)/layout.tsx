@@ -166,6 +166,9 @@ export default function DashboardLayout({
             </div>
           </div>
           
+          <NavItem href="/dashboard/sms-compliance" icon={<Shield className="h-5 w-5" />} active={isActive("/dashboard/sms-compliance")}>
+            SMS Compliance
+          </NavItem>
           <NavItem href="/dashboard/integrations" icon={<Plug className="h-5 w-5" />} active={isActive("/dashboard/integrations")}>
             Integrations
           </NavItem>
