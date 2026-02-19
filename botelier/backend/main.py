@@ -33,6 +33,7 @@ from botelier.api.mcp_connections import router as mcp_connections_router
 from botelier.api.api_tester import router as api_tester_router
 from botelier.api.reports import router as reports_router
 from botelier.api.sms import router as sms_router
+from botelier.api.sms_compliance import router as sms_compliance_router
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -75,6 +76,7 @@ app.include_router(mcp_connections_router)  # MCP server connections for dynamic
 app.include_router(api_tester_router)  # API testing proxy for tool configuration
 app.include_router(reports_router)  # Queue performance reports
 app.include_router(sms_router)  # SMS AI conversations
+app.include_router(sms_compliance_router)  # SMS A2P 10DLC compliance
 
 
 _scheduler_task = None
