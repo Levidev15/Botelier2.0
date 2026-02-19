@@ -312,6 +312,12 @@ async def create_campaign(request: CampaignCreateRequest, db: Session = Depends(
     if not brand:
         raise HTTPException(status_code=404, detail="Brand not found")
 
+    if brand.status != BrandStatus.APPROVED:
+        raise HTTPException(
+            status_code=400,
+            detail="Brand must be approved before creating campaigns. Current status: " + brand.status.value
+        )
+
     hotel = db.query(Hotel).filter(Hotel.id == request.hotel_id).first()
     if not hotel:
         raise HTTPException(status_code=404, detail="Hotel not found")
