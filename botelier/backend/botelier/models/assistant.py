@@ -83,6 +83,11 @@ class Assistant(Base):
     # This stores the complete flow graph designed in the visual editor
     # Structure follows Pipecat Flows format: nodes, edges, initial_node, etc.
     flow_config = Column(JSONB, nullable=True, default=None)
+
+    # SMS AI configuration (stored as JSONB for flexibility)
+    # Keys: enabled, llm_model, max_response_length, welcome_message,
+    #        away_message, away_schedule, prompt_additions, auto_reply_delay
+    sms_config = Column(JSONB, nullable=True, default=dict)
     
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -122,6 +127,7 @@ class Assistant(Base):
             "vad_config": self.vad_config or {},
             "is_active": self.is_active,
             "flow_config": self.flow_config,
+            "sms_config": self.sms_config or {},
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
             "updated_at": self.updated_at.isoformat() + "Z" if self.updated_at else None,
         }

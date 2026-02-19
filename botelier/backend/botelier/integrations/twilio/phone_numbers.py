@@ -182,7 +182,9 @@ class PhoneNumberManager:
         voice_method: Optional[str] = None,
         friendly_name: Optional[str] = None,
         status_callback: Optional[str] = None,
-        status_callback_method: Optional[str] = None
+        status_callback_method: Optional[str] = None,
+        sms_url: Optional[str] = None,
+        sms_method: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Update configuration for an existing phone number.
@@ -194,6 +196,8 @@ class PhoneNumberManager:
             friendly_name: New label
             status_callback: URL for call status updates (completed, failed, etc.)
             status_callback_method: HTTP method for status callback (POST/GET)
+            sms_url: Webhook URL for incoming SMS messages
+            sms_method: HTTP method for SMS webhook (POST/GET)
             
         Returns:
             Updated number details
@@ -211,6 +215,10 @@ class PhoneNumberManager:
                 update_params["status_callback"] = status_callback
             if status_callback_method is not None:
                 update_params["status_callback_method"] = status_callback_method
+            if sms_url is not None:
+                update_params["sms_url"] = sms_url
+            if sms_method is not None:
+                update_params["sms_method"] = sms_method
             
             updated = self.client.client.incoming_phone_numbers(phone_number_sid).update(
                 **update_params

@@ -16,6 +16,8 @@ interface PhoneNumber {
   hotel_id: string;
   is_active: boolean;
   created_at: string;
+  sms_enabled?: boolean;
+  sms_assistant_id?: string | null;
 }
 
 interface Assistant {
