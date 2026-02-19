@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Info, Mic, MessageSquare, Volume2, Activity, Tags, Smartphone } from "lucide-react";
 import Link from "next/link";
@@ -91,7 +91,6 @@ const TABS: Tab[] = [
 export default function AssistantConfigForm({ mode, assistantId }: AssistantConfigFormProps) {
   const router = useRouter();
   const { accountId, loading: contextLoading } = useAccountContext();
-  const scrollContainerRef = useRef<HTMLElement | null>(null);
   const [activeTab, setActiveTab] = useState("info");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -148,62 +147,6 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
     setLoading(false);
   };
 
-  useEffect(() => {
-    if (loading) return;
-    
-    scrollContainerRef.current = document.querySelector('main');
-    
-    const observers: IntersectionObserver[] = [];
-    const intersectingEntries = new Map<string, IntersectionObserverEntry>();
-    
-    const observerCallback = (entries: IntersectionObserverEntry[]) => {
-      entries.forEach((entry) => {
-        const sectionId = entry.target.id.replace('section-', '');
-        
-        if (entry.isIntersecting) {
-          intersectingEntries.set(sectionId, entry);
-        } else {
-          intersectingEntries.delete(sectionId);
-        }
-      });
-      
-      if (intersectingEntries.size > 0) {
-        let closestSection = '';
-        let closestDistance = Infinity;
-        
-        intersectingEntries.forEach((entry, sectionId) => {
-          const distance = Math.abs(entry.boundingClientRect.top);
-          if (distance < closestDistance) {
-            closestDistance = distance;
-            closestSection = sectionId;
-          }
-        });
-        
-        if (closestSection) {
-          setActiveTab(closestSection);
-        }
-      }
-    };
-
-    const observerOptions = {
-      root: scrollContainerRef.current,
-      rootMargin: '-100px 0px -50% 0px',
-      threshold: [0, 0.25, 0.5, 0.75, 1],
-    };
-
-    TABS.forEach(tab => {
-      const element = document.getElementById(`section-${tab.id}`);
-      if (element) {
-        const observer = new IntersectionObserver(observerCallback, observerOptions);
-        observer.observe(element);
-        observers.push(observer);
-      }
-    });
-
-    return () => {
-      observers.forEach(observer => observer.disconnect());
-    };
-  }, [loading]);
 
   const fetchAssistant = async () => {
     if (!assistantId) return;
@@ -364,21 +307,6 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
     }
   };
 
-  const scrollToSection = (tabId: string) => {
-    setActiveTab(tabId);
-    const element = document.getElementById(`section-${tabId}`);
-    const container = scrollContainerRef.current;
-    if (element && container) {
-      const offset = 150;
-      const elementPosition = element.getBoundingClientRect().top;
-      const containerPosition = container.getBoundingClientRect().top;
-      const scrollOffset = elementPosition - containerPosition + container.scrollTop - offset;
-      container.scrollTo({
-        top: scrollOffset,
-        behavior: "smooth",
-      });
-    }
-  };
 
   if (loading) {
     return (
@@ -426,18 +354,18 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
 
         {/* Tab Navigation - now inside sticky container */}
         <TabNavigation
-          tabs={TABS}
+          tabs={mode === "create" ? TABS.filter(t => t.id !== "dispositions") : TABS}
           activeTab={activeTab}
-          onTabChange={scrollToSection}
+          onTabChange={setActiveTab}
           sticky={false}
         />
       </div>
 
       {/* Content */}
-      <div className="px-8 py-8 space-y-12">
+      <div className="px-8 py-8">
         {/* Info Section */}
+        {activeTab === "info" && (
         <FormSection
-          id="section-info"
           title="Basic Information"
           description="Configure the basic details of your assistant"
         >
@@ -595,10 +523,11 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
             );
           })()}
         </FormSection>
+        )}
 
         {/* Language Model Section */}
+        {activeTab === "model" && (
         <FormSection
-          id="section-model"
           title="Language Model Configuration"
           description="Configure the AI that powers conversations"
         >
@@ -681,10 +610,11 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
             />
           </FormField>
         </FormSection>
+        )}
 
         {/* Voice Section */}
+        {activeTab === "voice" && (
         <FormSection
-          id="section-voice"
           title="Text-to-Speech Configuration"
           description="Configure how responses are spoken"
         >
@@ -775,10 +705,11 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
             ) : null;
           })()}
         </FormSection>
+        )}
 
         {/* Transcriber Section */}
+        {activeTab === "transcriber" && (
         <FormSection
-          id="section-transcriber"
           title="Speech-to-Text Configuration"
           description="Configure how voice is converted to text"
         >
@@ -880,10 +811,11 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
             </>
           )}
         </FormSection>
+        )}
 
         {/* VAD Section */}
+        {activeTab === "vad" && (
         <FormSection
-          id="section-vad"
           title="Voice Activity Detection (VAD)"
           description="Optional: Detect when users start and stop speaking"
         >
@@ -1016,21 +948,21 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
             </>
           )}
         </FormSection>
+        )}
 
         {/* Dispositions Section - Only show in edit mode */}
-        {mode === "edit" && assistantId && accountId && (
-          <FormSection
-            id="section-dispositions"
-            title="Call Dispositions"
-            description="Configure custom dispositions for call outcomes"
-          >
-            <DispositionsTab assistantId={assistantId} accountId={accountId} />
-          </FormSection>
+        {activeTab === "dispositions" && mode === "edit" && assistantId && accountId && (
+        <FormSection
+          title="Call Dispositions"
+          description="Configure custom dispositions for call outcomes"
+        >
+          <DispositionsTab assistantId={assistantId} accountId={accountId} />
+        </FormSection>
         )}
 
         {/* SMS Configuration Section */}
+        {activeTab === "sms" && (
         <FormSection
-          id="section-sms"
           title="SMS Channel"
           description="Enable AI-powered SMS conversations using this assistant's knowledge base, system prompt, and tools"
         >
@@ -1172,6 +1104,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
             )}
           </div>
         </FormSection>
+        )}
       </div>
 
       {/* Save Bar */}
