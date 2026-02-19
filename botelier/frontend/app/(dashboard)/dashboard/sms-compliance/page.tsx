@@ -661,16 +661,57 @@ export default function SMSCompliancePage() {
           <section>
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-lg font-semibold text-white">Campaigns</h2>
-              <button
-                onClick={openCampaignCreate}
-                className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors"
-              >
-                <Plus className="h-4 w-4" />
-                Add Campaign
-              </button>
+              {brand.status === "approved" && (
+                <button
+                  onClick={openCampaignCreate}
+                  className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors"
+                >
+                  <Plus className="h-4 w-4" />
+                  Add Campaign
+                </button>
+              )}
             </div>
 
-            {campaigns.length === 0 ? (
+            {brand.status !== "approved" ? (
+              <div className="bg-[#141414] border border-gray-800 rounded-xl p-12 flex flex-col items-center text-center">
+                {(brand.status === "pending" || brand.status === "in_review") && (
+                  <>
+                    <Clock className="h-10 w-10 text-yellow-500 mb-3" />
+                    <p className="text-gray-300 text-sm font-medium">Brand Under Review</p>
+                    <p className="text-gray-500 text-xs mt-1 max-w-md">
+                      Your brand registration is being reviewed. Once approved, you'll be able to create campaigns and start sending compliant SMS messages.
+                    </p>
+                  </>
+                )}
+                {brand.status === "failed" && (
+                  <>
+                    <AlertCircle className="h-10 w-10 text-red-500 mb-3" />
+                    <p className="text-gray-300 text-sm font-medium">Brand Registration Failed</p>
+                    <p className="text-gray-500 text-xs mt-1 max-w-md">
+                      Your brand registration was not approved. Please edit your brand details and resubmit before creating campaigns.
+                    </p>
+                  </>
+                )}
+                {brand.status === "draft" && (
+                  <>
+                    <Shield className="h-10 w-10 text-gray-600 mb-3" />
+                    <p className="text-gray-300 text-sm font-medium">Brand Not Submitted</p>
+                    <p className="text-gray-500 text-xs mt-1 max-w-md">
+                      Submit your brand registration for review first. Once approved, you'll be able to create campaigns.
+                    </p>
+                  </>
+                )}
+                {brand.status === "suspended" && (
+                  <>
+                    <AlertCircle className="h-10 w-10 text-orange-500 mb-3" />
+                    <p className="text-gray-300 text-sm font-medium">Brand Suspended</p>
+                    <p className="text-gray-500 text-xs mt-1 max-w-md">
+                      Your brand has been suspended. Campaign creation is unavailable until the suspension is resolved. Please contact support for assistance.
+                    </p>
+                  </>
+                )}
+              </div>
+            ) : campaigns.length === 0 ? (
               <div className="bg-[#141414] border border-gray-800 rounded-xl p-12 flex flex-col items-center text-center">
                 <Send className="h-10 w-10 text-gray-600 mb-3" />
                 <p className="text-gray-400 text-sm">No campaigns yet</p>
