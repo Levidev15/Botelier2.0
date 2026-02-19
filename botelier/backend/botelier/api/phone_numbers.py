@@ -345,6 +345,78 @@ async def release_phone_number(
         )
 
 
+class SMSConfigRequest(BaseModel):
+    hotel_id: str
+    sms_enabled: bool
+    sms_assistant_id: Optional[str] = None
+
+
+@router.put("/{phone_number_id}/sms-config")
+async def update_sms_config(
+    phone_number_id: str,
+    request: SMSConfigRequest,
+    db: Session = Depends(get_db),
+):
+    """
+    Enable/disable SMS on a phone number and optionally assign an SMS-specific assistant.
+    When SMS is enabled, configures the Twilio number's SMS webhook.
+    """
+    phone_number = db.query(PhoneNumber).filter(
+        PhoneNumber.id == phone_number_id,
+        PhoneNumber.hotel_id == UUID(request.hotel_id),
+    ).first()
+
+    if not phone_number:
+        raise HTTPException(status_code=404, detail="Phone number not found")
+
+    hotel = db.query(Hotel).filter(Hotel.id == phone_number.hotel_id).first()
+    if not hotel or not hotel.twilio_sub_account_sid or not hotel.twilio_sub_auth_token:
+        raise HTTPException(status_code=400, detail="Hotel sub-account not configured")
+
+    if request.sms_assistant_id:
+        sms_assistant = db.query(Assistant).filter(
+            Assistant.id == UUID(request.sms_assistant_id),
+            Assistant.hotel_id == phone_number.hotel_id,
+        ).first()
+        if not sms_assistant:
+            raise HTTPException(status_code=404, detail="SMS assistant not found in this account")
+
+    phone_number.sms_enabled = request.sms_enabled
+    phone_number.sms_assistant_id = UUID(request.sms_assistant_id) if request.sms_assistant_id else None
+
+    try:
+        manager = PhoneNumberManager(
+            sub_account_sid=hotel.twilio_sub_account_sid,
+            sub_auth_token=hotel.twilio_sub_auth_token,
+        )
+
+        base_url = get_public_base_url()
+
+        if request.sms_enabled:
+            sms_url = f"{base_url}/api/sms/webhook"
+            manager.update_number_config(
+                phone_number_sid=phone_number.twilio_sid,
+                sms_url=sms_url,
+                sms_method="POST",
+            )
+        else:
+            manager.update_number_config(
+                phone_number_sid=phone_number.twilio_sid,
+                sms_url="",
+                sms_method="POST",
+            )
+
+        db.commit()
+        return phone_number.to_dict()
+
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to update SMS config: {str(e)}",
+        )
+
+
 @router.post("/{phone_number_id}/reconfigure")
 async def reconfigure_phone_number_webhooks(
     phone_number_id: str,

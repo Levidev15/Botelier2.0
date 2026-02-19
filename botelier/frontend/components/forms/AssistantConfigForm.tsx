@@ -2,7 +2,7 @@
 
 import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Info, Mic, MessageSquare, Volume2, Activity, Tags } from "lucide-react";
+import { ArrowLeft, Info, Mic, MessageSquare, Volume2, Activity, Tags, Smartphone } from "lucide-react";
 import Link from "next/link";
 import TabNavigation, { Tab } from "@/components/tabs/TabNavigation";
 import FormSection from "@/components/forms/FormSection";
@@ -41,6 +41,7 @@ interface Assistant {
   tool_set_id: string | null;
   mcp_connection_id: string | null;
   mcp_enabled_tools: string[];
+  sms_config: any;
 }
 
 interface KnowledgeBase {
@@ -84,6 +85,7 @@ const TABS: Tab[] = [
   { id: "transcriber", label: "Transcriber", icon: <Mic className="h-4 w-4" /> },
   { id: "vad", label: "Voice Activity Detection", icon: <Activity className="h-4 w-4" /> },
   { id: "dispositions", label: "Dispositions", icon: <Tags className="h-4 w-4" /> },
+  { id: "sms", label: "SMS", icon: <Smartphone className="h-4 w-4" /> },
 ];
 
 export default function AssistantConfigForm({ mode, assistantId }: AssistantConfigFormProps) {
@@ -1025,6 +1027,151 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
             <DispositionsTab assistantId={assistantId} accountId={accountId} />
           </FormSection>
         )}
+
+        {/* SMS Configuration Section */}
+        <FormSection
+          id="section-sms"
+          title="SMS Channel"
+          description="Enable AI-powered SMS conversations using this assistant's knowledge base, system prompt, and tools"
+        >
+          <div className="space-y-6">
+            <div className="flex items-center gap-3">
+              <label className="relative inline-flex items-center cursor-pointer">
+                <input
+                  type="checkbox"
+                  checked={formData.sms_config?.enabled || false}
+                  onChange={(e) => {
+                    setFormData(prev => ({
+                      ...prev,
+                      sms_config: {
+                        ...prev.sms_config,
+                        enabled: e.target.checked,
+                      }
+                    }));
+                    setIsDirty(true);
+                  }}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-[#2a2a2a] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-indigo-600"></div>
+              </label>
+              <div>
+                <span className="text-sm font-medium text-white">Enable SMS</span>
+                <p className="text-xs text-gray-400">Allow this assistant to respond to incoming text messages</p>
+              </div>
+            </div>
+
+            {formData.sms_config?.enabled && (
+              <>
+                <FormField label="LLM Model Override" tooltip="Use a different model for SMS responses (leave empty to use the voice model)">
+                  <input
+                    type="text"
+                    value={formData.sms_config?.llm_model || ""}
+                    onChange={(e) => {
+                      setFormData(prev => ({
+                        ...prev,
+                        sms_config: { ...prev.sms_config, llm_model: e.target.value || undefined }
+                      }));
+                      setIsDirty(true);
+                    }}
+                    placeholder={formData.llm_model || "Same as voice model"}
+                    className="w-full px-3 py-2 bg-[#1a1a1a] border border-[#333] rounded-lg text-sm text-white placeholder-gray-500 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
+                  />
+                </FormField>
+
+                <FormField label="Max Response Length" tooltip="Maximum characters per SMS response (default: 480, roughly 3 SMS segments)">
+                  <input
+                    type="number"
+                    value={formData.sms_config?.max_response_length || 480}
+                    onChange={(e) => {
+                      setFormData(prev => ({
+                        ...prev,
+                        sms_config: { ...prev.sms_config, max_response_length: parseInt(e.target.value) || 480 }
+                      }));
+                      setIsDirty(true);
+                    }}
+                    min={100}
+                    max={1600}
+                    className="w-full px-3 py-2 bg-[#1a1a1a] border border-[#333] rounded-lg text-sm text-white focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
+                  />
+                </FormField>
+
+                <FormField label="Session Timeout (hours)" tooltip="How long before an inactive conversation is considered a new session (default: 24 hours)">
+                  <input
+                    type="number"
+                    value={formData.sms_config?.session_timeout_hours || 24}
+                    onChange={(e) => {
+                      setFormData(prev => ({
+                        ...prev,
+                        sms_config: { ...prev.sms_config, session_timeout_hours: parseInt(e.target.value) || 24 }
+                      }));
+                      setIsDirty(true);
+                    }}
+                    min={1}
+                    max={168}
+                    className="w-full px-3 py-2 bg-[#1a1a1a] border border-[#333] rounded-lg text-sm text-white focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
+                  />
+                </FormField>
+
+                <FormField label="Welcome Message" tooltip="Optional message sent when a new conversation starts (leave empty for no welcome message)">
+                  <textarea
+                    value={formData.sms_config?.welcome_message || ""}
+                    onChange={(e) => {
+                      setFormData(prev => ({
+                        ...prev,
+                        sms_config: { ...prev.sms_config, welcome_message: e.target.value || undefined }
+                      }));
+                      setIsDirty(true);
+                    }}
+                    placeholder="e.g., Hi! How can I help you today?"
+                    rows={2}
+                    className="w-full px-3 py-2 bg-[#1a1a1a] border border-[#333] rounded-lg text-sm text-white placeholder-gray-500 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 resize-none"
+                  />
+                </FormField>
+
+                <FormField label="SMS-Specific Instructions" tooltip="Additional instructions for the AI when responding via SMS (added to the system prompt)">
+                  <textarea
+                    value={formData.sms_config?.prompt_additions || ""}
+                    onChange={(e) => {
+                      setFormData(prev => ({
+                        ...prev,
+                        sms_config: { ...prev.sms_config, prompt_additions: e.target.value || undefined }
+                      }));
+                      setIsDirty(true);
+                    }}
+                    placeholder="e.g., Always include booking links when discussing reservations. Respond in Spanish if the customer writes in Spanish."
+                    rows={3}
+                    className="w-full px-3 py-2 bg-[#1a1a1a] border border-[#333] rounded-lg text-sm text-white placeholder-gray-500 focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500 resize-none"
+                  />
+                </FormField>
+
+                <FormField label="History Messages" tooltip="Number of previous messages to include as context (default: 20)">
+                  <input
+                    type="number"
+                    value={formData.sms_config?.max_history_messages || 20}
+                    onChange={(e) => {
+                      setFormData(prev => ({
+                        ...prev,
+                        sms_config: { ...prev.sms_config, max_history_messages: parseInt(e.target.value) || 20 }
+                      }));
+                      setIsDirty(true);
+                    }}
+                    min={5}
+                    max={50}
+                    className="w-full px-3 py-2 bg-[#1a1a1a] border border-[#333] rounded-lg text-sm text-white focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
+                  />
+                </FormField>
+
+                <div className="p-3 bg-[#1a1a1a] border border-[#333] rounded-lg">
+                  <p className="text-xs text-gray-400">
+                    <strong className="text-gray-300">How it works:</strong> SMS conversations use this assistant&apos;s system prompt, knowledge base, and tools. 
+                    To activate, enable SMS here and then turn on SMS on a phone number in the Phone Numbers page.
+                    Customers can text STOP to opt out and START to re-subscribe.
+                  </p>
+                </div>
+              </>
+            )}
+          </div>
+        </FormSection>
       </div>
 
       {/* Save Bar */}

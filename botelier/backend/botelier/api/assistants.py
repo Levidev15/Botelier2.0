@@ -80,6 +80,7 @@ class AssistantUpdate(BaseModel):
     vad_config: Optional[dict] = None
     is_active: Optional[bool] = None
     flow_config: Optional[dict] = None
+    sms_config: Optional[dict] = None
 
 
 class FlowConfigUpdate(BaseModel):

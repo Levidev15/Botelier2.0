@@ -43,6 +43,10 @@ class PhoneNumber(Base):
     
     # Assignment to voice assistant
     assistant_id = Column(UUID(as_uuid=True), nullable=True)  # Which assistant handles calls
+
+    # SMS configuration
+    sms_enabled = Column(Boolean, default=False)
+    sms_assistant_id = Column(UUID(as_uuid=True), nullable=True)  # Defaults to voice assistant if null
     
     # Status
     is_active = Column(Boolean, default=True)
@@ -64,6 +68,8 @@ class PhoneNumber(Base):
             "twilio_sid": self.twilio_sid,
             "hotel_id": str(self.hotel_id),
             "assistant_id": str(self.assistant_id) if self.assistant_id else None,
+            "sms_enabled": self.sms_enabled or False,
+            "sms_assistant_id": str(self.sms_assistant_id) if self.sms_assistant_id else None,
             "is_active": self.is_active,
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
             "updated_at": self.updated_at.isoformat() + "Z" if self.updated_at else None,
