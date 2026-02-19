@@ -63,6 +63,5 @@ def init_db():
     from botelier.models import call_log  # noqa: F401
     from botelier.models import integration  # noqa: F401
     from botelier.models import mcp_connection  # noqa: F401
-    from botelier.models import queue_report  # noqa: F401
     
     Base.metadata.create_all(bind=engine)

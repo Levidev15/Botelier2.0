@@ -50,4 +50,3 @@ The architecture emphasizes clean branding ("Botelier"), flexible provider confi
 - **Sonner:** For React toast notifications.
 - **Multi-Tenant Integration System:** A platform-level integration registry for connecting account-specific third-party services (e.g., Oracle Opera Cloud, GuestCentric CRS) with universal authentication support (OAuth 2.0, Basic Auth, JWT). API Request tools enable direct API calls with templating and response mapping.
 - **MCP (Model Context Protocol) Integration System:** Enables assistants to connect to external MCP servers for dynamic, hotel-specific tools (e.g., property management systems), leveraging the official MCP Python SDK with SSE transport.
-- **Zoom Contact Center Reports Integration:** Automated queue performance reporting from Zoom Contact Center, fetching and storing hourly snapshots for analysis and display on a dedicated dashboard.
