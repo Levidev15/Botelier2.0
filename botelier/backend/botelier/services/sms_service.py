@@ -424,7 +424,7 @@ class SMSService:
 
         tools = self.db.query(Tool).filter(
             Tool.tool_set_id == assistant.tool_set_id,
-            Tool.is_active == True,
+            Tool.is_active == "true",
         ).all()
 
         if not tools:
@@ -476,7 +476,7 @@ class SMSService:
         tool = self.db.query(Tool).filter(
             Tool.tool_set_id == assistant.tool_set_id,
             Tool.name == fn_name,
-            Tool.is_active == True,
+            Tool.is_active == "true",
         ).first()
 
         if not tool:
