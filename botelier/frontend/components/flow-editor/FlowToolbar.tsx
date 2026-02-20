@@ -27,7 +27,8 @@ import {
   Trash2,
   Info,
   X,
-  Settings
+  Settings,
+  Code
 } from "lucide-react";
 import { useFlowStore, NodeType, AVAILABLE_TEMPLATES, FlowVersionInfo } from "./store";
 import { toast } from "sonner";
@@ -37,6 +38,8 @@ interface FlowToolbarProps {
   isSaving: boolean;
   showSimulator?: boolean;
   onToggleSimulator?: () => void;
+  showSchema?: boolean;
+  onToggleSchema?: () => void;
 }
 
 interface NodeInfo {
@@ -162,7 +165,7 @@ function formatDate(dateStr: string | null): string {
   });
 }
 
-export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleSimulator }: FlowToolbarProps) {
+export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleSimulator, showSchema, onToggleSchema }: FlowToolbarProps) {
   const { 
     addNode, 
     isDirty, 
@@ -482,6 +485,23 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
           
           {isDirty && (
             <span className="text-xs text-yellow-500">Unsaved changes</span>
+          )}
+
+          {onToggleSchema && (
+            <button
+              onClick={onToggleSchema}
+              className={`
+                flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition
+                ${showSchema
+                  ? "bg-blue-600 hover:bg-blue-700 text-white"
+                  : "bg-gray-700 hover:bg-gray-600 text-white"
+                }
+              `}
+              title="View flow schema"
+            >
+              <Code className="h-4 w-4" />
+              Schema
+            </button>
           )}
 
           <button
