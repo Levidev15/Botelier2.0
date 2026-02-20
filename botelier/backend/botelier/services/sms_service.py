@@ -577,7 +577,7 @@ class SMSService:
                 return None
 
             account_sid = hotel.twilio_sub_account_sid
-            auth_token = hotel.twilio_sub_account_auth_token
+            auth_token = hotel.twilio_sub_auth_token
 
             if not account_sid or not auth_token:
                 account_sid = os.environ.get("TWILIO_ACCOUNT_SID")
