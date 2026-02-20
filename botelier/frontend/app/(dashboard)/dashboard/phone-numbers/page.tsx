@@ -96,22 +96,28 @@ export default function PhoneNumbersPage() {
   };
 
   return (
-    <div className="flex-1 overflow-auto bg-[#0a0a0a]">
-      <div className="max-w-7xl mx-auto px-6 py-8">
-        <div className="flex items-center justify-between mb-8">
-          <div>
-            <h1 className="text-3xl font-bold text-white mb-2">Phone Numbers</h1>
-            <p className="text-gray-400">Manage your Twilio phone numbers</p>
+    <div className="h-full">
+      <div className="border-b border-gray-800 bg-[#0a0a0a] sticky top-0 z-10">
+        <div className="px-8 py-6">
+          <div className="flex justify-between items-center">
+            <div>
+              <h1 className="text-2xl font-bold">Phone Numbers</h1>
+              <p className="text-sm text-gray-400 mt-1">
+                Manage your Twilio phone numbers
+              </p>
+            </div>
+            <button
+              onClick={() => setIsDrawerOpen(true)}
+              className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition text-sm font-medium"
+            >
+              <Plus className="h-4 w-4 mr-2" />
+              Add Number
+            </button>
           </div>
-          <button
-            onClick={() => setIsDrawerOpen(true)}
-            className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg transition-colors"
-          >
-            <Plus className="h-5 w-5" />
-            <span>Add Number</span>
-          </button>
         </div>
+      </div>
 
+      <div className="p-8">
         {loading ? (
           <div className="flex items-center justify-center py-12">
             <div className="text-gray-400">Loading phone numbers...</div>
