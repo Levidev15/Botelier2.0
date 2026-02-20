@@ -67,6 +67,8 @@ class SMSConversation(Base):
     last_message_at = Column(DateTime, default=datetime.utcnow)
     closed_at = Column(DateTime, nullable=True)
 
+    last_read_at = Column(DateTime, nullable=True)
+
     disposition_id = Column(UUID(as_uuid=True), ForeignKey("assistant_dispositions.id"), nullable=True)
     ai_summary = Column(Text, nullable=True)
     tools_used = Column(String, nullable=True)
@@ -104,6 +106,8 @@ class SMSConversation(Base):
             "started_at": self.started_at.isoformat() + "Z" if self.started_at else None,
             "last_message_at": self.last_message_at.isoformat() + "Z" if self.last_message_at else None,
             "closed_at": self.closed_at.isoformat() + "Z" if self.closed_at else None,
+            "last_read_at": self.last_read_at.isoformat() + "Z" if self.last_read_at else None,
+            "has_unread": bool(self.last_message_at and (not self.last_read_at or self.last_message_at > self.last_read_at)),
             "disposition_id": str(self.disposition_id) if self.disposition_id else None,
             "disposition_name": self.disposition.name if self.disposition else None,
             "disposition_color": self.disposition.color if self.disposition else None,

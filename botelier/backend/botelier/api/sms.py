@@ -9,10 +9,10 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Form
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
-from sqlalchemy import desc, or_
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 from loguru import logger
 
@@ -21,7 +21,6 @@ from botelier.models.sms_conversation import (
     SMSConversation, SMSMessage,
     ConversationStatus, MessageDirection, MessageSender, MessageStatus
 )
-from botelier.models.assistant import Assistant
 from botelier.services.sms_service import SMSService
 
 
@@ -253,6 +252,101 @@ async def close_conversation(
     except Exception as e:
         logger.exception(f"Error closing SMS conversation: {e}")
         raise HTTPException(status_code=500, detail="Failed to close conversation")
+
+
+class MarkReadRequest(BaseModel):
+    hotel_id: str
+
+
+@router.post("/conversations/{conversation_id}/read")
+async def mark_conversation_read(
+    conversation_id: UUID,
+    request: MarkReadRequest,
+    db: Session = Depends(get_db),
+):
+    """Mark a conversation as read (updates last_read_at timestamp)."""
+    try:
+        conversation = db.query(SMSConversation).filter(
+            SMSConversation.id == conversation_id,
+            SMSConversation.hotel_id == UUID(request.hotel_id),
+        ).first()
+
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        conversation.last_read_at = datetime.utcnow()
+        db.commit()
+
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error marking conversation as read: {e}")
+        raise HTTPException(status_code=500, detail="Failed to mark as read")
+
+
+class AgentReplyRequest(BaseModel):
+    hotel_id: str
+    message: str
+
+
+@router.post("/conversations/{conversation_id}/reply")
+async def agent_reply(
+    conversation_id: UUID,
+    request: AgentReplyRequest,
+    db: Session = Depends(get_db),
+):
+    """Send a manual reply from a human agent in an SMS conversation."""
+    try:
+        conversation = db.query(SMSConversation).filter(
+            SMSConversation.id == conversation_id,
+            SMSConversation.hotel_id == UUID(request.hotel_id),
+        ).first()
+
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        if conversation.status != ConversationStatus.ACTIVE.value:
+            raise HTTPException(status_code=400, detail="Cannot reply to a closed conversation")
+
+        message_text = request.message.strip()
+        if not message_text:
+            raise HTTPException(status_code=400, detail="Message cannot be empty")
+
+        sms_service = SMSService(db)
+        twilio_sid = sms_service._send_twilio_sms(
+            from_number=conversation.botelier_number,
+            to_number=conversation.customer_number,
+            body=message_text,
+            hotel_id=conversation.hotel_id,
+        )
+
+        msg = SMSMessage(
+            conversation_id=conversation.id,
+            direction=MessageDirection.OUTBOUND.value,
+            sender=MessageSender.AGENT.value,
+            content=message_text,
+            status=MessageStatus.SENT.value if twilio_sid else MessageStatus.FAILED.value,
+            twilio_sid=twilio_sid,
+        )
+        db.add(msg)
+
+        conversation.message_count = (conversation.message_count or 0) + 1
+        conversation.last_message_at = datetime.utcnow()
+        db.commit()
+
+        return {
+            "success": True,
+            "message": msg.to_dict(),
+            "twilio_sid": twilio_sid,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error sending agent reply: {e}")
+        raise HTTPException(status_code=500, detail="Failed to send reply")
 
 
 class GenerateSMSSummaryRequest(BaseModel):

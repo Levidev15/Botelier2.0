@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { MessageSquare, Search, X, Send, Sparkles, Phone, Clock, ChevronDown } from "lucide-react";
+import { MessageSquare, Search, X, Send, Sparkles, Phone } from "lucide-react";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { notify } from "@/lib/notifications";
 
@@ -17,6 +17,7 @@ interface Conversation {
   tools_used: string | null;
   ai_summary: string | null;
   last_message_preview?: string;
+  has_unread?: boolean;
 }
 
 interface Message {
@@ -42,6 +43,8 @@ export default function MessagesPage() {
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
   const [generatingSummary, setGeneratingSummary] = useState(false);
+  const [replyText, setReplyText] = useState("");
+  const [sendingReply, setSendingReply] = useState(false);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const fetchConversations = async () => {
@@ -69,6 +72,14 @@ export default function MessagesPage() {
       const data = await res.json();
       setSelectedConv(data);
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
+
+      fetch(`/api/sms/conversations/${id}/read`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hotel_id: accountId }),
+      }).then(() => {
+        setConversations(prev => prev.map(c => c.id === id ? { ...c, has_unread: false } : c));
+      }).catch(() => {});
     } catch (error) {
       console.error("Failed to fetch conversation:", error);
     } finally {
@@ -112,6 +123,30 @@ export default function MessagesPage() {
       }
     } catch (error) {
       notify.error("Failed to close conversation");
+    }
+  };
+
+  const handleSendReply = async () => {
+    if (!selectedConv || !accountId || !replyText.trim() || sendingReply) return;
+    setSendingReply(true);
+    try {
+      const res = await fetch(`/api/sms/conversations/${selectedConv.id}/reply`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hotel_id: accountId, message: replyText.trim() }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        notify.error(data.detail || "Failed to send reply");
+        return;
+      }
+      setReplyText("");
+      fetchConversation(selectedConv.id);
+      fetchConversations();
+    } catch (error) {
+      notify.error("Failed to send reply");
+    } finally {
+      setSendingReply(false);
     }
   };
 
@@ -209,12 +244,15 @@ export default function MessagesPage() {
               >
                 <div className="flex items-start justify-between mb-1">
                   <div className="flex items-center gap-2">
+                    {conv.has_unread && (
+                      <span className="h-2 w-2 rounded-full bg-indigo-500 flex-shrink-0" />
+                    )}
                     <Phone className="h-3.5 w-3.5 text-gray-400" />
-                    <span className="text-sm font-medium text-white">{conv.customer_number}</span>
+                    <span className={`text-sm ${conv.has_unread ? "font-semibold text-white" : "font-medium text-white"}`}>{conv.customer_number}</span>
                   </div>
                   <span className="text-xs text-gray-500">{formatTime(conv.last_message_at)}</span>
                 </div>
-                <p className="text-xs text-gray-400 truncate mb-1.5">
+                <p className={`text-xs truncate mb-1.5 ${conv.has_unread ? "text-gray-200 font-medium" : "text-gray-400"}`}>
                   {conv.last_message_preview || "No messages"}
                 </p>
                 <div className="flex items-center gap-2">
@@ -298,14 +336,19 @@ export default function MessagesPage() {
                     className={`max-w-[70%] rounded-2xl px-4 py-2.5 ${
                       msg.sender === "customer"
                         ? "bg-[#1a1a1a] border border-gray-700 text-white rounded-bl-sm"
+                        : msg.sender === "agent"
+                        ? "bg-emerald-600 text-white rounded-br-sm"
                         : "bg-indigo-600 text-white rounded-br-sm"
                     }`}
                   >
                     <p className="text-sm whitespace-pre-wrap">{msg.content}</p>
                     <div className={`flex items-center gap-1.5 mt-1 ${
-                      msg.sender === "customer" ? "text-gray-500" : "text-indigo-200"
+                      msg.sender === "customer" ? "text-gray-500" : msg.sender === "agent" ? "text-emerald-200" : "text-indigo-200"
                     }`}>
                       <span className="text-[10px]">{formatFullTime(msg.created_at)}</span>
+                      {msg.sender === "agent" && (
+                        <span className="text-[10px] px-1 bg-white/10 rounded">Agent</span>
+                      )}
                       {msg.tool_calls && msg.tool_calls.length > 0 && (
                         <span className="text-[10px] px-1 bg-white/10 rounded">
                           {msg.tool_calls.map((tc: any) => tc.name).join(", ")}
@@ -320,6 +363,30 @@ export default function MessagesPage() {
               ))}
               <div ref={messagesEndRef} />
             </div>
+
+            {selectedConv.status === "active" && (
+              <div className="p-3 border-t border-gray-800 bg-[#141414]">
+                <div className="flex items-center gap-2">
+                  <input
+                    type="text"
+                    value={replyText}
+                    onChange={(e) => setReplyText(e.target.value)}
+                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSendReply(); } }}
+                    placeholder="Type a reply..."
+                    disabled={sendingReply}
+                    className="flex-1 px-4 py-2.5 bg-[#1a1a1a] border border-gray-700 rounded-xl text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500 disabled:opacity-50"
+                  />
+                  <button
+                    onClick={handleSendReply}
+                    disabled={sendingReply || !replyText.trim()}
+                    className="p-2.5 bg-emerald-600 hover:bg-emerald-500 disabled:bg-gray-700 disabled:text-gray-500 text-white rounded-xl transition-colors"
+                  >
+                    <Send className="h-4 w-4" />
+                  </button>
+                </div>
+                <p className="text-[10px] text-gray-600 mt-1.5 ml-1">Replies are sent as your team, not the AI</p>
+              </div>
+            )}
           </>
         )}
       </div>
