@@ -275,20 +275,6 @@ class SMSService:
         self.db.add(conversation)
         self.db.flush()
 
-        welcome_message = sms_config.get("welcome_message")
-        if welcome_message:
-            welcome_msg = SMSMessage(
-                conversation_id=conversation.id,
-                direction=MessageDirection.OUTBOUND.value,
-                sender=MessageSender.AI.value,
-                content=welcome_message,
-                status=MessageStatus.SENT.value,
-            )
-            self.db.add(welcome_msg)
-            conversation.message_count = 1
-
-            self._send_twilio_sms(to_number, from_number, welcome_message, phone_number.hotel_id)
-
         logger.info(f"Created new SMS conversation {conversation.id} for {from_number}")
         return conversation
 
