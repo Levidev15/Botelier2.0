@@ -133,7 +133,7 @@ export interface BaseNodeData {
 export interface InitialNodeData extends BaseNodeData {
   systemPrompt: string;
   greeting: string;
-  awaitResponse?: boolean;
+  waitForResponse?: boolean;
 }
 
 export type DeliveryMode = "guided" | "static";
@@ -274,7 +274,7 @@ const getDefaultNodeData = (type: NodeType): NodeData => {
         name: "Start",
         systemPrompt: "You are a helpful hotel concierge assistant. Be friendly, professional, and helpful.",
         greeting: "Hello! Thank you for calling. How may I assist you today?",
-        awaitResponse: true,
+        waitForResponse: true,
       } as InitialNodeData;
     
     case "message":
