@@ -713,7 +713,7 @@ You are executing a structured conversation flow. Follow these guidelines:
         """
         Get all initial messages, following auto-advance chain.
         
-        If the initial node has awaitResponse=false, it will continue
+        If the initial node has waitForResponse=false, it will continue
         to get messages from connected nodes until one requires a response
         or reaches a node that collects input (collect_slot, end, transfer).
         """
@@ -730,7 +730,7 @@ You are executing a structured conversation flow. Follow these guidelines:
         
         messages.append(initial_node.data.get("greeting", "Hello! How can I assist you?"))
         
-        await_response = initial_node.data.get("awaitResponse", True)
+        await_response = initial_node.data.get("waitForResponse", True)
         if await_response:
             return messages
         
@@ -745,7 +745,7 @@ You are executing a structured conversation flow. Follow these guidelines:
             if current_node.type in [NodeType.COLLECT_SLOT, NodeType.COLLECT_FORM, NodeType.END, NodeType.TRANSFER]:
                 break
             
-            node_await = current_node.data.get("awaitResponse", current_node.data.get("waitForResponse", True))
+            node_await = current_node.data.get("waitForResponse", True)
             if node_await:
                 break
             

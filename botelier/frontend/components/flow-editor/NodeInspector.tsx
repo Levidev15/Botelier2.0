@@ -138,12 +138,12 @@ function InitialNodePanel({ data, nodeId }: { data: InitialNodeData; nodeId: str
       <div className="flex items-center gap-2">
         <input
           type="checkbox"
-          id="awaitResponse"
-          checked={data.awaitResponse ?? true}
-          onChange={(e) => updateNodeData(nodeId, { awaitResponse: e.target.checked })}
+          id="waitForResponse"
+          checked={data.waitForResponse ?? true}
+          onChange={(e) => updateNodeData(nodeId, { waitForResponse: e.target.checked })}
           className="w-4 h-4 bg-[#1a1a1a] border-gray-700 rounded text-green-500 focus:ring-green-500"
         />
-        <label htmlFor="awaitResponse" className="text-sm text-gray-400">
+        <label htmlFor="waitForResponse" className="text-sm text-gray-400">
           Wait for guest response before continuing
         </label>
       </div>
