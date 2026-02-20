@@ -19,6 +19,7 @@ import { useFlowStore } from "./store";
 import { nodeTypes } from "./nodes";
 import NodeInspector from "./NodeInspector";
 import FlowToolbar from "./FlowToolbar";
+import FlowSchemaPanel from "./FlowSchemaPanel";
 import { FlowSimulatorSidebar } from "@/components/flow-simulator";
 import { notify } from "@/lib/notifications";
 import { X } from "lucide-react";
@@ -107,6 +108,7 @@ function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
 
   const [isSaving, setIsSaving] = useState(false);
   const [showSimulator, setShowSimulator] = useState(false);
+  const [showSchema, setShowSchema] = useState(false);
 
   useEffect(() => {
     loadFlow(toolId, hotelId);
@@ -176,6 +178,8 @@ function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
         isSaving={isSaving} 
         showSimulator={showSimulator}
         onToggleSimulator={() => setShowSimulator(!showSimulator)}
+        showSchema={showSchema}
+        onToggleSchema={() => setShowSchema(!showSchema)}
       />
       
       <div className="flex-1 flex min-h-0">
@@ -263,6 +267,12 @@ function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
               onClose={() => setShowSimulator(false)}
               onNodeChange={setActiveNodeId}
             />
+          </div>
+        )}
+
+        {showSchema && (
+          <div className="w-[420px] flex-shrink-0">
+            <FlowSchemaPanel onClose={() => setShowSchema(false)} />
           </div>
         )}
       </div>
