@@ -241,9 +241,15 @@ export default function KnowledgeBasesPage() {
 
   if (contextLoading || loading) {
     return (
-      <div className="p-6">
-        <div className="flex items-center justify-center h-64">
-          <div className="text-white/60">Loading...</div>
+      <div className="h-full">
+        <div className="border-b border-gray-800 bg-[#0a0a0a] sticky top-0 z-10">
+          <div className="px-8 py-6">
+            <h1 className="text-2xl font-bold">Knowledge Bases</h1>
+            <p className="text-sm text-gray-400 mt-1">Manage Q&A knowledge for your AI assistants</p>
+          </div>
+        </div>
+        <div className="flex items-center justify-center py-24">
+          <div className="text-gray-400">Loading...</div>
         </div>
       </div>
     );
@@ -251,75 +257,80 @@ export default function KnowledgeBasesPage() {
 
   if (selectedKB) {
     return (
-      <div className="p-6">
-        <div className="flex items-center gap-4 mb-6">
-          <button onClick={goBack} className="p-2 hover:bg-white/5 rounded-lg transition-colors">
-            <ArrowLeft className="w-5 h-5 text-white/60" />
-          </button>
-          <div className="flex-1">
-            <h1 className="text-2xl font-semibold text-white">{selectedKB.name}</h1>
-            <p className="text-white/60 text-sm">{selectedKB.description || "Knowledge base entries"}</p>
-          </div>
-          <div className="flex items-center gap-2">
-            <div className="relative">
-              <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-white/40" />
-              <input
-                type="text"
-                placeholder="Search entries..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                className="pl-10 pr-4 py-2 bg-[#2A2A2A] border border-white/10 rounded-lg text-white placeholder:text-white/40 focus:outline-none focus:border-[#3B82F6]/50 w-64"
-              />
+      <div className="h-full">
+        <div className="border-b border-gray-800 bg-[#0a0a0a] sticky top-0 z-10">
+          <div className="px-8 py-6">
+            <div className="flex items-center gap-4">
+              <button onClick={goBack} className="p-2 hover:bg-gray-800 rounded-lg transition-colors">
+                <ArrowLeft className="w-5 h-5 text-gray-400" />
+              </button>
+              <div className="flex-1">
+                <h1 className="text-2xl font-bold">{selectedKB.name}</h1>
+                <p className="text-sm text-gray-400 mt-0.5">{selectedKB.description || "Knowledge base entries"}</p>
+              </div>
+              <div className="flex items-center gap-2">
+                <div className="relative">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-500" />
+                  <input
+                    type="text"
+                    placeholder="Search entries..."
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    className="pl-10 pr-4 py-2 bg-[#141414] border border-gray-800 rounded-lg text-white placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-600 w-64 text-sm"
+                  />
+                </div>
+                {uniqueCategories.length > 0 && (
+                  <select
+                    value={categoryFilter}
+                    onChange={(e) => setCategoryFilter(e.target.value)}
+                    className="px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg text-white text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  >
+                    <option value="">All Categories</option>
+                    {uniqueCategories.map((cat) => (
+                      <option key={cat} value={cat}>{cat}</option>
+                    ))}
+                  </select>
+                )}
+                {expiredCount > 0 && (
+                  <button
+                    onClick={() => setShowExpired(!showExpired)}
+                    className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
+                      showExpired 
+                        ? "bg-red-500/20 border border-red-500/50 text-red-400" 
+                        : "bg-[#141414] border border-gray-800 text-gray-400 hover:text-white"
+                    }`}
+                  >
+                    <AlertCircle className="w-4 h-4" />
+                    {showExpired ? "Hide" : "Show"} Expired ({expiredCount})
+                  </button>
+                )}
+                <div className="flex items-center bg-[#141414] border border-gray-800 rounded-lg">
+                  <button onClick={() => setView("grid")} className={`p-2 ${view === "grid" ? "text-blue-500" : "text-gray-500"}`}>
+                    <Grid3x3 className="w-4 h-4" />
+                  </button>
+                  <button onClick={() => setView("table")} className={`p-2 ${view === "table" ? "text-blue-500" : "text-gray-500"}`}>
+                    <List className="w-4 h-4" />
+                  </button>
+                </div>
+                <button onClick={handleExportCSV} className="flex items-center gap-2 px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg text-gray-400 hover:text-white transition-colors text-sm">
+                  <Download className="w-4 h-4" />
+                  Export
+                </button>
+                <label className="flex items-center gap-2 px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg text-gray-400 hover:text-white transition-colors cursor-pointer text-sm">
+                  <Upload className="w-4 h-4" />
+                  Import
+                  <input type="file" accept=".csv" onChange={handleImportCSV} className="hidden" />
+                </label>
+                <button onClick={() => setShowAddEntryModal(true)} className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition text-sm font-medium">
+                  <Plus className="h-4 w-4 mr-2" />
+                  Add Entry
+                </button>
+              </div>
             </div>
-            {uniqueCategories.length > 0 && (
-              <select
-                value={categoryFilter}
-                onChange={(e) => setCategoryFilter(e.target.value)}
-                className="px-3 py-2 bg-[#2A2A2A] border border-white/10 rounded-lg text-white text-sm focus:outline-none focus:border-[#3B82F6]/50"
-              >
-                <option value="">All Categories</option>
-                {uniqueCategories.map((cat) => (
-                  <option key={cat} value={cat}>{cat}</option>
-                ))}
-              </select>
-            )}
-            {expiredCount > 0 && (
-              <button
-                onClick={() => setShowExpired(!showExpired)}
-                className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm transition-colors ${
-                  showExpired 
-                    ? "bg-red-500/20 border border-red-500/50 text-red-400" 
-                    : "bg-[#2A2A2A] border border-white/10 text-white/60 hover:text-white"
-                }`}
-              >
-                <AlertCircle className="w-4 h-4" />
-                {showExpired ? "Hide" : "Show"} Expired ({expiredCount})
-              </button>
-            )}
-            <div className="flex items-center bg-[#2A2A2A] border border-white/10 rounded-lg">
-              <button onClick={() => setView("grid")} className={`p-2 ${view === "grid" ? "text-[#3B82F6]" : "text-white/60"}`}>
-                <Grid3x3 className="w-4 h-4" />
-              </button>
-              <button onClick={() => setView("table")} className={`p-2 ${view === "table" ? "text-[#3B82F6]" : "text-white/60"}`}>
-                <List className="w-4 h-4" />
-              </button>
-            </div>
-            <button onClick={handleExportCSV} className="flex items-center gap-2 px-3 py-2 bg-[#2A2A2A] border border-white/10 rounded-lg text-white/80 hover:text-white hover:border-white/20 transition-colors">
-              <Download className="w-4 h-4" />
-              Export
-            </button>
-            <label className="flex items-center gap-2 px-3 py-2 bg-[#2A2A2A] border border-white/10 rounded-lg text-white/80 hover:text-white hover:border-white/20 transition-colors cursor-pointer">
-              <Upload className="w-4 h-4" />
-              Import
-              <input type="file" accept=".csv" onChange={handleImportCSV} className="hidden" />
-            </label>
-            <button onClick={() => setShowAddEntryModal(true)} className="flex items-center gap-2 px-4 py-2 bg-[#3B82F6] hover:bg-[#3B82F6]/80 text-white font-medium rounded-lg transition-colors">
-              <Plus className="w-4 h-4" />
-              Add Entry
-            </button>
           </div>
         </div>
 
+        <div className="p-8">
         {filteredEntries.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-16 text-center">
             <BookOpen className="w-12 h-12 text-white/20 mb-4" />
@@ -419,60 +430,82 @@ export default function KnowledgeBasesPage() {
             onSave={() => { setShowAddEntryModal(false); setEditingEntry(null); fetchEntries(selectedKB.id); }}
           />
         )}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="p-6">
-      <div className="flex items-center justify-between mb-6">
-        <div>
-          <h1 className="text-2xl font-semibold text-white">Knowledge Bases</h1>
-          <p className="text-white/60 text-sm mt-1">Manage Q&A knowledge for your AI assistants</p>
+    <div className="h-full">
+      <div className="border-b border-gray-800 bg-[#0a0a0a] sticky top-0 z-10">
+        <div className="px-8 py-6">
+          <div className="flex justify-between items-center">
+            <div>
+              <h1 className="text-2xl font-bold">Knowledge Bases</h1>
+              <p className="text-sm text-gray-400 mt-1">Manage Q&A knowledge for your AI assistants</p>
+            </div>
+            <button onClick={() => setShowCreateModal(true)} className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition text-sm font-medium">
+              <Plus className="h-4 w-4 mr-2" />
+              Create Knowledge Base
+            </button>
+          </div>
         </div>
-        <button onClick={() => setShowCreateModal(true)} className="flex items-center gap-2 px-4 py-2 bg-[#3B82F6] hover:bg-[#3B82F6]/80 text-black font-medium rounded-lg transition-colors">
-          <Plus className="w-4 h-4" />
-          Create Knowledge Base
-        </button>
       </div>
 
+      <div className="p-8">
       {knowledgeBases.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16 text-center">
-          <BookOpen className="w-12 h-12 text-white/20 mb-4" />
-          <h3 className="text-lg font-medium text-white/80 mb-2">No knowledge bases yet</h3>
-          <p className="text-white/40 text-sm mb-4">Create a knowledge base to store Q&A content for your assistants</p>
-          <button onClick={() => setShowCreateModal(true)} className="flex items-center gap-2 px-4 py-2 bg-[#3B82F6] hover:bg-[#3B82F6]/80 text-black font-medium rounded-lg transition-colors">
-            <Plus className="w-4 h-4" />
-            Create First Knowledge Base
+        <div className="flex flex-col items-center justify-center py-16">
+          <div className="w-20 h-20 bg-gray-800 rounded-full flex items-center justify-center mb-4">
+            <BookOpen className="h-10 w-10 text-gray-600" />
+          </div>
+          <h2 className="text-xl font-semibold text-white mb-2">No knowledge bases yet</h2>
+          <p className="text-gray-400 text-center mb-6 max-w-md">Create a knowledge base to store Q&A content for your assistants</p>
+          <button onClick={() => setShowCreateModal(true)} className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg transition-colors">
+            <Plus className="h-5 w-5" />
+            <span>Create Knowledge Base</span>
           </button>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div className="space-y-3">
           {knowledgeBases.map((kb) => (
-            <div key={kb.id} onClick={() => selectKnowledgeBase(kb)} className="bg-[#1A1A1A] border border-white/10 rounded-xl p-5 hover:border-[#3B82F6]/50 transition-colors cursor-pointer group">
-              <div className="flex items-start justify-between mb-3">
-                <div className="p-2 bg-[#3B82F6]/10 rounded-lg">
-                  <BookOpen className="w-5 h-5 text-[#3B82F6]" />
+            <div
+              key={kb.id}
+              onClick={() => selectKnowledgeBase(kb)}
+              className="flex items-center justify-between p-4 bg-[#141414] border border-gray-800 rounded-xl hover:border-gray-700 transition-colors cursor-pointer group"
+            >
+              <div className="flex items-center gap-4 flex-1 min-w-0">
+                <div className="p-2.5 bg-blue-600/10 rounded-lg shrink-0">
+                  <BookOpen className="w-5 h-5 text-blue-500" />
+                </div>
+                <div className="min-w-0 flex-1">
+                  <h3 className="text-white font-medium truncate">{kb.name}</h3>
+                  <p className="text-gray-500 text-sm truncate mt-0.5">{kb.description || "No description"}</p>
+                </div>
+              </div>
+              <div className="flex items-center gap-6 shrink-0 ml-4">
+                <div className="text-right">
+                  <div className="text-sm text-white">{kb.entry_count}</div>
+                  <div className="text-xs text-gray-500">entries</div>
+                </div>
+                <div className="text-right min-w-[80px]">
+                  <div className="text-sm text-gray-400">{formatDate(kb.updated_at)}</div>
+                  <div className="text-xs text-gray-500">modified</div>
                 </div>
                 <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
                   <button onClick={(e) => { e.stopPropagation(); setEditingKB(kb); setShowCreateModal(true); }} className="p-1.5 hover:bg-white/5 rounded">
-                    <Pencil className="w-4 h-4 text-white/60" />
+                    <Pencil className="w-4 h-4 text-gray-500" />
                   </button>
                   <button onClick={(e) => { e.stopPropagation(); handleDeleteKB(kb); }} className="p-1.5 hover:bg-red-500/20 rounded">
                     <Trash2 className="w-4 h-4 text-red-400" />
                   </button>
                 </div>
-              </div>
-              <h3 className="text-white font-medium text-lg mb-1">{kb.name}</h3>
-              <p className="text-white/60 text-sm mb-4 line-clamp-2">{kb.description || "No description"}</p>
-              <div className="flex items-center justify-between">
-                <span className="text-white/40 text-sm">{kb.entry_count} entries</span>
-                <ChevronRight className="w-4 h-4 text-white/40 group-hover:text-[#3B82F6] transition-colors" />
+                <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-blue-500 transition-colors" />
               </div>
             </div>
           ))}
         </div>
       )}
+      </div>
 
       {showCreateModal && (
         <KBModal

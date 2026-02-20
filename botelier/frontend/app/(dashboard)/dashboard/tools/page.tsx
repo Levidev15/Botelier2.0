@@ -194,74 +194,74 @@ export default function ToolsPage() {
   };
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] text-white p-8">
-      <div className="max-w-7xl mx-auto mb-8">
-        <div className="flex items-center justify-between">
-          <div>
-            <h1 className="text-3xl font-bold mb-2">Tools</h1>
-            <p className="text-gray-400">
-              Configure functions your AI assistant can perform during conversations
-            </p>
-          </div>
-          {activeTab === "tools" && (
-            <button
-              onClick={() => setIsDrawerOpen(true)}
-              disabled={!selectedToolSet}
-              className="flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            >
-              <Plus size={20} />
-              Create Tool
-            </button>
-          )}
-        </div>
-
-        <div className="flex gap-1 mt-6 border-b border-gray-800">
-          <button
-            onClick={() => setActiveTab("tools")}
-            className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
-              activeTab === "tools"
-                ? "text-white"
-                : "text-gray-400 hover:text-gray-300"
-            }`}
-          >
-            Tools
+    <div className="h-full">
+      <div className="border-b border-gray-800 bg-[#0a0a0a] sticky top-0 z-10">
+        <div className="px-8 py-6">
+          <div className="flex justify-between items-center">
+            <div>
+              <h1 className="text-2xl font-bold">Tools</h1>
+              <p className="text-sm text-gray-400 mt-1">
+                Configure functions your AI assistant can perform during conversations
+              </p>
+            </div>
             {activeTab === "tools" && (
-              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500" />
+              <button
+                onClick={() => setIsDrawerOpen(true)}
+                disabled={!selectedToolSet}
+                className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition text-sm font-medium disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Create Tool
+              </button>
             )}
-          </button>
-          <button
-            onClick={() => setActiveTab("tester")}
-            className={`px-4 py-2.5 text-sm font-medium transition-colors relative flex items-center gap-2 ${
-              activeTab === "tester"
-                ? "text-white"
-                : "text-gray-400 hover:text-gray-300"
-            }`}
-          >
-            <Play size={14} />
-            API Tester
-            {activeTab === "tester" && (
-              <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-purple-500" />
-            )}
-          </button>
+          </div>
+
+          <div className="flex gap-1 mt-6">
+            <button
+              onClick={() => setActiveTab("tools")}
+              className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
+                activeTab === "tools"
+                  ? "text-white"
+                  : "text-gray-400 hover:text-gray-300"
+              }`}
+            >
+              Tools
+              {activeTab === "tools" && (
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-blue-500" />
+              )}
+            </button>
+            <button
+              onClick={() => setActiveTab("tester")}
+              className={`px-4 py-2.5 text-sm font-medium transition-colors relative flex items-center gap-2 ${
+                activeTab === "tester"
+                  ? "text-white"
+                  : "text-gray-400 hover:text-gray-300"
+              }`}
+            >
+              <Play size={14} />
+              API Tester
+              {activeTab === "tester" && (
+                <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-purple-500" />
+              )}
+            </button>
+          </div>
         </div>
       </div>
 
+      <div className="p-8">
       {activeTab === "tester" && (
-        <div className="max-w-4xl mx-auto">
-          <ApiTester />
-        </div>
+        <ApiTester />
       )}
 
       {activeTab === "tools" && (
       <>
-      {/* Tool Set Selector */}
-      <div className="max-w-7xl mx-auto mb-6">
+      <div className="mb-6">
         <div className="flex items-center gap-4">
           <span className="text-sm text-gray-400">Tool Set:</span>
           <div className="relative">
             <button
               onClick={() => setShowToolSetDropdown(!showToolSetDropdown)}
-              className="flex items-center gap-2 px-4 py-2 bg-[#1a1a1a] border border-gray-700 rounded-lg hover:border-gray-600 transition-colors min-w-[200px]"
+              className="flex items-center gap-2 px-4 py-2 bg-[#141414] border border-gray-800 rounded-lg hover:border-gray-600 transition-colors min-w-[200px]"
             >
               <span className="flex-1 text-left">
                 {selectedToolSet ? selectedToolSet.name : "Select a tool set..."}
@@ -270,7 +270,7 @@ export default function ToolsPage() {
             </button>
             
             {showToolSetDropdown && (
-              <div className="absolute top-full left-0 mt-1 w-72 bg-[#1a1a1a] border border-gray-700 rounded-lg shadow-xl z-50">
+              <div className="absolute top-full left-0 mt-1 w-72 bg-[#141414] border border-gray-800 rounded-lg shadow-xl z-50">
                 {toolSets.map((ts) => (
                   <button
                     key={ts.id}
@@ -291,7 +291,7 @@ export default function ToolsPage() {
                     setShowToolSetDropdown(false);
                     setShowCreateToolSet(true);
                   }}
-                  className="w-full px-4 py-3 text-left hover:bg-gray-800 transition-colors border-t border-gray-700 rounded-b-lg flex items-center gap-2 text-blue-400"
+                  className="w-full px-4 py-3 text-left hover:bg-gray-800 transition-colors border-t border-gray-800 rounded-b-lg flex items-center gap-2 text-blue-400"
                 >
                   <FolderPlus size={16} />
                   Create New Tool Set
@@ -302,7 +302,7 @@ export default function ToolsPage() {
         </div>
       </div>
 
-      <div className="max-w-7xl mx-auto">
+      <div>
         {loading ? (
           <div className="text-center py-12 text-gray-400">
             Loading tools...
@@ -361,6 +361,7 @@ export default function ToolsPage() {
 
       </>
       )}
+      </div>
 
       <ToolDrawer
         isOpen={isDrawerOpen}
