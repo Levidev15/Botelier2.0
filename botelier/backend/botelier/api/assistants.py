@@ -118,6 +118,7 @@ class AssistantResponse(BaseModel):
     vad_config: Optional[dict]
     is_active: bool
     flow_config: Optional[dict]
+    sms_config: Optional[dict] = None
     created_at: Optional[str]
     updated_at: Optional[str]
 
