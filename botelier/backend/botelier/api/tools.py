@@ -2,6 +2,7 @@
 Tools API endpoints.
 
 Provides CRUD operations for managing AI assistant tools/functions.
+Tools are scoped through their ToolSet's account_id for multi-tenant isolation.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -11,6 +12,7 @@ import uuid
 
 from botelier.database import get_db
 from botelier.models.tool import Tool, ToolType as DBToolType
+from botelier.models.tool_set import ToolSet
 from botelier.schemas.tool_schemas import (
     ToolCreate,
     ToolUpdate,
@@ -22,6 +24,26 @@ from botelier.schemas.tool_schemas import (
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
 
+def _scope_query_by_account(query, db, tool_set_id: str = None, hotel_id: str = None):
+    """Apply multi-tenant scoping to a tool query.
+    
+    Tools are scoped through their ToolSet's account_id.
+    When hotel_id is provided, it resolves through ToolSet.account_id.
+    """
+    if tool_set_id:
+        query = query.filter(Tool.tool_set_id == tool_set_id)
+    elif hotel_id:
+        query = query.join(ToolSet, Tool.tool_set_id == ToolSet.id).filter(
+            ToolSet.account_id == hotel_id
+        )
+    else:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Either tool_set_id or hotel_id is required"
+        )
+    return query
+
+
 @router.get("")
 def list_tools(
     hotel_id: str = None,
@@ -30,18 +52,9 @@ def list_tools(
     tool_type: str = None,
     db: Session = Depends(get_db)
 ):
-    """List tools scoped by tool_set_id or hotel_id."""
-    if not tool_set_id and not hotel_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Either tool_set_id or hotel_id is required"
-        )
-
+    """List tools scoped by tool_set_id or account (hotel_id)."""
     query = db.query(Tool)
-    if tool_set_id:
-        query = query.filter(Tool.tool_set_id == tool_set_id)
-    elif hotel_id:
-        query = query.filter(Tool.hotel_id == hotel_id)
+    query = _scope_query_by_account(query, db, tool_set_id, hotel_id)
 
     if assistant_id:
         query = query.filter(Tool.assistant_id == assistant_id)
@@ -67,18 +80,9 @@ def get_tool(
     hotel_id: str = None,
     db: Session = Depends(get_db)
 ):
-    """Get a specific tool by ID, scoped by tool_set_id or hotel_id."""
-    if not tool_set_id and not hotel_id:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Either tool_set_id or hotel_id is required"
-        )
-
+    """Get a specific tool by ID, scoped by tool_set_id or account (hotel_id)."""
     query = db.query(Tool).filter(Tool.id == tool_id)
-    if tool_set_id:
-        query = query.filter(Tool.tool_set_id == tool_set_id)
-    elif hotel_id:
-        query = query.filter(Tool.hotel_id == hotel_id)
+    query = _scope_query_by_account(query, db, tool_set_id, hotel_id)
 
     tool = query.first()
 
@@ -93,24 +97,19 @@ def get_tool(
 
 @router.post("", status_code=status.HTTP_201_CREATED)
 def create_tool(tool_data: ToolCreate, db: Session = Depends(get_db)):
-    """
-    Create a new tool, scoped to a tool set.
-    """
-    from ..models.tool_set import ToolSet
-
-    if not tool_data.tool_set_id and not tool_data.hotel_id:
+    """Create a new tool, scoped to a tool set."""
+    if not tool_data.tool_set_id:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Either tool_set_id or hotel_id is required"
+            detail="tool_set_id is required"
         )
 
-    if tool_data.tool_set_id:
-        tool_set = db.query(ToolSet).filter(ToolSet.id == tool_data.tool_set_id).first()
-        if not tool_set:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="Tool set not found"
-            )
+    tool_set = db.query(ToolSet).filter(ToolSet.id == tool_data.tool_set_id).first()
+    if not tool_set:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Tool set not found"
+        )
 
     tool_id = str(uuid.uuid4())
     db_tool_type = DBToolType(tool_data.tool_type.value)
@@ -122,7 +121,6 @@ def create_tool(tool_data: ToolCreate, db: Session = Depends(get_db)):
         tool_type=db_tool_type,
         config=tool_data.config,
         tool_set_id=tool_data.tool_set_id,
-        hotel_id=tool_data.hotel_id,
         is_active="true" if tool_data.is_active else "false"
     )
 
@@ -141,17 +139,10 @@ def update_tool(
     hotel_id: str = None,
     db: Session = Depends(get_db)
 ):
-    """Update an existing tool, scoped by tool_set_id or hotel_id."""
+    """Update an existing tool, scoped by tool_set_id or account (hotel_id)."""
     query = db.query(Tool).filter(Tool.id == tool_id)
-    if tool_set_id:
-        query = query.filter(Tool.tool_set_id == tool_set_id)
-    elif hotel_id:
-        query = query.filter(Tool.hotel_id == hotel_id)
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Either tool_set_id or hotel_id is required"
-        )
+    query = _scope_query_by_account(query, db, tool_set_id, hotel_id)
+
     tool = query.first()
 
     if not tool:
@@ -182,17 +173,10 @@ def delete_tool(
     hotel_id: str = None,
     db: Session = Depends(get_db)
 ):
-    """Delete a tool, scoped by tool_set_id or hotel_id."""
+    """Delete a tool, scoped by tool_set_id or account (hotel_id)."""
     query = db.query(Tool).filter(Tool.id == tool_id)
-    if tool_set_id:
-        query = query.filter(Tool.tool_set_id == tool_set_id)
-    elif hotel_id:
-        query = query.filter(Tool.hotel_id == hotel_id)
-    else:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Either tool_set_id or hotel_id is required"
-        )
+    query = _scope_query_by_account(query, db, tool_set_id, hotel_id)
+
     tool = query.first()
 
     if not tool:

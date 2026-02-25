@@ -6,6 +6,8 @@ Provides endpoints for managing versioned flow configurations:
 - Publish versions
 - List version history
 - Revert to previous versions
+
+Tools are scoped through their ToolSet's account_id for multi-tenant isolation.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -17,9 +19,34 @@ import uuid
 
 from botelier.database import get_db
 from botelier.models.tool import Tool, ToolType as DBToolType
+from botelier.models.tool_set import ToolSet
 from botelier.models.flow_version import FlowVersion, FlowVersionStatus
 
 router = APIRouter(prefix="/api/tools", tags=["flow-versions"])
+
+
+def _get_flow_tool(db: Session, tool_id: str, hotel_id: str) -> Tool:
+    """Fetch a flow tool by ID, scoped through ToolSet.account_id."""
+    tool = db.query(Tool).join(
+        ToolSet, Tool.tool_set_id == ToolSet.id
+    ).filter(
+        Tool.id == tool_id,
+        ToolSet.account_id == hotel_id
+    ).first()
+
+    if not tool:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Tool with id {tool_id} not found for this account"
+        )
+
+    if tool.tool_type != DBToolType.FLOW:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Tool {tool_id} is not a flow type tool"
+        )
+
+    return tool
 
 
 def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str]]:
@@ -144,22 +171,7 @@ def get_tool_flow(
     
     Returns the visual flow editor data (nodes, edges, variables).
     """
-    tool = db.query(Tool).filter(
-        Tool.id == tool_id,
-        Tool.hotel_id == hotel_id
-    ).first()
-    
-    if not tool:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tool with id {tool_id} not found for this hotel"
-        )
-    
-    if tool.tool_type != DBToolType.FLOW:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Tool {tool_id} is not a flow type tool"
-        )
+    tool = _get_flow_tool(db, tool_id, hotel_id)
     
     flow_version = None
     
@@ -206,7 +218,7 @@ def get_tool_flow(
             flow_config = tool.config or {}
             return {
                 "tool_id": tool.id,
-                "hotel_id": str(tool.hotel_id),
+                "hotel_id": hotel_id,
                 "name": tool.name,
                 "source": "legacy",
                 "version_number": 0,
@@ -222,7 +234,7 @@ def get_tool_flow(
     
     return {
         "tool_id": tool.id,
-        "hotel_id": str(tool.hotel_id),
+        "hotel_id": hotel_id,
         "name": tool.name,
         "source": flow_version.status.value,
         "version_number": flow_version.version_number,
@@ -252,22 +264,7 @@ def save_flow_draft(
         - flow_config: The flow configuration (nodes, edges, variables)
         - description: Optional description for this version
     """
-    tool = db.query(Tool).filter(
-        Tool.id == tool_id,
-        Tool.hotel_id == hotel_id
-    ).first()
-    
-    if not tool:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tool with id {tool_id} not found for this hotel"
-        )
-    
-    if tool.tool_type != DBToolType.FLOW:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Tool {tool_id} is not a flow type tool"
-        )
+    tool = _get_flow_tool(db, tool_id, hotel_id)
     
     flow_config = draft_data.get("flow_config", {})
     description = draft_data.get("description")
@@ -324,22 +321,7 @@ def publish_flow(
     Body (optional):
         - description: Override or set the version description
     """
-    tool = db.query(Tool).filter(
-        Tool.id == tool_id,
-        Tool.hotel_id == hotel_id
-    ).first()
-    
-    if not tool:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tool with id {tool_id} not found for this hotel"
-        )
-    
-    if tool.tool_type != DBToolType.FLOW:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Tool {tool_id} is not a flow type tool"
-        )
+    tool = _get_flow_tool(db, tool_id, hotel_id)
     
     if not tool.draft_version_id:
         raise HTTPException(
@@ -404,16 +386,7 @@ def discard_draft(
     
     Reverts to the last published version for editing.
     """
-    tool = db.query(Tool).filter(
-        Tool.id == tool_id,
-        Tool.hotel_id == hotel_id
-    ).first()
-    
-    if not tool:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tool with id {tool_id} not found for this hotel"
-        )
+    tool = _get_flow_tool(db, tool_id, hotel_id)
     
     if not tool.draft_version_id:
         raise HTTPException(
@@ -448,22 +421,7 @@ def list_flow_versions(
     
     Returns version history without full flow_config (for performance).
     """
-    tool = db.query(Tool).filter(
-        Tool.id == tool_id,
-        Tool.hotel_id == hotel_id
-    ).first()
-    
-    if not tool:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tool with id {tool_id} not found for this hotel"
-        )
-    
-    if tool.tool_type != DBToolType.FLOW:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Tool {tool_id} is not a flow type tool"
-        )
+    tool = _get_flow_tool(db, tool_id, hotel_id)
     
     versions = db.query(FlowVersion).filter(
         FlowVersion.tool_id == tool_id
@@ -489,16 +447,7 @@ def get_flow_version(
     
     Returns the full flow_config for the requested version.
     """
-    tool = db.query(Tool).filter(
-        Tool.id == tool_id,
-        Tool.hotel_id == hotel_id
-    ).first()
-    
-    if not tool:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tool with id {tool_id} not found for this hotel"
-        )
+    _get_flow_tool(db, tool_id, hotel_id)
     
     version = db.query(FlowVersion).filter(
         FlowVersion.tool_id == tool_id,
@@ -528,22 +477,7 @@ def revert_to_version(
     Updates the current draft with content from the selected version.
     Does not create a new version number - simply restores the content.
     """
-    tool = db.query(Tool).filter(
-        Tool.id == tool_id,
-        Tool.hotel_id == hotel_id
-    ).first()
-    
-    if not tool:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Tool with id {tool_id} not found for this hotel"
-        )
-    
-    if tool.tool_type != DBToolType.FLOW:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Tool {tool_id} is not a flow type tool"
-        )
+    tool = _get_flow_tool(db, tool_id, hotel_id)
     
     source_version = db.query(FlowVersion).filter(
         FlowVersion.tool_id == tool_id,
