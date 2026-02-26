@@ -43,11 +43,11 @@ class MessageStatus(str, Enum):
 
 class SMSConversation(Base):
     """
-    Represents a threaded SMS conversation with a customer.
+    Represents a unified SMS conversation thread with a customer.
 
-    A conversation groups all messages exchanged with a single phone number
-    on a single Botelier number. Conversations auto-expire after the
-    configured session timeout (default 24 hours).
+    One conversation per customer_number + botelier_number + hotel_id.
+    Session boundaries are tracked on individual messages rather than
+    splitting into separate conversations.
     """
     __tablename__ = "sms_conversations"
 
@@ -68,6 +68,10 @@ class SMSConversation(Base):
     closed_at = Column(DateTime, nullable=True)
 
     last_read_at = Column(DateTime, nullable=True)
+
+    active_agent_id = Column(UUID(as_uuid=True), nullable=True)
+    active_agent_name = Column(String, nullable=True)
+    agent_active_at = Column(DateTime, nullable=True)
 
     disposition_id = Column(UUID(as_uuid=True), ForeignKey("assistant_dispositions.id"), nullable=True)
     ai_summary = Column(Text, nullable=True)
@@ -111,6 +115,9 @@ class SMSConversation(Base):
             "disposition_id": str(self.disposition_id) if self.disposition_id else None,
             "disposition_name": self.disposition.name if self.disposition else None,
             "disposition_color": self.disposition.color if self.disposition else None,
+            "active_agent_id": str(self.active_agent_id) if self.active_agent_id else None,
+            "active_agent_name": self.active_agent_name,
+            "agent_active_at": self.agent_active_at.isoformat() + "Z" if self.agent_active_at else None,
             "ai_summary": self.ai_summary,
             "tools_used": self.tools_used,
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
@@ -138,6 +145,7 @@ class SMSMessage(Base):
     content = Column(Text, nullable=False)
 
     media_urls = Column(JSONB, nullable=True)
+    session_boundary = Column(Boolean, default=False, nullable=False)
 
     twilio_sid = Column(String, nullable=True)
     status = Column(String(20), nullable=False, default=MessageStatus.RECEIVED.value)
@@ -164,6 +172,7 @@ class SMSMessage(Base):
             "sender": self.sender,
             "content": self.content,
             "media_urls": self.media_urls,
+            "session_boundary": self.session_boundary,
             "twilio_sid": self.twilio_sid,
             "status": self.status,
             "tokens_used": self.tokens_used,

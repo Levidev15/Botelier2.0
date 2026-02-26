@@ -128,6 +128,7 @@ class SMSService:
             sender=MessageSender.CUSTOMER.value,
             content=body,
             media_urls=media_urls,
+            session_boundary=getattr(self, '_is_new_session', False),
             twilio_sid=twilio_sid,
             status=MessageStatus.RECEIVED.value,
         )
@@ -249,18 +250,26 @@ class SMSService:
         assistant: Assistant,
         sms_config: Dict[str, Any],
     ) -> SMSConversation:
-        session_timeout_hours = sms_config.get("session_timeout_hours", DEFAULT_SESSION_TIMEOUT_HOURS)
-        cutoff = datetime.utcnow() - timedelta(hours=session_timeout_hours)
+        """
+        Find or create a unified conversation thread.
 
+        All messages from the same customer to the same Botelier number
+        are grouped into one thread. Session boundaries are tracked on
+        individual messages rather than splitting into separate conversations.
+        """
         conversation = self.db.query(SMSConversation).filter(
             SMSConversation.customer_number == from_number,
             SMSConversation.botelier_number == to_number,
             SMSConversation.hotel_id == phone_number.hotel_id,
-            SMSConversation.status == ConversationStatus.ACTIVE.value,
-            SMSConversation.last_message_at >= cutoff,
+            SMSConversation.status != ConversationStatus.OPTED_OUT.value,
         ).order_by(SMSConversation.last_message_at.desc()).first()
 
         if conversation:
+            if conversation.status == ConversationStatus.CLOSED.value:
+                conversation.status = ConversationStatus.ACTIVE.value
+                conversation.closed_at = None
+            conversation.assistant_id = assistant.id
+            self._is_new_session = self._check_session_boundary(conversation, sms_config)
             return conversation
 
         conversation = SMSConversation(
@@ -274,9 +283,21 @@ class SMSService:
         )
         self.db.add(conversation)
         self.db.flush()
+        self._is_new_session = False
 
         logger.info(f"Created new SMS conversation {conversation.id} for {from_number}")
         return conversation
+
+    def _check_session_boundary(
+        self, conversation: SMSConversation, sms_config: Dict[str, Any]
+    ) -> bool:
+        """Check if enough time has elapsed to mark a session boundary."""
+        session_timeout_hours = sms_config.get("session_timeout_hours", DEFAULT_SESSION_TIMEOUT_HOURS)
+        cutoff = datetime.utcnow() - timedelta(hours=session_timeout_hours)
+
+        if conversation.last_message_at and conversation.last_message_at < cutoff:
+            return True
+        return False
 
     def _generate_ai_response(
         self,
@@ -553,7 +574,8 @@ class SMSService:
         return result
 
     def _send_twilio_sms(
-        self, from_number: str, to_number: str, body: str, hotel_id
+        self, from_number: str, to_number: str, body: str, hotel_id,
+        media_urls: Optional[List[str]] = None,
     ) -> Optional[str]:
         try:
             from botelier.models.hotel import Hotel
@@ -578,12 +600,16 @@ class SMSService:
             from botelier.config.domain import get_public_base_url
             status_callback = f"{get_public_base_url()}/api/sms/status"
 
-            message = client.messages.create(
-                body=body,
-                from_=from_number,
-                to=to_number,
-                status_callback=status_callback,
-            )
+            kwargs: Dict[str, Any] = {
+                "body": body,
+                "from_": from_number,
+                "to": to_number,
+                "status_callback": status_callback,
+            }
+            if media_urls:
+                kwargs["media_url"] = media_urls
+
+            message = client.messages.create(**kwargs)
 
             logger.info(f"Sent SMS via Twilio: {message.sid}")
             return message.sid
