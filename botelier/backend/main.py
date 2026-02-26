@@ -6,6 +6,7 @@ Provides REST endpoints for tools, integrations, and voice agent configuration.
 """
 
 from fastapi import FastAPI
+from fastapi.staticfiles import StaticFiles
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import os
@@ -74,6 +75,10 @@ app.include_router(mcp_connections_router)  # MCP server connections for dynamic
 app.include_router(api_tester_router)  # API testing proxy for tool configuration
 app.include_router(sms_router)  # SMS AI conversations
 app.include_router(sms_compliance_router)  # SMS A2P 10DLC compliance
+
+uploads_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
+os.makedirs(uploads_dir, exist_ok=True)
+app.mount("/uploads", StaticFiles(directory=uploads_dir), name="uploads")
 
 
 @app.on_event("startup")
