@@ -5,6 +5,12 @@ Multi-tenant isolation: All queries MUST filter by hotel_id to prevent data leak
 
 SMSConversation represents a threaded conversation with a customer via SMS.
 SMSMessage represents individual messages within a conversation.
+
+Deferred columns (add when ready):
+  SMSMessage.price       = Column(Numeric(10, 4), nullable=True)  # Twilio cost per message
+  SMSMessage.price_unit  = Column(String(3), nullable=True)        # e.g. "USD"
+  Migration: ALTER TABLE sms_messages ADD COLUMN IF NOT EXISTS price NUMERIC(10,4);
+             ALTER TABLE sms_messages ADD COLUMN IF NOT EXISTS price_unit VARCHAR(3);
 """
 
 import uuid
@@ -21,6 +27,11 @@ class ConversationStatus(str, Enum):
     CLOSED = "closed"
     TRANSFERRED = "transferred"
     OPTED_OUT = "opted_out"
+
+
+class HandlerMode(str, Enum):
+    AI = "ai"
+    HUMAN = "human"
 
 
 class MessageDirection(str, Enum):
@@ -62,10 +73,13 @@ class SMSConversation(Base):
 
     status = Column(String(20), nullable=False, default=ConversationStatus.ACTIVE.value)
 
+    handler_mode = Column(String(10), nullable=False, default=HandlerMode.AI.value, server_default=HandlerMode.AI.value)
+
     message_count = Column(Integer, default=0)
     started_at = Column(DateTime, default=datetime.utcnow)
     last_message_at = Column(DateTime, default=datetime.utcnow)
     closed_at = Column(DateTime, nullable=True)
+    first_response_at = Column(DateTime, nullable=True)
 
     last_read_at = Column(DateTime, nullable=True)
 
@@ -92,6 +106,7 @@ class SMSConversation(Base):
         Index('ix_sms_conv_hotel_status', 'hotel_id', 'status'),
         Index('ix_sms_conv_hotel_last_msg', 'hotel_id', 'last_message_at'),
         Index('ix_sms_conv_customer_number', 'hotel_id', 'customer_number', 'botelier_number'),
+        Index('ix_sms_conv_started_at', 'hotel_id', 'started_at'),
     )
 
     def __repr__(self):
@@ -106,10 +121,12 @@ class SMSConversation(Base):
             "customer_number": self.customer_number,
             "botelier_number": self.botelier_number,
             "status": self.status,
+            "handler_mode": self.handler_mode or HandlerMode.AI.value,
             "message_count": self.message_count,
             "started_at": self.started_at.isoformat() + "Z" if self.started_at else None,
             "last_message_at": self.last_message_at.isoformat() + "Z" if self.last_message_at else None,
             "closed_at": self.closed_at.isoformat() + "Z" if self.closed_at else None,
+            "first_response_at": self.first_response_at.isoformat() + "Z" if self.first_response_at else None,
             "last_read_at": self.last_read_at.isoformat() + "Z" if self.last_read_at else None,
             "has_unread": bool(self.last_message_at and (not self.last_read_at or self.last_message_at > self.last_read_at)),
             "disposition_id": str(self.disposition_id) if self.disposition_id else None,
@@ -133,6 +150,10 @@ class SMSConversation(Base):
 class SMSMessage(Base):
     """
     Represents a single SMS message within a conversation.
+
+    Deferred pricing columns (add when ready, see module docstring for migration SQL):
+      price      — Twilio cost per message (e.g. Decimal("0.0075"))
+      price_unit — ISO 4217 currency code (e.g. "USD")
     """
     __tablename__ = "sms_messages"
 

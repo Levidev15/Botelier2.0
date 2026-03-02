@@ -164,6 +164,8 @@ class SMSService:
         self.db.add(outbound_msg)
         conversation.message_count = (conversation.message_count or 0) + 1
         conversation.last_message_at = datetime.utcnow()
+        if conversation.first_response_at is None:
+            conversation.first_response_at = datetime.utcnow()
 
         if tools_called:
             tool_names = list({tc["name"] for tc in tools_called})
