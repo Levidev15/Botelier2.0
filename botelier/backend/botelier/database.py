@@ -5,9 +5,10 @@ Uses SQLAlchemy with PostgreSQL for multi-tenant data persistence.
 """
 
 import os
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
+from loguru import logger
 
 # Get database URL from environment
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -45,6 +46,43 @@ def get_db():
         db.close()
 
 
+# ---------------------------------------------------------------------------
+# Additive column migrations
+#
+# Each entry is a safe "ADD COLUMN IF NOT EXISTS" statement. These run at
+# startup and are idempotent — safe to re-run as many times as needed.
+#
+# To add a new column in the future:
+#   1. Add the SQLAlchemy Column() to the model
+#   2. Append an ALTER TABLE statement here
+# ---------------------------------------------------------------------------
+_ADDITIVE_MIGRATIONS = [
+    # sms_conversations — handler_mode (AI vs human takeover)
+    "ALTER TABLE sms_conversations ADD COLUMN IF NOT EXISTS handler_mode VARCHAR(10) NOT NULL DEFAULT 'ai'",
+    # sms_conversations — first_response_at (first outbound message timestamp for response-time analytics)
+    "ALTER TABLE sms_conversations ADD COLUMN IF NOT EXISTS first_response_at TIMESTAMP",
+
+    # Indexes (CREATE INDEX IF NOT EXISTS is idempotent)
+    "CREATE INDEX IF NOT EXISTS ix_sms_conv_started_at ON sms_conversations(hotel_id, started_at DESC)",
+
+    # --- Pricing columns (deferred — uncomment when ready to capture Twilio costs) ---
+    # "ALTER TABLE sms_messages ADD COLUMN IF NOT EXISTS price NUMERIC(10,4)",
+    # "ALTER TABLE sms_messages ADD COLUMN IF NOT EXISTS price_unit VARCHAR(3)",
+]
+
+
+def _run_additive_migrations():
+    """Run idempotent schema additions that SQLAlchemy create_all won't handle."""
+    with engine.connect() as conn:
+        for sql in _ADDITIVE_MIGRATIONS:
+            try:
+                conn.execute(text(sql))
+                conn.commit()
+            except Exception as e:
+                logger.warning(f"Migration skipped (non-fatal): {sql[:60]}... — {e}")
+                conn.rollback()
+
+
 def init_db():
     """
     Initialize database tables.
@@ -63,5 +101,6 @@ def init_db():
     from botelier.models import call_log  # noqa: F401
     from botelier.models import integration  # noqa: F401
     from botelier.models import mcp_connection  # noqa: F401
-    
+
     Base.metadata.create_all(bind=engine)
+    _run_additive_migrations()
