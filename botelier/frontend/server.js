@@ -48,7 +48,7 @@ app.prepare().then(() => {
         // NextAuth routes (session, providers, etc.)
         console.log(`🔐 NextAuth: ${req.method} ${pathname}`);
         await handle(req, res, parsedUrl);
-      } else if (pathname.startsWith('/api/')) {
+      } else if (pathname.startsWith('/api/') || pathname.startsWith('/uploads/')) {
         apiProxy(req, res);
       } else {
         await handle(req, res, parsedUrl);
