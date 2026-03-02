@@ -18,6 +18,8 @@ from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 from loguru import logger
 
+from sse_starlette.sse import EventSourceResponse
+
 from botelier.database import get_db
 from botelier.models.sms_conversation import (
     SMSConversation, SMSMessage,
@@ -25,6 +27,7 @@ from botelier.models.sms_conversation import (
 )
 from botelier.models.sms_template import SMSTemplate, SMSNotificationSettings
 from botelier.services.sms_service import SMSService
+from botelier.services.notification_broadcaster import broadcaster
 
 
 router = APIRouter(prefix="/api/sms", tags=["SMS"])
@@ -71,6 +74,34 @@ async def sms_webhook(
             twilio_sid=message_sid,
             media_urls=media_urls if media_urls else None,
         )
+
+        # After processing, broadcast a real-time notification to all SSE
+        # clients watching this hotel so their conversation lists update instantly.
+        try:
+            from botelier.models.phone_number import PhoneNumber
+            phone_number = db.query(PhoneNumber).filter(
+                PhoneNumber.number == to_number
+            ).first()
+            if phone_number:
+                conversation = db.query(SMSConversation).filter(
+                    SMSConversation.customer_number == from_number,
+                    SMSConversation.botelier_number == to_number,
+                    SMSConversation.hotel_id == phone_number.hotel_id,
+                ).order_by(desc(SMSConversation.last_message_at)).first()
+
+                if conversation:
+                    await broadcaster.broadcast(
+                        hotel_id=str(phone_number.hotel_id),
+                        event_type="new_message",
+                        data={
+                            "conversation_id": str(conversation.id),
+                            "customer_number": from_number,
+                            "preview": body[:100] if body else "",
+                            "hotel_id": str(phone_number.hotel_id),
+                        },
+                    )
+        except Exception as broadcast_err:
+            logger.warning(f"SSE broadcast failed (non-fatal): {broadcast_err}")
 
         twiml = (
             '<?xml version="1.0" encoding="UTF-8"?>'
@@ -129,6 +160,7 @@ async def list_conversations(
     hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
     status: Optional[str] = Query(None, description="Filter by status"),
     search: Optional[str] = Query(None, description="Search by phone number"),
+    assistant_id: Optional[UUID] = Query(None, description="Filter by assistant"),
     page: int = Query(1, ge=1),
     limit: int = Query(50, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -146,6 +178,9 @@ async def list_conversations(
             query = query.filter(
                 SMSConversation.customer_number.ilike(f"%{search}%")
             )
+
+        if assistant_id:
+            query = query.filter(SMSConversation.assistant_id == assistant_id)
 
         total = query.count()
 
@@ -413,6 +448,21 @@ async def agent_reply(
         conversation.message_count = (conversation.message_count or 0) + 1
         conversation.last_message_at = datetime.utcnow()
         db.commit()
+
+        # Notify other connected agents that a reply was sent
+        try:
+            await broadcaster.broadcast(
+                hotel_id=str(conversation.hotel_id),
+                event_type="new_reply",
+                data={
+                    "conversation_id": str(conversation.id),
+                    "customer_number": conversation.customer_number,
+                    "preview": (message_text or "")[:100],
+                    "hotel_id": str(conversation.hotel_id),
+                },
+            )
+        except Exception as broadcast_err:
+            logger.warning(f"SSE broadcast failed (non-fatal): {broadcast_err}")
 
         return {
             "success": True,
@@ -700,3 +750,27 @@ async def get_unread_count(
     ).scalar() or 0
 
     return {"unread_count": count}
+
+
+@router.get("/stream")
+async def sms_event_stream(
+    hotel_id: str = Query(..., description="Hotel ID to subscribe for real-time events"),
+):
+    """
+    Server-Sent Events stream for real-time SMS notifications.
+
+    Each browser tab opens one persistent connection here. The server pushes
+    events when messages arrive — no polling needed.
+
+    Event types:
+        new_message  — a customer SMS arrived (updates conversation list)
+        new_reply    — an agent sent a reply (syncs other agents' views)
+        keepalive    — sent every 15 s to keep proxies from closing the connection
+
+    Event data shape (JSON):
+        { "conversation_id": "...", "customer_number": "...", "preview": "...", "hotel_id": "..." }
+    """
+    return EventSourceResponse(
+        broadcaster.event_generator(hotel_id=hotel_id),
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
