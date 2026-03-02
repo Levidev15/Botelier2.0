@@ -80,7 +80,7 @@ async def sms_webhook(
         try:
             from botelier.models.phone_number import PhoneNumber
             phone_number = db.query(PhoneNumber).filter(
-                PhoneNumber.number == to_number
+                PhoneNumber.phone_number == to_number
             ).first()
             if phone_number:
                 conversation = db.query(SMSConversation).filter(
@@ -591,7 +591,17 @@ async def upload_file(
     with open(file_path, "wb") as f:
         f.write(contents)
 
-    base_url = str(request.base_url).rstrip("/") if request else "http://localhost:3001"
+    replit_domain = os.environ.get("REPLIT_DEV_DOMAIN", "")
+    if replit_domain:
+        base_url = f"https://{replit_domain}"
+    elif request:
+        forwarded_host = request.headers.get("x-forwarded-host", "")
+        if forwarded_host:
+            base_url = f"https://{forwarded_host}"
+        else:
+            base_url = str(request.base_url).rstrip("/")
+    else:
+        base_url = "http://localhost:3001"
     public_url = f"{base_url}/uploads/{unique_name}"
 
     return {
