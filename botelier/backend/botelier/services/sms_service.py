@@ -46,14 +46,32 @@ DEFAULT_MAX_HISTORY_MESSAGES = 20
 DEFAULT_MAX_RESPONSE_LENGTH = 480
 
 SMS_BEHAVIOR_RULES = """
-SMS BEHAVIOR RULES:
+## SMS BEHAVIOR RULES
 - Keep responses concise and under 300 characters when possible
 - Do not use TTS-specific formatting (no currency speech conversion)
 - Use natural texting tone (slightly less formal than phone)
 - If the answer is lengthy, break into key bullet points
 - Do not end every message with "How can I help you?"
 - Never include emojis unless specifically instructed to
-- If you cannot fully resolve the customer's request, or the customer explicitly asks to speak with a human agent, start your response with exactly [HANDOFF] (e.g. "[HANDOFF] Let me connect you with a member of our team who can help."). Do not use [HANDOFF] if you can handle the request yourself.
+"""
+
+HANDOFF_INSTRUCTION = """
+## ESCALATION PROTOCOL — MANDATORY
+
+When ANY of the following situations occur, you MUST escalate to a human agent:
+- The customer wants to make, change, or cancel a RESERVATION or BOOKING
+- The customer explicitly asks to speak with a human, manager, or real person
+- You cannot fully answer or resolve the customer's request with available information
+- The customer expresses frustration and requests human help
+
+To escalate, start your ENTIRE response with [HANDOFF] — nothing before it.
+The [HANDOFF] tag must be the very first characters of your message.
+
+CORRECT: "[HANDOFF] I'm connecting you with our team who can assist with that reservation."
+WRONG:   "I'll connect you with someone. [HANDOFF]"
+WRONG:   "Sure! [HANDOFF] Let me transfer you."
+
+If you CAN fully resolve the request yourself without needing a human, do NOT use [HANDOFF].
 """
 
 HANDOFF_PREFIX = "[HANDOFF]"
@@ -430,6 +448,10 @@ class SMSService:
         prompt_additions = sms_config.get("prompt_additions", "")
         if prompt_additions:
             prompt_parts.append(f"\n## ADDITIONAL SMS INSTRUCTIONS\n{prompt_additions}")
+
+        # Inject escalation protocol last so it has maximum recency weight
+        # with the LLM and cannot be overridden by earlier instructions.
+        prompt_parts.append(HANDOFF_INSTRUCTION)
 
         return "\n".join(prompt_parts)
 

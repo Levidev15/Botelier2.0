@@ -4,7 +4,7 @@ import { Bot, LayoutDashboard, Phone, BarChart, Settings, Key, Users, Wrench, Bo
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 
@@ -19,6 +19,8 @@ export default function DashboardLayout({
   const pathname = usePathname();
   const [userInfo, setUserInfo] = useState<any>(null);
   const [authChecked, setAuthChecked] = useState(false);
+  const [pendingHandoffs, setPendingHandoffs] = useState(0);
+  const handoffPollRef = useRef<NodeJS.Timeout | null>(null);
 
   const handleExitAccount = () => {
     exitAccount();
@@ -78,6 +80,32 @@ export default function DashboardLayout({
       console.error("Error fetching user info:", err);
     }
   };
+
+  // Poll for pending handoffs count every 30s so the sidebar badge stays current
+  // across all pages, not just when the Messages page is open.
+  const fetchPendingHandoffs = async (hotelId: string) => {
+    try {
+      const res = await fetch(`/api/sms/pending-handoffs?hotel_id=${hotelId}`);
+      if (res.ok) {
+        const data = await res.json();
+        setPendingHandoffs(data.count ?? 0);
+      }
+    } catch {}
+  };
+
+  useEffect(() => {
+    if (!accountId || !authChecked) return;
+
+    fetchPendingHandoffs(accountId);
+
+    handoffPollRef.current = setInterval(() => {
+      fetchPendingHandoffs(accountId);
+    }, 30_000);
+
+    return () => {
+      if (handoffPollRef.current) clearInterval(handoffPollRef.current);
+    };
+  }, [accountId, authChecked]);
 
   if (tokenLoading || accountLoading || !authChecked) {
     return (
@@ -153,7 +181,7 @@ export default function DashboardLayout({
           <NavItem href="/dashboard/call-logs" icon={<BarChart className="h-5 w-5" />} active={isActive("/dashboard/call-logs")}>
             Call Logs
           </NavItem>
-          <NavItem href="/dashboard/messages" icon={<MessageSquare className="h-5 w-5" />} active={isActive("/dashboard/messages")}>
+          <NavItem href="/dashboard/messages" icon={<MessageSquare className="h-5 w-5" />} active={isActive("/dashboard/messages")} badge={pendingHandoffs}>
             Messages
           </NavItem>
           
@@ -233,11 +261,13 @@ function NavItem({
   icon,
   children,
   active,
+  badge,
 }: {
   href: string;
   icon: React.ReactNode;
   children: React.ReactNode;
   active?: boolean;
+  badge?: number;
 }) {
   return (
     <Link
@@ -249,7 +279,12 @@ function NavItem({
       }`}
     >
       {icon}
-      <span className="text-sm font-medium">{children}</span>
+      <span className="text-sm font-medium flex-1">{children}</span>
+      {badge != null && badge > 0 && (
+        <span className="ml-auto flex items-center justify-center min-w-[18px] h-[18px] px-1 bg-red-600 rounded-full text-[10px] font-bold text-white leading-none">
+          {badge > 99 ? "99+" : badge}
+        </span>
+      )}
     </Link>
   );
 }

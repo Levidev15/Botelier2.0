@@ -914,6 +914,21 @@ async def get_unread_count(
     return {"unread_count": count}
 
 
+@router.get("/pending-handoffs")
+async def get_pending_handoffs(
+    hotel_id: str = Query(..., description="Hotel ID for multi-tenant isolation"),
+    db: Session = Depends(get_db),
+):
+    """Return count of active conversations waiting for a human agent."""
+    count = db.query(func.count(SMSConversation.id)).filter(
+        SMSConversation.hotel_id == UUID(hotel_id),
+        SMSConversation.handler_mode == "human",
+        SMSConversation.status == ConversationStatus.ACTIVE.value,
+    ).scalar() or 0
+
+    return {"count": count}
+
+
 @router.get("/stats")
 async def get_sms_stats(
     hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
