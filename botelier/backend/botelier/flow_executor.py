@@ -1914,19 +1914,21 @@ You are executing a structured conversation flow. Follow these guidelines:
         transfer_config = node.data.get("transfer", {})
         phone_number = transfer_config.get("phoneNumber", "")
         pre_message = transfer_config.get("preTransferMessage", "Please hold while I transfer you.")
+        transfer_mode = transfer_config.get("transferMode", "warm")
         
         self.state.transfer_requested = True
         self.state.transfer_target = phone_number
         self.state.advance_to(node_id)
         
         if self.transfer_callback:
-            await self.transfer_callback(phone_number, arguments.get("reason", ""))
+            await self.transfer_callback(phone_number, arguments.get("reason", ""), transfer_mode=transfer_mode)
         
         return {
             "success": True,
             "message": pre_message,
             "action": "transfer",
             "target": phone_number,
+            "transfer_mode": transfer_mode,
             "current_node_id": node_id
         }
     

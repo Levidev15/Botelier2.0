@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Phone } from "lucide-react";
+import { Phone, PhoneForwarded, AlertTriangle } from "lucide-react";
 import { notify } from "@/lib/notifications";
 
 interface Tool {
@@ -12,6 +12,7 @@ interface Tool {
   config: {
     phone_number?: string;
     pre_transfer_message?: string;
+    transfer_mode?: string;
   };
   is_active: boolean;
 }
@@ -29,6 +30,7 @@ interface FormData {
   description: string;
   phone_number: string;
   pre_transfer_message: string;
+  transfer_mode: "warm" | "cold";
 }
 
 export default function TransferCallForm({ onSuccess, onCancel, tool, accountId, toolSetId }: TransferCallFormProps) {
@@ -39,6 +41,7 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
     description: "",
     phone_number: "",
     pre_transfer_message: "Let me connect you with someone who can help...",
+    transfer_mode: "warm",
   });
 
   const [saving, setSaving] = useState(false);
@@ -51,6 +54,7 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
         description: tool.description || "",
         phone_number: tool.config?.phone_number || "",
         pre_transfer_message: tool.config?.pre_transfer_message || "Let me connect you with someone who can help...",
+        transfer_mode: (tool.config?.transfer_mode as "warm" | "cold") || "warm",
       });
     }
   }, [tool]);
@@ -91,6 +95,7 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
         config: {
           phone_number: formData.phone_number,
           pre_transfer_message: formData.pre_transfer_message,
+          transfer_mode: formData.transfer_mode,
         },
         tool_set_id: toolSetId,
         is_active: true,
@@ -230,6 +235,80 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
         <p className="text-xs text-gray-500 mt-1">
           The AI will say this message before transferring the call
         </p>
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium mb-3">
+          Transfer Mode
+        </label>
+        <div className="grid grid-cols-1 gap-3">
+          <button
+            type="button"
+            onClick={() => handleChange("transfer_mode", "warm")}
+            className={`w-full text-left px-4 py-3 rounded-lg border transition-colors ${
+              formData.transfer_mode === "warm"
+                ? "border-blue-600 bg-blue-600/10"
+                : "border-gray-800 bg-[#141414] hover:border-gray-700"
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              <div className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+                formData.transfer_mode === "warm" ? "border-blue-500" : "border-gray-600"
+              }`}>
+                {formData.transfer_mode === "warm" && (
+                  <div className="w-2 h-2 rounded-full bg-blue-500" />
+                )}
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <PhoneForwarded className="h-4 w-4 text-blue-400" />
+                  <span className="font-medium text-sm">Warm Transfer</span>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  Twilio stays in the bridge for both legs. Full call logging and duration tracking. Standard per-minute charges apply for the entire duration.
+                </p>
+              </div>
+            </div>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => handleChange("transfer_mode", "cold")}
+            className={`w-full text-left px-4 py-3 rounded-lg border transition-colors ${
+              formData.transfer_mode === "cold"
+                ? "border-amber-600 bg-amber-600/10"
+                : "border-gray-800 bg-[#141414] hover:border-gray-700"
+            }`}
+          >
+            <div className="flex items-start gap-3">
+              <div className={`mt-0.5 w-4 h-4 rounded-full border-2 flex items-center justify-center flex-shrink-0 ${
+                formData.transfer_mode === "cold" ? "border-amber-500" : "border-gray-600"
+              }`}>
+                {formData.transfer_mode === "cold" && (
+                  <div className="w-2 h-2 rounded-full bg-amber-500" />
+                )}
+              </div>
+              <div>
+                <div className="flex items-center gap-2">
+                  <PhoneForwarded className="h-4 w-4 text-amber-400" />
+                  <span className="font-medium text-sm">Cold Transfer (SIP REFER)</span>
+                </div>
+                <p className="text-xs text-gray-500 mt-1">
+                  Twilio exits the bridge after handoff. Charges stop at the moment of transfer — no ongoing bridging cost. Call outcome is not tracked after handoff.
+                </p>
+              </div>
+            </div>
+          </button>
+        </div>
+
+        {formData.transfer_mode === "cold" && (
+          <div className="mt-3 flex items-start gap-2 px-3 py-2.5 bg-amber-950/30 border border-amber-800/50 rounded-lg">
+            <AlertTriangle className="h-4 w-4 text-amber-500 flex-shrink-0 mt-0.5" />
+            <p className="text-xs text-amber-400">
+              After transfer, Botelier can no longer monitor, record, or log the duration of this call. Only the AI conversation portion will appear in call logs.
+            </p>
+          </div>
+        )}
       </div>
 
       <div className="flex gap-3 pt-4">

@@ -251,6 +251,7 @@ class FunctionMapper:
         """
         phone_number = tool.config.get("phone_number")
         pre_message = tool.config.get("pre_transfer_message", "One moment please...")
+        transfer_mode = tool.config.get("transfer_mode", "warm")
         
         # OpenAI function schema
         function_schema = {
@@ -300,10 +301,10 @@ class FunctionMapper:
             logger.info(f"⏳ Waiting {wait_time:.1f}s for TTS to complete before transfer ({word_count} words)")
             await asyncio.sleep(wait_time)
             
+            import re as _re
             transfer_success = False
             if self.twilio_client and self.call_sid:
                 try:
-                    # Record transfer in database BEFORE Twilio redirect
                     from ..database import SessionLocal
                     from ..services.call_logger import CallLogger
                     
@@ -314,64 +315,81 @@ class FunctionMapper:
                         # Save transcript BEFORE transfer (WebSocket closes after)
                         if self.call_handler and hasattr(self.call_handler, '_save_call_transcript'):
                             try:
-                                # Get LLM context if available
                                 llm_context = self.call_handler.call_contexts.get(self.call_sid)
                                 await self.call_handler._save_call_transcript(self.call_sid, llm_context)
                                 logger.info(f"📝 Saved transcript before transfer for call {self.call_sid}")
                             except Exception as e:
                                 logger.error(f"Error saving transcript before transfer: {e}")
                         
-                        call_logger.record_transfer(
-                            call_sid=self.call_sid,
-                            transfer_to=phone_number,
-                            transfer_type="external"
-                        )
-                        logger.info(f"📝 Recorded transfer for call {self.call_sid}")
+                        # Build TwiML and record transfer — keep DB open until both are done
+                        twiml_parts = ['<?xml version="1.0" encoding="UTF-8"?>', '<Response>']
+                        
+                        # Stop the media stream (critical for all transfer types)
+                        if self.stream_sid:
+                            twiml_parts.append(f'<Stop><Stream name="{self.stream_sid}"/></Stop>')
+                        
+                        if transfer_mode == "cold":
+                            # Cold Transfer (SIP REFER)
+                            # Twilio sends a SIP REFER to the destination and exits the bridge.
+                            # Charges stop at this point. No /transfer-status callbacks will arrive.
+                            # SIP URI requires E.164 digits only (e.g. +14155551234).
+                            digits_only = _re.sub(r'[^\d+]', '', phone_number)
+                            sip_uri = f"sip:{digits_only}@pstn.twilio.com"
+                            twiml_parts.append(f'<Refer><Sip>{sip_uri}</Sip></Refer>')
+                            twiml_parts.append('</Response>')
+                            transfer_twiml = '\n'.join(twiml_parts)
+                            
+                            logger.info(f"🔄 Cold SIP REFER transfer for call {self.call_sid} to {phone_number} ({sip_uri})")
+                            logger.debug(f"Cold Transfer TwiML:\n{transfer_twiml}")
+                            
+                            call_logger.record_transfer(
+                                call_sid=self.call_sid,
+                                transfer_to=phone_number,
+                                transfer_type="cold"
+                            )
+                            self.twilio_client.calls(self.call_sid).update(twiml=transfer_twiml)
+                            transfer_success = True
+                            logger.info(f"✅ Cold SIP REFER transfer initiated for call {self.call_sid} to {phone_number}")
+                            
+                        else:
+                            # Warm Transfer (Twilio bridges both legs)
+                            # Twilio stays in the call and bridges the caller to the new number.
+                            # Status callbacks arrive at /transfer-status to track the second leg.
+                            caller_id = self.to_number or os.environ.get("TWILIO_PHONE_NUMBER", "")
+                            if caller_id:
+                                twiml_parts.append(f'<Dial timeout="30" callerId="{caller_id}">')
+                            else:
+                                twiml_parts.append('<Dial timeout="30">')
+                            
+                            base_url = os.environ.get("PUBLIC_BASE_URL", "")
+                            if base_url:
+                                status_callback = f"{base_url}/api/calls/transfer-status"
+                                twiml_parts.append(
+                                    f'<Number statusCallback="{status_callback}" '
+                                    f'statusCallbackEvent="initiated ringing answered completed">'
+                                    f'{phone_number}</Number>'
+                                )
+                            else:
+                                twiml_parts.append(f'<Number>{phone_number}</Number>')
+                            
+                            twiml_parts.append('</Dial>')
+                            twiml_parts.append('</Response>')
+                            transfer_twiml = '\n'.join(twiml_parts)
+                            
+                            logger.info(f"🔄 Warm transfer for call {self.call_sid} to {phone_number}")
+                            logger.debug(f"Warm Transfer TwiML:\n{transfer_twiml}")
+                            
+                            call_logger.record_transfer(
+                                call_sid=self.call_sid,
+                                transfer_to=phone_number,
+                                transfer_type="external"
+                            )
+                            self.twilio_client.calls(self.call_sid).update(twiml=transfer_twiml)
+                            transfer_success = True
+                            logger.info(f"✅ Warm transfer initiated for call {self.call_sid} to {phone_number}")
+                        
                     finally:
                         db.close()
-                    
-                    # Build the transfer TwiML
-                    # NOTE: We do NOT include <Say> because the pre-transfer message
-                    # was already spoken via Pipecat TTS using the assistant's configured voice
-                    twiml_parts = ['<?xml version="1.0" encoding="UTF-8"?>', '<Response>']
-                    
-                    # 1. Stop the media stream (critical for transfer to work)
-                    if self.stream_sid:
-                        twiml_parts.append(f'<Stop><Stream name="{self.stream_sid}"/></Stop>')
-                    
-                    # 2. Build Dial element
-                    # Use the caller's original number as callerId (they called us)
-                    # Or fall back to the hotel's number (the number that was called)
-                    caller_id = self.to_number or os.environ.get("TWILIO_PHONE_NUMBER", "")
-                    if caller_id:
-                        twiml_parts.append(f'<Dial timeout="30" callerId="{caller_id}">')
-                    else:
-                        twiml_parts.append('<Dial timeout="30">')
-                    
-                    # 3. Add the Number element with status callback
-                    base_url = os.environ.get("PUBLIC_BASE_URL", "")
-                    if base_url:
-                        status_callback = f"{base_url}/api/calls/transfer-status"
-                        twiml_parts.append(
-                            f'<Number statusCallback="{status_callback}" '
-                            f'statusCallbackEvent="initiated ringing answered completed">'
-                            f'{phone_number}</Number>'
-                        )
-                    else:
-                        twiml_parts.append(f'<Number>{phone_number}</Number>')
-                    
-                    twiml_parts.append('</Dial>')
-                    twiml_parts.append('</Response>')
-                    
-                    dial_twiml = '\n'.join(twiml_parts)
-                    
-                    logger.info(f"🔄 Transferring call {self.call_sid} to {phone_number}")
-                    logger.debug(f"Transfer TwiML:\n{dial_twiml}")
-                    
-                    # Update the call with the new TwiML
-                    self.twilio_client.calls(self.call_sid).update(twiml=dial_twiml)
-                    transfer_success = True
-                    logger.info(f"✅ Call {self.call_sid} transfer initiated to {phone_number}")
                     
                 except Exception as e:
                     logger.error(f"❌ Twilio transfer failed for call {self.call_sid}: {e}")
@@ -764,14 +782,51 @@ class FunctionMapper:
             # Handle special actions
             if result.get("action") == "transfer":
                 target = result.get("target")
-                if self.twilio_client and self.call_sid:
+                flow_transfer_mode = result.get("transfer_mode", "warm")
+                if self.twilio_client and self.call_sid and target:
                     try:
-                        self.twilio_client.calls(self.call_sid).update(
-                            twiml=f'<Response><Dial>{target}</Dial></Response>'
-                        )
-                        logger.info(f"Call transferred to {target}")
+                        from ..database import SessionLocal
+                        from ..services.call_logger import CallLogger as _CLFlow
+                        _db_flow = SessionLocal()
+                        try:
+                            _cl_flow = _CLFlow(_db_flow)
+                            twiml_parts = ['<?xml version="1.0" encoding="UTF-8"?>', '<Response>']
+                            if self.stream_sid:
+                                twiml_parts.append(f'<Stop><Stream name="{self.stream_sid}"/></Stop>')
+                            if flow_transfer_mode == "cold":
+                                import re as _re2
+                                digits_only = _re2.sub(r'[^\d+]', '', target)
+                                sip_uri = f"sip:{digits_only}@pstn.twilio.com"
+                                twiml_parts.append(f'<Refer><Sip>{sip_uri}</Sip></Refer>')
+                                twiml_parts.append('</Response>')
+                                _cl_flow.record_transfer(call_sid=self.call_sid, transfer_to=target, transfer_type="cold")
+                                logger.info(f"🔄 Cold SIP REFER flow transfer to {target}")
+                            else:
+                                caller_id = self.to_number or os.environ.get("TWILIO_PHONE_NUMBER", "")
+                                if caller_id:
+                                    twiml_parts.append(f'<Dial timeout="30" callerId="{caller_id}">')
+                                else:
+                                    twiml_parts.append('<Dial timeout="30">')
+                                base_url = os.environ.get("PUBLIC_BASE_URL", "")
+                                if base_url:
+                                    status_callback = f"{base_url}/api/calls/transfer-status"
+                                    twiml_parts.append(
+                                        f'<Number statusCallback="{status_callback}" '
+                                        f'statusCallbackEvent="initiated ringing answered completed">'
+                                        f'{target}</Number>'
+                                    )
+                                else:
+                                    twiml_parts.append(f'<Number>{target}</Number>')
+                                twiml_parts.append('</Dial>')
+                                twiml_parts.append('</Response>')
+                                _cl_flow.record_transfer(call_sid=self.call_sid, transfer_to=target, transfer_type="external")
+                                logger.info(f"🔄 Warm flow transfer to {target}")
+                            self.twilio_client.calls(self.call_sid).update(twiml='\n'.join(twiml_parts))
+                            logger.info(f"✅ Flow transfer to {target} initiated")
+                        finally:
+                            _db_flow.close()
                     except Exception as e:
-                        logger.error(f"Transfer failed: {e}")
+                        logger.error(f"Flow transfer failed: {e}")
                 await params.llm.push_frame(EndFrame())
             
             elif result.get("action") == "end":

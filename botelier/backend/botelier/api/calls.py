@@ -199,7 +199,19 @@ async def connect_complete(request: Request, db: Session = Depends(get_db)):
         call_logger = CallLogger(db)
         
         if call_logger.has_transfer(call_sid):
-            logger.info(f"Call {call_sid} had transfer, not hanging up")
+            call_log = call_logger.get_call_log(call_sid)
+            transfer_mode = call_log.transfer_mode if call_log else None
+            
+            if transfer_mode == "cold":
+                # Cold (SIP REFER) transfer: Twilio already exited the bridge.
+                # No /transfer-status callbacks will arrive — finalize the record now.
+                call_logger.complete_cold_transfer(call_sid)
+                logger.info(f"Cold transfer call {call_sid} finalized at connect-complete")
+            else:
+                # Warm transfer: Twilio is still bridging. Keep call alive and wait
+                # for /transfer-status callbacks to arrive with the final duration.
+                logger.info(f"Warm transfer call {call_sid} — keeping alive for status callbacks")
+            
             return Response(content="", media_type="application/xml")
         
         call_logger.complete_call(call_sid)

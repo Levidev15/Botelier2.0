@@ -65,6 +65,9 @@ _ADDITIVE_MIGRATIONS = [
     # sms_conversations — needs_attention (true when AI handed off but no agent has replied yet)
     "ALTER TABLE sms_conversations ADD COLUMN IF NOT EXISTS needs_attention BOOLEAN NOT NULL DEFAULT FALSE",
 
+    # call_logs — transfer_mode ('warm' or 'cold') — null means no transfer or legacy warm
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS transfer_mode VARCHAR",
+
     # Indexes (CREATE INDEX IF NOT EXISTS is idempotent)
     "CREATE INDEX IF NOT EXISTS ix_sms_conv_started_at ON sms_conversations(hotel_id, started_at DESC)",
 
