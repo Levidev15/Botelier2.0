@@ -108,17 +108,20 @@ class SMSService:
 
         normalized_body = body.strip().lower()
 
+        # TCPA: STOP must always work immediately regardless of conversation state.
         if normalized_body in OPT_OUT_KEYWORDS:
             return self._handle_opt_out(from_number, to_number, phone_number, twilio_sid)
-
-        if normalized_body in OPT_IN_KEYWORDS:
-            return self._handle_opt_in(from_number, to_number, phone_number, twilio_sid)
 
         conversation = self._find_or_create_conversation(
             from_number, to_number, phone_number, assistant, sms_config
         )
 
+        # Opt-in (YES/START/UNSTOP) only triggers re-subscription when the
+        # conversation is actually opted-out. In an active conversation these
+        # words are normal customer messages and should be handled by the AI.
         if conversation.status == ConversationStatus.OPTED_OUT.value:
+            if normalized_body in OPT_IN_KEYWORDS:
+                return self._handle_opt_in(from_number, to_number, phone_number, twilio_sid)
             logger.info(f"Ignoring SMS from opted-out number {from_number}")
             return None
 
