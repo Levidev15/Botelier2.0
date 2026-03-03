@@ -899,7 +899,7 @@ export default function MessagesPage() {
                   <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColor(conv.status)}`}>
                     {conv.status}
                   </span>
-                  {needsAgent ? (
+                  {conv.handler_mode === "human" ? (
                     <span className="text-[10px] px-1.5 py-0.5 rounded text-amber-400 bg-amber-400/15 border border-amber-400/30 font-medium">
                       Agent
                     </span>
