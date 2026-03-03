@@ -77,12 +77,14 @@ If you CAN fully resolve the request yourself without needing a human, do NOT us
 HANDOFF_PREFIX = "[HANDOFF]"
 
 
+_openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+
+
 class SMSService:
     """Handles SMS AI conversation processing."""
 
     def __init__(self, db: Session):
         self.db = db
-        self.openai_client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
     def process_incoming_sms(
         self,
@@ -386,7 +388,7 @@ class SMSService:
             if tools_schema:
                 kwargs["tools"] = tools_schema
 
-            response = self.openai_client.chat.completions.create(**kwargs)
+            response = _openai_client.chat.completions.create(**kwargs)
             choice = response.choices[0]
 
             max_tool_rounds = 5
@@ -412,7 +414,7 @@ class SMSService:
                         "content": json.dumps(result) if isinstance(result, dict) else str(result),
                     })
 
-                response = self.openai_client.chat.completions.create(**kwargs)
+                response = _openai_client.chat.completions.create(**kwargs)
                 choice = response.choices[0]
 
             ai_text = choice.message.content or ""
