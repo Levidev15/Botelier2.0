@@ -74,6 +74,7 @@ class SMSConversation(Base):
     status = Column(String(20), nullable=False, default=ConversationStatus.ACTIVE.value)
 
     handler_mode = Column(String(10), nullable=False, default=HandlerMode.AI.value, server_default=HandlerMode.AI.value)
+    needs_attention = Column(Boolean, nullable=False, default=False, server_default="false")
 
     message_count = Column(Integer, default=0)
     started_at = Column(DateTime, default=datetime.utcnow)
@@ -122,6 +123,7 @@ class SMSConversation(Base):
             "botelier_number": self.botelier_number,
             "status": self.status,
             "handler_mode": self.handler_mode or HandlerMode.AI.value,
+            "needs_attention": bool(self.needs_attention),
             "message_count": self.message_count,
             "started_at": self.started_at.isoformat() + "Z" if self.started_at else None,
             "last_message_at": self.last_message_at.isoformat() + "Z" if self.last_message_at else None,

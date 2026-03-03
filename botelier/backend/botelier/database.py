@@ -62,6 +62,9 @@ _ADDITIVE_MIGRATIONS = [
     # sms_conversations — first_response_at (first outbound message timestamp for response-time analytics)
     "ALTER TABLE sms_conversations ADD COLUMN IF NOT EXISTS first_response_at TIMESTAMP",
 
+    # sms_conversations — needs_attention (true when AI handed off but no agent has replied yet)
+    "ALTER TABLE sms_conversations ADD COLUMN IF NOT EXISTS needs_attention BOOLEAN NOT NULL DEFAULT FALSE",
+
     # Indexes (CREATE INDEX IF NOT EXISTS is idempotent)
     "CREATE INDEX IF NOT EXISTS ix_sms_conv_started_at ON sms_conversations(hotel_id, started_at DESC)",
 

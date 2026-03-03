@@ -33,7 +33,7 @@ from botelier.models.tool import Tool, ToolType
 from botelier.models.tool_set import ToolSet
 from botelier.models.sms_conversation import (
     SMSConversation, SMSMessage,
-    ConversationStatus, MessageDirection, MessageSender, MessageStatus
+    ConversationStatus, HandlerMode, MessageDirection, MessageSender, MessageStatus
 )
 from botelier.voice.knowledge_handler import load_knowledge_for_prompt
 
@@ -185,6 +185,7 @@ class SMSService:
         if ai_response.startswith(HANDOFF_PREFIX):
             ai_response = ai_response[len(HANDOFF_PREFIX):].strip()
             conversation.handler_mode = "human"
+            conversation.needs_attention = True
             handoff_triggered = True
             logger.info(f"AI triggered handoff on conversation {conv_id}")
 
@@ -312,8 +313,12 @@ class SMSService:
 
         if conversation:
             if conversation.status == ConversationStatus.CLOSED.value:
+                # New session after close — reopen and hand control back to AI.
+                # Any previous handoff state belongs to the prior session.
                 conversation.status = ConversationStatus.ACTIVE.value
                 conversation.closed_at = None
+                conversation.handler_mode = HandlerMode.AI.value
+                conversation.needs_attention = False
             conversation.assistant_id = assistant.id
             self._is_new_session = self._check_session_boundary(conversation, sms_config)
             return conversation

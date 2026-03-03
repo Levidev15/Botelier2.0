@@ -347,6 +347,7 @@ async def take_over_conversation(
             raise HTTPException(status_code=404, detail="Conversation not found")
 
         conversation.handler_mode = "human"
+        conversation.needs_attention = True
         db.commit()
 
         try:
@@ -356,12 +357,13 @@ async def take_over_conversation(
                 data={
                     "conversation_id": str(conversation_id),
                     "handler_mode": "human",
+                    "needs_attention": True,
                 },
             )
         except Exception as broadcast_err:
             logger.warning(f"SSE broadcast failed (non-fatal): {broadcast_err}")
 
-        return {"success": True, "handler_mode": "human"}
+        return {"success": True, "handler_mode": "human", "needs_attention": True}
 
     except HTTPException:
         raise
@@ -386,6 +388,7 @@ async def return_to_ai(
             raise HTTPException(status_code=404, detail="Conversation not found")
 
         conversation.handler_mode = "ai"
+        conversation.needs_attention = False
         db.commit()
 
         try:
@@ -395,12 +398,13 @@ async def return_to_ai(
                 data={
                     "conversation_id": str(conversation_id),
                     "handler_mode": "ai",
+                    "needs_attention": False,
                 },
             )
         except Exception as broadcast_err:
             logger.warning(f"SSE broadcast failed (non-fatal): {broadcast_err}")
 
-        return {"success": True, "handler_mode": "ai"}
+        return {"success": True, "handler_mode": "ai", "needs_attention": False}
 
     except HTTPException:
         raise
@@ -599,20 +603,42 @@ async def agent_reply(
         conversation.last_message_at = datetime.utcnow()
         if conversation.first_response_at is None:
             conversation.first_response_at = datetime.utcnow()
+
+        # First agent reply on a needs-attention conversation clears the alert.
+        # handler_mode stays "human" (agent is still handling it), but the
+        # urgent styling and sidebar badge count both go away.
+        attention_was_set = bool(conversation.needs_attention)
+        if attention_was_set:
+            conversation.needs_attention = False
+
         db.commit()
 
-        # Notify other connected agents that a reply was sent
+        hotel_id_str = str(conversation.hotel_id)
+        conv_id_str = str(conversation.id)
+
         try:
             await broadcaster.broadcast(
-                hotel_id=str(conversation.hotel_id),
+                hotel_id=hotel_id_str,
                 event_type="new_reply",
                 data={
-                    "conversation_id": str(conversation.id),
+                    "conversation_id": conv_id_str,
                     "customer_number": conversation.customer_number,
                     "preview": (message_text or "")[:100],
-                    "hotel_id": str(conversation.hotel_id),
+                    "hotel_id": hotel_id_str,
                 },
             )
+            # If this reply cleared the attention flag, push a handler_changed
+            # event so all open tabs update the conversation styling immediately.
+            if attention_was_set:
+                await broadcaster.broadcast(
+                    hotel_id=hotel_id_str,
+                    event_type="handler_changed",
+                    data={
+                        "conversation_id": conv_id_str,
+                        "handler_mode": "human",
+                        "needs_attention": False,
+                    },
+                )
         except Exception as broadcast_err:
             logger.warning(f"SSE broadcast failed (non-fatal): {broadcast_err}")
 
@@ -922,7 +948,7 @@ async def get_pending_handoffs(
     """Return count of active conversations waiting for a human agent."""
     count = db.query(func.count(SMSConversation.id)).filter(
         SMSConversation.hotel_id == UUID(hotel_id),
-        SMSConversation.handler_mode == "human",
+        SMSConversation.needs_attention == True,
         SMSConversation.status == ConversationStatus.ACTIVE.value,
     ).scalar() or 0
 

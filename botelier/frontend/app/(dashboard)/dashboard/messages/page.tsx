@@ -26,6 +26,7 @@ interface Conversation {
   botelier_number: string;
   status: string;
   handler_mode: "ai" | "human";
+  needs_attention: boolean;
   message_count: number;
   last_message_at: string | null;
   created_at: string;
@@ -416,11 +417,11 @@ export default function MessagesPage() {
           last_ai_message: string;
         };
 
-        // Flip the conversation to human mode in the list
+        // Flip the conversation to human mode + needs_attention in the list
         setConversations(prev =>
           prev.map(c =>
             c.id === data.conversation_id
-              ? { ...c, handler_mode: "human" as const }
+              ? { ...c, handler_mode: "human" as const, needs_attention: true }
               : c
           )
         );
@@ -440,13 +441,14 @@ export default function MessagesPage() {
         const data = JSON.parse(event.data) as {
           conversation_id: string;
           handler_mode: "ai" | "human";
+          needs_attention: boolean;
         };
 
         // Update the conversation list silently (agent triggered it themselves)
         setConversations(prev =>
           prev.map(c =>
             c.id === data.conversation_id
-              ? { ...c, handler_mode: data.handler_mode }
+              ? { ...c, handler_mode: data.handler_mode, needs_attention: data.needs_attention }
               : c
           )
         );
@@ -454,7 +456,7 @@ export default function MessagesPage() {
         // Also update the open thread detail if it matches
         setSelectedConv(prev =>
           prev?.id === data.conversation_id
-            ? { ...prev, handler_mode: data.handler_mode }
+            ? { ...prev, handler_mode: data.handler_mode, needs_attention: data.needs_attention }
             : prev
         );
       } catch {}
@@ -590,9 +592,9 @@ export default function MessagesPage() {
         notify.error(data.detail || "Failed to take over conversation");
         return;
       }
-      setSelectedConv(prev => prev ? { ...prev, handler_mode: "human" } : prev);
+      setSelectedConv(prev => prev ? { ...prev, handler_mode: "human", needs_attention: true } : prev);
       setConversations(prev =>
-        prev.map(c => c.id === selectedConv.id ? { ...c, handler_mode: "human" as const } : c)
+        prev.map(c => c.id === selectedConv.id ? { ...c, handler_mode: "human" as const, needs_attention: true } : c)
       );
     } catch {
       notify.error("Failed to take over conversation");
@@ -615,9 +617,9 @@ export default function MessagesPage() {
         notify.error(data.detail || "Failed to return to AI");
         return;
       }
-      setSelectedConv(prev => prev ? { ...prev, handler_mode: "ai" } : prev);
+      setSelectedConv(prev => prev ? { ...prev, handler_mode: "ai", needs_attention: false } : prev);
       setConversations(prev =>
-        prev.map(c => c.id === selectedConv.id ? { ...c, handler_mode: "ai" as const } : c)
+        prev.map(c => c.id === selectedConv.id ? { ...c, handler_mode: "ai" as const, needs_attention: false } : c)
       );
     } catch {
       notify.error("Failed to return to AI");
@@ -853,7 +855,7 @@ export default function MessagesPage() {
             </div>
           ) : (
             conversations.map((conv) => {
-              const needsAgent = conv.handler_mode === "human" && conv.status === "active";
+              const needsAgent = !!conv.needs_attention && conv.status === "active";
               return (
               <button
                 key={conv.id}
@@ -1012,8 +1014,8 @@ export default function MessagesPage() {
               )}
             </div>
 
-            {/* Handoff banner — shown when AI has handed off to a human agent */}
-            {selectedConv.handler_mode === "human" && selectedConv.status === "active" && (
+            {/* Handoff banner — shown when conversation needs agent attention */}
+            {selectedConv.needs_attention && selectedConv.status === "active" && (
               <div className="mx-4 mt-3 mb-1 flex items-center gap-2.5 px-3 py-2.5 bg-amber-500/10 border border-amber-500/30 rounded-lg">
                 <span className="h-2 w-2 rounded-full bg-amber-500 animate-pulse flex-shrink-0" />
                 <p className="text-xs text-amber-300 flex-1">
