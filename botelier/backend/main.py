@@ -31,7 +31,7 @@ from botelier.api.integrations import router as integrations_router
 from botelier.api.tool_sets import router as tool_sets_router
 from botelier.api.mcp_connections import router as mcp_connections_router
 from botelier.api.api_tester import router as api_tester_router
-from botelier.api.sms import router as sms_router
+from botelier.api.sms_pkg import router as sms_router
 from botelier.api.sms_compliance import router as sms_compliance_router
 
 # Initialize FastAPI app
