@@ -69,7 +69,7 @@ async def sms_webhook(
         logger.info(f"📩 Incoming SMS: {from_number} -> {to_number} | Body: {body[:50]}...")
 
         sms_service = SMSService(db)
-        response_text = sms_service.process_incoming_sms(
+        ai_response, conv_id, handoff_triggered = sms_service.process_incoming_sms(
             from_number=from_number,
             to_number=to_number,
             body=body,
@@ -77,31 +77,68 @@ async def sms_webhook(
             media_urls=media_urls if media_urls else None,
         )
 
-        # After processing, broadcast a real-time notification to all SSE
-        # clients watching this hotel so their conversation lists update instantly.
+        # Broadcast real-time SSE events so all connected agents update instantly.
         try:
             from botelier.models.phone_number import PhoneNumber
             phone_number = db.query(PhoneNumber).filter(
                 PhoneNumber.phone_number == to_number
             ).first()
             if phone_number:
-                conversation = db.query(SMSConversation).filter(
-                    SMSConversation.customer_number == from_number,
-                    SMSConversation.botelier_number == to_number,
-                    SMSConversation.hotel_id == phone_number.hotel_id,
-                ).order_by(desc(SMSConversation.last_message_at)).first()
+                hotel_id_str = str(phone_number.hotel_id)
+
+                # Resolve conversation for broadcast metadata (use conv_id if returned)
+                if conv_id:
+                    conversation = db.query(SMSConversation).filter(
+                        SMSConversation.id == conv_id,
+                    ).first()
+                else:
+                    conversation = db.query(SMSConversation).filter(
+                        SMSConversation.customer_number == from_number,
+                        SMSConversation.botelier_number == to_number,
+                        SMSConversation.hotel_id == phone_number.hotel_id,
+                    ).order_by(desc(SMSConversation.last_message_at)).first()
 
                 if conversation:
+                    conv_id_str = str(conversation.id)
+
+                    # new_message — inbound customer message (updates conversation list)
                     await broadcaster.broadcast(
-                        hotel_id=str(phone_number.hotel_id),
+                        hotel_id=hotel_id_str,
                         event_type="new_message",
                         data={
-                            "conversation_id": str(conversation.id),
+                            "conversation_id": conv_id_str,
                             "customer_number": from_number,
                             "preview": body[:100] if body else "",
-                            "hotel_id": str(phone_number.hotel_id),
+                            "hotel_id": hotel_id_str,
                         },
                     )
+
+                    # new_reply — AI response (refreshes open thread for agents)
+                    if ai_response:
+                        await broadcaster.broadcast(
+                            hotel_id=hotel_id_str,
+                            event_type="new_reply",
+                            data={
+                                "conversation_id": conv_id_str,
+                                "customer_number": from_number,
+                                "preview": ai_response[:100],
+                                "hotel_id": hotel_id_str,
+                            },
+                        )
+
+                    # handoff_requested — AI escalated to human (alerts agents)
+                    if handoff_triggered:
+                        await broadcaster.broadcast(
+                            hotel_id=hotel_id_str,
+                            event_type="handoff_requested",
+                            data={
+                                "conversation_id": conv_id_str,
+                                "customer_number": from_number,
+                                "hotel_id": hotel_id_str,
+                                "last_ai_message": (ai_response or "")[:100],
+                            },
+                        )
+
         except Exception as broadcast_err:
             logger.warning(f"SSE broadcast failed (non-fatal): {broadcast_err}")
 
@@ -288,6 +325,88 @@ async def get_conversation(
     except Exception as e:
         logger.exception(f"Error getting SMS conversation: {e}")
         raise HTTPException(status_code=500, detail="Failed to load conversation")
+
+
+class HandlerModeRequest(BaseModel):
+    hotel_id: str
+
+
+@router.post("/conversations/{conversation_id}/take-over")
+async def take_over_conversation(
+    conversation_id: UUID,
+    request: HandlerModeRequest,
+    db: Session = Depends(get_db),
+):
+    """Agent takes over a conversation — AI goes silent."""
+    try:
+        conversation = db.query(SMSConversation).filter(
+            SMSConversation.id == conversation_id,
+            SMSConversation.hotel_id == UUID(request.hotel_id),
+        ).first()
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        conversation.handler_mode = "human"
+        db.commit()
+
+        try:
+            await broadcaster.broadcast(
+                hotel_id=request.hotel_id,
+                event_type="handler_changed",
+                data={
+                    "conversation_id": str(conversation_id),
+                    "handler_mode": "human",
+                },
+            )
+        except Exception as broadcast_err:
+            logger.warning(f"SSE broadcast failed (non-fatal): {broadcast_err}")
+
+        return {"success": True, "handler_mode": "human"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error taking over conversation: {e}")
+        raise HTTPException(status_code=500, detail="Failed to take over conversation")
+
+
+@router.post("/conversations/{conversation_id}/return-to-ai")
+async def return_to_ai(
+    conversation_id: UUID,
+    request: HandlerModeRequest,
+    db: Session = Depends(get_db),
+):
+    """Return a conversation to AI handling."""
+    try:
+        conversation = db.query(SMSConversation).filter(
+            SMSConversation.id == conversation_id,
+            SMSConversation.hotel_id == UUID(request.hotel_id),
+        ).first()
+        if not conversation:
+            raise HTTPException(status_code=404, detail="Conversation not found")
+
+        conversation.handler_mode = "ai"
+        db.commit()
+
+        try:
+            await broadcaster.broadcast(
+                hotel_id=request.hotel_id,
+                event_type="handler_changed",
+                data={
+                    "conversation_id": str(conversation_id),
+                    "handler_mode": "ai",
+                },
+            )
+        except Exception as broadcast_err:
+            logger.warning(f"SSE broadcast failed (non-fatal): {broadcast_err}")
+
+        return {"success": True, "handler_mode": "ai"}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error returning conversation to AI: {e}")
+        raise HTTPException(status_code=500, detail="Failed to return to AI")
 
 
 class CloseConversationRequest(BaseModel):

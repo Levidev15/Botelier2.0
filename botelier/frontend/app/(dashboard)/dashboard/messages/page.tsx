@@ -25,6 +25,7 @@ interface Conversation {
   customer_number: string;
   botelier_number: string;
   status: string;
+  handler_mode: "ai" | "human";
   message_count: number;
   last_message_at: string | null;
   created_at: string;
@@ -154,6 +155,7 @@ export default function MessagesPage() {
   const [selectedConv, setSelectedConv]     = useState<ConversationDetail | null>(null);
   const [loadingConv, setLoadingConv]       = useState(false);
   const [generatingSummary, setGeneratingSummary] = useState(false);
+  const [handoffLoading, setHandoffLoading] = useState(false);
   const [replyText, setReplyText]           = useState("");
   const [sendingReply, setSendingReply]     = useState(false);
 
@@ -405,8 +407,63 @@ export default function MessagesPage() {
       } catch {}
     };
 
+    const handleHandoffRequested = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data) as {
+          conversation_id: string;
+          customer_number: string;
+          hotel_id: string;
+          last_ai_message: string;
+        };
+
+        // Flip the conversation to human mode in the list
+        setConversations(prev =>
+          prev.map(c =>
+            c.id === data.conversation_id
+              ? { ...c, handler_mode: "human" as const }
+              : c
+          )
+        );
+
+        // Alert agents with an amber toast
+        notify.warning(`AI escalated: ${data.customer_number} needs an agent`);
+
+        // Refresh open thread so the flipped mode shows immediately
+        if (selectedConvIdRef.current === data.conversation_id) {
+          fetchConversation(data.conversation_id);
+        }
+      } catch {}
+    };
+
+    const handleHandlerChanged = (event: MessageEvent) => {
+      try {
+        const data = JSON.parse(event.data) as {
+          conversation_id: string;
+          handler_mode: "ai" | "human";
+        };
+
+        // Update the conversation list silently (agent triggered it themselves)
+        setConversations(prev =>
+          prev.map(c =>
+            c.id === data.conversation_id
+              ? { ...c, handler_mode: data.handler_mode }
+              : c
+          )
+        );
+
+        // Also update the open thread detail if it matches
+        setSelectedConv(prev =>
+          prev?.id === data.conversation_id
+            ? { ...prev, handler_mode: data.handler_mode }
+            : prev
+        );
+      } catch {}
+    };
+
     es.addEventListener("new_message", handleNewMessage);
     es.addEventListener("new_reply", handleNewReply);
+    es.addEventListener("handoff_requested", handleHandoffRequested);
+    es.addEventListener("handler_changed", handleHandlerChanged);
 
     es.onerror = () => {
       // EventSource auto-reconnects — no manual retry needed
@@ -516,6 +573,56 @@ export default function MessagesPage() {
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = "";
+    }
+  };
+
+  const handleTakeOver = async () => {
+    if (!selectedConv || !accountId || handoffLoading) return;
+    setHandoffLoading(true);
+    try {
+      const res = await fetch(`/api/sms/conversations/${selectedConv.id}/take-over`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hotel_id: accountId }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        notify.error(data.detail || "Failed to take over conversation");
+        return;
+      }
+      setSelectedConv(prev => prev ? { ...prev, handler_mode: "human" } : prev);
+      setConversations(prev =>
+        prev.map(c => c.id === selectedConv.id ? { ...c, handler_mode: "human" as const } : c)
+      );
+    } catch {
+      notify.error("Failed to take over conversation");
+    } finally {
+      setHandoffLoading(false);
+    }
+  };
+
+  const handleReturnToAI = async () => {
+    if (!selectedConv || !accountId || handoffLoading) return;
+    setHandoffLoading(true);
+    try {
+      const res = await fetch(`/api/sms/conversations/${selectedConv.id}/return-to-ai`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hotel_id: accountId }),
+      });
+      if (!res.ok) {
+        const data = await res.json();
+        notify.error(data.detail || "Failed to return to AI");
+        return;
+      }
+      setSelectedConv(prev => prev ? { ...prev, handler_mode: "ai" } : prev);
+      setConversations(prev =>
+        prev.map(c => c.id === selectedConv.id ? { ...c, handler_mode: "ai" as const } : c)
+      );
+    } catch {
+      notify.error("Failed to return to AI");
+    } finally {
+      setHandoffLoading(false);
     }
   };
 
@@ -774,6 +881,15 @@ export default function MessagesPage() {
                   <span className={`text-[10px] px-1.5 py-0.5 rounded ${statusColor(conv.status)}`}>
                     {conv.status}
                   </span>
+                  {conv.handler_mode === "human" ? (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded text-amber-400 bg-amber-400/10">
+                      Agent
+                    </span>
+                  ) : (
+                    <span className="text-[10px] px-1.5 py-0.5 rounded text-indigo-400 bg-indigo-400/10">
+                      AI
+                    </span>
+                  )}
                   <span className="text-[10px] text-gray-500">{conv.message_count} msgs</span>
                   {conv.active_agent_name && isPresenceActive(conv.agent_active_at) && (
                     <span className="flex items-center gap-1 text-[10px] text-amber-400">
@@ -830,6 +946,25 @@ export default function MessagesPage() {
                   )}
                 </div>
                 <div className="flex items-center gap-2">
+                  {selectedConv.status === "active" && (
+                    selectedConv.handler_mode === "human" ? (
+                      <button
+                        onClick={handleReturnToAI}
+                        disabled={handoffLoading}
+                        className="flex items-center gap-1.5 px-3 py-1.5 border border-indigo-500/50 hover:bg-indigo-600/10 text-indigo-400 rounded-lg text-xs transition-colors disabled:opacity-50"
+                      >
+                        {handoffLoading ? "..." : "Return to AI"}
+                      </button>
+                    ) : (
+                      <button
+                        onClick={handleTakeOver}
+                        disabled={handoffLoading}
+                        className="flex items-center gap-1.5 px-3 py-1.5 border border-amber-500/50 hover:bg-amber-600/10 text-amber-400 rounded-lg text-xs transition-colors disabled:opacity-50"
+                      >
+                        {handoffLoading ? "..." : "Take Over"}
+                      </button>
+                    )
+                  )}
                   <button
                     onClick={handleGenerateSummary}
                     disabled={generatingSummary}

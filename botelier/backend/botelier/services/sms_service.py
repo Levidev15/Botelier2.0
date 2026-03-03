@@ -53,7 +53,10 @@ SMS BEHAVIOR RULES:
 - If the answer is lengthy, break into key bullet points
 - Do not end every message with "How can I help you?"
 - Never include emojis unless specifically instructed to
+- If you cannot fully resolve the customer's request, or the customer explicitly asks to speak with a human agent, start your response with exactly [HANDOFF] (e.g. "[HANDOFF] Let me connect you with a member of our team who can help."). Do not use [HANDOFF] if you can handle the request yourself.
 """
+
+HANDOFF_PREFIX = "[HANDOFF]"
 
 
 class SMSService:
@@ -70,12 +73,15 @@ class SMSService:
         body: str,
         twilio_sid: Optional[str] = None,
         media_urls: Optional[List[str]] = None,
-    ) -> Optional[str]:
+    ) -> tuple[Optional[str], Optional[str], bool]:
         """
         Process an incoming SMS and generate an AI response.
 
-        Returns the AI response text, or None if no response should be sent
-        (e.g., opt-out confirmation).
+        Returns:
+            (ai_response, conversation_id, handoff_triggered)
+            ai_response     — text to send back, or None for no reply
+            conversation_id — str UUID of the conversation (for SSE broadcast)
+            handoff_triggered — True if the AI signalled [HANDOFF] this turn
         """
         phone_number = self.db.query(PhoneNumber).filter(
             PhoneNumber.phone_number == to_number,
@@ -85,12 +91,12 @@ class SMSService:
 
         if not phone_number:
             logger.warning(f"SMS received on number {to_number} but no SMS-enabled phone number found")
-            return None
+            return None, None, False
 
         sms_assistant_id = phone_number.sms_assistant_id or phone_number.assistant_id
         if not sms_assistant_id:
             logger.warning(f"No assistant assigned for SMS on {to_number}")
-            return None
+            return None, None, False
 
         assistant = self.db.query(Assistant).filter(
             Assistant.id == sms_assistant_id,
@@ -99,31 +105,34 @@ class SMSService:
 
         if not assistant:
             logger.warning(f"Assistant {sms_assistant_id} not found or inactive")
-            return None
+            return None, None, False
 
         sms_config = assistant.sms_config or {}
         if not sms_config.get("enabled", False):
             logger.info(f"SMS is disabled on assistant {assistant.id}")
-            return None
+            return None, None, False
 
         normalized_body = body.strip().lower()
 
         # TCPA: STOP must always work immediately regardless of conversation state.
         if normalized_body in OPT_OUT_KEYWORDS:
-            return self._handle_opt_out(from_number, to_number, phone_number, twilio_sid)
+            result = self._handle_opt_out(from_number, to_number, phone_number, twilio_sid)
+            return result, None, False
 
         conversation = self._find_or_create_conversation(
             from_number, to_number, phone_number, assistant, sms_config
         )
+        conv_id = str(conversation.id)
 
         # Opt-in (YES/START/UNSTOP) only triggers re-subscription when the
         # conversation is actually opted-out. In an active conversation these
         # words are normal customer messages and should be handled by the AI.
         if conversation.status == ConversationStatus.OPTED_OUT.value:
             if normalized_body in OPT_IN_KEYWORDS:
-                return self._handle_opt_in(from_number, to_number, phone_number, twilio_sid)
+                result = self._handle_opt_in(from_number, to_number, phone_number, twilio_sid)
+                return result, None, False
             logger.info(f"Ignoring SMS from opted-out number {from_number}")
-            return None
+            return None, conv_id, False
 
         inbound_msg = SMSMessage(
             conversation_id=conversation.id,
@@ -140,12 +149,26 @@ class SMSService:
         conversation.last_message_at = datetime.utcnow()
         self.db.flush()
 
+        # If a human agent has taken over, save the inbound message but stay silent.
+        if conversation.handler_mode == "human":
+            self.db.commit()
+            logger.info(f"SMS conversation {conv_id} in human mode — AI silent, message saved")
+            return None, conv_id, False
+
         ai_response, tools_called = self._generate_ai_response(
             assistant, sms_config, conversation, body
         )
 
         if not ai_response:
             ai_response = "I'm sorry, I wasn't able to process your message. Please try again."
+
+        # Detect handoff signal from the AI
+        handoff_triggered = False
+        if ai_response.startswith(HANDOFF_PREFIX):
+            ai_response = ai_response[len(HANDOFF_PREFIX):].strip()
+            conversation.handler_mode = "human"
+            handoff_triggered = True
+            logger.info(f"AI triggered handoff on conversation {conv_id}")
 
         max_length = sms_config.get("max_response_length", DEFAULT_MAX_RESPONSE_LENGTH)
         if max_length and len(ai_response) > max_length:
@@ -182,10 +205,10 @@ class SMSService:
 
         logger.info(
             f"SMS processed: {from_number} -> {to_number} | "
-            f"Conv: {conversation.id} | Tools: {tools_called or 'none'}"
+            f"Conv: {conv_id} | Handoff: {handoff_triggered} | Tools: {tools_called or 'none'}"
         )
 
-        return ai_response
+        return ai_response, conv_id, handoff_triggered
 
     def _handle_opt_out(
         self, from_number: str, to_number: str,
