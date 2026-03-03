@@ -58,7 +58,12 @@ function TransferNode({ data, selected }: TransferNodeProps) {
               </div>
             )}
             
-            {transfer.warmTransfer && (
+            {transfer.transferMode === "cold" ? (
+              <div className="text-xs text-amber-400/70 flex items-center gap-1">
+                <span className="w-1.5 h-1.5 bg-amber-400 rounded-full" />
+                Cold transfer (SIP REFER)
+              </div>
+            ) : (
               <div className="text-xs text-cyan-400/70 flex items-center gap-1">
                 <span className="w-1.5 h-1.5 bg-cyan-400 rounded-full" />
                 Warm transfer

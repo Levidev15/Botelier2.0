@@ -108,6 +108,7 @@ export interface TransferConfig {
   phoneNumber: string;
   preTransferMessage?: string;
   warmTransfer?: boolean;
+  transferMode?: "warm" | "cold";
 }
 
 export type NodeType = 

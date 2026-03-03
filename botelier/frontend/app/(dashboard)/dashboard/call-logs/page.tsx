@@ -40,7 +40,7 @@ interface CallLeg {
   status: string;
   started_at: string | null;
   ended_at: string | null;
-  duration_seconds: number;
+  duration_seconds: number | null;
 }
 
 interface TranscriptEntry {
@@ -150,11 +150,13 @@ function getLegTypeLabel(legType: string): string {
     case "ai_conversation":
       return "AI Assistant";
     case "transfer_external":
-      return "External Transfer";
+      return "Warm Transfer";
     case "transfer_sip":
       return "SIP Transfer";
     case "transfer_internal":
       return "Internal Transfer";
+    case "transfer_cold":
+      return "Cold Transfer (SIP REFER)";
     default:
       return legType;
   }
@@ -803,10 +805,12 @@ function CallLogRow({
                     <div className="w-8 text-gray-500 font-mono">
                       #{leg.leg_number}
                     </div>
-                    <div className="min-w-[120px]">
+                    <div className="min-w-[160px]">
                       <span className={`px-2 py-0.5 text-xs rounded ${
                         leg.leg_type === "ai_conversation"
                           ? "bg-blue-500/10 text-blue-400"
+                          : leg.leg_type === "transfer_cold"
+                          ? "bg-amber-500/10 text-amber-400"
                           : "bg-purple-500/10 text-purple-400"
                       }`}>
                         {getLegTypeLabel(leg.leg_type)}
@@ -817,7 +821,10 @@ function CallLogRow({
                     </div>
                     <div className="text-gray-500 flex items-center gap-1">
                       <Clock className="h-3 w-3" />
-                      {formatDuration(leg.duration_seconds)}
+                      {leg.leg_type === "transfer_cold" && (leg.duration_seconds === null || leg.duration_seconds === 0)
+                        ? <span className="text-amber-500/70 italic">Handed off</span>
+                        : formatDuration(leg.duration_seconds ?? 0)
+                      }
                     </div>
                     <div>
                       <span className={`px-2 py-0.5 text-xs rounded-full border ${getStatusBadge(leg.status)}`}>

@@ -31,14 +31,24 @@ class TransferCallConfig(BaseModel):
         "Let me connect you with someone who can help...",
         description="Message AI says before transferring"
     )
+    transfer_mode: str = Field(
+        "warm",
+        description="'warm' keeps Twilio bridging both legs (trackable, ongoing charges). 'cold' uses SIP REFER — Twilio exits after handoff, no ongoing charges, no second-leg tracking."
+    )
     
     @validator('phone_number')
     def validate_phone(cls, v):
         """Basic phone number validation."""
-        # Remove common formatting
         cleaned = v.replace("+", "").replace("-", "").replace(" ", "").replace("(", "").replace(")", "")
         if not cleaned.isdigit():
             raise ValueError("Phone number must contain only digits and formatting characters")
+        return v
+    
+    @validator('transfer_mode')
+    def validate_transfer_mode(cls, v):
+        """Validate transfer mode."""
+        if v not in ("warm", "cold"):
+            raise ValueError("transfer_mode must be 'warm' or 'cold'")
         return v
 
 

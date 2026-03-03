@@ -45,6 +45,7 @@ class LegType(str, Enum):
     TRANSFER_EXTERNAL = "transfer_external"
     TRANSFER_SIP = "transfer_sip"
     TRANSFER_INTERNAL = "transfer_internal"
+    TRANSFER_COLD = "transfer_cold"
 
 
 class CallLog(Base):
@@ -90,6 +91,7 @@ class CallLog(Base):
     recording_sid = Column(String, nullable=True)
     
     has_transfer = Column(Boolean, default=False)
+    transfer_mode = Column(String, nullable=True)
     
     flow_id = Column(UUID(as_uuid=True), nullable=True)
     flow_name = Column(String, nullable=True)

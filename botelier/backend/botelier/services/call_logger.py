@@ -176,21 +176,25 @@ class CallLogger:
                 if leg.status in non_terminal_statuses:
                     leg.status = CallStatus.COMPLETED.value
                 
-                # For transfer legs, update end time to match call end time
+                # For warm transfer legs, update end time to match call end time
                 if leg.leg_type in (LegType.TRANSFER_EXTERNAL.value, LegType.TRANSFER_SIP.value):
                     if call_log.ended_at and (not leg.ended_at or leg.ended_at < call_log.ended_at):
                         leg.ended_at = call_log.ended_at
                         if leg.started_at:
                             leg.duration_seconds = int((leg.ended_at - leg.started_at).total_seconds())
+                # Cold transfer legs are already marked completed — leave duration as-is (None = unknown)
+                elif leg.leg_type == LegType.TRANSFER_COLD.value:
+                    pass
                 # For other legs, just ensure they have an end time
                 elif not leg.ended_at:
                     leg.ended_at = call_log.ended_at or datetime.utcnow()
                     if leg.started_at:
                         leg.duration_seconds = int((leg.ended_at - leg.started_at).total_seconds())
             
-            # Calculate total duration by summing all leg durations
-            # This ensures transfer time is included in total call duration
-            total_leg_duration = sum(leg.duration_seconds or 0 for leg in all_legs)
+            # Calculate total duration by summing all leg durations.
+            # Cold transfer legs are excluded (duration unknown — Twilio exited the bridge).
+            warm_legs = [leg for leg in all_legs if leg.leg_type != LegType.TRANSFER_COLD.value]
+            total_leg_duration = sum(leg.duration_seconds or 0 for leg in warm_legs)
             if total_leg_duration > 0:
                 call_log.duration_seconds = total_leg_duration
             
@@ -255,7 +259,11 @@ class CallLogger:
         Args:
             call_sid: Twilio call SID
             transfer_to: Phone number or SIP URI transferred to
-            transfer_type: "external" or "sip"
+            transfer_type: "external", "sip", or "cold"
+                - "external": warm Twilio-bridged transfer to PSTN number
+                - "sip": warm Twilio-bridged transfer via SIP
+                - "cold": cold SIP REFER transfer — Twilio exits bridge immediately,
+                          no status callbacks will arrive, leg is pre-marked completed
             
         Returns:
             True if update was successful
@@ -266,7 +274,12 @@ class CallLogger:
                 logger.warning(f"Call log not found for SID: {call_sid}")
                 return False
             
-            leg_type = LegType.TRANSFER_SIP.value if transfer_type == "sip" else LegType.TRANSFER_EXTERNAL.value
+            if transfer_type == "cold":
+                leg_type = LegType.TRANSFER_COLD.value
+            elif transfer_type == "sip":
+                leg_type = LegType.TRANSFER_SIP.value
+            else:
+                leg_type = LegType.TRANSFER_EXTERNAL.value
             
             existing_transfer = self.db.query(CallLeg).filter(
                 CallLeg.call_log_id == call_log.id,
@@ -280,6 +293,7 @@ class CallLogger:
             
             call_log.has_transfer = True
             call_log.outcome = CallOutcome.TRANSFERRED.value
+            call_log.transfer_mode = "cold" if transfer_type == "cold" else "warm"
             
             ai_leg = self.db.query(CallLeg).filter(
                 CallLeg.call_log_id == call_log.id,
@@ -299,22 +313,87 @@ class CallLogger:
             
             next_leg_num = (max_leg.leg_number + 1) if max_leg else 1
             
-            transfer_leg = CallLeg(
-                call_log_id=call_log.id,
-                leg_number=next_leg_num,
-                leg_type=leg_type,
-                participant=transfer_to,
-                status=CallStatus.INITIATED.value,
-                started_at=datetime.utcnow(),
-            )
+            now = datetime.utcnow()
+            
+            if transfer_type == "cold":
+                # Cold transfer: Twilio exits immediately — no callbacks will arrive.
+                # Pre-mark the leg as completed with null duration (duration is unknown).
+                transfer_leg = CallLeg(
+                    call_log_id=call_log.id,
+                    leg_number=next_leg_num,
+                    leg_type=leg_type,
+                    participant=transfer_to,
+                    status=CallStatus.COMPLETED.value,
+                    started_at=now,
+                    ended_at=now,
+                    duration_seconds=None,
+                )
+            else:
+                # Warm transfer: Twilio stays in bridge, status callbacks will arrive.
+                transfer_leg = CallLeg(
+                    call_log_id=call_log.id,
+                    leg_number=next_leg_num,
+                    leg_type=leg_type,
+                    participant=transfer_to,
+                    status=CallStatus.INITIATED.value,
+                    started_at=now,
+                )
+            
             self.db.add(transfer_leg)
             
             self.db.commit()
-            logger.info(f"Recorded transfer for call {call_sid} to {transfer_to}")
+            logger.info(f"Recorded {transfer_type} transfer for call {call_sid} to {transfer_to}")
             return True
             
         except Exception as e:
             logger.exception(f"Error recording transfer: {e}")
+            self.db.rollback()
+            return False
+    
+    def complete_cold_transfer(self, call_sid: str) -> bool:
+        """
+        Finalize a cold-transferred call log.
+        
+        Called from /connect-complete when transfer_mode='cold'. Since Twilio exits
+        the bridge immediately on a SIP REFER, no /transfer-status callbacks arrive.
+        We finalize the call here using the AI leg duration as the tracked duration.
+        
+        Args:
+            call_sid: Twilio call SID
+            
+        Returns:
+            True if update was successful
+        """
+        try:
+            call_log = self.get_call_log(call_sid)
+            if not call_log:
+                logger.warning(f"Call log not found for SID: {call_sid}")
+                return False
+            
+            now = datetime.utcnow()
+            
+            if call_log.status != CallStatus.COMPLETED.value:
+                call_log.status = CallStatus.COMPLETED.value
+            
+            if not call_log.ended_at:
+                call_log.ended_at = now
+            
+            # Use AI leg duration as the logged call duration (transfer leg duration is unknown)
+            ai_leg = self.db.query(CallLeg).filter(
+                CallLeg.call_log_id == call_log.id,
+                CallLeg.leg_type == LegType.AI_CONVERSATION.value
+            ).first()
+            
+            ai_duration = ai_leg.duration_seconds if ai_leg else 0
+            if call_log.duration_seconds is None or call_log.duration_seconds == 0:
+                call_log.duration_seconds = ai_duration or 0
+            
+            self.db.commit()
+            logger.info(f"Finalized cold transfer call {call_sid} (AI leg duration: {ai_duration}s)")
+            return True
+            
+        except Exception as e:
+            logger.exception(f"Error finalizing cold transfer call: {e}")
             self.db.rollback()
             return False
     
