@@ -8,6 +8,18 @@ const hostname = '0.0.0.0';
 const port = parseInt(process.env.PORT || '5000', 10);
 const backendUrl = process.env.BACKEND_URL || 'http://localhost:3001';
 
+// Ensure NEXTAUTH_URL is always set.
+// In production, NEXTAUTH_URL may not be explicitly configured, so we derive it
+// from REPLIT_DOMAINS (the canonical public domain Replit assigns to deployed apps).
+if (!process.env.NEXTAUTH_URL) {
+  const replitDomains = process.env.REPLIT_DOMAINS || process.env.REPLIT_DEV_DOMAIN;
+  if (replitDomains) {
+    const primaryDomain = replitDomains.split(',')[0].trim();
+    process.env.NEXTAUTH_URL = `https://${primaryDomain}`;
+    console.log(`🔑 NEXTAUTH_URL derived from Replit domain: ${process.env.NEXTAUTH_URL}`);
+  }
+}
+
 const app = next({ dev, hostname, port });
 const handle = app.getRequestHandler();
 
