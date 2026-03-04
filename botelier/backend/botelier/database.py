@@ -16,11 +16,21 @@ DATABASE_URL = os.environ.get("DATABASE_URL")
 if not DATABASE_URL:
     raise ValueError("DATABASE_URL environment variable is not set")
 
+# SQLAlchemy requires 'postgresql://' not 'postgres://' (the latter is common in Heroku/Render URLs)
+if DATABASE_URL.startswith("postgres://"):
+    DATABASE_URL = DATABASE_URL.replace("postgres://", "postgresql://", 1)
+
 # Create SQLAlchemy engine
+# connect_args: pass SSL settings for hosted databases that require it
+_connect_args = {}
+if "sslmode=require" in DATABASE_URL or "sslmode=verify" in DATABASE_URL:
+    _connect_args["sslmode"] = "require"
+
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,  # Verify connections before using
-    pool_recycle=300,    # Recycle connections after 5 minutes
+    pool_pre_ping=True,   # Verify connections before using
+    pool_recycle=300,     # Recycle connections after 5 minutes
+    connect_args=_connect_args,
 )
 
 # Create session factory

@@ -26,26 +26,48 @@ router = APIRouter(prefix="/api/sms", tags=["SMS"])
 _EMPTY_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
 
 
-def _validate_twilio_signature(request: Request, form_data: dict, auth_token: str) -> bool:
+def _build_webhook_url(request: Request) -> str:
+    """
+    Reconstruct the canonical public URL that Twilio signed against.
+
+    Twilio signs the exact URL it called (e.g. https://my-app.replit.app/api/sms/webhook).
+    We must reconstruct that same URL — NOT the internal server URL
+    (http://0.0.0.0:3001/...) that FastAPI sees — or the signature check always fails.
+
+    Priority:
+      1. PUBLIC_BASE_URL env var (production custom domain or Replit dev URL)
+      2. X-Forwarded-Host / Host headers as fallback
+    """
+    from botelier.config.domain import get_public_base_url
+    fallback_host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host", "")
+    base = get_public_base_url(fallback_host=fallback_host)
+    return f"{base}/api/sms/webhook"
+
+
+def _validate_twilio_signature(request: Request, form_data: dict, auth_token: str) -> tuple[bool, str]:
     """
     Validate Twilio's X-Twilio-Signature header.
 
-    Returns True if valid, False if invalid.
-    Skip validation when no auth_token is available (dev environments).
+    Returns (is_valid, url_used) — the URL is included so callers can log it on failure.
+    Skips validation (returns True) when no auth_token is available.
     """
+    url = _build_webhook_url(request)
+
     if not auth_token:
-        return True
+        logger.debug(f"Twilio signature validation skipped — no auth token configured")
+        return True, url
 
     try:
         from twilio.request_validator import RequestValidator
         validator = RequestValidator(auth_token)
 
         signature = request.headers.get("X-Twilio-Signature", "")
-        url = str(request.url)
-        return validator.validate(url, dict(form_data), signature)
+        logger.debug(f"Validating Twilio signature against: {url}")
+        is_valid = validator.validate(url, dict(form_data), signature)
+        return is_valid, url
     except Exception as e:
         logger.warning(f"Twilio signature validation error: {e}")
-        return False
+        return False, url
 
 
 async def _get_auth_token_for_number(to_number: str, db: Session) -> str:
@@ -91,11 +113,13 @@ async def sms_webhook(
         body        = form_data.get("Body", "")
         message_sid = form_data.get("MessageSid", "")
 
-        # --- Signature validation (T001) ---
+        # --- Signature validation ---
         auth_token = await _get_auth_token_for_number(to_number, db)
-        if not _validate_twilio_signature(request, dict(form_data), auth_token):
+        is_valid, validated_url = _validate_twilio_signature(request, dict(form_data), auth_token)
+        if not is_valid:
             logger.warning(
-                f"Invalid Twilio signature for webhook from {from_number} to {to_number}"
+                f"Invalid Twilio signature for webhook from {from_number} to {to_number} "
+                f"(validated against: {validated_url})"
             )
             from fastapi.responses import Response
             return Response(status_code=403, content="Forbidden")

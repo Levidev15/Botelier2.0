@@ -47,15 +47,22 @@ def get_public_base_url(fallback_host: Optional[str] = None) -> str:
             public_url = f"https://{public_url}"
         return public_url.rstrip("/")
     
-    # Priority 2: Replit development domain
-    # In dev, we need to include the port from the Host header if available
+    # Priority 2: Replit domain — covers both development (REPLIT_DEV_DOMAIN) and
+    # production (REPLIT_DOMAINS, a comma-separated list; first entry is canonical).
+    # In dev, we may need to append the port from the Host header.
     replit_domain = os.environ.get("REPLIT_DEV_DOMAIN")
+    if not replit_domain:
+        # Production: REPLIT_DOMAINS = "my-app.username.repl.co,my-app.replit.app"
+        replit_domains_str = os.environ.get("REPLIT_DOMAINS", "")
+        if replit_domains_str:
+            replit_domain = replit_domains_str.split(",")[0].strip()
     if replit_domain:
-        # Check if fallback_host includes a port and use it
+        # In dev environments, include the port from the Host header if non-standard
         if fallback_host and ":" in fallback_host:
-            # Extract port from Host header (e.g., "abc123.repl.dev:5000" -> ":5000")
             port = fallback_host.split(":", 1)[1]
-            return f"https://{replit_domain}:{port}"
+            # Only append port if it's not 443 (standard HTTPS)
+            if port and port != "443":
+                return f"https://{replit_domain}:{port}"
         return f"https://{replit_domain}"
     
     # Priority 3: Fallback host from request (preserve port for non-standard ports)
@@ -112,8 +119,15 @@ def get_websocket_url(
             backend_ws_url = f"wss://{backend_ws_url}"
         ws_url = backend_ws_url.rstrip("/")
     else:
-        # Priority 2: Replit development domain with port 3001
+        # Priority 2: Replit domain — dev (REPLIT_DEV_DOMAIN) or production (REPLIT_DOMAINS)
+        # In dev, the backend runs on port 3001 (no reverse proxy), so we include :3001.
+        # In production (vm deployment), the backend also runs on 3001 internally,
+        # but Replit exposes it via the same domain through port mapping.
         replit_domain = os.environ.get("REPLIT_DEV_DOMAIN")
+        if not replit_domain:
+            replit_domains_str = os.environ.get("REPLIT_DOMAINS", "")
+            if replit_domains_str:
+                replit_domain = replit_domains_str.split(",")[0].strip()
         if replit_domain:
             ws_url = f"wss://{replit_domain}:3001"
         else:
