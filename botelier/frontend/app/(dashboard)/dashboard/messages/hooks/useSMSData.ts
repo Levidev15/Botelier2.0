@@ -354,7 +354,14 @@ export function useSMSData() {
         };
 
         setConversations(prev => {
-          const exists = prev.some(c => c.id === data.conversation_id);
+          const existing = prev.find(c => c.id === data.conversation_id);
+          if (!existing) {
+            fetchConversationsRef.current?.();
+            return prev;
+          }
+
+          const wasClosed = existing.status === "closed";
+
           const updated = prev.map(c =>
             c.id === data.conversation_id
               ? {
@@ -362,13 +369,19 @@ export function useSMSData() {
                   has_unread: selectedConvIdRef.current !== data.conversation_id,
                   last_message_preview: data.preview,
                   last_message_at: new Date().toISOString(),
+                  // Optimistically reopen if closed — the backend always reopens
+                  // a closed conversation when a new inbound message arrives.
+                  // A follow-up fetch will sync the correct handler_mode from the server.
+                  ...(wasClosed ? { status: "active", handler_mode: "ai", needs_attention: false } : {}),
                 }
               : c
           );
-          if (!exists) {
+
+          if (wasClosed) {
+            // Fetch to pick up the authoritative handler_mode/needs_attention from server
             fetchConversationsRef.current?.();
-            return prev;
           }
+
           return [...updated].sort(
             (a, b) =>
               new Date(b.last_message_at ?? 0).getTime() -
