@@ -185,6 +185,7 @@ export function useSMSData() {
   const fileInputRef          = useRef<HTMLInputElement>(null);
   const eventSourceRef        = useRef<EventSource | null>(null);
   const selectedConvIdRef     = useRef<string | null>(null);
+  const conversationsRef      = useRef<Conversation[]>([]);
 
   // Refs for SSE callbacks — avoids tearing down the SSE connection on filter changes
   const notifSettingsRef      = useRef(notifSettings);
@@ -195,6 +196,12 @@ export function useSMSData() {
   useEffect(() => {
     selectedConvIdRef.current = selectedConv?.id ?? null;
   }, [selectedConv?.id]);
+
+  // Keep conversationsRef in sync so SSE handlers can read current list
+  // without being listed as deps (which would restart the SSE connection).
+  useEffect(() => {
+    conversationsRef.current = conversations;
+  }, [conversations]);
 
   // Keep notifSettingsRef in sync (no SSE restart)
   useEffect(() => {
@@ -353,14 +360,15 @@ export function useSMSData() {
           hotel_id: string;
         };
 
-        setConversations(prev => {
-          const existing = prev.find(c => c.id === data.conversation_id);
-          if (!existing) {
-            fetchConversationsRef.current?.();
-            return prev;
-          }
+        // Snapshot current list synchronously so we can decide on side-effects
+        // *outside* the state updater (updaters must be pure — no side-effects).
+        const currentConversations = conversationsRef.current ?? [];
+        const existing = currentConversations.find(c => c.id === data.conversation_id);
+        const isNew    = !existing;
+        const wasClosed = existing?.status === "closed";
 
-          const wasClosed = existing.status === "closed";
+        setConversations(prev => {
+          if (isNew) return prev;
 
           const updated = prev.map(c =>
             c.id === data.conversation_id
@@ -372,15 +380,10 @@ export function useSMSData() {
                   // Optimistically reopen if closed — the backend always reopens
                   // a closed conversation when a new inbound message arrives.
                   // A follow-up fetch will sync the correct handler_mode from the server.
-                  ...(wasClosed ? { status: "active", handler_mode: "ai", needs_attention: false } : {}),
+                  ...(wasClosed ? { status: "active", handler_mode: "ai" as const, needs_attention: false } : {}),
                 }
               : c
           );
-
-          if (wasClosed) {
-            // Fetch to pick up the authoritative handler_mode/needs_attention from server
-            fetchConversationsRef.current?.();
-          }
 
           return [...updated].sort(
             (a, b) =>
@@ -388,6 +391,11 @@ export function useSMSData() {
               new Date(a.last_message_at ?? 0).getTime()
           );
         });
+
+        // Side-effects run outside the updater so React doesn't suppress them.
+        if (isNew || wasClosed) {
+          fetchConversationsRef.current?.();
+        }
 
         if (selectedConvIdRef.current === data.conversation_id) {
           fetchConversationRef.current?.(data.conversation_id);
