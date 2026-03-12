@@ -639,6 +639,14 @@ export default function CallLogsPage() {
             setShowTranscript(false);
             setSelectedLog(null);
           }}
+          onLogUpdated={(updates) => {
+            setSelectedLog((prev) => prev ? { ...prev, ...updates } : prev);
+            setCallLogs((prev) =>
+              prev.map((l) =>
+                l.id === selectedLog.id ? { ...l, ...updates } : l
+              )
+            );
+          }}
         />
       )}
     </div>
@@ -754,7 +762,7 @@ function CallLogRow({
           )}
         </td>
         <td className="px-4 py-3">
-          {log.acw_quality_score !== null && log.acw_quality_score !== undefined ? (
+          {log.acw_quality_score != null ? (
             <span
               className={`px-2 py-0.5 text-xs rounded-full border font-medium ${
                 log.acw_quality_score >= 80
@@ -767,7 +775,7 @@ function CallLogRow({
               {log.acw_quality_score}
             </span>
           ) : (
-            <span className="text-sm text-gray-500">-</span>
+            <span className="px-2 py-0.5 text-xs rounded-full border bg-gray-500/10 border-gray-500/30 text-gray-500">—</span>
           )}
         </td>
         <td className="px-4 py-3">
