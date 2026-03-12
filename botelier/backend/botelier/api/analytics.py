@@ -10,7 +10,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
-from sqlalchemy import desc, func, case, cast, Integer
+from sqlalchemy import desc, func, case
 from sqlalchemy.orm import Session
 
 from botelier.database import get_db
