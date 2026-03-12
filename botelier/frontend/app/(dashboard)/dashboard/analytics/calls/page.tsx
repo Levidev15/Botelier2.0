@@ -79,12 +79,24 @@ interface AnalyticsData {
   };
 }
 
-const CustomTooltipContent = ({ active, payload, label }: any) => {
+interface TooltipPayloadEntry {
+  name?: string;
+  value?: string | number;
+  color?: string;
+}
+
+interface CustomTooltipProps {
+  active?: boolean;
+  payload?: TooltipPayloadEntry[];
+  label?: string | number;
+}
+
+const CustomTooltipContent = ({ active, payload, label }: CustomTooltipProps) => {
   if (!active || !payload?.length) return null;
   return (
     <div className="bg-[#252525] border border-gray-700 rounded-lg px-3 py-2 text-sm shadow-lg">
-      <p className="text-gray-400 mb-1">{label}</p>
-      {payload.map((p: any, i: number) => (
+      <p className="text-gray-400 mb-1">{String(label)}</p>
+      {payload.map((p, i) => (
         <p key={i} style={{ color: p.color }} className="font-medium">
           {p.name}: {p.value}
         </p>
@@ -96,6 +108,7 @@ const CustomTooltipContent = ({ active, payload, label }: any) => {
 export default function CallAnalyticsPage() {
   const { accountId } = useAccountContext();
   const [days, setDays] = useState(7);
+  const [retryKey, setRetryKey] = useState(0);
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -117,7 +130,7 @@ export default function CallAnalyticsPage() {
         setError(err.message || "Failed to load analytics");
       })
       .finally(() => setLoading(false));
-  }, [accountId, days]);
+  }, [accountId, days, retryKey]);
 
   const volumeData = useMemo(() => {
     if (!data) return [];
@@ -149,7 +162,7 @@ export default function CallAnalyticsPage() {
       <div className="flex flex-col items-center justify-center h-full gap-4">
         <p className="text-red-400">{error}</p>
         <button
-          onClick={() => setDays(days)}
+          onClick={() => setRetryKey((k) => k + 1)}
           className="px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 rounded-lg text-white transition-colors"
         >
           Retry
