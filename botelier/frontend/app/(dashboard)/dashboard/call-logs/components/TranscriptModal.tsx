@@ -1,6 +1,9 @@
 "use client";
 
-import { X, Bot, User, Clock, Phone, PhoneForwarded, Sparkles, Tag, Wrench, BarChart3, ClipboardCheck } from "lucide-react";
+import { useState } from "react";
+import { X, Bot, User, Clock, Phone, PhoneForwarded, Sparkles, Tag, Wrench, BarChart3, ClipboardCheck, Loader2 } from "lucide-react";
+import { notify } from "@/lib/notifications";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface TranscriptEntry {
   role: string;
@@ -22,6 +25,7 @@ interface CallLeg {
 
 interface CallLog {
   id: string;
+  hotel_id?: string;
   caller_number: string | null;
   to_number: string | null;
   status: string;
@@ -44,6 +48,7 @@ interface CallLog {
 interface TranscriptModalProps {
   log: CallLog;
   onClose: () => void;
+  onLogUpdated?: (updatedFields: Partial<CallLog>) => void;
 }
 
 function formatDuration(seconds: number): string {
@@ -66,8 +71,41 @@ function formatDateTime(dateStr: string | null): string {
   });
 }
 
-export default function TranscriptModal({ log, onClose }: TranscriptModalProps) {
+export default function TranscriptModal({ log, onClose, onLogUpdated }: TranscriptModalProps) {
   const transcript = log.transcript || [];
+  const [running, setRunning] = useState(false);
+  const { authHeaders } = useAuthToken();
+  const hasTranscript = transcript.length > 0;
+
+  const runPostCallQA = async () => {
+    setRunning(true);
+    try {
+      const response = await fetch(`/api/call-logs/${log.id}/generate-summary`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({ hotel_id: log.hotel_id }),
+      });
+      if (response.ok) {
+        const result = await response.json();
+        const updates: Partial<CallLog> = {
+          ai_summary: result.summary,
+          disposition_name: result.disposition?.name || null,
+          disposition_color: result.disposition?.color || null,
+          acw_resolution: result.acw_resolution || null,
+          acw_quality_score: result.acw_quality_score ?? null,
+        };
+        if (onLogUpdated) onLogUpdated(updates);
+        notify.success("Post Call QA complete");
+      } else {
+        const error = await response.json();
+        notify.error(error.detail || "Failed to run Post Call QA");
+      }
+    } catch (error) {
+      notify.error("Error running Post Call QA");
+    } finally {
+      setRunning(false);
+    }
+  };
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center">
@@ -231,7 +269,23 @@ export default function TranscriptModal({ log, onClose }: TranscriptModalProps) 
           )}
         </div>
 
-        <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-gray-700 bg-[#141414]">
+        <div className="flex items-center justify-between px-5 py-4 border-t border-gray-700 bg-[#141414]">
+          <div>
+            {hasTranscript && (
+              <button
+                onClick={runPostCallQA}
+                disabled={running}
+                className="flex items-center gap-2 px-4 py-2 text-sm bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition disabled:opacity-50"
+              >
+                {running ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Sparkles className="h-4 w-4" />
+                )}
+                Run Post Call QA
+              </button>
+            )}
+          </div>
           <button
             onClick={onClose}
             className="px-4 py-2 text-sm text-gray-300 hover:text-white hover:bg-gray-700 rounded-lg transition"
