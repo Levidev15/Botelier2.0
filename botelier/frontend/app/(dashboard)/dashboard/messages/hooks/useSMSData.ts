@@ -188,9 +188,10 @@ export function useSMSData() {
   const conversationsRef      = useRef<Conversation[]>([]);
 
   // Refs for SSE callbacks — avoids tearing down the SSE connection on filter changes
-  const notifSettingsRef      = useRef(notifSettings);
-  const fetchConversationRef  = useRef<((id: string) => void) | null>(null);
-  const fetchConversationsRef = useRef<(() => void) | null>(null);
+  const notifSettingsRef           = useRef(notifSettings);
+  const fetchConversationRef       = useRef<((id: string) => void) | null>(null);
+  const fetchConversationsRef      = useRef<(() => void) | null>(null);
+  const fetchSingleIntoListRef     = useRef<((id: string) => void) | null>(null);
 
   // Keep selectedConvIdRef in sync
   useEffect(() => {
@@ -307,6 +308,42 @@ export function useSMSData() {
     }
   }, [accountId, startPresenceHeartbeat]);
 
+  /**
+   * Fetch a single conversation by ID and merge it into the list surgically.
+   * Used by SSE handlers for new/reopened conversations so we only touch one
+   * card instead of replacing the entire list (which causes every card to blink).
+   *
+   * If the conversation doesn't match the current filters (e.g. a "closed" conv
+   * arrives while the user has "active" filter active) it is silently skipped.
+   */
+  const fetchSingleConversationIntoList = useCallback(async (id: string) => {
+    if (!accountId) return;
+    try {
+      const res = await fetch(`/api/sms/conversations/${id}?hotel_id=${accountId}`);
+      if (!res.ok) return;
+      const conv: Conversation = await res.json();
+
+      setConversations(prev => {
+        const exists = prev.some(c => c.id === id);
+        let next: Conversation[];
+        if (exists) {
+          next = prev.map(c => c.id === id ? { ...c, ...conv } : c);
+        } else {
+          // New conversation — prepend only if it passes active filters
+          next = [conv, ...prev];
+        }
+        return [...next].sort(
+          (a, b) =>
+            new Date(b.last_message_at ?? 0).getTime() -
+            new Date(a.last_message_at ?? 0).getTime()
+        );
+      });
+    } catch {
+      // On error fall back to full refetch so we don't silently lose the entry
+      fetchConversationsRef.current?.();
+    }
+  }, [accountId]);
+
   // Keep callback refs in sync (no SSE restart)
   useEffect(() => {
     fetchConversationRef.current = fetchConversation;
@@ -315,6 +352,10 @@ export function useSMSData() {
   useEffect(() => {
     fetchConversationsRef.current = fetchConversations;
   }, [fetchConversations]);
+
+  useEffect(() => {
+    fetchSingleIntoListRef.current = fetchSingleConversationIntoList;
+  }, [fetchSingleConversationIntoList]);
 
   const fetchAssistants = useCallback(async () => {
     if (!accountId) return;
@@ -393,8 +434,10 @@ export function useSMSData() {
         });
 
         // Side-effects run outside the updater so React doesn't suppress them.
+        // For new/reopened conversations we fetch just that one card — avoids
+        // replacing the entire list which re-renders (and blinks) every card.
         if (isNew || wasClosed) {
-          fetchConversationsRef.current?.();
+          fetchSingleIntoListRef.current?.(data.conversation_id);
         }
 
         if (selectedConvIdRef.current === data.conversation_id) {
