@@ -27,6 +27,7 @@ from botelier.api.admin import router as admin_router
 from botelier.api.invitations import router as invitations_router
 from botelier.api.auth import router as auth_router
 from botelier.api.dispositions import router as dispositions_router
+from botelier.api.resolution_options import router as resolution_options_router
 from botelier.api.integrations import router as integrations_router
 from botelier.api.tool_sets import router as tool_sets_router
 from botelier.api.mcp_connections import router as mcp_connections_router
@@ -69,6 +70,7 @@ app.include_router(simulation_router)
 app.include_router(invitations_router)  # Public invitation endpoints
 app.include_router(auth_router)  # Email/password auth endpoints
 app.include_router(dispositions_router)  # Assistant dispositions
+app.include_router(resolution_options_router)  # Resolution status options
 app.include_router(integrations_router)  # Third-party integrations (Opera Cloud, etc.)
 app.include_router(tool_sets_router)  # Tool collection management
 app.include_router(mcp_connections_router)  # MCP server connections for dynamic tools

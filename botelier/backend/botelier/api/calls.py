@@ -8,7 +8,7 @@ Also handles call status updates and creates call log records for analytics.
 """
 
 from datetime import datetime
-from fastapi import APIRouter, Request, Response, Depends
+from fastapi import APIRouter, Request, Response, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
 from loguru import logger
 
@@ -16,6 +16,7 @@ from ..config.domain import get_websocket_url, get_public_base_url
 from ..database import get_db
 from ..models import CallLog, CallLeg, PhoneNumber, CallStatus, LegType
 from ..services.call_logger import CallLogger
+from ..services.acw_service import run_acw_background
 
 
 router = APIRouter(prefix="/api/calls", tags=["Calls"])
@@ -176,9 +177,23 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
         return {"status": "error", "message": str(e)}
 
 
+def _maybe_enqueue_acw(call_sid: str, db: Session, background_tasks: BackgroundTasks):
+    call_log = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
+    if not call_log or not call_log.assistant_id or not call_log.transcript:
+        return
+    from ..models import Assistant
+    assistant = db.query(Assistant).filter(Assistant.id == call_log.assistant_id).first()
+    if not assistant:
+        return
+    acw_config = assistant.acw_config or {}
+    if acw_config.get("auto_run"):
+        logger.info(f"Enqueueing ACW background task for call {call_sid}")
+        background_tasks.add_task(run_acw_background, call_log.id)
+
+
 @router.post("/connect-complete")
 @router.get("/connect-complete")
-async def connect_complete(request: Request, db: Session = Depends(get_db)):
+async def connect_complete(request: Request, db: Session = Depends(get_db), background_tasks: BackgroundTasks = BackgroundTasks()):
     """
     Called when <Connect> completes (Stream ends).
     
@@ -207,6 +222,7 @@ async def connect_complete(request: Request, db: Session = Depends(get_db)):
                 # No /transfer-status callbacks will arrive — finalize the record now.
                 call_logger.complete_cold_transfer(call_sid)
                 logger.info(f"Cold transfer call {call_sid} finalized at connect-complete")
+                _maybe_enqueue_acw(call_sid, db, background_tasks)
             else:
                 # Warm transfer: Twilio is still bridging. Keep call alive and wait
                 # for /transfer-status callbacks to arrive with the final duration.
@@ -216,6 +232,8 @@ async def connect_complete(request: Request, db: Session = Depends(get_db)):
         
         call_logger.complete_call(call_sid)
         logger.info(f"Marked call {call_sid} as completed via connect-complete")
+        
+        _maybe_enqueue_acw(call_sid, db, background_tasks)
         
         hangup_twiml = """<?xml version="1.0" encoding="UTF-8"?>
 <Response>

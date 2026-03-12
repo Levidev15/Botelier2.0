@@ -17,7 +17,6 @@ from pydantic import BaseModel
 from sqlalchemy import desc, or_, func
 from sqlalchemy.orm import Session, joinedload
 from loguru import logger
-from openai import OpenAI
 
 from botelier.database import get_db
 from botelier.models import CallLog, CallLeg, CallStatus, Assistant, PhoneNumber, AssistantDisposition
@@ -340,6 +339,8 @@ class GenerateSummaryRequest(BaseModel):
 class UpdateCallLogRequest(BaseModel):
     disposition_id: Optional[str] = None
     ai_summary: Optional[str] = None
+    acw_resolution: Optional[str] = None
+    acw_quality_score: Optional[int] = None
 
 
 @router.post("/{call_log_id}/generate-summary")
@@ -349,115 +350,53 @@ async def generate_summary(
     db: Session = Depends(get_db),
 ):
     """
-    Generate an AI summary of the call transcript.
-    
-    Uses OpenAI to analyze the transcript and produce a concise summary.
-    Also auto-selects a disposition based on the conversation if dispositions are configured.
+    Run Post Call QA on a call transcript.
+
+    Delegates to AcwService which analyses the transcript based on
+    the assistant's acw_config: dispositions, resolution status,
+    quality score, and summary (if enabled).
     """
     try:
         hotel_id = UUID(request.hotel_id)
-        
+
         call_log = db.query(CallLog).filter(
             CallLog.id == call_log_id,
             CallLog.hotel_id == hotel_id
         ).first()
-        
+
         if not call_log:
             raise HTTPException(status_code=404, detail="Call log not found")
-        
+
         if not call_log.transcript:
             raise HTTPException(status_code=400, detail="No transcript available for this call")
-        
-        transcript_text = ""
-        for msg in call_log.transcript:
-            role = msg.get("role", "unknown").capitalize()
-            content = msg.get("content", "")
-            transcript_text += f"{role}: {content}\n"
-        
-        dispositions = []
-        if call_log.assistant_id:
-            disposition_records = db.query(AssistantDisposition).filter(
-                AssistantDisposition.assistant_id == call_log.assistant_id,
-                AssistantDisposition.is_active == True
-            ).order_by(AssistantDisposition.display_order).all()
-            dispositions = [d.to_dict() for d in disposition_records]
-        
-        disposition_prompt = ""
-        if dispositions:
-            disposition_list = "\n".join([
-                f"- {d['name']}: {d['description'] or 'No description'}"
-                for d in dispositions
-            ])
-            disposition_prompt = f"""
 
-Also select the most appropriate disposition from this list based on the conversation outcome:
-{disposition_list}
+        from ..services.acw_service import run_acw
+        result = run_acw(call_log, db)
 
-Return the disposition name exactly as written above."""
-        
-        prompt = f"""Analyze this phone call transcript and provide:
-1. A concise 2-3 sentence summary of what happened during the call
-2. Key points: caller intent, actions taken, and outcome{disposition_prompt}
+        if result.get("error"):
+            raise HTTPException(status_code=500, detail=result["error"])
 
-Transcript:
-{transcript_text}
+        if result.get("skipped"):
+            return {
+                "success": False,
+                "skipped": True,
+                "reason": result.get("reason"),
+            }
 
-Respond in JSON format:
-{{
-    "summary": "...",
-    "key_points": ["...", "..."],
-    "disposition": "..." or null if no dispositions provided
-}}"""
-        
-        import os
-        client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-        
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": "You are a call center analyst. Provide clear, professional summaries."},
-                {"role": "user", "content": prompt}
-            ],
-            response_format={"type": "json_object"},
-            temperature=0.3,
-        )
-        
-        import json
-        result = json.loads(response.choices[0].message.content)
-        
-        summary = result.get("summary", "")
-        key_points = result.get("key_points", [])
-        disposition_name = result.get("disposition")
-        
-        full_summary = summary
-        if key_points:
-            full_summary += "\n\nKey Points:\n" + "\n".join([f"- {p}" for p in key_points])
-        
-        call_log.ai_summary = full_summary
-        
-        selected_disposition = None
-        if disposition_name and dispositions:
-            for d in dispositions:
-                if d["name"].lower() == disposition_name.lower():
-                    call_log.disposition_id = UUID(d["id"])
-                    selected_disposition = d
-                    break
-        
-        db.commit()
-        
-        logger.info(f"Generated summary for call {call_log_id}")
-        
         return {
             "success": True,
-            "summary": full_summary,
-            "disposition": selected_disposition,
+            "summary": result.get("summary"),
+            "disposition": result.get("disposition"),
+            "acw_resolution": result.get("acw_resolution"),
+            "acw_quality_score": result.get("acw_quality_score"),
+            "acw_completed_at": result.get("acw_completed_at"),
         }
-        
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.exception(f"Error generating summary: {e}")
-        raise HTTPException(status_code=500, detail="Failed to generate summary")
+        logger.exception(f"Error running post-call QA: {e}")
+        raise HTTPException(status_code=500, detail="Failed to run post-call QA")
 
 
 @router.patch("/{call_log_id}")
@@ -494,7 +433,13 @@ async def update_call_log(
         
         if request.ai_summary is not None:
             call_log.ai_summary = request.ai_summary
-        
+
+        if request.acw_resolution is not None:
+            call_log.acw_resolution = request.acw_resolution if request.acw_resolution else None
+
+        if request.acw_quality_score is not None:
+            call_log.acw_quality_score = request.acw_quality_score
+
         db.commit()
         db.refresh(call_log)
         
