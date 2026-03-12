@@ -96,7 +96,7 @@ class CallLog(Base):
     flow_id = Column(UUID(as_uuid=True), nullable=True)
     flow_name = Column(String, nullable=True)
     
-    disposition_id = Column(UUID(as_uuid=True), ForeignKey("assistant_dispositions.id"), nullable=True)
+    disposition_id = Column(UUID(as_uuid=True), ForeignKey("assistant_dispositions.id", ondelete="SET NULL"), nullable=True)
     ai_summary = Column(Text, nullable=True)
     
     acw_resolution = Column(String, nullable=True)

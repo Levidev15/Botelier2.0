@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Plus, Edit2, Trash2, GripVertical, Check, X } from "lucide-react";
-import { notify } from "@/lib/notifications";
+import { notify, confirmAction } from "@/lib/notifications";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface Disposition {
@@ -97,7 +97,10 @@ export default function DispositionsTab({ assistantId, accountId }: Dispositions
   };
 
   const handleDelete = async (id: string) => {
-    if (!confirm("Are you sure you want to delete this disposition?")) return;
+    const confirmed = await confirmAction("Are you sure you want to delete this disposition?", {
+      confirmText: "Delete",
+    });
+    if (!confirmed) return;
     
     try {
       const response = await fetch(
