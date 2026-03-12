@@ -1,6 +1,6 @@
 "use client";
 
-import { X, Bot, User, Clock, Phone, PhoneForwarded, Sparkles, Tag, Wrench } from "lucide-react";
+import { X, Bot, User, Clock, Phone, PhoneForwarded, Sparkles, Tag, Wrench, BarChart3, ClipboardCheck } from "lucide-react";
 
 interface TranscriptEntry {
   role: string;
@@ -37,6 +37,8 @@ interface CallLog {
   disposition_color: string | null;
   tool_name: string | null;
   flow_name: string | null;
+  acw_resolution: string | null;
+  acw_quality_score: number | null;
 }
 
 interface TranscriptModalProps {
@@ -122,25 +124,53 @@ export default function TranscriptModal({ log, onClose }: TranscriptModalProps) 
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4">
-          {log.ai_summary && (
+          {(log.ai_summary || log.disposition_name || log.acw_resolution || (log.acw_quality_score != null)) && (
             <div className="mb-6 p-4 bg-gradient-to-r from-purple-900/20 to-blue-900/20 border border-purple-800/30 rounded-lg">
-              <div className="flex items-center gap-2 mb-2">
+              <div className="flex items-center gap-2 mb-3">
                 <Sparkles className="h-4 w-4 text-purple-400" />
-                <span className="text-sm font-medium text-purple-300">AI Summary</span>
-                {log.disposition_name && (
-                  <span
-                    className="ml-auto px-2 py-0.5 text-xs rounded-full border"
-                    style={{
-                      backgroundColor: `${log.disposition_color || '#6366f1'}15`,
-                      borderColor: `${log.disposition_color || '#6366f1'}40`,
-                      color: log.disposition_color || '#6366f1',
-                    }}
-                  >
-                    {log.disposition_name}
-                  </span>
-                )}
+                <span className="text-sm font-medium text-purple-300">Post Call QA</span>
               </div>
-              <p className="text-sm text-gray-300 whitespace-pre-wrap">{log.ai_summary}</p>
+
+              {(log.disposition_name || log.acw_resolution || (log.acw_quality_score != null)) && (
+                <div className="flex flex-wrap gap-2 mb-3">
+                  {log.disposition_name && (
+                    <span
+                      className="px-2 py-0.5 text-xs rounded-full border"
+                      style={{
+                        backgroundColor: `${log.disposition_color || '#6366f1'}15`,
+                        borderColor: `${log.disposition_color || '#6366f1'}40`,
+                        color: log.disposition_color || '#6366f1',
+                      }}
+                    >
+                      {log.disposition_name}
+                    </span>
+                  )}
+                  {log.acw_resolution && (
+                    <span className="flex items-center gap-1 px-2 py-0.5 text-xs rounded-full border bg-blue-500/10 border-blue-500/30 text-blue-400">
+                      <ClipboardCheck className="h-3 w-3" />
+                      {log.acw_resolution}
+                    </span>
+                  )}
+                  {log.acw_quality_score != null && (
+                    <span
+                      className={`flex items-center gap-1 px-2 py-0.5 text-xs rounded-full border font-medium ${
+                        log.acw_quality_score >= 80
+                          ? "bg-green-500/10 border-green-500/30 text-green-400"
+                          : log.acw_quality_score >= 50
+                          ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-400"
+                          : "bg-red-500/10 border-red-500/30 text-red-400"
+                      }`}
+                    >
+                      <BarChart3 className="h-3 w-3" />
+                      Score: {log.acw_quality_score}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {log.ai_summary && (
+                <p className="text-sm text-gray-300 whitespace-pre-wrap">{log.ai_summary}</p>
+              )}
               {(log.tool_name || log.flow_name) && (
                 <div className="mt-2 flex items-center gap-2 text-xs text-gray-500">
                   <Wrench className="h-3 w-3" />
