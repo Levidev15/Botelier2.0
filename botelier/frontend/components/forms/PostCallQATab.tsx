@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
-import { Plus, Edit2, Trash2, GripVertical, Settings, Sparkles, ClipboardCheck, BarChart3, FileText } from "lucide-react";
+import { useState, useEffect } from "react";
+import { Plus, Edit2, Trash2, GripVertical, Settings, ClipboardCheck, BarChart3, FileText } from "lucide-react";
 import { notify } from "@/lib/notifications";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import DispositionsTab from "@/components/forms/DispositionsTab";
