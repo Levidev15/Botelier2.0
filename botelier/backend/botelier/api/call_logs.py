@@ -383,10 +383,12 @@ async def generate_summary(
                 "reason": result.get("reason"),
             }
 
+        disposition = result.get("disposition")
         return {
             "success": True,
             "summary": result.get("summary"),
-            "disposition": result.get("disposition"),
+            "disposition": disposition,
+            "disposition_name": disposition.get("name") if disposition else None,
             "acw_resolution": result.get("acw_resolution"),
             "acw_quality_score": result.get("acw_quality_score"),
             "acw_completed_at": result.get("acw_completed_at"),
@@ -438,6 +440,8 @@ async def update_call_log(
             call_log.acw_resolution = request.acw_resolution if request.acw_resolution else None
 
         if request.acw_quality_score is not None:
+            if not (0 <= request.acw_quality_score <= 100):
+                raise HTTPException(status_code=400, detail="Quality score must be between 0 and 100")
             call_log.acw_quality_score = request.acw_quality_score
 
         db.commit()
