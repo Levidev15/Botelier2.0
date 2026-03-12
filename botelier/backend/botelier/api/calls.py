@@ -179,7 +179,7 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
 
 def _maybe_enqueue_acw(call_sid: str, db: Session, background_tasks: BackgroundTasks):
     call_log = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
-    if not call_log or not call_log.assistant_id or not call_log.transcript:
+    if not call_log or not call_log.assistant_id:
         return
     from ..models import Assistant
     assistant = db.query(Assistant).filter(Assistant.id == call_log.assistant_id).first()
