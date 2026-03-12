@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Info, Mic, MessageSquare, Volume2, Activity, Tags, Smartphone } from "lucide-react";
+import { ArrowLeft, Info, Mic, MessageSquare, Volume2, Activity, ClipboardCheck, Smartphone } from "lucide-react";
 import Link from "next/link";
 import TabNavigation, { Tab } from "@/components/tabs/TabNavigation";
 import FormSection from "@/components/forms/FormSection";
@@ -84,7 +84,7 @@ const TABS: Tab[] = [
   { id: "voice", label: "Voice", icon: <Volume2 className="h-4 w-4" /> },
   { id: "transcriber", label: "Transcriber", icon: <Mic className="h-4 w-4" /> },
   { id: "vad", label: "Voice Activity Detection", icon: <Activity className="h-4 w-4" /> },
-  { id: "post-call-qa", label: "Post Call QA", icon: <Tags className="h-4 w-4" /> },
+  { id: "post-call-qa", label: "Post Call QA", icon: <ClipboardCheck className="h-4 w-4" /> },
   { id: "sms", label: "SMS", icon: <Smartphone className="h-4 w-4" /> },
 ];
 
