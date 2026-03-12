@@ -44,7 +44,10 @@ export function useWidgetLayout(pageKey: string, widgets: WidgetDef[]) {
     setVisibility(defaults);
   }, [storageKey, widgets]);
 
-  const isVisible = (id: string) => visibility[id] ?? true;
+  const isVisible = (id: string) => {
+    if (id in visibility) return visibility[id];
+    return widgets.find((w) => w.id === id)?.defaultVisible ?? true;
+  };
 
   return { visibility, toggle, resetDefaults, isVisible };
 }
