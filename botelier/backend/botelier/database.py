@@ -84,6 +84,12 @@ _ADDITIVE_MIGRATIONS = [
     # --- Pricing columns (deferred — uncomment when ready to capture Twilio costs) ---
     # "ALTER TABLE sms_messages ADD COLUMN IF NOT EXISTS price NUMERIC(10,4)",
     # "ALTER TABLE sms_messages ADD COLUMN IF NOT EXISTS price_unit VARCHAR(3)",
+
+    # Post Call QA / After-Call Work columns
+    "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS acw_config JSONB DEFAULT '{}'",
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS acw_resolution VARCHAR",
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS acw_quality_score INTEGER",
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS acw_completed_at TIMESTAMP",
 ]
 
 
@@ -115,6 +121,7 @@ def init_db():
     from botelier.models import knowledge_entry  # noqa: F401
     from botelier.models import flow_version  # noqa: F401
     from botelier.models import call_log  # noqa: F401
+    from botelier.models import resolution_option  # noqa: F401
     from botelier.models import integration  # noqa: F401
     from botelier.models import mcp_connection  # noqa: F401
 

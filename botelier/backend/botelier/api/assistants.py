@@ -383,3 +383,56 @@ async def delete_assistant_flow(
     db.commit()
     
     return None
+
+
+@router.get("/{assistant_id}/acw-config")
+async def get_acw_config(
+    assistant_id: str,
+    hotel_id: str = Query(..., description="Hotel ID for multi-tenant isolation"),
+    db: Session = Depends(get_db),
+):
+    assistant = db.query(Assistant).filter(
+        Assistant.id == assistant_id,
+        Assistant.hotel_id == hotel_id
+    ).first()
+    if not assistant:
+        raise HTTPException(status_code=404, detail="Assistant not found")
+
+    return assistant.acw_config or {}
+
+
+class AcwConfigUpdate(BaseModel):
+    auto_run: Optional[bool] = None
+    quality_rubric: Optional[str] = None
+    summary_enabled: Optional[bool] = None
+    summary_prompt: Optional[str] = None
+
+
+@router.patch("/{assistant_id}/acw-config")
+async def update_acw_config(
+    assistant_id: str,
+    updates: AcwConfigUpdate,
+    hotel_id: str = Query(..., description="Hotel ID for multi-tenant isolation"),
+    db: Session = Depends(get_db),
+):
+    assistant = db.query(Assistant).filter(
+        Assistant.id == assistant_id,
+        Assistant.hotel_id == hotel_id
+    ).first()
+    if not assistant:
+        raise HTTPException(status_code=404, detail="Assistant not found")
+
+    filtered = updates.model_dump(exclude_unset=True)
+
+    if not filtered:
+        raise HTTPException(status_code=400, detail="No valid fields provided")
+
+    current = dict(assistant.acw_config or {})
+    current.update(filtered)
+    assistant.acw_config = current
+    from sqlalchemy.orm.attributes import flag_modified
+    flag_modified(assistant, "acw_config")
+    db.commit()
+    db.refresh(assistant)
+
+    return assistant.acw_config

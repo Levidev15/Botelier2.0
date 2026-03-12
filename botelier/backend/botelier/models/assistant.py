@@ -88,6 +88,10 @@ class Assistant(Base):
     # Keys: enabled, llm_model, max_response_length, welcome_message,
     #        away_message, away_schedule, prompt_additions, auto_reply_delay
     sms_config = Column(JSONB, nullable=True, default=dict)
+
+    # After-Call Work / Post Call QA configuration (stored as JSONB)
+    # Keys: auto_run (bool), quality_rubric (str), summary_enabled (bool), summary_prompt (str)
+    acw_config = Column(JSONB, nullable=True, default=dict)
     
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -128,6 +132,7 @@ class Assistant(Base):
             "is_active": self.is_active,
             "flow_config": self.flow_config,
             "sms_config": self.sms_config or {},
+            "acw_config": self.acw_config or {},
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
             "updated_at": self.updated_at.isoformat() + "Z" if self.updated_at else None,
         }

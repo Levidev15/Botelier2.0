@@ -99,6 +99,10 @@ class CallLog(Base):
     disposition_id = Column(UUID(as_uuid=True), ForeignKey("assistant_dispositions.id"), nullable=True)
     ai_summary = Column(Text, nullable=True)
     
+    acw_resolution = Column(String, nullable=True)
+    acw_quality_score = Column(Integer, nullable=True)
+    acw_completed_at = Column(DateTime, nullable=True)
+    
     tool_name = Column(String, nullable=True)
     
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -139,6 +143,9 @@ class CallLog(Base):
             "disposition_name": self.disposition.name if self.disposition else None,
             "disposition_color": self.disposition.color if self.disposition else None,
             "ai_summary": self.ai_summary,
+            "acw_resolution": self.acw_resolution,
+            "acw_quality_score": self.acw_quality_score,
+            "acw_completed_at": self.acw_completed_at.isoformat() + "Z" if self.acw_completed_at else None,
             "tool_name": self.tool_name,
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
             "updated_at": self.updated_at.isoformat() + "Z" if self.updated_at else None,
