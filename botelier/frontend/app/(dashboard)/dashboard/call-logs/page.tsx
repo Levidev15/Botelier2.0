@@ -78,6 +78,8 @@ interface CallLog {
   disposition_color: string | null;
   ai_summary: string | null;
   tool_name: string | null;
+  acw_resolution: string | null;
+  acw_quality_score: number | null;
 }
 
 interface FilterOptions {
@@ -321,11 +323,19 @@ export default function CallLogsPage() {
         setCallLogs((prev) =>
           prev.map((l) =>
             l.id === log.id
-              ? { ...l, ai_summary: result.summary, disposition_id: result.disposition?.id || null }
+              ? {
+                  ...l,
+                  ai_summary: result.summary,
+                  disposition_id: result.disposition?.id || null,
+                  disposition_name: result.disposition?.name || null,
+                  disposition_color: result.disposition?.color || null,
+                  acw_resolution: result.acw_resolution || null,
+                  acw_quality_score: result.acw_quality_score ?? null,
+                }
               : l
           )
         );
-        notify.success("Summary generated");
+        notify.success("Post Call QA complete");
       } else {
         const error = await response.json();
         notify.error(error.detail || "Failed to generate summary");
@@ -567,6 +577,12 @@ export default function CallLogsPage() {
                       Disposition
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                      Resolution
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                      Score
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
                       Status
                     </th>
                     <th className="px-4 py-3 text-right text-xs font-medium text-gray-400 uppercase tracking-wider">
@@ -729,6 +745,32 @@ function CallLogRow({
           )}
         </td>
         <td className="px-4 py-3">
+          {log.acw_resolution ? (
+            <span className="px-2 py-0.5 text-xs rounded-full border bg-blue-500/10 border-blue-500/30 text-blue-400">
+              {log.acw_resolution}
+            </span>
+          ) : (
+            <span className="text-sm text-gray-500">-</span>
+          )}
+        </td>
+        <td className="px-4 py-3">
+          {log.acw_quality_score !== null && log.acw_quality_score !== undefined ? (
+            <span
+              className={`px-2 py-0.5 text-xs rounded-full border font-medium ${
+                log.acw_quality_score >= 80
+                  ? "bg-green-500/10 border-green-500/30 text-green-400"
+                  : log.acw_quality_score >= 50
+                  ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-400"
+                  : "bg-red-500/10 border-red-500/30 text-red-400"
+              }`}
+            >
+              {log.acw_quality_score}
+            </span>
+          ) : (
+            <span className="text-sm text-gray-500">-</span>
+          )}
+        </td>
+        <td className="px-4 py-3">
           <div className="flex items-center gap-2">
             <span
               className={`px-2 py-0.5 text-xs rounded-full border ${getStatusBadge(log.status || 'unknown')}`}
@@ -768,7 +810,7 @@ function CallLogRow({
                 onClick={onGenerateSummary}
                 disabled={isGeneratingSummary}
                 className="p-2 text-gray-400 hover:text-purple-400 hover:bg-gray-700 rounded-lg transition disabled:opacity-50"
-                title="Generate AI summary"
+                title="Run Post Call QA"
               >
                 {isGeneratingSummary ? (
                   <Loader2 className="h-4 w-4 animate-spin" />
@@ -791,7 +833,7 @@ function CallLogRow({
       </tr>
       {isExpanded && hasLegs && (
         <tr>
-          <td colSpan={8} className="bg-[#0f0f0f] px-4 py-3">
+          <td colSpan={10} className="bg-[#0f0f0f] px-4 py-3">
             <div className="ml-10">
               <div className="text-xs text-gray-500 mb-2 font-medium uppercase tracking-wider">
                 Call Segments

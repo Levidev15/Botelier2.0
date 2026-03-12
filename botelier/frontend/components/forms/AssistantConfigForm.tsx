@@ -11,7 +11,7 @@ import ProviderSelector from "@/components/forms/ProviderSelector";
 import SaveBar from "@/components/ui/SaveBar";
 import { notify } from "@/lib/notifications";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
-import DispositionsTab from "@/components/forms/DispositionsTab";
+import PostCallQATab from "@/components/forms/PostCallQATab";
 
 interface Assistant {
   id: string;
@@ -84,7 +84,7 @@ const TABS: Tab[] = [
   { id: "voice", label: "Voice", icon: <Volume2 className="h-4 w-4" /> },
   { id: "transcriber", label: "Transcriber", icon: <Mic className="h-4 w-4" /> },
   { id: "vad", label: "Voice Activity Detection", icon: <Activity className="h-4 w-4" /> },
-  { id: "dispositions", label: "Dispositions", icon: <Tags className="h-4 w-4" /> },
+  { id: "post-call-qa", label: "Post Call QA", icon: <Tags className="h-4 w-4" /> },
   { id: "sms", label: "SMS", icon: <Smartphone className="h-4 w-4" /> },
 ];
 
@@ -354,7 +354,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
 
         {/* Tab Navigation - now inside sticky container */}
         <TabNavigation
-          tabs={mode === "create" ? TABS.filter(t => t.id !== "dispositions") : TABS}
+          tabs={mode === "create" ? TABS.filter(t => t.id !== "post-call-qa") : TABS}
           activeTab={activeTab}
           onTabChange={setActiveTab}
           sticky={false}
@@ -950,13 +950,13 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
         </FormSection>
         )}
 
-        {/* Dispositions Section - Only show in edit mode */}
-        {activeTab === "dispositions" && mode === "edit" && assistantId && accountId && (
+        {/* Post Call QA Section - Only show in edit mode */}
+        {activeTab === "post-call-qa" && mode === "edit" && assistantId && accountId && (
         <FormSection
-          title="Call Dispositions"
-          description="Configure custom dispositions for call outcomes"
+          title="Post Call QA"
+          description="Configure automated post-call analysis: dispositions, resolution tracking, quality scoring, and AI summaries"
         >
-          <DispositionsTab assistantId={assistantId} accountId={accountId} />
+          <PostCallQATab assistantId={assistantId} accountId={accountId} />
         </FormSection>
         )}
 
