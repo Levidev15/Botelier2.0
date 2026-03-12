@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { Plus, Edit2, Trash2, GripVertical, Settings, ClipboardCheck, BarChart3, FileText } from "lucide-react";
-import { notify } from "@/lib/notifications";
+import { notify, confirmAction } from "@/lib/notifications";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import DispositionsTab from "@/components/forms/DispositionsTab";
 
@@ -138,7 +138,10 @@ export default function PostCallQATab({ assistantId, accountId }: PostCallQATabP
   };
 
   const handleResDelete = async (id: string) => {
-    if (!confirm("Are you sure you want to delete this resolution option?")) return;
+    const confirmed = await confirmAction("Are you sure you want to delete this resolution option?", {
+      confirmText: "Delete",
+    });
+    if (!confirmed) return;
     try {
       const response = await fetch(
         `/api/assistants/${assistantId}/resolution-options/${id}?hotel_id=${accountId}`,

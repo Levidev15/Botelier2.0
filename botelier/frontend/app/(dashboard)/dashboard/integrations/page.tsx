@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
+import { confirmAction } from "@/lib/notifications";
 import { 
   Plug, 
   Check, 
@@ -240,9 +241,10 @@ export default function IntegrationsPage() {
   };
 
   const handleDeleteMcp = async (mcp: MCPConnection) => {
-    if (!confirm(`Are you sure you want to delete "${mcp.name}"?`)) {
-      return;
-    }
+    const confirmed = await confirmAction(`Are you sure you want to delete "${mcp.name}"?`, {
+      confirmText: "Delete",
+    });
+    if (!confirmed) return;
 
     try {
       const response = await authFetch(`/api/mcp-connections/${mcp.id}`, {
@@ -330,9 +332,10 @@ export default function IntegrationsPage() {
   };
 
   const handleDisconnect = async (integration: AccountIntegration) => {
-    if (!confirm("Are you sure you want to disconnect this integration? This will remove your stored credentials.")) {
-      return;
-    }
+    const confirmed = await confirmAction("Are you sure you want to disconnect this integration? This will remove your stored credentials.", {
+      confirmText: "Disconnect",
+    });
+    if (!confirmed) return;
 
     try {
       const response = await authFetch(
