@@ -24,13 +24,22 @@ def _get_client() -> OpenAI:
     return _client
 
 
+_MAX_TRANSCRIPT_CHARS = 8000
+
+_ROLE_LABELS = {
+    "user": "Customer",
+    "assistant": "AI Agent",
+}
+
+
 def _build_transcript_text(transcript: list) -> str:
     lines = []
     for msg in transcript:
         role = msg.get("role", "unknown")
         content = msg.get("content", "")
         if role in ("user", "assistant") and content.strip():
-            lines.append(f"{role}: {content}")
+            label = _ROLE_LABELS.get(role, role)
+            lines.append(f"{label}: {content}")
     return "\n".join(lines)
 
 
@@ -74,7 +83,15 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
         logger.warning(f"ACW skipped for call {call_log.id}: empty transcript")
         return {"skipped": True, "reason": "empty_transcript"}
 
-    prompt_parts = ["Analyze this call transcript.\n"]
+    if len(transcript_text) > _MAX_TRANSCRIPT_CHARS:
+        truncated = transcript_text[:_MAX_TRANSCRIPT_CHARS]
+        last_newline = truncated.rfind("\n")
+        if last_newline > 0:
+            truncated = truncated[:last_newline]
+        transcript_text = truncated + "\n[Transcript truncated due to length]"
+        logger.info(f"ACW: transcript truncated for call {call_log.id}")
+
+    prompt_parts = [f"Assistant: {assistant.name}\nAnalyze this call transcript.\n"]
     json_fields = []
 
     if has_dispositions:
