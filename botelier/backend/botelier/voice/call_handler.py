@@ -225,7 +225,7 @@ class CallHandler:
             def on_interruption(content: str):
                 self.mark_response_interrupted(call_sid, content)
             
-            pipeline, task, llm, context_aggregator, llm_context = VoiceEngineFactory.create_pipeline(
+            pipeline, task, llm, context_aggregator, llm_context, tts_completion_watcher = VoiceEngineFactory.create_pipeline(
                 config=config,
                 api_keys=api_keys,
                 transport=transport,
@@ -233,6 +233,11 @@ class CallHandler:
                 function_handlers=function_handlers if function_handlers else None,
                 on_interruption=on_interruption,
             )
+
+            # Link the TTS completion watcher to the FunctionMapper (if one was created
+            # for this call) so transfer handlers can await actual TTS completion.
+            if call_sid in self.call_mappers:
+                self.call_mappers[call_sid].set_tts_completion_watcher(tts_completion_watcher)
             
             # 6.5 Register MCP tools if connection is configured (must happen AFTER pipeline creation)
             logger.info(f"🔍 MCP registration check: mcp_connection_data={mcp_connection_data is not None}, mcp_enabled_tools={mcp_enabled_tools}, PIPECAT_MCP_AVAILABLE={PIPECAT_MCP_AVAILABLE}")

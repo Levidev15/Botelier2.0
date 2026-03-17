@@ -10,6 +10,7 @@ Key Design Principle:
 - Supports provider-specific features (Flux STT, prompt caching, etc.)
 """
 
+import asyncio
 import os
 from typing import Optional, Dict, Any, Callable
 from loguru import logger
@@ -22,7 +23,7 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.transcriptions.language import Language
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-from pipecat.frames.frames import Frame, InterruptionFrame, TextFrame, TTSSpeakFrame
+from pipecat.frames.frames import Frame, BotStoppedSpeakingFrame, InterruptionFrame, TextFrame, TTSSpeakFrame
 
 from .agent import VoiceAgentConfig
 from ..config.providers import is_flux_model
@@ -64,6 +65,63 @@ class InterruptionTracker(FrameProcessor):
             self._current_text = ""  # Reset after interruption
         
         # CRITICAL: Always push frames through to next processor
+        await self.push_frame(frame, direction)
+
+
+class TtsCompletionWatcher(FrameProcessor):
+    """
+    Watches for BotStoppedSpeakingFrame to signal TTS completion.
+
+    Placed in the pipeline immediately after the TTS service so it can observe
+    BotStoppedSpeakingFrame as it flows downstream toward the transport output.
+
+    Usage:
+        watcher = TtsCompletionWatcher()
+        # …add to pipeline after tts…
+
+        # In transfer handler, before pushing TTSSpeakFrame:
+        watcher.reset()
+        await llm.push_frame(TTSSpeakFrame(message))
+        await watcher.wait_until_done(timeout=15.0)
+        # Now safe to initiate transfer
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._speaking_done = asyncio.Event()
+        self._speaking_done.set()  # Start in "done" state — no pending speech
+
+    def reset(self):
+        """
+        Clear the completion event.
+
+        Call this synchronously (no await) just before pushing a TTSSpeakFrame
+        so that wait_until_done() will block until the corresponding
+        BotStoppedSpeakingFrame arrives.
+        """
+        self._speaking_done.clear()
+
+    async def wait_until_done(self, timeout: float = 15.0) -> bool:
+        """
+        Wait until BotStoppedSpeakingFrame is observed or the timeout expires.
+
+        Returns:
+            True  — speech completed within the timeout.
+            False — timed out; caller should proceed with the transfer anyway.
+        """
+        try:
+            await asyncio.wait_for(self._speaking_done.wait(), timeout=timeout)
+            return True
+        except asyncio.TimeoutError:
+            logger.warning(f"TtsCompletionWatcher: timed out after {timeout}s waiting for BotStoppedSpeakingFrame")
+            return False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, BotStoppedSpeakingFrame):
+            logger.debug("TtsCompletionWatcher: BotStoppedSpeakingFrame received — signalling done")
+            self._speaking_done.set()
+        # Always pass frames through unchanged
         await self.push_frame(frame, direction)
 
 
@@ -208,13 +266,13 @@ class VoiceEngineFactory:
         function_schemas: Optional[list] = None,
         function_handlers: Optional[Dict[str, Any]] = None,
         on_interruption: Optional[Callable[[str], None]] = None,
-    ) -> tuple[Pipeline, PipelineTask, Any, Any, Any]:
+    ) -> tuple[Pipeline, PipelineTask, Any, Any, Any, "TtsCompletionWatcher"]:
         """
-        Create complete voice pipeline from agent configuration
-        
+        Create complete voice pipeline from agent configuration.
+
         This is where Pipecat is actually used, but it's completely hidden
         from the hotel-facing API.
-        
+
         Args:
             config: Voice agent configuration
             api_keys: API keys for external services
@@ -222,54 +280,61 @@ class VoiceEngineFactory:
             function_schemas: Optional list of FunctionSchema objects for function calling
             function_handlers: Optional dict mapping function names to async handlers
             on_interruption: Optional callback called when user interrupts (receives interrupted text)
-            
+
         Returns:
-            Tuple of (pipeline, task, llm, context_aggregator, context) for external access
-            The context is returned separately for transcript extraction
+            Tuple of (pipeline, task, llm, context_aggregator, context, tts_completion_watcher).
+            - context is returned separately for transcript extraction.
+            - tts_completion_watcher can be linked to FunctionMapper.set_tts_completion_watcher()
+              so transfer handlers can await TTS completion without time-based sleeps.
         """
         from pipecat.adapters.schemas.tools_schema import ToolsSchema
-        
+
         stt = VoiceEngineFactory.create_stt_service(config, api_keys)
         llm = VoiceEngineFactory.create_llm_service(config, api_keys)
         tts = VoiceEngineFactory.create_tts_service(config, api_keys)
-        
-        # Create interruption tracker to detect when user interrupts
+
+        # Track text frames/interruptions before TTS
         interruption_tracker = InterruptionTracker(on_interruption=on_interruption)
-        
+
+        # Observe BotStoppedSpeakingFrame after TTS so transfer handlers can
+        # await actual TTS completion rather than using fixed-duration sleeps.
+        tts_completion_watcher = TtsCompletionWatcher()
+
         messages = [
             {
                 "role": "system",
                 "content": config.system_prompt,
             },
         ]
-        
+
         # Create context with tools if schemas provided
         if function_schemas:
             tools = ToolsSchema(standard_tools=function_schemas)
             context = LLMContext(messages, tools=tools)
         else:
             context = LLMContext(messages)
-        
+
         context_aggregator = LLMContextAggregatorPair(context)
-        
+
         # Register function handlers with LLM
         if function_handlers:
             for function_name, handler in function_handlers.items():
                 llm.register_function(function_name, handler)
-        
+
         pipeline = Pipeline(
             [
                 transport.input(),
                 stt,
                 context_aggregator.user(),
                 llm,
-                interruption_tracker,  # Track text frames before TTS and detect interruptions
+                interruption_tracker,      # Observes text frames + InterruptionFrame before TTS
                 tts,
+                tts_completion_watcher,    # Observes BotStoppedSpeakingFrame after TTS
                 transport.output(),
                 context_aggregator.assistant(),
             ]
         )
-        
+
         task = PipelineTask(
             pipeline,
             params=PipelineParams(
@@ -277,8 +342,8 @@ class VoiceEngineFactory:
                 enable_usage_metrics=True,
             ),
         )
-        
-        return pipeline, task, llm, context_aggregator, context
+
+        return pipeline, task, llm, context_aggregator, context, tts_completion_watcher
     
     @staticmethod
     def create_transport_params(config: VoiceAgentConfig):

@@ -77,24 +77,71 @@ class FunctionMapper:
         self.call_handler = call_handler
         self.db_session = db_session
         self.account_id = account_id
-        
+
         # Store flow executors by tool name for state persistence across turns
         self._flow_executors: Dict[str, FlowExecutor] = {}
-        
+
         # Store non-flow tool schemas for inclusion in dynamic tool updates
         # These tools should always remain available even during flow execution
         self._non_flow_tool_schemas: List[Dict[str, Any]] = []
-        
+
+        # TTS completion watcher — set by CallHandler after pipeline creation.
+        # Used by transfer handlers to await real TTS completion instead of a
+        # fixed sleep, ensuring the pre-transfer message is never clipped.
+        self._tts_completion_watcher = None
+
         # Twilio client for call transfers - use hotel's sub-account credentials
         self.twilio_client = None
         self.twilio_account_sid = twilio_account_sid or os.environ.get("TWILIO_ACCOUNT_SID")
         self.twilio_auth_token = twilio_auth_token or os.environ.get("TWILIO_AUTH_TOKEN")
-        
+
         if self.twilio_account_sid and self.twilio_auth_token:
             self.twilio_client = TwilioClient(self.twilio_account_sid, self.twilio_auth_token)
             logger.info(f"✅ Twilio client initialized for call {call_sid} (Account: {self.twilio_account_sid[:10]}...)")
     
     
+    def set_tts_completion_watcher(self, watcher) -> None:
+        """
+        Attach the TtsCompletionWatcher created by the voice pipeline.
+
+        Called by CallHandler immediately after pipeline creation so that
+        transfer handlers can use wait_for_bot_done() instead of fixed sleeps.
+
+        Args:
+            watcher: TtsCompletionWatcher instance from VoiceEngineFactory.create_pipeline()
+        """
+        self._tts_completion_watcher = watcher
+        logger.debug(f"TtsCompletionWatcher linked to FunctionMapper for call {self.call_sid}")
+
+    async def wait_for_bot_done(self, timeout: float = 15.0) -> None:
+        """
+        Wait until the bot has finished speaking before initiating a transfer.
+
+        If a TtsCompletionWatcher is attached, resets it and awaits the
+        BotStoppedSpeakingFrame signal.  Falls back to a short fixed delay
+        when the watcher is unavailable (e.g. calls without a tool set).
+
+        Args:
+            timeout: Maximum seconds to wait (default 15).  Transfer proceeds
+                     regardless once the timeout expires.
+        """
+        import asyncio
+
+        if self._tts_completion_watcher is not None:
+            # Reset first (synchronously, no await) so wait_until_done() will
+            # block until the next BotStoppedSpeakingFrame — not a stale one.
+            self._tts_completion_watcher.reset()
+            logger.info(f"⏳ Awaiting TTS completion before transfer for call {self.call_sid}")
+            await self._tts_completion_watcher.wait_until_done(timeout=timeout)
+            logger.info(f"✅ TTS completion confirmed for call {self.call_sid}")
+        else:
+            # Fallback: watcher not available (no tools registered for this call)
+            logger.warning(
+                f"No TtsCompletionWatcher available for call {self.call_sid} — "
+                "using 3 s fallback delay before transfer"
+            )
+            await asyncio.sleep(3.0)
+
     def track_tool_usage(self, tool_name: str, is_flow: bool = False):
         """Record tool usage in call log."""
         if not self.call_sid:
@@ -268,38 +315,31 @@ class FunctionMapper:
         async def transfer_handler(params: FunctionCallParams):
             """
             Handler called when LLM decides to transfer call.
-            
+
             Transfer Flow:
-                1. AI says pre-transfer message via Pipecat TTS (uses assistant's configured voice)
-                2. Wait for TTS audio to complete streaming to caller
-                3. Record transfer in database (so connect-complete won't hang up)
-                4. Build TwiML with:
-                   - <Stop><Stream> to close the media stream
-                   - <Dial> to connect to the transfer target
-                   - NOTE: No <Say> tag - the pre-transfer message was already spoken via TTS
-                5. Update call via Twilio REST API
-                
-            The pipeline ends when Twilio closes the WebSocket after receiving
-            the update. Twilio executes the TwiML and bridges the caller.
+                1. AI says pre-transfer message via Pipecat TTS (assistant's configured voice).
+                2. Reset the TtsCompletionWatcher, then await BotStoppedSpeakingFrame to
+                   confirm the audio has fully drained before initiating the transfer.
+                3. Save transcript to DB (WebSocket closes immediately after the REST update).
+                4. Build mode-specific TwiML:
+                   - Cold (SIP REFER): <Refer> only — no <Stop><Stream> so audio can drain.
+                   - Warm (<Dial>): <Stop><Stream> + <Dial> (stream must be closed for Twilio to bridge).
+                5. Update call via Twilio REST API.
+
+            The pipeline ends when Twilio closes the WebSocket after receiving the update.
             """
-            import asyncio
-            
             # Track tool usage
             self.track_tool_usage(tool.name)
-            
-            # Speak pre-transfer message using the assistant's configured TTS voice
-            await params.llm.push_frame(
-                TTSSpeakFrame(pre_message)
-            )
-            
-            # Wait for TTS audio to finish streaming to the caller
-            # This ensures the caller hears the complete message before transfer
-            # Conservative estimate: ~400ms per word (typical speech rate) + 1.5s buffer
-            # for TTS generation latency and network streaming
-            word_count = len(pre_message.split())
-            wait_time = max(2.5, (word_count * 0.4) + 1.5)
-            logger.info(f"⏳ Waiting {wait_time:.1f}s for TTS to complete before transfer ({word_count} words)")
-            await asyncio.sleep(wait_time)
+
+            # Speak pre-transfer message using the assistant's configured TTS voice.
+            # Reset the watcher BEFORE pushing the frame so the next BotStoppedSpeakingFrame
+            # is guaranteed to correspond to this utterance.
+            self._tts_completion_watcher and self._tts_completion_watcher.reset()
+            await params.llm.push_frame(TTSSpeakFrame(pre_message))
+
+            # Wait for TTS to finish playing to the caller before transferring.
+            # Event-driven: avoids both early cutoffs and unnecessary delays.
+            await self.wait_for_bot_done(timeout=15.0)
             
             import re as _re
             transfer_success = False
@@ -321,13 +361,14 @@ class FunctionMapper:
                             except Exception as e:
                                 logger.error(f"Error saving transcript before transfer: {e}")
                         
-                        # Build TwiML and record transfer — keep DB open until both are done
+                        # Build mode-specific TwiML.
+                        # Cold REFER: <Stop><Stream> is intentionally omitted — Twilio closes
+                        # the WebSocket naturally on REFER, so including it would cut off any
+                        # audio still in flight before the transfer completes.
+                        # Warm <Dial>: <Stop><Stream> is required so Twilio stops the media
+                        # stream and bridges the caller to the new leg.
                         twiml_parts = ['<?xml version="1.0" encoding="UTF-8"?>', '<Response>']
-                        
-                        # Stop the media stream (critical for all transfer types)
-                        if self.stream_sid:
-                            twiml_parts.append(f'<Stop><Stream name="{self.stream_sid}"/></Stop>')
-                        
+
                         if transfer_mode == "cold":
                             # Cold Transfer (SIP REFER)
                             # Twilio sends a SIP REFER to the destination and exits the bridge.
@@ -338,7 +379,7 @@ class FunctionMapper:
                             twiml_parts.append(f'<Refer><Sip>{sip_uri}</Sip></Refer>')
                             twiml_parts.append('</Response>')
                             transfer_twiml = '\n'.join(twiml_parts)
-                            
+
                             logger.info(f"🔄 Cold SIP REFER transfer for call {self.call_sid} to {phone_number} ({sip_uri})")
                             logger.debug(f"Cold Transfer TwiML:\n{transfer_twiml}")
                             
@@ -370,6 +411,10 @@ class FunctionMapper:
                             # Warm Transfer (Twilio bridges both legs)
                             # Twilio stays in the call and bridges the caller to the new number.
                             # Status callbacks arrive at /transfer-status to track the second leg.
+                            # <Stop><Stream> is required here so Twilio closes the media stream
+                            # before bridging the caller to the new leg via <Dial>.
+                            if self.stream_sid:
+                                twiml_parts.append(f'<Stop><Stream name="{self.stream_sid}"/></Stop>')
                             caller_id = self.to_number or os.environ.get("TWILIO_PHONE_NUMBER", "")
                             if caller_id:
                                 twiml_parts.append(f'<Dial timeout="30" callerId="{caller_id}">')
@@ -799,15 +844,22 @@ class FunctionMapper:
                 target = result.get("target")
                 flow_transfer_mode = result.get("transfer_mode", "warm")
                 if self.twilio_client and self.call_sid and target:
+                    # Wait for any bot speech to finish before sending the transfer.
+                    # For flow transfers there may be an in-flight LLM response.
+                    await self.wait_for_bot_done(timeout=15.0)
+
                     try:
                         from ..database import SessionLocal
                         from ..services.call_logger import CallLogger as _CLFlow
                         _db_flow = SessionLocal()
                         try:
                             _cl_flow = _CLFlow(_db_flow)
+
+                            # Build mode-specific TwiML.
+                            # Cold REFER: omit <Stop><Stream> so Twilio lets audio drain naturally.
+                            # Warm <Dial>: include <Stop><Stream> to close stream before bridging.
                             twiml_parts = ['<?xml version="1.0" encoding="UTF-8"?>', '<Response>']
-                            if self.stream_sid:
-                                twiml_parts.append(f'<Stop><Stream name="{self.stream_sid}"/></Stop>')
+
                             if flow_transfer_mode == "cold":
                                 # Save transcript before REFER — WebSocket closes after
                                 # REST update and /connect-complete is never called
@@ -827,6 +879,9 @@ class FunctionMapper:
                                 _cl_flow.record_transfer(call_sid=self.call_sid, transfer_to=target, transfer_type="cold")
                                 logger.info(f"🔄 Cold SIP REFER flow transfer to {target}")
                             else:
+                                # Warm transfer: close the stream before bridging via <Dial>
+                                if self.stream_sid:
+                                    twiml_parts.append(f'<Stop><Stream name="{self.stream_sid}"/></Stop>')
                                 caller_id = self.to_number or os.environ.get("TWILIO_PHONE_NUMBER", "")
                                 if caller_id:
                                     twiml_parts.append(f'<Dial timeout="30" callerId="{caller_id}">')
