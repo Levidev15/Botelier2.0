@@ -16,6 +16,10 @@ from sqlalchemy.orm import relationship
 from botelier.database import Base
 
 
+def _generate_reference_id() -> str:
+    return uuid.uuid4().hex[:8].upper()
+
+
 class CallStatus(str, Enum):
     """Status of a call."""
     INITIATED = "initiated"
@@ -66,6 +70,8 @@ class CallLog(Base):
     
     hotel_id = Column(UUID(as_uuid=True), ForeignKey("hotels.id"), nullable=False, index=True)
     
+    reference_id = Column(String(8), nullable=True, default=_generate_reference_id)
+
     call_sid = Column(String, unique=True, nullable=False)
     
     phone_number_id = Column(UUID(as_uuid=True), ForeignKey("phone_numbers.id"), nullable=True)
@@ -124,6 +130,7 @@ class CallLog(Base):
         result = {
             "id": str(self.id),
             "hotel_id": str(self.hotel_id),
+            "reference_id": self.reference_id,
             "call_sid": self.call_sid,
             "phone_number_id": str(self.phone_number_id) if self.phone_number_id else None,
             "assistant_id": str(self.assistant_id) if self.assistant_id else None,

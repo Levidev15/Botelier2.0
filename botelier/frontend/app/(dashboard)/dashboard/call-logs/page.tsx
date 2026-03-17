@@ -54,6 +54,7 @@ interface TranscriptEntry {
 interface CallLog {
   id: string;
   hotel_id: string;
+  reference_id: string | null;
   call_sid: string;
   phone_number_id: string | null;
   assistant_id: string | null;
@@ -417,7 +418,7 @@ export default function CallLogsPage() {
                   value={search}
                   onChange={(e) => setSearch(e.target.value)}
                   onKeyDown={(e) => e.key === "Enter" && fetchCallLogs()}
-                  placeholder="Search by caller number..."
+                  placeholder="Search by caller, reference ID..."
                   className="w-full pl-10 pr-4 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
                 />
               </div>
@@ -703,6 +704,11 @@ function CallLogRow({
                 <Clock className="h-3 w-3" />
                 {formatDuration(log.duration_seconds)}
               </div>
+              {log.reference_id && (
+                <span className="mt-0.5 inline-block font-mono text-[10px] text-gray-500 bg-gray-800 px-1.5 py-0.5 rounded">
+                  #{log.reference_id}
+                </span>
+              )}
             </div>
           </div>
         </td>

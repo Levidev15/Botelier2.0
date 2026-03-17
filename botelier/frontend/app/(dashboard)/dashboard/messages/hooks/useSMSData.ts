@@ -17,6 +17,7 @@ export interface Assistant {
 
 export interface Conversation {
   id: string;
+  reference_id?: string | null;
   customer_number: string;
   botelier_number: string;
   status: string;

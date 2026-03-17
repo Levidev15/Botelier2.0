@@ -92,7 +92,7 @@ export function ConversationList({
             type="text"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            placeholder="Search by phone number..."
+            placeholder="Search by phone or reference ID..."
             className="w-full pl-9 pr-8 py-2 bg-[#1a1a1a] border border-gray-700 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500"
           />
           {search && (
@@ -198,6 +198,11 @@ export function ConversationList({
                     </span>
                   )}
                   <span className="text-[10px] text-gray-500">{conv.message_count} msgs</span>
+                  {conv.reference_id && (
+                    <span className="font-mono text-[10px] text-gray-600 bg-gray-800/60 px-1 py-0.5 rounded">
+                      #{conv.reference_id}
+                    </span>
+                  )}
                   {conv.active_agent_name && isPresenceActive(conv.agent_active_at) && (
                     <span className="flex items-center gap-1 text-[10px] text-amber-400">
                       <Eye className="h-2.5 w-2.5" />

@@ -26,6 +26,7 @@ interface CallLeg {
 interface CallLog {
   id: string;
   hotel_id?: string;
+  reference_id?: string | null;
   caller_number: string | null;
   to_number: string | null;
   status: string;
@@ -121,7 +122,14 @@ export default function TranscriptModal({ log, onClose, onLogUpdated }: Transcri
               <Phone className="h-5 w-5 text-blue-400" />
             </div>
             <div>
-              <h3 className="text-lg font-semibold text-white">Call Transcript</h3>
+              <div className="flex items-center gap-2">
+                <h3 className="text-lg font-semibold text-white">Call Transcript</h3>
+                {log.reference_id && (
+                  <span className="font-mono text-[11px] text-gray-400 bg-gray-800 px-2 py-0.5 rounded border border-gray-700">
+                    #{log.reference_id}
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-gray-400">
                 {formatDateTime(log.started_at)} • {formatDuration(log.duration_seconds)}
               </p>
