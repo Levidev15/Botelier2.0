@@ -16,14 +16,10 @@ Deferred columns (add when ready):
 import uuid
 from datetime import datetime
 from enum import Enum
-from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey, Integer, Text, Index
+from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey, Integer, Text, Index, event
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from botelier.database import Base
-
-
-def _generate_reference_id() -> str:
-    return uuid.uuid4().hex[:8].upper()
 
 
 class ConversationStatus(str, Enum):
@@ -68,7 +64,7 @@ class SMSConversation(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    reference_id = Column(String(8), nullable=True, default=_generate_reference_id)
+    reference_id = Column(String(8), nullable=True)
 
     hotel_id = Column(UUID(as_uuid=True), ForeignKey("hotels.id"), nullable=False)
     assistant_id = Column(UUID(as_uuid=True), ForeignKey("assistants.id"), nullable=True)
@@ -154,6 +150,19 @@ class SMSConversation(Base):
             result["messages"] = [msg.to_dict() for msg in self.messages]
 
         return result
+
+
+@event.listens_for(SMSConversation, "init")
+def _init_sms_conversation_reference_id(target, args, kwargs):
+    """Derive reference_id from the same UUID as id on object creation."""
+    if not kwargs.get("reference_id"):
+        uid = kwargs.get("id")
+        if uid is None:
+            uid = uuid.uuid4()
+            kwargs["id"] = uid
+        if not hasattr(uid, "hex"):
+            uid = uuid.UUID(str(uid))
+        kwargs["reference_id"] = uid.hex[:8].upper()
 
 
 class SMSMessage(Base):

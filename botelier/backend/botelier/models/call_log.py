@@ -10,14 +10,10 @@ CallLeg represents individual segments of a call (AI conversation, transfers, et
 import uuid
 from datetime import datetime
 from enum import Enum
-from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey, Integer, Text, Index
+from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey, Integer, Text, Index, event
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 from botelier.database import Base
-
-
-def _generate_reference_id() -> str:
-    return uuid.uuid4().hex[:8].upper()
 
 
 class CallStatus(str, Enum):
@@ -70,7 +66,7 @@ class CallLog(Base):
     
     hotel_id = Column(UUID(as_uuid=True), ForeignKey("hotels.id"), nullable=False, index=True)
     
-    reference_id = Column(String(8), nullable=True, default=_generate_reference_id)
+    reference_id = Column(String(8), nullable=True)
 
     call_sid = Column(String, unique=True, nullable=False)
     
@@ -165,6 +161,19 @@ class CallLog(Base):
             result["legs"] = [leg.to_dict() for leg in self.legs]
         
         return result
+
+
+@event.listens_for(CallLog, "init")
+def _init_call_log_reference_id(target, args, kwargs):
+    """Derive reference_id from the same UUID as id on object creation."""
+    if not kwargs.get("reference_id"):
+        uid = kwargs.get("id")
+        if uid is None:
+            uid = uuid.uuid4()
+            kwargs["id"] = uid
+        if not hasattr(uid, "hex"):
+            uid = uuid.UUID(str(uid))
+        kwargs["reference_id"] = uid.hex[:8].upper()
 
 
 class CallLeg(Base):

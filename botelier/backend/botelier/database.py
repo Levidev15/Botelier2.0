@@ -97,12 +97,16 @@ _ADDITIVE_MIGRATIONS = [
 
     # Friendly reference IDs — short 8-char uppercase identifiers for support/search
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS reference_id VARCHAR(8)",
-    "UPDATE call_logs SET reference_id = UPPER(SUBSTRING(REPLACE(gen_random_uuid()::text, '-', ''), 1, 8)) WHERE reference_id IS NULL",
-    "CREATE UNIQUE INDEX IF NOT EXISTS ix_call_logs_hotel_ref ON call_logs(hotel_id, reference_id)",
+    # Backfill: derive from each row's own UUID (removes dashes, takes first 8 chars, uppercases)
+    "UPDATE call_logs SET reference_id = UPPER(SUBSTRING(REPLACE(id::text, '-', ''), 1, 8)) WHERE reference_id IS NULL",
+    # Drop old composite index if it exists (replaced below with a global unique index)
+    "DROP INDEX IF EXISTS ix_call_logs_hotel_ref",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ix_call_logs_ref ON call_logs(reference_id)",
 
     "ALTER TABLE sms_conversations ADD COLUMN IF NOT EXISTS reference_id VARCHAR(8)",
-    "UPDATE sms_conversations SET reference_id = UPPER(SUBSTRING(REPLACE(gen_random_uuid()::text, '-', ''), 1, 8)) WHERE reference_id IS NULL",
-    "CREATE UNIQUE INDEX IF NOT EXISTS ix_sms_conv_hotel_ref ON sms_conversations(hotel_id, reference_id)",
+    "UPDATE sms_conversations SET reference_id = UPPER(SUBSTRING(REPLACE(id::text, '-', ''), 1, 8)) WHERE reference_id IS NULL",
+    "DROP INDEX IF EXISTS ix_sms_conv_hotel_ref",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ix_sms_conv_ref ON sms_conversations(reference_id)",
 ]
 
 
