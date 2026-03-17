@@ -34,6 +34,29 @@ interface DrilldownResponse {
   metric: string;
 }
 
+export interface TranscriptCallLog {
+  id: string;
+  hotel_id?: string;
+  reference_id?: string | null;
+  caller_number: string | null;
+  to_number: string | null;
+  status: string;
+  started_at: string | null;
+  duration_seconds: number;
+  has_transfer: boolean;
+  transcript: Array<{ role: string; content?: string; text?: string; timestamp?: string; interrupted?: boolean }> | null;
+  legs: Array<{ id: string; leg_number: number; leg_type: string; participant: string | null; participant_name: string | null; status: string; duration_seconds: number }>;
+  assistant_name: string | null;
+  phone_number_display: string | null;
+  ai_summary: string | null;
+  disposition_name: string | null;
+  disposition_color: string | null;
+  tool_name: string | null;
+  flow_name: string | null;
+  acw_resolution: string | null;
+  acw_quality_score: number | null;
+}
+
 interface DrilldownPanelProps {
   open: boolean;
   metric: string;
@@ -71,6 +94,10 @@ function fmtDateTime(iso: string | null): string {
     minute: "2-digit",
     hour12: true,
   });
+}
+
+function toDateParam(d: Date): string {
+  return d.toISOString().slice(0, 10);
 }
 
 const PAGE_LIMIT = 25;
@@ -125,19 +152,34 @@ export default function DrilldownPanel({
     if (page > 1) fetchData(page);
   }, [page, fetchData]);
 
-  function handleViewInCallLogs() {
+  function buildCallLogsUrl(): string {
     const params = new URLSearchParams();
-    if (metric.startsWith("status:")) params.set("status", metric.slice(7));
-    router.push(`/dashboard/call-logs?${params}`);
+    params.set("date_from", toDateParam(dateRange.from));
+    params.set("date_to", toDateParam(dateRange.to));
+
+    if (metric === "completed") params.set("status", "completed");
+    else if (metric === "failed") params.set("status", "failed");
+    else if (metric.startsWith("status:")) params.set("status", metric.slice(7));
+    else if (metric.startsWith("assistant:")) params.set("assistant_id", metric.slice(10));
+
+    if (assistantIds.length === 1) params.set("assistant_id", assistantIds[0]);
+
+    return `/dashboard/call-logs?${params}`;
+  }
+
+  function handleViewInCallLogs() {
+    router.push(buildCallLogsUrl());
     onClose();
   }
 
   if (!open) return null;
 
+  const skeletonRows = Array.from({ length: 8 });
+
   return (
     <div className="fixed inset-0 z-50 overflow-hidden">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="absolute right-0 top-0 h-full w-full max-w-2xl bg-[#141414] border-l border-gray-800 flex flex-col shadow-2xl">
+      <div className="absolute right-0 top-0 h-full w-full max-w-3xl bg-[#141414] border-l border-gray-800 flex flex-col shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
           <div>
@@ -160,91 +202,157 @@ export default function DrilldownPanel({
           </button>
         </div>
 
-        {/* Body */}
-        <div className="flex-1 overflow-y-auto">
-          {loading && !data && (
-            <div className="flex items-center justify-center h-40">
-              <Loader2 className="h-6 w-6 animate-spin text-gray-500" />
-            </div>
-          )}
+        {/* Body — scrollable table */}
+        <div className="flex-1 overflow-auto">
+          <table className="w-full text-sm border-collapse">
+            <thead className="sticky top-0 bg-[#1a1a1a] border-b border-gray-800 z-10">
+              <tr>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Ref / Status</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Date & Time</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Caller</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Assistant</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Duration</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Disposition</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">QA</th>
+                <th className="px-4 py-3" />
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-800/60">
+              {/* Skeleton rows */}
+              {loading && !data &&
+                skeletonRows.map((_, i) => (
+                  <tr key={i} className="animate-pulse">
+                    <td className="px-4 py-3">
+                      <div className="h-4 w-24 bg-gray-800 rounded" />
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="h-4 w-28 bg-gray-800 rounded" />
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="h-4 w-24 bg-gray-800 rounded" />
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="h-4 w-20 bg-gray-800 rounded" />
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="h-4 w-12 bg-gray-800 rounded" />
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="h-4 w-16 bg-gray-800 rounded" />
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="h-4 w-8 bg-gray-800 rounded" />
+                    </td>
+                    <td className="px-4 py-3" />
+                  </tr>
+                ))}
 
-          {!loading && data?.records.length === 0 && (
-            <div className="flex items-center justify-center h-40">
-              <p className="text-gray-500 text-sm">No calls match this filter</p>
-            </div>
-          )}
+              {/* Empty state */}
+              {!loading && data?.records.length === 0 && (
+                <tr>
+                  <td colSpan={8} className="px-4 py-16 text-center text-sm text-gray-500">
+                    No calls match this filter
+                  </td>
+                </tr>
+              )}
 
-          {data && data.records.length > 0 && (
-            <div className="divide-y divide-gray-800">
-              {data.records.map((rec) => (
-                <div key={rec.id} className="px-6 py-4 hover:bg-[#1a1a1a] transition-colors">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex-1 min-w-0 space-y-1">
-                      <div className="flex items-center gap-2 flex-wrap">
-                        {rec.reference_id && (
-                          <span className="font-mono text-xs bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded">
-                            #{rec.reference_id}
-                          </span>
-                        )}
-                        <span
-                          className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                            STATUS_COLORS[rec.status] ?? "bg-gray-700 text-gray-400"
-                          }`}
-                        >
-                          {rec.status.replace(/_/g, " ")}
+              {/* Data rows */}
+              {data?.records.map((rec) => (
+                <tr key={rec.id} className="hover:bg-[#1a1a1a] transition-colors">
+                  {/* Ref / Status */}
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    <div className="flex flex-col gap-1">
+                      {rec.reference_id && (
+                        <span className="font-mono text-xs bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded w-fit">
+                          #{rec.reference_id}
                         </span>
-                        {rec.disposition_name && (
-                          <span
-                            className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
-                            style={{
-                              backgroundColor: rec.disposition_color ? `${rec.disposition_color}22` : "#374151",
-                              color: rec.disposition_color ?? "#9ca3af",
-                            }}
-                          >
-                            {rec.disposition_name}
-                          </span>
-                        )}
-                        {rec.acw_quality_score != null && (
-                          <span className="text-xs text-purple-400 font-medium">
-                            QA {rec.acw_quality_score}
-                          </span>
-                        )}
-                      </div>
-                      <div className="text-sm text-gray-300">
-                        {rec.caller_number ?? rec.to_number ?? "Unknown"}
-                        {rec.assistant_name && (
-                          <span className="text-gray-500"> · {rec.assistant_name}</span>
-                        )}
-                      </div>
-                      <div className="text-xs text-gray-500 flex items-center gap-2">
-                        <span>{fmtDateTime(rec.started_at)}</span>
-                        <span>·</span>
-                        <span>{fmtDuration(rec.duration_seconds)}</span>
-                        {rec.has_transfer && <span className="text-blue-400">· Transferred</span>}
-                      </div>
+                      )}
+                      <span
+                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium w-fit ${
+                          STATUS_COLORS[rec.status] ?? "bg-gray-700 text-gray-400"
+                        }`}
+                      >
+                        {rec.status.replace(/_/g, " ")}
+                      </span>
                     </div>
+                  </td>
+
+                  {/* Date & Time */}
+                  <td className="px-4 py-3 text-gray-400 whitespace-nowrap text-xs">
+                    {fmtDateTime(rec.started_at)}
+                  </td>
+
+                  {/* Caller */}
+                  <td className="px-4 py-3 text-gray-300 whitespace-nowrap text-xs font-mono">
+                    {rec.caller_number ?? rec.to_number ?? "—"}
+                    {rec.has_transfer && (
+                      <span className="ml-1 text-blue-400 font-sans font-normal">↗</span>
+                    )}
+                  </td>
+
+                  {/* Assistant */}
+                  <td className="px-4 py-3 text-gray-400 text-xs max-w-[120px] truncate">
+                    {rec.assistant_name ?? "—"}
+                  </td>
+
+                  {/* Duration */}
+                  <td className="px-4 py-3 text-gray-400 whitespace-nowrap text-xs">
+                    {fmtDuration(rec.duration_seconds)}
+                  </td>
+
+                  {/* Disposition */}
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    {rec.disposition_name ? (
+                      <span
+                        className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium"
+                        style={{
+                          backgroundColor: rec.disposition_color ? `${rec.disposition_color}22` : "#374151",
+                          color: rec.disposition_color ?? "#9ca3af",
+                        }}
+                      >
+                        {rec.disposition_name}
+                      </span>
+                    ) : (
+                      <span className="text-gray-600 text-xs">—</span>
+                    )}
+                  </td>
+
+                  {/* QA Score */}
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    {rec.acw_quality_score != null ? (
+                      <span className="text-xs text-purple-400 font-medium">{rec.acw_quality_score}</span>
+                    ) : (
+                      <span className="text-gray-600 text-xs">—</span>
+                    )}
+                  </td>
+
+                  {/* Transcript button */}
+                  <td className="px-4 py-3 whitespace-nowrap text-right">
                     <button
                       onClick={() => onViewTranscript(rec.id)}
-                      className="flex-shrink-0 flex items-center gap-1.5 px-3 py-1.5 text-xs bg-[#252525] border border-gray-700 rounded-lg text-gray-400 hover:text-gray-100 hover:border-gray-500 transition-colors"
+                      className="flex items-center gap-1 px-2 py-1 text-xs bg-[#252525] border border-gray-700 rounded-lg text-gray-400 hover:text-gray-100 hover:border-gray-500 transition-colors"
                     >
-                      <FileText className="h-3.5 w-3.5" />
+                      <FileText className="h-3 w-3" />
                       Transcript
                     </button>
-                  </div>
-                </div>
+                  </td>
+                </tr>
               ))}
-            </div>
-          )}
 
-          {loading && data && (
-            <div className="flex items-center justify-center py-4">
-              <Loader2 className="h-5 w-5 animate-spin text-gray-500" />
-            </div>
-          )}
+              {/* Inline refresh indicator */}
+              {loading && data && (
+                <tr>
+                  <td colSpan={8} className="py-3 text-center">
+                    <Loader2 className="h-4 w-4 animate-spin text-gray-500 inline-block" />
+                  </td>
+                </tr>
+              )}
+            </tbody>
+          </table>
         </div>
 
         {/* Footer */}
-        <div className="flex-shrink-0 border-t border-gray-800 px-6 py-4">
+        <div className="flex-shrink-0 border-t border-gray-800 px-6 py-3">
           <div className="flex items-center justify-between">
             <button
               onClick={handleViewInCallLogs}
@@ -256,6 +364,9 @@ export default function DrilldownPanel({
 
             {data && data.pages > 1 && (
               <div className="flex items-center gap-2">
+                <span className="text-xs text-gray-500">
+                  {(page - 1) * PAGE_LIMIT + 1}–{Math.min(page * PAGE_LIMIT, data.total)} of {data.total}
+                </span>
                 <button
                   disabled={page <= 1}
                   onClick={() => setPage((p) => p - 1)}
@@ -263,9 +374,6 @@ export default function DrilldownPanel({
                 >
                   <ChevronLeft className="h-4 w-4" />
                 </button>
-                <span className="text-sm text-gray-400">
-                  {page} / {data.pages}
-                </span>
                 <button
                   disabled={page >= data.pages}
                   onClick={() => setPage((p) => p + 1)}
