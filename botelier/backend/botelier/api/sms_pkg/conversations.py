@@ -22,7 +22,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from openai import OpenAI
 from pydantic import BaseModel
-from sqlalchemy import asc, desc, func
+from sqlalchemy import asc, desc, func, or_
 from sqlalchemy.orm import Session
 from loguru import logger
 
@@ -76,7 +76,12 @@ async def list_conversations(
         if status:
             query = query.filter(SMSConversation.status == status)
         if search:
-            query = query.filter(SMSConversation.customer_number.ilike(f"%{search}%"))
+            query = query.filter(
+                or_(
+                    SMSConversation.customer_number.ilike(f"%{search}%"),
+                    SMSConversation.reference_id.ilike(f"%{search}%"),
+                )
+            )
         if assistant_id:
             query = query.filter(SMSConversation.assistant_id == assistant_id)
         if handler_mode and handler_mode in ("ai", "human"):

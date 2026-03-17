@@ -94,6 +94,15 @@ _ADDITIVE_MIGRATIONS = [
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS acw_resolution VARCHAR",
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS acw_quality_score INTEGER",
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS acw_completed_at TIMESTAMP",
+
+    # Friendly reference IDs — short 8-char uppercase identifiers for support/search
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS reference_id VARCHAR(8)",
+    "UPDATE call_logs SET reference_id = UPPER(SUBSTRING(REPLACE(gen_random_uuid()::text, '-', ''), 1, 8)) WHERE reference_id IS NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ix_call_logs_hotel_ref ON call_logs(hotel_id, reference_id)",
+
+    "ALTER TABLE sms_conversations ADD COLUMN IF NOT EXISTS reference_id VARCHAR(8)",
+    "UPDATE sms_conversations SET reference_id = UPPER(SUBSTRING(REPLACE(gen_random_uuid()::text, '-', ''), 1, 8)) WHERE reference_id IS NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS ix_sms_conv_hotel_ref ON sms_conversations(hotel_id, reference_id)",
 ]
 
 

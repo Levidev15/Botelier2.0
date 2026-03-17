@@ -22,6 +22,10 @@ from sqlalchemy.orm import relationship
 from botelier.database import Base
 
 
+def _generate_reference_id() -> str:
+    return uuid.uuid4().hex[:8].upper()
+
+
 class ConversationStatus(str, Enum):
     ACTIVE = "active"
     CLOSED = "closed"
@@ -63,6 +67,8 @@ class SMSConversation(Base):
     __tablename__ = "sms_conversations"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    reference_id = Column(String(8), nullable=True, default=_generate_reference_id)
 
     hotel_id = Column(UUID(as_uuid=True), ForeignKey("hotels.id"), nullable=False)
     assistant_id = Column(UUID(as_uuid=True), ForeignKey("assistants.id"), nullable=True)
@@ -117,6 +123,7 @@ class SMSConversation(Base):
         result = {
             "id": str(self.id),
             "hotel_id": str(self.hotel_id),
+            "reference_id": self.reference_id,
             "assistant_id": str(self.assistant_id) if self.assistant_id else None,
             "phone_number_id": str(self.phone_number_id) if self.phone_number_id else None,
             "customer_number": self.customer_number,

@@ -66,6 +66,7 @@ async def get_call_logs(
             query = query.filter(
                 or_(
                     CallLog.caller_number.ilike(search_pattern),
+                    CallLog.reference_id.ilike(search_pattern),
                     CallLog.transcript.cast(str).ilike(search_pattern),
                 )
             )
