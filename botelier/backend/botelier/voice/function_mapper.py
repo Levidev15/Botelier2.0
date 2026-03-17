@@ -117,9 +117,15 @@ class FunctionMapper:
         """
         Wait until the bot has finished speaking before initiating a transfer.
 
-        If a TtsCompletionWatcher is attached, resets it and awaits the
-        BotStoppedSpeakingFrame signal.  Falls back to a short fixed delay
-        when the watcher is unavailable (e.g. calls without a tool set).
+        This method is a pure waiter — it does NOT reset the watcher.
+        Callers that push a new TTSSpeakFrame must call
+        ``self._tts_completion_watcher.reset()`` *before* the push so the
+        watcher captures the correct BotStoppedSpeakingFrame.  Callers that
+        only want to ensure the bot is already idle (e.g. flow transfers where
+        speech was initiated upstream) should call this without resetting so
+        that an already-set event returns immediately.
+
+        Falls back to a short fixed delay when the watcher is unavailable.
 
         Args:
             timeout: Maximum seconds to wait (default 15).  Transfer proceeds
@@ -128,9 +134,6 @@ class FunctionMapper:
         import asyncio
 
         if self._tts_completion_watcher is not None:
-            # Reset first (synchronously, no await) so wait_until_done() will
-            # block until the next BotStoppedSpeakingFrame — not a stale one.
-            self._tts_completion_watcher.reset()
             logger.info(f"⏳ Awaiting TTS completion before transfer for call {self.call_sid}")
             await self._tts_completion_watcher.wait_until_done(timeout=timeout)
             logger.info(f"✅ TTS completion confirmed for call {self.call_sid}")
