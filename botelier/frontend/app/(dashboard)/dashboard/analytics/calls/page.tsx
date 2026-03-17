@@ -15,7 +15,7 @@ import DashboardWidget from "@/components/analytics/DashboardWidget";
 import DateRangePicker, { DateRange } from "@/components/analytics/DateRangePicker";
 import AssistantFilter from "@/components/analytics/AssistantFilter";
 import CustomizePanel from "@/components/analytics/CustomizePanel";
-import DrilldownPanel from "@/components/analytics/DrilldownPanel";
+import DrilldownPanel, { TranscriptCallLog } from "@/components/analytics/DrilldownPanel";
 import { useWidgetLayout, WidgetDef } from "@/components/analytics/useWidgetLayout";
 import TranscriptModal from "@/app/(dashboard)/dashboard/call-logs/components/TranscriptModal";
 
@@ -133,8 +133,7 @@ export default function CallAnalyticsPage() {
   const [drilldown, setDrilldown] = useState<{ metric: string; label: string } | null>(null);
 
   // Transcript state (fetched on demand from drilldown panel)
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [transcriptLog, setTranscriptLog] = useState<any | null>(null);
+  const [transcriptLog, setTranscriptLog] = useState<TranscriptCallLog | null>(null);
   const [transcriptLoading, setTranscriptLoading] = useState(false);
 
   useEffect(() => {
@@ -274,6 +273,7 @@ export default function CallAnalyticsPage() {
             label="Avg Duration"
             value={fmtDuration(o?.avg_duration_seconds ?? 0)}
             sub={`${fmtDuration(o?.total_duration_seconds ?? 0)} total`}
+            onClick={() => openDrilldown("all", "All Calls")}
           />
         )}
         {isVisible("transfer_rate") && (

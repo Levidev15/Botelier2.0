@@ -181,6 +181,18 @@ export default function CallLogsPage() {
   const [assistantFilter, setAssistantFilter] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+
+  // Pre-populate filters from URL params (e.g. from analytics drilldown "View all" link)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const sp = new URLSearchParams(window.location.search);
+    const s = sp.get("status"); if (s) setStatusFilter(s);
+    const a = sp.get("assistant_id"); if (a) setAssistantFilter(a);
+    const df = sp.get("date_from"); if (df) setDateFrom(df);
+    const dt = sp.get("date_to"); if (dt) setDateTo(dt);
+    if (s || a || df || dt) setShowFilters(true);
+  }, []);
+
   const [timezone, setTimezone] = useState(() => {
     if (typeof window !== "undefined") {
       return localStorage.getItem("botelier_call_logs_timezone") || "UTC";
