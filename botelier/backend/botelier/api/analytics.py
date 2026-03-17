@@ -22,12 +22,15 @@ router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
 _DRILLDOWN_PAGE_LIMIT = 50
 
 
+_MAX_RANGE_DAYS = 365
+
+
 def _resolve_date_range(
     date_from: Optional[datetime],
     date_to: Optional[datetime],
     default_days: int = 7,
 ) -> tuple[datetime, datetime]:
-    """Return (date_from, date_to) with sensible defaults when omitted."""
+    """Return (date_from, date_to) with sensible defaults and a 365-day max range."""
     now = datetime.utcnow()
     if date_from is None and date_to is None:
         date_from = now - timedelta(days=default_days)
@@ -36,6 +39,9 @@ def _resolve_date_range(
         date_from = date_to - timedelta(days=default_days)  # type: ignore[operator]
     elif date_to is None:
         date_to = now
+    # Clamp range to maximum allowed window
+    if (date_to - date_from).days > _MAX_RANGE_DAYS:  # type: ignore[operator]
+        date_from = date_to - timedelta(days=_MAX_RANGE_DAYS)  # type: ignore[operator]
     return date_from, date_to
 
 

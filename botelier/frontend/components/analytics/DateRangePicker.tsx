@@ -34,6 +34,16 @@ function daysAgo(n: number): Date {
   d.setDate(d.getDate() - n);
   return startOfDay(d);
 }
+function monthsAgo(n: number): Date {
+  const d = new Date();
+  d.setMonth(d.getMonth() - n);
+  return startOfDay(d);
+}
+function yearsAgo(n: number): Date {
+  const d = new Date();
+  d.setFullYear(d.getFullYear() - n);
+  return startOfDay(d);
+}
 
 const PRESETS: Preset[] = [
   {
@@ -44,12 +54,25 @@ const PRESETS: Preset[] = [
   {
     label: "Yesterday",
     key: "yesterday",
-    resolve: () => ({ from: daysAgo(1), to: endOfDay(new Date(Date.now() - 86400000)) }),
+    resolve: () => {
+      const yest = new Date(Date.now() - 86_400_000);
+      return { from: startOfDay(yest), to: endOfDay(yest) };
+    },
+  },
+  {
+    label: "Last 3 days",
+    key: "3d",
+    resolve: () => ({ from: daysAgo(3), to: endOfDay(new Date()) }),
   },
   {
     label: "Last 7 days",
     key: "7d",
     resolve: () => ({ from: daysAgo(7), to: endOfDay(new Date()) }),
+  },
+  {
+    label: "Last 14 days",
+    key: "14d",
+    resolve: () => ({ from: daysAgo(14), to: endOfDay(new Date()) }),
   },
   {
     label: "Last 30 days",
@@ -60,6 +83,16 @@ const PRESETS: Preset[] = [
     label: "Last 90 days",
     key: "90d",
     resolve: () => ({ from: daysAgo(90), to: endOfDay(new Date()) }),
+  },
+  {
+    label: "Last 6 months",
+    key: "6m",
+    resolve: () => ({ from: monthsAgo(6), to: endOfDay(new Date()) }),
+  },
+  {
+    label: "Last year",
+    key: "1y",
+    resolve: () => ({ from: yearsAgo(1), to: endOfDay(new Date()) }),
   },
 ];
 
@@ -87,7 +120,6 @@ export default function DateRangePicker({ value, onChange }: DateRangePickerProp
   const ref = useRef<HTMLDivElement>(null);
 
   const activePreset = detectPreset(value);
-  const isCustom = activePreset === null;
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
@@ -109,10 +141,12 @@ export default function DateRangePicker({ value, onChange }: DateRangePickerProp
 
   function applyCustom() {
     if (!customFrom || !customTo) return;
-    const from = startOfDay(new Date(customFrom));
-    const to = endOfDay(new Date(customTo));
+    const from = startOfDay(new Date(customFrom + "T00:00:00"));
+    const to = endOfDay(new Date(customTo + "T00:00:00"));
     if (from > to) return;
-    onChange({ from, to });
+    // Clamp to 365-day max
+    const maxFrom = new Date(to.getTime() - 365 * 86_400_000);
+    onChange({ from: from < maxFrom ? maxFrom : from, to });
     setOpen(false);
   }
 
@@ -121,7 +155,11 @@ export default function DateRangePicker({ value, onChange }: DateRangePickerProp
       return PRESETS.find((p) => p.key === activePreset)?.label ?? "Custom";
     }
     const from = value.from.toLocaleDateString("en-US", { month: "short", day: "numeric" });
-    const to = value.to.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" });
+    const to = value.to.toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
     return `${from} – ${to}`;
   }
 
@@ -133,11 +171,13 @@ export default function DateRangePicker({ value, onChange }: DateRangePickerProp
       >
         <Calendar className="h-4 w-4 text-gray-500" />
         <span>{displayLabel()}</span>
-        <ChevronDown className={`h-4 w-4 text-gray-500 transition-transform ${open ? "rotate-180" : ""}`} />
+        <ChevronDown
+          className={`h-4 w-4 text-gray-500 transition-transform ${open ? "rotate-180" : ""}`}
+        />
       </button>
 
       {open && (
-        <div className="absolute right-0 top-full mt-1 z-50 bg-[#1a1a1a] border border-gray-700 rounded-xl shadow-xl p-3 w-56">
+        <div className="absolute right-0 top-full mt-1 z-50 bg-[#1a1a1a] border border-gray-700 rounded-xl shadow-xl p-3 w-60">
           <p className="text-xs text-gray-500 uppercase tracking-wider mb-2 px-1">Presets</p>
           <div className="space-y-0.5">
             {PRESETS.map((preset) => (
@@ -156,7 +196,9 @@ export default function DateRangePicker({ value, onChange }: DateRangePickerProp
           </div>
 
           <div className="border-t border-gray-700 mt-3 pt-3">
-            <p className="text-xs text-gray-500 uppercase tracking-wider mb-2 px-1">Custom range</p>
+            <p className="text-xs text-gray-500 uppercase tracking-wider mb-2 px-1">
+              Custom range <span className="normal-case">(max 365 days)</span>
+            </p>
             <div className="space-y-2">
               <div>
                 <p className="text-xs text-gray-500 mb-1">From</p>

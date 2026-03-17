@@ -9,7 +9,7 @@ SMS Analytics endpoints.
 
 import csv
 import io
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Optional, List
 from uuid import UUID
 
@@ -75,12 +75,18 @@ async def get_sms_stats(
         from botelier.models.assistant import Assistant
         from botelier.models.disposition import AssistantDisposition
 
+        # Resolve & clamp date range (max 365 days)
+        _MAX_RANGE_DAYS = 365
+        _now = datetime.utcnow()
+        _since = date_from if date_from else (_now - timedelta(days=7))
+        _until = date_to if date_to else _now
+        if (_until - _since).days > _MAX_RANGE_DAYS:
+            _since = _until - timedelta(days=_MAX_RANGE_DAYS)
+
         def _base_q():
             q = db.query(SMSConversation).filter(SMSConversation.hotel_id == hotel_id)
-            if date_from:
-                q = q.filter(SMSConversation.started_at >= date_from)
-            if date_to:
-                q = q.filter(SMSConversation.started_at <= date_to)
+            q = q.filter(SMSConversation.started_at >= _since)
+            q = q.filter(SMSConversation.started_at <= _until)
             if assistant_ids:
                 q = q.filter(SMSConversation.assistant_id.in_(assistant_ids))
             if botelier_number:
