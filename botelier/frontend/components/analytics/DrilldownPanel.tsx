@@ -198,7 +198,10 @@ export default function DrilldownPanel({
       }
     }
 
-    // Apply assistant filter (single assistant_id supported by Call Logs)
+    // Apply assistant filter — Call Logs supports a single assistant_id param.
+    // When exactly one assistant is active, it is preserved; when multiple are selected
+    // the date range alone is used (multi-assistant cannot be expressed as a single
+    // Call Logs filter without backend changes to support assistant_ids[]).
     if (assistantIds.length === 1 && !params.has("assistant_id")) {
       params.set("assistant_id", assistantIds[0]);
     }
