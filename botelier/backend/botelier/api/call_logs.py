@@ -14,7 +14,7 @@ from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
-from sqlalchemy import desc, or_, func
+from sqlalchemy import desc, or_, func, Text
 from sqlalchemy.orm import Session, joinedload
 from loguru import logger
 
@@ -67,7 +67,7 @@ async def get_call_logs(
                 or_(
                     CallLog.caller_number.ilike(search_pattern),
                     CallLog.reference_id.ilike(search_pattern),
-                    CallLog.transcript.cast(str).ilike(search_pattern),
+                    CallLog.transcript.cast(Text).ilike(search_pattern),
                 )
             )
         

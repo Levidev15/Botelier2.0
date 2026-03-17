@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useMemo } from "react";
+import { useEffect, useState, useMemo, useCallback } from "react";
 import { SlidersHorizontal, Loader2 } from "lucide-react";
 import {
   ResponsiveContainer,
@@ -12,9 +12,12 @@ import {
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import StatCard from "@/components/analytics/StatCard";
 import DashboardWidget from "@/components/analytics/DashboardWidget";
-import TimeRangePicker from "@/components/analytics/TimeRangePicker";
+import DateRangePicker, { DateRange } from "@/components/analytics/DateRangePicker";
+import AssistantFilter from "@/components/analytics/AssistantFilter";
 import CustomizePanel from "@/components/analytics/CustomizePanel";
+import DrilldownPanel from "@/components/analytics/DrilldownPanel";
 import { useWidgetLayout, WidgetDef } from "@/components/analytics/useWidgetLayout";
+import TranscriptModal from "@/app/(dashboard)/dashboard/call-logs/components/TranscriptModal";
 
 const WIDGETS: WidgetDef[] = [
   { id: "total_calls", label: "Total Calls", defaultVisible: true },
@@ -50,8 +53,18 @@ function fmtDuration(s: number) {
   return `${m}m ${sec}s`;
 }
 
+function defaultDateRange(): DateRange {
+  const now = new Date();
+  const from = new Date(now.getTime() - 7 * 86_400_000);
+  from.setHours(0, 0, 0, 0);
+  const to = new Date(now);
+  to.setHours(23, 59, 59, 999);
+  return { from, to };
+}
+
 interface AnalyticsData {
-  period_days: number;
+  date_from: string;
+  date_to: string;
   overview: {
     total_calls: number;
     completed: number;
@@ -84,7 +97,6 @@ interface TooltipPayloadEntry {
   value?: string | number;
   color?: string;
 }
-
 interface CustomTooltipProps {
   active?: boolean;
   payload?: TooltipPayloadEntry[];
@@ -105,9 +117,11 @@ const CustomTooltipContent = ({ active, payload, label }: CustomTooltipProps) =>
   );
 };
 
+
 export default function CallAnalyticsPage() {
   const { accountId } = useAccountContext();
-  const [days, setDays] = useState(7);
+  const [dateRange, setDateRange] = useState<DateRange>(defaultDateRange);
+  const [assistantIds, setAssistantIds] = useState<string[]>([]);
   const [retryKey, setRetryKey] = useState(0);
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -115,11 +129,25 @@ export default function CallAnalyticsPage() {
   const [customizeOpen, setCustomizeOpen] = useState(false);
   const { visibility, toggle, resetDefaults, isVisible } = useWidgetLayout("call_analytics", WIDGETS);
 
+  // Drilldown state
+  const [drilldown, setDrilldown] = useState<{ metric: string; label: string } | null>(null);
+
+  // Transcript state (fetched on demand from drilldown panel)
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const [transcriptLog, setTranscriptLog] = useState<any | null>(null);
+  const [transcriptLoading, setTranscriptLoading] = useState(false);
+
   useEffect(() => {
     if (!accountId) return;
     setLoading(true);
     setError(null);
-    fetch(`/api/analytics/calls?hotel_id=${accountId}&days=${days}`)
+    const params = new URLSearchParams({
+      hotel_id: accountId,
+      date_from: dateRange.from.toISOString(),
+      date_to: dateRange.to.toISOString(),
+    });
+    assistantIds.forEach((id) => params.append("assistant_ids", id));
+    fetch(`/api/analytics/calls?${params}`)
       .then((r) => {
         if (!r.ok) throw new Error(`Failed to load analytics (${r.status})`);
         return r.json();
@@ -130,7 +158,7 @@ export default function CallAnalyticsPage() {
         setError(err.message || "Failed to load analytics");
       })
       .finally(() => setLoading(false));
-  }, [accountId, days, retryKey]);
+  }, [accountId, dateRange, assistantIds, retryKey]);
 
   const volumeData = useMemo(() => {
     if (!data) return [];
@@ -148,6 +176,28 @@ export default function CallAnalyticsPage() {
     });
     return full;
   }, [data]);
+
+  const openDrilldown = useCallback((metric: string, label: string) => {
+    setDrilldown({ metric, label });
+  }, []);
+
+  const handleViewTranscript = useCallback(
+    async (logId: string) => {
+      if (!accountId) return;
+      setTranscriptLoading(true);
+      try {
+        const r = await fetch(`/api/call-logs/${logId}?hotel_id=${accountId}`);
+        if (!r.ok) throw new Error("Failed to load transcript");
+        const log = await r.json();
+        setTranscriptLog(log);
+      } catch {
+        // silently fail — transcript unavailable
+      } finally {
+        setTranscriptLoading(false);
+      }
+    },
+    [accountId]
+  );
 
   if (loading && !data) {
     return (
@@ -175,15 +225,16 @@ export default function CallAnalyticsPage() {
 
   return (
     <div className="p-6 max-w-[1400px] mx-auto">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-100">Call Analytics</h1>
           <p className="text-sm text-gray-400 mt-1">
-            {o?.total_calls ?? 0} calls in the last {days} days
+            {o?.total_calls ?? 0} calls
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <TimeRangePicker value={days} onChange={setDays} />
+        <div className="flex items-center gap-3 flex-wrap">
+          <AssistantFilter selected={assistantIds} onChange={setAssistantIds} />
+          <DateRangePicker value={dateRange} onChange={setDateRange} />
           <button
             onClick={() => setCustomizeOpen(true)}
             className="flex items-center gap-2 px-3 py-1.5 text-sm bg-[#1a1a1a] border border-gray-700 rounded-lg text-gray-300 hover:text-gray-100 hover:border-gray-600 transition-colors"
@@ -202,7 +253,12 @@ export default function CallAnalyticsPage() {
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
         {isVisible("total_calls") && (
-          <StatCard label="Total Calls" value={o?.total_calls ?? 0} sub={`${o?.completed ?? 0} completed`} />
+          <StatCard
+            label="Total Calls"
+            value={o?.total_calls ?? 0}
+            sub={`${o?.completed ?? 0} completed`}
+            onClick={() => openDrilldown("all", "All Calls")}
+          />
         )}
         {isVisible("completion_rate") && (
           <StatCard
@@ -210,6 +266,7 @@ export default function CallAnalyticsPage() {
             value={`${o?.completion_rate ?? 0}%`}
             sub={`${o?.missed ?? 0} missed`}
             color="text-green-400"
+            onClick={() => openDrilldown("completed", "Completed Calls")}
           />
         )}
         {isVisible("avg_duration") && (
@@ -225,6 +282,7 @@ export default function CallAnalyticsPage() {
             value={`${o?.transfer_rate ?? 0}%`}
             sub={`${o?.transferred ?? 0} transferred`}
             color="text-blue-400"
+            onClick={() => openDrilldown("transferred", "Transferred Calls")}
           />
         )}
         {isVisible("avg_quality") && (
@@ -237,6 +295,7 @@ export default function CallAnalyticsPage() {
                 : "No ACW data"
             }
             color="text-purple-400"
+            onClick={() => openDrilldown("acw_completed", "Calls with Post Call QA")}
           />
         )}
       </div>
@@ -264,12 +323,20 @@ export default function CallAnalyticsPage() {
           <DashboardWidget title="Calls by Hour of Day" span={2}>
             {hourData.some((h) => h.calls > 0) ? (
               <ResponsiveContainer width="100%" height={260}>
-                <BarChart data={hourData}>
+                <BarChart
+                  data={hourData}
+                  onClick={(e) => {
+                    if (e?.activePayload?.[0]?.payload) {
+                      const hr = e.activePayload[0].payload.hour;
+                      openDrilldown(`hour:${hr}`, `Calls at ${hr}:00`);
+                    }
+                  }}
+                >
                   <CartesianGrid strokeDasharray="3 3" stroke="#333" />
                   <XAxis dataKey="label" tick={{ fill: "#9ca3af", fontSize: 10 }} interval={2} />
                   <YAxis tick={{ fill: "#9ca3af", fontSize: 12 }} allowDecimals={false} />
                   <Tooltip content={<CustomTooltipContent />} />
-                  <Bar dataKey="calls" fill="#8b5cf6" radius={[4, 4, 0, 0]} />
+                  <Bar dataKey="calls" fill="#8b5cf6" radius={[4, 4, 0, 0]} cursor="pointer" />
                 </BarChart>
               </ResponsiveContainer>
             ) : (
@@ -293,9 +360,10 @@ export default function CallAnalyticsPage() {
                       innerRadius={35}
                       outerRadius={60}
                       paddingAngle={2}
+                      onClick={(entry) => openDrilldown(`status:${entry.status}`, `Status: ${entry.status.replace(/_/g, " ")}`)}
                     >
                       {data.status_distribution.map((d, i) => (
-                        <Cell key={d.status} fill={STATUS_COLORS[d.status] || CHART_COLORS[i % CHART_COLORS.length]} />
+                        <Cell key={d.status} fill={STATUS_COLORS[d.status] || CHART_COLORS[i % CHART_COLORS.length]} cursor="pointer" />
                       ))}
                     </Pie>
                     <Tooltip content={<CustomTooltipContent />} />
@@ -303,7 +371,11 @@ export default function CallAnalyticsPage() {
                 </ResponsiveContainer>
                 <div className="flex-1 space-y-1.5">
                   {data.status_distribution.map((d, i) => (
-                    <div key={d.status} className="flex items-center justify-between text-sm">
+                    <button
+                      key={d.status}
+                      onClick={() => openDrilldown(`status:${d.status}`, `Status: ${d.status.replace(/_/g, " ")}`)}
+                      className="w-full flex items-center justify-between text-sm hover:bg-gray-800 rounded px-1 py-0.5 transition-colors"
+                    >
                       <div className="flex items-center gap-2">
                         <span
                           className="w-2.5 h-2.5 rounded-full"
@@ -312,7 +384,7 @@ export default function CallAnalyticsPage() {
                         <span className="text-gray-300 capitalize">{d.status.replace(/_/g, " ")}</span>
                       </div>
                       <span className="text-gray-400 font-medium">{d.count}</span>
-                    </div>
+                    </button>
                   ))}
                 </div>
               </div>
@@ -330,7 +402,11 @@ export default function CallAnalyticsPage() {
                   const total = data.dispositions.reduce((a, b) => a + b.count, 0);
                   const pct = total > 0 ? (d.count / total) * 100 : 0;
                   return (
-                    <div key={d.disposition_id}>
+                    <button
+                      key={d.disposition_id}
+                      onClick={() => openDrilldown(`disposition:${d.disposition_id}`, `Disposition: ${d.name}`)}
+                      className="w-full text-left hover:bg-gray-800/50 rounded-lg px-1 py-0.5 transition-colors"
+                    >
                       <div className="flex items-center justify-between text-sm mb-1">
                         <div className="flex items-center gap-2">
                           <span
@@ -347,7 +423,7 @@ export default function CallAnalyticsPage() {
                           style={{ width: `${pct}%`, backgroundColor: d.color || "#6b7280" }}
                         />
                       </div>
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -361,7 +437,16 @@ export default function CallAnalyticsPage() {
           <DashboardWidget title="Calls by Assistant" span={2}>
             {data && data.by_assistant.length > 0 ? (
               <ResponsiveContainer width="100%" height={Math.max(180, data.by_assistant.length * 40)}>
-                <BarChart data={data.by_assistant} layout="vertical">
+                <BarChart
+                  data={data.by_assistant}
+                  layout="vertical"
+                  onClick={(e) => {
+                    if (e?.activePayload?.[0]?.payload) {
+                      const row = e.activePayload[0].payload;
+                      openDrilldown(`assistant:${row.assistant_id}`, `Assistant: ${row.assistant_name}`);
+                    }
+                  }}
+                >
                   <CartesianGrid strokeDasharray="3 3" stroke="#333" />
                   <XAxis type="number" tick={{ fill: "#9ca3af", fontSize: 12 }} allowDecimals={false} />
                   <YAxis
@@ -371,7 +456,7 @@ export default function CallAnalyticsPage() {
                     width={120}
                   />
                   <Tooltip content={<CustomTooltipContent />} />
-                  <Bar dataKey="calls" fill="#22c55e" radius={[0, 4, 4, 0]} />
+                  <Bar dataKey="calls" fill="#22c55e" radius={[0, 4, 4, 0]} cursor="pointer" />
                 </BarChart>
               </ResponsiveContainer>
             ) : (
@@ -415,12 +500,20 @@ export default function CallAnalyticsPage() {
           <DashboardWidget title="Quality Score Distribution">
             {data && data.acw.score_distribution.length > 0 && data.acw.score_distribution.some((d) => d.count > 0) ? (
               <ResponsiveContainer width="100%" height={200}>
-                <BarChart data={data.acw.score_distribution}>
+                <BarChart
+                  data={data.acw.score_distribution}
+                  onClick={(e) => {
+                    if (e?.activePayload?.[0]?.payload) {
+                      const row = e.activePayload[0].payload;
+                      openDrilldown(`quality_range:${row.range}`, `Quality Score ${row.range}`);
+                    }
+                  }}
+                >
                   <CartesianGrid strokeDasharray="3 3" stroke="#333" />
                   <XAxis dataKey="range" tick={{ fill: "#9ca3af", fontSize: 12 }} />
                   <YAxis tick={{ fill: "#9ca3af", fontSize: 12 }} allowDecimals={false} />
                   <Tooltip content={<CustomTooltipContent />} />
-                  <Bar dataKey="count" radius={[4, 4, 0, 0]}>
+                  <Bar dataKey="count" radius={[4, 4, 0, 0]} cursor="pointer">
                     {data.acw.score_distribution.map((_, i) => (
                       <Cell key={i} fill={["#ef4444", "#f59e0b", "#eab308", "#22c55e", "#10b981"][i]} />
                     ))}
@@ -442,6 +535,29 @@ export default function CallAnalyticsPage() {
         onToggle={toggle}
         onReset={resetDefaults}
       />
+
+      <DrilldownPanel
+        open={drilldown !== null}
+        metric={drilldown?.metric ?? ""}
+        metricLabel={drilldown?.label ?? ""}
+        dateRange={dateRange}
+        assistantIds={assistantIds}
+        onClose={() => setDrilldown(null)}
+        onViewTranscript={handleViewTranscript}
+      />
+
+      {transcriptLoading && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60">
+          <Loader2 className="h-8 w-8 animate-spin text-gray-300" />
+        </div>
+      )}
+
+      {transcriptLog && (
+        <TranscriptModal
+          log={transcriptLog}
+          onClose={() => setTranscriptLog(null)}
+        />
+      )}
     </div>
   );
 }

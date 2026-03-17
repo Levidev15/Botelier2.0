@@ -1,41 +1,63 @@
 """
 Analytics API — rich aggregated metrics for Call Analytics dashboard.
 
-GET /api/analytics/calls — All call metrics in one response.
+GET /api/analytics/calls            — All call metrics in one response.
+GET /api/analytics/calls/drilldown  — Paginated call records for a given metric slice.
 """
 
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
 from sqlalchemy import desc, func, case
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from botelier.database import get_db
-from botelier.models import CallLog, CallStatus, Assistant, AssistantDisposition
+from botelier.models import CallLog, CallStatus, Assistant, AssistantDisposition, PhoneNumber
 
 router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
+
+_DRILLDOWN_PAGE_LIMIT = 50
+
+
+def _resolve_date_range(
+    date_from: Optional[datetime],
+    date_to: Optional[datetime],
+    default_days: int = 7,
+) -> tuple[datetime, datetime]:
+    """Return (date_from, date_to) with sensible defaults when omitted."""
+    now = datetime.utcnow()
+    if date_from is None and date_to is None:
+        date_from = now - timedelta(days=default_days)
+        date_to = now
+    elif date_from is None:
+        date_from = date_to - timedelta(days=default_days)  # type: ignore[operator]
+    elif date_to is None:
+        date_to = now
+    return date_from, date_to
 
 
 @router.get("/calls")
 async def get_call_analytics(
     hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
-    days: int = Query(7, ge=1, le=90, description="Number of days to analyze"),
-    assistant_id: Optional[UUID] = Query(None, description="Filter by assistant"),
+    date_from: Optional[datetime] = Query(None, description="Start of window (ISO 8601). Defaults to 7 days ago."),
+    date_to: Optional[datetime] = Query(None, description="End of window (ISO 8601). Defaults to now."),
+    assistant_ids: Optional[List[UUID]] = Query(None, description="Filter to these assistants (repeat param for multiple)."),
     db: Session = Depends(get_db),
 ):
     try:
-        since = datetime.utcnow() - timedelta(days=days)
+        since, until = _resolve_date_range(date_from, date_to)
 
         def _base():
             q = db.query(CallLog).filter(
                 CallLog.hotel_id == hotel_id,
                 CallLog.started_at >= since,
+                CallLog.started_at <= until,
             )
-            if assistant_id:
-                q = q.filter(CallLog.assistant_id == assistant_id)
+            if assistant_ids:
+                q = q.filter(CallLog.assistant_id.in_(assistant_ids))
             return q
 
         total = _base().count()
@@ -217,7 +239,8 @@ async def get_call_analytics(
         }
 
         return {
-            "period_days": days,
+            "date_from": since.isoformat(),
+            "date_to": until.isoformat(),
             "overview": overview,
             "volume_by_day": volume_by_day,
             "calls_by_hour": calls_by_hour,
@@ -230,3 +253,151 @@ async def get_call_analytics(
     except Exception as e:
         logger.exception(f"Error generating call analytics: {e}")
         raise HTTPException(status_code=500, detail="Failed to generate call analytics")
+
+
+@router.get("/calls/drilldown")
+async def get_calls_drilldown(
+    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    date_from: Optional[datetime] = Query(None, description="Start of window (ISO 8601)."),
+    date_to: Optional[datetime] = Query(None, description="End of window (ISO 8601)."),
+    assistant_ids: Optional[List[UUID]] = Query(None, description="Filter to these assistants."),
+    metric: str = Query("all", description=(
+        "Metric token — one of: all | completed | missed | failed | transferred | "
+        "acw_completed | status:<val> | disposition:<uuid> | hour:<0-23> | "
+        "assistant:<uuid> | quality_range:<label>"
+    )),
+    page: int = Query(1, ge=1),
+    limit: int = Query(_DRILLDOWN_PAGE_LIMIT, ge=1, le=100),
+    db: Session = Depends(get_db),
+):
+    """
+    Return a paginated list of individual call records that make up a given
+    analytics metric slice.  Supports the same date/assistant filters as
+    GET /api/analytics/calls.
+    """
+    try:
+        since, until = _resolve_date_range(date_from, date_to)
+
+        query = db.query(CallLog).filter(
+            CallLog.hotel_id == hotel_id,
+            CallLog.started_at >= since,
+            CallLog.started_at <= until,
+        )
+        if assistant_ids:
+            query = query.filter(CallLog.assistant_id.in_(assistant_ids))
+
+        # --- apply metric filter ---
+        token = metric.strip()
+        if token == "completed":
+            query = query.filter(CallLog.status == CallStatus.COMPLETED.value)
+        elif token == "missed":
+            query = query.filter(CallLog.status.in_([
+                CallStatus.NO_ANSWER.value,
+                CallStatus.BUSY.value,
+                CallStatus.CANCELED.value,
+            ]))
+        elif token == "failed":
+            query = query.filter(CallLog.status == CallStatus.FAILED.value)
+        elif token == "transferred":
+            query = query.filter(CallLog.has_transfer == True)
+        elif token == "acw_completed":
+            query = query.filter(CallLog.acw_completed_at.isnot(None))
+        elif token.startswith("status:"):
+            status_val = token[len("status:"):]
+            query = query.filter(CallLog.status == status_val)
+        elif token.startswith("disposition:"):
+            disp_id = token[len("disposition:"):]
+            query = query.filter(CallLog.disposition_id == UUID(disp_id))
+        elif token.startswith("hour:"):
+            hr = int(token[len("hour:"):])
+            query = query.filter(func.extract("hour", CallLog.started_at) == hr)
+        elif token.startswith("assistant:"):
+            asst_id = token[len("assistant:"):]
+            query = query.filter(CallLog.assistant_id == UUID(asst_id))
+        elif token.startswith("quality_range:"):
+            label = token[len("quality_range:"):]
+            _ranges = {
+                "0-20": (0, 20), "21-40": (21, 40), "41-60": (41, 60),
+                "61-80": (61, 80), "81-100": (81, 100),
+            }
+            if label in _ranges:
+                lo, hi = _ranges[label]
+                query = query.filter(
+                    CallLog.acw_quality_score >= lo,
+                    CallLog.acw_quality_score <= hi,
+                )
+        # "all" — no extra filter
+
+        total = query.count()
+
+        call_logs = (
+            query
+            .order_by(desc(CallLog.started_at))
+            .offset((page - 1) * limit)
+            .limit(limit)
+            .all()
+        )
+
+        # Bulk-load assistant + phone names
+        asst_id_set = {log.assistant_id for log in call_logs if log.assistant_id}
+        phone_id_set = {log.phone_number_id for log in call_logs if log.phone_number_id}
+        disp_id_set = {log.disposition_id for log in call_logs if log.disposition_id}
+
+        asst_map: dict = {}
+        if asst_id_set:
+            rows = db.query(Assistant.id, Assistant.name).filter(
+                Assistant.id.in_(asst_id_set), Assistant.hotel_id == hotel_id
+            ).all()
+            asst_map = {str(r.id): r.name for r in rows}
+
+        phone_map: dict = {}
+        if phone_id_set:
+            rows = db.query(PhoneNumber.id, PhoneNumber.phone_number).filter(
+                PhoneNumber.id.in_(phone_id_set), PhoneNumber.hotel_id == hotel_id
+            ).all()
+            phone_map = {str(r.id): r.phone_number for r in rows}
+
+        disp_map: dict = {}
+        if disp_id_set:
+            rows = db.query(
+                AssistantDisposition.id,
+                AssistantDisposition.name,
+                AssistantDisposition.color,
+            ).filter(AssistantDisposition.id.in_(disp_id_set)).all()
+            disp_map = {str(r.id): {"name": r.name, "color": r.color} for r in rows}
+
+        records = []
+        for log in call_logs:
+            records.append({
+                "id": str(log.id),
+                "reference_id": log.reference_id,
+                "started_at": log.started_at.isoformat() if log.started_at else None,
+                "caller_number": log.caller_number,
+                "to_number": log.to_number,
+                "status": log.status,
+                "duration_seconds": log.duration_seconds,
+                "has_transfer": log.has_transfer,
+                "assistant_id": str(log.assistant_id) if log.assistant_id else None,
+                "assistant_name": asst_map.get(str(log.assistant_id)) if log.assistant_id else None,
+                "phone_number_display": phone_map.get(str(log.phone_number_id)) if log.phone_number_id else None,
+                "disposition_id": str(log.disposition_id) if log.disposition_id else None,
+                "disposition_name": disp_map.get(str(log.disposition_id), {}).get("name") if log.disposition_id else None,
+                "disposition_color": disp_map.get(str(log.disposition_id), {}).get("color") if log.disposition_id else None,
+                "acw_quality_score": log.acw_quality_score,
+                "acw_resolution": log.acw_resolution,
+            })
+
+        return {
+            "records": records,
+            "total": total,
+            "page": page,
+            "limit": limit,
+            "pages": max(1, (total + limit - 1) // limit),
+            "metric": metric,
+            "date_from": since.isoformat(),
+            "date_to": until.isoformat(),
+        }
+
+    except Exception as e:
+        logger.exception(f"Error fetching drilldown: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch drilldown data")

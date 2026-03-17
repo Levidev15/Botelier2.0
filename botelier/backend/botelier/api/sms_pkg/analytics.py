@@ -10,7 +10,7 @@ SMS Analytics endpoints.
 import csv
 import io
 from datetime import datetime
-from typing import Optional
+from typing import Optional, List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -61,7 +61,7 @@ async def get_sms_stats(
     hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
     date_from: Optional[datetime] = Query(None, description="Start of reporting window (ISO 8601)"),
     date_to: Optional[datetime] = Query(None, description="End of reporting window (ISO 8601)"),
-    assistant_id: Optional[UUID] = Query(None, description="Limit stats to one assistant"),
+    assistant_ids: Optional[List[UUID]] = Query(None, description="Filter to these assistants (repeat param for multiple)."),
     botelier_number: Optional[str] = Query(None, description="Limit stats to one phone number"),
     db: Session = Depends(get_db),
 ):
@@ -81,8 +81,8 @@ async def get_sms_stats(
                 q = q.filter(SMSConversation.started_at >= date_from)
             if date_to:
                 q = q.filter(SMSConversation.started_at <= date_to)
-            if assistant_id:
-                q = q.filter(SMSConversation.assistant_id == assistant_id)
+            if assistant_ids:
+                q = q.filter(SMSConversation.assistant_id.in_(assistant_ids))
             if botelier_number:
                 q = q.filter(SMSConversation.botelier_number == botelier_number)
             return q
