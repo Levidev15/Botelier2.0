@@ -152,23 +152,59 @@ export default function DrilldownPanel({
     if (page > 1) fetchData(page);
   }, [page, fetchData]);
 
-  function buildCallLogsUrl(): string {
+  /**
+   * Map the current metric token to the best-effort Call Logs URL params.
+   * Returns { url, filterNote } where filterNote describes any criteria
+   * that could not be expressed as Call Logs filters.
+   */
+  function buildCallLogsTarget(): { url: string; filterNote: string | null } {
     const params = new URLSearchParams();
     params.set("date_from", toDateParam(dateRange.from));
     params.set("date_to", toDateParam(dateRange.to));
 
-    if (metric === "completed") params.set("status", "completed");
-    else if (metric === "failed") params.set("status", "failed");
-    else if (metric.startsWith("status:")) params.set("status", metric.slice(7));
-    else if (metric.startsWith("assistant:")) params.set("assistant_id", metric.slice(10));
+    let filterNote: string | null = null;
 
-    if (assistantIds.length === 1) params.set("assistant_id", assistantIds[0]);
+    if (metric === "all") {
+      // no extra filter — all calls in date range
+    } else if (metric === "completed") {
+      params.set("status", "completed");
+    } else if (metric === "failed") {
+      params.set("status", "failed");
+    } else if (metric === "missed") {
+      // "missed" = no_answer | busy | canceled — Call Logs only supports a single status
+      // Pass no_answer as the primary status and note the limitation
+      params.set("status", "no_answer");
+      filterNote = "Showing no_answer only — Call Logs doesn't support multi-status filter";
+    } else if (metric === "transferred") {
+      // No direct "transferred" filter in Call Logs; pass date/assistant only
+      filterNote = "Showing all calls in range — transfer filter not available in Call Logs";
+    } else if (metric === "acw_completed") {
+      filterNote = "Showing all calls in range — Post Call QA filter not available in Call Logs";
+    } else if (metric.startsWith("status:")) {
+      params.set("status", metric.slice(7));
+    } else if (metric.startsWith("assistant:")) {
+      params.set("assistant_id", metric.slice(10));
+    } else if (metric.startsWith("disposition:")) {
+      filterNote = "Showing all calls in range — disposition filter not available in Call Logs";
+    } else if (metric.startsWith("hour:")) {
+      const hr = metric.slice(5);
+      filterNote = `Showing all calls in range — hour ${hr}:00 filter not available in Call Logs`;
+    } else if (metric.startsWith("quality_range:")) {
+      filterNote = "Showing all calls in range — quality score filter not available in Call Logs";
+    }
 
-    return `/dashboard/call-logs?${params}`;
+    // Apply assistant filter (single assistant_id supported by Call Logs)
+    if (assistantIds.length === 1 && !params.has("assistant_id")) {
+      params.set("assistant_id", assistantIds[0]);
+    }
+
+    return { url: `/dashboard/call-logs?${params}`, filterNote };
   }
 
+  const { url: callLogsUrl, filterNote } = buildCallLogsTarget();
+
   function handleViewInCallLogs() {
-    router.push(buildCallLogsUrl());
+    router.push(callLogsUrl);
     onClose();
   }
 
@@ -353,6 +389,12 @@ export default function DrilldownPanel({
 
         {/* Footer */}
         <div className="flex-shrink-0 border-t border-gray-800 px-6 py-3">
+          {filterNote && (
+            <p className="text-xs text-yellow-600/80 mb-2 flex items-start gap-1.5">
+              <span className="mt-0.5">⚠</span>
+              <span>{filterNote}</span>
+            </p>
+          )}
           <div className="flex items-center justify-between">
             <button
               onClick={handleViewInCallLogs}
