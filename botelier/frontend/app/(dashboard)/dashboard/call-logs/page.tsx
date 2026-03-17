@@ -182,6 +182,14 @@ export default function CallLogsPage() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
+  // Deep-link params from analytics drilldown "View all in Call Logs"
+  const [hasTransferFilter, setHasTransferFilter] = useState<boolean | null>(null);
+  const [dispositionIdFilter, setDispositionIdFilter] = useState("");
+  const [acwCompletedFilter, setAcwCompletedFilter] = useState<boolean | null>(null);
+  const [qualityMin, setQualityMin] = useState<number | null>(null);
+  const [qualityMax, setQualityMax] = useState<number | null>(null);
+  const [hourFilter, setHourFilter] = useState<number | null>(null);
+
   // Pre-populate filters from URL params (e.g. from analytics drilldown "View all" link)
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -190,7 +198,13 @@ export default function CallLogsPage() {
     const a = sp.get("assistant_id"); if (a) setAssistantFilter(a);
     const df = sp.get("date_from"); if (df) setDateFrom(df);
     const dt = sp.get("date_to"); if (dt) setDateTo(dt);
-    if (s || a || df || dt) setShowFilters(true);
+    const ht = sp.get("has_transfer"); if (ht === "true") setHasTransferFilter(true);
+    const did = sp.get("disposition_id"); if (did) setDispositionIdFilter(did);
+    const acw = sp.get("acw_completed"); if (acw === "true") setAcwCompletedFilter(true);
+    const qmin = sp.get("quality_min"); if (qmin) setQualityMin(Number(qmin));
+    const qmax = sp.get("quality_max"); if (qmax) setQualityMax(Number(qmax));
+    const hr = sp.get("hour"); if (hr !== null) setHourFilter(Number(hr));
+    if (s || a || df || dt || ht || did || acw || qmin || qmax || hr !== null) setShowFilters(true);
   }, []);
 
   const [timezone, setTimezone] = useState(() => {
@@ -222,6 +236,12 @@ export default function CallLogsPage() {
       if (assistantFilter) params.append("assistant_id", assistantFilter);
       if (dateFrom) params.append("date_from", new Date(dateFrom).toISOString());
       if (dateTo) params.append("date_to", new Date(dateTo).toISOString());
+      if (hasTransferFilter !== null) params.append("has_transfer", String(hasTransferFilter));
+      if (dispositionIdFilter) params.append("disposition_id", dispositionIdFilter);
+      if (acwCompletedFilter !== null) params.append("acw_completed", String(acwCompletedFilter));
+      if (qualityMin !== null) params.append("quality_min", String(qualityMin));
+      if (qualityMax !== null) params.append("quality_max", String(qualityMax));
+      if (hourFilter !== null) params.append("hour", String(hourFilter));
 
       const response = await fetch(`/api/call-logs?${params}`);
       if (!response.ok) throw new Error("Failed to fetch call logs");
@@ -236,7 +256,8 @@ export default function CallLogsPage() {
     } finally {
       setLoading(false);
     }
-  }, [accountId, page, search, statusFilter, assistantFilter, dateFrom, dateTo]);
+  }, [accountId, page, search, statusFilter, assistantFilter, dateFrom, dateTo,
+      hasTransferFilter, dispositionIdFilter, acwCompletedFilter, qualityMin, qualityMax, hourFilter]);
 
   const fetchFilterOptions = useCallback(async () => {
     if (!accountId) return;

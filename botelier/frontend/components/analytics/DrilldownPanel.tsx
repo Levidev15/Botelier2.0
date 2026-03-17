@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useCallback } from "react";
+import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { X, Loader2, ExternalLink, ChevronLeft, ChevronRight, FileText } from "lucide-react";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
@@ -143,26 +143,31 @@ export default function DrilldownPanel({
     [accountId, open, metric, dateRange, assistantIds]
   );
 
-  useEffect(() => {
-    setPage(1);
-    fetchData(1);
-  }, [fetchData]);
+  // Track previous fetchData identity to distinguish query changes from page changes.
+  // When fetchData changes (metric/dateRange/assistantIds changed), reset to page 1.
+  // When only page changes, fetch that page without resetting.
+  const prevFetchDataRef = useRef(fetchData);
 
   useEffect(() => {
-    if (page > 1) fetchData(page);
-  }, [page, fetchData]);
+    const isNewQuery = prevFetchDataRef.current !== fetchData;
+    prevFetchDataRef.current = fetchData;
+    if (isNewQuery) {
+      setPage(1);
+      fetchData(1);
+    } else {
+      fetchData(page);
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [fetchData, page]);
 
   /**
-   * Map the current metric token to the best-effort Call Logs URL params.
-   * Returns { url, filterNote } where filterNote describes any criteria
-   * that could not be expressed as Call Logs filters.
+   * Map the current metric token to exact Call Logs URL params so that
+   * "View all in Call Logs" always opens a pre-filtered view matching this drilldown.
    */
-  function buildCallLogsTarget(): { url: string; filterNote: string | null } {
+  function buildCallLogsTarget(): string {
     const params = new URLSearchParams();
     params.set("date_from", toDateParam(dateRange.from));
     params.set("date_to", toDateParam(dateRange.to));
-
-    let filterNote: string | null = null;
 
     if (metric === "all") {
       // no extra filter — all calls in date range
@@ -171,26 +176,26 @@ export default function DrilldownPanel({
     } else if (metric === "failed") {
       params.set("status", "failed");
     } else if (metric === "missed") {
-      // "missed" = no_answer | busy | canceled — Call Logs only supports a single status
-      // Pass no_answer as the primary status and note the limitation
-      params.set("status", "no_answer");
-      filterNote = "Showing no_answer only — Call Logs doesn't support multi-status filter";
+      params.set("status", "missed"); // backend expands to no_answer|busy|canceled
     } else if (metric === "transferred") {
-      // No direct "transferred" filter in Call Logs; pass date/assistant only
-      filterNote = "Showing all calls in range — transfer filter not available in Call Logs";
+      params.set("has_transfer", "true");
     } else if (metric === "acw_completed") {
-      filterNote = "Showing all calls in range — Post Call QA filter not available in Call Logs";
+      params.set("acw_completed", "true");
     } else if (metric.startsWith("status:")) {
       params.set("status", metric.slice(7));
     } else if (metric.startsWith("assistant:")) {
       params.set("assistant_id", metric.slice(10));
     } else if (metric.startsWith("disposition:")) {
-      filterNote = "Showing all calls in range — disposition filter not available in Call Logs";
+      params.set("disposition_id", metric.slice(12));
     } else if (metric.startsWith("hour:")) {
-      const hr = metric.slice(5);
-      filterNote = `Showing all calls in range — hour ${hr}:00 filter not available in Call Logs`;
+      params.set("hour", metric.slice(5));
     } else if (metric.startsWith("quality_range:")) {
-      filterNote = "Showing all calls in range — quality score filter not available in Call Logs";
+      const label = metric.slice(14); // e.g. "0-20", "81-100"
+      const parts = label.split("-");
+      if (parts.length === 2) {
+        params.set("quality_min", parts[0]);
+        params.set("quality_max", parts[1]);
+      }
     }
 
     // Apply assistant filter (single assistant_id supported by Call Logs)
@@ -198,10 +203,10 @@ export default function DrilldownPanel({
       params.set("assistant_id", assistantIds[0]);
     }
 
-    return { url: `/dashboard/call-logs?${params}`, filterNote };
+    return `/dashboard/call-logs?${params}`;
   }
 
-  const { url: callLogsUrl, filterNote } = buildCallLogsTarget();
+  const callLogsUrl = buildCallLogsTarget();
 
   function handleViewInCallLogs() {
     router.push(callLogsUrl);
@@ -389,12 +394,6 @@ export default function DrilldownPanel({
 
         {/* Footer */}
         <div className="flex-shrink-0 border-t border-gray-800 px-6 py-3">
-          {filterNote && (
-            <p className="text-xs text-yellow-600/80 mb-2 flex items-start gap-1.5">
-              <span className="mt-0.5">⚠</span>
-              <span>{filterNote}</span>
-            </p>
-          )}
           <div className="flex items-center justify-between">
             <button
               onClick={handleViewInCallLogs}

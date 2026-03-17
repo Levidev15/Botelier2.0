@@ -25,15 +25,24 @@ from botelier.models import CallLog, CallLeg, CallStatus, Assistant, PhoneNumber
 router = APIRouter(prefix="/api/call-logs", tags=["Call Logs"])
 
 
+_MISSED_STATUSES = ("no_answer", "busy", "canceled")
+
+
 @router.get("")
 async def get_call_logs(
     hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
-    status: Optional[str] = Query(None, description="Filter by call status"),
+    status: Optional[str] = Query(None, description="Filter by call status. Use 'missed' to match no_answer|busy|canceled."),
     assistant_id: Optional[UUID] = Query(None, description="Filter by assistant"),
     phone_number_id: Optional[UUID] = Query(None, description="Filter by phone number"),
     date_from: Optional[datetime] = Query(None, description="Filter calls from this date"),
     date_to: Optional[datetime] = Query(None, description="Filter calls until this date"),
     search: Optional[str] = Query(None, description="Search caller number or transcript"),
+    has_transfer: Optional[bool] = Query(None, description="If true, only return calls with transfers"),
+    disposition_id: Optional[UUID] = Query(None, description="Filter by disposition UUID"),
+    acw_completed: Optional[bool] = Query(None, description="If true, only return calls with completed Post Call QA"),
+    quality_min: Optional[int] = Query(None, ge=0, le=100, description="Minimum ACW quality score"),
+    quality_max: Optional[int] = Query(None, ge=0, le=100, description="Maximum ACW quality score"),
+    hour: Optional[int] = Query(None, ge=0, le=23, description="Hour of day (0-23) in UTC to filter by"),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(50, ge=1, le=100, description="Items per page"),
     db: Session = Depends(get_db),
@@ -47,7 +56,10 @@ async def get_call_logs(
         query = db.query(CallLog).filter(CallLog.hotel_id == hotel_id)
         
         if status:
-            query = query.filter(CallLog.status == status)
+            if status == "missed":
+                query = query.filter(CallLog.status.in_(_MISSED_STATUSES))
+            else:
+                query = query.filter(CallLog.status == status)
         
         if assistant_id:
             query = query.filter(CallLog.assistant_id == assistant_id)
@@ -60,6 +72,24 @@ async def get_call_logs(
         
         if date_to:
             query = query.filter(CallLog.started_at <= date_to)
+
+        if has_transfer is not None:
+            query = query.filter(CallLog.has_transfer == has_transfer)
+
+        if disposition_id:
+            query = query.filter(CallLog.disposition_id == disposition_id)
+
+        if acw_completed:
+            query = query.filter(CallLog.acw_completed_at.isnot(None))
+
+        if quality_min is not None:
+            query = query.filter(CallLog.acw_quality_score >= quality_min)
+
+        if quality_max is not None:
+            query = query.filter(CallLog.acw_quality_score <= quality_max)
+
+        if hour is not None:
+            query = query.filter(func.extract("hour", CallLog.started_at) == hour)
         
         if search:
             search_pattern = f"%{search}%"
