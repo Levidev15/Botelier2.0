@@ -350,6 +350,21 @@ class FunctionMapper:
                             self.twilio_client.calls(self.call_sid).update(twiml=transfer_twiml)
                             transfer_success = True
                             logger.info(f"✅ Cold SIP REFER transfer initiated for call {self.call_sid} to {phone_number}")
+
+                            # Twilio does NOT call /connect-complete after a REST API <Refer> update,
+                            # so ACW must be triggered here directly. Transcript was saved above.
+                            try:
+                                from ..services.acw_service import run_acw_background as _run_acw_bg
+                                from ..models import Assistant as _Assistant
+                                _call_log = call_logger.get_call_log(self.call_sid)
+                                if _call_log and _call_log.assistant_id:
+                                    _asst = db.query(_Assistant).filter(_Assistant.id == _call_log.assistant_id).first()
+                                    if _asst and (_asst.acw_config or {}).get("auto_run"):
+                                        import threading
+                                        threading.Thread(target=_run_acw_bg, args=(_call_log.id,), daemon=True).start()
+                                        logger.info(f"ACW background thread started for cold transfer call {self.call_sid}")
+                            except Exception as _acw_e:
+                                logger.error(f"Failed to start ACW thread after cold transfer: {_acw_e}")
                             
                         else:
                             # Warm Transfer (Twilio bridges both legs)
@@ -823,6 +838,21 @@ class FunctionMapper:
                                 logger.info(f"🔄 Warm flow transfer to {target}")
                             self.twilio_client.calls(self.call_sid).update(twiml='\n'.join(twiml_parts))
                             logger.info(f"✅ Flow transfer to {target} initiated")
+
+                            # Trigger ACW for cold flow transfers — Twilio won't call /connect-complete
+                            if flow_transfer_mode == "cold":
+                                try:
+                                    from ..services.acw_service import run_acw_background as _run_acw_bg2
+                                    from ..models import Assistant as _Assistant2
+                                    _flow_call_log = _cl_flow.get_call_log(self.call_sid)
+                                    if _flow_call_log and _flow_call_log.assistant_id:
+                                        _flow_asst = _db_flow.query(_Assistant2).filter(_Assistant2.id == _flow_call_log.assistant_id).first()
+                                        if _flow_asst and (_flow_asst.acw_config or {}).get("auto_run"):
+                                            import threading
+                                            threading.Thread(target=_run_acw_bg2, args=(_flow_call_log.id,), daemon=True).start()
+                                            logger.info(f"ACW background thread started for cold flow transfer call {self.call_sid}")
+                                except Exception as _acw_e2:
+                                    logger.error(f"Failed to start ACW thread after cold flow transfer: {_acw_e2}")
                         finally:
                             _db_flow.close()
                     except Exception as e:
