@@ -406,12 +406,21 @@ export default function CallLogsPage() {
     setSearch("");
     setStatusFilter("");
     setAssistantFilter("");
+    setHasTransferFilter(null);
+    setDispositionIdFilter("");
+    setAcwCompletedFilter(null);
+    setQualityMin(null);
+    setQualityMax(null);
+    setHourFilter(null);
     setDateFrom("");
     setDateTo("");
     setPage(1);
   };
 
-  const hasActiveFilters = search || statusFilter || assistantFilter || dateFrom || dateTo;
+  const hasActiveFilters =
+    search || statusFilter || assistantFilter || dateFrom || dateTo ||
+    hasTransferFilter !== null || dispositionIdFilter || acwCompletedFilter !== null ||
+    qualityMin !== null || qualityMax !== null || hourFilter !== null;
 
   return (
     <div className="h-full flex flex-col">
