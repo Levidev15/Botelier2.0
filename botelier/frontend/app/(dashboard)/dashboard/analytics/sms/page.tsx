@@ -12,7 +12,8 @@ import {
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import StatCard from "@/components/analytics/StatCard";
 import DashboardWidget from "@/components/analytics/DashboardWidget";
-import TimeRangePicker from "@/components/analytics/TimeRangePicker";
+import DateRangePicker, { DateRange } from "@/components/analytics/DateRangePicker";
+import AssistantFilter from "@/components/analytics/AssistantFilter";
 import CustomizePanel from "@/components/analytics/CustomizePanel";
 import { useWidgetLayout, WidgetDef } from "@/components/analytics/useWidgetLayout";
 
@@ -37,6 +38,15 @@ function fmtSeconds(s: number | null) {
   const m = Math.floor(s / 60);
   const sec = Math.round(s % 60);
   return sec > 0 ? `${m}m ${sec}s` : `${m}m`;
+}
+
+function defaultDateRange(): DateRange {
+  const now = new Date();
+  const from = new Date(now.getTime() - 7 * 86_400_000);
+  from.setHours(0, 0, 0, 0);
+  const to = new Date(now);
+  to.setHours(23, 59, 59, 999);
+  return { from, to };
 }
 
 interface SMSStats {
@@ -72,7 +82,6 @@ interface TooltipPayloadEntry {
   value?: string | number;
   color?: string;
 }
-
 interface CustomTooltipProps {
   active?: boolean;
   payload?: TooltipPayloadEntry[];
@@ -95,7 +104,8 @@ const CustomTooltipContent = ({ active, payload, label }: CustomTooltipProps) =>
 
 export default function SMSAnalyticsPage() {
   const { accountId } = useAccountContext();
-  const [days, setDays] = useState(7);
+  const [dateRange, setDateRange] = useState<DateRange>(defaultDateRange);
+  const [assistantIds, setAssistantIds] = useState<string[]>([]);
   const [retryKey, setRetryKey] = useState(0);
   const [data, setData] = useState<SMSStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -107,13 +117,12 @@ export default function SMSAnalyticsPage() {
     if (!accountId) return;
     setLoading(true);
     setError(null);
-    const now = new Date();
-    const from = new Date(now.getTime() - days * 86_400_000);
     const params = new URLSearchParams({
       hotel_id: accountId,
-      date_from: from.toISOString(),
-      date_to: now.toISOString(),
+      date_from: dateRange.from.toISOString(),
+      date_to: dateRange.to.toISOString(),
     });
+    assistantIds.forEach((id) => params.append("assistant_ids", id));
     fetch(`/api/sms/stats?${params}`)
       .then((r) => {
         if (!r.ok) throw new Error(`Failed to load analytics (${r.status})`);
@@ -125,7 +134,7 @@ export default function SMSAnalyticsPage() {
         setError(err.message || "Failed to load analytics");
       })
       .finally(() => setLoading(false));
-  }, [accountId, days, retryKey]);
+  }, [accountId, dateRange, assistantIds, retryKey]);
 
   const volumeData = useMemo(() => {
     if (!data) return [];
@@ -183,15 +192,16 @@ export default function SMSAnalyticsPage() {
 
   return (
     <div className="p-6 max-w-[1400px] mx-auto">
-      <div className="flex items-center justify-between mb-6">
+      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
         <div>
           <h1 className="text-2xl font-bold text-gray-100">SMS Analytics</h1>
           <p className="text-sm text-gray-400 mt-1">
-            {o?.total_conversations ?? 0} conversations in the last {days} days
+            {o?.total_conversations ?? 0} conversations
           </p>
         </div>
-        <div className="flex items-center gap-3">
-          <TimeRangePicker value={days} onChange={setDays} />
+        <div className="flex items-center gap-3 flex-wrap">
+          <AssistantFilter selected={assistantIds} onChange={setAssistantIds} />
+          <DateRangePicker value={dateRange} onChange={setDateRange} />
           <button
             onClick={() => setCustomizeOpen(true)}
             className="flex items-center gap-2 px-3 py-1.5 text-sm bg-[#1a1a1a] border border-gray-700 rounded-lg text-gray-300 hover:text-gray-100 hover:border-gray-600 transition-colors"
