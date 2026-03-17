@@ -809,6 +809,16 @@ class FunctionMapper:
                             if self.stream_sid:
                                 twiml_parts.append(f'<Stop><Stream name="{self.stream_sid}"/></Stop>')
                             if flow_transfer_mode == "cold":
+                                # Save transcript before REFER — WebSocket closes after
+                                # REST update and /connect-complete is never called
+                                if self.call_handler and hasattr(self.call_handler, '_save_call_transcript'):
+                                    try:
+                                        llm_context = self.call_handler.call_contexts.get(self.call_sid)
+                                        await self.call_handler._save_call_transcript(self.call_sid, llm_context)
+                                        logger.info(f"📝 Saved transcript before cold flow transfer for call {self.call_sid}")
+                                    except Exception as _e:
+                                        logger.error(f"Error saving transcript before cold flow transfer: {_e}")
+
                                 import re as _re2
                                 digits_only = _re2.sub(r'[^\d+]', '', target)
                                 sip_uri = f"sip:{digits_only}@pstn.twilio.com"
