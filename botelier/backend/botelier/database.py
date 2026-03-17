@@ -99,12 +99,16 @@ _ADDITIVE_MIGRATIONS = [
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS reference_id VARCHAR(8)",
     # Backfill: derive from each row's own UUID (removes dashes, takes first 8 chars, uppercases)
     "UPDATE call_logs SET reference_id = UPPER(SUBSTRING(REPLACE(id::text, '-', ''), 1, 8)) WHERE reference_id IS NULL",
+    # Enforce NOT NULL after backfill guarantees all rows are populated
+    "ALTER TABLE call_logs ALTER COLUMN reference_id SET NOT NULL",
     # Drop old composite index if it exists (replaced below with a global unique index)
     "DROP INDEX IF EXISTS ix_call_logs_hotel_ref",
     "CREATE UNIQUE INDEX IF NOT EXISTS ix_call_logs_ref ON call_logs(reference_id)",
 
     "ALTER TABLE sms_conversations ADD COLUMN IF NOT EXISTS reference_id VARCHAR(8)",
     "UPDATE sms_conversations SET reference_id = UPPER(SUBSTRING(REPLACE(id::text, '-', ''), 1, 8)) WHERE reference_id IS NULL",
+    # Enforce NOT NULL after backfill guarantees all rows are populated
+    "ALTER TABLE sms_conversations ALTER COLUMN reference_id SET NOT NULL",
     "DROP INDEX IF EXISTS ix_sms_conv_hotel_ref",
     "CREATE UNIQUE INDEX IF NOT EXISTS ix_sms_conv_ref ON sms_conversations(reference_id)",
 ]
