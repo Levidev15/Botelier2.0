@@ -135,8 +135,14 @@ class FunctionMapper:
 
         if self._tts_completion_watcher is not None:
             logger.info(f"⏳ Awaiting TTS completion before transfer for call {self.call_sid}")
-            await self._tts_completion_watcher.wait_until_done(timeout=timeout)
-            logger.info(f"✅ TTS completion confirmed for call {self.call_sid}")
+            completed = await self._tts_completion_watcher.wait_until_done(timeout=timeout)
+            if completed:
+                logger.info(f"✅ TTS completion confirmed for call {self.call_sid}")
+            else:
+                logger.warning(
+                    f"⚠️ TTS completion timed out after {timeout}s for call {self.call_sid} "
+                    "— proceeding with transfer anyway"
+                )
         else:
             # Fallback: watcher not available (no tools registered for this call)
             logger.warning(
