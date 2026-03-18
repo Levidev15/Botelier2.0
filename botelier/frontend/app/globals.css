@@ -152,6 +152,78 @@
   color: #1e293b;
 }
 
+/* ------------------------------------------------------------------ */
+/* text-white / text-white/{opacity} — convert to dark in light mode   */
+/* ------------------------------------------------------------------ */
+[data-theme="light"] .themed-app .text-white {
+  color: #0f172a;
+}
+[data-theme="light"] .themed-app .text-white\/20 {
+  color: rgba(15, 23, 42, 0.20);
+}
+[data-theme="light"] .themed-app .text-white\/30 {
+  color: rgba(15, 23, 42, 0.30);
+}
+[data-theme="light"] .themed-app .text-white\/40 {
+  color: rgba(15, 23, 42, 0.40);
+}
+[data-theme="light"] .themed-app .text-white\/60 {
+  color: rgba(15, 23, 42, 0.60);
+}
+[data-theme="light"] .themed-app .text-white\/80 {
+  color: rgba(15, 23, 42, 0.80);
+}
+
+/* hover:text-white — also convert to dark on hover in light mode */
+[data-theme="light"] .themed-app .hover\:text-white:hover {
+  color: #0f172a;
+}
+
+/* ------------------------------------------------------------------ */
+/* Restore white text for elements with genuinely colored backgrounds  */
+/* (buttons, badges, chips — colours not overridden by above rules)    */
+/* ------------------------------------------------------------------ */
+[data-theme="light"] .themed-app [class*="bg-blue-"].text-white,
+[data-theme="light"] .themed-app [class*="bg-indigo-"].text-white,
+[data-theme="light"] .themed-app [class*="bg-violet-"].text-white,
+[data-theme="light"] .themed-app [class*="bg-purple-"].text-white,
+[data-theme="light"] .themed-app [class*="bg-red-"].text-white,
+[data-theme="light"] .themed-app [class*="bg-rose-"].text-white,
+[data-theme="light"] .themed-app [class*="bg-pink-"].text-white,
+[data-theme="light"] .themed-app [class*="bg-orange-"].text-white,
+[data-theme="light"] .themed-app [class*="bg-amber-"].text-white,
+[data-theme="light"] .themed-app [class*="bg-yellow-"].text-white,
+[data-theme="light"] .themed-app [class*="bg-green-"].text-white,
+[data-theme="light"] .themed-app [class*="bg-emerald-"].text-white,
+[data-theme="light"] .themed-app [class*="bg-teal-"].text-white,
+[data-theme="light"] .themed-app [class*="bg-cyan-"].text-white {
+  color: #ffffff;
+}
+
+/* Restore white text for child spans inside colored-background parents */
+[data-theme="light"] .themed-app [class*="bg-blue-"] > .text-white,
+[data-theme="light"] .themed-app [class*="bg-indigo-"] > .text-white,
+[data-theme="light"] .themed-app [class*="bg-violet-"] > .text-white,
+[data-theme="light"] .themed-app [class*="bg-purple-"] > .text-white,
+[data-theme="light"] .themed-app [class*="bg-red-"] > .text-white,
+[data-theme="light"] .themed-app [class*="bg-rose-"] > .text-white,
+[data-theme="light"] .themed-app [class*="bg-pink-"] > .text-white,
+[data-theme="light"] .themed-app [class*="bg-orange-"] > .text-white,
+[data-theme="light"] .themed-app [class*="bg-amber-"] > .text-white,
+[data-theme="light"] .themed-app [class*="bg-emerald-"] > .text-white,
+[data-theme="light"] .themed-app [class*="bg-teal-"] > .text-white,
+[data-theme="light"] .themed-app [class*="bg-cyan-"] > .text-white {
+  color: #ffffff;
+}
+
+/* placeholder:text-white/40 → muted dark placeholder in light mode */
+[data-theme="light"] .themed-app .placeholder\:text-white\/40::placeholder {
+  color: rgba(15, 23, 42, 0.40);
+}
+[data-theme="light"] .themed-app .placeholder\:text-white\/60::placeholder {
+  color: rgba(15, 23, 42, 0.50);
+}
+
 /* Ring / focus overrides */
 [data-theme="light"] .themed-app .ring-gray-800 {
   --tw-ring-color: #e2e8f0;
