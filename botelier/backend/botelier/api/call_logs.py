@@ -56,6 +56,7 @@ async def get_call_logs(
     search: Optional[str] = Query(None, description="Search caller number or transcript"),
     has_transfer: Optional[bool] = Query(None, description="If true, only return calls with transfers"),
     disposition_id: Optional[UUID] = Query(None, description="Filter by disposition UUID"),
+    acw_resolution: Optional[str] = Query(None, description="Filter by resolution status string"),
     acw_completed: Optional[bool] = Query(None, description="If true, only return calls with completed Post Call QA"),
     quality_min: Optional[int] = Query(None, ge=0, le=100, description="Minimum ACW quality score"),
     quality_max: Optional[int] = Query(None, ge=0, le=100, description="Maximum ACW quality score"),
@@ -93,6 +94,9 @@ async def get_call_logs(
 
         if disposition_id:
             query = query.filter(CallLog.disposition_id == disposition_id)
+
+        if acw_resolution:
+            query = query.filter(CallLog.acw_resolution == acw_resolution)
 
         if acw_completed:
             query = query.filter(CallLog.acw_completed_at.isnot(None))
@@ -347,7 +351,7 @@ async def get_filter_options(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Get available filter options (assistants, phone numbers, statuses)."""
+    """Get available filter options (assistants, phone numbers, statuses, dispositions, resolutions)."""
     check_account_permission(user, str(hotel_id), "call_logs.view", db)
     try:
         assistants = db.query(Assistant).filter(
@@ -359,6 +363,20 @@ async def get_filter_options(
         ).order_by(PhoneNumber.phone_number).all()
         
         statuses = [status.value for status in CallStatus]
+
+        dispositions = db.query(AssistantDisposition).join(
+            Assistant, AssistantDisposition.assistant_id == Assistant.id
+        ).filter(
+            Assistant.hotel_id == hotel_id,
+            AssistantDisposition.is_active == True,
+        ).order_by(AssistantDisposition.name).all()
+
+        resolution_rows = db.query(CallLog.acw_resolution).filter(
+            CallLog.hotel_id == hotel_id,
+            CallLog.acw_resolution.isnot(None),
+            CallLog.acw_resolution != "",
+        ).distinct().order_by(CallLog.acw_resolution).all()
+        resolution_options = [r[0] for r in resolution_rows]
         
         return {
             "assistants": [{"id": str(a.id), "name": a.name} for a in assistants],
@@ -367,6 +385,11 @@ async def get_filter_options(
                 for p in phone_numbers
             ],
             "statuses": statuses,
+            "dispositions": [
+                {"id": str(d.id), "name": d.name, "color": d.color}
+                for d in dispositions
+            ],
+            "resolution_options": resolution_options,
         }
         
     except Exception as e:
