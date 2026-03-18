@@ -31,6 +31,7 @@ import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
 import { usePermissions } from "@/lib/auth/usePermissions";
+import { loadTimezone, saveTimezone } from "@/components/analytics/TimezonePicker";
 
 function DispositionSelect({
   value,
@@ -288,19 +289,13 @@ export default function CallLogsPage() {
     if (s || a || df || dt || ht || did || ar || acw || qmin || qmax || hr !== null) setShowFilters(true);
   }, []);
 
-  const [timezone, setTimezone] = useState(() => {
-    if (typeof window !== "undefined") {
-      return localStorage.getItem("botelier_call_logs_timezone") || "UTC";
-    }
-    return "UTC";
-  });
+  const [timezone, setTimezone] = useState<string>("UTC");
+  useEffect(() => { setTimezone(loadTimezone()); }, []);
   const [showFilters, setShowFilters] = useState(false);
 
   const handleTimezoneChange = (newTimezone: string) => {
     setTimezone(newTimezone);
-    if (typeof window !== "undefined") {
-      localStorage.setItem("botelier_call_logs_timezone", newTimezone);
-    }
+    saveTimezone(newTimezone);
   };
 
   const [page, setPage] = useState(1);
@@ -775,6 +770,9 @@ export default function CallLogsPage() {
                   <tr className="border-b border-gray-800 bg-[#0f0f0f]">
                     <th className="w-10 px-4 py-3"></th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                      Ref
+                    </th>
+                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
                       Date / Duration
                     </th>
                     <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
@@ -911,6 +909,15 @@ function CallLogRow({
             <div className="w-6" />
           )}
         </td>
+        <td className="px-4 py-3 whitespace-nowrap">
+          {log.reference_id ? (
+            <span className="font-mono text-xs bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded">
+              #{log.reference_id}
+            </span>
+          ) : (
+            <span className="text-gray-700 text-xs">—</span>
+          )}
+        </td>
         <td className="px-4 py-3">
           <div className="flex items-center gap-3">
             {getStatusIcon(log.status)}
@@ -922,11 +929,6 @@ function CallLogRow({
                 <Clock className="h-3 w-3" />
                 {formatDuration(log.duration_seconds)}
               </div>
-              {log.reference_id && (
-                <span className="mt-0.5 inline-block font-mono text-[10px] text-gray-500 bg-gray-800 px-1.5 py-0.5 rounded">
-                  #{log.reference_id}
-                </span>
-              )}
             </div>
           </div>
         </td>
@@ -1065,7 +1067,7 @@ function CallLogRow({
       </tr>
       {isExpanded && hasLegs && (
         <tr>
-          <td colSpan={10} className="bg-[#0f0f0f] px-4 py-3">
+          <td colSpan={11} className="bg-[#0f0f0f] px-4 py-3">
             <div className="ml-10">
               <div className="text-xs text-gray-500 mb-2 font-medium uppercase tracking-wider">
                 Call Segments
