@@ -53,6 +53,7 @@ async def get_call_analytics(
     date_from: Optional[datetime] = Query(None, description="Start of window (ISO 8601). Defaults to 7 days ago."),
     date_to: Optional[datetime] = Query(None, description="End of window (ISO 8601). Defaults to now."),
     assistant_ids: Optional[List[UUID]] = Query(None, description="Filter to these assistants (repeat param for multiple)."),
+    timezone: str = Query("UTC", description="IANA timezone name for time-bucketed aggregations (e.g. America/Los_Angeles)."),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -140,7 +141,12 @@ async def get_call_analytics(
             "outbound_calls_count": int(outbound_dur.calls),
         }
 
-        day_label = func.date_trunc("day", CallLog.started_at).label("day")
+        # Timezone-aware local timestamp — converts naive UTC stored_at to the
+        # requested IANA timezone so that day boundaries and hour buckets reflect
+        # the user's local time rather than UTC.
+        local_ts = func.timezone(timezone, CallLog.started_at)
+
+        day_label = func.date_trunc("day", local_ts).label("day")
         vol_rows = (
             _base()
             .with_entities(day_label, func.count(CallLog.id).label("cnt"))
@@ -153,7 +159,7 @@ async def get_call_analytics(
             for r in vol_rows
         ]
 
-        hour_label = func.extract("hour", CallLog.started_at).label("hr")
+        hour_label = func.extract("hour", local_ts).label("hr")
         hour_rows = (
             _base()
             .with_entities(hour_label, func.count(CallLog.id).label("cnt"))
@@ -286,8 +292,8 @@ async def get_call_analytics(
         }
 
         return {
-            "date_from": since.isoformat(),
-            "date_to": until.isoformat(),
+            "date_from": since.isoformat() + "Z",
+            "date_to": until.isoformat() + "Z",
             "overview": overview,
             "volume_by_day": volume_by_day,
             "calls_by_hour": calls_by_hour,
@@ -308,6 +314,7 @@ async def get_calls_drilldown(
     date_from: Optional[datetime] = Query(None, description="Start of window (ISO 8601)."),
     date_to: Optional[datetime] = Query(None, description="End of window (ISO 8601)."),
     assistant_ids: Optional[List[UUID]] = Query(None, description="Filter to these assistants."),
+    timezone: str = Query("UTC", description="IANA timezone name — used to match hour: filters to the same timezone as the chart."),
     metric: str = Query("all", description=(  # noqa: E501
         "Metric token — one of: all | completed | missed | failed | transferred | "
         "acw_completed | status:<val> | disposition:<uuid> | hour:<0-23> | "
@@ -359,7 +366,9 @@ async def get_calls_drilldown(
             query = query.filter(CallLog.disposition_id == UUID(disp_id))
         elif token.startswith("hour:"):
             hr = int(token[len("hour:"):])
-            query = query.filter(func.extract("hour", CallLog.started_at) == hr)
+            query = query.filter(
+                func.extract("hour", func.timezone(timezone, CallLog.started_at)) == hr
+            )
         elif token.startswith("assistant:"):
             asst_id = token[len("assistant:"):]
             query = query.filter(CallLog.assistant_id == UUID(asst_id))
@@ -423,7 +432,7 @@ async def get_calls_drilldown(
             records.append({
                 "id": str(log.id),
                 "reference_id": log.reference_id,
-                "started_at": log.started_at.isoformat() if log.started_at else None,
+                "started_at": (log.started_at.isoformat() + "Z") if log.started_at else None,
                 "caller_number": log.caller_number,
                 "to_number": log.to_number,
                 "status": log.status,
@@ -446,8 +455,8 @@ async def get_calls_drilldown(
             "limit": limit,
             "pages": max(1, (total + limit - 1) // limit),
             "metric": metric,
-            "date_from": since.isoformat(),
-            "date_to": until.isoformat(),
+            "date_from": since.isoformat() + "Z",
+            "date_to": until.isoformat() + "Z",
         }
 
     except Exception as e:
