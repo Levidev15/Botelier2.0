@@ -138,7 +138,7 @@ export default function DashboardLayout({
   const parsedUser = storedUser ? JSON.parse(storedUser) : null;
 
   return (
-    <div className="flex h-screen bg-background text-foreground">
+    <div className="themed-app flex h-screen bg-background text-foreground">
       <aside className="w-64 bg-surface border-r border-border flex flex-col">
         {isAdminSession && (
           <div className="p-3 bg-purple-600/20 border-b border-purple-600/30">
