@@ -7,6 +7,10 @@ REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 echo "=== Starting Botelier ==="
 echo "Repo root: $REPO_ROOT"
 
+# Activate the virtual environment created by build.sh
+source "$REPO_ROOT/.venv/bin/activate"
+echo "Python venv activated: $(python3 --version)"
+
 # Start FastAPI backend in the background
 cd "$REPO_ROOT/botelier/backend"
 python3 -m uvicorn main:app --host 0.0.0.0 --port 3001 &
