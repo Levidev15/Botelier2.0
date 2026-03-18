@@ -31,7 +31,7 @@ import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
 import { usePermissions } from "@/lib/auth/usePermissions";
-import { loadTimezone, saveTimezone } from "@/components/analytics/TimezonePicker";
+import { loadTimezone, saveTimezone, TIMEZONE_OPTIONS } from "@/components/analytics/TimezonePicker";
 
 function DispositionSelect({
   value,
@@ -163,19 +163,6 @@ interface FilterOptions {
   dispositions: Array<{ id: string; name: string; color: string }>;
   resolution_options: string[];
 }
-
-const TIMEZONE_OPTIONS = [
-  { value: "UTC", label: "UTC" },
-  { value: "America/New_York", label: "Eastern Time (ET)" },
-  { value: "America/Chicago", label: "Central Time (CT)" },
-  { value: "America/Denver", label: "Mountain Time (MT)" },
-  { value: "America/Los_Angeles", label: "Pacific Time (PT)" },
-  { value: "Europe/London", label: "London (GMT)" },
-  { value: "Europe/Paris", label: "Paris (CET)" },
-  { value: "Asia/Tokyo", label: "Tokyo (JST)" },
-  { value: "Asia/Dubai", label: "Dubai (GST)" },
-  { value: "Australia/Sydney", label: "Sydney (AEST)" },
-];
 
 function formatDuration(seconds: number): string {
   if (!seconds || seconds < 0) return "0:00";
