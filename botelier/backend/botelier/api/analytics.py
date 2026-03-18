@@ -12,8 +12,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
-from sqlalchemy import cast, desc, func, case
-from sqlalchemy.dialects.postgresql import TIMESTAMP as PG_TIMESTAMP
+from sqlalchemy import desc, func, case
 from sqlalchemy.orm import Session, joinedload
 
 from botelier.database import get_db
@@ -149,14 +148,11 @@ async def get_call_analytics(
 
         # Timezone-aware local timestamp.
         # started_at is stored as timestamp WITHOUT time zone (naive UTC).
-        # Step 1: cast to timestamptz — PostgreSQL treats the value as UTC
-        #         because the server/session timezone is UTC.
-        # Step 2: timezone(tz, timestamptz) converts UTC → local time,
-        #         returning a timestamp WITHOUT time zone in the target zone.
-        # This is the correct direction; doing timezone(tz, timestamp_no_tz)
-        # directly would interpret the value AS local time (wrong direction).
-        _utc_ts = cast(CallLog.started_at, PG_TIMESTAMP(timezone=True))
-        local_ts = func.timezone(timezone, _utc_ts)
+        # Explicitly anchor the naive timestamp to UTC using timezone('UTC', ts),
+        # which yields a timestamptz. Then timezone(target, timestamptz) converts
+        # it to local time. This two-step form is independent of the DB session
+        # timezone setting, making it portable across any PostgreSQL environment.
+        local_ts = func.timezone(timezone, func.timezone("UTC", CallLog.started_at))
 
         day_label = func.date_trunc("day", local_ts).label("day")
         vol_rows = (
@@ -382,9 +378,11 @@ async def get_calls_drilldown(
             query = query.filter(CallLog.disposition_id == UUID(disp_id))
         elif token.startswith("hour:"):
             hr = int(token[len("hour:"):])
-            _utc_ts_dd = cast(CallLog.started_at, PG_TIMESTAMP(timezone=True))
             query = query.filter(
-                func.extract("hour", func.timezone(timezone, _utc_ts_dd)) == hr
+                func.extract(
+                    "hour",
+                    func.timezone(timezone, func.timezone("UTC", CallLog.started_at)),
+                ) == hr
             )
         elif token.startswith("assistant:"):
             asst_id = token[len("assistant:"):]
