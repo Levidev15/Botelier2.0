@@ -14,6 +14,8 @@ export default function LoginPage() {
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
+  const reason = searchParams.get("reason");
+  const sessionExpired = reason === "session_expired";
 
   useEffect(() => {
     const storedToken = localStorage.getItem("botelier_token");
@@ -112,6 +114,12 @@ export default function LoginPage() {
               Sign in to manage your voice AI assistants
             </p>
           </div>
+
+          {sessionExpired && (
+            <div className="mb-6 p-4 bg-amber-900/20 border border-amber-900/50 rounded-lg">
+              <p className="text-amber-400 text-sm text-center">Your session has expired. Please sign in again.</p>
+            </div>
+          )}
 
           {error && (
             <div className="mb-6 p-4 bg-red-900/20 border border-red-900/50 rounded-lg">
