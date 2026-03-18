@@ -24,9 +24,11 @@ interface PhoneNumberCardProps {
   assistants: Assistant[];
   onDelete: (id: string) => void;
   onUpdate: () => void;
+  canConfigure?: boolean;
+  canRelease?: boolean;
 }
 
-export default function PhoneNumberCard({ phoneNumber, assistants, onDelete, onUpdate }: PhoneNumberCardProps) {
+export default function PhoneNumberCard({ phoneNumber, assistants, onDelete, onUpdate, canConfigure = true, canRelease = true }: PhoneNumberCardProps) {
   const [assigning, setAssigning] = useState(false);
   const [toggingSms, setTogglingSms] = useState(false);
 
@@ -149,7 +151,7 @@ export default function PhoneNumberCard({ phoneNumber, assistants, onDelete, onU
           <select
             value={phoneNumber.assistant_id || ""}
             onChange={(e) => handleAssignment(e.target.value)}
-            disabled={assigning}
+            disabled={assigning || !canConfigure}
             className="w-full px-3 py-2 bg-[#1a1a1a] border border-gray-700 rounded-lg text-sm text-gray-300 focus:outline-none focus:border-blue-500 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <option value="">Not assigned</option>
@@ -168,12 +170,12 @@ export default function PhoneNumberCard({ phoneNumber, assistants, onDelete, onU
         <div className="border-t border-gray-800 pt-3">
           <div className="flex items-center justify-between mb-2">
             <span className="text-sm text-gray-400">SMS</span>
-            <label className="relative inline-flex items-center cursor-pointer">
+            <label className={`relative inline-flex items-center ${canConfigure ? "cursor-pointer" : "cursor-not-allowed opacity-50"}`}>
               <input
                 type="checkbox"
                 checked={phoneNumber.sms_enabled || false}
                 onChange={(e) => handleSmsToggle(e.target.checked)}
-                disabled={toggingSms}
+                disabled={toggingSms || !canConfigure}
                 className="sr-only peer"
               />
               <div className="w-9 h-5 bg-[#2a2a2a] peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-indigo-600 peer-disabled:opacity-50"></div>
@@ -185,7 +187,7 @@ export default function PhoneNumberCard({ phoneNumber, assistants, onDelete, onU
               <select
                 value={phoneNumber.sms_assistant_id || ""}
                 onChange={(e) => handleSmsAssistantChange(e.target.value)}
-                disabled={toggingSms}
+                disabled={toggingSms || !canConfigure}
                 className="w-full px-3 py-1.5 bg-[#1a1a1a] border border-gray-700 rounded-lg text-xs text-gray-300 focus:outline-none focus:border-indigo-500 disabled:opacity-50 disabled:cursor-not-allowed"
               >
                 <option value="">Same as voice assistant</option>
@@ -204,15 +206,17 @@ export default function PhoneNumberCard({ phoneNumber, assistants, onDelete, onU
         </div>
       </div>
 
-      <div className="flex items-center space-x-2">
-        <button
-          onClick={() => onDelete(phoneNumber.id)}
-          className="flex-1 flex items-center justify-center space-x-2 px-3 py-2 bg-red-600/10 hover:bg-red-600/20 text-red-500 rounded-lg transition-colors text-sm"
-        >
-          <Trash2 className="h-4 w-4" />
-          <span>Delete</span>
-        </button>
-      </div>
+      {canRelease && (
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={() => onDelete(phoneNumber.id)}
+            className="flex-1 flex items-center justify-center space-x-2 px-3 py-2 bg-red-600/10 hover:bg-red-600/20 text-red-500 rounded-lg transition-colors text-sm"
+          >
+            <Trash2 className="h-4 w-4" />
+            <span>Delete</span>
+          </button>
+        </div>
+      )}
     </div>
   );
 }

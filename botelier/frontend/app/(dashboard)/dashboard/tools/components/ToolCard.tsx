@@ -22,9 +22,11 @@ interface ToolCardProps {
   onEdit?: (tool: Tool) => void;
   hotelId: string;
   toolSetId?: string;
+  canEdit?: boolean;
+  canDelete?: boolean;
 }
 
-export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit, hotelId, toolSetId }: ToolCardProps) {
+export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit, hotelId, toolSetId, canEdit = true, canDelete = true }: ToolCardProps) {
   const router = useRouter();
   const [deleting, setDeleting] = useState(false);
 
@@ -130,13 +132,15 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit
       <div className="flex items-center gap-2 pt-4 border-t border-gray-800">
         {isFlowTool ? (
           <>
-            <button
-              onClick={handleEditFlow}
-              className="flex-1 px-3 py-2 text-sm text-cyan-400 hover:text-cyan-300 hover:bg-cyan-950/20 rounded transition-colors flex items-center justify-center gap-2"
-            >
-              <GitBranch size={14} />
-              Edit
-            </button>
+            {canEdit && (
+              <button
+                onClick={handleEditFlow}
+                className="flex-1 px-3 py-2 text-sm text-cyan-400 hover:text-cyan-300 hover:bg-cyan-950/20 rounded transition-colors flex items-center justify-center gap-2"
+              >
+                <GitBranch size={14} />
+                Edit
+              </button>
+            )}
             <button
               onClick={handleTestFlow}
               disabled={!hasFlowNodes}
@@ -147,7 +151,7 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit
               Test
             </button>
           </>
-        ) : (
+        ) : canEdit ? (
           <button
             onClick={handleEdit}
             className="flex-1 px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800 rounded transition-colors flex items-center justify-center gap-2"
@@ -155,15 +159,17 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit
             <Edit size={14} />
             Edit
           </button>
+        ) : null}
+        {canDelete && (
+          <button
+            onClick={handleDelete}
+            disabled={deleting}
+            className="flex-1 px-3 py-2 text-sm text-red-400 hover:text-red-300 hover:bg-red-950/20 rounded transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
+          >
+            <Trash2 size={14} />
+            {deleting ? "Deleting..." : "Delete"}
+          </button>
         )}
-        <button
-          onClick={handleDelete}
-          disabled={deleting}
-          className="flex-1 px-3 py-2 text-sm text-red-400 hover:text-red-300 hover:bg-red-950/20 rounded transition-colors flex items-center justify-center gap-2 disabled:opacity-50"
-        >
-          <Trash2 size={14} />
-          {deleting ? "Deleting..." : "Delete"}
-        </button>
       </div>
     </div>
   );
