@@ -4,6 +4,7 @@ import { useState, useRef, useEffect } from "react";
 import { Globe, ChevronDown } from "lucide-react";
 
 const STORAGE_KEY = "botelier_analytics_tz";
+const LEGACY_KEY = "botelier_call_logs_timezone";
 
 export const TIMEZONE_OPTIONS = [
   { label: "UTC", value: "UTC" },
@@ -33,7 +34,15 @@ function getBrowserTimezone(): string {
 
 export function loadTimezone(): string {
   if (typeof window === "undefined") return "UTC";
-  return localStorage.getItem(STORAGE_KEY) || getBrowserTimezone();
+  const saved = localStorage.getItem(STORAGE_KEY);
+  if (saved) return saved;
+  const legacy = localStorage.getItem(LEGACY_KEY);
+  if (legacy) {
+    localStorage.setItem(STORAGE_KEY, legacy);
+    localStorage.removeItem(LEGACY_KEY);
+    return legacy;
+  }
+  return getBrowserTimezone();
 }
 
 export function saveTimezone(tz: string) {
