@@ -250,8 +250,16 @@ async def list_invitations(
 
     invitations = query.order_by(AccountInvitation.created_at.desc()).all()
 
+    now = datetime.utcnow()
+    stale_updated = False
     result = []
     for inv in invitations:
+        effective_status = inv.status
+        if inv.status == InvitationStatus.PENDING and inv.expires_at < now:
+            inv.status = InvitationStatus.EXPIRED
+            effective_status = InvitationStatus.EXPIRED
+            stale_updated = True
+
         result.append(
             InvitationResponse(
                 id=str(inv.id),
@@ -259,13 +267,16 @@ async def list_invitations(
                 role_id=str(inv.role_id),
                 role_name=inv.role.name if inv.role else "Unknown",
                 invited_by_name=inv.invited_by.display_name if inv.invited_by else "Unknown",
-                status=inv.status.value,
+                status=effective_status.value,
                 token=inv.token,
                 expires_at=inv.expires_at,
                 accepted_at=inv.accepted_at,
                 created_at=inv.created_at,
             )
         )
+
+    if stale_updated:
+        db.commit()
 
     return result
 
