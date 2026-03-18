@@ -89,6 +89,8 @@ interface FilterOptions {
   assistants: Array<{ id: string; name: string }>;
   phone_numbers: Array<{ id: string; number: string; name: string | null }>;
   statuses: string[];
+  dispositions: Array<{ id: string; name: string; color: string }>;
+  resolution_options: string[];
 }
 
 const TIMEZONE_OPTIONS = [
@@ -192,6 +194,7 @@ export default function CallLogsPage() {
   // Deep-link params from analytics drilldown "View all in Call Logs"
   const [hasTransferFilter, setHasTransferFilter] = useState<boolean | null>(null);
   const [dispositionIdFilter, setDispositionIdFilter] = useState("");
+  const [acwResolutionFilter, setAcwResolutionFilter] = useState("");
   const [acwCompletedFilter, setAcwCompletedFilter] = useState<boolean | null>(null);
   const [qualityMin, setQualityMin] = useState<number | null>(null);
   const [qualityMax, setQualityMax] = useState<number | null>(null);
@@ -207,11 +210,12 @@ export default function CallLogsPage() {
     const dt = sp.get("date_to"); if (dt) setDateTo(dt);
     const ht = sp.get("has_transfer"); if (ht === "true") setHasTransferFilter(true);
     const did = sp.get("disposition_id"); if (did) setDispositionIdFilter(did);
+    const ar = sp.get("acw_resolution"); if (ar) setAcwResolutionFilter(ar);
     const acw = sp.get("acw_completed"); if (acw === "true") setAcwCompletedFilter(true);
     const qmin = sp.get("quality_min"); if (qmin) setQualityMin(Number(qmin));
     const qmax = sp.get("quality_max"); if (qmax) setQualityMax(Number(qmax));
     const hr = sp.get("hour"); if (hr !== null) setHourFilter(Number(hr));
-    if (s || a || df || dt || ht || did || acw || qmin || qmax || hr !== null) setShowFilters(true);
+    if (s || a || df || dt || ht || did || ar || acw || qmin || qmax || hr !== null) setShowFilters(true);
   }, []);
 
   const [timezone, setTimezone] = useState(() => {
@@ -245,6 +249,7 @@ export default function CallLogsPage() {
       if (dateTo) params.append("date_to", new Date(dateTo).toISOString());
       if (hasTransferFilter !== null) params.append("has_transfer", String(hasTransferFilter));
       if (dispositionIdFilter) params.append("disposition_id", dispositionIdFilter);
+      if (acwResolutionFilter) params.append("acw_resolution", acwResolutionFilter);
       if (acwCompletedFilter !== null) params.append("acw_completed", String(acwCompletedFilter));
       if (qualityMin !== null) params.append("quality_min", String(qualityMin));
       if (qualityMax !== null) params.append("quality_max", String(qualityMax));
@@ -264,7 +269,7 @@ export default function CallLogsPage() {
       setLoading(false);
     }
   }, [accountId, page, search, statusFilter, assistantFilter, dateFrom, dateTo,
-      hasTransferFilter, dispositionIdFilter, acwCompletedFilter, qualityMin, qualityMax, hourFilter]);
+      hasTransferFilter, dispositionIdFilter, acwResolutionFilter, acwCompletedFilter, qualityMin, qualityMax, hourFilter]);
 
   const fetchFilterOptions = useCallback(async () => {
     if (!accountId) return;
@@ -411,6 +416,7 @@ export default function CallLogsPage() {
     setAssistantFilter("");
     setHasTransferFilter(null);
     setDispositionIdFilter("");
+    setAcwResolutionFilter("");
     setAcwCompletedFilter(null);
     setQualityMin(null);
     setQualityMax(null);
@@ -422,8 +428,8 @@ export default function CallLogsPage() {
 
   const hasActiveFilters =
     search || statusFilter || assistantFilter || dateFrom || dateTo ||
-    hasTransferFilter !== null || dispositionIdFilter || acwCompletedFilter !== null ||
-    qualityMin !== null || qualityMax !== null || hourFilter !== null;
+    hasTransferFilter !== null || dispositionIdFilter || acwResolutionFilter ||
+    acwCompletedFilter !== null || qualityMin !== null || qualityMax !== null || hourFilter !== null;
 
   if (!permLoading && !hasAccess) {
     return <AccessDeniedPage message="You don't have permission to view call logs." />;
@@ -490,80 +496,161 @@ export default function CallLogsPage() {
             </div>
 
             {showFilters && (
-              <div className="grid grid-cols-5 gap-3 p-4 bg-[#141414] border border-gray-800 rounded-lg">
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Status</label>
-                  <select
-                    value={statusFilter}
-                    onChange={(e) => setStatusFilter(e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  >
-                    <option value="">All statuses</option>
-                    {filterOptions?.statuses.map((status) => (
-                      <option key={status} value={status}>
-                        {status.charAt(0).toUpperCase() + status.slice(1).replace("_", " ")}
-                      </option>
-                    ))}
-                  </select>
+              <div className="p-4 bg-[#141414] border border-gray-800 rounded-lg space-y-3">
+                {/* Row 1 */}
+                <div className="grid grid-cols-5 gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Status</label>
+                    <select
+                      value={statusFilter}
+                      onChange={(e) => setStatusFilter(e.target.value)}
+                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    >
+                      <option value="">All statuses</option>
+                      {filterOptions?.statuses.map((status) => (
+                        <option key={status} value={status}>
+                          {status.charAt(0).toUpperCase() + status.slice(1).replace(/_/g, " ")}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Assistant</label>
+                    <select
+                      value={assistantFilter}
+                      onChange={(e) => setAssistantFilter(e.target.value)}
+                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    >
+                      <option value="">All assistants</option>
+                      {filterOptions?.assistants.map((a) => (
+                        <option key={a.id} value={a.id}>{a.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Disposition</label>
+                    <select
+                      value={dispositionIdFilter}
+                      onChange={(e) => setDispositionIdFilter(e.target.value)}
+                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    >
+                      <option value="">All dispositions</option>
+                      {filterOptions?.dispositions.map((d) => (
+                        <option key={d.id} value={d.id}>{d.name}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Resolution Status</label>
+                    <select
+                      value={acwResolutionFilter}
+                      onChange={(e) => setAcwResolutionFilter(e.target.value)}
+                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    >
+                      <option value="">All resolutions</option>
+                      {filterOptions?.resolution_options.map((r) => (
+                        <option key={r} value={r}>{r}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Transferred</label>
+                    <select
+                      value={hasTransferFilter === null ? "" : String(hasTransferFilter)}
+                      onChange={(e) => {
+                        const v = e.target.value;
+                        setHasTransferFilter(v === "" ? null : v === "true");
+                      }}
+                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    >
+                      <option value="">All calls</option>
+                      <option value="true">Transferred</option>
+                      <option value="false">Not transferred</option>
+                    </select>
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Assistant</label>
-                  <select
-                    value={assistantFilter}
-                    onChange={(e) => setAssistantFilter(e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  >
-                    <option value="">All assistants</option>
-                    {filterOptions?.assistants.map((a) => (
-                      <option key={a.id} value={a.id}>
-                        {a.name}
-                      </option>
-                    ))}
-                  </select>
+
+                {/* Row 2 */}
+                <div className="grid grid-cols-5 gap-3">
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">From Date</label>
+                    <input
+                      type="date"
+                      value={dateFrom}
+                      onChange={(e) => setDateFrom(e.target.value)}
+                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">To Date</label>
+                    <input
+                      type="date"
+                      value={dateTo}
+                      onChange={(e) => setDateTo(e.target.value)}
+                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Post Call QA</label>
+                    <select
+                      value={acwCompletedFilter === null ? "" : "true"}
+                      onChange={(e) => setAcwCompletedFilter(e.target.value === "" ? null : true)}
+                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    >
+                      <option value="">All calls</option>
+                      <option value="true">Has QA completed</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Quality Score Min</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      placeholder="0"
+                      value={qualityMin ?? ""}
+                      onChange={(e) => setQualityMin(e.target.value === "" ? null : Number(e.target.value))}
+                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-xs text-gray-500 mb-1">Quality Score Max</label>
+                    <input
+                      type="number"
+                      min={0}
+                      max={100}
+                      placeholder="100"
+                      value={qualityMax ?? ""}
+                      onChange={(e) => setQualityMax(e.target.value === "" ? null : Number(e.target.value))}
+                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    />
+                  </div>
                 </div>
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">From Date</label>
-                  <input
-                    type="date"
-                    value={dateFrom}
-                    onChange={(e) => setDateFrom(e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">To Date</label>
-                  <input
-                    type="date"
-                    value={dateTo}
-                    onChange={(e) => setDateTo(e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  />
-                </div>
-                <div>
-                  <label className="block text-xs text-gray-500 mb-1">Timezone</label>
-                  <select
-                    value={timezone}
-                    onChange={(e) => handleTimezoneChange(e.target.value)}
-                    className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                  >
-                    {TIMEZONE_OPTIONS.map((tz) => (
-                      <option key={tz.value} value={tz.value}>
-                        {tz.label}
-                      </option>
-                    ))}
-                  </select>
-                </div>
-                {hasActiveFilters && (
-                  <div className="col-span-5 flex justify-end">
+
+                {/* Timezone + Clear row */}
+                <div className="flex items-end justify-between gap-3">
+                  <div className="w-48">
+                    <label className="block text-xs text-gray-500 mb-1">Timezone</label>
+                    <select
+                      value={timezone}
+                      onChange={(e) => handleTimezoneChange(e.target.value)}
+                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                    >
+                      {TIMEZONE_OPTIONS.map((tz) => (
+                        <option key={tz.value} value={tz.value}>{tz.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  {hasActiveFilters && (
                     <button
                       onClick={clearFilters}
-                      className="text-sm text-gray-400 hover:text-white flex items-center gap-1"
+                      className="text-sm text-gray-400 hover:text-white flex items-center gap-1 pb-2"
                     >
                       <X className="h-3 w-3" />
                       Clear all filters
                     </button>
-                  </div>
-                )}
+                  )}
+                </div>
               </div>
             )}
           </div>
