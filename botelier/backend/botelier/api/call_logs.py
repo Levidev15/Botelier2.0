@@ -20,6 +20,8 @@ from loguru import logger
 
 from botelier.database import get_db
 from botelier.models import CallLog, CallLeg, CallStatus, Assistant, PhoneNumber, AssistantDisposition
+from botelier.models.user import User
+from botelier.auth.middleware import get_current_user, check_account_permission
 
 
 router = APIRouter(prefix="/api/call-logs", tags=["Call Logs"])
@@ -46,12 +48,10 @@ async def get_call_logs(
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(50, ge=1, le=100, description="Items per page"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """
-    Get paginated call logs for a hotel.
-    
-    SECURITY: Filters by hotel_id to ensure tenant isolation.
-    """
+    """Get paginated call logs for a hotel."""
+    check_account_permission(user, str(hotel_id), "call_logs.view", db)
     try:
         query = db.query(CallLog).filter(CallLog.hotel_id == hotel_id)
         
@@ -156,10 +156,10 @@ async def get_call_stats(
     hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
     days: int = Query(7, ge=1, le=90, description="Number of days to analyze"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """
-    Get call statistics for quick summary display.
-    """
+    """Get call statistics for quick summary display."""
+    check_account_permission(user, str(hotel_id), "call_logs.view", db)
     try:
         since = datetime.utcnow() - timedelta(days=days)
         
@@ -201,12 +201,10 @@ async def export_call_logs(
     date_from: Optional[datetime] = Query(None),
     date_to: Optional[datetime] = Query(None),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """
-    Export call logs as CSV file.
-    
-    SECURITY: Filters by hotel_id to ensure tenant isolation.
-    """
+    """Export call logs as CSV file."""
+    check_account_permission(user, str(hotel_id), "call_logs.export", db)
     try:
         query = db.query(CallLog).filter(CallLog.hotel_id == hotel_id)
         
@@ -283,12 +281,10 @@ async def get_call_log(
     call_log_id: UUID,
     hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """
-    Get a single call log with full details including transcript and legs.
-    
-    SECURITY: Validates hotel_id ownership to prevent unauthorized access.
-    """
+    """Get a single call log with full details including transcript and legs."""
+    check_account_permission(user, str(hotel_id), "call_logs.view", db)
     try:
         call_log = (
             db.query(CallLog)
@@ -332,12 +328,10 @@ async def get_call_log(
 async def get_filter_options(
     hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """
-    Get available filter options (assistants, phone numbers, statuses).
-    
-    Used to populate filter dropdowns in the UI.
-    """
+    """Get available filter options (assistants, phone numbers, statuses)."""
+    check_account_permission(user, str(hotel_id), "call_logs.view", db)
     try:
         assistants = db.query(Assistant).filter(
             Assistant.hotel_id == hotel_id
@@ -379,6 +373,7 @@ async def generate_summary(
     call_log_id: UUID,
     request: GenerateSummaryRequest,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """
     Run Post Call QA on a call transcript.
@@ -389,6 +384,7 @@ async def generate_summary(
     """
     try:
         hotel_id = UUID(request.hotel_id)
+        check_account_permission(user, str(hotel_id), "call_logs.view", db)
 
         call_log = db.query(CallLog).filter(
             CallLog.id == call_log_id,
@@ -438,12 +434,10 @@ async def update_call_log(
     request: UpdateCallLogRequest,
     hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """
-    Update a call log's disposition or summary.
-    
-    Allows manual override of AI-selected disposition or summary edits.
-    """
+    """Update a call log's disposition or summary."""
+    check_account_permission(user, str(hotel_id), "call_logs.view", db)
     try:
         call_log = db.query(CallLog).filter(
             CallLog.id == call_log_id,

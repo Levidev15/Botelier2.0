@@ -14,6 +14,8 @@ from sqlalchemy.orm import Session
 from botelier.database import get_db
 from botelier.models.tool_set import ToolSet
 from botelier.models.tool import Tool, ToolType
+from botelier.models.user import User
+from botelier.auth.middleware import get_current_user, check_account_permission
 
 router = APIRouter(prefix="/api/tool-sets", tags=["tool-sets"])
 
@@ -64,9 +66,11 @@ class ToolListResponse(BaseModel):
 @router.get("", response_model=ToolSetListResponse)
 async def list_tool_sets(
     account_id: UUID = Query(..., description="Account ID to filter by"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """List all tool sets for an account."""
+    check_account_permission(user, str(account_id), "tools.view", db)
     tool_sets = db.query(ToolSet).filter(ToolSet.account_id == account_id).all()
     
     result = []
@@ -86,8 +90,13 @@ async def list_tool_sets(
 
 
 @router.post("", response_model=ToolSetResponse)
-async def create_tool_set(data: ToolSetCreate, db: Session = Depends(get_db)):
+async def create_tool_set(
+    data: ToolSetCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Create a new tool set."""
+    check_account_permission(user, str(data.account_id), "tools.create", db)
     try:
         tool_set = ToolSet(
             account_id=data.account_id,
@@ -114,13 +123,17 @@ async def create_tool_set(data: ToolSetCreate, db: Session = Depends(get_db)):
 
 
 @router.get("/{tool_set_id}")
-async def get_tool_set(tool_set_id: UUID, db: Session = Depends(get_db)):
+async def get_tool_set(
+    tool_set_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Get a specific tool set by ID."""
     tool_set = db.query(ToolSet).filter(ToolSet.id == tool_set_id).first()
     
     if not tool_set:
         raise HTTPException(status_code=404, detail="Tool set not found")
-    
+    check_account_permission(user, str(tool_set.account_id), "tools.view", db)
     tool_count = db.query(Tool).filter(Tool.tool_set_id == tool_set.id).count()
     
     return {
@@ -135,14 +148,19 @@ async def get_tool_set(tool_set_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.put("/{tool_set_id}")
-async def update_tool_set(tool_set_id: UUID, data: ToolSetUpdate, db: Session = Depends(get_db)):
+async def update_tool_set(
+    tool_set_id: UUID,
+    data: ToolSetUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Update a tool set."""
     try:
         tool_set = db.query(ToolSet).filter(ToolSet.id == tool_set_id).first()
         
         if not tool_set:
             raise HTTPException(status_code=404, detail="Tool set not found")
-        
+        check_account_permission(user, str(tool_set.account_id), "tools.edit", db)
         if data.name is not None:
             tool_set.name = data.name
         if data.description is not None:
@@ -168,13 +186,18 @@ async def update_tool_set(tool_set_id: UUID, data: ToolSetUpdate, db: Session = 
 
 
 @router.delete("/{tool_set_id}")
-async def delete_tool_set(tool_set_id: UUID, db: Session = Depends(get_db)):
+async def delete_tool_set(
+    tool_set_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Delete a tool set and all its tools."""
     try:
         tool_set = db.query(ToolSet).filter(ToolSet.id == tool_set_id).first()
         
         if not tool_set:
             raise HTTPException(status_code=404, detail="Tool set not found")
+        check_account_permission(user, str(tool_set.account_id), "tools.delete", db)
         
         tool_count = db.query(Tool).filter(Tool.tool_set_id == tool_set.id).count()
         
@@ -189,11 +212,16 @@ async def delete_tool_set(tool_set_id: UUID, db: Session = Depends(get_db)):
 
 
 @router.get("/{tool_set_id}/tools", response_model=ToolListResponse)
-async def list_tools_in_set(tool_set_id: UUID, db: Session = Depends(get_db)):
+async def list_tools_in_set(
+    tool_set_id: UUID,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """List all tools in a tool set."""
     tool_set = db.query(ToolSet).filter(ToolSet.id == tool_set_id).first()
     if not tool_set:
         raise HTTPException(status_code=404, detail="Tool set not found")
+    check_account_permission(user, str(tool_set.account_id), "tools.view", db)
     
     tools = db.query(Tool).filter(Tool.tool_set_id == tool_set_id).all()
     

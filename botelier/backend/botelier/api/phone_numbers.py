@@ -22,6 +22,8 @@ from botelier.models.hotel import Hotel
 from botelier.models.assistant import Assistant
 from botelier.integrations.twilio.phone_numbers import PhoneNumberManager
 from botelier.config.domain import get_public_base_url
+from botelier.models.user import User
+from botelier.auth.middleware import get_current_user, check_account_permission
 
 
 router = APIRouter(prefix="/api/phone-numbers", tags=["phone-numbers"])
@@ -70,8 +72,10 @@ async def search_available_numbers(
     country: str = Query("US", description="Country code (US, GB, etc.)"),
     limit: int = Query(10, ge=1, le=50, description="Max results"),
     hotel_id: str = Query(..., description="Hotel ID"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    check_account_permission(user, hotel_id, "phone_numbers.view", db)
     """
     Search for available phone numbers by area code.
     
@@ -123,8 +127,11 @@ async def search_available_numbers(
 async def list_phone_numbers(
     hotel_id: Optional[str] = Query(None, description="Filter by hotel ID"),
     assistant_id: Optional[str] = Query(None, description="Filter by assistant ID"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    if hotel_id:
+        check_account_permission(user, hotel_id, "phone_numbers.view", db)
     """
     List phone numbers.
     
@@ -153,8 +160,10 @@ async def list_phone_numbers(
 @router.post("/purchase", response_model=PhoneNumberResponse)
 async def purchase_phone_number(
     request: PurchaseNumberRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    check_account_permission(user, str(request.hotel_id), "phone_numbers.purchase", db)
     """
     Purchase a phone number for a hotel.
     
@@ -245,7 +254,8 @@ async def purchase_phone_number(
 async def assign_to_assistant(
     phone_number_id: str,
     request: AssignAssistantRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """
     Assign phone number to a voice assistant.
@@ -266,7 +276,7 @@ async def assign_to_assistant(
     phone_number = db.query(PhoneNumber).filter(PhoneNumber.id == phone_number_id).first()
     if not phone_number:
         raise HTTPException(status_code=404, detail="Phone number not found")
-    
+    check_account_permission(user, str(phone_number.hotel_id), "phone_numbers.configure", db)
     # Validate assistant belongs to same hotel (CRITICAL for multi-tenancy)
     if request.assistant_id:
         assistant = db.query(Assistant).filter(Assistant.id == request.assistant_id).first()
@@ -293,7 +303,8 @@ async def assign_to_assistant(
 @router.delete("/{phone_number_id}")
 async def release_phone_number(
     phone_number_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """
     Release a phone number back to Twilio.
@@ -307,7 +318,7 @@ async def release_phone_number(
     phone_number = db.query(PhoneNumber).filter(PhoneNumber.id == phone_number_id).first()
     if not phone_number:
         raise HTTPException(status_code=404, detail="Phone number not found")
-    
+    check_account_permission(user, str(phone_number.hotel_id), "phone_numbers.release", db)
     # Get hotel for sub-account credentials
     hotel = db.query(Hotel).filter(Hotel.id == phone_number.hotel_id).first()
     if not hotel or not hotel.twilio_sub_account_sid or not hotel.twilio_sub_auth_token:
@@ -356,7 +367,9 @@ async def update_sms_config(
     phone_number_id: str,
     request: SMSConfigRequest,
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    check_account_permission(user, str(request.hotel_id), "phone_numbers.configure", db)
     """
     Enable/disable SMS on a phone number and optionally assign an SMS-specific assistant.
     When SMS is enabled, configures the Twilio number's SMS webhook.
@@ -420,7 +433,8 @@ async def update_sms_config(
 @router.post("/{phone_number_id}/reconfigure")
 async def reconfigure_phone_number_webhooks(
     phone_number_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """
     Reconfigure phone number webhooks to use correct voice and status callback URLs.
@@ -437,7 +451,7 @@ async def reconfigure_phone_number_webhooks(
     phone_number = db.query(PhoneNumber).filter(PhoneNumber.id == phone_number_id).first()
     if not phone_number:
         raise HTTPException(status_code=404, detail="Phone number not found")
-    
+    check_account_permission(user, str(phone_number.hotel_id), "phone_numbers.configure", db)
     hotel = db.query(Hotel).filter(Hotel.id == phone_number.hotel_id).first()
     if not hotel or not hotel.twilio_sub_account_sid or not hotel.twilio_sub_auth_token:
         raise HTTPException(

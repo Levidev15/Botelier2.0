@@ -5,6 +5,7 @@ import { Plus, Search, MoreVertical, Play, Pause, Copy, Bot, Trash2, GitBranch }
 import Link from "next/link";
 import { notify, confirmAction } from "@/lib/notifications";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
+import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
 
 interface Assistant {
   id: string;
@@ -29,6 +30,8 @@ interface Assistant {
 
 export default function AssistantsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
+  const { hasAccess, loading: permLoading } = usePagePermission("assistants", "view");
+  const { can } = usePagePermission("assistants", "create");
   const [assistants, setAssistants] = useState<Assistant[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -51,6 +54,10 @@ export default function AssistantsPage() {
     }
   };
 
+  if (!permLoading && !hasAccess) {
+    return <AccessDeniedPage message="You don't have permission to view assistants." />;
+  }
+
   return (
     <div className="h-full">
       <div className="border-b border-gray-800 bg-[#0a0a0a] sticky top-0 z-10">
@@ -62,13 +69,15 @@ export default function AssistantsPage() {
                 Manage your voice AI assistants
               </p>
             </div>
-            <Link
-              href="/dashboard/assistants/new"
-              className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition text-sm font-medium"
-            >
-              <Plus className="h-4 w-4 mr-2" />
-              Create Assistant
-            </Link>
+            <PermissionGate resource="assistants" action="create">
+              <Link
+                href="/dashboard/assistants/new"
+                className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition text-sm font-medium"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Create Assistant
+              </Link>
+            </PermissionGate>
           </div>
 
           <div className="mt-6">

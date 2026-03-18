@@ -29,6 +29,7 @@ import { notify } from "@/lib/notifications";
 import TranscriptModal from "./components/TranscriptModal";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
+import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
 
 interface CallLeg {
   id: string;
@@ -167,6 +168,7 @@ function getLegTypeLabel(legType: string): string {
 
 export default function CallLogsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
+  const { hasAccess, loading: permLoading } = usePagePermission("call_logs", "view");
   const { authHeaders } = useAuthToken();
   const [callLogs, setCallLogs] = useState<CallLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -421,6 +423,10 @@ export default function CallLogsPage() {
     search || statusFilter || assistantFilter || dateFrom || dateTo ||
     hasTransferFilter !== null || dispositionIdFilter || acwCompletedFilter !== null ||
     qualityMin !== null || qualityMax !== null || hourFilter !== null;
+
+  if (!permLoading && !hasAccess) {
+    return <AccessDeniedPage message="You don't have permission to view call logs." />;
+  }
 
   return (
     <div className="h-full flex flex-col">

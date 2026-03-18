@@ -13,6 +13,8 @@ import uuid
 from botelier.database import get_db
 from botelier.models.tool import Tool, ToolType as DBToolType
 from botelier.models.tool_set import ToolSet
+from botelier.models.user import User
+from botelier.auth.middleware import get_current_user, check_account_permission
 from botelier.schemas.tool_schemas import (
     ToolCreate,
     ToolUpdate,
@@ -50,9 +52,16 @@ def list_tools(
     tool_set_id: str = None,
     assistant_id: str = None,
     tool_type: str = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """List tools scoped by tool_set_id or account (hotel_id)."""
+    if hotel_id:
+        check_account_permission(user, hotel_id, "tools.view", db)
+    elif tool_set_id:
+        ts = db.query(ToolSet).filter(ToolSet.id == tool_set_id).first()
+        if ts:
+            check_account_permission(user, str(ts.account_id), "tools.view", db)
     query = db.query(Tool)
     query = _scope_query_by_account(query, db, tool_set_id, hotel_id)
 
@@ -78,9 +87,16 @@ def get_tool(
     tool_id: str,
     tool_set_id: str = None,
     hotel_id: str = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Get a specific tool by ID, scoped by tool_set_id or account (hotel_id)."""
+    if hotel_id:
+        check_account_permission(user, hotel_id, "tools.view", db)
+    elif tool_set_id:
+        ts = db.query(ToolSet).filter(ToolSet.id == tool_set_id).first()
+        if ts:
+            check_account_permission(user, str(ts.account_id), "tools.view", db)
     query = db.query(Tool).filter(Tool.id == tool_id)
     query = _scope_query_by_account(query, db, tool_set_id, hotel_id)
 
@@ -96,7 +112,11 @@ def get_tool(
 
 
 @router.post("", status_code=status.HTTP_201_CREATED)
-def create_tool(tool_data: ToolCreate, db: Session = Depends(get_db)):
+def create_tool(
+    tool_data: ToolCreate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """Create a new tool, scoped to a tool set."""
     if not tool_data.tool_set_id:
         raise HTTPException(
@@ -110,6 +130,7 @@ def create_tool(tool_data: ToolCreate, db: Session = Depends(get_db)):
             status_code=status.HTTP_404_NOT_FOUND,
             detail="Tool set not found"
         )
+    check_account_permission(user, str(tool_set.account_id), "tools.create", db)
 
     tool_id = str(uuid.uuid4())
     db_tool_type = DBToolType(tool_data.tool_type.value)
@@ -137,9 +158,16 @@ def update_tool(
     tool_data: ToolUpdate,
     tool_set_id: str = None,
     hotel_id: str = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Update an existing tool, scoped by tool_set_id or account (hotel_id)."""
+    if hotel_id:
+        check_account_permission(user, hotel_id, "tools.edit", db)
+    elif tool_set_id:
+        ts = db.query(ToolSet).filter(ToolSet.id == tool_set_id).first()
+        if ts:
+            check_account_permission(user, str(ts.account_id), "tools.edit", db)
     query = db.query(Tool).filter(Tool.id == tool_id)
     query = _scope_query_by_account(query, db, tool_set_id, hotel_id)
 
@@ -171,9 +199,16 @@ def delete_tool(
     tool_id: str,
     tool_set_id: str = None,
     hotel_id: str = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Delete a tool, scoped by tool_set_id or account (hotel_id)."""
+    if hotel_id:
+        check_account_permission(user, hotel_id, "tools.delete", db)
+    elif tool_set_id:
+        ts = db.query(ToolSet).filter(ToolSet.id == tool_set_id).first()
+        if ts:
+            check_account_permission(user, str(ts.account_id), "tools.delete", db)
     query = db.query(Tool).filter(Tool.id == tool_id)
     query = _scope_query_by_account(query, db, tool_set_id, hotel_id)
 
