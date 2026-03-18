@@ -387,35 +387,74 @@ def get_hotel_context(permission: str):
     """
     Reusable FastAPI dependency factory for query-param scoped hotel endpoints.
 
-    Reads `hotel_id` from the query string, verifies the user is authenticated
-    and holds the given permission for that account, then returns the hotel_id
-    as a plain string.
+    Accepts ``hotel_id`` **or** ``account_id`` from the query string (hotel_id
+    takes precedence), validates the UUID, loads the membership, performs a
+    permission check, and returns a fully-populated ``AccountContext`` with
+    platform-admin bypass support.
 
     Usage::
 
         @router.get("/my-resource")
         async def my_endpoint(
-            hotel_id: str = Depends(get_hotel_context("resource.view")),
+            ctx: AccountContext = Depends(get_hotel_context("resource.view")),
         ):
+            ctx.require_permission("resource.edit")  # optional extra check
+            hotel_id = str(ctx.account.id)
             ...
     """
     from uuid import UUID as _UUID
     from fastapi import Query as _Query
+    from typing import Optional as _Optional
 
     async def _dependency(
-        hotel_id: str = _Query(..., description="Hotel/account ID for multi-tenant isolation"),
+        hotel_id: _Optional[str] = _Query(None, description="Hotel/account UUID"),
+        account_id: _Optional[str] = _Query(None, description="Account UUID (alias for hotel_id)"),
         user: User = Depends(get_current_user),
         db: Session = Depends(get_db),
-    ) -> str:
+    ) -> AccountContext:
+        raw_id = hotel_id or account_id
+        if not raw_id:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="hotel_id (or account_id) is required",
+            )
         try:
-            _UUID(hotel_id)
+            _UUID(raw_id)
         except (ValueError, AttributeError):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid hotel_id — must be a valid UUID",
             )
-        check_account_permission(user, hotel_id, permission, db)
-        return hotel_id
+
+        account = db.query(Account).filter(Account.id == raw_id).first()
+        if not account:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Account not found",
+            )
+
+        if user.is_platform_admin:
+            return AccountContext(user=user, account=account)
+
+        membership = db.query(AccountMembership).filter(
+            AccountMembership.user_id == user.id,
+            AccountMembership.account_id == account.id,
+            AccountMembership.is_active == True,
+        ).first()
+
+        if not membership:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="You don't have access to this account",
+            )
+
+        if permission and not membership.has_permission(permission):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Permission denied: {permission}",
+            )
+
+        return AccountContext(user=user, account=account, membership=membership)
 
     return _dependency
 

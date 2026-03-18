@@ -22,12 +22,27 @@ from botelier.database import get_db
 from botelier.models import CallLog, CallLeg, CallStatus, Assistant, PhoneNumber, AssistantDisposition
 from botelier.models.user import User
 from botelier.auth.middleware import get_current_user, check_account_permission
+from botelier.models.role import AccountMembership
 
 
 router = APIRouter(prefix="/api/call-logs", tags=["Call Logs"])
 
 
 _MISSED_STATUSES = ("no_answer", "busy", "canceled")
+
+
+def _can_view_transcripts(user: User, hotel_id: str, db: Session) -> bool:
+    """Return True if user has call_logs.view_transcripts for this account."""
+    if user.is_platform_admin:
+        return True
+    membership = db.query(AccountMembership).filter(
+        AccountMembership.user_id == user.id,
+        AccountMembership.account_id == hotel_id,
+        AccountMembership.is_active == True,
+    ).first()
+    if not membership:
+        return False
+    return membership.has_permission("call_logs.view_transcripts")
 
 
 @router.get("")
@@ -131,9 +146,10 @@ async def get_call_logs(
             ).all()
             phone_numbers = {str(p.id): p.phone_number for p in phone_records}
         
+        include_transcript = _can_view_transcripts(user, str(hotel_id), db)
         logs_with_names = []
         for log in call_logs:
-            log_dict = log.to_dict(include_legs=True, include_transcript=True)
+            log_dict = log.to_dict(include_legs=True, include_transcript=include_transcript)
             log_dict["assistant_name"] = assistants.get(str(log.assistant_id)) if log.assistant_id else None
             log_dict["phone_number_display"] = phone_numbers.get(str(log.phone_number_id)) if log.phone_number_id else None
             logs_with_names.append(log_dict)
@@ -284,7 +300,7 @@ async def get_call_log(
     user: User = Depends(get_current_user),
 ):
     """Get a single call log with full details including transcript and legs."""
-    check_account_permission(user, str(hotel_id), "call_logs.view_transcripts", db)
+    check_account_permission(user, str(hotel_id), "call_logs.view", db)
     try:
         call_log = (
             db.query(CallLog)
@@ -299,7 +315,8 @@ async def get_call_log(
         if not call_log:
             raise HTTPException(status_code=404, detail="Call log not found")
         
-        result = call_log.to_dict(include_legs=True, include_transcript=True)
+        include_transcript = _can_view_transcripts(user, str(hotel_id), db)
+        result = call_log.to_dict(include_legs=True, include_transcript=include_transcript)
         
         if call_log.assistant_id:
             assistant = db.query(Assistant).filter(
