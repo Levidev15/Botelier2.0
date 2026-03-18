@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { Phone, PhoneForwarded, AlertTriangle } from "lucide-react";
 import { notify } from "@/lib/notifications";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface Tool {
   id: string;
@@ -35,7 +36,8 @@ interface FormData {
 
 export default function TransferCallForm({ onSuccess, onCancel, tool, accountId, toolSetId }: TransferCallFormProps) {
   const isEditMode = !!tool;
-  
+  const { authFetch } = useAuthToken();
+
   const [formData, setFormData] = useState<FormData>({
     name: "",
     description: "",
@@ -107,11 +109,8 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
         : "/api/tools";
       const method = isEditMode ? "PUT" : "POST";
 
-      const response = await fetch(url, {
+      const response = await authFetch(url, {
         method,
-        headers: {
-          "Content-Type": "application/json",
-        },
         body: JSON.stringify(payload),
       });
 
