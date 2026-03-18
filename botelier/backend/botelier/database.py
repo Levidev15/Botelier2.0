@@ -111,6 +111,10 @@ _ADDITIVE_MIGRATIONS = [
     "ALTER TABLE sms_conversations ALTER COLUMN reference_id SET NOT NULL",
     "DROP INDEX IF EXISTS ix_sms_conv_hotel_ref",
     "CREATE UNIQUE INDEX IF NOT EXISTS ix_sms_conv_ref ON sms_conversations(reference_id)",
+
+    # Allow email-registered users (invited members) to have no replit_id.
+    # The SQLAlchemy model has nullable=True but the original DB column was NOT NULL.
+    "ALTER TABLE users ALTER COLUMN replit_id DROP NOT NULL",
 ]
 
 
