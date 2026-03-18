@@ -18,6 +18,7 @@ import CustomizePanel from "@/components/analytics/CustomizePanel";
 import DrilldownPanel, { TranscriptCallLog } from "@/components/analytics/DrilldownPanel";
 import { useWidgetLayout, WidgetDef } from "@/components/analytics/useWidgetLayout";
 import TranscriptModal from "@/app/(dashboard)/dashboard/call-logs/components/TranscriptModal";
+import TimezonePicker, { loadTimezone, saveTimezone } from "@/components/analytics/TimezonePicker";
 
 const WIDGETS: WidgetDef[] = [
   { id: "total_calls", label: "Total Calls", defaultVisible: true },
@@ -127,7 +128,12 @@ export default function CallAnalyticsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [customizeOpen, setCustomizeOpen] = useState(false);
+  const [timezone, setTimezone] = useState<string>("UTC");
   const { visibility, toggle, resetDefaults, isVisible } = useWidgetLayout("call_analytics", WIDGETS);
+
+  useEffect(() => {
+    setTimezone(loadTimezone());
+  }, []);
 
   // Drilldown state
   const [drilldown, setDrilldown] = useState<{ metric: string; label: string } | null>(null);
@@ -234,6 +240,10 @@ export default function CallAnalyticsPage() {
         <div className="flex items-center gap-3 flex-wrap">
           <AssistantFilter selected={assistantIds} onChange={setAssistantIds} />
           <DateRangePicker value={dateRange} onChange={setDateRange} />
+          <TimezonePicker
+            value={timezone}
+            onChange={(tz) => { setTimezone(tz); saveTimezone(tz); }}
+          />
           <button
             onClick={() => setCustomizeOpen(true)}
             className="flex items-center gap-2 px-3 py-1.5 text-sm bg-[#1a1a1a] border border-gray-700 rounded-lg text-gray-300 hover:text-gray-100 hover:border-gray-600 transition-colors"
@@ -473,7 +483,11 @@ export default function CallAnalyticsPage() {
                   const total = data.acw.resolution_distribution.reduce((a, b) => a + b.count, 0);
                   const pct = total > 0 ? (d.count / total) * 100 : 0;
                   return (
-                    <div key={d.resolution}>
+                    <button
+                      key={d.resolution}
+                      onClick={() => openDrilldown(`resolution:${d.resolution}`, `Resolution: ${d.resolution}`)}
+                      className="w-full text-left hover:bg-gray-800/50 rounded-lg px-1 py-0.5 transition-colors"
+                    >
                       <div className="flex items-center justify-between text-sm mb-1">
                         <span className="text-gray-300">{d.resolution}</span>
                         <span className="text-gray-400">
@@ -486,7 +500,7 @@ export default function CallAnalyticsPage() {
                           style={{ width: `${pct}%`, backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }}
                         />
                       </div>
-                    </div>
+                    </button>
                   );
                 })}
               </div>
@@ -542,6 +556,7 @@ export default function CallAnalyticsPage() {
         metricLabel={drilldown?.label ?? ""}
         dateRange={dateRange}
         assistantIds={assistantIds}
+        timezone={timezone}
         onClose={() => setDrilldown(null)}
         onViewTranscript={handleViewTranscript}
       />

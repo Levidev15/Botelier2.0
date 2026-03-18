@@ -332,6 +332,9 @@ async def get_calls_drilldown(
                     CallLog.acw_quality_score >= lo,
                     CallLog.acw_quality_score <= hi,
                 )
+        elif token.startswith("resolution:"):
+            resolution_val = token[len("resolution:"):]
+            query = query.filter(CallLog.acw_resolution == resolution_val)
         # "all" — no extra filter
 
         total = query.count()
