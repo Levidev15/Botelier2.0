@@ -1,12 +1,13 @@
 "use client";
 
-import { Bot, Phone, BarChart, Key, Users, Wrench, BookOpen, Shield, LogOut, ArrowLeft, Building2, Plug, MessageSquare, TrendingUp, MessageCircle } from "lucide-react";
+import { Bot, Phone, BarChart, Key, Users, Wrench, BookOpen, Shield, LogOut, ArrowLeft, Building2, Plug, MessageSquare, TrendingUp, MessageCircle, Sun, Moon } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
+import { useTheme } from "@/lib/theme/ThemeContext";
 
 export default function DashboardLayout({
   children,
@@ -15,6 +16,7 @@ export default function DashboardLayout({
 }) {
   const { token, loading: tokenLoading, authFetch } = useAuthToken();
   const { accountId, accountName, isAdminSession, exitAccount, loading: accountLoading } = useAccountContext();
+  const { theme, toggleTheme } = useTheme();
   const router = useRouter();
   const pathname = usePathname();
   const [userInfo, setUserInfo] = useState<any>(null);
@@ -81,8 +83,6 @@ export default function DashboardLayout({
     }
   };
 
-  // Poll for pending handoffs count every 30s so the sidebar badge stays current
-  // across all pages, not just when the Messages page is open.
   const fetchPendingHandoffs = async (hotelId: string) => {
     try {
       const res = await authFetch(`/api/sms/pending-handoffs?hotel_id=${hotelId}`);
@@ -109,7 +109,7 @@ export default function DashboardLayout({
 
   if (tokenLoading || accountLoading || !authChecked) {
     return (
-      <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-6">
           <div className="relative">
             <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
@@ -138,8 +138,8 @@ export default function DashboardLayout({
   const parsedUser = storedUser ? JSON.parse(storedUser) : null;
 
   return (
-    <div className="flex h-screen bg-[#0a0a0a] text-gray-100">
-      <aside className="w-64 bg-[#141414] border-r border-gray-800 flex flex-col">
+    <div className="flex h-screen bg-background text-foreground">
+      <aside className="w-64 bg-surface border-r border-border flex flex-col">
         {isAdminSession && (
           <div className="p-3 bg-purple-600/20 border-b border-purple-600/30">
             <div className="flex items-center gap-2 text-purple-400 text-sm">
@@ -155,14 +155,14 @@ export default function DashboardLayout({
             </button>
           </div>
         )}
-        <div className="p-6 border-b border-gray-800">
+        <div className="p-6 border-b border-border">
           <Link href="/" className="flex items-center space-x-2">
             <Bot className="h-8 w-8 text-blue-500" />
-            <span className="text-xl font-bold">Botelier</span>
+            <span className="text-xl font-bold text-foreground">Botelier</span>
           </Link>
         </div>
         
-        <nav className="flex-1 p-4 space-y-1">
+        <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
           <NavItem href="/dashboard/assistants" icon={<Bot className="h-5 w-5" />} active={isActive("/dashboard/assistants")}>
             Assistants
           </NavItem>
@@ -183,7 +183,7 @@ export default function DashboardLayout({
           </NavItem>
           
           <div className="pt-4 pb-2">
-            <div className="px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+            <div className="px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
               Analytics
             </div>
           </div>
@@ -196,7 +196,7 @@ export default function DashboardLayout({
           </NavItem>
           
           <div className="pt-4 pb-2">
-            <div className="px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+            <div className="px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
               Configuration
             </div>
           </div>
@@ -217,7 +217,7 @@ export default function DashboardLayout({
           {(userInfo?.is_platform_admin || parsedUser?.user_type === "platform_admin") && (
             <>
               <div className="pt-4 pb-2">
-                <div className="px-3 text-xs font-semibold text-gray-500 uppercase tracking-wider">
+                <div className="px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
                   Platform
                 </div>
               </div>
@@ -228,27 +228,36 @@ export default function DashboardLayout({
           )}
         </nav>
 
-        <div className="p-4 border-t border-gray-800">
-          <div className="flex items-center space-x-3">
-            {userInfo?.profile_image_url ? (
-              <img
-                src={userInfo.profile_image_url}
-                alt=""
-                className="w-8 h-8 rounded-full object-cover"
-              />
-            ) : (
-              <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-sm font-semibold">
-                {userInfo?.display_name?.[0] || parsedUser?.first_name?.[0] || "?"}
+        <div className="p-4 border-t border-border">
+          <div className="flex items-center gap-2 mb-3">
+            <div className="flex items-center gap-2 flex-1 min-w-0">
+              {userInfo?.profile_image_url ? (
+                <img
+                  src={userInfo.profile_image_url}
+                  alt=""
+                  className="w-8 h-8 rounded-full object-cover flex-shrink-0"
+                />
+              ) : (
+                <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center text-sm font-semibold text-white flex-shrink-0">
+                  {userInfo?.display_name?.[0] || parsedUser?.first_name?.[0] || "?"}
+                </div>
+              )}
+              <div className="flex-1 min-w-0">
+                <div className="text-sm font-medium text-foreground truncate">{userInfo?.display_name || parsedUser?.first_name || "User"}</div>
+                <div className="text-xs text-muted-foreground truncate">{userInfo?.email || parsedUser?.email || ""}</div>
               </div>
-            )}
-            <div className="flex-1">
-              <div className="text-sm font-medium">{userInfo?.display_name || parsedUser?.first_name || "User"}</div>
-              <div className="text-xs text-gray-400">{userInfo?.email || parsedUser?.email || ""}</div>
             </div>
+            <button
+              onClick={toggleTheme}
+              title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+              className="flex-shrink-0 p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-hover-bg transition-colors"
+            >
+              {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+            </button>
           </div>
           <button
             onClick={handleLogout}
-            className="w-full mt-3 flex items-center gap-2 px-3 py-2 text-sm text-red-400 hover:text-red-300 hover:bg-red-900/20 rounded-lg transition-colors"
+            className="w-full flex items-center gap-2 px-3 py-2 text-sm text-red-400 hover:text-red-300 hover:bg-red-900/20 rounded-lg transition-colors"
           >
             <LogOut className="h-4 w-4" />
             Sign Out
@@ -281,8 +290,8 @@ function NavItem({
       href={href}
       className={`flex items-center space-x-3 px-3 py-2 rounded-lg transition-colors ${
         active
-          ? "bg-blue-600/10 text-blue-400"
-          : "text-gray-400 hover:bg-gray-800 hover:text-gray-200"
+          ? "bg-blue-600/10 text-blue-500"
+          : "text-muted-foreground hover:bg-hover-bg hover:text-foreground"
       }`}
     >
       {icon}

@@ -13,8 +13,11 @@ import {
   ChevronRight,
   Shield,
   Mail,
+  Sun,
+  Moon,
 } from "lucide-react";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
+import { useTheme } from "@/lib/theme/ThemeContext";
 
 const adminNavItems = [
   { href: "/admin", label: "Dashboard", icon: BarChart3 },
@@ -30,6 +33,7 @@ export default function AdminLayout({
   children: React.ReactNode;
 }) {
   const { token, loading: tokenLoading, authFetch, logout } = useAuthToken();
+  const { theme, toggleTheme } = useTheme();
   const router = useRouter();
   const pathname = usePathname();
   const [userInfo, setUserInfo] = useState<any>(null);
@@ -72,7 +76,7 @@ export default function AdminLayout({
 
   if (tokenLoading || loading) {
     return (
-      <div className="min-h-screen bg-[#0a0a0a] flex items-center justify-center">
+      <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-6">
           <div className="relative">
             <div className="w-14 h-14 rounded-xl bg-gradient-to-br from-blue-500 to-purple-600 flex items-center justify-center">
@@ -91,12 +95,12 @@ export default function AdminLayout({
   }
 
   return (
-    <div className="min-h-screen bg-[#0a0a0a] flex">
-      <aside className="w-64 bg-[#0f0f0f] border-r border-[#1a1a1a] flex flex-col">
-        <div className="p-4 border-b border-[#1a1a1a]">
+    <div className="min-h-screen bg-background flex text-foreground">
+      <aside className="w-64 bg-surface border-r border-border flex flex-col">
+        <div className="p-4 border-b border-border">
           <div className="flex items-center gap-2">
             <Shield className="h-6 w-6 text-blue-500" />
-            <span className="text-lg font-semibold text-white">
+            <span className="text-lg font-semibold text-foreground">
               Platform Admin
             </span>
           </div>
@@ -113,8 +117,8 @@ export default function AdminLayout({
                 href={item.href}
                 className={`flex items-center gap-3 px-3 py-2 rounded-lg transition-colors ${
                   isActive
-                    ? "bg-blue-600/20 text-blue-400"
-                    : "text-gray-400 hover:text-white hover:bg-[#1a1a1a]"
+                    ? "bg-blue-600/20 text-blue-500"
+                    : "text-muted-foreground hover:text-foreground hover:bg-hover-bg"
                 }`}
               >
                 <item.icon className="h-5 w-5" />
@@ -124,36 +128,45 @@ export default function AdminLayout({
           })}
         </nav>
 
-        <div className="p-4 border-t border-[#1a1a1a]">
+        <div className="p-4 border-t border-border">
           <Link
             href="/dashboard"
-            className="flex items-center gap-3 px-3 py-2 text-gray-400 hover:text-white hover:bg-[#1a1a1a] rounded-lg transition-colors"
+            className="flex items-center gap-3 px-3 py-2 text-muted-foreground hover:text-foreground hover:bg-hover-bg rounded-lg transition-colors"
           >
             <ChevronRight className="h-5 w-5" />
             <span>Go to Dashboard</span>
           </Link>
 
           <div className="mt-4 px-3 py-2">
-            <div className="flex items-center gap-3">
-              {userInfo?.profile_image_url ? (
-                <img
-                  src={userInfo.profile_image_url}
-                  alt=""
-                  className="h-8 w-8 rounded-full object-cover"
-                />
-              ) : (
-                <div className="h-8 w-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-medium">
-                  {userInfo?.display_name?.[0] || "?"}
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-3 flex-1 min-w-0">
+                {userInfo?.profile_image_url ? (
+                  <img
+                    src={userInfo.profile_image_url}
+                    alt=""
+                    className="h-8 w-8 rounded-full object-cover flex-shrink-0"
+                  />
+                ) : (
+                  <div className="h-8 w-8 rounded-full bg-blue-600 flex items-center justify-center text-white text-sm font-medium flex-shrink-0">
+                    {userInfo?.display_name?.[0] || "?"}
+                  </div>
+                )}
+                <div className="flex-1 min-w-0">
+                  <p className="text-sm font-medium text-foreground truncate">
+                    {userInfo?.display_name || "Admin"}
+                  </p>
+                  <p className="text-xs text-muted-foreground truncate">
+                    {userInfo?.email || "Platform Admin"}
+                  </p>
                 </div>
-              )}
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-white truncate">
-                  {userInfo?.display_name || "Admin"}
-                </p>
-                <p className="text-xs text-gray-500 truncate">
-                  {userInfo?.email || "Platform Admin"}
-                </p>
               </div>
+              <button
+                onClick={toggleTheme}
+                title={theme === "dark" ? "Switch to light mode" : "Switch to dark mode"}
+                className="flex-shrink-0 p-1.5 rounded-lg text-muted-foreground hover:text-foreground hover:bg-hover-bg transition-colors"
+              >
+                {theme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+              </button>
             </div>
           </div>
 
