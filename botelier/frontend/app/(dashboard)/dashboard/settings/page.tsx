@@ -1,6 +1,28 @@
+"use client";
+
 import { Save } from "lucide-react";
+import { usePagePermission, AccessDeniedPage } from "@/components/ui/PermissionGate";
+import { usePermissions } from "@/lib/auth/usePermissions";
 
 export default function SettingsPage() {
+  const { hasAccess, loading: permLoading } = usePagePermission("settings", "view");
+  const { can, isPlatformAdmin } = usePermissions();
+
+  if (permLoading) {
+    return (
+      <div className="flex items-center justify-center min-h-[400px]">
+        <div className="animate-spin h-6 w-6 border-2 border-blue-500 border-t-transparent rounded-full" />
+      </div>
+    );
+  }
+
+  if (!hasAccess) {
+    return <AccessDeniedPage message="You don't have permission to view account settings." />;
+  }
+
+  const canEdit = isPlatformAdmin || can("settings", "edit");
+  const canBilling = isPlatformAdmin || can("settings", "billing");
+
   return (
     <div className="p-8 max-w-3xl">
       <div className="mb-6">
@@ -21,7 +43,8 @@ export default function SettingsPage() {
               <input
                 type="text"
                 defaultValue="Hotel Demo"
-                className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                disabled={!canEdit}
+                className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
               />
             </div>
             <div>
@@ -31,7 +54,8 @@ export default function SettingsPage() {
               <input
                 type="email"
                 defaultValue="hotel@example.com"
-                className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                disabled={!canEdit}
+                className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm disabled:opacity-50 disabled:cursor-not-allowed"
               />
             </div>
           </div>
@@ -42,17 +66,21 @@ export default function SettingsPage() {
           <p className="text-sm text-gray-400">
             Manage your subscription and billing information
           </p>
-          <button className="mt-4 px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg transition text-sm font-medium">
-            Manage Subscription
-          </button>
+          {canBilling && (
+            <button className="mt-4 px-4 py-2 bg-gray-800 hover:bg-gray-700 rounded-lg transition text-sm font-medium">
+              Manage Subscription
+            </button>
+          )}
         </div>
 
-        <div className="flex justify-end">
-          <button className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition text-sm font-medium">
-            <Save className="h-4 w-4 mr-2" />
-            Save Changes
-          </button>
-        </div>
+        {canEdit && (
+          <div className="flex justify-end">
+            <button className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition text-sm font-medium">
+              <Save className="h-4 w-4 mr-2" />
+              Save Changes
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );

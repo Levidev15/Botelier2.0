@@ -4,6 +4,8 @@ import { useState, useEffect, useCallback } from "react";
 import { Users, Mail, Shield, Plus, RefreshCw } from "lucide-react";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
+import { usePagePermission, AccessDeniedPage } from "@/components/ui/PermissionGate";
+import { usePermissions } from "@/lib/auth/usePermissions";
 import MembersTab from "./components/MembersTab";
 import InvitationsTab from "./components/InvitationsTab";
 import RolesTab from "./components/RolesTab";
@@ -60,6 +62,8 @@ const TABS: { key: Tab; label: string; icon: typeof Users }[] = [
 export default function TeamPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
   const { authFetch, user } = useAuthToken();
+  const { hasAccess, loading: permLoading } = usePagePermission("team", "view");
+  const { can, isPlatformAdmin } = usePermissions();
 
   const [activeTab, setActiveTab] = useState<Tab>("members");
   const [members, setMembers] = useState<Member[]>([]);
@@ -131,12 +135,19 @@ export default function TeamPage() {
 
   const pendingCount = invitations.filter((inv) => inv.status === "pending").length;
 
-  if (contextLoading) {
+  const canInvite = isPlatformAdmin || can("team", "invite");
+  const canManageRoles = isPlatformAdmin || can("team", "manage_roles");
+
+  if (contextLoading || permLoading) {
     return (
       <div className="flex items-center justify-center min-h-[400px]">
         <div className="animate-spin h-6 w-6 border-2 border-blue-500 border-t-transparent rounded-full" />
       </div>
     );
+  }
+
+  if (!hasAccess) {
+    return <AccessDeniedPage message="You don't have permission to view team members." />;
   }
 
   return (
@@ -157,13 +168,15 @@ export default function TeamPage() {
           >
             <RefreshCw className="w-4 h-4" />
           </button>
-          <button
-            onClick={() => setShowInviteModal(true)}
-            className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors"
-          >
-            <Plus className="w-4 h-4" />
-            Invite Member
-          </button>
+          {canInvite && (
+            <button
+              onClick={() => setShowInviteModal(true)}
+              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors"
+            >
+              <Plus className="w-4 h-4" />
+              Invite Member
+            </button>
+          )}
         </div>
       </div>
 

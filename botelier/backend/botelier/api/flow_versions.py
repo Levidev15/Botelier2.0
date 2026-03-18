@@ -486,7 +486,7 @@ def revert_to_version(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, hotel_id, "flows.edit", db)
+    check_account_permission(user, hotel_id, "flows.revert", db)
     """
     Revert to a previous version.
     
