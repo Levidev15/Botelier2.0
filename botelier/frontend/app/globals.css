@@ -94,6 +94,16 @@
   background-color: #cbd5e1;
 }
 
+/* Additional background overrides (Tailwind gray scale) */
+[data-theme="light"] .themed-app .bg-gray-800,
+[data-theme="light"] .themed-app .bg-gray-900 {
+  background-color: #e2e8f0;
+}
+
+[data-theme="light"] .themed-app .bg-gray-700 {
+  background-color: #cbd5e1;
+}
+
 /* Border overrides */
 [data-theme="light"] .themed-app .border-gray-800,
 [data-theme="light"] .themed-app .border-\[#222222\],
