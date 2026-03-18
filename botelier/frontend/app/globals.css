@@ -81,7 +81,7 @@
 
 [data-theme="light"] .themed-app .bg-\[#1a1a1a\],
 [data-theme="light"] .themed-app .bg-\[#1c1c1c\] {
-  background-color: #f1f5f9;
+  background-color: #ffffff;
 }
 
 [data-theme="light"] .themed-app .bg-\[#222222\],
@@ -108,7 +108,7 @@
 [data-theme="light"] .themed-app .border-gray-800,
 [data-theme="light"] .themed-app .border-\[#222222\],
 [data-theme="light"] .themed-app .border-\[#1a1a1a\] {
-  border-color: #e2e8f0;
+  border-color: #d1d5db;
 }
 
 [data-theme="light"] .themed-app .border-\[#333333\],
@@ -119,6 +119,15 @@
 [data-theme="light"] .themed-app .border-\[#444444\],
 [data-theme="light"] .themed-app .border-gray-700 {
   border-color: #94a3b8;
+}
+
+/* Card elevation — subtle shadow so white cards lift off the page bg */
+[data-theme="light"] .themed-app .bg-\[#1a1a1a\].rounded-xl,
+[data-theme="light"] .themed-app .bg-\[#1a1a1a\].rounded-lg,
+[data-theme="light"] .themed-app .bg-\[#141414\].rounded-xl,
+[data-theme="light"] .themed-app .bg-\[#141414\].rounded-lg,
+[data-theme="light"] .themed-app .bg-\[#141414\].rounded-2xl {
+  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.08), 0 1px 2px -1px rgba(0, 0, 0, 0.06);
 }
 
 /* Hover background overrides */
