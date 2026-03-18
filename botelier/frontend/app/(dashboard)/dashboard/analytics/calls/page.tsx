@@ -24,8 +24,8 @@ import TimezonePicker, { loadTimezone, saveTimezone } from "@/components/analyti
 const WIDGETS: WidgetDef[] = [
   { id: "total_calls", label: "Total Calls", defaultVisible: true },
   { id: "completion_rate", label: "Completion Rate", defaultVisible: true },
-  { id: "avg_duration", label: "AI Duration", defaultVisible: true },
-  { id: "outbound_duration", label: "Outbound Duration", defaultVisible: true },
+  { id: "avg_duration", label: "Avg AI Duration", defaultVisible: true },
+  { id: "outbound_duration", label: "Avg Outbound Duration", defaultVisible: true },
   { id: "transfer_rate", label: "Transfer Rate", defaultVisible: true },
   { id: "avg_quality", label: "Avg Quality Score", defaultVisible: true },
   { id: "volume_chart", label: "Call Volume Over Time", defaultVisible: true },
@@ -144,7 +144,7 @@ export default function CallAnalyticsPage() {
   }, []);
 
   // Drilldown state
-  const [drilldown, setDrilldown] = useState<{ metric: string; label: string } | null>(null);
+  const [drilldown, setDrilldown] = useState<{ metric: string; label: string; timezone?: string } | null>(null);
 
   // Transcript state (fetched on demand from drilldown panel)
   const [transcriptLog, setTranscriptLog] = useState<TranscriptCallLog | null>(null);
@@ -158,6 +158,7 @@ export default function CallAnalyticsPage() {
       hotel_id: accountId,
       date_from: dateRange.from.toISOString(),
       date_to: dateRange.to.toISOString(),
+      timezone,
     });
     assistantIds.forEach((id) => params.append("assistant_ids", id));
     authFetch(`/api/analytics/calls?${params}`)
@@ -171,13 +172,15 @@ export default function CallAnalyticsPage() {
         setError(err.message || "Failed to load analytics");
       })
       .finally(() => setLoading(false));
-  }, [accountId, dateRange, assistantIds, retryKey]);
+  }, [accountId, dateRange, assistantIds, timezone, retryKey]);
 
   const volumeData = useMemo(() => {
     if (!data) return [];
     return data.volume_by_day.map((d) => ({
       ...d,
-      date: new Date(d.date).toLocaleDateString("en-US", { month: "short", day: "numeric" }),
+      // Append T00:00:00 so JS treats this as local midnight (not UTC midnight)
+      // which prevents the off-by-one-day issue in non-UTC browsers.
+      date: new Date(d.date + "T00:00:00").toLocaleDateString("en-US", { month: "short", day: "numeric" }),
     }));
   }, [data]);
 
@@ -288,7 +291,7 @@ export default function CallAnalyticsPage() {
         )}
         {isVisible("avg_duration") && (
           <StatCard
-            label="AI Duration"
+            label="Avg AI Duration"
             value={fmtDuration(o?.avg_ai_duration_seconds ?? 0)}
             sub={`${fmtDuration(o?.total_ai_duration_seconds ?? 0)} total`}
             onClick={() => openDrilldown("all", "All Calls")}
@@ -296,9 +299,9 @@ export default function CallAnalyticsPage() {
         )}
         {isVisible("outbound_duration") && (
           <StatCard
-            label="Outbound Duration"
+            label="Avg Outbound Duration"
             value={fmtDuration(o?.avg_outbound_duration_seconds ?? 0)}
-            sub={`${o?.outbound_calls_count ?? 0} transferred calls`}
+            sub={`${fmtDuration(o?.total_outbound_duration_seconds ?? 0)} total`}
             color="text-amber-400"
             onClick={() => openDrilldown("transferred", "Transferred Calls")}
           />

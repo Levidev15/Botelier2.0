@@ -122,6 +122,7 @@ export default function DrilldownPanel({
           metric,
           date_from: dateRange.from.toISOString(),
           date_to: dateRange.to.toISOString(),
+          timezone: timezone ?? "UTC",
           page: String(p),
           limit: String(PAGE_LIMIT),
         });
@@ -135,7 +136,7 @@ export default function DrilldownPanel({
         setLoading(false);
       }
     },
-    [accountId, open, metric, dateRange, assistantIds, authFetch]
+    [accountId, open, metric, dateRange, assistantIds, timezone, authFetch]
   );
 
   // Track previous fetchData identity to distinguish query changes from page changes.
