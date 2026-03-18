@@ -106,7 +106,7 @@ export default function AssistantsPage() {
             <div className="w-20 h-20 bg-gray-800 rounded-full flex items-center justify-center mb-4">
               <Bot className="h-10 w-10 text-gray-600" />
             </div>
-            <h2 className="text-xl font-semibold text-white mb-2">No assistants yet</h2>
+            <h2 className="text-xl font-semibold text-foreground mb-2">No assistants yet</h2>
             <p className="text-gray-400 text-center mb-6 max-w-md">
               Create your first voice AI assistant to get started
             </p>

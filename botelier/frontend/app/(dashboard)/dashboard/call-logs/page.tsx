@@ -510,7 +510,7 @@ export default function CallLogsPage() {
             <div className="flex items-center gap-3">
               <button
                 onClick={fetchCallLogs}
-                className="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition"
+                className="p-2 text-gray-400 hover:text-foreground hover:bg-gray-800 rounded-lg transition"
                 title="Refresh"
               >
                 <RefreshCw className="h-4 w-4" />
@@ -700,7 +700,7 @@ export default function CallLogsPage() {
                   {hasActiveFilters && (
                     <button
                       onClick={clearFilters}
-                      className="text-sm text-gray-400 hover:text-white flex items-center gap-1 pb-2"
+                      className="text-sm text-gray-400 hover:text-foreground flex items-center gap-1 pb-2"
                     >
                       <X className="h-3 w-3" />
                       Clear all filters
@@ -724,7 +724,7 @@ export default function CallLogsPage() {
             <div className="w-20 h-20 bg-gray-800 rounded-full flex items-center justify-center mb-4">
               <Phone className="h-10 w-10 text-gray-600" />
             </div>
-            <h2 className="text-xl font-semibold text-white mb-2">No calls yet</h2>
+            <h2 className="text-xl font-semibold text-foreground mb-2">No calls yet</h2>
             <p className="text-gray-400 text-center mb-2 max-w-md">
               {hasActiveFilters
                 ? "No calls match your current filters"
@@ -884,7 +884,7 @@ function CallLogRow({
           {hasLegs ? (
             <button
               onClick={onToggleExpand}
-              className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded transition"
+              className="p-1 text-gray-400 hover:text-foreground hover:bg-gray-700 rounded transition"
             >
               {isExpanded ? (
                 <ChevronDown className="h-4 w-4" />
@@ -909,7 +909,7 @@ function CallLogRow({
           <div className="flex items-center gap-3">
             {getStatusIcon(log.status)}
             <div>
-              <div className="text-sm font-medium text-white">
+              <div className="text-sm font-medium text-foreground">
                 {formatDateTime(log.started_at)}
               </div>
               <div className="text-xs text-gray-500 flex items-center gap-1">
