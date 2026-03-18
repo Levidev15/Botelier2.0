@@ -137,6 +137,17 @@ function ReportContent() {
     return full;
   }, [data]);
 
+  if (!hotelId) {
+    return (
+      <div className="min-h-screen bg-white flex items-center justify-center">
+        <div className="text-center max-w-sm">
+          <p className="text-red-500 font-medium mb-2">Missing required parameter</p>
+          <p className="text-gray-400 text-sm">The <code className="bg-gray-100 px-1 rounded">hotel_id</code> query parameter is required to generate this report.</p>
+        </div>
+      </div>
+    );
+  }
+
   if (loading) {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center">
