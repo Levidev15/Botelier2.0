@@ -73,9 +73,15 @@ class CallLogger:
                 call_log.answered_at = datetime.utcnow()
             
             if status in ("completed", "busy", "failed", "no-answer", "canceled"):
-                call_log.ended_at = datetime.utcnow()
-                if call_log.started_at:
-                    call_log.duration_seconds = int((call_log.ended_at - call_log.started_at).total_seconds())
+                if not call_log.ended_at:
+                    call_log.ended_at = datetime.utcnow()
+                # For transferred calls, duration is finalized by update_leg_status
+                # after the transfer leg ends. Avoid overwriting it here with a
+                # wall-clock value that may not yet include the transfer time.
+                if not call_log.has_transfer and call_log.started_at and call_log.ended_at:
+                    call_log.duration_seconds = int(
+                        (call_log.ended_at - call_log.started_at).total_seconds()
+                    )
             
             ai_leg = self.db.query(CallLeg).filter(
                 CallLeg.call_log_id == call_log.id,
@@ -471,28 +477,41 @@ class CallLogger:
                 if leg.started_at and leg.ended_at:
                     leg.duration_seconds = int((leg.ended_at - leg.started_at).total_seconds())
                 
-                # When transfer leg ends (success or fail), mark parent call as completed
+                # When transfer leg ends (success or fail), update parent call.
                 if leg.leg_type in (LegType.TRANSFER_EXTERNAL.value, LegType.TRANSFER_SIP.value):
                     if not call_log and parent_call_sid:
                         call_log = self.get_call_log(parent_call_sid)
                     if not call_log:
                         call_log = self.db.query(CallLog).filter(CallLog.id == leg.call_log_id).first()
                     
-                    if call_log and call_log.status != CallStatus.COMPLETED.value:
-                        call_log.status = CallStatus.COMPLETED.value
-                        call_log.ended_at = datetime.utcnow()
+                    if call_log:
+                        # Only update status/outcome if not already marked complete.
+                        if call_log.status != CallStatus.COMPLETED.value:
+                            call_log.status = CallStatus.COMPLETED.value
+                            # Set outcome based on transfer result
+                            if status == "failed":
+                                call_log.outcome = "transfer_failed"
+                            elif status in ("busy", "no-answer", "canceled"):
+                                call_log.outcome = f"transfer_{status.replace('-', '_')}"
+                            # If completed successfully, keep "transferred" outcome
+                            logger.info(f"Marked parent call {call_log.call_sid} as completed after transfer {status}")
                         
-                        # Set outcome based on transfer result
-                        if status == "failed":
-                            call_log.outcome = "transfer_failed"
-                        elif status in ("busy", "no-answer", "canceled"):
-                            call_log.outcome = f"transfer_{status.replace('-', '_')}"
-                        # If completed successfully, keep "transferred" outcome
-                        
-                        if call_log.started_at and call_log.ended_at:
-                            call_log.duration_seconds = int((call_log.ended_at - call_log.started_at).total_seconds())
-                        
-                        logger.info(f"Marked parent call {call_log.call_sid} as completed after transfer {status}")
+                        # ALWAYS update ended_at and duration to include transfer time,
+                        # even if the call was already marked completed by a parallel
+                        # parent-call status callback. Using sum-of-legs ensures we never
+                        # under-count when callbacks arrive out of order.
+                        call_log.ended_at = leg.ended_at or datetime.utcnow()
+                        all_legs = self.db.query(CallLeg).filter(
+                            CallLeg.call_log_id == call_log.id
+                        ).all()
+                        non_cold = [l for l in all_legs if l.leg_type != LegType.TRANSFER_COLD.value]
+                        total_dur = sum(l.duration_seconds or 0 for l in non_cold)
+                        if total_dur > 0:
+                            call_log.duration_seconds = total_dur
+                        elif call_log.started_at and call_log.ended_at:
+                            call_log.duration_seconds = int(
+                                (call_log.ended_at - call_log.started_at).total_seconds()
+                            )
             
             self.db.commit()
             logger.info(f"Updated leg {leg.leg_number} status to {new_status} (duration: {leg.duration_seconds}s)")

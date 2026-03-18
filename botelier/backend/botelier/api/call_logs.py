@@ -253,32 +253,44 @@ async def export_call_logs(
         
         writer.writerow([
             "Date/Time",
-            "Duration (seconds)",
+            "Total Duration (seconds)",
+            "AI Duration (seconds)",
+            "Transfer Duration (seconds)",
             "Caller",
             "To Number",
             "Assistant",
             "Status",
             "Outcome",
             "Has Transfer",
+            "Transfer Mode",
             "Leg Count",
-            "Total Leg Duration",
         ])
         
         for log in call_logs:
-            leg_count = len(log.legs) if log.legs else 0
-            total_leg_duration = sum(leg.duration_seconds or 0 for leg in log.legs) if log.legs else 0
+            legs = log.legs or []
+            leg_count = len(legs)
+            ai_duration = sum(
+                leg.duration_seconds or 0 for leg in legs
+                if leg.leg_type == "ai_conversation"
+            )
+            transfer_duration = sum(
+                leg.duration_seconds or 0 for leg in legs
+                if leg.leg_type in ("transfer_external", "transfer_warm", "transfer_sip")
+            )
             
             writer.writerow([
                 log.started_at.isoformat() if log.started_at else "",
                 log.duration_seconds or 0,
+                ai_duration,
+                transfer_duration,
                 log.caller_number or "",
                 log.to_number or "",
                 assistants.get(str(log.assistant_id), "") if log.assistant_id else "",
                 log.status or "",
                 log.outcome or "",
                 "Yes" if log.has_transfer else "No",
+                log.transfer_mode or "",
                 leg_count,
-                total_leg_duration,
             ])
         
         output.seek(0)
