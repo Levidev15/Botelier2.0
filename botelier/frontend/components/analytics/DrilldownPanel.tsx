@@ -258,7 +258,6 @@ export default function DrilldownPanel({
                 <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Duration</th>
                 <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Disposition</th>
                 <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">QA</th>
-                <th className="px-4 py-3" />
               </tr>
             </thead>
             <tbody className="divide-y divide-gray-800/60">
@@ -287,22 +286,26 @@ export default function DrilldownPanel({
                     <td className="px-4 py-3">
                       <div className="h-4 w-8 bg-gray-800 rounded" />
                     </td>
-                    <td className="px-4 py-3" />
                   </tr>
                 ))}
 
               {/* Empty state */}
               {!loading && data?.records.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="px-4 py-16 text-center text-sm text-gray-500">
+                  <td colSpan={7} className="px-4 py-16 text-center text-sm text-gray-500">
                     No calls match this filter
                   </td>
                 </tr>
               )}
 
-              {/* Data rows */}
+              {/* Data rows — entire row is clickable to open transcript */}
               {data?.records.map((rec) => (
-                <tr key={rec.id} className="hover:bg-[#1a1a1a] transition-colors">
+                <tr
+                  key={rec.id}
+                  onClick={() => onViewTranscript(rec.id)}
+                  className="hover:bg-[#1a1a1a] transition-colors cursor-pointer group"
+                  title="Click to view transcript"
+                >
                   {/* Ref / Status */}
                   <td className="px-4 py-3 whitespace-nowrap">
                     <div className="flex flex-col gap-1">
@@ -361,24 +364,16 @@ export default function DrilldownPanel({
                     )}
                   </td>
 
-                  {/* QA Score */}
+                  {/* QA Score + transcript icon on hover */}
                   <td className="px-4 py-3 whitespace-nowrap">
-                    {rec.acw_quality_score != null ? (
-                      <span className="text-xs text-purple-400 font-medium">{rec.acw_quality_score}</span>
-                    ) : (
-                      <span className="text-gray-600 text-xs">—</span>
-                    )}
-                  </td>
-
-                  {/* Transcript button */}
-                  <td className="px-4 py-3 whitespace-nowrap text-right">
-                    <button
-                      onClick={() => onViewTranscript(rec.id)}
-                      className="flex items-center gap-1 px-2 py-1 text-xs bg-[#252525] border border-gray-700 rounded-lg text-gray-400 hover:text-gray-100 hover:border-gray-500 transition-colors"
-                    >
-                      <FileText className="h-3 w-3" />
-                      Transcript
-                    </button>
+                    <div className="flex items-center justify-between gap-2">
+                      {rec.acw_quality_score != null ? (
+                        <span className="text-xs text-purple-400 font-medium">{rec.acw_quality_score}</span>
+                      ) : (
+                        <span className="text-gray-600 text-xs">—</span>
+                      )}
+                      <FileText className="h-3.5 w-3.5 text-gray-700 group-hover:text-gray-400 transition-colors flex-shrink-0" />
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -386,7 +381,7 @@ export default function DrilldownPanel({
               {/* Inline refresh indicator */}
               {loading && data && (
                 <tr>
-                  <td colSpan={8} className="py-3 text-center">
+                  <td colSpan={7} className="py-3 text-center">
                     <Loader2 className="h-4 w-4 animate-spin text-gray-500 inline-block" />
                   </td>
                 </tr>
