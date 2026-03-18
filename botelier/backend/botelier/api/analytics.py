@@ -16,6 +16,8 @@ from sqlalchemy.orm import Session, joinedload
 
 from botelier.database import get_db
 from botelier.models import CallLog, CallStatus, Assistant, AssistantDisposition, PhoneNumber
+from botelier.models.user import User
+from botelier.auth.middleware import get_current_user, check_account_permission
 
 router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
 
@@ -52,7 +54,9 @@ async def get_call_analytics(
     date_to: Optional[datetime] = Query(None, description="End of window (ISO 8601). Defaults to now."),
     assistant_ids: Optional[List[UUID]] = Query(None, description="Filter to these assistants (repeat param for multiple)."),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    check_account_permission(user, str(hotel_id), "call_logs.view", db)
     try:
         since, until = _resolve_date_range(date_from, date_to)
 
@@ -267,7 +271,7 @@ async def get_calls_drilldown(
     date_from: Optional[datetime] = Query(None, description="Start of window (ISO 8601)."),
     date_to: Optional[datetime] = Query(None, description="End of window (ISO 8601)."),
     assistant_ids: Optional[List[UUID]] = Query(None, description="Filter to these assistants."),
-    metric: str = Query("all", description=(
+    metric: str = Query("all", description=(  # noqa: E501
         "Metric token — one of: all | completed | missed | failed | transferred | "
         "acw_completed | status:<val> | disposition:<uuid> | hour:<0-23> | "
         "assistant:<uuid> | quality_range:<label>"
@@ -275,7 +279,9 @@ async def get_calls_drilldown(
     page: int = Query(1, ge=1),
     limit: int = Query(_DRILLDOWN_PAGE_LIMIT, ge=1, le=100),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    check_account_permission(user, str(hotel_id), "call_logs.view", db)
     """
     Return a paginated list of individual call records that make up a given
     analytics metric slice.  Supports the same date/assistant filters as

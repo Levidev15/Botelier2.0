@@ -20,7 +20,7 @@ from botelier.models.account import Account, AccountStatus, SubscriptionTier
 from botelier.models.user import User, UserType, SupportSession
 from botelier.models.role import Role, AccountMembership
 from botelier.models.invitation import AccountInvitation, InvitationStatus
-from botelier.auth.permissions import DEFAULT_ROLES
+from botelier.auth.permissions import DEFAULT_ROLES, PLATFORM_ADMIN_PERMISSIONS
 from botelier.auth.middleware import get_platform_admin, get_current_user
 
 
@@ -496,6 +496,58 @@ async def get_platform_stats(
     }
 
 
+def _get_effective_permissions(membership: AccountMembership) -> dict:
+    """Compute effective permissions for a membership (role defaults + overrides)."""
+    import copy
+    perms = copy.deepcopy(membership.role.permissions or {})
+
+    if membership.permission_overrides:
+        for category, category_perms in membership.permission_overrides.items():
+            if isinstance(category_perms, dict):
+                if category not in perms:
+                    perms[category] = {}
+                for perm, value in category_perms.items():
+                    perms[category][perm] = value
+
+    return perms
+
+
+@router.get("/me/permissions")
+async def get_my_permissions(
+    account_id: str = Query(..., description="Account ID to retrieve permissions for"),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return the current user's resolved permissions for a specific account."""
+    if user.is_platform_admin:
+        return {
+            "is_platform_admin": True,
+            "permissions": PLATFORM_ADMIN_PERMISSIONS,
+        }
+
+    membership = db.query(AccountMembership).filter(
+        AccountMembership.user_id == user.id,
+        AccountMembership.account_id == account_id,
+        AccountMembership.is_active == True,
+    ).first()
+
+    if not membership:
+        raise HTTPException(
+            status_code=403,
+            detail="You don't have access to this account",
+        )
+
+    return {
+        "is_platform_admin": False,
+        "permissions": _get_effective_permissions(membership),
+        "role": {
+            "id": str(membership.role_id),
+            "name": membership.role.name,
+            "slug": membership.role.slug,
+        },
+    }
+
+
 @router.get("/me")
 async def get_current_admin_user(
     user: User = Depends(get_current_user),
@@ -512,7 +564,9 @@ async def get_current_admin_user(
                 "account_slug": membership.account.slug,
                 "role_id": str(membership.role_id),
                 "role_name": membership.role.name,
+                "role_slug": membership.role.slug,
                 "is_owner": membership.is_owner,
+                "permissions": _get_effective_permissions(membership),
             })
     
     return {

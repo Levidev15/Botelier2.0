@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { BookOpen, Plus, Pencil, Trash2, ChevronRight, ArrowLeft, Upload, Download, Search, Tag, AlertCircle, X, Grid3x3, List } from "lucide-react";
 import { notify, confirmAction } from "@/lib/notifications";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
+import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
 
 interface KnowledgeBase {
   id: string;
@@ -46,7 +47,8 @@ function formatDate(dateString: string | null): string {
 
 export default function KnowledgeBasesPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
-  
+  const { hasAccess, loading: permLoading } = usePagePermission("knowledge_base", "view");
+
   const [knowledgeBases, setKnowledgeBases] = useState<KnowledgeBase[]>([]);
   const [selectedKB, setSelectedKB] = useState<KnowledgeBase | null>(null);
   const [entries, setEntries] = useState<Entry[]>([]);
@@ -433,6 +435,10 @@ export default function KnowledgeBasesPage() {
         </div>
       </div>
     );
+  }
+
+  if (!permLoading && !hasAccess) {
+    return <AccessDeniedPage message="You don't have permission to view knowledge bases." />;
   }
 
   return (

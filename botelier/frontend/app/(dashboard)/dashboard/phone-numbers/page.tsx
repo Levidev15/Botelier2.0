@@ -6,6 +6,7 @@ import PhoneNumberCard from "./components/PhoneNumberCard";
 import AddNumberDrawer from "./components/AddNumberDrawer";
 import { notify, confirmAction } from "@/lib/notifications";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
+import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
 
 interface PhoneNumber {
   id: string;
@@ -27,6 +28,7 @@ interface Assistant {
 
 export default function PhoneNumbersPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
+  const { hasAccess, loading: permLoading } = usePagePermission("phone_numbers", "view");
   const [phoneNumbers, setPhoneNumbers] = useState<PhoneNumber[]>([]);
   const [assistants, setAssistants] = useState<Assistant[]>([]);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -94,6 +96,10 @@ export default function PhoneNumbersPage() {
       notify.error("Failed to delete phone number");
     }
   };
+
+  if (!permLoading && !hasAccess) {
+    return <AccessDeniedPage message="You don't have permission to view phone numbers." />;
+  }
 
   return (
     <div className="h-full">

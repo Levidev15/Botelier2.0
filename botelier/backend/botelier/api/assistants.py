@@ -17,6 +17,8 @@ from uuid import UUID
 
 from botelier.database import get_db
 from botelier.models.assistant import Assistant
+from botelier.models.user import User
+from botelier.auth.middleware import get_current_user, check_account_permission
 
 
 router = APIRouter(prefix="/api/assistants", tags=["assistants"])
@@ -135,18 +137,13 @@ class FlowConfigResponse(BaseModel):
 async def list_assistants(
     hotel_id: Optional[str] = Query(None, description="Filter by hotel ID"),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """
-    List all assistants, optionally filtered by hotel or status.
-    
-    Query params:
-    - hotel_id: Filter by hotel UUID
-    - is_active: Filter by active status
-    
-    Returns:
-    - List of assistants
-    """
+    """List all assistants, optionally filtered by hotel or status."""
+    if hotel_id:
+        check_account_permission(user, hotel_id, "assistants.view", db)
+
     query = db.query(Assistant)
     
     if hotel_id:
@@ -166,38 +163,25 @@ async def list_assistants(
 @router.get("/{assistant_id}", response_model=AssistantResponse)
 async def get_assistant(
     assistant_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """
-    Get a specific assistant by ID.
-    
-    Path params:
-    - assistant_id: Assistant UUID
-    
-    Returns:
-    - Assistant details
-    """
+    """Get a specific assistant by ID."""
     assistant = db.query(Assistant).filter(Assistant.id == assistant_id).first()
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
-    
+    check_account_permission(user, str(assistant.hotel_id), "assistants.view", db)
     return assistant.to_dict()
 
 
 @router.post("", response_model=AssistantResponse, status_code=201)
 async def create_assistant(
     data: AssistantCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """
-    Create a new assistant.
-    
-    Body:
-    - Assistant creation data
-    
-    Returns:
-    - Created assistant details
-    """
+    """Create a new assistant."""
+    check_account_permission(user, data.hotel_id, "assistants.create", db)
     assistant = Assistant(
         hotel_id=data.hotel_id,
         knowledge_base_id=data.knowledge_base_id,
@@ -236,23 +220,14 @@ async def create_assistant(
 async def update_assistant(
     assistant_id: str,
     data: AssistantUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """
-    Update an existing assistant.
-    
-    Path params:
-    - assistant_id: Assistant UUID
-    
-    Body:
-    - Assistant update data
-    
-    Returns:
-    - Updated assistant details
-    """
+    """Update an existing assistant."""
     assistant = db.query(Assistant).filter(Assistant.id == assistant_id).first()
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
+    check_account_permission(user, str(assistant.hotel_id), "assistants.edit", db)
     
     # Update only fields that are provided
     update_data = data.dict(exclude_unset=True)
@@ -268,20 +243,14 @@ async def update_assistant(
 @router.delete("/{assistant_id}", status_code=204)
 async def delete_assistant(
     assistant_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """
-    Delete an assistant.
-    
-    Path params:
-    - assistant_id: Assistant UUID
-    
-    Returns:
-    - 204 No Content on success
-    """
+    """Delete an assistant."""
     assistant = db.query(Assistant).filter(Assistant.id == assistant_id).first()
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
+    check_account_permission(user, str(assistant.hotel_id), "assistants.delete", db)
     
     db.delete(assistant)
     db.commit()
@@ -292,23 +261,14 @@ async def delete_assistant(
 @router.get("/{assistant_id}/flow", response_model=FlowConfigResponse)
 async def get_assistant_flow(
     assistant_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """
-    Get the flow configuration for an assistant.
-    
-    This returns the Pipecat Flows JSON configuration that defines
-    the conversation flow for this assistant.
-    
-    Path params:
-    - assistant_id: Assistant UUID
-    
-    Returns:
-    - Flow configuration JSON
-    """
+    """Get the flow configuration for an assistant."""
     assistant = db.query(Assistant).filter(Assistant.id == assistant_id).first()
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
+    check_account_permission(user, str(assistant.hotel_id), "flows.view", db)
     
     return {
         "assistant_id": str(assistant.id),
@@ -322,30 +282,14 @@ async def get_assistant_flow(
 async def update_assistant_flow(
     assistant_id: str,
     data: FlowConfigUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """
-    Update the flow configuration for an assistant.
-    
-    This saves the Pipecat Flows JSON configuration from the visual editor.
-    The flow defines nodes, transitions, and functions for conversations.
-    
-    Path params:
-    - assistant_id: Assistant UUID
-    
-    Body:
-    - flow_config: Pipecat Flows configuration JSON
-    
-    Returns:
-    - Updated flow configuration
-    
-    Security:
-    - Validates that the assistant belongs to the requesting hotel
-    - Sanitizes function definitions to prevent code injection
-    """
+    """Update the flow configuration for an assistant."""
     assistant = db.query(Assistant).filter(Assistant.id == assistant_id).first()
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
+    check_account_permission(user, str(assistant.hotel_id), "flows.edit", db)
     
     assistant.flow_config = data.flow_config
     db.commit()
@@ -362,22 +306,14 @@ async def update_assistant_flow(
 @router.delete("/{assistant_id}/flow", status_code=204)
 async def delete_assistant_flow(
     assistant_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
-    """
-    Delete the flow configuration for an assistant.
-    
-    This removes the custom flow, reverting to default behavior.
-    
-    Path params:
-    - assistant_id: Assistant UUID
-    
-    Returns:
-    - 204 No Content on success
-    """
+    """Delete the flow configuration for an assistant."""
     assistant = db.query(Assistant).filter(Assistant.id == assistant_id).first()
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
+    check_account_permission(user, str(assistant.hotel_id), "flows.edit", db)
     
     assistant.flow_config = None
     db.commit()
@@ -390,7 +326,9 @@ async def get_acw_config(
     assistant_id: str,
     hotel_id: str = Query(..., description="Hotel ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    check_account_permission(user, hotel_id, "assistants.view", db)
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
         Assistant.hotel_id == hotel_id
@@ -414,7 +352,9 @@ async def update_acw_config(
     updates: AcwConfigUpdate,
     hotel_id: str = Query(..., description="Hotel ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    check_account_permission(user, hotel_id, "assistants.edit", db)
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
         Assistant.hotel_id == hotel_id

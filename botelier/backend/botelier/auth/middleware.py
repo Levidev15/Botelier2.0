@@ -350,6 +350,39 @@ async def get_account_from_support_session(
     return account
 
 
+def check_account_permission(
+    user: User,
+    account_id: str,
+    permission: str,
+    db: Session,
+) -> None:
+    """
+    Verify the user has the given permission for the specified account.
+    Platform admins bypass all checks.
+    Raises HTTP 403 if access is denied.
+    """
+    if user.is_platform_admin:
+        return
+
+    membership = db.query(AccountMembership).filter(
+        AccountMembership.user_id == user.id,
+        AccountMembership.account_id == account_id,
+        AccountMembership.is_active == True,
+    ).first()
+
+    if not membership:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="You don't have access to this account",
+        )
+
+    if not membership.has_permission(permission):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Permission denied: {permission}",
+        )
+
+
 async def get_current_account_id(
     request: Request,
     user: User = Depends(get_current_user),

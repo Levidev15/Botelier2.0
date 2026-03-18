@@ -7,6 +7,7 @@ import ToolDrawer from "./components/ToolDrawer";
 import ApiTester from "./components/ApiTester";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { notify } from "@/lib/notifications";
+import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
 
 interface Tool {
   id: string;
@@ -28,6 +29,7 @@ interface ToolSet {
 
 export default function ToolsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
+  const { hasAccess, loading: permLoading } = usePagePermission("tools", "view");
   const [tools, setTools] = useState<Tool[]>([]);
   const [toolSets, setToolSets] = useState<ToolSet[]>([]);
   const [selectedToolSet, setSelectedToolSet] = useState<ToolSet | null>(null);
@@ -192,6 +194,10 @@ export default function ToolsPage() {
         return toolType;
     }
   };
+
+  if (!permLoading && !hasAccess) {
+    return <AccessDeniedPage message="You don't have permission to view tools." />;
+  }
 
   return (
     <div className="h-full">

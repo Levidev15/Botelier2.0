@@ -8,6 +8,8 @@ from loguru import logger
 
 from ..database import get_db
 from ..models import AssistantResolutionOption, Assistant
+from ..models.user import User
+from ..auth.middleware import get_current_user, check_account_permission
 
 
 router = APIRouter(prefix="/api/assistants", tags=["Resolution Options"])
@@ -32,7 +34,9 @@ async def list_resolution_options(
     assistant_id: UUID,
     hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    check_account_permission(user, str(hotel_id), "assistants.view", db)
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
         Assistant.hotel_id == hotel_id
@@ -54,7 +58,9 @@ async def create_resolution_option(
     data: ResolutionOptionCreate,
     hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    check_account_permission(user, str(hotel_id), "assistants.edit", db)
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
         Assistant.hotel_id == hotel_id
@@ -90,7 +96,9 @@ async def update_resolution_option(
     data: ResolutionOptionUpdate,
     hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    check_account_permission(user, str(hotel_id), "assistants.edit", db)
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
         Assistant.hotel_id == hotel_id
@@ -125,7 +133,9 @@ async def delete_resolution_option(
     option_id: UUID,
     hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    check_account_permission(user, str(hotel_id), "assistants.edit", db)
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
         Assistant.hotel_id == hotel_id

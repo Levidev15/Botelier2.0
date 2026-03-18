@@ -38,9 +38,20 @@ from sqlalchemy import func
 from botelier.database import get_db
 from botelier.models.knowledge_base import KnowledgeBase
 from botelier.models.knowledge_entry import KnowledgeEntry
+from botelier.models.user import User
+from botelier.auth.middleware import get_current_user, check_account_permission
 
 
 router = APIRouter(prefix="/api/knowledge-bases", tags=["knowledge-bases"])
+
+
+def _get_kb_and_check(kb_id: str, permission: str, user: User, db: Session) -> KnowledgeBase:
+    """Fetch a knowledge base and verify the user has the given permission on its account."""
+    kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
+    if not kb:
+        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    check_account_permission(user, str(kb.account_id), permission, db)
+    return kb
 
 
 # Pydantic Models - Knowledge Bases
@@ -88,9 +99,11 @@ class BulkDeleteRequest(BaseModel):
 @router.post("", status_code=201)
 async def create_knowledge_base(
     data: KnowledgeBaseCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Create a new knowledge base."""
+    check_account_permission(user, data.account_id, "knowledge_base.create", db)
     kb = KnowledgeBase(
         account_id=data.account_id,
         name=data.name,
@@ -107,9 +120,11 @@ async def create_knowledge_base(
 @router.get("")
 async def list_knowledge_bases(
     account_id: str = Query(..., description="Account UUID"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """List all knowledge bases for an account with entry counts."""
+    check_account_permission(user, account_id, "knowledge_base.view", db)
     kbs = db.query(KnowledgeBase).filter(
         KnowledgeBase.account_id == account_id
     ).order_by(KnowledgeBase.created_at.desc()).all()
@@ -124,14 +139,11 @@ async def list_knowledge_bases(
 async def get_knowledge_base(
     kb_id: str,
     include_entries: bool = Query(False, description="Include all entries"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Get a specific knowledge base by ID."""
-    kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
-    
-    if not kb:
-        raise HTTPException(status_code=404, detail="Knowledge base not found")
-    
+    kb = _get_kb_and_check(kb_id, "knowledge_base.view", user, db)
     return kb.to_dict(include_entries=include_entries)
 
 
@@ -139,14 +151,12 @@ async def get_knowledge_base(
 async def update_knowledge_base(
     kb_id: str,
     data: KnowledgeBaseUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Update a knowledge base."""
-    kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
-    
-    if not kb:
-        raise HTTPException(status_code=404, detail="Knowledge base not found")
-    
+    kb = _get_kb_and_check(kb_id, "knowledge_base.edit", user, db)
+
     if data.name is not None:
         kb.name = data.name
     if data.description is not None:
@@ -161,14 +171,11 @@ async def update_knowledge_base(
 @router.delete("/{kb_id}", status_code=204)
 async def delete_knowledge_base(
     kb_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Delete a knowledge base and all its entries."""
-    kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
-    
-    if not kb:
-        raise HTTPException(status_code=404, detail="Knowledge base not found")
-    
+    kb = _get_kb_and_check(kb_id, "knowledge_base.delete", user, db)
     db.delete(kb)
     db.commit()
 
@@ -181,12 +188,11 @@ async def delete_knowledge_base(
 async def create_entry(
     kb_id: str,
     data: EntryCreate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Create a Q&A entry in a knowledge base."""
-    kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
-    if not kb:
-        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    kb = _get_kb_and_check(kb_id, "knowledge_base.create", user, db)
     
     exp_date = None
     if data.expiration_date:
@@ -215,12 +221,11 @@ async def list_entries(
     kb_id: str,
     include_expired: bool = Query(False, description="Include expired entries"),
     category: Optional[str] = Query(None, description="Filter by category"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """List all entries in a knowledge base."""
-    kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
-    if not kb:
-        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    kb = _get_kb_and_check(kb_id, "knowledge_base.view", user, db)
     
     query = db.query(KnowledgeEntry).filter(KnowledgeEntry.knowledge_base_id == kb_id)
     
@@ -246,12 +251,11 @@ async def list_entries(
 async def export_entries_csv(
     kb_id: str,
     include_expired: bool = Query(True, description="Include expired entries"),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Export all entries to CSV file."""
-    kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
-    if not kb:
-        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    kb = _get_kb_and_check(kb_id, "knowledge_base.view", user, db)
     
     query = db.query(KnowledgeEntry).filter(KnowledgeEntry.knowledge_base_id == kb_id)
     
@@ -291,9 +295,11 @@ async def export_entries_csv(
 async def bulk_delete_entries(
     kb_id: str,
     data: BulkDeleteRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Bulk delete entries."""
+    _get_kb_and_check(kb_id, "knowledge_base.delete", user, db)
     deleted_count = db.query(KnowledgeEntry).filter(
         KnowledgeEntry.knowledge_base_id == kb_id,
         KnowledgeEntry.id.in_(data.entry_ids)
@@ -308,9 +314,11 @@ async def bulk_delete_entries(
 async def get_entry(
     kb_id: str,
     entry_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Get a specific entry."""
+    _get_kb_and_check(kb_id, "knowledge_base.view", user, db)
     entry = db.query(KnowledgeEntry).filter(
         KnowledgeEntry.id == entry_id,
         KnowledgeEntry.knowledge_base_id == kb_id
@@ -327,9 +335,11 @@ async def update_entry(
     kb_id: str,
     entry_id: str,
     data: EntryUpdate,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Update a Q&A entry."""
+    _get_kb_and_check(kb_id, "knowledge_base.edit", user, db)
     entry = db.query(KnowledgeEntry).filter(
         KnowledgeEntry.id == entry_id,
         KnowledgeEntry.knowledge_base_id == kb_id
@@ -360,9 +370,11 @@ async def update_entry(
 async def delete_entry(
     kb_id: str,
     entry_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Delete a Q&A entry."""
+    _get_kb_and_check(kb_id, "knowledge_base.delete", user, db)
     entry = db.query(KnowledgeEntry).filter(
         KnowledgeEntry.id == entry_id,
         KnowledgeEntry.knowledge_base_id == kb_id
@@ -379,12 +391,11 @@ async def delete_entry(
 async def import_csv(
     kb_id: str,
     file: UploadFile = File(...),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """Bulk import Q&A entries from CSV file."""
-    kb = db.query(KnowledgeBase).filter(KnowledgeBase.id == kb_id).first()
-    if not kb:
-        raise HTTPException(status_code=404, detail="Knowledge base not found")
+    kb = _get_kb_and_check(kb_id, "knowledge_base.import", user, db)
     
     if not file.filename.endswith('.csv'):
         raise HTTPException(status_code=400, detail="File must be a CSV")

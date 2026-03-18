@@ -21,6 +21,8 @@ from botelier.database import get_db
 from botelier.models.tool import Tool, ToolType as DBToolType
 from botelier.models.tool_set import ToolSet
 from botelier.models.flow_version import FlowVersion, FlowVersionStatus
+from botelier.models.user import User
+from botelier.auth.middleware import get_current_user, check_account_permission
 
 router = APIRouter(prefix="/api/tools", tags=["flow-versions"])
 
@@ -160,8 +162,10 @@ def get_tool_flow(
     hotel_id: str,
     source: Optional[str] = None,
     version: Optional[int] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    check_account_permission(user, hotel_id, "flows.view", db)
     """
     Get flow configuration for a flow-type tool.
     
@@ -252,8 +256,10 @@ def save_flow_draft(
     tool_id: str,
     hotel_id: str,
     draft_data: dict,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    check_account_permission(user, hotel_id, "flows.edit", db)
     """
     Save flow as a draft.
     
@@ -310,8 +316,10 @@ def publish_flow(
     tool_id: str,
     hotel_id: str,
     publish_data: Optional[dict] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    check_account_permission(user, hotel_id, "flows.publish", db)
     """
     Publish the current draft as a new version.
     
@@ -379,8 +387,10 @@ def publish_flow(
 def discard_draft(
     tool_id: str,
     hotel_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    check_account_permission(user, hotel_id, "flows.edit", db)
     """
     Discard the current draft.
     
@@ -414,8 +424,10 @@ def discard_draft(
 def list_flow_versions(
     tool_id: str,
     hotel_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    check_account_permission(user, hotel_id, "flows.view", db)
     """
     List all versions of a flow.
     
@@ -440,8 +452,10 @@ def get_flow_version(
     tool_id: str,
     version_number: int,
     hotel_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    check_account_permission(user, hotel_id, "flows.view", db)
     """
     Get a specific version of a flow.
     
@@ -469,8 +483,10 @@ def revert_to_version(
     version_number: int,
     hotel_id: str,
     revert_data: Optional[dict] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
+    check_account_permission(user, hotel_id, "flows.edit", db)
     """
     Revert to a previous version.
     
@@ -550,7 +566,8 @@ def update_tool_flow_legacy(
     tool_id: str,
     hotel_id: str,
     flow_data: dict,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """
     Legacy endpoint for saving flow configuration.
@@ -558,4 +575,4 @@ def update_tool_flow_legacy(
     Now saves as a draft for versioning workflow.
     Use PUT /flow/draft for explicit draft saves.
     """
-    return save_flow_draft(tool_id, hotel_id, flow_data, db)
+    return save_flow_draft(tool_id, hotel_id, flow_data, db, user)
