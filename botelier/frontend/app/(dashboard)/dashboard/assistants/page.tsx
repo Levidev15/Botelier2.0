@@ -7,6 +7,7 @@ import { notify, confirmAction } from "@/lib/notifications";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
 import { usePermissions } from "@/lib/auth/usePermissions";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface Assistant {
   id: string;
@@ -33,6 +34,7 @@ export default function AssistantsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
   const { hasAccess, loading: permLoading } = usePagePermission("assistants", "view");
   const { can } = usePagePermission("assistants", "create");
+  const { authFetch } = useAuthToken();
   const [assistants, setAssistants] = useState<Assistant[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -44,7 +46,7 @@ export default function AssistantsPage() {
 
   const fetchAssistants = async () => {
     try {
-      const response = await fetch(`/api/assistants?hotel_id=${accountId}`);
+      const response = await authFetch(`/api/assistants?hotel_id=${accountId}`);
       const data = await response.json();
       setAssistants(data.assistants || []);
     } catch (error) {
@@ -135,6 +137,7 @@ function AssistantCard({ assistant, onUpdate }: { assistant: Assistant; onUpdate
   const [isToggling, setIsToggling] = useState(false);
   const [isDuplicating, setIsDuplicating] = useState(false);
   const { can, isPlatformAdmin } = usePermissions();
+  const { authFetch } = useAuthToken();
   const canEdit = isPlatformAdmin || can("assistants", "edit");
   const canDelete = isPlatformAdmin || can("assistants", "delete");
   const canCreate = isPlatformAdmin || can("assistants", "create");
@@ -157,9 +160,8 @@ function AssistantCard({ assistant, onUpdate }: { assistant: Assistant; onUpdate
   const handleToggleActive = async () => {
     setIsToggling(true);
     try {
-      const response = await fetch(`/api/assistants/${assistant.id}`, {
+      const response = await authFetch(`/api/assistants/${assistant.id}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ is_active: !assistant.is_active }),
       });
 
@@ -181,15 +183,14 @@ function AssistantCard({ assistant, onUpdate }: { assistant: Assistant; onUpdate
     setIsDuplicating(true);
     try {
       // Fetch full assistant details
-      const response = await fetch(`/api/assistants/${assistant.id}`);
+      const response = await authFetch(`/api/assistants/${assistant.id}`);
       if (!response.ok) throw new Error("Failed to fetch assistant");
       
       const fullAssistant = await response.json();
       
       // Create duplicate with new name
-      const duplicateResponse = await fetch("/api/assistants", {
+      const duplicateResponse = await authFetch("/api/assistants", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           ...fullAssistant,
           id: undefined, // Remove ID to create new
@@ -225,7 +226,7 @@ function AssistantCard({ assistant, onUpdate }: { assistant: Assistant; onUpdate
     if (!confirmed) return;
 
     try {
-      const response = await fetch(`/api/assistants/${assistant.id}`, {
+      const response = await authFetch(`/api/assistants/${assistant.id}`, {
         method: "DELETE",
       });
 

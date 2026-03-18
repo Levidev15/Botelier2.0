@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Phone, Trash2, MessageSquare } from "lucide-react";
 import { notify } from "@/lib/notifications";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface Assistant {
   id: string;
@@ -31,13 +32,13 @@ interface PhoneNumberCardProps {
 export default function PhoneNumberCard({ phoneNumber, assistants, onDelete, onUpdate, canConfigure = true, canRelease = true }: PhoneNumberCardProps) {
   const [assigning, setAssigning] = useState(false);
   const [toggingSms, setTogglingSms] = useState(false);
+  const { authFetch } = useAuthToken();
 
   const handleAssignment = async (assistantId: string) => {
     setAssigning(true);
     try {
-      const response = await fetch(`/api/phone-numbers/${phoneNumber.id}/assign`, {
+      const response = await authFetch(`/api/phone-numbers/${phoneNumber.id}/assign`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           assistant_id: assistantId || null,
         }),
@@ -61,9 +62,8 @@ export default function PhoneNumberCard({ phoneNumber, assistants, onDelete, onU
   const handleSmsToggle = async (enabled: boolean) => {
     setTogglingSms(true);
     try {
-      const response = await fetch(`/api/phone-numbers/${phoneNumber.id}/sms-config`, {
+      const response = await authFetch(`/api/phone-numbers/${phoneNumber.id}/sms-config`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           hotel_id: phoneNumber.hotel_id,
           sms_enabled: enabled,
@@ -89,9 +89,8 @@ export default function PhoneNumberCard({ phoneNumber, assistants, onDelete, onU
   const handleSmsAssistantChange = async (assistantId: string) => {
     setTogglingSms(true);
     try {
-      const response = await fetch(`/api/phone-numbers/${phoneNumber.id}/sms-config`, {
+      const response = await authFetch(`/api/phone-numbers/${phoneNumber.id}/sms-config`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           hotel_id: phoneNumber.hotel_id,
           sms_enabled: phoneNumber.sms_enabled || false,

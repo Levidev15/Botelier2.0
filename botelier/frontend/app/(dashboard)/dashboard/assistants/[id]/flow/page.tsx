@@ -4,6 +4,7 @@ import { useParams, useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { ArrowLeft, Bot, GitBranch, ArrowRight } from "lucide-react";
 import Link from "next/link";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface Assistant {
   id: string;
@@ -15,13 +16,14 @@ export default function FlowEditorPage() {
   const params = useParams();
   const router = useRouter();
   const assistantId = params.id as string;
+  const { authFetch } = useAuthToken();
   const [assistant, setAssistant] = useState<Assistant | null>(null);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     const fetchAssistant = async () => {
       try {
-        const response = await fetch(`/api/assistants/${assistantId}`);
+        const response = await authFetch(`/api/assistants/${assistantId}`);
         if (!response.ok) {
           throw new Error("Assistant not found");
         }

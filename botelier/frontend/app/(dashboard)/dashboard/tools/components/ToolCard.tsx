@@ -4,6 +4,7 @@ import { LucideIcon, Trash2, Edit, GitBranch, Play } from "lucide-react";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { notify, confirmAction } from "@/lib/notifications";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface Tool {
   id: string;
@@ -29,6 +30,7 @@ interface ToolCardProps {
 export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit, hotelId, toolSetId, canEdit = true, canDelete = true }: ToolCardProps) {
   const router = useRouter();
   const [deleting, setDeleting] = useState(false);
+  const { authFetch } = useAuthToken();
 
   const isFlowTool = tool.tool_type === "FLOW";
   const hasFlowNodes = isFlowTool && tool.config?.nodes?.length > 0;
@@ -59,7 +61,7 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit
 
     try {
       const scopeParam = toolSetId ? `tool_set_id=${toolSetId}` : `hotel_id=${hotelId}`;
-      const response = await fetch(`/api/tools/${tool.id}?${scopeParam}`, {
+      const response = await authFetch(`/api/tools/${tool.id}?${scopeParam}`, {
         method: "DELETE",
       });
 

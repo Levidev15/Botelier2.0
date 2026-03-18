@@ -8,6 +8,7 @@ import { notify, confirmAction } from "@/lib/notifications";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
 import { usePermissions } from "@/lib/auth/usePermissions";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface PhoneNumber {
   id: string;
@@ -31,6 +32,7 @@ export default function PhoneNumbersPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
   const { hasAccess, loading: permLoading } = usePagePermission("phone_numbers", "view");
   const { can, isPlatformAdmin } = usePermissions();
+  const { authFetch } = useAuthToken();
   const canPurchase = isPlatformAdmin || can("phone_numbers", "purchase");
   const canConfigure = isPlatformAdmin || can("phone_numbers", "configure");
   const canRelease = isPlatformAdmin || can("phone_numbers", "release");
@@ -43,7 +45,7 @@ export default function PhoneNumbersPage() {
     if (!accountId) return;
     try {
       setLoading(true);
-      const response = await fetch(`/api/phone-numbers?hotel_id=${accountId}`);
+      const response = await authFetch(`/api/phone-numbers?hotel_id=${accountId}`);
       const data = await response.json();
       setPhoneNumbers(data.phone_numbers || []);
     } catch (error) {
@@ -57,7 +59,7 @@ export default function PhoneNumbersPage() {
   const fetchAssistants = async () => {
     if (!accountId) return;
     try {
-      const response = await fetch(`/api/assistants?hotel_id=${accountId}`);
+      const response = await authFetch(`/api/assistants?hotel_id=${accountId}`);
       const data = await response.json();
       setAssistants(data.assistants || []);
     } catch (error) {
@@ -86,7 +88,7 @@ export default function PhoneNumbersPage() {
     if (!confirmed) return;
 
     try {
-      const response = await fetch(`/api/phone-numbers/${id}`, {
+      const response = await authFetch(`/api/phone-numbers/${id}`, {
         method: "DELETE",
       });
 

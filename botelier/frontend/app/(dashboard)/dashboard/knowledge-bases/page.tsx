@@ -6,6 +6,7 @@ import { notify, confirmAction } from "@/lib/notifications";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
 import { usePermissions } from "@/lib/auth/usePermissions";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface KnowledgeBase {
   id: string;
@@ -50,6 +51,7 @@ export default function KnowledgeBasesPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
   const { hasAccess, loading: permLoading } = usePagePermission("knowledge_base", "view");
   const { can, isPlatformAdmin } = usePermissions();
+  const { authFetch } = useAuthToken();
   const canCreate = isPlatformAdmin || can("knowledge_base", "create");
   const canEdit = isPlatformAdmin || can("knowledge_base", "edit");
   const canDelete = isPlatformAdmin || can("knowledge_base", "delete");
@@ -80,7 +82,7 @@ export default function KnowledgeBasesPage() {
     if (!accountId) return;
     try {
       setLoading(true);
-      const res = await fetch(`/api/knowledge-bases?account_id=${accountId}`);
+      const res = await authFetch(`/api/knowledge-bases?account_id=${accountId}`);
       const data = await res.json();
       setKnowledgeBases(data.knowledge_bases || []);
     } catch (error) {
@@ -93,7 +95,7 @@ export default function KnowledgeBasesPage() {
   const fetchEntries = async (kbId: string) => {
     try {
       setLoading(true);
-      const res = await fetch(`/api/knowledge-bases/${kbId}/entries`);
+      const res = await authFetch(`/api/knowledge-bases/${kbId}/entries`);
       const data = await res.json();
       setEntries(data.entries || []);
     } catch (error) {
@@ -122,7 +124,7 @@ export default function KnowledgeBasesPage() {
     if (!confirmed) return;
 
     try {
-      const res = await fetch(`/api/knowledge-bases/${kb.id}`, { method: "DELETE" });
+      const res = await authFetch(`/api/knowledge-bases/${kb.id}`, { method: "DELETE" });
       if (res.ok) {
         notify.success("Knowledge base deleted");
         fetchKnowledgeBases();
@@ -142,7 +144,7 @@ export default function KnowledgeBasesPage() {
     if (!confirmed) return;
 
     try {
-      const res = await fetch(`/api/knowledge-bases/${selectedKB?.id}/entries/${entry.id}`, { method: "DELETE" });
+      const res = await authFetch(`/api/knowledge-bases/${selectedKB?.id}/entries/${entry.id}`, { method: "DELETE" });
       if (res.ok) {
         notify.success("Entry deleted");
         if (selectedKB) fetchEntries(selectedKB.id);
@@ -210,9 +212,8 @@ export default function KnowledgeBasesPage() {
         const expiration_date = cleanValue(values[3]) || null;
 
         if (question && answer) {
-          const res = await fetch(`/api/knowledge-bases/${selectedKB.id}/entries`, {
+          const res = await authFetch(`/api/knowledge-bases/${selectedKB.id}/entries`, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
             body: JSON.stringify({ question, answer, category, expiration_date }),
           });
           if (res.ok) {

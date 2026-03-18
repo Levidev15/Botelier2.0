@@ -4,6 +4,7 @@ import { useState } from "react";
 import { Search, Phone, MapPin } from "lucide-react";
 import { notify } from "@/lib/notifications";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface AvailableNumber {
   phone_number: string;
@@ -20,6 +21,7 @@ interface BuyBotelierFormProps {
 
 export default function BuyBotelierForm({ onNumberAdded, onClose }: BuyBotelierFormProps) {
   const { accountId } = useAccountContext();
+  const { authFetch } = useAuthToken();
   const [areaCode, setAreaCode] = useState("");
   const [country, setCountry] = useState("US");
   const [searching, setSearching] = useState(false);
@@ -44,7 +46,7 @@ export default function BuyBotelierForm({ onNumberAdded, onClose }: BuyBotelierF
         params.append("area_code", areaCode);
       }
 
-      const response = await fetch(`/api/phone-numbers/available?${params}`);
+      const response = await authFetch(`/api/phone-numbers/available?${params}`);
       
       if (!response.ok) {
         const error = await response.json();
@@ -76,9 +78,8 @@ export default function BuyBotelierForm({ onNumberAdded, onClose }: BuyBotelierF
 
     setPurchasing(true);
     try {
-      const response = await fetch("/api/phone-numbers/purchase", {
+      const response = await authFetch("/api/phone-numbers/purchase", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           phone_number: selectedNumber,
           friendly_name: friendlyName || null,

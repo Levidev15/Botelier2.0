@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { GitBranch } from "lucide-react";
 import { notify } from "@/lib/notifications";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface FlowFormProps {
   onSuccess: (tool: any) => void;
@@ -19,6 +20,7 @@ interface FormData {
 
 export default function FlowForm({ onSuccess, onCancel, accountId, toolSetId }: FlowFormProps) {
   const router = useRouter();
+  const { authFetch } = useAuthToken();
   const [formData, setFormData] = useState<FormData>({
     name: "",
     description: "",
@@ -63,11 +65,8 @@ export default function FlowForm({ onSuccess, onCancel, accountId, toolSetId }: 
         is_active: true,
       };
 
-      const response = await fetch("/api/tools", {
+      const response = await authFetch("/api/tools", {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
         body: JSON.stringify(payload),
       });
 

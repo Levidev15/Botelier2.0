@@ -9,6 +9,7 @@ import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { notify } from "@/lib/notifications";
 import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
 import { usePermissions } from "@/lib/auth/usePermissions";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface Tool {
   id: string;
@@ -32,6 +33,7 @@ export default function ToolsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
   const { hasAccess, loading: permLoading } = usePagePermission("tools", "view");
   const { can, isPlatformAdmin } = usePermissions();
+  const { authFetch } = useAuthToken();
   const canCreateTool = isPlatformAdmin || can("tools", "create");
   const canEditTool = isPlatformAdmin || can("tools", "edit");
   const canDeleteTool = isPlatformAdmin || can("tools", "delete");
@@ -65,7 +67,7 @@ export default function ToolsPage() {
   const fetchToolSets = async () => {
     if (!accountId) return;
     try {
-      const res = await fetch(`/api/tool-sets?account_id=${accountId}`);
+      const res = await authFetch(`/api/tool-sets?account_id=${accountId}`);
       const data = await res.json();
       const sets = data.tool_sets || [];
       setToolSets(sets);
@@ -81,7 +83,7 @@ export default function ToolsPage() {
 
   const fetchTools = async (toolSetId: string) => {
     try {
-      const res = await fetch(`/api/tool-sets/${toolSetId}/tools`);
+      const res = await authFetch(`/api/tool-sets/${toolSetId}/tools`);
       const data = await res.json();
       setTools(data.tools || []);
     } catch (error) {
@@ -98,9 +100,8 @@ export default function ToolsPage() {
     
     try {
       setCreatingToolSet(true);
-      const res = await fetch("/api/tool-sets", {
+      const res = await authFetch("/api/tool-sets", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           account_id: accountId,
           name: newToolSetName,
