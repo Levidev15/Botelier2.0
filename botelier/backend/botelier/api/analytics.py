@@ -121,7 +121,7 @@ async def get_call_analytics(
             )
             .filter(
                 CallLeg.call_log_id.in_(call_ids_subq),
-                CallLeg.leg_type.in_(["transfer_warm", "transfer_cold"]),
+                CallLeg.leg_type.in_(["transfer_warm", "transfer_cold", "transfer_external"]),
             )
             .one()
         )
