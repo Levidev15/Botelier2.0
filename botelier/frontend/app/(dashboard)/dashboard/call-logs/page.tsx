@@ -174,7 +174,7 @@ export default function CallLogsPage() {
   const canExport = isPlatformAdmin || can("call_logs", "export");
   const canViewTranscripts = isPlatformAdmin || can("call_logs", "view_transcripts");
   const canDeleteLogs = isPlatformAdmin || can("call_logs", "delete");
-  const { authHeaders } = useAuthToken();
+  const { authFetch } = useAuthToken();
   const [callLogs, setCallLogs] = useState<CallLog[]>([]);
   const [loading, setLoading] = useState(true);
   const [filterOptions, setFilterOptions] = useState<FilterOptions | null>(null);
@@ -250,7 +250,7 @@ export default function CallLogsPage() {
       if (qualityMax !== null) params.append("quality_max", String(qualityMax));
       if (hourFilter !== null) params.append("hour", String(hourFilter));
 
-      const response = await fetch(`/api/call-logs?${params}`);
+      const response = await authFetch(`/api/call-logs?${params}`);
       if (!response.ok) throw new Error("Failed to fetch call logs");
 
       const data = await response.json();
@@ -269,7 +269,7 @@ export default function CallLogsPage() {
   const fetchFilterOptions = useCallback(async () => {
     if (!accountId) return;
     try {
-      const response = await fetch(`/api/call-logs/filters/options?hotel_id=${accountId}`);
+      const response = await authFetch(`/api/call-logs/filters/options?hotel_id=${accountId}`);
       if (response.ok) {
         const data = await response.json();
         setFilterOptions(data);
@@ -295,7 +295,7 @@ export default function CallLogsPage() {
       if (dateFrom) params.append("date_from", new Date(dateFrom).toISOString());
       if (dateTo) params.append("date_to", new Date(dateTo).toISOString());
 
-      const response = await fetch(`/api/call-logs/export?${params}`);
+      const response = await authFetch(`/api/call-logs/export?${params}`);
       if (!response.ok) throw new Error("Export failed");
 
       const blob = await response.blob();
@@ -332,7 +332,7 @@ export default function CallLogsPage() {
       setShowTranscript(true);
     } else {
       try {
-        const response = await fetch(`/api/call-logs/${log.id}?hotel_id=${accountId}`);
+        const response = await authFetch(`/api/call-logs/${log.id}?hotel_id=${accountId}`);
         if (response.ok) {
           const fullLog = await response.json();
           setSelectedLog(fullLog);
@@ -350,12 +350,8 @@ export default function CallLogsPage() {
     setGeneratingIds((prev) => new Set(prev).add(log.id));
     
     try {
-      const response = await fetch(`/api/call-logs/${log.id}/generate-summary`, {
+      const response = await authFetch(`/api/call-logs/${log.id}/generate-summary`, {
         method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...authHeaders,
-        },
         body: JSON.stringify({ hotel_id: accountId }),
       });
 

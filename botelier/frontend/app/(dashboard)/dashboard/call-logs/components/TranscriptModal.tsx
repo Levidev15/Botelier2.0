@@ -75,15 +75,14 @@ function formatDateTime(dateStr: string | null): string {
 export default function TranscriptModal({ log, onClose, onLogUpdated }: TranscriptModalProps) {
   const transcript = log.transcript || [];
   const [running, setRunning] = useState(false);
-  const { authHeaders } = useAuthToken();
+  const { authFetch } = useAuthToken();
   const hasTranscript = transcript.length > 0;
 
   const runPostCallQA = async () => {
     setRunning(true);
     try {
-      const response = await fetch(`/api/call-logs/${log.id}/generate-summary`, {
+      const response = await authFetch(`/api/call-logs/${log.id}/generate-summary`, {
         method: "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
         body: JSON.stringify({ hotel_id: log.hotel_id }),
       });
       if (response.ok) {

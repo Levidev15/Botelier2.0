@@ -10,6 +10,7 @@ import { useFlowStore } from "@/components/flow-editor/store";
 import { useUnsavedChangesWarning } from "@/components/flow-editor/useUnsavedChangesWarning";
 import { UnsavedChangesModal } from "@/components/flow-editor/UnsavedChangesModal";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface Tool {
   id: string;
@@ -39,6 +40,7 @@ export default function FlowToolEditorPage() {
   const params = useParams();
   const router = useRouter();
   const { accountId, loading: contextLoading } = useAccountContext();
+  const { authFetch } = useAuthToken();
   const toolId = params.id as string;
   const [tool, setTool] = useState<Tool | null>(null);
   const [loading, setLoading] = useState(true);
@@ -78,7 +80,7 @@ export default function FlowToolEditorPage() {
     
     const fetchTool = async () => {
       try {
-        const response = await fetch(`/api/tools/${toolId}?hotel_id=${accountId}`);
+        const response = await authFetch(`/api/tools/${toolId}?hotel_id=${accountId}`);
         if (!response.ok) {
           throw new Error("Tool not found");
         }
