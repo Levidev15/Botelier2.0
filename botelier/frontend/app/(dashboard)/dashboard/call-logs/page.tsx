@@ -344,15 +344,24 @@ export default function CallLogsPage() {
   const fetchFilterOptions = useCallback(async () => {
     if (!accountId) return;
     try {
-      const response = await authFetch(`/api/call-logs/filters/options?hotel_id=${accountId}`);
+      const url = assistantFilter
+        ? `/api/call-logs/filters/options?hotel_id=${accountId}&assistant_id=${assistantFilter}`
+        : `/api/call-logs/filters/options?hotel_id=${accountId}`;
+      const response = await authFetch(url);
       if (response.ok) {
         const data = await response.json();
         setFilterOptions(data);
+        if (assistantFilter) {
+          const validDispositionIds = new Set((data.dispositions as Array<{ id: string }>).map(d => d.id));
+          setDispositionIdFilter(prev => (prev && !validDispositionIds.has(prev) ? "" : prev));
+          const validResolutions = new Set(data.resolution_options as string[]);
+          setAcwResolutionFilter(prev => (prev && !validResolutions.has(prev) ? "" : prev));
+        }
       }
     } catch (error) {
       console.error("Failed to fetch filter options:", error);
     }
-  }, [accountId]);
+  }, [accountId, assistantFilter]);
 
   useEffect(() => {
     if (!contextLoading && accountId) {
