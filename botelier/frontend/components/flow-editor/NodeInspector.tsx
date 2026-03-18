@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { Trash2, ChevronDown, ChevronRight, Plus, X, Variable } from "lucide-react";
 import { 
   useFlowStore, 
@@ -686,6 +687,7 @@ interface AccountIntegration {
 
 function APIRequestNodePanel({ data, nodeId }: { data: APIRequestNodeData; nodeId: string }) {
   const { updateNodeData, variables } = useFlowStore();
+  const { authFetch } = useAuthToken();
   const api = data.api || { method: "GET" as const, url: "", apiSource: "custom" as const };
   const [showHeaders, setShowHeaders] = useState(
     !!(api.headers && Object.keys(api.headers).length > 0)
@@ -700,7 +702,7 @@ function APIRequestNodePanel({ data, nodeId }: { data: APIRequestNodeData; nodeI
     const fetchIntegrations = async () => {
       setLoadingIntegrations(true);
       try {
-        const response = await fetch("/api/integrations/connections");
+        const response = await authFetch("/api/integrations/connections");
         if (response.ok) {
           const data = await response.json();
           setIntegrations(data.filter((i: AccountIntegration) => i.status === "active"));

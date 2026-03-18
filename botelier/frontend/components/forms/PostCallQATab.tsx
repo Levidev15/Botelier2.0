@@ -34,7 +34,7 @@ const DEFAULT_QUALITY_RUBRIC =
   "Score 0-100 based on:\n- Accuracy of information provided (40%)\n- Empathy, professionalism, and tone (30%)\n- Efficiency and resolution speed (30%)";
 
 export default function PostCallQATab({ assistantId, accountId }: PostCallQATabProps) {
-  const { authHeaders } = useAuthToken();
+  const { authFetch } = useAuthToken();
   const [acwConfig, setAcwConfig] = useState<AcwConfig>({});
   const [configLoading, setConfigLoading] = useState(true);
 
@@ -57,9 +57,8 @@ export default function PostCallQATab({ assistantId, accountId }: PostCallQATabP
 
   const fetchAcwConfig = async () => {
     try {
-      const response = await fetch(
-        `/api/assistants/${assistantId}/acw-config?hotel_id=${accountId}`,
-        { headers: authHeaders }
+      const response = await authFetch(
+        `/api/assistants/${assistantId}/acw-config?hotel_id=${accountId}`
       );
       if (response.ok) {
         const data = await response.json();
@@ -76,11 +75,10 @@ export default function PostCallQATab({ assistantId, accountId }: PostCallQATabP
 
   const patchAcwConfig = async (updates: Partial<AcwConfig>) => {
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `/api/assistants/${assistantId}/acw-config?hotel_id=${accountId}`,
         {
           method: "PATCH",
-          headers: { "Content-Type": "application/json", ...authHeaders },
           body: JSON.stringify(updates),
         }
       );
@@ -99,9 +97,8 @@ export default function PostCallQATab({ assistantId, accountId }: PostCallQATabP
 
   const fetchResolutionOptions = async () => {
     try {
-      const response = await fetch(
-        `/api/assistants/${assistantId}/resolution-options?hotel_id=${accountId}`,
-        { headers: authHeaders }
+      const response = await authFetch(
+        `/api/assistants/${assistantId}/resolution-options?hotel_id=${accountId}`
       );
       if (response.ok) {
         const data = await response.json();
@@ -120,9 +117,8 @@ export default function PostCallQATab({ assistantId, accountId }: PostCallQATabP
       const url = resEditingId
         ? `/api/assistants/${assistantId}/resolution-options/${resEditingId}?hotel_id=${accountId}`
         : `/api/assistants/${assistantId}/resolution-options?hotel_id=${accountId}`;
-      const response = await fetch(url, {
+      const response = await authFetch(url, {
         method: resEditingId ? "PATCH" : "POST",
-        headers: { "Content-Type": "application/json", ...authHeaders },
         body: JSON.stringify(resFormData),
       });
       if (response.ok) {
@@ -143,9 +139,9 @@ export default function PostCallQATab({ assistantId, accountId }: PostCallQATabP
     });
     if (!confirmed) return;
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `/api/assistants/${assistantId}/resolution-options/${id}?hotel_id=${accountId}`,
-        { method: "DELETE", headers: authHeaders }
+        { method: "DELETE" }
       );
       if (response.ok) {
         notify.success("Resolution option deleted");

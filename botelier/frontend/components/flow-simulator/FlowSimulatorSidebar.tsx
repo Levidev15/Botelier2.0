@@ -4,6 +4,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import ChatMessage from "./ChatMessage";
 import SlotTracker from "./SlotTracker";
 import { Play, RotateCcw, Loader2, X, ChevronDown, ChevronUp } from "lucide-react";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface FlowSimulatorSidebarProps {
   toolId: string;
@@ -58,6 +59,7 @@ export default function FlowSimulatorSidebar({
   const [error, setError] = useState<string | null>(null);
   const [showSlotTracker, setShowSlotTracker] = useState(true);
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  const { authFetch } = useAuthToken();
 
   const scrollToBottom = useCallback(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -77,9 +79,8 @@ export default function FlowSimulatorSidebar({
     setIsStarting(true);
     setError(null);
     try {
-      const response = await fetch("/api/simulate/start", {
+      const response = await authFetch("/api/simulate/start", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ tool_id: toolId }),
       });
 
@@ -115,9 +116,8 @@ export default function FlowSimulatorSidebar({
     setMessages((prev) => [...prev, { role: "user", content: userMessage }]);
 
     try {
-      const response = await fetch("/api/simulate/message", {
+      const response = await authFetch("/api/simulate/message", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           session_id: sessionId,
           message: userMessage,
@@ -146,7 +146,7 @@ export default function FlowSimulatorSidebar({
   const resetSimulation = async () => {
     if (sessionId) {
       try {
-        await fetch(`/api/simulate/session/${sessionId}`, { method: "DELETE" });
+        await authFetch(`/api/simulate/session/${sessionId}`, { method: "DELETE" });
       } catch {
         // Ignore cleanup errors
       }
@@ -164,7 +164,7 @@ export default function FlowSimulatorSidebar({
   useEffect(() => {
     return () => {
       if (sessionId) {
-        fetch(`/api/simulate/session/${sessionId}`, { method: "DELETE" }).catch(() => {});
+        authFetch(`/api/simulate/session/${sessionId}`, { method: "DELETE" }).catch(() => {});
       }
       if (onNodeChange) {
         onNodeChange(null);

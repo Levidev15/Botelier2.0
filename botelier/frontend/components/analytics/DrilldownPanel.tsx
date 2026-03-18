@@ -4,6 +4,7 @@ import { useEffect, useState, useCallback, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { X, Loader2, ExternalLink, ChevronLeft, ChevronRight, FileText } from "lucide-react";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { DateRange } from "./DateRangePicker";
 
 interface DrilldownRecord {
@@ -105,6 +106,7 @@ export default function DrilldownPanel({
   onViewTranscript,
 }: DrilldownPanelProps) {
   const { accountId } = useAccountContext();
+  const { authFetch } = useAuthToken();
   const router = useRouter();
   const [data, setData] = useState<DrilldownResponse | null>(null);
   const [loading, setLoading] = useState(false);
@@ -124,7 +126,7 @@ export default function DrilldownPanel({
           limit: String(PAGE_LIMIT),
         });
         assistantIds.forEach((id) => params.append("assistant_ids", id));
-        const r = await fetch(`/api/analytics/calls/drilldown?${params}`);
+        const r = await authFetch(`/api/analytics/calls/drilldown?${params}`);
         if (!r.ok) throw new Error("Failed");
         setData(await r.json());
       } catch {
@@ -133,7 +135,7 @@ export default function DrilldownPanel({
         setLoading(false);
       }
     },
-    [accountId, open, metric, dateRange, assistantIds]
+    [accountId, open, metric, dateRange, assistantIds, authFetch]
   );
 
   // Track previous fetchData identity to distinguish query changes from page changes.

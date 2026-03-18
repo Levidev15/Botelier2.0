@@ -44,7 +44,7 @@ export default function DispositionsTab({ assistantId, accountId }: Dispositions
     color: "#6366f1",
     is_active: true,
   });
-  const { authHeaders } = useAuthToken();
+  const { authFetch } = useAuthToken();
 
   useEffect(() => {
     fetchDispositions();
@@ -52,9 +52,8 @@ export default function DispositionsTab({ assistantId, accountId }: Dispositions
 
   const fetchDispositions = async () => {
     try {
-      const response = await fetch(
-        `/api/assistants/${assistantId}/dispositions?hotel_id=${accountId}`,
-        { headers: authHeaders }
+      const response = await authFetch(
+        `/api/assistants/${assistantId}/dispositions?hotel_id=${accountId}`
       );
       if (response.ok) {
         const data = await response.json();
@@ -75,12 +74,8 @@ export default function DispositionsTab({ assistantId, accountId }: Dispositions
         ? `/api/assistants/${assistantId}/dispositions/${editingId}?hotel_id=${accountId}`
         : `/api/assistants/${assistantId}/dispositions?hotel_id=${accountId}`;
       
-      const response = await fetch(url, {
+      const response = await authFetch(url, {
         method: editingId ? "PATCH" : "POST",
-        headers: {
-          "Content-Type": "application/json",
-          ...authHeaders,
-        },
         body: JSON.stringify(formData),
       });
 
@@ -103,9 +98,9 @@ export default function DispositionsTab({ assistantId, accountId }: Dispositions
     if (!confirmed) return;
     
     try {
-      const response = await fetch(
+      const response = await authFetch(
         `/api/assistants/${assistantId}/dispositions/${id}?hotel_id=${accountId}`,
-        { method: "DELETE", headers: authHeaders }
+        { method: "DELETE" }
       );
 
       if (response.ok) {
