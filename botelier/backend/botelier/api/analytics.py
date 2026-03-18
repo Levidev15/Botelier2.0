@@ -8,10 +8,12 @@ GET /api/analytics/calls/drilldown  — Paginated call records for a given metri
 from datetime import datetime, timedelta
 from typing import Optional, List
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
-from sqlalchemy import desc, func, case
+from sqlalchemy import cast, desc, func, case
+from sqlalchemy.dialects.postgresql import TIMESTAMP as PG_TIMESTAMP
 from sqlalchemy.orm import Session, joinedload
 
 from botelier.database import get_db
@@ -58,6 +60,10 @@ async def get_call_analytics(
     user: User = Depends(get_current_user),
 ):
     check_account_permission(user, str(hotel_id), "call_logs.view", db)
+    try:
+        ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, KeyError):
+        raise HTTPException(status_code=400, detail=f"Invalid timezone: {timezone!r}")
     try:
         since, until = _resolve_date_range(date_from, date_to)
 
@@ -141,10 +147,16 @@ async def get_call_analytics(
             "outbound_calls_count": int(outbound_dur.calls),
         }
 
-        # Timezone-aware local timestamp — converts naive UTC stored_at to the
-        # requested IANA timezone so that day boundaries and hour buckets reflect
-        # the user's local time rather than UTC.
-        local_ts = func.timezone(timezone, CallLog.started_at)
+        # Timezone-aware local timestamp.
+        # started_at is stored as timestamp WITHOUT time zone (naive UTC).
+        # Step 1: cast to timestamptz — PostgreSQL treats the value as UTC
+        #         because the server/session timezone is UTC.
+        # Step 2: timezone(tz, timestamptz) converts UTC → local time,
+        #         returning a timestamp WITHOUT time zone in the target zone.
+        # This is the correct direction; doing timezone(tz, timestamp_no_tz)
+        # directly would interpret the value AS local time (wrong direction).
+        _utc_ts = cast(CallLog.started_at, PG_TIMESTAMP(timezone=True))
+        local_ts = func.timezone(timezone, _utc_ts)
 
         day_label = func.date_trunc("day", local_ts).label("day")
         vol_rows = (
@@ -332,6 +344,10 @@ async def get_calls_drilldown(
     GET /api/analytics/calls.
     """
     try:
+        ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, KeyError):
+        raise HTTPException(status_code=400, detail=f"Invalid timezone: {timezone!r}")
+    try:
         since, until = _resolve_date_range(date_from, date_to)
 
         query = db.query(CallLog).filter(
@@ -366,8 +382,9 @@ async def get_calls_drilldown(
             query = query.filter(CallLog.disposition_id == UUID(disp_id))
         elif token.startswith("hour:"):
             hr = int(token[len("hour:"):])
+            _utc_ts_dd = cast(CallLog.started_at, PG_TIMESTAMP(timezone=True))
             query = query.filter(
-                func.extract("hour", func.timezone(timezone, CallLog.started_at)) == hr
+                func.extract("hour", func.timezone(timezone, _utc_ts_dd)) == hr
             )
         elif token.startswith("assistant:"):
             asst_id = token[len("assistant:"):]
