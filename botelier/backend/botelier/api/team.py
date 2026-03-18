@@ -12,6 +12,7 @@ from typing import Optional, List
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from botelier.database import get_db
@@ -173,7 +174,13 @@ async def update_member_role(
 
     role = (
         db.query(Role)
-        .filter(Role.id == data.role_id, Role.account_id == ctx.account.id)
+        .filter(
+            Role.id == data.role_id,
+            or_(
+                Role.account_id == ctx.account.id,
+                (Role.account_id == None) & (Role.is_system_role == True),
+            ),
+        )
         .first()
     )
 
@@ -274,7 +281,13 @@ async def create_invitation(
 
     role = (
         db.query(Role)
-        .filter(Role.id == data.role_id, Role.account_id == ctx.account.id)
+        .filter(
+            Role.id == data.role_id,
+            or_(
+                Role.account_id == ctx.account.id,
+                (Role.account_id == None) & (Role.is_system_role == True),
+            ),
+        )
         .first()
     )
 
@@ -385,7 +398,12 @@ async def list_roles(
 
     roles = (
         db.query(Role)
-        .filter(Role.account_id == ctx.account.id)
+        .filter(
+            or_(
+                Role.account_id == ctx.account.id,
+                (Role.account_id == None) & (Role.is_system_role == True),
+            )
+        )
         .order_by(Role.is_system_role.desc(), Role.created_at.asc())
         .all()
     )

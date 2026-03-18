@@ -92,6 +92,10 @@ export default function InvitationsTab({
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [revokingId, setRevokingId] = useState<string | null>(null);
   const [confirmRevokeId, setConfirmRevokeId] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
+
+  const pendingInvitations = invitations.filter((inv) => inv.status === "pending");
+  const displayedInvitations = showAll ? invitations : pendingInvitations;
 
   const handleCopyLink = async (invitation: Invitation) => {
     const link = `${window.location.origin}/invite/${invitation.token}`;
@@ -135,14 +139,22 @@ export default function InvitationsTab({
     );
   }
 
-  if (invitations.length === 0) {
+  if (pendingInvitations.length === 0 && !showAll) {
     return (
       <div className="text-center py-16">
         <div className="w-12 h-12 bg-[#1a1a1a] rounded-full flex items-center justify-center mx-auto mb-3">
           <Mail className="w-5 h-5 text-gray-600" />
         </div>
-        <p className="text-gray-400 font-medium">No invitations sent yet</p>
+        <p className="text-gray-400 font-medium">No pending invitations</p>
         <p className="text-gray-600 text-sm mt-1">Invite team members using the button above</p>
+        {invitations.length > 0 && (
+          <button
+            onClick={() => setShowAll(true)}
+            className="mt-3 text-xs text-gray-500 hover:text-gray-300 underline transition-colors"
+          >
+            View all invitation history ({invitations.length})
+          </button>
+        )}
       </div>
     );
   }
@@ -151,6 +163,22 @@ export default function InvitationsTab({
 
   return (
     <>
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-xs text-gray-500">
+          {showAll
+            ? `${invitations.length} total invitation${invitations.length !== 1 ? "s" : ""}`
+            : `${pendingInvitations.length} pending invitation${pendingInvitations.length !== 1 ? "s" : ""}`}
+        </p>
+        {invitations.length !== pendingInvitations.length && (
+          <button
+            onClick={() => setShowAll((v) => !v)}
+            className="text-xs text-gray-500 hover:text-gray-300 underline transition-colors"
+          >
+            {showAll ? "Show pending only" : `View all history (${invitations.length})`}
+          </button>
+        )}
+      </div>
+
       <div className="overflow-x-auto">
         <table className="w-full">
           <thead>
@@ -173,7 +201,7 @@ export default function InvitationsTab({
             </tr>
           </thead>
           <tbody className="divide-y divide-[#1a1a1a]">
-            {invitations.map((invitation) => (
+            {displayedInvitations.map((invitation) => (
               <tr key={invitation.id} className="group">
                 <td className="py-3.5 pr-4">
                   <div className="flex items-center gap-3">

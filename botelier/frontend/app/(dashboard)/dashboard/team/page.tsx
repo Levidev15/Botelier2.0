@@ -53,7 +53,7 @@ interface Role {
 
 const TABS: { key: Tab; label: string; icon: typeof Users }[] = [
   { key: "members", label: "Members", icon: Users },
-  { key: "invitations", label: "Invitations", icon: Mail },
+  { key: "invitations", label: "Pending Invitations", icon: Mail },
   { key: "roles", label: "Roles", icon: Shield },
 ];
 
