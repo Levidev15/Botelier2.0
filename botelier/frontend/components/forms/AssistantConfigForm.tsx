@@ -11,6 +11,7 @@ import ProviderSelector from "@/components/forms/ProviderSelector";
 import SaveBar from "@/components/ui/SaveBar";
 import { notify } from "@/lib/notifications";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 import PostCallQATab from "@/components/forms/PostCallQATab";
 
 interface Assistant {
@@ -91,6 +92,7 @@ const TABS: Tab[] = [
 export default function AssistantConfigForm({ mode, assistantId }: AssistantConfigFormProps) {
   const router = useRouter();
   const { accountId, loading: contextLoading } = useAccountContext();
+  const { authFetch } = useAuthToken();
   const [activeTab, setActiveTab] = useState("info");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -152,7 +154,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
     if (!assistantId) return;
     
     try {
-      const response = await fetch(`/api/assistants/${assistantId}`);
+      const response = await authFetch(`/api/assistants/${assistantId}`);
       if (!response.ok) throw new Error("Failed to fetch assistant");
       const data = await response.json();
       setAssistant(data);
@@ -169,9 +171,9 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
   const fetchProviders = async () => {
     try {
       const [sttRes, llmRes, ttsRes] = await Promise.all([
-        fetch('/api/providers/stt'),
-        fetch('/api/providers/llm'),
-        fetch('/api/providers/tts'),
+        authFetch('/api/providers/stt'),
+        authFetch('/api/providers/llm'),
+        authFetch('/api/providers/tts'),
       ]);
       
       const [sttData, llmData, ttsData] = await Promise.all([
@@ -207,7 +209,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
   const fetchKnowledgeBases = async () => {
     if (!accountId) return;
     try {
-      const res = await fetch(`/api/knowledge-bases?account_id=${accountId}`);
+      const res = await authFetch(`/api/knowledge-bases?account_id=${accountId}`);
       const data = await res.json();
       setKnowledgeBases(data.knowledge_bases || []);
     } catch (error) {
@@ -218,7 +220,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
   const fetchToolSets = async () => {
     if (!accountId) return;
     try {
-      const res = await fetch(`/api/tool-sets?account_id=${accountId}`);
+      const res = await authFetch(`/api/tool-sets?account_id=${accountId}`);
       const data = await res.json();
       setToolSets(data.tool_sets || []);
     } catch (error) {
@@ -229,7 +231,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
   const fetchMcpConnections = async () => {
     if (!accountId) return;
     try {
-      const res = await fetch(`/api/mcp-connections?account_id=${accountId}&include_tools=true`);
+      const res = await authFetch(`/api/mcp-connections?account_id=${accountId}&include_tools=true`);
       if (res.ok) {
         const data = await res.json();
         setMcpConnections(data.filter((mcp: MCPConnection) => mcp.is_active && mcp.status === "connected"));
@@ -261,9 +263,8 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
     setSaving(true);
     try {
       if (mode === "create") {
-        const response = await fetch("/api/assistants", {
+        const response = await authFetch("/api/assistants", {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             ...formData,
             hotel_id: accountId,
@@ -277,9 +278,8 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
         setIsDirty(false);
         router.push(`/dashboard/assistants/${data.id}`);
       } else {
-        const response = await fetch(`/api/assistants/${assistantId}`, {
+        const response = await authFetch(`/api/assistants/${assistantId}`, {
           method: "PUT",
-          headers: { "Content-Type": "application/json" },
           body: JSON.stringify(formData),
         });
 

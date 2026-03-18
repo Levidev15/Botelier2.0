@@ -85,7 +85,7 @@ export default function DashboardLayout({
   // across all pages, not just when the Messages page is open.
   const fetchPendingHandoffs = async (hotelId: string) => {
     try {
-      const res = await fetch(`/api/sms/pending-handoffs?hotel_id=${hotelId}`);
+      const res = await authFetch(`/api/sms/pending-handoffs?hotel_id=${hotelId}`);
       if (res.ok) {
         const data = await res.json();
         setPendingHandoffs(data.count ?? 0);
