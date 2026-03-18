@@ -248,7 +248,7 @@ async def connect_complete(request: Request, db: Session = Depends(get_db), back
 
 
 @router.post("/transfer-status")
-async def transfer_status_callback(request: Request, db: Session = Depends(get_db)):
+async def transfer_status_callback(request: Request, db: Session = Depends(get_db), background_tasks: BackgroundTasks = BackgroundTasks()):
     """
     Callback specifically for tracking transfer call status.
     
@@ -283,6 +283,10 @@ async def transfer_status_callback(request: Request, db: Session = Depends(get_d
                 parent_call_sid=parent_call_sid,
                 to_number=to_number,
             )
+            
+            if call_status == "completed" and parent_call_sid:
+                logger.info(f"Warm transfer leg {call_sid} completed — enqueueing ACW for parent call {parent_call_sid}")
+                _maybe_enqueue_acw(parent_call_sid, db, background_tasks)
         
         return {"status": "received"}
         
