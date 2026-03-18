@@ -364,7 +364,7 @@ export default function ToolsPage() {
                 icon={getToolIcon(tool.tool_type)}
                 typeLabel={getToolTypeLabel(tool.tool_type)}
                 onDelete={handleToolDeleted}
-                onEdit={handleEditTool}
+                onEdit={handleEditTool as any}
                 hotelId={accountId}
                 toolSetId={selectedToolSet?.id}
                 canEdit={canEditTool}

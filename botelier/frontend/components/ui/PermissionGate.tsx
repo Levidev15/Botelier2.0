@@ -3,6 +3,7 @@
 import React from "react";
 import { ShieldOff } from "lucide-react";
 import { usePermissions } from "@/lib/auth/usePermissions";
+import type { UserPermissions } from "@/lib/auth/types";
 
 interface PermissionGateProps {
   resource: string;
@@ -16,7 +17,7 @@ export function PermissionGate({ resource, action, children, fallback }: Permiss
 
   if (loading) return null;
 
-  if (isPlatformAdmin || can(resource, action)) {
+  if (isPlatformAdmin || can(resource as keyof UserPermissions, action)) {
     return <>{children}</>;
   }
 
@@ -47,6 +48,6 @@ export function usePagePermission(resource: string, action: string) {
   const perms = usePermissions();
   return {
     ...perms,
-    hasAccess: perms.isPlatformAdmin || perms.can(resource, action),
+    hasAccess: perms.isPlatformAdmin || perms.can(resource as keyof UserPermissions, action),
   };
 }
