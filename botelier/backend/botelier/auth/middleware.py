@@ -53,28 +53,40 @@ def decode_jwt_token(token: str) -> Optional[dict]:
     1. Plain HS256 tokens (from email/password auth)
     2. NextAuth signed (JWS) tokens
     3. NextAuth encrypted (JWE) tokens
+    
+    Tries all known secrets so tokens issued before/after secret rotation still work.
     """
-    if not NEXTAUTH_SECRET:
-        return None
-    
-    try:
-        payload = jwt.decode(
-            token,
-            NEXTAUTH_SECRET,
-            algorithms=["HS256"],
-            options={"verify_aud": False}
-        )
-        return payload
-    except JWTError:
-        pass
-    
-    try:
-        from jose import jwe
-        key = derive_encryption_key(NEXTAUTH_SECRET)
-        decrypted = jwe.decrypt(token, key)
-        return json.loads(decrypted)
-    except Exception:
-        return None
+    # Build list of secrets to try (current env secret + fallback default)
+    secrets_to_try = []
+    if NEXTAUTH_SECRET:
+        secrets_to_try.append(NEXTAUTH_SECRET)
+    fallback = "botelier-secret-key"
+    if fallback not in secrets_to_try:
+        secrets_to_try.append(fallback)
+
+    for secret in secrets_to_try:
+        try:
+            payload = jwt.decode(
+                token,
+                secret,
+                algorithms=["HS256"],
+                options={"verify_aud": False}
+            )
+            return payload
+        except JWTError:
+            continue
+
+    # Try JWE decryption with current secret
+    if NEXTAUTH_SECRET:
+        try:
+            from jose import jwe
+            key = derive_encryption_key(NEXTAUTH_SECRET)
+            decrypted = jwe.decrypt(token, key)
+            return json.loads(decrypted)
+        except Exception:
+            pass
+
+    return None
 
 
 def decode_nextauth_token(token: str) -> Optional[dict]:
