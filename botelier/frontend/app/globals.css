@@ -3,7 +3,8 @@
 @tailwind utilities;
 
 @layer base {
-  :root {
+  :root,
+  [data-theme="dark"] {
     --background: 0 0% 4%;
     --foreground: 0 0% 98%;
     --card: 0 0% 8%;
@@ -18,10 +19,35 @@
     --muted-foreground: 0 0% 60%;
     --accent: 0 0% 14%;
     --accent-foreground: 0 0% 98%;
-    --border: 0 0% 18%;
-    --input: 0 0% 18%;
+    --border: 0 0% 13%;
+    --input: 0 0% 13%;
     --ring: 217 91% 60%;
     --radius: 0.5rem;
+    /* Semantic theme vars */
+    --surface: 0 0% 8%;
+    --hover-bg: 0 0% 14%;
+  }
+
+  [data-theme="light"] {
+    --background: 210 40% 98%;
+    --foreground: 222 47% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 222 47% 11%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 222 47% 11%;
+    --primary: 217 91% 60%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 214 32% 91%;
+    --secondary-foreground: 222 47% 11%;
+    --muted: 214 32% 96%;
+    --muted-foreground: 215 25% 45%;
+    --accent: 214 32% 91%;
+    --accent-foreground: 222 47% 11%;
+    --border: 214 32% 91%;
+    --input: 214 32% 91%;
+    --ring: 217 91% 60%;
+    --surface: 0 0% 100%;
+    --hover-bg: 214 32% 96%;
   }
 }
 
@@ -32,4 +58,107 @@
   body {
     @apply bg-background text-foreground;
   }
+}
+
+/* ─── Light-mode overrides for hardcoded dark Tailwind classes ─── */
+
+/* Background overrides */
+[data-theme="light"] .bg-\[#0a0a0a\],
+[data-theme="light"] .bg-\[#0d0d0d\],
+[data-theme="light"] .bg-\[#0f0f0f\],
+[data-theme="light"] .bg-\[#111111\] {
+  background-color: hsl(210, 40%, 98%);
+}
+
+[data-theme="light"] .bg-\[#141414\],
+[data-theme="light"] .bg-\[#161616\] {
+  background-color: #ffffff;
+}
+
+[data-theme="light"] .bg-\[#1a1a1a\],
+[data-theme="light"] .bg-\[#1c1c1c\] {
+  background-color: #f1f5f9;
+}
+
+[data-theme="light"] .bg-\[#222222\],
+[data-theme="light"] .bg-\[#252525\] {
+  background-color: #e2e8f0;
+}
+
+[data-theme="light"] .bg-\[#2a2a2a\],
+[data-theme="light"] .bg-\[#2d2d2d\] {
+  background-color: #cbd5e1;
+}
+
+/* Border overrides */
+[data-theme="light"] .border-gray-800,
+[data-theme="light"] .border-\[#222222\],
+[data-theme="light"] .border-\[#1a1a1a\] {
+  border-color: #e2e8f0;
+}
+
+[data-theme="light"] .border-\[#333333\],
+[data-theme="light"] .border-\[#2a2a2a\] {
+  border-color: #cbd5e1;
+}
+
+[data-theme="light"] .border-\[#444444\],
+[data-theme="light"] .border-gray-700 {
+  border-color: #94a3b8;
+}
+
+/* Hover background overrides */
+[data-theme="light"] .hover\:bg-gray-800:hover,
+[data-theme="light"] .hover\:bg-\[#1a1a1a\]:hover,
+[data-theme="light"] .hover\:bg-\[#222222\]:hover,
+[data-theme="light"] .hover\:bg-\[#2a2a2a\]:hover {
+  background-color: #e2e8f0;
+}
+
+[data-theme="light"] .hover\:bg-gray-900:hover,
+[data-theme="light"] .hover\:bg-\[#0a0a0a\]:hover {
+  background-color: #f1f5f9;
+}
+
+/* Divide color overrides */
+[data-theme="light"] .divide-gray-800 > * + * {
+  border-color: #e2e8f0;
+}
+
+[data-theme="light"] .divide-\[#222222\] > * + * {
+  border-color: #e2e8f0;
+}
+
+/* Text color overrides — flip nearly-white text to dark in light mode */
+[data-theme="light"] .text-gray-100 {
+  color: #0f172a;
+}
+
+[data-theme="light"] .text-gray-200 {
+  color: #1e293b;
+}
+
+/* Restore white text for buttons/badges with colored backgrounds */
+[data-theme="light"] [class*="bg-blue-"] .text-gray-100,
+[data-theme="light"] [class*="bg-purple-"] .text-gray-100,
+[data-theme="light"] [class*="bg-green-"] .text-gray-100,
+[data-theme="light"] [class*="bg-red-"] .text-gray-100,
+[data-theme="light"] .bg-blue-600 .text-gray-100,
+[data-theme="light"] .bg-blue-500 .text-gray-100 {
+  color: #f3f4f6;
+}
+
+/* Ring / focus overrides */
+[data-theme="light"] .ring-gray-800 {
+  --tw-ring-color: #e2e8f0;
+}
+
+/* Placeholder text */
+[data-theme="light"] .placeholder-gray-600::placeholder {
+  color: #94a3b8;
+}
+
+/* Scrollbar styling for light mode */
+[data-theme="light"] {
+  color-scheme: light;
 }
