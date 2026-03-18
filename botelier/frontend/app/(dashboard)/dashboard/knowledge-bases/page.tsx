@@ -557,6 +557,7 @@ export default function KnowledgeBasesPage() {
 }
 
 function KBModal({ kb, accountId, onClose, onSave }: { kb: KnowledgeBase | null; accountId: string; onClose: () => void; onSave: () => void }) {
+  const { authFetch } = useAuthToken();
   const [name, setName] = useState(kb?.name || "");
   const [description, setDescription] = useState(kb?.description || "");
   const [saving, setSaving] = useState(false);
@@ -573,9 +574,8 @@ function KBModal({ kb, accountId, onClose, onSave }: { kb: KnowledgeBase | null;
       const method = kb ? "PUT" : "POST";
       const body = kb ? { name, description } : { account_id: accountId, name, description };
 
-      const res = await fetch(url, {
+      const res = await authFetch(url, {
         method,
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
       });
 
@@ -637,6 +637,7 @@ function KBModal({ kb, accountId, onClose, onSave }: { kb: KnowledgeBase | null;
 }
 
 function EntryModal({ entry, knowledgeBaseId, onClose, onSave }: { entry: Entry | null; knowledgeBaseId: string; onClose: () => void; onSave: () => void }) {
+  const { authFetch } = useAuthToken();
   const [question, setQuestion] = useState(entry?.question || "");
   const [answer, setAnswer] = useState(entry?.answer || "");
   const [category, setCategory] = useState(entry?.category || "");
@@ -654,9 +655,8 @@ function EntryModal({ entry, knowledgeBaseId, onClose, onSave }: { entry: Entry 
       const url = entry ? `/api/knowledge-bases/${knowledgeBaseId}/entries/${entry.id}` : `/api/knowledge-bases/${knowledgeBaseId}/entries`;
       const method = entry ? "PUT" : "POST";
 
-      const res = await fetch(url, {
+      const res = await authFetch(url, {
         method,
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
           question, 
           answer, 

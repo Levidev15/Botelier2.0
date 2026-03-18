@@ -3,6 +3,7 @@
 import { useState, useEffect } from "react";
 import { Globe, Plus, Trash2, ChevronDown, ChevronRight } from "lucide-react";
 import { notify } from "@/lib/notifications";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface Tool {
   id: string;
@@ -40,6 +41,7 @@ interface ResponseMappingEntry {
 
 export default function ApiRequestForm({ onSuccess, onCancel, tool, accountId, toolSetId }: ApiRequestFormProps) {
   const isEditMode = !!tool;
+  const { authFetch } = useAuthToken();
 
   const [name, setName] = useState("");
   const [description, setDescription] = useState("");
@@ -160,9 +162,8 @@ export default function ApiRequestForm({ onSuccess, onCancel, tool, accountId, t
         : "/api/tools";
       const apiMethod = isEditMode ? "PUT" : "POST";
 
-      const response = await fetch(apiUrl, {
+      const response = await authFetch(apiUrl, {
         method: apiMethod,
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
