@@ -7,6 +7,7 @@ import AddNumberDrawer from "./components/AddNumberDrawer";
 import { notify, confirmAction } from "@/lib/notifications";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
+import { usePermissions } from "@/lib/auth/usePermissions";
 
 interface PhoneNumber {
   id: string;
@@ -29,6 +30,10 @@ interface Assistant {
 export default function PhoneNumbersPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
   const { hasAccess, loading: permLoading } = usePagePermission("phone_numbers", "view");
+  const { can, isPlatformAdmin } = usePermissions();
+  const canPurchase = isPlatformAdmin || can("phone_numbers", "purchase");
+  const canConfigure = isPlatformAdmin || can("phone_numbers", "configure");
+  const canRelease = isPlatformAdmin || can("phone_numbers", "release");
   const [phoneNumbers, setPhoneNumbers] = useState<PhoneNumber[]>([]);
   const [assistants, setAssistants] = useState<Assistant[]>([]);
   const [isDrawerOpen, setIsDrawerOpen] = useState(false);
@@ -112,13 +117,15 @@ export default function PhoneNumbersPage() {
                 Manage your Twilio phone numbers
               </p>
             </div>
-            <button
-              onClick={() => setIsDrawerOpen(true)}
-              className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition text-sm font-medium"
-            >
-              <Plus className="h-4 w-4 mr-2" />
-              Add Number
-            </button>
+            {canPurchase && (
+              <button
+                onClick={() => setIsDrawerOpen(true)}
+                className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition text-sm font-medium"
+              >
+                <Plus className="h-4 w-4 mr-2" />
+                Add Number
+              </button>
+            )}
           </div>
         </div>
       </div>
@@ -137,13 +144,15 @@ export default function PhoneNumbersPage() {
             <p className="text-gray-400 text-center mb-6 max-w-md">
               Add a phone number to start receiving calls
             </p>
-            <button
-              onClick={() => setIsDrawerOpen(true)}
-              className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg transition-colors"
-            >
-              <Plus className="h-5 w-5" />
-              <span>Add Your First Number</span>
-            </button>
+            {canPurchase && (
+              <button
+                onClick={() => setIsDrawerOpen(true)}
+                className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg transition-colors"
+              >
+                <Plus className="h-5 w-5" />
+                <span>Add Your First Number</span>
+              </button>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -154,6 +163,8 @@ export default function PhoneNumbersPage() {
                 assistants={assistants}
                 onDelete={handleDelete}
                 onUpdate={fetchPhoneNumbers}
+                canConfigure={canConfigure}
+                canRelease={canRelease}
               />
             ))}
           </div>

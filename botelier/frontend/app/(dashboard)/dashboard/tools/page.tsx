@@ -8,6 +8,7 @@ import ApiTester from "./components/ApiTester";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { notify } from "@/lib/notifications";
 import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
+import { usePermissions } from "@/lib/auth/usePermissions";
 
 interface Tool {
   id: string;
@@ -30,6 +31,10 @@ interface ToolSet {
 export default function ToolsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
   const { hasAccess, loading: permLoading } = usePagePermission("tools", "view");
+  const { can, isPlatformAdmin } = usePermissions();
+  const canCreateTool = isPlatformAdmin || can("tools", "create");
+  const canEditTool = isPlatformAdmin || can("tools", "edit");
+  const canDeleteTool = isPlatformAdmin || can("tools", "delete");
   const [tools, setTools] = useState<Tool[]>([]);
   const [toolSets, setToolSets] = useState<ToolSet[]>([]);
   const [selectedToolSet, setSelectedToolSet] = useState<ToolSet | null>(null);
@@ -210,7 +215,7 @@ export default function ToolsPage() {
                 Configure functions your AI assistant can perform during conversations
               </p>
             </div>
-            {activeTab === "tools" && (
+            {activeTab === "tools" && canCreateTool && (
               <button
                 onClick={() => setIsDrawerOpen(true)}
                 disabled={!selectedToolSet}
@@ -339,13 +344,15 @@ export default function ToolsPage() {
             <p className="text-gray-400 mb-6">
               Create your first tool to give your AI assistant new capabilities
             </p>
-            <button
-              onClick={() => setIsDrawerOpen(true)}
-              className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors"
-            >
-              <Plus size={20} />
-              Create Tool
-            </button>
+            {canCreateTool && (
+              <button
+                onClick={() => setIsDrawerOpen(true)}
+                className="inline-flex items-center gap-2 px-6 py-3 bg-blue-600 hover:bg-blue-700 rounded-lg font-medium transition-colors"
+              >
+                <Plus size={20} />
+                Create Tool
+              </button>
+            )}
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -359,6 +366,8 @@ export default function ToolsPage() {
                 onEdit={handleEditTool}
                 hotelId={accountId}
                 toolSetId={selectedToolSet?.id}
+                canEdit={canEditTool}
+                canDelete={canDeleteTool}
               />
             ))}
           </div>

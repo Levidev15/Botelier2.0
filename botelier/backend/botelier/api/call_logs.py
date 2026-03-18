@@ -284,7 +284,7 @@ async def get_call_log(
     user: User = Depends(get_current_user),
 ):
     """Get a single call log with full details including transcript and legs."""
-    check_account_permission(user, str(hotel_id), "call_logs.view", db)
+    check_account_permission(user, str(hotel_id), "call_logs.view_transcripts", db)
     try:
         call_log = (
             db.query(CallLog)
@@ -384,7 +384,7 @@ async def generate_summary(
     """
     try:
         hotel_id = UUID(request.hotel_id)
-        check_account_permission(user, str(hotel_id), "call_logs.view", db)
+        check_account_permission(user, str(hotel_id), "call_logs.view_transcripts", db)
 
         call_log = db.query(CallLog).filter(
             CallLog.id == call_log_id,
@@ -437,7 +437,7 @@ async def update_call_log(
     user: User = Depends(get_current_user),
 ):
     """Update a call log's disposition or summary."""
-    check_account_permission(user, str(hotel_id), "call_logs.view", db)
+    check_account_permission(user, str(hotel_id), "call_logs.view_transcripts", db)
     try:
         call_log = db.query(CallLog).filter(
             CallLog.id == call_log_id,

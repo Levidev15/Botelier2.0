@@ -30,6 +30,7 @@ import TranscriptModal from "./components/TranscriptModal";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
+import { usePermissions } from "@/lib/auth/usePermissions";
 
 interface CallLeg {
   id: string;
@@ -169,6 +170,9 @@ function getLegTypeLabel(legType: string): string {
 export default function CallLogsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
   const { hasAccess, loading: permLoading } = usePagePermission("call_logs", "view");
+  const { can, isPlatformAdmin } = usePermissions();
+  const canExport = isPlatformAdmin || can("call_logs", "export");
+  const canViewTranscripts = isPlatformAdmin || can("call_logs", "view_transcripts");
   const { authHeaders } = useAuthToken();
   const [callLogs, setCallLogs] = useState<CallLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -447,13 +451,15 @@ export default function CallLogsPage() {
               >
                 <RefreshCw className="h-4 w-4" />
               </button>
-              <button
-                onClick={handleExport}
-                className="inline-flex items-center px-4 py-2 bg-[#141414] border border-gray-800 hover:bg-gray-800 rounded-lg transition text-sm font-medium"
-              >
-                <Download className="h-4 w-4 mr-2" />
-                Export CSV
-              </button>
+              {canExport && (
+                <button
+                  onClick={handleExport}
+                  className="inline-flex items-center px-4 py-2 bg-[#141414] border border-gray-800 hover:bg-gray-800 rounded-lg transition text-sm font-medium"
+                >
+                  <Download className="h-4 w-4 mr-2" />
+                  Export CSV
+                </button>
+              )}
             </div>
           </div>
 
@@ -650,6 +656,7 @@ export default function CallLogsPage() {
                       onGenerateSummary={() => generateSummary(log)}
                       isGeneratingSummary={generatingIds.has(log.id)}
                       formatDateTime={formatDateTime}
+                      canViewTranscripts={canViewTranscripts}
                     />
                   ))}
                 </tbody>
@@ -710,6 +717,7 @@ function CallLogRow({
   onGenerateSummary,
   isGeneratingSummary,
   formatDateTime,
+  canViewTranscripts,
 }: {
   log: CallLog;
   isExpanded: boolean;
@@ -718,6 +726,7 @@ function CallLogRow({
   onGenerateSummary: () => void;
   isGeneratingSummary: boolean;
   formatDateTime: (date: string | null) => string;
+  canViewTranscripts: boolean;
 }) {
   const hasLegs = log.legs && log.legs.length > 1;
   const hasTranscript = log.transcript && log.transcript.length > 0;
@@ -859,7 +868,7 @@ function CallLogRow({
                 <Play className="h-4 w-4" />
               </a>
             )}
-            {log.ai_summary ? (
+            {canViewTranscripts && log.ai_summary ? (
               <button
                 onClick={onViewTranscript}
                 className="p-2 text-green-400 hover:bg-gray-700 rounded-lg transition"
@@ -867,7 +876,7 @@ function CallLogRow({
               >
                 <MessageSquareText className="h-4 w-4" />
               </button>
-            ) : hasTranscript ? (
+            ) : canViewTranscripts && hasTranscript ? (
               <button
                 onClick={onGenerateSummary}
                 disabled={isGeneratingSummary}
@@ -881,7 +890,7 @@ function CallLogRow({
                 )}
               </button>
             ) : null}
-            {hasTranscript && (
+            {canViewTranscripts && hasTranscript && (
               <button
                 onClick={onViewTranscript}
                 className="p-2 text-gray-400 hover:text-blue-400 hover:bg-gray-700 rounded-lg transition"

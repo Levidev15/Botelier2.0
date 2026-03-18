@@ -6,6 +6,7 @@ import Link from "next/link";
 import { notify, confirmAction } from "@/lib/notifications";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
+import { usePermissions } from "@/lib/auth/usePermissions";
 
 interface Assistant {
   id: string;
@@ -107,13 +108,15 @@ export default function AssistantsPage() {
             <p className="text-gray-400 text-center mb-6 max-w-md">
               Create your first voice AI assistant to get started
             </p>
-            <Link
-              href="/dashboard/assistants/new"
-              className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg transition-colors"
-            >
-              <Plus className="h-5 w-5" />
-              <span>Create Assistant</span>
-            </Link>
+            <PermissionGate resource="assistants" action="create">
+              <Link
+                href="/dashboard/assistants/new"
+                className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg transition-colors"
+              >
+                <Plus className="h-5 w-5" />
+                <span>Create Assistant</span>
+              </Link>
+            </PermissionGate>
           </div>
         ) : (
           <div className="space-y-3">
@@ -131,6 +134,11 @@ function AssistantCard({ assistant, onUpdate }: { assistant: Assistant; onUpdate
   const [showMenu, setShowMenu] = useState(false);
   const [isToggling, setIsToggling] = useState(false);
   const [isDuplicating, setIsDuplicating] = useState(false);
+  const { can, isPlatformAdmin } = usePermissions();
+  const canEdit = isPlatformAdmin || can("assistants", "edit");
+  const canDelete = isPlatformAdmin || can("assistants", "delete");
+  const canCreate = isPlatformAdmin || can("assistants", "create");
+  const canViewFlow = isPlatformAdmin || can("flows", "view");
 
   const formatDate = (dateStr: string | null) => {
     if (!dateStr) return "Never";
@@ -267,71 +275,85 @@ function AssistantCard({ assistant, onUpdate }: { assistant: Assistant; onUpdate
         </div>
 
         <div className="flex items-center space-x-2">
-          <button
-            onClick={handleDuplicate}
-            disabled={isDuplicating}
-            className="p-2 hover:bg-gray-800 rounded-lg transition opacity-0 group-hover:opacity-100 disabled:opacity-50"
-            title="Duplicate assistant"
-          >
-            <Copy className="h-4 w-4 text-gray-400" />
-          </button>
-          <button
-            onClick={handleToggleActive}
-            disabled={isToggling}
-            className="p-2 hover:bg-gray-800 rounded-lg transition opacity-0 group-hover:opacity-100 disabled:opacity-50"
-            title={assistant.is_active ? "Deactivate assistant" : "Activate assistant"}
-          >
-            {assistant.is_active ? (
-              <Pause className="h-4 w-4 text-gray-400" />
-            ) : (
-              <Play className="h-4 w-4 text-gray-400" />
-            )}
-          </button>
-          <Link
-            href={`/dashboard/assistants/${assistant.id}/flow`}
-            className="px-3 py-2 bg-purple-600/10 hover:bg-purple-600/20 text-purple-400 rounded-lg transition text-sm font-medium flex items-center gap-1.5"
-            title="Edit conversation flow"
-          >
-            <GitBranch className="h-3.5 w-3.5" />
-            Flow
-          </Link>
-          <Link
-            href={`/dashboard/assistants/${assistant.id}`}
-            className="px-4 py-2 bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 rounded-lg transition text-sm font-medium"
-          >
-            Configure
-          </Link>
-          <div className="relative">
+          {canCreate && (
             <button
-              onClick={() => setShowMenu(!showMenu)}
-              className="p-2 hover:bg-gray-800 rounded-lg transition"
-              title="More options"
+              onClick={handleDuplicate}
+              disabled={isDuplicating}
+              className="p-2 hover:bg-gray-800 rounded-lg transition opacity-0 group-hover:opacity-100 disabled:opacity-50"
+              title="Duplicate assistant"
             >
-              <MoreVertical className="h-4 w-4 text-gray-400" />
+              <Copy className="h-4 w-4 text-gray-400" />
             </button>
-            {showMenu && (
-              <>
-                <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
-                <div className="absolute right-0 mt-2 w-48 bg-gray-900 border border-gray-800 rounded-lg shadow-lg z-20">
-                  <button
-                    onClick={handleDuplicate}
-                    disabled={isDuplicating}
-                    className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-gray-800 flex items-center space-x-2 disabled:opacity-50"
-                  >
-                    <Copy className="h-4 w-4" />
-                    <span>Duplicate</span>
-                  </button>
-                  <button
-                    onClick={handleDelete}
-                    className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-gray-800 flex items-center space-x-2 rounded-b-lg"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                    <span>Delete</span>
-                  </button>
-                </div>
-              </>
-            )}
-          </div>
+          )}
+          {canEdit && (
+            <button
+              onClick={handleToggleActive}
+              disabled={isToggling}
+              className="p-2 hover:bg-gray-800 rounded-lg transition opacity-0 group-hover:opacity-100 disabled:opacity-50"
+              title={assistant.is_active ? "Deactivate assistant" : "Activate assistant"}
+            >
+              {assistant.is_active ? (
+                <Pause className="h-4 w-4 text-gray-400" />
+              ) : (
+                <Play className="h-4 w-4 text-gray-400" />
+              )}
+            </button>
+          )}
+          {canViewFlow && (
+            <Link
+              href={`/dashboard/assistants/${assistant.id}/flow`}
+              className="px-3 py-2 bg-purple-600/10 hover:bg-purple-600/20 text-purple-400 rounded-lg transition text-sm font-medium flex items-center gap-1.5"
+              title="Edit conversation flow"
+            >
+              <GitBranch className="h-3.5 w-3.5" />
+              Flow
+            </Link>
+          )}
+          {canEdit && (
+            <Link
+              href={`/dashboard/assistants/${assistant.id}`}
+              className="px-4 py-2 bg-blue-600/10 hover:bg-blue-600/20 text-blue-400 rounded-lg transition text-sm font-medium"
+            >
+              Configure
+            </Link>
+          )}
+          {(canCreate || canDelete) && (
+            <div className="relative">
+              <button
+                onClick={() => setShowMenu(!showMenu)}
+                className="p-2 hover:bg-gray-800 rounded-lg transition"
+                title="More options"
+              >
+                <MoreVertical className="h-4 w-4 text-gray-400" />
+              </button>
+              {showMenu && (
+                <>
+                  <div className="fixed inset-0 z-10" onClick={() => setShowMenu(false)} />
+                  <div className="absolute right-0 mt-2 w-48 bg-gray-900 border border-gray-800 rounded-lg shadow-lg z-20">
+                    {canCreate && (
+                      <button
+                        onClick={handleDuplicate}
+                        disabled={isDuplicating}
+                        className="w-full text-left px-4 py-2 text-sm text-gray-300 hover:bg-gray-800 flex items-center space-x-2 disabled:opacity-50"
+                      >
+                        <Copy className="h-4 w-4" />
+                        <span>Duplicate</span>
+                      </button>
+                    )}
+                    {canDelete && (
+                      <button
+                        onClick={handleDelete}
+                        className="w-full text-left px-4 py-2 text-sm text-red-400 hover:bg-gray-800 flex items-center space-x-2 rounded-b-lg"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        <span>Delete</span>
+                      </button>
+                    )}
+                  </div>
+                </>
+              )}
+            </div>
+          )}
         </div>
       </div>
     </div>
