@@ -383,6 +383,43 @@ def check_account_permission(
         )
 
 
+def get_hotel_context(permission: str):
+    """
+    Reusable FastAPI dependency factory for query-param scoped hotel endpoints.
+
+    Reads `hotel_id` from the query string, verifies the user is authenticated
+    and holds the given permission for that account, then returns the hotel_id
+    as a plain string.
+
+    Usage::
+
+        @router.get("/my-resource")
+        async def my_endpoint(
+            hotel_id: str = Depends(get_hotel_context("resource.view")),
+        ):
+            ...
+    """
+    from uuid import UUID as _UUID
+    from fastapi import Query as _Query
+
+    async def _dependency(
+        hotel_id: str = _Query(..., description="Hotel/account ID for multi-tenant isolation"),
+        user: User = Depends(get_current_user),
+        db: Session = Depends(get_db),
+    ) -> str:
+        try:
+            _UUID(hotel_id)
+        except (ValueError, AttributeError):
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid hotel_id — must be a valid UUID",
+            )
+        check_account_permission(user, hotel_id, permission, db)
+        return hotel_id
+
+    return _dependency
+
+
 async def get_current_account_id(
     request: Request,
     user: User = Depends(get_current_user),

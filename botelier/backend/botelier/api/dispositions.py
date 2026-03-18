@@ -46,7 +46,7 @@ async def list_dispositions(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, str(hotel_id), "assistants.view", db)
+    check_account_permission(user, str(hotel_id), "assistants.edit", db)
     """List all dispositions for an assistant."""
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
@@ -110,7 +110,7 @@ async def get_disposition(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, str(hotel_id), "assistants.view", db)
+    check_account_permission(user, str(hotel_id), "assistants.edit", db)
     """Get a specific disposition."""
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
