@@ -63,20 +63,11 @@ interface DrilldownPanelProps {
   metricLabel: string;
   dateRange: DateRange;
   assistantIds: string[];
+  timezone?: string;
   onClose: () => void;
   onViewTranscript: (logId: string) => void;
 }
 
-const STATUS_COLORS: Record<string, string> = {
-  completed: "bg-green-500/15 text-green-400",
-  in_progress: "bg-blue-500/15 text-blue-400",
-  failed: "bg-red-500/15 text-red-400",
-  no_answer: "bg-yellow-500/15 text-yellow-400",
-  busy: "bg-orange-500/15 text-orange-400",
-  canceled: "bg-gray-500/15 text-gray-400",
-  initiated: "bg-purple-500/15 text-purple-400",
-  ringing: "bg-cyan-500/15 text-cyan-400",
-};
 
 function fmtDuration(s: number) {
   if (!s || s < 0) return "0:00";
@@ -85,7 +76,7 @@ function fmtDuration(s: number) {
   return `${m}:${sec.toString().padStart(2, "0")}`;
 }
 
-function fmtDateTime(iso: string | null): string {
+function fmtDateTime(iso: string | null, tz?: string): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleString("en-US", {
     month: "short",
@@ -93,6 +84,7 @@ function fmtDateTime(iso: string | null): string {
     hour: "numeric",
     minute: "2-digit",
     hour12: true,
+    timeZone: tz,
   });
 }
 
@@ -108,6 +100,7 @@ export default function DrilldownPanel({
   metricLabel,
   dateRange,
   assistantIds,
+  timezone,
   onClose,
   onViewTranscript,
 }: DrilldownPanelProps) {
@@ -223,7 +216,7 @@ export default function DrilldownPanel({
   return (
     <div className="fixed inset-0 z-50 overflow-hidden">
       <div className="absolute inset-0 bg-black/50" onClick={onClose} />
-      <div className="absolute right-0 top-0 h-full w-full max-w-3xl bg-[#141414] border-l border-gray-800 flex flex-col shadow-2xl">
+      <div className="absolute right-0 top-0 h-full w-full max-w-5xl bg-[#141414] border-l border-gray-800 flex flex-col shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
           <div>
@@ -251,7 +244,7 @@ export default function DrilldownPanel({
           <table className="w-full text-sm border-collapse">
             <thead className="sticky top-0 bg-[#1a1a1a] border-b border-gray-800 z-10">
               <tr>
-                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Ref / Status</th>
+                <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Ref</th>
                 <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Date & Time</th>
                 <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Caller</th>
                 <th className="text-left px-4 py-3 text-xs font-medium text-gray-500 uppercase tracking-wider whitespace-nowrap">Assistant</th>
@@ -306,27 +299,16 @@ export default function DrilldownPanel({
                   className="hover:bg-[#1a1a1a] transition-colors cursor-pointer group"
                   title="Click to view transcript"
                 >
-                  {/* Ref / Status */}
+                  {/* Ref */}
                   <td className="px-4 py-3 whitespace-nowrap">
-                    <div className="flex flex-col gap-1">
-                      {rec.reference_id && (
-                        <span className="font-mono text-xs bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded w-fit">
-                          #{rec.reference_id}
-                        </span>
-                      )}
-                      <span
-                        className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium w-fit ${
-                          STATUS_COLORS[rec.status] ?? "bg-gray-700 text-gray-400"
-                        }`}
-                      >
-                        {rec.status.replace(/_/g, " ")}
-                      </span>
-                    </div>
+                    <span className="font-mono text-xs bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded">
+                      {rec.reference_id ? `#${rec.reference_id}` : "—"}
+                    </span>
                   </td>
 
                   {/* Date & Time */}
                   <td className="px-4 py-3 text-gray-400 whitespace-nowrap text-xs">
-                    {fmtDateTime(rec.started_at)}
+                    {fmtDateTime(rec.started_at, timezone)}
                   </td>
 
                   {/* Caller */}
@@ -365,8 +347,8 @@ export default function DrilldownPanel({
                   </td>
 
                   {/* QA Score + transcript icon on hover */}
-                  <td className="px-4 py-3 whitespace-nowrap">
-                    <div className="flex items-center justify-between gap-2">
+                  <td className="px-4 py-3 whitespace-nowrap min-w-[80px]">
+                    <div className="flex items-center gap-3">
                       {rec.acw_quality_score != null ? (
                         <span className="text-xs text-purple-400 font-medium">{rec.acw_quality_score}</span>
                       ) : (
