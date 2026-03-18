@@ -40,6 +40,14 @@ function fmtDate(iso: string) {
   });
 }
 
+function daysToRange(days: number): { from: Date; to: Date } {
+  const to = new Date();
+  to.setHours(23, 59, 59, 999);
+  const from = new Date(to.getTime() - (days - 1) * 86_400_000);
+  from.setHours(0, 0, 0, 0);
+  return { from, to };
+}
+
 interface AnalyticsData {
   date_from: string;
   date_to: string;
@@ -80,10 +88,18 @@ function ReportContent() {
   const { authFetch, loading: authLoading } = useAuthToken();
 
   const hotelId = params.get("hotel_id") || "";
-  const dateFrom = params.get("date_from") || "";
-  const dateTo = params.get("date_to") || "";
   const tz = params.get("tz") || "UTC";
   const accountName = params.get("account_name") || "Account";
+  const daysParam = params.get("days");
+
+  const { dateFrom, dateTo } = useMemo(() => {
+    const rawFrom = params.get("date_from");
+    const rawTo = params.get("date_to");
+    if (rawFrom && rawTo) return { dateFrom: rawFrom, dateTo: rawTo };
+    const days = daysParam ? parseInt(daysParam, 10) : 7;
+    const { from, to } = daysToRange(isNaN(days) ? 7 : days);
+    return { dateFrom: from.toISOString(), dateTo: to.toISOString() };
+  }, [params, daysParam]);
 
   const [data, setData] = useState<AnalyticsData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -143,6 +159,7 @@ function ReportContent() {
   const o = data.overview;
   const tzLabel = tz === "UTC" ? "UTC" : tz.replace(/_/g, " ");
   const dateLabel = dateFrom && dateTo ? `${fmtDate(dateFrom)} – ${fmtDate(dateTo)}` : "All time";
+  const totalDispositions = data.dispositions.reduce((a, b) => a + b.count, 0);
 
   return (
     <div className="report-root bg-white min-h-screen">
@@ -234,7 +251,7 @@ function ReportContent() {
           </Section>
         )}
 
-        {/* Status Breakdown + Disposition side by side */}
+        {/* Status Breakdown (donut) + Outcome/Disposition Breakdown (donut) — side by side */}
         <div className="grid grid-cols-2 gap-6 mb-6">
           {data.status_distribution.length > 0 && (
             <Section title="Status Breakdown" noMargin>
@@ -275,26 +292,42 @@ function ReportContent() {
           )}
 
           {data.dispositions.length > 0 && (
-            <Section title="Disposition Breakdown" noMargin>
-              <div className="space-y-2.5">
-                {data.dispositions.map((d) => {
-                  const total = data.dispositions.reduce((a, b) => a + b.count, 0);
-                  const pct = total > 0 ? (d.count / total) * 100 : 0;
-                  return (
-                    <div key={d.disposition_id}>
-                      <div className="flex items-center justify-between text-sm mb-1">
+            <Section title="Outcome Breakdown" noMargin>
+              <div className="flex items-center gap-4">
+                <PieChart width={130} height={130}>
+                  <Pie
+                    data={data.dispositions}
+                    dataKey="count"
+                    nameKey="name"
+                    cx="50%"
+                    cy="50%"
+                    innerRadius={30}
+                    outerRadius={55}
+                    paddingAngle={2}
+                  >
+                    {data.dispositions.map((d, i) => (
+                      <Cell key={d.disposition_id} fill={d.color || CHART_COLORS[i % CHART_COLORS.length]} />
+                    ))}
+                  </Pie>
+                  <Tooltip />
+                </PieChart>
+                <div className="flex-1 space-y-1.5">
+                  {data.dispositions.map((d, i) => {
+                    const pct = totalDispositions > 0 ? Math.round((d.count / totalDispositions) * 100) : 0;
+                    return (
+                      <div key={d.disposition_id} className="flex items-center justify-between text-sm">
                         <div className="flex items-center gap-2">
-                          <span className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ backgroundColor: d.color || "#6b7280" }} />
-                          <span className="text-gray-700">{d.name}</span>
+                          <span
+                            className="w-2.5 h-2.5 rounded-full flex-shrink-0"
+                            style={{ backgroundColor: d.color || CHART_COLORS[i % CHART_COLORS.length] }}
+                          />
+                          <span className="text-gray-700 truncate max-w-[100px]">{d.name}</span>
                         </div>
-                        <span className="text-gray-500">{d.count} ({Math.round(pct)}%)</span>
+                        <span className="text-gray-500 font-medium">{d.count} ({pct}%)</span>
                       </div>
-                      <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                        <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: d.color || "#6b7280" }} />
-                      </div>
-                    </div>
-                  );
-                })}
+                    );
+                  })}
+                </div>
               </div>
             </Section>
           )}
@@ -320,7 +353,9 @@ function ReportContent() {
           <>
             <div className="mt-8 mb-4 pt-6 border-t border-gray-100">
               <h2 className="text-lg font-bold text-gray-800">Post-Call QA Metrics</h2>
-              <p className="text-sm text-gray-500 mt-0.5">{data.acw.acw_completed} calls with QA completed ({data.acw.acw_completion_rate}%)</p>
+              <p className="text-sm text-gray-500 mt-0.5">
+                {data.acw.acw_completed} calls with QA completed ({data.acw.acw_completion_rate}%)
+              </p>
             </div>
 
             <div className="grid grid-cols-2 gap-6 mb-8">
@@ -355,7 +390,10 @@ function ReportContent() {
                             <span className="text-gray-500">{d.count} ({Math.round(pct)}%)</span>
                           </div>
                           <div className="w-full h-1.5 bg-gray-100 rounded-full overflow-hidden">
-                            <div className="h-full rounded-full" style={{ width: `${pct}%`, backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }} />
+                            <div
+                              className="h-full rounded-full"
+                              style={{ width: `${pct}%`, backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }}
+                            />
                           </div>
                         </div>
                       );

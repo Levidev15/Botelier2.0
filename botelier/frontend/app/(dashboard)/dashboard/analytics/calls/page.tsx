@@ -206,7 +206,7 @@ export default function CallAnalyticsPage() {
       tz: timezone,
       account_name: accountName || "",
     });
-    window.open(`/report/analytics/calls?${p}`, "_blank");
+    window.open(`/dashboard/analytics/calls/report?${p}`, "_blank");
   }, [accountId, dateRange, timezone, accountName]);
 
   const handleViewTranscript = useCallback(
