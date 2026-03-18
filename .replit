@@ -94,4 +94,4 @@ NEXTAUTH_URL = "https://7862d0f9-746c-4a00-bc3b-fe2d01757149-00-34304m7qlgqdq.ri
 [deployment]
 deploymentTarget = "vm"
 run = ["bash", "start.sh"]
-build = ["bash", "-c", "cd botelier/frontend && npm run build"]
+build = ["npm", "run", "build", "--prefix", "botelier/frontend"]
