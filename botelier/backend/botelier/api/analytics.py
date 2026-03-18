@@ -15,7 +15,7 @@ from sqlalchemy import desc, func, case
 from sqlalchemy.orm import Session, joinedload
 
 from botelier.database import get_db
-from botelier.models import CallLog, CallStatus, Assistant, AssistantDisposition, PhoneNumber
+from botelier.models import CallLog, CallLeg, CallStatus, Assistant, AssistantDisposition, PhoneNumber
 from botelier.models.user import User
 from botelier.auth.middleware import get_current_user, check_account_permission
 
@@ -91,6 +91,38 @@ async def get_call_analytics(
             .one()
         )
 
+        call_ids_subq = _base().with_entities(CallLog.id).subquery()
+
+        ai_dur = (
+            db.query(
+                func.coalesce(func.sum(CallLeg.duration_seconds), 0).label("total"),
+                func.count(func.distinct(CallLeg.call_log_id)).label("calls"),
+            )
+            .filter(
+                CallLeg.call_log_id.in_(call_ids_subq),
+                CallLeg.leg_type == "ai_conversation",
+            )
+            .one()
+        )
+        ai_calls = int(ai_dur.calls) or 1
+        avg_ai_duration = round(float(ai_dur.total) / ai_calls, 1)
+        total_ai_duration = int(ai_dur.total)
+
+        outbound_dur = (
+            db.query(
+                func.coalesce(func.sum(CallLeg.duration_seconds), 0).label("total"),
+                func.count(func.distinct(CallLeg.call_log_id)).label("calls"),
+            )
+            .filter(
+                CallLeg.call_log_id.in_(call_ids_subq),
+                CallLeg.leg_type.in_(["transfer_warm", "transfer_cold"]),
+            )
+            .one()
+        )
+        outbound_calls = int(outbound_dur.calls) or 1
+        avg_outbound_duration = round(float(outbound_dur.total) / outbound_calls, 1)
+        total_outbound_duration = int(outbound_dur.total)
+
         overview = {
             "total_calls": total,
             "completed": completed,
@@ -101,6 +133,11 @@ async def get_call_analytics(
             "transfer_rate": round(transferred / total * 100, 1) if total else 0,
             "avg_duration_seconds": round(float(dur_row.avg), 1),
             "total_duration_seconds": int(dur_row.total),
+            "avg_ai_duration_seconds": avg_ai_duration,
+            "total_ai_duration_seconds": total_ai_duration,
+            "avg_outbound_duration_seconds": avg_outbound_duration,
+            "total_outbound_duration_seconds": total_outbound_duration,
+            "outbound_calls_count": int(outbound_dur.calls),
         }
 
         day_label = func.date_trunc("day", CallLog.started_at).label("day")

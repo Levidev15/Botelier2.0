@@ -24,7 +24,8 @@ import TimezonePicker, { loadTimezone, saveTimezone } from "@/components/analyti
 const WIDGETS: WidgetDef[] = [
   { id: "total_calls", label: "Total Calls", defaultVisible: true },
   { id: "completion_rate", label: "Completion Rate", defaultVisible: true },
-  { id: "avg_duration", label: "Average Duration", defaultVisible: true },
+  { id: "avg_duration", label: "AI Duration", defaultVisible: true },
+  { id: "outbound_duration", label: "Outbound Duration", defaultVisible: true },
   { id: "transfer_rate", label: "Transfer Rate", defaultVisible: true },
   { id: "avg_quality", label: "Avg Quality Score", defaultVisible: true },
   { id: "volume_chart", label: "Call Volume Over Time", defaultVisible: true },
@@ -77,6 +78,11 @@ interface AnalyticsData {
     transfer_rate: number;
     avg_duration_seconds: number;
     total_duration_seconds: number;
+    avg_ai_duration_seconds: number;
+    total_ai_duration_seconds: number;
+    avg_outbound_duration_seconds: number;
+    total_outbound_duration_seconds: number;
+    outbound_calls_count: number;
   };
   volume_by_day: { date: string; calls: number }[];
   calls_by_hour: { hour: number; calls: number }[];
@@ -262,7 +268,7 @@ export default function CallAnalyticsPage() {
         </div>
       )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 mb-6">
         {isVisible("total_calls") && (
           <StatCard
             label="Total Calls"
@@ -282,10 +288,19 @@ export default function CallAnalyticsPage() {
         )}
         {isVisible("avg_duration") && (
           <StatCard
-            label="Avg Duration"
-            value={fmtDuration(o?.avg_duration_seconds ?? 0)}
-            sub={`${fmtDuration(o?.total_duration_seconds ?? 0)} total`}
+            label="AI Duration"
+            value={fmtDuration(o?.avg_ai_duration_seconds ?? 0)}
+            sub={`${fmtDuration(o?.total_ai_duration_seconds ?? 0)} total`}
             onClick={() => openDrilldown("all", "All Calls")}
+          />
+        )}
+        {isVisible("outbound_duration") && (
+          <StatCard
+            label="Outbound Duration"
+            value={fmtDuration(o?.avg_outbound_duration_seconds ?? 0)}
+            sub={`${o?.outbound_calls_count ?? 0} transferred calls`}
+            color="text-amber-400"
+            onClick={() => openDrilldown("transferred", "Transferred Calls")}
           />
         )}
         {isVisible("transfer_rate") && (
