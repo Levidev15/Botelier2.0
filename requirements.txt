@@ -1,0 +1,2 @@
+# Root-level requirements intentionally empty.
+# All Python dependencies are installed by build.sh from botelier/backend/requirements.txt
