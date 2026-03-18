@@ -95,7 +95,7 @@ export default function AdminLayout({
   }
 
   return (
-    <div className="min-h-screen bg-background flex text-foreground">
+    <div className="themed-app min-h-screen bg-background flex text-foreground">
       <aside className="w-64 bg-surface border-r border-border flex flex-col">
         <div className="p-4 border-b border-border">
           <div className="flex items-center gap-2">

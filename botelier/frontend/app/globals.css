@@ -60,105 +60,94 @@
   }
 }
 
-/* ─── Light-mode overrides for hardcoded dark Tailwind classes ─── */
+/*
+ * Light-mode overrides for hardcoded dark Tailwind classes.
+ * Scoped to .themed-app so login/invite/public pages are unaffected
+ * even when data-theme="light" is set on <html>.
+ */
 
 /* Background overrides */
-[data-theme="light"] .bg-\[#0a0a0a\],
-[data-theme="light"] .bg-\[#0d0d0d\],
-[data-theme="light"] .bg-\[#0f0f0f\],
-[data-theme="light"] .bg-\[#111111\] {
+[data-theme="light"] .themed-app .bg-\[#0a0a0a\],
+[data-theme="light"] .themed-app .bg-\[#0d0d0d\],
+[data-theme="light"] .themed-app .bg-\[#0f0f0f\],
+[data-theme="light"] .themed-app .bg-\[#111111\] {
   background-color: hsl(210, 40%, 98%);
 }
 
-[data-theme="light"] .bg-\[#141414\],
-[data-theme="light"] .bg-\[#161616\] {
+[data-theme="light"] .themed-app .bg-\[#141414\],
+[data-theme="light"] .themed-app .bg-\[#161616\] {
   background-color: #ffffff;
 }
 
-[data-theme="light"] .bg-\[#1a1a1a\],
-[data-theme="light"] .bg-\[#1c1c1c\] {
+[data-theme="light"] .themed-app .bg-\[#1a1a1a\],
+[data-theme="light"] .themed-app .bg-\[#1c1c1c\] {
   background-color: #f1f5f9;
 }
 
-[data-theme="light"] .bg-\[#222222\],
-[data-theme="light"] .bg-\[#252525\] {
+[data-theme="light"] .themed-app .bg-\[#222222\],
+[data-theme="light"] .themed-app .bg-\[#252525\] {
   background-color: #e2e8f0;
 }
 
-[data-theme="light"] .bg-\[#2a2a2a\],
-[data-theme="light"] .bg-\[#2d2d2d\] {
+[data-theme="light"] .themed-app .bg-\[#2a2a2a\],
+[data-theme="light"] .themed-app .bg-\[#2d2d2d\] {
   background-color: #cbd5e1;
 }
 
 /* Border overrides */
-[data-theme="light"] .border-gray-800,
-[data-theme="light"] .border-\[#222222\],
-[data-theme="light"] .border-\[#1a1a1a\] {
+[data-theme="light"] .themed-app .border-gray-800,
+[data-theme="light"] .themed-app .border-\[#222222\],
+[data-theme="light"] .themed-app .border-\[#1a1a1a\] {
   border-color: #e2e8f0;
 }
 
-[data-theme="light"] .border-\[#333333\],
-[data-theme="light"] .border-\[#2a2a2a\] {
+[data-theme="light"] .themed-app .border-\[#333333\],
+[data-theme="light"] .themed-app .border-\[#2a2a2a\] {
   border-color: #cbd5e1;
 }
 
-[data-theme="light"] .border-\[#444444\],
-[data-theme="light"] .border-gray-700 {
+[data-theme="light"] .themed-app .border-\[#444444\],
+[data-theme="light"] .themed-app .border-gray-700 {
   border-color: #94a3b8;
 }
 
 /* Hover background overrides */
-[data-theme="light"] .hover\:bg-gray-800:hover,
-[data-theme="light"] .hover\:bg-\[#1a1a1a\]:hover,
-[data-theme="light"] .hover\:bg-\[#222222\]:hover,
-[data-theme="light"] .hover\:bg-\[#2a2a2a\]:hover {
+[data-theme="light"] .themed-app .hover\:bg-gray-800:hover,
+[data-theme="light"] .themed-app .hover\:bg-\[#1a1a1a\]:hover,
+[data-theme="light"] .themed-app .hover\:bg-\[#222222\]:hover,
+[data-theme="light"] .themed-app .hover\:bg-\[#2a2a2a\]:hover {
   background-color: #e2e8f0;
 }
 
-[data-theme="light"] .hover\:bg-gray-900:hover,
-[data-theme="light"] .hover\:bg-\[#0a0a0a\]:hover {
+[data-theme="light"] .themed-app .hover\:bg-gray-900:hover,
+[data-theme="light"] .themed-app .hover\:bg-\[#0a0a0a\]:hover {
   background-color: #f1f5f9;
 }
 
 /* Divide color overrides */
-[data-theme="light"] .divide-gray-800 > * + * {
+[data-theme="light"] .themed-app .divide-gray-800 > * + * {
   border-color: #e2e8f0;
 }
 
-[data-theme="light"] .divide-\[#222222\] > * + * {
+[data-theme="light"] .themed-app .divide-\[#222222\] > * + * {
   border-color: #e2e8f0;
 }
 
 /* Text color overrides — flip nearly-white text to dark in light mode */
-[data-theme="light"] .text-gray-100 {
+[data-theme="light"] .themed-app .text-gray-100 {
   color: #0f172a;
 }
 
-[data-theme="light"] .text-gray-200 {
+[data-theme="light"] .themed-app .text-gray-200 {
   color: #1e293b;
 }
 
-/* Restore white text for buttons/badges with colored backgrounds */
-[data-theme="light"] [class*="bg-blue-"] .text-gray-100,
-[data-theme="light"] [class*="bg-purple-"] .text-gray-100,
-[data-theme="light"] [class*="bg-green-"] .text-gray-100,
-[data-theme="light"] [class*="bg-red-"] .text-gray-100,
-[data-theme="light"] .bg-blue-600 .text-gray-100,
-[data-theme="light"] .bg-blue-500 .text-gray-100 {
-  color: #f3f4f6;
-}
-
 /* Ring / focus overrides */
-[data-theme="light"] .ring-gray-800 {
+[data-theme="light"] .themed-app .ring-gray-800 {
   --tw-ring-color: #e2e8f0;
 }
 
-/* Placeholder text */
-[data-theme="light"] .placeholder-gray-600::placeholder {
-  color: #94a3b8;
-}
-
-/* Scrollbar styling for light mode */
-[data-theme="light"] {
+/* Scrollbar and native control styling for light mode in themed shells */
+[data-theme="light"] .themed-app {
   color-scheme: light;
 }
