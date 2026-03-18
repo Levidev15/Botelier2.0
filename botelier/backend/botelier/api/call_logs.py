@@ -348,6 +348,7 @@ async def get_call_log(
 @router.get("/filters/options")
 async def get_filter_options(
     hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    assistant_id: Optional[UUID] = Query(None, description="Scope dispositions and resolutions to this assistant"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -364,18 +365,28 @@ async def get_filter_options(
         
         statuses = [status.value for status in CallStatus]
 
-        dispositions = db.query(AssistantDisposition).join(
+        disposition_query = db.query(AssistantDisposition).join(
             Assistant, AssistantDisposition.assistant_id == Assistant.id
         ).filter(
             Assistant.hotel_id == hotel_id,
             AssistantDisposition.is_active == True,
-        ).order_by(AssistantDisposition.name).all()
+        )
+        if assistant_id:
+            disposition_query = disposition_query.filter(
+                AssistantDisposition.assistant_id == assistant_id
+            )
+        dispositions = disposition_query.order_by(AssistantDisposition.name).all()
 
-        resolution_rows = db.query(CallLog.acw_resolution).filter(
+        resolution_query = db.query(CallLog.acw_resolution).filter(
             CallLog.hotel_id == hotel_id,
             CallLog.acw_resolution.isnot(None),
             CallLog.acw_resolution != "",
-        ).distinct().order_by(CallLog.acw_resolution).all()
+        )
+        if assistant_id:
+            resolution_query = resolution_query.filter(
+                CallLog.assistant_id == assistant_id
+            )
+        resolution_rows = resolution_query.distinct().order_by(CallLog.acw_resolution).all()
         resolution_options = [r[0] for r in resolution_rows]
         
         return {
