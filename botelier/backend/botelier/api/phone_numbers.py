@@ -23,7 +23,7 @@ from botelier.models.assistant import Assistant
 from botelier.integrations.twilio.phone_numbers import PhoneNumberManager
 from botelier.config.domain import get_public_base_url
 from botelier.models.user import User
-from botelier.auth.middleware import get_current_user, check_account_permission
+from botelier.auth.middleware import get_current_user, check_account_permission, get_hotel_context, AccountContext
 
 
 router = APIRouter(prefix="/api/phone-numbers", tags=["phone-numbers"])
@@ -125,27 +125,15 @@ async def search_available_numbers(
 
 @router.get("", response_model=dict)
 async def list_phone_numbers(
-    hotel_id: Optional[str] = Query(None, description="Filter by hotel ID"),
     assistant_id: Optional[str] = Query(None, description="Filter by assistant ID"),
+    ctx: AccountContext = Depends(get_hotel_context("phone_numbers.view")),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
 ):
-    if hotel_id:
-        check_account_permission(user, hotel_id, "phone_numbers.view", db)
-    """
-    List phone numbers.
-    
-    Query params:
-    - hotel_id: Filter by hotel (optional)
-    - assistant_id: Filter by assigned assistant (optional)
-    
-    Returns:
-    - List of phone numbers
-    """
-    query = db.query(PhoneNumber)
-    
-    if hotel_id:
-        query = query.filter(PhoneNumber.hotel_id == hotel_id)
+    """List phone numbers for the authenticated account."""
+    hotel_id = str(ctx.account.id)
+
+    query = db.query(PhoneNumber).filter(PhoneNumber.hotel_id == hotel_id)
+
     if assistant_id:
         query = query.filter(PhoneNumber.assistant_id == assistant_id)
     
