@@ -35,6 +35,7 @@ from botelier.api.api_tester import router as api_tester_router
 from botelier.api.sms_pkg import router as sms_router
 from botelier.api.sms_compliance import router as sms_compliance_router
 from botelier.api.analytics import router as analytics_router
+from botelier.api.team import router as team_router
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -79,6 +80,7 @@ app.include_router(api_tester_router)  # API testing proxy for tool configuratio
 app.include_router(sms_router)  # SMS AI conversations
 app.include_router(sms_compliance_router)  # SMS A2P 10DLC compliance
 app.include_router(analytics_router)  # Analytics dashboards
+app.include_router(team_router)  # Account team management
 
 uploads_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
 os.makedirs(uploads_dir, exist_ok=True)
