@@ -1,14 +1,14 @@
 import json
 import os
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, List
 from uuid import UUID
 
 from loguru import logger
 from openai import OpenAI
 from sqlalchemy.orm import Session
 
-from botelier.models.call_log import CallLog
+from botelier.models.call_log import CallLog, CallLeg, LegType
 from botelier.models.assistant import Assistant
 from botelier.models.disposition import AssistantDisposition
 from botelier.models.resolution_option import AssistantResolutionOption
@@ -31,15 +31,120 @@ _ROLE_LABELS = {
     "assistant": "AI Agent",
 }
 
+_TRANSFER_LEG_TYPES = {
+    LegType.TRANSFER_EXTERNAL.value,
+    LegType.TRANSFER_SIP.value,
+    LegType.TRANSFER_COLD.value,
+    LegType.TRANSFER_INTERNAL.value,
+}
+
+
+def _mask_number(number: str) -> str:
+    """Mask a phone number, showing only the last 4 digits."""
+    if not number:
+        return "unknown"
+    digits = "".join(c for c in number if c.isdigit())
+    if len(digits) >= 4:
+        return f"***-{digits[-4:]}"
+    return number
+
+
+def _fmt_duration(seconds: Optional[int]) -> str:
+    """Format duration in seconds to a human-readable string."""
+    if not seconds:
+        return "unknown"
+    minutes, secs = divmod(int(seconds), 60)
+    if minutes:
+        return f"{minutes}m {secs}s"
+    return f"{secs}s"
+
 
 def _build_transcript_text(transcript: list) -> str:
+    """
+    Convert raw LLM message list to a readable transcript string.
+
+    Handles four message types:
+    - user: spoken by the caller
+    - assistant with content: spoken by the AI
+    - assistant with tool_calls (empty content): AI triggered a tool/action
+    - tool: the result returned by a tool call
+    """
     lines = []
     for msg in transcript:
         role = msg.get("role", "unknown")
-        content = msg.get("content", "")
-        if role in ("user", "assistant") and content.strip():
-            label = _ROLE_LABELS.get(role, role)
-            lines.append(f"{label}: {content}")
+        content = msg.get("content") or ""
+        tool_calls = msg.get("tool_calls") or []
+
+        if role == "user" and content.strip():
+            lines.append(f"Customer: {content.strip()}")
+
+        elif role == "assistant":
+            if content.strip():
+                lines.append(f"AI Agent: {content.strip()}")
+            elif tool_calls:
+                for tc in tool_calls:
+                    fn_name = ""
+                    if isinstance(tc, dict):
+                        fn_name = tc.get("function", {}).get("name", "") or tc.get("name", "")
+                    elif hasattr(tc, "function"):
+                        fn_name = getattr(tc.function, "name", "")
+                    if fn_name:
+                        lines.append(f"AI Agent: [Action taken: {fn_name}]")
+
+        elif role == "tool":
+            snippet = content.strip()[:120] if content else ""
+            if snippet:
+                lines.append(f"System: [Tool result: {snippet}]")
+
+    return "\n".join(lines)
+
+
+def _build_call_context(call_log: CallLog, db: Session) -> str:
+    """
+    Build a CALL CONTEXT block summarising call metadata for the ACW prompt.
+
+    Includes duration, masked caller number, call outcome, and transfer details
+    so the LLM can make accurate disposition / resolution / quality decisions.
+    """
+    lines = ["CALL CONTEXT:"]
+
+    duration_str = _fmt_duration(call_log.duration_seconds)
+    lines.append(f"- Duration: {duration_str}")
+
+    if call_log.caller_number:
+        lines.append(f"- Caller: {_mask_number(call_log.caller_number)}")
+
+    outcome = call_log.outcome or "unknown"
+    lines.append(f"- Outcome: {outcome}")
+
+    if call_log.has_transfer:
+        transfer_mode = call_log.transfer_mode or "warm"
+        legs: List[CallLeg] = (
+            db.query(CallLeg)
+            .filter(
+                CallLeg.call_log_id == call_log.id,
+                CallLeg.leg_type.in_(list(_TRANSFER_LEG_TYPES)),
+            )
+            .order_by(CallLeg.leg_number)
+            .all()
+        )
+        if legs:
+            for leg in legs:
+                dest = _mask_number(leg.participant or "")
+                status = leg.status or "unknown"
+                status_label = {
+                    "completed": "answered and connected",
+                    "no_answer": "no-answer (not connected)",
+                    "busy": "busy",
+                    "failed": "failed",
+                    "canceled": "canceled",
+                }.get(status, status)
+                lines.append(
+                    f"- Transfer: {transfer_mode} transfer to {dest} → result: {status_label}"
+                )
+        else:
+            lines.append(f"- Transfer: {transfer_mode} transfer (no leg details available)")
+
     return "\n".join(lines)
 
 
@@ -91,7 +196,10 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
         transcript_text = truncated + "\n[Transcript truncated due to length]"
         logger.info(f"ACW: transcript truncated for call {call_log.id}")
 
-    prompt_parts = [f"Assistant: {assistant.name}\nAnalyze this call transcript.\n"]
+    call_context = _build_call_context(call_log, db)
+    prompt_parts = [
+        f"Assistant: {assistant.name}\nAnalyze this call transcript.\n\n{call_context}"
+    ]
     json_fields = []
 
     if has_dispositions:

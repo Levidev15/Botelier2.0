@@ -284,8 +284,9 @@ async def transfer_status_callback(request: Request, db: Session = Depends(get_d
                 to_number=to_number,
             )
             
-            if call_status == "completed" and parent_call_sid:
-                logger.info(f"Warm transfer leg {call_sid} completed — enqueueing ACW for parent call {parent_call_sid}")
+            _TERMINAL_TRANSFER_STATUSES = {"completed", "no-answer", "busy", "failed", "canceled"}
+            if call_status in _TERMINAL_TRANSFER_STATUSES and parent_call_sid:
+                logger.info(f"Transfer leg {call_sid} ended ({call_status}) — enqueueing ACW for parent call {parent_call_sid}")
                 _maybe_enqueue_acw(parent_call_sid, db, background_tasks)
         
         return {"status": "received"}
