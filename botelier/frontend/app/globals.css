@@ -94,6 +94,19 @@
   background-color: #cbd5e1;
 }
 
+/* Uppercase hex variants (some components use #1A1A1A, #2A2A2A etc.) */
+[data-theme="light"] .themed-app .bg-\[\#1A1A1A\] {
+  background-color: #ffffff;
+}
+
+[data-theme="light"] .themed-app .bg-\[\#2A2A2A\] {
+  background-color: #e2e8f0;
+}
+
+[data-theme="light"] .themed-app .bg-\[\#333333\] {
+  background-color: #cbd5e1;
+}
+
 /* Additional background overrides (Tailwind gray scale) */
 [data-theme="light"] .themed-app .bg-gray-800,
 [data-theme="light"] .themed-app .bg-gray-900 {
@@ -121,9 +134,28 @@
   border-color: #94a3b8;
 }
 
+/* border-white and border-white/{opacity} → visible light borders */
+[data-theme="light"] .themed-app .border-white {
+  border-color: #d1d5db;
+}
+[data-theme="light"] .themed-app .border-white\/5 {
+  border-color: #f1f5f9;
+}
+[data-theme="light"] .themed-app .border-white\/10 {
+  border-color: #e2e8f0;
+}
+[data-theme="light"] .themed-app .border-white\/20 {
+  border-color: #d1d5db;
+}
+[data-theme="light"] .themed-app .hover\:border-white\/20:hover {
+  border-color: #9ca3af;
+}
+
 /* Card elevation — subtle shadow so white cards lift off the page bg */
 [data-theme="light"] .themed-app .bg-\[\#1a1a1a\].rounded-xl,
 [data-theme="light"] .themed-app .bg-\[\#1a1a1a\].rounded-lg,
+[data-theme="light"] .themed-app .bg-\[\#1A1A1A\].rounded-xl,
+[data-theme="light"] .themed-app .bg-\[\#1A1A1A\].rounded-lg,
 [data-theme="light"] .themed-app .bg-\[\#141414\].rounded-xl,
 [data-theme="light"] .themed-app .bg-\[\#141414\].rounded-lg,
 [data-theme="light"] .themed-app .bg-\[\#141414\].rounded-2xl {
@@ -159,6 +191,18 @@
 
 [data-theme="light"] .themed-app .text-gray-200 {
   color: #1e293b;
+}
+
+[data-theme="light"] .themed-app .text-gray-300 {
+  color: #334155;
+}
+
+[data-theme="light"] .themed-app .text-gray-400 {
+  color: #475569;
+}
+
+[data-theme="light"] .themed-app .text-gray-500 {
+  color: #64748b;
 }
 
 /* ------------------------------------------------------------------ */
