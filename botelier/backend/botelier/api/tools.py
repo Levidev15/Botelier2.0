@@ -14,7 +14,7 @@ from botelier.database import get_db
 from botelier.models.tool import Tool, ToolType as DBToolType
 from botelier.models.tool_set import ToolSet
 from botelier.models.user import User
-from botelier.auth.middleware import get_current_user, check_account_permission
+from botelier.auth.middleware import get_current_user, check_account_permission, get_hotel_context, AccountContext
 from botelier.schemas.tool_schemas import (
     ToolCreate,
     ToolUpdate,
@@ -48,20 +48,14 @@ def _scope_query_by_account(query, db, tool_set_id: str = None, hotel_id: str = 
 
 @router.get("")
 def list_tools(
-    hotel_id: str = None,
     tool_set_id: str = None,
     assistant_id: str = None,
     tool_type: str = None,
+    ctx: AccountContext = Depends(get_hotel_context("tools.view")),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
 ):
     """List tools scoped by tool_set_id or account (hotel_id)."""
-    if hotel_id:
-        check_account_permission(user, hotel_id, "tools.view", db)
-    elif tool_set_id:
-        ts = db.query(ToolSet).filter(ToolSet.id == tool_set_id).first()
-        if ts:
-            check_account_permission(user, str(ts.account_id), "tools.view", db)
+    hotel_id = str(ctx.account.id)
     query = db.query(Tool)
     query = _scope_query_by_account(query, db, tool_set_id, hotel_id)
 

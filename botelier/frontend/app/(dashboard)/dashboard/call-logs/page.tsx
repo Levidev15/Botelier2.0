@@ -173,6 +173,7 @@ export default function CallLogsPage() {
   const { can, isPlatformAdmin } = usePermissions();
   const canExport = isPlatformAdmin || can("call_logs", "export");
   const canViewTranscripts = isPlatformAdmin || can("call_logs", "view_transcripts");
+  const canDeleteLogs = isPlatformAdmin || can("call_logs", "delete");
   const { authHeaders } = useAuthToken();
   const [callLogs, setCallLogs] = useState<CallLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -657,6 +658,7 @@ export default function CallLogsPage() {
                       isGeneratingSummary={generatingIds.has(log.id)}
                       formatDateTime={formatDateTime}
                       canViewTranscripts={canViewTranscripts}
+                      canDeleteLogs={canDeleteLogs}
                     />
                   ))}
                 </tbody>
@@ -718,6 +720,7 @@ function CallLogRow({
   isGeneratingSummary,
   formatDateTime,
   canViewTranscripts,
+  canDeleteLogs,
 }: {
   log: CallLog;
   isExpanded: boolean;
@@ -727,6 +730,7 @@ function CallLogRow({
   isGeneratingSummary: boolean;
   formatDateTime: (date: string | null) => string;
   canViewTranscripts: boolean;
+  canDeleteLogs: boolean;
 }) {
   const hasLegs = log.legs && log.legs.length > 1;
   const hasTranscript = log.transcript && log.transcript.length > 0;
@@ -876,7 +880,7 @@ function CallLogRow({
               >
                 <MessageSquareText className="h-4 w-4" />
               </button>
-            ) : canViewTranscripts && hasTranscript ? (
+            ) : canDeleteLogs && hasTranscript ? (
               <button
                 onClick={onGenerateSummary}
                 disabled={isGeneratingSummary}

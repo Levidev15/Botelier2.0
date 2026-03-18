@@ -18,7 +18,8 @@ from uuid import UUID
 from botelier.database import get_db
 from botelier.models.assistant import Assistant
 from botelier.models.user import User
-from botelier.auth.middleware import get_current_user, check_account_permission
+from botelier.auth.middleware import get_current_user, check_account_permission, get_hotel_context, AccountContext
+from botelier.models.user import UserType
 
 
 router = APIRouter(prefix="/api/assistants", tags=["assistants"])
@@ -135,19 +136,14 @@ class FlowConfigResponse(BaseModel):
 
 @router.get("", response_model=dict)
 async def list_assistants(
-    hotel_id: Optional[str] = Query(None, description="Filter by hotel ID"),
     is_active: Optional[bool] = Query(None, description="Filter by active status"),
+    ctx: AccountContext = Depends(get_hotel_context("assistants.view")),
     db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
 ):
-    """List all assistants, optionally filtered by hotel or status."""
-    if hotel_id:
-        check_account_permission(user, hotel_id, "assistants.view", db)
+    """List all assistants for the authenticated account."""
+    hotel_id = str(ctx.account.id)
 
-    query = db.query(Assistant)
-    
-    if hotel_id:
-        query = query.filter(Assistant.hotel_id == hotel_id)
+    query = db.query(Assistant).filter(Assistant.hotel_id == hotel_id)
     
     if is_active is not None:
         query = query.filter(Assistant.is_active == is_active)
