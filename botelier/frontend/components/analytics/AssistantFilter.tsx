@@ -3,6 +3,7 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import { Bot, ChevronDown, X, Search } from "lucide-react";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface Assistant {
   id: string;
@@ -16,6 +17,7 @@ interface AssistantFilterProps {
 
 export default function AssistantFilter({ selected, onChange }: AssistantFilterProps) {
   const { accountId } = useAccountContext();
+  const { authFetch } = useAuthToken();
   const [open, setOpen] = useState(false);
   const [assistants, setAssistants] = useState<Assistant[]>([]);
   const [search, setSearch] = useState("");
@@ -24,11 +26,11 @@ export default function AssistantFilter({ selected, onChange }: AssistantFilterP
 
   useEffect(() => {
     if (!accountId) return;
-    fetch(`/api/assistants?hotel_id=${accountId}`)
+    authFetch(`/api/assistants?hotel_id=${accountId}`)
       .then((r) => r.json())
       .then((data) => setAssistants(Array.isArray(data) ? data : (data.assistants ?? [])))
       .catch(() => {});
-  }, [accountId]);
+  }, [accountId, authFetch]);
 
   useEffect(() => {
     function handleClick(e: MouseEvent) {
