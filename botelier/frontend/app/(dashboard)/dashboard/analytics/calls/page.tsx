@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useMemo, useCallback } from "react";
-import { SlidersHorizontal, Loader2 } from "lucide-react";
+import { SlidersHorizontal, Loader2, FileDown } from "lucide-react";
 import {
   ResponsiveContainer,
   LineChart, Line,
@@ -127,7 +127,7 @@ const CustomTooltipContent = ({ active, payload, label }: CustomTooltipProps) =>
 
 
 export default function CallAnalyticsPage() {
-  const { accountId } = useAccountContext();
+  const { accountId, accountName } = useAccountContext();
   const { authFetch } = useAuthToken();
   const [dateRange, setDateRange] = useState<DateRange>(defaultDateRange);
   const [assistantIds, setAssistantIds] = useState<string[]>([]);
@@ -197,6 +197,18 @@ export default function CallAnalyticsPage() {
     setDrilldown({ metric, label });
   }, []);
 
+  const handleExportReport = useCallback(() => {
+    if (!accountId) return;
+    const p = new URLSearchParams({
+      hotel_id: accountId,
+      date_from: dateRange.from.toISOString(),
+      date_to: dateRange.to.toISOString(),
+      tz: timezone,
+      account_name: accountName || "",
+    });
+    window.open(`/report/analytics/calls?${p}`, "_blank");
+  }, [accountId, dateRange, timezone, accountName]);
+
   const handleViewTranscript = useCallback(
     async (logId: string) => {
       if (!accountId) return;
@@ -255,6 +267,14 @@ export default function CallAnalyticsPage() {
             value={timezone}
             onChange={(tz) => { setTimezone(tz); saveTimezone(tz); }}
           />
+          <button
+            onClick={handleExportReport}
+            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-[#1a1a1a] border border-gray-700 rounded-lg text-gray-300 hover:text-gray-100 hover:border-gray-600 transition-colors"
+            title="Open a print-ready visual report in a new tab"
+          >
+            <FileDown className="h-4 w-4" />
+            Export Report
+          </button>
           <button
             onClick={() => setCustomizeOpen(true)}
             className="flex items-center gap-2 px-3 py-1.5 text-sm bg-[#1a1a1a] border border-gray-700 rounded-lg text-gray-300 hover:text-gray-100 hover:border-gray-600 transition-colors"
