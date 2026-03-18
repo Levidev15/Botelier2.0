@@ -375,7 +375,7 @@ export default function CallAnalyticsPage() {
               <ResponsiveContainer width="100%" height={260}>
                 <BarChart
                   data={hourData}
-                  onClick={(e) => {
+                  onClick={(e: any) => {
                     if (e?.activePayload?.[0]?.payload) {
                       const hr = e.activePayload[0].payload.hour;
                       openDrilldown(`hour:${hr}`, `Calls at ${hr}:00`);
@@ -410,7 +410,7 @@ export default function CallAnalyticsPage() {
                       innerRadius={35}
                       outerRadius={60}
                       paddingAngle={2}
-                      onClick={(entry) => openDrilldown(`status:${entry.status}`, `Status: ${entry.status.replace(/_/g, " ")}`)}
+                      onClick={(entry: any) => openDrilldown(`status:${entry.status}`, `Status: ${entry.status.replace(/_/g, " ")}`)}
                     >
                       {data.status_distribution.map((d, i) => (
                         <Cell key={d.status} fill={STATUS_COLORS[d.status] || CHART_COLORS[i % CHART_COLORS.length]} cursor="pointer" />
@@ -490,7 +490,7 @@ export default function CallAnalyticsPage() {
                 <BarChart
                   data={data.by_assistant}
                   layout="vertical"
-                  onClick={(e) => {
+                  onClick={(e: any) => {
                     if (e?.activePayload?.[0]?.payload) {
                       const row = e.activePayload[0].payload;
                       openDrilldown(`assistant:${row.assistant_id}`, `Assistant: ${row.assistant_name}`);
@@ -556,7 +556,7 @@ export default function CallAnalyticsPage() {
               <ResponsiveContainer width="100%" height={200}>
                 <BarChart
                   data={data.acw.score_distribution}
-                  onClick={(e) => {
+                  onClick={(e: any) => {
                     if (e?.activePayload?.[0]?.payload) {
                       const row = e.activePayload[0].payload;
                       openDrilldown(`quality_range:${row.range}`, `Quality Score ${row.range}`);

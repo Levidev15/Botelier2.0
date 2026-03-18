@@ -834,16 +834,16 @@ export default function CallLogsPage() {
 
       {showTranscript && selectedLog && (
         <TranscriptModal
-          log={selectedLog}
+          log={selectedLog as any}
           onClose={() => {
             setShowTranscript(false);
             setSelectedLog(null);
           }}
           onLogUpdated={(updates) => {
-            setSelectedLog((prev) => prev ? { ...prev, ...updates } : prev);
+            setSelectedLog((prev) => prev ? { ...prev, ...updates } as any : prev);
             setCallLogs((prev) =>
               prev.map((l) =>
-                l.id === selectedLog.id ? { ...l, ...updates } : l
+                l.id === selectedLog.id ? { ...l, ...updates } as any : l
               )
             );
           }}

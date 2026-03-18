@@ -3,4 +3,4 @@ export { default as NodeInspector } from "./NodeInspector";
 export { default as FlowToolbar } from "./FlowToolbar";
 export { useFlowStore } from "./store";
 export { nodeTypes } from "./nodes";
-export type { NodeData, FlowFunction, FlowState } from "./store";
+export type { NodeData, FlowState } from "./store";

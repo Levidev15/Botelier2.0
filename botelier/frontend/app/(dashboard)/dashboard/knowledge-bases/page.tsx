@@ -118,8 +118,7 @@ export default function KnowledgeBasesPage() {
 
   const handleDeleteKB = async (kb: KnowledgeBase) => {
     const confirmed = await confirmAction(
-      "Delete Knowledge Base",
-      `Are you sure you want to delete "${kb.name}"? This will permanently delete all ${kb.entry_count} entries.`
+      `Delete knowledge base "${kb.name}"? This will permanently delete all ${kb.entry_count} entries.`
     );
     if (!confirmed) return;
 
@@ -138,8 +137,7 @@ export default function KnowledgeBasesPage() {
 
   const handleDeleteEntry = async (entry: Entry) => {
     const confirmed = await confirmAction(
-      "Delete Entry",
-      `Are you sure you want to delete this Q&A entry?`
+      "Are you sure you want to delete this Q&A entry?"
     );
     if (!confirmed) return;
 
@@ -206,10 +204,10 @@ export default function KnowledgeBasesPage() {
         const values = lines[i].match(/("([^"]|"")*"|[^,]+)/g) || [];
         const cleanValue = (v: string) => v?.replace(/^"|"$/g, '').replace(/""/g, '"').trim() || '';
         
-        const question = cleanValue(values[0]);
-        const answer = cleanValue(values[1]);
-        const category = cleanValue(values[2]) || null;
-        const expiration_date = cleanValue(values[3]) || null;
+        const question = cleanValue(values[0] || '');
+        const answer = cleanValue(values[1] || '');
+        const category = cleanValue(values[2] || '') || null;
+        const expiration_date = cleanValue(values[3] || '') || null;
 
         if (question && answer) {
           const res = await authFetch(`/api/knowledge-bases/${selectedKB.id}/entries`, {

@@ -1,6 +1,7 @@
 interface FormFieldProps {
   label: string;
   description?: string;
+  tooltip?: string;
   required?: boolean;
   error?: string;
   children: React.ReactNode;
@@ -9,6 +10,7 @@ interface FormFieldProps {
 export default function FormField({
   label,
   description,
+  tooltip,
   required = false,
   error,
   children,
