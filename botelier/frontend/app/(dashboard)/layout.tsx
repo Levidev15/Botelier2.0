@@ -1,6 +1,6 @@
 "use client";
 
-import { Bot, Phone, BarChart, Settings, Key, Users, Wrench, BookOpen, Shield, LogOut, ArrowLeft, Building2, Plug, MessageSquare, TrendingUp, MessageCircle } from "lucide-react";
+import { Bot, Phone, BarChart, Key, Users, Wrench, BookOpen, Shield, LogOut, ArrowLeft, Building2, Plug, MessageSquare, TrendingUp, MessageCircle } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRouter } from "next/navigation";
@@ -212,9 +212,6 @@ export default function DashboardLayout({
           </NavItem>
           <NavItem href="/dashboard/team" icon={<Users className="h-5 w-5" />} active={isActive("/dashboard/team")}>
             Team
-          </NavItem>
-          <NavItem href="/dashboard/settings" icon={<Settings className="h-5 w-5" />} active={isActive("/dashboard/settings")}>
-            Settings
           </NavItem>
 
           {(userInfo?.is_platform_admin || parsedUser?.user_type === "platform_admin") && (
