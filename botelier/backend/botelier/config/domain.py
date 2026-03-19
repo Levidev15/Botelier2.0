@@ -47,23 +47,26 @@ def get_public_base_url(fallback_host: Optional[str] = None) -> str:
             public_url = f"https://{public_url}"
         return public_url.rstrip("/")
     
-    # Priority 2: Replit domain — covers both development (REPLIT_DEV_DOMAIN) and
-    # production (REPLIT_DOMAINS, a comma-separated list; first entry is canonical).
-    # In dev, we may need to append the port from the Host header.
-    replit_domain = os.environ.get("REPLIT_DEV_DOMAIN")
-    if not replit_domain:
-        # Production: REPLIT_DOMAINS = "my-app.username.repl.co,my-app.replit.app"
-        replit_domains_str = os.environ.get("REPLIT_DOMAINS", "")
-        if replit_domains_str:
-            replit_domain = replit_domains_str.split(",")[0].strip()
-    if replit_domain:
+    # Priority 2: Replit domain — production (REPLIT_DOMAINS) takes priority over
+    # dev (REPLIT_DEV_DOMAIN). Replit injects REPLIT_DEV_DOMAIN into both dev and
+    # production VM environments, so we must check REPLIT_DOMAINS first.
+    # Production: REPLIT_DOMAINS = "my-app.replit.app,my-app.username.repl.co"
+    replit_domains_str = os.environ.get("REPLIT_DOMAINS", "")
+    if replit_domains_str:
+        production_domain = replit_domains_str.split(",")[0].strip()
+        # Production traffic arrives on standard HTTPS port 443 — no port suffix needed.
+        return f"https://{production_domain}"
+
+    # Dev: REPLIT_DEV_DOMAIN is the workspace URL (may need port from Host header).
+    replit_dev_domain = os.environ.get("REPLIT_DEV_DOMAIN")
+    if replit_dev_domain:
         # In dev environments, include the port from the Host header if non-standard
         if fallback_host and ":" in fallback_host:
             port = fallback_host.split(":", 1)[1]
             # Only append port if it's not 443 (standard HTTPS)
             if port and port != "443":
-                return f"https://{replit_domain}:{port}"
-        return f"https://{replit_domain}"
+                return f"https://{replit_dev_domain}:{port}"
+        return f"https://{replit_dev_domain}"
     
     # Priority 3: Fallback host from request (preserve port for non-standard ports)
     if fallback_host:
@@ -119,20 +122,24 @@ def get_websocket_url(
             backend_ws_url = f"wss://{backend_ws_url}"
         ws_url = backend_ws_url.rstrip("/")
     else:
-        # Priority 2: Replit domain — dev (REPLIT_DEV_DOMAIN) or production (REPLIT_DOMAINS)
-        # In dev, the backend runs on port 3001 (no reverse proxy), so we include :3001.
-        # In production (vm deployment), the backend also runs on 3001 internally,
-        # but Replit exposes it via the same domain through port mapping.
-        replit_domain = os.environ.get("REPLIT_DEV_DOMAIN")
-        if not replit_domain:
-            replit_domains_str = os.environ.get("REPLIT_DOMAINS", "")
-            if replit_domains_str:
-                replit_domain = replit_domains_str.split(",")[0].strip()
-        if replit_domain:
-            ws_url = f"wss://{replit_domain}:3001"
+        # Priority 2: Replit domain — production (REPLIT_DOMAINS) before dev (REPLIT_DEV_DOMAIN).
+        # Replit injects REPLIT_DEV_DOMAIN into both environments, so check REPLIT_DOMAINS first.
+        #
+        # Production: WebSocket traffic arrives at port 443 via the Node.js server (port 5000)
+        # which proxies /api/ws/* to the backend on localhost:3001. No explicit port needed.
+        #
+        # Dev: Backend port 3001 is directly reachable via Replit's dev proxy, so we include :3001.
+        replit_domains_str = os.environ.get("REPLIT_DOMAINS", "")
+        if replit_domains_str:
+            production_domain = replit_domains_str.split(",")[0].strip()
+            ws_url = f"wss://{production_domain}"  # No :3001 — proxied through port 443
         else:
-            # Fallback: localhost (for local development)
-            ws_url = "ws://localhost:3001"
+            replit_dev_domain = os.environ.get("REPLIT_DEV_DOMAIN")
+            if replit_dev_domain:
+                ws_url = f"wss://{replit_dev_domain}:3001"  # Direct backend access in dev
+            else:
+                # Fallback: localhost (for local development outside Replit)
+                ws_url = "ws://localhost:3001"
     
     # Ensure path starts with /
     if not path.startswith("/"):
