@@ -7,7 +7,7 @@ and the actual Pipecat function calling system during voice conversations.
 
 import os
 import httpx
-from typing import Dict, Any, List, Callable, TYPE_CHECKING
+from typing import Dict, Any, List, Callable, Optional, TYPE_CHECKING
 from loguru import logger
 from ..config.domain import get_public_base_url
 
@@ -90,6 +90,11 @@ class FunctionMapper:
         # Used by transfer handlers to await real TTS completion instead of a
         # fixed sleep, ensuring the pre-transfer message is never clipped.
         self._tts_completion_watcher = None
+
+        # Stores the spoken pre-transfer message so _execute_transfer can append
+        # it to the saved transcript.  TTSSpeakFrame bypasses the LLM context, so
+        # the message would otherwise be invisible to the ACW LLM.
+        self._pending_pre_transfer_message: Optional[str] = None
 
         # Twilio client for call transfers - use hotel's sub-account credentials
         self.twilio_client = None
@@ -366,11 +371,24 @@ class FunctionMapper:
                             try:
                                 call_logger = CallLogger(db)
 
-                                # Save transcript BEFORE transfer (WebSocket closes after)
+                                # Save transcript BEFORE transfer (WebSocket closes after).
+                                # Append the pre-transfer message that was spoken via TTSSpeakFrame
+                                # (bypasses LLM context, so must be injected manually here).
                                 if self.call_handler and hasattr(self.call_handler, '_save_call_transcript'):
                                     try:
                                         llm_context = self.call_handler.call_contexts.get(self.call_sid)
-                                        await self.call_handler._save_call_transcript(self.call_sid, llm_context)
+                                        extra = []
+                                        if self._pending_pre_transfer_message:
+                                            extra.append({
+                                                "role": "assistant",
+                                                "content": self._pending_pre_transfer_message,
+                                                "interrupted": False
+                                            })
+                                            self._pending_pre_transfer_message = None
+                                        await self.call_handler._save_call_transcript(
+                                            self.call_sid, llm_context,
+                                            extra_messages=extra if extra else None
+                                        )
                                         logger.info(f"📝 Saved transcript before transfer for call {self.call_sid}")
                                     except Exception as e:
                                         logger.error(f"Error saving transcript before transfer: {e}")
@@ -507,6 +525,9 @@ class FunctionMapper:
             # our TTSSpeakFrame opens a fresh context that lives long enough to
             # receive audio.  The watcher's 5s timeout is the safety net if TTS
             # still fails for any reason.
+            # Record what will be spoken so _execute_transfer can append it to
+            # the saved transcript (TTSSpeakFrame bypasses the LLM context).
+            self._pending_pre_transfer_message = pre_message
             await _asyncio.sleep(0.15)
             await params.llm.push_frame(TTSSpeakFrame(pre_message))
         
