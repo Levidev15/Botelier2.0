@@ -75,31 +75,76 @@ class TtsCompletionWatcher(FrameProcessor):
     Placed in the pipeline immediately after the TTS service so it can observe
     BotStoppedSpeakingFrame as it flows downstream toward the transport output.
 
-    Usage:
-        watcher = TtsCompletionWatcher()
-        # …add to pipeline after tts…
+    Two usage modes:
 
-        # In transfer handler, before pushing TTSSpeakFrame:
+    1. Callback (preferred for transfers) — decouples the action from the
+       Pipecat function-call timeout:
+
+        watcher.reset()
+        watcher.schedule_after_speech(my_async_callback)
+        await llm.push_frame(TTSSpeakFrame(message))
+        # return immediately — callback fires when speech ends
+
+    2. Await (legacy, blocks the function handler — subject to Pipecat timeout):
+
         watcher.reset()
         await llm.push_frame(TTSSpeakFrame(message))
         await watcher.wait_until_done(timeout=15.0)
-        # Now safe to initiate transfer
     """
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         self._speaking_done = asyncio.Event()
         self._speaking_done.set()  # Start in "done" state — no pending speech
+        self._on_done_callback = None  # One-shot async callback
 
     def reset(self):
         """
         Clear the completion event.
 
         Call this synchronously (no await) just before pushing a TTSSpeakFrame
-        so that wait_until_done() will block until the corresponding
-        BotStoppedSpeakingFrame arrives.
+        so that schedule_after_speech / wait_until_done captures the correct
+        BotStoppedSpeakingFrame.
         """
         self._speaking_done.clear()
+
+    def schedule_after_speech(self, callback) -> None:
+        """
+        Run ``callback`` as soon as the current speech is done.
+
+        - If speech has already ended (event is set), fires callback immediately
+          via asyncio.create_task so it runs outside the current stack frame.
+        - If speech is still in progress, registers it as a one-shot callback
+          that fires when the next BotStoppedSpeakingFrame arrives.
+
+        This is the preferred method for transfer handlers: call reset() first,
+        then schedule_after_speech(), then push the TTSSpeakFrame, then return
+        immediately to Pipecat. The callback executes after speech completes
+        regardless of how long TTS takes — entirely outside Pipecat's function-
+        call timeout window.
+
+        For flow transfers where speech was initiated upstream (no reset()),
+        call schedule_after_speech() without reset(). If speech is already
+        done the callback fires immediately; otherwise it waits.
+
+        Args:
+            callback: Async callable (no arguments) to invoke after speech ends.
+        """
+        if self._speaking_done.is_set():
+            asyncio.create_task(callback())
+        else:
+            if self._on_done_callback is not None:
+                logger.warning("TtsCompletionWatcher: overwriting existing on-done callback")
+            self._on_done_callback = callback
+
+    def clear_callback(self) -> None:
+        """
+        Remove any pending one-shot callback.
+
+        Call this on pipeline shutdown or call hang-up to avoid firing a
+        stale transfer after the call has already ended.
+        """
+        self._on_done_callback = None
 
     async def wait_until_done(self, timeout: float = 15.0) -> bool:
         """
@@ -121,6 +166,13 @@ class TtsCompletionWatcher(FrameProcessor):
         if isinstance(frame, BotStoppedSpeakingFrame):
             logger.debug("TtsCompletionWatcher: BotStoppedSpeakingFrame received — signalling done")
             self._speaking_done.set()
+            # Fire and clear the one-shot callback if one is registered.
+            # Use create_task so the callback runs outside this frame-processing
+            # stack, avoiding any re-entrant pipeline issues.
+            cb = self._on_done_callback
+            self._on_done_callback = None
+            if cb is not None:
+                asyncio.create_task(cb())
         # Always pass frames through unchanged
         await self.push_frame(frame, direction)
 
