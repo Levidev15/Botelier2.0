@@ -340,6 +340,7 @@ class AcwConfigUpdate(BaseModel):
     quality_rubric: Optional[str] = None
     summary_enabled: Optional[bool] = None
     summary_prompt: Optional[str] = None
+    llm_model: Optional[str] = None
 
 
 @router.patch("/{assistant_id}/acw-config")
