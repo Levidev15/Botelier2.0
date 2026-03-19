@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { BookOpen, Plus, Pencil, Trash2, ChevronRight, ArrowLeft, Upload, Download, Search, Tag, AlertCircle, X, Grid3x3, List } from "lucide-react";
 import { notify, confirmAction } from "@/lib/notifications";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
+import { getAccountContext } from "@/lib/auth/accountContext";
 import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
 import { usePermissions } from "@/lib/auth/usePermissions";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
@@ -190,11 +191,24 @@ export default function KnowledgeBasesPage() {
       const headers: Record<string, string> = {};
       if (token) headers["Authorization"] = `Bearer ${token}`;
 
+      const accountCtx = getAccountContext();
+      if (accountCtx?.isAdminSession && accountCtx.sessionToken) {
+        headers["X-Support-Session"] = accountCtx.sessionToken;
+        headers["X-Account-Id"] = accountCtx.accountId;
+      }
+
       const res = await fetch(`/api/knowledge-bases/${selectedKB.id}/entries/import-csv`, {
         method: "POST",
         headers,
         body: formData,
       });
+
+      if (res.status === 401) {
+        if (typeof window !== "undefined") {
+          window.location.href = "/login?callbackUrl=/dashboard&reason=session_expired";
+        }
+        return;
+      }
 
       if (res.ok) {
         const result = await res.json();
