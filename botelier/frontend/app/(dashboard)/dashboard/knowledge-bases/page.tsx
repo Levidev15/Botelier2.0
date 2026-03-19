@@ -51,7 +51,7 @@ export default function KnowledgeBasesPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
   const { hasAccess, loading: permLoading } = usePagePermission("knowledge_base", "view");
   const { can, isPlatformAdmin } = usePermissions();
-  const { authFetch } = useAuthToken();
+  const { authFetch, token } = useAuthToken();
   const canCreate = isPlatformAdmin || can("knowledge_base", "create");
   const canEdit = isPlatformAdmin || can("knowledge_base", "edit");
   const canDelete = isPlatformAdmin || can("knowledge_base", "delete");
@@ -145,7 +145,7 @@ export default function KnowledgeBasesPage() {
       const res = await authFetch(`/api/knowledge-bases/${selectedKB?.id}/entries/${entry.id}`, { method: "DELETE" });
       if (res.ok) {
         notify.success("Entry deleted");
-        if (selectedKB) fetchEntries(selectedKB.id);
+        setEntries(prev => prev.filter(e => e.id !== entry.id));
       } else {
         notify.error("Failed to delete entry");
       }
@@ -184,51 +184,31 @@ export default function KnowledgeBasesPage() {
     if (!file || !selectedKB) return;
 
     try {
-      const text = await file.text();
-      const lines = text.split("\n").filter(line => line.trim());
-      
-      if (lines.length < 2) {
-        notify.error("CSV file must have a header row and at least one data row");
-        return;
-      }
+      const formData = new FormData();
+      formData.append("file", file);
 
-      const header = lines[0].toLowerCase();
-      if (!header.includes("question") || !header.includes("answer")) {
-        notify.error("CSV must have 'question' and 'answer' columns");
-        return;
-      }
+      const headers: Record<string, string> = {};
+      if (token) headers["Authorization"] = `Bearer ${token}`;
 
-      let imported = 0;
-      let failed = 0;
-      for (let i = 1; i < lines.length; i++) {
-        const values = lines[i].match(/("([^"]|"")*"|[^,]+)/g) || [];
-        const cleanValue = (v: string) => v?.replace(/^"|"$/g, '').replace(/""/g, '"').trim() || '';
-        
-        const question = cleanValue(values[0] || '');
-        const answer = cleanValue(values[1] || '');
-        const category = cleanValue(values[2] || '') || null;
-        const expiration_date = cleanValue(values[3] || '') || null;
+      const res = await fetch(`/api/knowledge-bases/${selectedKB.id}/entries/import-csv`, {
+        method: "POST",
+        headers,
+        body: formData,
+      });
 
-        if (question && answer) {
-          const res = await authFetch(`/api/knowledge-bases/${selectedKB.id}/entries`, {
-            method: "POST",
-            body: JSON.stringify({ question, answer, category, expiration_date }),
-          });
-          if (res.ok) {
-            imported++;
-          } else {
-            failed++;
-          }
+      if (res.ok) {
+        const result = await res.json();
+        if (result.errors > 0) {
+          notify.info(`Imported ${result.created} entries, ${result.errors} failed`);
+        } else {
+          notify.success(`Imported ${result.created} entries successfully`);
         }
-      }
-
-      if (failed > 0) {
-        notify.info(`Imported ${imported} entries, ${failed} failed`);
+        fetchEntries(selectedKB.id);
       } else {
-        notify.success(`Imported ${imported} entries`);
+        const err = await res.json().catch(() => ({}));
+        notify.error(err.detail || "Failed to import CSV");
       }
-      fetchEntries(selectedKB.id);
-    } catch (error) {
+    } catch {
       notify.error("Failed to import CSV");
     }
 
@@ -448,7 +428,14 @@ export default function KnowledgeBasesPage() {
             entry={editingEntry}
             knowledgeBaseId={selectedKB.id}
             onClose={() => { setShowAddEntryModal(false); setEditingEntry(null); }}
-            onSave={() => { setShowAddEntryModal(false); setEditingEntry(null); fetchEntries(selectedKB.id); }}
+            onSave={(saved) => {
+              setShowAddEntryModal(false);
+              setEditingEntry(null);
+              setEntries(prev => {
+                const exists = prev.some(e => e.id === saved.id);
+                return exists ? prev.map(e => e.id === saved.id ? saved : e) : [saved, ...prev];
+              });
+            }}
           />
         )}
         </div>
@@ -634,7 +621,7 @@ function KBModal({ kb, accountId, onClose, onSave }: { kb: KnowledgeBase | null;
   );
 }
 
-function EntryModal({ entry, knowledgeBaseId, onClose, onSave }: { entry: Entry | null; knowledgeBaseId: string; onClose: () => void; onSave: () => void }) {
+function EntryModal({ entry, knowledgeBaseId, onClose, onSave }: { entry: Entry | null; knowledgeBaseId: string; onClose: () => void; onSave: (saved: Entry) => void }) {
   const { authFetch } = useAuthToken();
   const [question, setQuestion] = useState(entry?.question || "");
   const [answer, setAnswer] = useState(entry?.answer || "");
@@ -664,8 +651,9 @@ function EntryModal({ entry, knowledgeBaseId, onClose, onSave }: { entry: Entry 
       });
 
       if (res.ok) {
+        const saved: Entry = await res.json();
         notify.success(entry ? "Entry updated" : "Entry created");
-        onSave();
+        onSave(saved);
       } else {
         notify.error("Failed to save entry");
       }
