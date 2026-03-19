@@ -10,6 +10,7 @@ Endpoints:
 """
 
 import os
+import logging
 from typing import Optional, List
 from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel, Field
@@ -322,7 +323,12 @@ async def release_phone_number(
             sub_account_sid=hotel.twilio_sub_account_sid,
             sub_auth_token=hotel.twilio_sub_auth_token
         )
-        manager.release_number(phone_number.twilio_sid)
+        released = manager.release_number(phone_number.twilio_sid)
+        if not released:
+            raise HTTPException(
+                status_code=500,
+                detail="Failed to release number from Twilio"
+            )
         db.delete(phone_number)
         db.commit()
         return {"message": "Phone number released successfully"}
@@ -331,7 +337,6 @@ async def release_phone_number(
         if e.status == 404:
             # Number no longer exists in Twilio (already released or from a
             # different Twilio context). Clean up the orphaned DB record.
-            import logging
             logging.getLogger(__name__).warning(
                 f"Phone number {phone_number.twilio_sid} not found in Twilio "
                 f"(404) — removing orphaned DB record."
