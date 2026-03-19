@@ -9,6 +9,7 @@ import os
 import httpx
 from typing import Dict, Any, List, Callable, TYPE_CHECKING
 from loguru import logger
+from ..config.domain import get_public_base_url
 
 if TYPE_CHECKING:
     from .call_handler import CallHandler
@@ -433,16 +434,13 @@ class FunctionMapper:
                                     else:
                                         twiml_parts.append('<Dial timeout="30">')
 
-                                    base_url = os.environ.get("PUBLIC_BASE_URL", "")
-                                    if base_url:
-                                        status_callback = f"{base_url}/api/calls/transfer-status"
-                                        twiml_parts.append(
-                                            f'<Number statusCallback="{status_callback}" '
-                                            f'statusCallbackEvent="initiated ringing answered completed">'
-                                            f'{phone_number}</Number>'
-                                        )
-                                    else:
-                                        twiml_parts.append(f'<Number>{phone_number}</Number>')
+                                    base_url = get_public_base_url()
+                                    status_callback = f"{base_url}/api/calls/transfer-status"
+                                    twiml_parts.append(
+                                        f'<Number statusCallback="{status_callback}" '
+                                        f'statusCallbackEvent="initiated ringing answered completed">'
+                                        f'{phone_number}</Number>'
+                                    )
 
                                     twiml_parts.append('</Dial>')
                                     twiml_parts.append('</Response>')
@@ -937,16 +935,13 @@ class FunctionMapper:
                                         twiml_parts.append(f'<Dial timeout="30" callerId="{caller_id}">')
                                     else:
                                         twiml_parts.append('<Dial timeout="30">')
-                                    base_url = os.environ.get("PUBLIC_BASE_URL", "")
-                                    if base_url:
-                                        status_callback = f"{base_url}/api/calls/transfer-status"
-                                        twiml_parts.append(
-                                            f'<Number statusCallback="{status_callback}" '
-                                            f'statusCallbackEvent="initiated ringing answered completed">'
-                                            f'{target}</Number>'
-                                        )
-                                    else:
-                                        twiml_parts.append(f'<Number>{target}</Number>')
+                                    base_url = get_public_base_url()
+                                    status_callback = f"{base_url}/api/calls/transfer-status"
+                                    twiml_parts.append(
+                                        f'<Number statusCallback="{status_callback}" '
+                                        f'statusCallbackEvent="initiated ringing answered completed">'
+                                        f'{target}</Number>'
+                                    )
                                     twiml_parts.append('</Dial>')
                                     twiml_parts.append('</Response>')
                                     _cl_flow.record_transfer(call_sid=self.call_sid, transfer_to=target, transfer_type="external")
