@@ -53,7 +53,10 @@ export default function PostCallQATab({ assistantId, accountId }: PostCallQATabP
   const [llmModel, setLlmModel] = useState("");
 
   const LLM_MODELS = [
+    { value: "gpt-4.1-nano", label: "GPT-4.1 Nano (cheapest)" },
+    { value: "gpt-4.1-mini", label: "GPT-4.1 Mini (lightweight)" },
     { value: "gpt-4o-mini", label: "GPT-4o Mini (fast, cost-effective)" },
+    { value: "gpt-4.1", label: "GPT-4.1 (standard)" },
     { value: "gpt-4o", label: "GPT-4o (higher quality)" },
   ];
 
