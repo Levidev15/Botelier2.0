@@ -643,7 +643,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
             logger.exception(f"Error saving transcript for call {call_sid}: {e}")
             return False
     
-    async def _save_call_transcript(self, call_sid: str, llm_context: Optional[Any]):
+    async def _save_call_transcript(self, call_sid: str, llm_context: Optional[Any], extra_messages: Optional[list] = None):
         """
         Save call transcript to database.
         
@@ -653,11 +653,15 @@ You have access to the following Q&A knowledge base. Use this information to ans
         Args:
             call_sid: Twilio call SID
             llm_context: Pipecat's LLMContext object with conversation history (may be None)
+            extra_messages: Optional list of additional transcript entries to append after
+                extraction (e.g. the spoken pre-transfer message that bypasses LLM context).
         """
         db = None
         try:
             if llm_context:
                 transcript, tools_used = self._extract_transcript(call_sid, llm_context)
+                if extra_messages:
+                    transcript.extend(extra_messages)
                 logger.info(f"Extracted transcript ({len(transcript)} messages) for call {call_sid}")
                 if tools_used:
                     logger.info(f"🔧 Tools used during call {call_sid}: {tools_used}")
@@ -751,6 +755,11 @@ You have access to the following Q&A knowledge base. Use this information to ans
                         name = fn.get("name")
                         if name:
                             tools_used_set.add(name)
+                            transcript.append({
+                                "role": "assistant",
+                                "content": f"[Action: {name}]",
+                                "interrupted": False
+                            })
                     continue
                 
                 if role not in ("user", "assistant"):
