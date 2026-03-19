@@ -21,6 +21,7 @@ from botelier.models.phone_number import PhoneNumber
 from botelier.models.hotel import Hotel
 from botelier.models.assistant import Assistant
 from botelier.integrations.twilio.phone_numbers import PhoneNumberManager
+from twilio.base.exceptions import TwilioRestException
 from botelier.config.domain import get_public_base_url
 from botelier.models.user import User
 from botelier.auth.middleware import get_current_user, check_account_permission, get_hotel_context, AccountContext
@@ -321,21 +322,29 @@ async def release_phone_number(
             sub_account_sid=hotel.twilio_sub_account_sid,
             sub_auth_token=hotel.twilio_sub_auth_token
         )
-        
-        success = manager.release_number(phone_number.twilio_sid)
-        
-        if success:
-            # Delete from database
+        manager.release_number(phone_number.twilio_sid)
+        db.delete(phone_number)
+        db.commit()
+        return {"message": "Phone number released successfully"}
+
+    except TwilioRestException as e:
+        if e.status == 404:
+            # Number no longer exists in Twilio (already released or from a
+            # different Twilio context). Clean up the orphaned DB record.
+            import logging
+            logging.getLogger(__name__).warning(
+                f"Phone number {phone_number.twilio_sid} not found in Twilio "
+                f"(404) — removing orphaned DB record."
+            )
             db.delete(phone_number)
             db.commit()
-            
-            return {"message": "Phone number released successfully"}
-        else:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to release number from Twilio"
-            )
-            
+            return {"message": "Phone number removed (was already released from Twilio)"}
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Failed to release number from Twilio: {str(e)}"
+        )
+
     except Exception as e:
         db.rollback()
         raise HTTPException(
