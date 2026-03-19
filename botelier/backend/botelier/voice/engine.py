@@ -255,6 +255,7 @@ class VoiceEngineFactory:
                     profanity_filter=config.stt_config.get("profanity_filter", True),
                     vad_events=config.stt_config.get("vad_events", False),
                     interim_results=True,
+                    endpointing=config.stt_config.get("endpointing", 300),
                 )
                 return DeepgramSTTService(
                     api_key=api_keys.get("deepgram_api_key"),
@@ -454,7 +455,7 @@ class VoiceEngineFactory:
                     vad_params = VADParams(
                         confidence=vad_config.get("confidence", 0.5),
                         start_secs=vad_config.get("start_secs", 0.0),
-                        stop_secs=vad_config.get("stop_secs", 0.2),
+                        stop_secs=vad_config.get("stop_secs", 0.4),
                         min_volume=vad_config.get("min_volume", 0.0)
                     )
                     params.vad_analyzer = SileroVADAnalyzer(params=vad_params)
