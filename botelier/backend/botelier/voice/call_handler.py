@@ -319,6 +319,14 @@ class CallHandler:
                 except Exception as save_error:
                     logger.error(f"Failed to save transcript on error: {save_error}")
         finally:
+            # Cancel any pending post-speech transfer callback so a stale transfer
+            # cannot fire after the call has already ended / pipeline has shut down.
+            if call_sid in self.call_mappers:
+                mapper = self.call_mappers[call_sid]
+                watcher = getattr(mapper, "_tts_completion_watcher", None)
+                if watcher is not None:
+                    watcher.clear_callback()
+                    logger.debug(f"Cleared pending TTS callback for call {call_sid}")
             # Cleanup call session state
             if call_sid in self.active_calls:
                 del self.active_calls[call_sid]
