@@ -497,10 +497,19 @@ class FunctionMapper:
             #
             # IMPORTANT: Do NOT call result_callback here.  Calling it causes
             # Pipecat to feed the function result back into the LLM, which starts
-            # a new LLM generation cycle.  That cycle triggers TTS to cancel the
-            # in-flight pre-transfer audio context ~50ms after it starts —
-            # before Deepgram has returned any audio chunks — so BotStoppedSpeaking
-            # Frame never fires and the transfer callback never runs.
+            # a new LLM generation cycle that cancels in-flight TTS.
+            #
+            # WHY THE SLEEP: When the LLM calls a function, Pipecat emits both
+            # FunctionCallsStartedFrame and FunctionCallInProgressFrame downstream.
+            # FunctionCallInProgressFrame cleans up the current TTS context ~67ms
+            # after this handler runs.  Without the sleep, our TTSSpeakFrame opens
+            # a new context immediately, which FunctionCallInProgressFrame then
+            # wipes before Deepgram audio arrives (~125ms in prod).  Sleeping 150ms
+            # first lets FunctionCallInProgressFrame clear the stale context, so
+            # our TTSSpeakFrame opens a fresh context that lives long enough to
+            # receive audio.  The watcher's 5s timeout is the safety net if TTS
+            # still fails for any reason.
+            await _asyncio.sleep(0.15)
             await params.llm.push_frame(TTSSpeakFrame(pre_message))
         
         return function_schema, transfer_handler
