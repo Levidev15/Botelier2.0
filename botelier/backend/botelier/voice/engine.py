@@ -172,7 +172,12 @@ class TtsCompletionWatcher(FrameProcessor):
             cb = self._on_done_callback
             self._on_done_callback = None
             if cb is not None:
-                asyncio.create_task(cb())
+                async def _guarded_cb(callback=cb):
+                    try:
+                        await callback()
+                    except Exception:
+                        logger.exception("TtsCompletionWatcher: unhandled exception in post-speech callback")
+                asyncio.create_task(_guarded_cb())
         # Always pass frames through unchanged
         await self.push_frame(frame, direction)
 
