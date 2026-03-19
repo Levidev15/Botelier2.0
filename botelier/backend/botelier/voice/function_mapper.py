@@ -878,22 +878,23 @@ class FunctionMapper:
                             try:
                                 _cl_flow = _CLFlow(_db_flow)
 
+                                # Save transcript BEFORE the Twilio REST call for both cold and
+                                # warm transfers — the WebSocket closes immediately after the update
+                                # and /connect-complete is never called for cold transfers.
+                                if self.call_handler and hasattr(self.call_handler, '_save_call_transcript'):
+                                    try:
+                                        llm_context = self.call_handler.call_contexts.get(self.call_sid)
+                                        await self.call_handler._save_call_transcript(self.call_sid, llm_context)
+                                        logger.info(f"📝 Saved transcript before flow transfer for call {self.call_sid}")
+                                    except Exception as _e:
+                                        logger.error(f"Error saving transcript before flow transfer: {_e}")
+
                                 # Build mode-specific TwiML.
                                 # Cold REFER: omit <Stop><Stream> so Twilio lets audio drain naturally.
                                 # Warm <Dial>: include <Stop><Stream> to close stream before bridging.
                                 twiml_parts = ['<?xml version="1.0" encoding="UTF-8"?>', '<Response>']
 
                                 if flow_transfer_mode == "cold":
-                                    # Save transcript before REFER — WebSocket closes after
-                                    # REST update and /connect-complete is never called
-                                    if self.call_handler and hasattr(self.call_handler, '_save_call_transcript'):
-                                        try:
-                                            llm_context = self.call_handler.call_contexts.get(self.call_sid)
-                                            await self.call_handler._save_call_transcript(self.call_sid, llm_context)
-                                            logger.info(f"📝 Saved transcript before cold flow transfer for call {self.call_sid}")
-                                        except Exception as _e:
-                                            logger.error(f"Error saving transcript before cold flow transfer: {_e}")
-
                                     digits_only = _re_flow.sub(r'[^\d+]', '', target)
                                     sip_uri = f"sip:{digits_only}@pstn.twilio.com"
                                     twiml_parts.append(f'<Refer><Sip>{sip_uri}</Sip></Refer>')
