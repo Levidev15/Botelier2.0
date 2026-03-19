@@ -751,8 +751,13 @@ You have access to the following Q&A knowledge base. Use this information to ans
                 
                 if role == "assistant" and msg.get("tool_calls"):
                     for tc in msg["tool_calls"]:
-                        fn = tc.get("function", {})
-                        name = fn.get("name")
+                        if isinstance(tc, dict):
+                            fn = tc.get("function", {})
+                            name = fn.get("name") if isinstance(fn, dict) else None
+                        elif hasattr(tc, "function"):
+                            name = getattr(tc.function, "name", None)
+                        else:
+                            continue
                         if name:
                             tools_used_set.add(name)
                             transcript.append({
