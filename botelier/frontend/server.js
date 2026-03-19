@@ -39,6 +39,19 @@ const apiProxy = createProxyMiddleware({
   }
 });
 
+const wsProxy = createProxyMiddleware({
+  target: backendUrl,
+  changeOrigin: true,
+  ws: true,
+  logLevel: 'silent',
+  on: {
+    error: (err, req, socket) => {
+      console.error(`❌ WebSocket proxy error for ${req?.url}:`, err.message);
+      if (socket && socket.writable) socket.destroy();
+    },
+  },
+});
+
 app.prepare().then(() => {
   const server = createServer(async (req, res) => {
     try {
@@ -72,10 +85,19 @@ app.prepare().then(() => {
     }
   });
 
+  server.on('upgrade', (req, socket, head) => {
+    if (req.url && req.url.startsWith('/api/ws/')) {
+      console.log(`🔌 WebSocket upgrade: ${req.url} → ${backendUrl}`);
+      wsProxy.upgrade(req, socket, head);
+    } else {
+      socket.destroy();
+    }
+  });
+
   server.listen(port, hostname, (err) => {
     if (err) throw err;
     console.log(`✅ Custom Next.js server ready on http://${hostname}:${port}`);
     console.log(`🔧 Proxying HTTP /api/* to ${backendUrl}`);
-    console.log(`📞 Twilio WebSocket connects directly to backend (no proxy)`);
+    console.log(`🔌 Proxying WebSocket /api/ws/* to ${backendUrl}`);
   });
 });
