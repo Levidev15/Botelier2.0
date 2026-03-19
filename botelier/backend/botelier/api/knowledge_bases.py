@@ -391,6 +391,7 @@ async def delete_entry(
 async def import_csv(
     kb_id: str,
     file: UploadFile = File(...),
+    replace_duplicates: bool = Query(False, description="When true, update existing entries whose question matches instead of skipping them"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -410,7 +411,14 @@ async def import_csv(
             detail="CSV must contain 'question' and 'answer' columns"
         )
     
+    existing_by_question = {
+        e.question.strip().lower(): e
+        for e in db.query(KnowledgeEntry).filter(KnowledgeEntry.knowledge_base_id == kb_id).all()
+    }
+    
     created_count = 0
+    replaced_count = 0
+    skipped_count = 0
     error_count = 0
     errors = []
     
@@ -436,6 +444,18 @@ async def import_csv(
                     errors.append(f"Row {row_num}: Invalid date format '{exp_date_str}'")
                     continue
             
+            existing = existing_by_question.get(question.lower())
+            if existing:
+                if replace_duplicates:
+                    existing.answer = answer
+                    existing.category = category
+                    existing.expiration_date = exp_date
+                    existing.updated_at = datetime.utcnow()
+                    replaced_count += 1
+                else:
+                    skipped_count += 1
+                continue
+            
             entry = KnowledgeEntry(
                 knowledge_base_id=kb_id,
                 question=question,
@@ -451,12 +471,14 @@ async def import_csv(
             error_count += 1
             errors.append(f"Row {row_num}: {str(e)}")
     
-    if created_count > 0:
+    if created_count > 0 or replaced_count > 0:
         db.commit()
     
     return {
         "success": True,
         "created": created_count,
+        "replaced": replaced_count,
+        "skipped": skipped_count,
         "errors": error_count,
         "error_details": errors[:10]
     }

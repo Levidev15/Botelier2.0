@@ -1,10 +1,9 @@
 "use client";
 
-import { useState, useEffect } from "react";
-import { BookOpen, Plus, Pencil, Trash2, ChevronRight, ArrowLeft, Upload, Download, Search, Tag, AlertCircle, X, Grid3x3, List } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { BookOpen, Plus, Pencil, Trash2, ChevronRight, ArrowLeft, Upload, Download, Search, Tag, AlertCircle, X, Grid3x3, List, CheckCircle2 } from "lucide-react";
 import { notify, confirmAction } from "@/lib/notifications";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
-import { getAccountContext } from "@/lib/auth/accountContext";
 import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
 import { usePermissions } from "@/lib/auth/usePermissions";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
@@ -31,6 +30,46 @@ interface Entry {
   updated_at: string;
 }
 
+interface ParsedRow {
+  question: string;
+  answer: string;
+  category: string | null;
+  expiration_date: string | null;
+  isDuplicate: boolean;
+}
+
+interface ImportResult {
+  created: number;
+  replaced: number;
+  skipped: number;
+  errors: number;
+  error_details: string[];
+}
+
+function parseCSVLine(line: string): string[] {
+  const values: string[] = [];
+  let current = "";
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '"') {
+      if (inQuotes && line[i + 1] === '"') {
+        current += '"';
+        i++;
+      } else {
+        inQuotes = !inQuotes;
+      }
+    } else if (ch === ',' && !inQuotes) {
+      values.push(current.trim());
+      current = "";
+    } else {
+      current += ch;
+    }
+  }
+  values.push(current.trim());
+  return values;
+}
+
 function formatDate(dateString: string | null): string {
   if (!dateString) return "N/A";
   const date = new Date(dateString);
@@ -52,7 +91,7 @@ export default function KnowledgeBasesPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
   const { hasAccess, loading: permLoading } = usePagePermission("knowledge_base", "view");
   const { can, isPlatformAdmin } = usePermissions();
-  const { authFetch, token } = useAuthToken();
+  const { authFetch } = useAuthToken();
   const canCreate = isPlatformAdmin || can("knowledge_base", "create");
   const canEdit = isPlatformAdmin || can("knowledge_base", "edit");
   const canDelete = isPlatformAdmin || can("knowledge_base", "delete");
@@ -72,6 +111,12 @@ export default function KnowledgeBasesPage() {
   const [view, setView] = useState<"grid" | "table">("grid");
   const [categoryFilter, setCategoryFilter] = useState<string>("");
   const [showExpired, setShowExpired] = useState(false);
+
+  const [reviewRows, setReviewRows] = useState<ParsedRow[] | null>(null);
+  const [replaceDuplicates, setReplaceDuplicates] = useState(false);
+  const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
+  const importFileRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     if (!contextLoading && accountId) {
@@ -180,53 +225,121 @@ export default function KnowledgeBasesPage() {
     notify.success("Entries exported successfully");
   };
 
-  const handleImportCSV = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || !selectedKB) return;
 
     try {
-      const formData = new FormData();
-      formData.append("file", file);
+      const text = await file.text();
+      const lines = text.split("\n").filter(line => line.trim());
 
-      const headers: Record<string, string> = {};
-      if (token) headers["Authorization"] = `Bearer ${token}`;
-
-      const accountCtx = getAccountContext();
-      if (accountCtx?.isAdminSession && accountCtx.sessionToken) {
-        headers["X-Support-Session"] = accountCtx.sessionToken;
-        headers["X-Account-Id"] = accountCtx.accountId;
-      }
-
-      const res = await fetch(`/api/knowledge-bases/${selectedKB.id}/entries/import-csv`, {
-        method: "POST",
-        headers,
-        body: formData,
-      });
-
-      if (res.status === 401) {
-        if (typeof window !== "undefined") {
-          window.location.href = "/login?callbackUrl=/dashboard&reason=session_expired";
-        }
+      if (lines.length < 2) {
+        notify.error("CSV file must have a header row and at least one data row");
+        if (importFileRef.current) importFileRef.current.value = "";
         return;
       }
 
-      if (res.ok) {
-        const result = await res.json();
-        if (result.errors > 0) {
-          notify.info(`Imported ${result.created} entries, ${result.errors} failed`);
-        } else {
-          notify.success(`Imported ${result.created} entries successfully`);
-        }
-        fetchEntries(selectedKB.id);
-      } else {
-        const err = await res.json().catch(() => ({}));
-        notify.error(err.detail || "Failed to import CSV");
+      const headerLine = lines[0].toLowerCase();
+      const headers = parseCSVLine(headerLine);
+      const qIdx = headers.indexOf("question");
+      const aIdx = headers.indexOf("answer");
+      const cIdx = headers.indexOf("category");
+      const eIdx = headers.indexOf("expiration_date");
+
+      if (qIdx === -1 || aIdx === -1) {
+        notify.error("CSV must have 'question' and 'answer' columns");
+        if (importFileRef.current) importFileRef.current.value = "";
+        return;
       }
-    } catch {
-      notify.error("Failed to import CSV");
+
+      const existingQuestions = new Set(entries.map(e => e.question.trim().toLowerCase()));
+
+      const rows: ParsedRow[] = [];
+      for (let i = 1; i < lines.length; i++) {
+        const values = parseCSVLine(lines[i]);
+        const question = values[qIdx] || "";
+        const answer = values[aIdx] || "";
+        if (!question && !answer) continue;
+        rows.push({
+          question,
+          answer,
+          category: cIdx !== -1 ? (values[cIdx] || null) : null,
+          expiration_date: eIdx !== -1 ? (values[eIdx] || null) : null,
+          isDuplicate: existingQuestions.has(question.trim().toLowerCase()),
+        });
+      }
+
+      if (rows.length === 0) {
+        notify.error("No valid rows found in CSV");
+        if (importFileRef.current) importFileRef.current.value = "";
+        return;
+      }
+
+      setReplaceDuplicates(false);
+      setReviewRows(rows);
+    } catch (error) {
+      notify.error("Failed to read CSV file");
     }
 
-    e.target.value = "";
+    if (importFileRef.current) importFileRef.current.value = "";
+  };
+
+  const handleImportConfirm = async () => {
+    if (!reviewRows || !selectedKB) return;
+
+    const rows = reviewRows;
+    setReviewRows(null);
+
+    const BATCH_SIZE = 20;
+    const totalRows = rows.length;
+    setImportProgress({ done: 0, total: totalRows });
+
+    const aggregated: ImportResult = { created: 0, replaced: 0, skipped: 0, errors: 0, error_details: [] };
+
+    for (let offset = 0; offset < rows.length; offset += BATCH_SIZE) {
+      const batch = rows.slice(offset, offset + BATCH_SIZE);
+
+      const csvLines = ["question,answer,category,expiration_date"];
+      for (const r of batch) {
+        const q = `"${(r.question || '').replace(/"/g, '""')}"`;
+        const a = `"${(r.answer || '').replace(/"/g, '""')}"`;
+        const c = `"${(r.category || '').replace(/"/g, '""')}"`;
+        const e = `"${r.expiration_date || ''}"`;
+        csvLines.push(`${q},${a},${c},${e}`);
+      }
+      const csvBlob = new Blob([csvLines.join("\n")], { type: "text/csv" });
+      const formData = new FormData();
+      formData.append("file", csvBlob, "batch.csv");
+
+      try {
+        const res = await authFetch(
+          `/api/knowledge-bases/${selectedKB.id}/entries/import-csv?replace_duplicates=${replaceDuplicates}`,
+          { method: "POST", body: formData }
+        );
+        if (res.ok) {
+          const data = await res.json();
+          aggregated.created += data.created || 0;
+          aggregated.replaced += data.replaced || 0;
+          aggregated.skipped += data.skipped || 0;
+          aggregated.errors += data.errors || 0;
+          if (data.error_details) {
+            aggregated.error_details.push(...data.error_details);
+          }
+        } else {
+          aggregated.errors += batch.length;
+          aggregated.error_details.push(`Batch at row ${offset + 2} failed with status ${res.status}`);
+        }
+      } catch (err) {
+        aggregated.errors += batch.length;
+        aggregated.error_details.push(`Batch at row ${offset + 2} failed: network error`);
+      }
+
+      setImportProgress({ done: Math.min(offset + BATCH_SIZE, totalRows), total: totalRows });
+    }
+
+    setImportProgress(null);
+    setImportResult(aggregated);
+    fetchEntries(selectedKB.id);
   };
 
   const uniqueCategories = Array.from(new Set(entries.filter(e => e.category).map(e => e.category as string)));
@@ -259,7 +372,14 @@ export default function KnowledgeBasesPage() {
   if (selectedKB) {
     return (
       <div className="h-full">
-        <div className="border-b border-gray-800 bg-[#0a0a0a] sticky top-0 z-10">
+        {importProgress && (
+          <div className="fixed top-0 left-0 right-0 z-50 bg-blue-600 text-white text-sm font-medium px-6 py-3 flex items-center justify-center gap-3 shadow-lg">
+            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+            Syncing {importProgress.done} of {importProgress.total} entries…
+          </div>
+        )}
+
+        <div className={`border-b border-gray-800 bg-[#0a0a0a] sticky z-10 ${importProgress ? "top-10" : "top-0"}`}>
           <div className="px-8 py-6">
             <div className="flex items-center gap-4">
               <button onClick={goBack} className="p-2 hover:bg-gray-800 rounded-lg transition-colors">
@@ -321,7 +441,7 @@ export default function KnowledgeBasesPage() {
                   <label className="flex items-center gap-2 px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg text-gray-400 hover:text-white transition-colors cursor-pointer text-sm">
                     <Upload className="w-4 h-4" />
                     Import
-                    <input type="file" accept=".csv" onChange={handleImportCSV} className="hidden" />
+                    <input ref={importFileRef} type="file" accept=".csv" onChange={handleFileChange} className="hidden" />
                   </label>
                 )}
                 {canCreate && (
@@ -452,6 +572,23 @@ export default function KnowledgeBasesPage() {
             }}
           />
         )}
+
+        {reviewRows && (
+          <ReviewModal
+            rows={reviewRows}
+            replaceDuplicates={replaceDuplicates}
+            onToggleReplace={() => setReplaceDuplicates(r => !r)}
+            onCancel={() => { setReviewRows(null); }}
+            onImport={handleImportConfirm}
+          />
+        )}
+
+        {importResult && (
+          <ResultModal
+            result={importResult}
+            onDone={() => setImportResult(null)}
+          />
+        )}
         </div>
       </div>
     );
@@ -551,6 +688,179 @@ export default function KnowledgeBasesPage() {
           onSave={() => { setShowCreateModal(false); setEditingKB(null); fetchKnowledgeBases(); }}
         />
       )}
+    </div>
+  );
+}
+
+function ReviewModal({
+  rows,
+  replaceDuplicates,
+  onToggleReplace,
+  onCancel,
+  onImport,
+}: {
+  rows: ParsedRow[];
+  replaceDuplicates: boolean;
+  onToggleReplace: () => void;
+  onCancel: () => void;
+  onImport: () => void;
+}) {
+  const duplicateCount = rows.filter(r => r.isDuplicate).length;
+  const newCount = rows.length - duplicateCount;
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50" onClick={onCancel}>
+      <div
+        className="bg-[#1A1A1A] border border-white/10 rounded-xl w-full max-w-2xl flex flex-col max-h-[80vh]"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <div className="flex items-center justify-between px-6 py-5 border-b border-white/10">
+          <div>
+            <h2 className="text-xl font-semibold text-white">Review Import</h2>
+            <p className="text-sm text-white/50 mt-0.5">
+              {rows.length} rows parsed &mdash; {newCount} new, {duplicateCount} duplicate{duplicateCount !== 1 ? "s" : ""}
+            </p>
+          </div>
+          <button onClick={onCancel} className="p-1 hover:bg-white/5 rounded">
+            <X className="w-5 h-5 text-white/60" />
+          </button>
+        </div>
+
+        {duplicateCount > 0 && (
+          <div className="px-6 py-4 border-b border-white/10 flex items-center justify-between gap-4">
+            <div>
+              <p className="text-sm text-white font-medium">{duplicateCount} duplicate question{duplicateCount !== 1 ? "s" : ""} found</p>
+              <p className="text-xs text-white/50 mt-0.5">
+                {replaceDuplicates
+                  ? "Existing entries will be overwritten with new data"
+                  : "Existing entries will be left unchanged"}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <span className={`text-xs ${!replaceDuplicates ? "text-white" : "text-white/40"}`}>Skip</span>
+              <button
+                onClick={onToggleReplace}
+                className={`relative w-10 h-5 rounded-full transition-colors ${replaceDuplicates ? "bg-blue-600" : "bg-white/20"}`}
+              >
+                <span
+                  className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${replaceDuplicates ? "translate-x-5" : "translate-x-0"}`}
+                />
+              </button>
+              <span className={`text-xs ${replaceDuplicates ? "text-white" : "text-white/40"}`}>Replace</span>
+            </div>
+          </div>
+        )}
+
+        <div className="overflow-y-auto flex-1 px-6 py-3 space-y-2">
+          {rows.map((row, idx) => (
+            <div
+              key={idx}
+              className={`rounded-lg px-4 py-3 border text-sm ${
+                row.isDuplicate
+                  ? "bg-yellow-500/5 border-yellow-500/20"
+                  : "bg-white/[0.02] border-white/5"
+              }`}
+            >
+              <div className="flex items-start gap-2">
+                {row.isDuplicate && (
+                  <span className="shrink-0 mt-0.5 text-xs px-1.5 py-0.5 bg-yellow-500/15 text-yellow-400 rounded font-medium">
+                    duplicate
+                  </span>
+                )}
+                <div className="min-w-0">
+                  <p className="text-white font-medium truncate">{row.question || <span className="text-white/30 italic">no question</span>}</p>
+                  <p className="text-white/50 text-xs mt-0.5 line-clamp-2">{row.answer || <span className="italic">no answer</span>}</p>
+                  {row.category && (
+                    <span className="inline-block mt-1 text-xs px-1.5 py-0.5 bg-blue-500/10 text-blue-400 rounded">
+                      {row.category}
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
+        <div className="flex justify-end gap-3 px-6 py-5 border-t border-white/10">
+          <button onClick={onCancel} className="px-4 py-2 text-white/60 hover:text-white transition-colors text-sm">
+            Cancel
+          </button>
+          <button
+            onClick={onImport}
+            className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors text-sm"
+          >
+            Import {rows.length} entries
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ResultModal({ result, onDone }: { result: ImportResult; onDone: () => void }) {
+  const totalImported = result.created + result.replaced;
+  const isFullFailure = totalImported === 0 && result.errors > 0;
+
+  return (
+    <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
+      <div className="bg-[#1A1A1A] border border-white/10 rounded-xl w-full max-w-md p-6">
+        <div className="flex items-center gap-3 mb-5">
+          <div className={`p-2 rounded-full ${isFullFailure ? "bg-red-500/15" : "bg-green-500/15"}`}>
+            <CheckCircle2 className={`w-6 h-6 ${isFullFailure ? "text-red-400" : "text-green-400"}`} />
+          </div>
+          <div>
+            <h2 className="text-xl font-semibold text-white">{isFullFailure ? "Import Failed" : "Import Complete"}</h2>
+            {isFullFailure && (
+              <p className="text-sm text-red-400 mt-0.5">No entries were imported — see errors below</p>
+            )}
+          </div>
+        </div>
+
+        <div className="space-y-2 mb-5">
+          {result.created > 0 && (
+            <div className="flex items-center justify-between py-2 border-b border-white/5">
+              <span className="text-sm text-white/70">New entries added</span>
+              <span className="text-sm font-medium text-green-400">{result.created}</span>
+            </div>
+          )}
+          {result.replaced > 0 && (
+            <div className="flex items-center justify-between py-2 border-b border-white/5">
+              <span className="text-sm text-white/70">Duplicates replaced</span>
+              <span className="text-sm font-medium text-blue-400">{result.replaced}</span>
+            </div>
+          )}
+          {result.skipped > 0 && (
+            <div className="flex items-center justify-between py-2 border-b border-white/5">
+              <span className="text-sm text-white/70">Duplicates skipped</span>
+              <span className="text-sm font-medium text-white/50">{result.skipped}</span>
+            </div>
+          )}
+          {result.errors > 0 && (
+            <div className="flex items-center justify-between py-2 border-b border-white/5">
+              <span className="text-sm text-white/70">Errors</span>
+              <span className="text-sm font-medium text-red-400">{result.errors}</span>
+            </div>
+          )}
+        </div>
+
+        {result.error_details.length > 0 && (
+          <div className="bg-red-500/5 border border-red-500/20 rounded-lg p-3 mb-5 max-h-40 overflow-y-auto">
+            <p className="text-xs font-medium text-red-400 mb-2">Error details</p>
+            {result.error_details.slice(0, 10).map((err, i) => (
+              <p key={i} className="text-xs text-white/50 leading-relaxed">{err}</p>
+            ))}
+          </div>
+        )}
+
+        <div className="flex justify-end">
+          <button
+            onClick={onDone}
+            className="px-5 py-2 bg-blue-600 hover:bg-blue-700 text-white font-medium rounded-lg transition-colors text-sm"
+          >
+            Done
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
