@@ -11,6 +11,7 @@ interface AcwConfig {
   quality_rubric?: string;
   summary_enabled?: boolean;
   summary_prompt?: string;
+  llm_model?: string;
 }
 
 interface ResolutionOption {
@@ -49,6 +50,12 @@ export default function PostCallQATab({ assistantId, accountId }: PostCallQATabP
 
   const [summaryPrompt, setSummaryPrompt] = useState("");
   const [summarySaving, setSummarySaving] = useState(false);
+  const [llmModel, setLlmModel] = useState("");
+
+  const LLM_MODELS = [
+    { value: "gpt-4o-mini", label: "GPT-4o Mini (fast, cost-effective)" },
+    { value: "gpt-4o", label: "GPT-4o (higher quality)" },
+  ];
 
   useEffect(() => {
     fetchAcwConfig();
@@ -65,6 +72,7 @@ export default function PostCallQATab({ assistantId, accountId }: PostCallQATabP
         setAcwConfig(data);
         setQualityRubric(data.quality_rubric || "");
         setSummaryPrompt(data.summary_prompt || "");
+        setLlmModel(data.llm_model || "gpt-4o-mini");
       }
     } catch (error) {
       console.error("Error fetching ACW config:", error);
@@ -200,29 +208,54 @@ export default function PostCallQATab({ assistantId, accountId }: PostCallQATabP
           <Settings className="h-5 w-5 text-indigo-400" />
           <h3 className="text-lg font-medium text-white">Settings</h3>
         </div>
-        <div className="flex items-center justify-between">
-          <div>
-            <p className="text-sm text-white">Auto-run after call</p>
-            <p className="text-xs text-gray-400 mt-0.5">
-              When enabled, Post Call QA runs automatically after every call. When disabled, use the AI button in call logs to run it manually.
+        <div className="space-y-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <p className="text-sm text-white">Auto-run after call</p>
+              <p className="text-xs text-gray-400 mt-0.5">
+                When enabled, Post Call QA runs automatically after every call. When disabled, use the AI button in call logs to run it manually.
+              </p>
+            </div>
+            <button
+              onClick={async () => {
+                const newValue = !acwConfig.auto_run;
+                const ok = await patchAcwConfig({ auto_run: newValue });
+                if (ok) notify.success(newValue ? "Auto-run enabled" : "Auto-run disabled");
+              }}
+              className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
+                acwConfig.auto_run ? "bg-indigo-600" : "bg-gray-600"
+              }`}
+            >
+              <span
+                className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
+                  acwConfig.auto_run ? "translate-x-6" : "translate-x-1"
+                }`}
+              />
+            </button>
+          </div>
+
+          <div className="border-t border-gray-700 pt-4">
+            <label className="block text-sm font-medium text-gray-300 mb-2">LLM Model</label>
+            <select
+              value={llmModel}
+              onChange={async (e) => {
+                const newModel = e.target.value;
+                setLlmModel(newModel);
+                const ok = await patchAcwConfig({ llm_model: newModel });
+                if (ok) notify.success(`Model set to ${newModel}`);
+              }}
+              className="w-full px-3 py-2 bg-gray-900 border border-gray-700 rounded-lg text-white focus:outline-none focus:ring-2 focus:ring-indigo-500"
+            >
+              {LLM_MODELS.map((model) => (
+                <option key={model.value} value={model.value}>
+                  {model.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-400 mt-1">
+              Choose which OpenAI model to use for Post Call QA analysis
             </p>
           </div>
-          <button
-            onClick={async () => {
-              const newValue = !acwConfig.auto_run;
-              const ok = await patchAcwConfig({ auto_run: newValue });
-              if (ok) notify.success(newValue ? "Auto-run enabled" : "Auto-run disabled");
-            }}
-            className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors ${
-              acwConfig.auto_run ? "bg-indigo-600" : "bg-gray-600"
-            }`}
-          >
-            <span
-              className={`inline-block h-4 w-4 transform rounded-full bg-white transition-transform ${
-                acwConfig.auto_run ? "translate-x-6" : "translate-x-1"
-              }`}
-            />
-          </button>
         </div>
       </div>
 
