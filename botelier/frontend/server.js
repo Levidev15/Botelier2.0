@@ -53,6 +53,8 @@ const wsProxy = createProxyMiddleware({
 });
 
 app.prepare().then(() => {
+  const nextjsUpgradeHandler = app.getUpgradeHandler();
+
   const server = createServer(async (req, res) => {
     try {
       const parsedUrl = parse(req.url, true);
@@ -90,7 +92,7 @@ app.prepare().then(() => {
       console.log(`🔌 WebSocket upgrade: ${req.url} → ${backendUrl}`);
       wsProxy.upgrade(req, socket, head);
     } else {
-      socket.destroy();
+      nextjsUpgradeHandler(req, socket, head);
     }
   });
 
