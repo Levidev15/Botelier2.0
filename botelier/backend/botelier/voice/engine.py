@@ -108,7 +108,7 @@ class TtsCompletionWatcher(FrameProcessor):
         """
         self._speaking_done.clear()
 
-    def schedule_after_speech(self, callback) -> None:
+    def schedule_after_speech(self, callback, timeout: float = 5.0) -> None:
         """
         Run ``callback`` as soon as the current speech is done.
 
@@ -116,6 +116,11 @@ class TtsCompletionWatcher(FrameProcessor):
           via asyncio.create_task so it runs outside the current stack frame.
         - If speech is still in progress, registers it as a one-shot callback
           that fires when the next BotStoppedSpeakingFrame arrives.
+
+        A safety ``timeout`` (default 5 s) guarantees the callback fires even
+        when BotStoppedSpeakingFrame never arrives — for example when Pipecat's
+        FunctionCallInProgressFrame wipes the TTS context before Deepgram audio
+        returns, leaving the pipeline silent and the event permanently unset.
 
         This is the preferred method for transfer handlers: call reset() first,
         then schedule_after_speech(), then push the TTSSpeakFrame, then return
@@ -129,6 +134,8 @@ class TtsCompletionWatcher(FrameProcessor):
 
         Args:
             callback: Async callable (no arguments) to invoke after speech ends.
+            timeout:  Seconds to wait for BotStoppedSpeakingFrame before firing
+                      the callback unconditionally.  Default 5 s.
         """
         if self._speaking_done.is_set():
             asyncio.create_task(callback())
@@ -136,6 +143,29 @@ class TtsCompletionWatcher(FrameProcessor):
             if self._on_done_callback is not None:
                 logger.warning("TtsCompletionWatcher: overwriting existing on-done callback")
             self._on_done_callback = callback
+
+            async def _timeout_guard():
+                try:
+                    await asyncio.wait_for(self._speaking_done.wait(), timeout=timeout)
+                except asyncio.TimeoutError:
+                    # BotStoppedSpeakingFrame never arrived within the window.
+                    # Fire the callback now so the transfer is never permanently lost.
+                    # Check atomically: process_frame may have already fired it.
+                    cb = self._on_done_callback
+                    self._on_done_callback = None
+                    if cb is not None:
+                        logger.warning(
+                            f"TtsCompletionWatcher: BotStoppedSpeakingFrame did not arrive "
+                            f"within {timeout}s — firing transfer callback via timeout"
+                        )
+                        try:
+                            await cb()
+                        except Exception:
+                            logger.exception(
+                                "TtsCompletionWatcher: unhandled exception in timeout callback"
+                            )
+
+            asyncio.create_task(_timeout_guard())
 
     def clear_callback(self) -> None:
         """
