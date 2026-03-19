@@ -207,18 +207,18 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
             f"- {d.name}: {d.description or 'No description'}" for d in dispositions
         )
         prompt_parts.append(
-            f"DISPOSITIONS — pick the single best match:\n{disp_list}"
+            f"DISPOSITION (required) — pick exactly one. Return the exact name as listed:\n{disp_list}"
         )
-        json_fields.append('"disposition": "exact name from list or null"')
+        json_fields.append('"disposition": "exact name from list above"')
 
     if has_resolutions:
         res_list = "\n".join(
             f"- {r.name}: {r.description or 'No description'}" for r in resolution_options
         )
         prompt_parts.append(
-            f"RESOLUTION STATUS — pick the single best match:\n{res_list}"
+            f"RESOLUTION (required) — pick exactly one. Return the exact name as listed:\n{res_list}"
         )
-        json_fields.append('"resolution": "exact name from list or null"')
+        json_fields.append('"resolution": "exact name from list above"')
 
     if has_quality:
         prompt_parts.append(
@@ -243,9 +243,9 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
     try:
         client = _get_client()
         response = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=acw_config.get("llm_model", "gpt-4o-mini"),
             messages=[
-                {"role": "system", "content": "You are a call center QA analyst. Return only valid JSON."},
+                {"role": "system", "content": "You are a call center QA analyst. Analyze the call transcript and return only valid JSON. Always select exactly one disposition and one resolution from the provided lists — never return null for these fields."},
                 {"role": "user", "content": full_prompt}
             ],
             response_format={"type": "json_object"},
