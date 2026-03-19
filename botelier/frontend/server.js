@@ -1,5 +1,6 @@
 const { createServer } = require('http');
 const { parse } = require('url');
+const net = require('net');
 const next = require('next');
 const { createProxyMiddleware } = require('http-proxy-middleware');
 
@@ -39,18 +40,69 @@ const apiProxy = createProxyMiddleware({
   }
 });
 
-const wsProxy = createProxyMiddleware({
-  target: backendUrl,
-  changeOrigin: true,
-  ws: true,
-  logLevel: 'silent',
-  on: {
-    error: (err, req, socket) => {
-      console.error(`❌ WebSocket proxy error for ${req?.url}:`, err.message);
-      if (socket && socket.writable) socket.destroy();
-    },
-  },
-});
+// Parse backend host/port once at startup for the raw WS relay.
+const backendParsed = new URL(backendUrl);
+const backendHost = backendParsed.hostname;
+const backendPort = parseInt(backendParsed.port || '80', 10);
+
+/**
+ * Raw TCP WebSocket relay for /api/ws/* (Twilio Media Streams).
+ *
+ * http-proxy-middleware relays WebSocket traffic through Node.js streams
+ * which use Nagle's algorithm by default, batching the 160-byte μ-law
+ * audio frames that Twilio sends every 20ms. That batching causes audible
+ * choppiness in prod (where WS goes through this Node.js server) even
+ * though dev is fine (where Twilio connects to FastAPI directly on :3001).
+ *
+ * Using net.Socket with setNoDelay(true) on both sides disables Nagle and
+ * gives every audio frame its own TCP segment — the same zero-buffering
+ * behaviour nginx uses for WebSocket proxying.
+ */
+function relayWebSocket(req, socket, head) {
+  // Disable Nagle on the incoming Twilio socket immediately.
+  socket.setNoDelay(true);
+
+  const proxySocket = net.connect(backendPort, backendHost, () => {
+    // Disable Nagle on the outgoing FastAPI socket.
+    proxySocket.setNoDelay(true);
+
+    // Re-emit the original HTTP upgrade request to the backend.
+    let upgradeReq = `${req.method} ${req.url} HTTP/1.1\r\n`;
+    for (const [key, value] of Object.entries(req.headers)) {
+      upgradeReq += `${key}: ${value}\r\n`;
+    }
+    upgradeReq += '\r\n';
+    proxySocket.write(upgradeReq);
+
+    // Forward any buffered bytes that arrived after the HTTP headers
+    // (typically empty for WebSocket upgrades, but safe to include).
+    if (head && head.length > 0) {
+      proxySocket.write(head);
+    }
+
+    // Bidirectional raw pipe — no parsing, no buffering.
+    socket.pipe(proxySocket, { end: false });
+    proxySocket.pipe(socket, { end: false });
+  });
+
+  // --- Symmetric cleanup: either side closing/erroring tears down both ---
+  proxySocket.on('error', (err) => {
+    console.error(`❌ Raw WS relay error for ${req.url}:`, err.message);
+    if (!socket.destroyed) socket.destroy();
+  });
+
+  socket.on('error', () => {
+    if (!proxySocket.destroyed) proxySocket.destroy();
+  });
+
+  socket.on('close', () => {
+    if (!proxySocket.destroyed) proxySocket.destroy();
+  });
+
+  proxySocket.on('close', () => {
+    if (!socket.destroyed) socket.destroy();
+  });
+}
 
 app.prepare().then(() => {
   const nextjsUpgradeHandler = app.getUpgradeHandler();
@@ -89,8 +141,8 @@ app.prepare().then(() => {
 
   server.on('upgrade', (req, socket, head) => {
     if (req.url && req.url.startsWith('/api/ws/')) {
-      console.log(`🔌 WebSocket upgrade: ${req.url} → ${backendUrl}`);
-      wsProxy.upgrade(req, socket, head);
+      console.log(`🔌 WebSocket upgrade (raw relay): ${req.url} → ${backendUrl}`);
+      relayWebSocket(req, socket, head);
     } else {
       nextjsUpgradeHandler(req, socket, head);
     }
@@ -100,6 +152,6 @@ app.prepare().then(() => {
     if (err) throw err;
     console.log(`✅ Custom Next.js server ready on http://${hostname}:${port}`);
     console.log(`🔧 Proxying HTTP /api/* to ${backendUrl}`);
-    console.log(`🔌 Proxying WebSocket /api/ws/* to ${backendUrl}`);
+    console.log(`🔌 Raw WebSocket relay /api/ws/* → ${backendUrl} (TCP_NODELAY)`);
   });
 });
