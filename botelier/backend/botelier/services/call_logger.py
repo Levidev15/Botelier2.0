@@ -140,7 +140,13 @@ class CallLogger:
             if not call_log.ended_at:
                 call_log.ended_at = datetime.utcnow()
             
-            if transcript:
+            if transcript and not call_log.transcript:
+                # Only write transcript if one is not already stored.
+                # Transfer calls save the transcript (including the spoken pre-transfer
+                # message) inside _execute_transfer, BEFORE the pipeline shuts down.
+                # The post-pipeline save in handle_call would overwrite that enriched
+                # transcript with a version that lacks the pre-transfer line, so we
+                # skip it here when the transcript has already been persisted.
                 formatted_transcript = []
                 for msg in transcript:
                     if msg.get("role") in ("user", "assistant"):
@@ -151,6 +157,8 @@ class CallLogger:
                         })
                 call_log.transcript = formatted_transcript
                 logger.info(f"Saved transcript with {len(formatted_transcript)} messages for call {call_sid}")
+            elif transcript and call_log.transcript:
+                logger.info(f"Transcript already saved for call {call_sid} — skipping overwrite ({len(call_log.transcript)} messages preserved)")
             
             if outcome:
                 call_log.outcome = outcome
