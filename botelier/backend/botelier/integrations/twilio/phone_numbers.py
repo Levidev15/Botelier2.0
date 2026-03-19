@@ -249,10 +249,9 @@ class PhoneNumberManager:
         try:
             self.client.client.incoming_phone_numbers(phone_number_sid).delete()
             return True
-            
-        except TwilioRestException as e:
-            print(f"Failed to release number {phone_number_sid}: {e}")
-            return False
+
+        except TwilioRestException:
+            raise
     
     def list_numbers(self) -> List[Dict[str, Any]]:
         """
