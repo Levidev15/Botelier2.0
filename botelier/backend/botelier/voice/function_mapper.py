@@ -91,6 +91,11 @@ class FunctionMapper:
         # fixed sleep, ensuring the pre-transfer message is never clipped.
         self._tts_completion_watcher = None
 
+        # TTS service instance — set by CallHandler after pipeline creation.
+        # Used by transfer handlers to check audio context state after interruptions
+        # and create a fresh context when needed before pushing TTSSpeakFrame.
+        self._tts_service = None
+
         # Stores the spoken pre-transfer message so _execute_transfer can append
         # it to the saved transcript.  TTSSpeakFrame bypasses the LLM context, so
         # the message would otherwise be invisible to the ACW LLM.
@@ -118,6 +123,20 @@ class FunctionMapper:
         """
         self._tts_completion_watcher = watcher
         logger.debug(f"TtsCompletionWatcher linked to FunctionMapper for call {self.call_sid}")
+
+    def set_tts_service(self, tts_service) -> None:
+        """
+        Attach the TTS service instance created by the voice pipeline.
+
+        Called by CallHandler immediately after pipeline creation so that
+        transfer handlers can check audio context state after interruptions and
+        create a fresh context when needed before pushing a TTSSpeakFrame.
+
+        Args:
+            tts_service: TTSService instance from VoiceEngineFactory.create_pipeline()
+        """
+        self._tts_service = tts_service
+        logger.debug(f"TTS service linked to FunctionMapper for call {self.call_sid}")
 
     async def wait_for_bot_done(self, timeout: float = 15.0) -> None:
         """
@@ -520,15 +539,43 @@ class FunctionMapper:
             # FunctionCallInProgressFrame cleans up the current TTS context ~67ms
             # after this handler runs.  Without the sleep, our TTSSpeakFrame opens
             # a new context immediately, which FunctionCallInProgressFrame then
-            # wipes before Deepgram audio arrives (~125ms in prod).  Sleeping 150ms
-            # first lets FunctionCallInProgressFrame clear the stale context, so
-            # our TTSSpeakFrame opens a fresh context that lives long enough to
-            # receive audio.  The watcher's 5s timeout is the safety net if TTS
-            # still fails for any reason.
+            # wipes before Deepgram audio arrives (~125ms in prod).  Sleeping 250ms
+            # (raised from 150ms) lets FunctionCallInProgressFrame fully clear the
+            # stale context, so our TTSSpeakFrame opens a fresh context that lives
+            # long enough to receive audio.  The watcher's 5s timeout is the safety
+            # net if TTS still fails for any reason.
+            #
+            # Yielding control (asyncio.sleep(0)) ensures any pending async
+            # callbacks from FunctionCallInProgressFrame have fully executed before
+            # we check and restore TTS context state.
             # Record what will be spoken so _execute_transfer can append it to
             # the saved transcript (TTSSpeakFrame bypasses the LLM context).
             self._pending_pre_transfer_message = pre_message
-            await _asyncio.sleep(0.15)
+            await _asyncio.sleep(0)
+            await _asyncio.sleep(0.25)
+
+            # If the TTS service supports audio contexts (AudioContextWordTTSService
+            # subclass in production Pipecat), an interruption may have cleared the
+            # active context leaving context_id as None.  Create a fresh named context
+            # so the transfer phrase audio has somewhere valid to land, preventing
+            # "unable to append audio to context: no context ID provided" frame drops.
+            # Creating a context is lightweight (just registers a UUID → Queue entry)
+            # and is only attempted when the service exposes this documented API.
+            if self._tts_service is not None and hasattr(self._tts_service, "create_audio_context"):
+                import uuid as _uuid
+                _ctx_id = str(_uuid.uuid4())
+                try:
+                    await self._tts_service.create_audio_context(_ctx_id)
+                    logger.debug(
+                        f"Created fresh TTS audio context {_ctx_id} before transfer phrase "
+                        f"for call {self.call_sid}"
+                    )
+                except Exception as _ctx_err:
+                    logger.warning(
+                        f"Failed to create TTS audio context before transfer phrase "
+                        f"for call {self.call_sid}: {_ctx_err}"
+                    )
+
             await params.llm.push_frame(TTSSpeakFrame(pre_message))
         
         return function_schema, transfer_handler
