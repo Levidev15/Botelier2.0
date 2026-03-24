@@ -232,7 +232,19 @@ class VoiceEngineFactory:
             
             # Check if using Flux model (advanced turn detection)
             if is_flux_model(model):
-                # Use Deepgram Flux with proper InputParams
+                if hasattr(DeepgramFluxSTTService, "Settings"):
+                    return DeepgramFluxSTTService(
+                        api_key=api_keys.get("deepgram_api_key"),
+                        settings=DeepgramFluxSTTService.Settings(
+                            model=model,
+                            eager_eot_threshold=config.stt_config.get("eager_eot_threshold"),
+                            eot_threshold=config.stt_config.get("eot_threshold", 0.7),
+                            eot_timeout_ms=config.stt_config.get("eot_timeout_ms", 5000),
+                            keyterm=config.stt_config.get("keyterm", []),
+                            tag=config.stt_config.get("tag", []),
+                        ),
+                    )
+                # Fallback for older Pipecat versions without Settings API
                 params = DeepgramFluxSTTService.InputParams(
                     eager_eot_threshold=config.stt_config.get("eager_eot_threshold"),
                     eot_threshold=config.stt_config.get("eot_threshold", 0.7),
@@ -284,7 +296,19 @@ class VoiceEngineFactory:
         if provider == "openai":
             from pipecat.services.openai.llm import OpenAILLMService
             from pipecat.services.openai.base_llm import BaseOpenAILLMService
-            # Use OpenAI's InputParams with provider-specific parameters
+            if hasattr(OpenAILLMService, "Settings"):
+                return OpenAILLMService(
+                    api_key=api_keys.get("openai_api_key"),
+                    settings=OpenAILLMService.Settings(
+                        model=config.llm_model,
+                        temperature=config.llm_temperature,
+                        max_completion_tokens=config.llm_max_tokens,
+                        frequency_penalty=config.llm_config.get("frequency_penalty", 0.0),
+                        presence_penalty=config.llm_config.get("presence_penalty", 0.0),
+                        top_p=config.llm_config.get("top_p", 1.0),
+                    ),
+                )
+            # Fallback for older Pipecat versions without Settings API
             params = BaseOpenAILLMService.InputParams(
                 temperature=config.llm_temperature,
                 max_completion_tokens=config.llm_max_tokens,
@@ -320,10 +344,20 @@ class VoiceEngineFactory:
         
         if provider == "deepgram":
             from pipecat.services.deepgram.tts import DeepgramTTSService
+            voice = config.tts_voice_id or "aura-2-helena-en"
+            encoding = config.tts_config.get("encoding", "linear16")
+            if hasattr(DeepgramTTSService, "Settings"):
+                return DeepgramTTSService(
+                    api_key=api_keys.get("deepgram_api_key"),
+                    settings=DeepgramTTSService.Settings(
+                        voice=voice,
+                        encoding=encoding,
+                    ),
+                )
             return DeepgramTTSService(
                 api_key=api_keys.get("deepgram_api_key"),
-                voice=config.tts_voice_id or "aura-2-helena-en",
-                encoding=config.tts_config.get("encoding", "linear16"),
+                voice=voice,
+                encoding=encoding,
             )
         elif provider == "cartesia":
             from pipecat.services.cartesia.tts import CartesiaTTSService
@@ -354,7 +388,7 @@ class VoiceEngineFactory:
         function_schemas: Optional[list] = None,
         function_handlers: Optional[Dict[str, Any]] = None,
         on_interruption: Optional[Callable[[str], None]] = None,
-    ) -> tuple[Pipeline, PipelineTask, Any, Any, Any, "TtsCompletionWatcher"]:
+    ) -> tuple[Pipeline, PipelineTask, Any, Any, Any, "TtsCompletionWatcher", Any]:
         """
         Create complete voice pipeline from agent configuration.
 
@@ -370,10 +404,12 @@ class VoiceEngineFactory:
             on_interruption: Optional callback called when user interrupts (receives interrupted text)
 
         Returns:
-            Tuple of (pipeline, task, llm, context_aggregator, context, tts_completion_watcher).
+            Tuple of (pipeline, task, llm, context_aggregator, context, tts_completion_watcher, tts).
             - context is returned separately for transcript extraction.
             - tts_completion_watcher can be linked to FunctionMapper.set_tts_completion_watcher()
               so transfer handlers can await TTS completion without time-based sleeps.
+            - tts is the TTS service instance, passed to FunctionMapper.set_tts_service() so
+              transfer handlers can check and restore audio context state after interruptions.
         """
         from pipecat.adapters.schemas.tools_schema import ToolsSchema
 
@@ -431,7 +467,7 @@ class VoiceEngineFactory:
             ),
         )
 
-        return pipeline, task, llm, context_aggregator, context, tts_completion_watcher
+        return pipeline, task, llm, context_aggregator, context, tts_completion_watcher, tts
     
     @staticmethod
     def create_transport_params(config: VoiceAgentConfig):

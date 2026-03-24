@@ -80,9 +80,19 @@ function relayWebSocket(req, socket, head) {
       proxySocket.write(head);
     }
 
-    // Bidirectional raw pipe — no parsing, no buffering.
-    socket.pipe(proxySocket, { end: false });
-    proxySocket.pipe(socket, { end: false });
+    // Bidirectional relay using raw data events instead of pipe().
+    // pipe() routes chunks through Node.js's internal Stream buffer
+    // (highWaterMark 16 KB) which can batch multiple 160-byte Twilio MULAW
+    // frames before flushing — reintroducing buffering jitter even though
+    // setNoDelay(true) disables Nagle at the OS level.  Listening on 'data'
+    // directly forwards every chunk the instant it arrives, matching the
+    // zero-buffering behaviour of the dev path (Twilio → FastAPI directly).
+    socket.on('data', (chunk) => {
+      if (!proxySocket.destroyed) proxySocket.write(chunk);
+    });
+    proxySocket.on('data', (chunk) => {
+      if (!socket.destroyed) socket.write(chunk);
+    });
   });
 
   // --- Symmetric cleanup: either side closing/erroring tears down both ---
