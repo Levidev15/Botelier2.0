@@ -101,6 +101,13 @@ class FunctionMapper:
         # the message would otherwise be invisible to the ACW LLM.
         self._pending_pre_transfer_message: Optional[str] = None
 
+        # CallEventQueue — injected by CallHandler after pipeline initialization.
+        # Used to log pipeline events non-blockingly.
+        self._event_queue = None
+
+        # Track whether user_first_speech has been logged yet
+        self._first_speech_logged = False
+
         # Twilio client for call transfers - use hotel's sub-account credentials
         self.twilio_client = None
         self.twilio_account_sid = twilio_account_sid or os.environ.get("TWILIO_ACCOUNT_SID")
@@ -137,6 +144,24 @@ class FunctionMapper:
         """
         self._tts_service = tts_service
         logger.debug(f"TTS service linked to FunctionMapper for call {self.call_sid}")
+
+    def set_event_queue(self, event_queue) -> None:
+        """
+        Attach the CallEventQueue for this call.
+
+        Called by CallHandler after pipeline creation so pipeline events
+        (user_first_speech, transfer_initiated) can be logged non-blockingly.
+
+        Args:
+            event_queue: CallEventQueue instance
+        """
+        self._event_queue = event_queue
+        logger.debug(f"CallEventQueue linked to FunctionMapper for call {self.call_sid}")
+
+    def log_event(self, event_type: str, event_source: str = "pipecat", severity: str = "info", details: dict = None) -> None:
+        """Log a pipeline event via the event queue (non-blocking)."""
+        if self._event_queue is not None:
+            self._event_queue.log(event_type, event_source=event_source, severity=severity, details=details)
 
     async def wait_for_bot_done(self, timeout: float = 15.0) -> None:
         """
@@ -369,6 +394,14 @@ class FunctionMapper:
 
             # Track tool usage
             self.track_tool_usage(tool.name)
+
+            # Log transfer_initiated event (non-blocking)
+            self.log_event(
+                "transfer_initiated",
+                event_source="app",
+                severity="info",
+                details={"tool": tool.name, "transfer_to": phone_number, "transfer_mode": transfer_mode},
+            )
 
             async def _execute_transfer():
                 """

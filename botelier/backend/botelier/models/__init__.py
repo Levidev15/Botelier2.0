@@ -22,6 +22,7 @@ from botelier.models.resolution_option import AssistantResolutionOption
 from botelier.models.mcp_connection import MCPConnection, MCPConnectionStatus, MCPAuthType, MCPTransportType
 from botelier.models.sms_conversation import SMSConversation, SMSMessage, ConversationStatus, MessageDirection, MessageSender, MessageStatus
 from botelier.models.sms_compliance import SMSComplianceBrand, SMSComplianceCampaign, BrandStatus, CampaignStatus, BrandType, CampaignUseCase
+from botelier.models.call_event import CallEvent
 
 __all__ = [
     "Hotel",
@@ -65,4 +66,5 @@ __all__ = [
     "CampaignStatus",
     "BrandType",
     "CampaignUseCase",
+    "CallEvent",
 ]

@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { notify } from "@/lib/notifications";
 import TranscriptModal from "./components/TranscriptModal";
+import EventLogModal from "./components/EventLogModal";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
@@ -241,6 +242,8 @@ export default function CallLogsPage() {
   const [expandedRows, setExpandedRows] = useState<Set<string>>(new Set());
   const [selectedLog, setSelectedLog] = useState<CallLog | null>(null);
   const [showTranscript, setShowTranscript] = useState(false);
+  const [showEventLog, setShowEventLog] = useState(false);
+  const [eventLogLog, setEventLogLog] = useState<CallLog | null>(null);
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(new Set());
 
   const [search, setSearch] = useState("");
@@ -796,6 +799,10 @@ export default function CallLogsPage() {
                       isExpanded={expandedRows.has(log.id)}
                       onToggleExpand={() => toggleRowExpanded(log.id)}
                       onViewTranscript={() => openTranscript(log)}
+                      onViewEventLog={() => {
+                        setEventLogLog(log);
+                        setShowEventLog(true);
+                      }}
                       onGenerateSummary={() => generateSummary(log)}
                       isGeneratingSummary={generatingIds.has(log.id)}
                       formatDateTime={formatDateTime}
@@ -847,6 +854,20 @@ export default function CallLogsPage() {
               )
             );
           }}
+          onViewEventLog={(log) => {
+            setEventLogLog(log as any);
+            setShowEventLog(true);
+          }}
+        />
+      )}
+
+      {showEventLog && eventLogLog && (
+        <EventLogModal
+          log={eventLogLog as any}
+          onClose={() => {
+            setShowEventLog(false);
+            setEventLogLog(null);
+          }}
         />
       )}
     </div>
@@ -858,6 +879,7 @@ function CallLogRow({
   isExpanded,
   onToggleExpand,
   onViewTranscript,
+  onViewEventLog,
   onGenerateSummary,
   isGeneratingSummary,
   formatDateTime,
@@ -868,6 +890,7 @@ function CallLogRow({
   isExpanded: boolean;
   onToggleExpand: () => void;
   onViewTranscript: () => void;
+  onViewEventLog: () => void;
   onGenerateSummary: () => void;
   isGeneratingSummary: boolean;
   formatDateTime: (date: string | null) => string;
@@ -898,9 +921,13 @@ function CallLogRow({
         </td>
         <td className="px-4 py-3 whitespace-nowrap">
           {log.reference_id ? (
-            <span className="font-mono text-xs bg-gray-800 text-gray-400 px-1.5 py-0.5 rounded">
+            <button
+              onClick={onViewEventLog}
+              className="font-mono text-xs bg-gray-800 text-gray-400 hover:bg-gray-700 hover:text-gray-200 px-1.5 py-0.5 rounded transition cursor-pointer"
+              title="View event timeline"
+            >
               #{log.reference_id}
-            </span>
+            </button>
           ) : (
             <span className="text-gray-700 text-xs">—</span>
           )}

@@ -50,6 +50,7 @@ interface TranscriptModalProps {
   log: CallLog;
   onClose: () => void;
   onLogUpdated?: (updatedFields: Partial<CallLog>) => void;
+  onViewEventLog?: (log: CallLog) => void;
 }
 
 function formatDuration(seconds: number): string {
@@ -72,7 +73,7 @@ function formatDateTime(dateStr: string | null): string {
   });
 }
 
-export default function TranscriptModal({ log, onClose, onLogUpdated }: TranscriptModalProps) {
+export default function TranscriptModal({ log, onClose, onLogUpdated, onViewEventLog }: TranscriptModalProps) {
   const transcript = log.transcript || [];
   const [running, setRunning] = useState(false);
   const { authFetch } = useAuthToken();
@@ -124,9 +125,19 @@ export default function TranscriptModal({ log, onClose, onLogUpdated }: Transcri
               <div className="flex items-center gap-2">
                 <h3 className="text-lg font-semibold text-white">Call Transcript</h3>
                 {log.reference_id && (
-                  <span className="font-mono text-[11px] text-gray-400 bg-gray-800 px-2 py-0.5 rounded border border-gray-700">
-                    #{log.reference_id}
-                  </span>
+                  onViewEventLog ? (
+                    <button
+                      onClick={() => onViewEventLog(log)}
+                      className="font-mono text-[11px] text-gray-400 bg-gray-800 hover:bg-gray-700 hover:text-gray-200 px-2 py-0.5 rounded border border-gray-700 transition cursor-pointer"
+                      title="View event timeline"
+                    >
+                      #{log.reference_id}
+                    </button>
+                  ) : (
+                    <span className="font-mono text-[11px] text-gray-400 bg-gray-800 px-2 py-0.5 rounded border border-gray-700">
+                      #{log.reference_id}
+                    </span>
+                  )
                 )}
               </div>
               <p className="text-xs text-gray-400">

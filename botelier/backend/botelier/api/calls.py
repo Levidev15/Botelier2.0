@@ -7,6 +7,7 @@ receives an incoming call. It returns TwiML to start a Media Stream.
 Also handles call status updates and creates call log records for analytics.
 """
 
+import uuid
 from datetime import datetime
 from fastapi import APIRouter, Request, Response, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
@@ -15,6 +16,7 @@ from loguru import logger
 from ..config.domain import get_websocket_url, get_public_base_url
 from ..database import get_db
 from ..models import CallLog, CallLeg, PhoneNumber, CallStatus, LegType
+from ..models.call_event import CallEvent
 from ..services.call_logger import CallLogger
 from ..services.acw_service import run_acw_background
 
@@ -26,6 +28,51 @@ def _get_call_handler():
     """Lazy import to avoid circular dependencies"""
     from .websockets import call_handler
     return call_handler
+
+
+def _write_event(
+    db: Session,
+    call_log_id,
+    event_type: str,
+    event_source: str = "twilio",
+    severity: str = "info",
+    details: dict = None,
+    call_started_at: datetime = None,
+):
+    """
+    Write a call event directly to the database.
+
+    Used for Twilio webhook events (call_initiated, call_answered, call_ended,
+    transfer_connected, transfer_ended) which arrive via async HTTP handlers
+    that are completely separate from the WebSocket pipeline — await here is safe.
+
+    Non-fatal: errors are logged but never raised so the webhook response is
+    always returned to Twilio.
+    """
+    try:
+        now = datetime.utcnow()
+        offset_ms = None
+        if call_started_at:
+            offset_ms = int((now - call_started_at).total_seconds() * 1000)
+
+        event = CallEvent(
+            id=uuid.uuid4(),
+            call_log_id=call_log_id,
+            event_type=event_type,
+            event_source=event_source,
+            severity=severity,
+            occurred_at=now,
+            offset_ms=offset_ms,
+            details=details,
+        )
+        db.add(event)
+        db.commit()
+    except Exception as e:
+        logger.warning(f"Failed to write call event {event_type} for {call_log_id}: {e}")
+        try:
+            db.rollback()
+        except Exception:
+            pass
 
 
 @router.post("/incoming")
@@ -53,10 +100,14 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
             PhoneNumber.phone_number == to_number
         ).first()
         
+        call_log_id = None
+        call_started_at = None
+
         if phone_record:
             existing_log = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
             
             if not existing_log:
+                now = datetime.utcnow()
                 call_log = CallLog(
                     hotel_id=phone_record.hotel_id,
                     call_sid=call_sid,
@@ -65,7 +116,7 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
                     caller_number=from_number,
                     to_number=to_number,
                     status=CallStatus.INITIATED.value,
-                    started_at=datetime.utcnow(),
+                    started_at=now,
                 )
                 db.add(call_log)
                 db.flush()
@@ -78,15 +129,31 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
                     participant="AI Assistant",
                     participant_name=None,
                     status=CallStatus.INITIATED.value,
-                    started_at=datetime.utcnow(),
+                    started_at=now,
                 )
                 db.add(initial_leg)
                 
                 db.commit()
                 logger.info(f"Created call log for {call_sid}")
+                call_log_id = call_log.id
+                call_started_at = now
+            else:
+                call_log_id = existing_log.id
+                call_started_at = existing_log.started_at
         else:
             logger.warning(f"No phone number record found for {to_number}")
         
+        if call_log_id:
+            _write_event(
+                db,
+                call_log_id=call_log_id,
+                event_type="call_initiated",
+                event_source="twilio",
+                severity="info",
+                details={"CallSid": call_sid, "From": from_number, "To": to_number, "CallStatus": call_status},
+                call_started_at=call_started_at,
+            )
+
         fallback_host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host")
         ws_url = get_websocket_url(path="/api/ws/call", fallback_host=fallback_host)
         
@@ -161,6 +228,31 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                 parent_call_sid=parent_call_sid,
                 to_number=to_number,
             )
+
+            # Log transfer_connected / transfer_ended for parent call
+            parent_log = call_logger.get_call_log(parent_call_sid)
+            if parent_log:
+                _TERMINAL = {"completed", "no-answer", "busy", "failed", "canceled"}
+                if call_status == "in-progress":
+                    _write_event(
+                        db,
+                        call_log_id=parent_log.id,
+                        event_type="transfer_connected",
+                        event_source="twilio",
+                        severity="info",
+                        details={"ChildCallSid": call_sid, "To": to_number},
+                        call_started_at=parent_log.started_at,
+                    )
+                elif call_status in _TERMINAL:
+                    _write_event(
+                        db,
+                        call_log_id=parent_log.id,
+                        event_type="transfer_ended",
+                        event_source="twilio",
+                        severity="info",
+                        details={"ChildCallSid": call_sid, "To": to_number, "CallStatus": call_status, "CallDuration": call_duration},
+                        call_started_at=parent_log.started_at,
+                    )
         else:
             call_logger.update_status(call_sid, call_status, duration_seconds)
             if call_status in ("completed", "busy", "failed", "no-answer", "canceled"):
@@ -169,6 +261,31 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                     status=call_status,
                     duration_seconds=duration_seconds,
                 )
+
+            # Log call_answered and call_ended events
+            call_log = call_logger.get_call_log(call_sid)
+            if call_log:
+                _TERMINAL = {"completed", "busy", "failed", "no-answer", "canceled"}
+                if call_status == "in-progress":
+                    _write_event(
+                        db,
+                        call_log_id=call_log.id,
+                        event_type="call_answered",
+                        event_source="twilio",
+                        severity="info",
+                        details={"CallStatus": call_status},
+                        call_started_at=call_log.started_at,
+                    )
+                elif call_status in _TERMINAL:
+                    _write_event(
+                        db,
+                        call_log_id=call_log.id,
+                        event_type="call_ended",
+                        event_source="twilio",
+                        severity="info" if call_status == "completed" else "warning",
+                        details={"CallStatus": call_status, "CallDuration": call_duration},
+                        call_started_at=call_log.started_at,
+                    )
         
         return {"status": "received"}
         
@@ -284,6 +401,32 @@ async def transfer_status_callback(request: Request, db: Session = Depends(get_d
                 to_number=to_number,
             )
             
+            # Log transfer_connected / transfer_ended on parent call
+            if parent_call_sid:
+                parent_log = call_logger.get_call_log(parent_call_sid)
+                if parent_log:
+                    _TERMINAL = {"completed", "no-answer", "busy", "failed", "canceled"}
+                    if call_status == "in-progress":
+                        _write_event(
+                            db,
+                            call_log_id=parent_log.id,
+                            event_type="transfer_connected",
+                            event_source="twilio",
+                            severity="info",
+                            details={"ChildCallSid": call_sid, "To": to_number},
+                            call_started_at=parent_log.started_at,
+                        )
+                    elif call_status in _TERMINAL:
+                        _write_event(
+                            db,
+                            call_log_id=parent_log.id,
+                            event_type="transfer_ended",
+                            event_source="twilio",
+                            severity="info",
+                            details={"ChildCallSid": call_sid, "To": to_number, "CallStatus": call_status, "CallDuration": call_duration},
+                            call_started_at=parent_log.started_at,
+                        )
+
             _TERMINAL_TRANSFER_STATUSES = {"completed", "no-answer", "busy", "failed", "canceled"}
             if call_status in _TERMINAL_TRANSFER_STATUSES and parent_call_sid:
                 logger.info(f"Transfer leg {call_sid} ended ({call_status}) — enqueueing ACW for parent call {parent_call_sid}")
@@ -294,3 +437,36 @@ async def transfer_status_callback(request: Request, db: Session = Depends(get_d
     except Exception as e:
         logger.exception(f"Error handling transfer status callback: {e}")
         return {"status": "error", "message": str(e)}
+
+
+@router.get("/{call_id}/events")
+async def get_call_events(call_id: str, request: Request, db: Session = Depends(get_db)):
+    """
+    Return the event timeline for a specific call.
+
+    Events are ordered chronologically by occurred_at.
+
+    Response items include:
+        event_type, event_source, severity, offset_ms, occurred_at, details
+    """
+    from ..models.call_event import CallEvent as CallEventModel
+
+    try:
+        call_log = db.query(CallLog).filter(CallLog.id == call_id).first()
+        if not call_log:
+            from fastapi import HTTPException
+            raise HTTPException(status_code=404, detail="Call not found")
+
+        events = (
+            db.query(CallEventModel)
+            .filter(CallEventModel.call_log_id == call_log.id)
+            .order_by(CallEventModel.occurred_at)
+            .all()
+        )
+
+        return [e.to_dict() for e in events]
+
+    except Exception as e:
+        logger.exception(f"Error fetching events for call {call_id}: {e}")
+        from fastapi import HTTPException
+        raise HTTPException(status_code=500, detail="Internal server error")
