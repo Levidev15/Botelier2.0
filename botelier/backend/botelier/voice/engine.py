@@ -25,6 +25,7 @@ from pipecat.transcriptions.language import Language
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.frames.frames import Frame, BotStoppedSpeakingFrame, InterruptionFrame, TextFrame, TTSSpeakFrame, TranscriptionFrame
 from pipecat.processors.user_idle_processor import UserIdleProcessor
+from pipecat.processors.filters.stt_mute_filter import STTMuteFilter, STTMuteConfig, STTMuteStrategy
 
 from .agent import VoiceAgentConfig
 from ..config.providers import is_flux_model
@@ -551,6 +552,21 @@ class VoiceEngineFactory:
         # UserIdleProcessor fires a callback after `timeout` seconds of silence.
         idle_timeout_tracker = IdleTimeoutTracker(timeout=30.0)
 
+        # Pipecat-native STT mute gate.
+        # MUTE_UNTIL_FIRST_BOT_COMPLETE — suppresses all VAD/transcription frames until
+        # Ava finishes her opening greeting, preventing speaker bleed-through from
+        # reaching Deepgram during the greeting.
+        # FUNCTION_CALL — re-mutes during active tool/function calls (e.g. transfers)
+        # so the caller cannot interrupt mid-transfer.
+        stt_mute_filter = STTMuteFilter(
+            config=STTMuteConfig(
+                strategies={
+                    STTMuteStrategy.MUTE_UNTIL_FIRST_BOT_COMPLETE,
+                    STTMuteStrategy.FUNCTION_CALL,
+                }
+            )
+        )
+
         messages = [
             {
                 "role": "system",
@@ -576,6 +592,7 @@ class VoiceEngineFactory:
             [
                 transport.input(),
                 stt,
+                stt_mute_filter,               # Mutes STT during greeting + function calls (Pipecat native)
                 first_speech_tracker,          # Detects caller's first utterance (non-blocking event log)
                 idle_timeout_tracker.processor, # Logs idle_timeout when caller goes silent too long
                 context_aggregator.user(),
