@@ -26,6 +26,7 @@ from ..models.assistant import Assistant
 from ..models.phone_number import PhoneNumber
 from ..database import SessionLocal
 from ..services.call_logger import CallLogger
+from ..services.call_event_queue import CallEventQueue
 
 try:
     from pipecat.services.mcp_service import MCPClient as PipecatMCPClient
@@ -65,6 +66,7 @@ class CallHandler:
         self.call_start_times: Dict[str, datetime] = {}
         self.interrupted_responses: Dict[str, set] = {}  # call_sid -> set of interrupted message contents
         self.call_mcp_clients: Dict[str, PipecatMCPClient] = {}  # call_sid -> Pipecat MCPClient for MCP tool execution
+        self.call_event_queues: Dict[str, CallEventQueue] = {}  # call_sid -> CallEventQueue
     
     async def handle_call(
         self,
@@ -100,6 +102,8 @@ class CallHandler:
             # Query database and close session immediately to avoid connection pool exhaustion
             hotel_twilio_sid = None
             hotel_twilio_token = None
+            call_log_id = None
+            call_started_at = None
             
             try:
                 phone_record = db.query(PhoneNumber).filter(
@@ -121,6 +125,13 @@ class CallHandler:
                     logger.error(f"❌ Assistant not found: {phone_record.assistant_id}")
                     db.close()
                     return
+                
+                # Fetch call log for event queue
+                from ..models.call_log import CallLog
+                call_log_record = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
+                if call_log_record:
+                    call_log_id = call_log_record.id
+                    call_started_at = call_log_record.started_at
                 
                 logger.info(f"🤖 Assistant: '{assistant.name}' (ID: {assistant.id})")
                 
@@ -225,7 +236,7 @@ class CallHandler:
             def on_interruption(content: str):
                 self.mark_response_interrupted(call_sid, content)
             
-            pipeline, task, llm, context_aggregator, llm_context, tts_completion_watcher, tts_service = VoiceEngineFactory.create_pipeline(
+            pipeline, task, llm, context_aggregator, llm_context, tts_completion_watcher, first_speech_tracker, greeting_completion_tracker, idle_timeout_tracker = VoiceEngineFactory.create_pipeline(
                 config=config,
                 api_keys=api_keys,
                 transport=transport,
@@ -234,12 +245,10 @@ class CallHandler:
                 on_interruption=on_interruption,
             )
 
-            # Link the TTS completion watcher and TTS service to the FunctionMapper (if one was
-            # created for this call) so transfer handlers can await actual TTS completion and
-            # check/restore audio context state after an interruption.
+            # Link the TTS completion watcher to the FunctionMapper (if one was
+            # created for this call) so transfer handlers can await actual TTS completion.
             if call_sid in self.call_mappers:
                 self.call_mappers[call_sid].set_tts_completion_watcher(tts_completion_watcher)
-                self.call_mappers[call_sid].set_tts_service(tts_service)
             
             # 6.5 Register MCP tools if connection is configured (must happen AFTER pipeline creation)
             logger.info(f"🔍 MCP registration check: mcp_connection_data={mcp_connection_data is not None}, mcp_enabled_tools={mcp_enabled_tools}, PIPECAT_MCP_AVAILABLE={PIPECAT_MCP_AVAILABLE}")
@@ -293,8 +302,46 @@ class CallHandler:
             self.call_contexts[call_sid] = llm_context  # Store LLMContext directly for transcript extraction
             self.call_start_times[call_sid] = datetime.utcnow()
             self.interrupted_responses[call_sid] = set()  # Initialize interruption tracking
-            
+
+            # 7.5 Initialize and start the call event queue for pipeline events
+            if call_log_id:
+                event_queue = CallEventQueue(
+                    call_log_id=call_log_id,
+                    call_started_at=call_started_at or self.call_start_times[call_sid],
+                )
+                self.call_event_queues[call_sid] = event_queue
+                await event_queue.start()
+
+                # Log websocket_connected — stream established between Twilio and backend
+                event_queue.log(
+                    "websocket_connected",
+                    event_source="pipecat",
+                    severity="info",
+                    details={"stream_sid": stream_sid},
+                )
+
+                # Pass the queue reference to FunctionMapper so it can log pipeline events
+                if call_sid in self.call_mappers:
+                    self.call_mappers[call_sid].set_event_queue(event_queue)
+
+                # Wire event_queue to the FirstUserSpeechTracker in the pipeline
+                first_speech_tracker.set_event_queue(event_queue)
+                greeting_completion_tracker.set_event_queue(event_queue)
+                idle_timeout_tracker.set_event_queue(event_queue)
+
+                # Wire event_queue to the GreetingCompletionTracker (first BotStoppedSpeakingFrame)
+                greeting_completion_tracker.set_event_queue(event_queue)
+
+                # Wire event_queue to the IdleTimeoutTracker (fires on caller silence)
+                idle_timeout_tracker.set_event_queue(event_queue)
+
             # 8. Queue greeting message
+            if call_sid in self.call_event_queues:
+                self.call_event_queues[call_sid].log(
+                    "greeting_started",
+                    event_source="pipecat",
+                    severity="info",
+                )
             await task.queue_frames([TTSSpeakFrame(text=config.greeting_message)])
             
             logger.info(f"▶️ Pipeline starting: STT ({config.stt_provider}) → LLM ({config.llm_provider}) → TTS ({config.tts_provider})")
@@ -313,6 +360,15 @@ class CallHandler:
             logger.exception(f"Error handling call {call_sid}: {e}")
             if websocket.client_state.name == "CONNECTED":
                 await websocket.close()
+
+            # Log pipeline_error event
+            if call_sid in self.call_event_queues:
+                self.call_event_queues[call_sid].log(
+                    "pipeline_error",
+                    event_source="app",
+                    severity="error",
+                    details={"error": str(e)},
+                )
             
             # Still try to save transcript on error
             if call_sid in self.call_contexts:
@@ -329,6 +385,13 @@ class CallHandler:
                 if watcher is not None:
                     watcher.clear_callback()
                     logger.debug(f"Cleared pending TTS callback for call {call_sid}")
+            # Flush and stop the event queue
+            if call_sid in self.call_event_queues:
+                try:
+                    await self.call_event_queues[call_sid].flush_and_stop()
+                except Exception as eq_err:
+                    logger.warning(f"Error flushing event queue for call {call_sid}: {eq_err}")
+                del self.call_event_queues[call_sid]
             # Cleanup call session state
             if call_sid in self.active_calls:
                 del self.active_calls[call_sid]

@@ -23,7 +23,8 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.transcriptions.language import Language
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-from pipecat.frames.frames import Frame, BotStoppedSpeakingFrame, InterruptionFrame, TextFrame, TTSSpeakFrame
+from pipecat.frames.frames import Frame, BotStoppedSpeakingFrame, InterruptionFrame, TextFrame, TTSSpeakFrame, TranscriptionFrame
+from pipecat.processors.user_idle_processor import UserIdleProcessor
 
 from .agent import VoiceAgentConfig
 from ..config.providers import is_flux_model
@@ -65,6 +66,117 @@ class InterruptionTracker(FrameProcessor):
             self._current_text = ""  # Reset after interruption
         
         # CRITICAL: Always push frames through to next processor
+        await self.push_frame(frame, direction)
+
+
+class FirstUserSpeechTracker(FrameProcessor):
+    """
+    Detects the first non-empty transcription from the user and logs a
+    user_first_speech event via the injected CallEventQueue.
+
+    Placed between the STT service and the context_aggregator so it
+    intercepts TranscriptionFrames on the way downstream.
+    Only the very first non-empty transcript is reported — subsequent turns
+    are intentionally ignored (per spec: no recurring speech events).
+    """
+
+    def __init__(self, event_queue=None, **kwargs):
+        super().__init__(**kwargs)
+        self._event_queue = event_queue
+        self._logged = False
+
+    def set_event_queue(self, event_queue) -> None:
+        self._event_queue = event_queue
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if (
+            not self._logged
+            and isinstance(frame, TranscriptionFrame)
+            and hasattr(frame, "text")
+            and frame.text
+            and frame.text.strip()
+        ):
+            self._logged = True
+            if self._event_queue is not None:
+                self._event_queue.log(
+                    "user_first_speech",
+                    event_source="pipecat",
+                    severity="info",
+                    details={"transcript": frame.text.strip()[:200]},
+                )
+            logger.debug(f"user_first_speech logged: {frame.text.strip()[:50]}...")
+
+        await self.push_frame(frame, direction)
+
+
+class IdleTimeoutTracker:
+    """
+    Thin wrapper that builds a UserIdleProcessor whose callback logs an
+    idle_timeout event via an injected CallEventQueue.
+
+    Usage::
+        tracker = IdleTimeoutTracker(timeout=30.0)
+        pipeline = Pipeline([..., tracker.processor, ...])
+        # after pipeline creation:
+        tracker.set_event_queue(event_queue)
+    """
+
+    def __init__(self, timeout: float = 30.0):
+        self._event_queue = None
+        self._retry_count = 0
+        self.processor = UserIdleProcessor(
+            callback=self._on_idle,
+            timeout=timeout,
+        )
+
+    def set_event_queue(self, event_queue) -> None:
+        self._event_queue = event_queue
+
+    async def _on_idle(self, processor: UserIdleProcessor, retry_count: int) -> bool:
+        """Called each time the idle timeout fires.  Returns False to stop retrying."""
+        if self._event_queue is not None:
+            self._event_queue.log(
+                "idle_timeout",
+                event_source="pipecat",
+                severity="warning",
+                details={"retry_count": retry_count, "timeout_secs": processor._timeout},
+            )
+        logger.info(f"idle_timeout logged (retry #{retry_count})")
+        return False  # One notification per idle period; let pipeline decide to hang up elsewhere
+
+
+class GreetingCompletionTracker(FrameProcessor):
+    """
+    Logs a greeting_completed event when the greeting TTS finishes speaking.
+
+    Placed immediately after the TTS service so it sees BotStoppedSpeakingFrame
+    as it flows downstream.  Only the very first BotStoppedSpeakingFrame is
+    reported — subsequent ones (regular turn-taking) are ignored.
+    """
+
+    def __init__(self, event_queue=None, **kwargs):
+        super().__init__(**kwargs)
+        self._event_queue = event_queue
+        self._logged = False
+
+    def set_event_queue(self, event_queue) -> None:
+        self._event_queue = event_queue
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if not self._logged and isinstance(frame, BotStoppedSpeakingFrame):
+            self._logged = True
+            if self._event_queue is not None:
+                self._event_queue.log(
+                    "greeting_completed",
+                    event_source="pipecat",
+                    severity="info",
+                )
+            logger.debug("greeting_completed logged")
+
         await self.push_frame(frame, direction)
 
 
@@ -388,7 +500,7 @@ class VoiceEngineFactory:
         function_schemas: Optional[list] = None,
         function_handlers: Optional[Dict[str, Any]] = None,
         on_interruption: Optional[Callable[[str], None]] = None,
-    ) -> tuple[Pipeline, PipelineTask, Any, Any, Any, "TtsCompletionWatcher", Any]:
+    ) -> tuple:
         """
         Create complete voice pipeline from agent configuration.
 
@@ -404,12 +516,14 @@ class VoiceEngineFactory:
             on_interruption: Optional callback called when user interrupts (receives interrupted text)
 
         Returns:
-            Tuple of (pipeline, task, llm, context_aggregator, context, tts_completion_watcher, tts).
+            9-tuple: (pipeline, task, llm, context_aggregator, context,
+                      tts_completion_watcher, first_speech_tracker,
+                      greeting_completion_tracker, idle_timeout_tracker).
             - context is returned separately for transcript extraction.
             - tts_completion_watcher can be linked to FunctionMapper.set_tts_completion_watcher()
               so transfer handlers can await TTS completion without time-based sleeps.
-            - tts is the TTS service instance, passed to FunctionMapper.set_tts_service() so
-              transfer handlers can check and restore audio context state after interruptions.
+            - first_speech_tracker / greeting_completion_tracker / idle_timeout_tracker
+              need event_queue injected via set_event_queue() after pipeline creation.
         """
         from pipecat.adapters.schemas.tools_schema import ToolsSchema
 
@@ -423,6 +537,19 @@ class VoiceEngineFactory:
         # Observe BotStoppedSpeakingFrame after TTS so transfer handlers can
         # await actual TTS completion rather than using fixed-duration sleeps.
         tts_completion_watcher = TtsCompletionWatcher()
+
+        # Detect the caller's first speech utterance for event logging.
+        # Placed between STT and context_aggregator so it intercepts
+        # TranscriptionFrames before they enter the LLM pipeline.
+        first_speech_tracker = FirstUserSpeechTracker()
+
+        # Log greeting_completed on the first BotStoppedSpeakingFrame (greeting TTS done).
+        # Placed between TTS and tts_completion_watcher; both see the same frame.
+        greeting_completion_tracker = GreetingCompletionTracker()
+
+        # Log idle_timeout when the caller goes silent for too long.
+        # UserIdleProcessor fires a callback after `timeout` seconds of silence.
+        idle_timeout_tracker = IdleTimeoutTracker(timeout=30.0)
 
         messages = [
             {
@@ -449,11 +576,14 @@ class VoiceEngineFactory:
             [
                 transport.input(),
                 stt,
+                first_speech_tracker,          # Detects caller's first utterance (non-blocking event log)
+                idle_timeout_tracker.processor, # Logs idle_timeout when caller goes silent too long
                 context_aggregator.user(),
                 llm,
-                interruption_tracker,      # Observes text frames + InterruptionFrame before TTS
+                interruption_tracker,          # Observes text frames + InterruptionFrame before TTS
                 tts,
-                tts_completion_watcher,    # Observes BotStoppedSpeakingFrame after TTS
+                greeting_completion_tracker,   # Logs greeting_completed on first BotStoppedSpeakingFrame
+                tts_completion_watcher,        # Observes BotStoppedSpeakingFrame after TTS
                 transport.output(),
                 context_aggregator.assistant(),
             ]
@@ -467,7 +597,7 @@ class VoiceEngineFactory:
             ),
         )
 
-        return pipeline, task, llm, context_aggregator, context, tts_completion_watcher, tts
+        return pipeline, task, llm, context_aggregator, context, tts_completion_watcher, first_speech_tracker, greeting_completion_tracker, idle_timeout_tracker
     
     @staticmethod
     def create_transport_params(config: VoiceAgentConfig):

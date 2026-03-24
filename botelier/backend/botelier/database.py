@@ -115,6 +115,25 @@ _ADDITIVE_MIGRATIONS = [
     # Allow email-registered users (invited members) to have no replit_id.
     # The SQLAlchemy model has nullable=True but the original DB column was NOT NULL.
     "ALTER TABLE users ALTER COLUMN replit_id DROP NOT NULL",
+
+    # call_events — event timeline table for every call.
+    # The table itself is created by Base.metadata.create_all, but we ensure the
+    # indexes exist here so they are present even on pre-existing deployments that
+    # ran create_all before this model was added.
+    """
+    CREATE TABLE IF NOT EXISTS call_events (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        call_log_id UUID NOT NULL REFERENCES call_logs(id) ON DELETE CASCADE,
+        event_type VARCHAR NOT NULL,
+        event_source VARCHAR NOT NULL DEFAULT 'app',
+        severity VARCHAR NOT NULL DEFAULT 'info',
+        occurred_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        offset_ms INTEGER,
+        details JSONB
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_call_events_call_log_id ON call_events(call_log_id)",
+    "CREATE INDEX IF NOT EXISTS ix_call_events_call_log_occurred ON call_events(call_log_id, occurred_at)",
 ]
 
 
@@ -149,6 +168,7 @@ def init_db():
     from botelier.models import resolution_option  # noqa: F401
     from botelier.models import integration  # noqa: F401
     from botelier.models import mcp_connection  # noqa: F401
+    from botelier.models import call_event  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
     _run_additive_migrations()
