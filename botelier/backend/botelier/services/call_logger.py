@@ -70,8 +70,23 @@ class CallLogger:
             call_log.status = new_status
             
             if status == "in-progress" and not call_log.answered_at:
-                call_log.answered_at = datetime.utcnow()
-            
+                answer_time = datetime.utcnow()
+                call_log.answered_at = answer_time
+                # Reset the AI leg's started_at to the true answer time so the AI leg
+                # duration reflects only the actual conversation, not pre-answer setup.
+                ai_leg_for_answer = self.db.query(CallLeg).filter(
+                    CallLeg.call_log_id == call_log.id,
+                    CallLeg.leg_type == LegType.AI_CONVERSATION.value
+                ).first()
+                if ai_leg_for_answer and ai_leg_for_answer.status not in (
+                    CallStatus.COMPLETED.value,
+                    CallStatus.FAILED.value,
+                    CallStatus.BUSY.value,
+                    CallStatus.NO_ANSWER.value,
+                    CallStatus.CANCELED.value,
+                ):
+                    ai_leg_for_answer.started_at = answer_time
+
             if status in ("completed", "busy", "failed", "no-answer", "canceled"):
                 if not call_log.ended_at:
                     call_log.ended_at = datetime.utcnow()
@@ -93,8 +108,12 @@ class CallLogger:
                 if status in ("completed", "busy", "failed", "no-answer", "canceled"):
                     if not ai_leg.ended_at:
                         ai_leg.ended_at = datetime.utcnow()
-                    if ai_leg.started_at:
-                        ai_leg.duration_seconds = int((ai_leg.ended_at - ai_leg.started_at).total_seconds())
+                    # Use answered_at as the conversation anchor if available; it was
+                    # already written to started_at during the in-progress callback, but
+                    # guard with answered_at again for robustness. Clamp to 0.
+                    anchor = call_log.answered_at if call_log.answered_at else ai_leg.started_at
+                    if anchor and ai_leg.ended_at:
+                        ai_leg.duration_seconds = max(0, int((ai_leg.ended_at - anchor).total_seconds()))
             
             self.db.commit()
             logger.info(f"Updated call {call_sid} status to {new_status}")
@@ -317,8 +336,13 @@ class CallLogger:
             if ai_leg and ai_leg.status != CallStatus.COMPLETED.value:
                 ai_leg.status = CallStatus.COMPLETED.value
                 ai_leg.ended_at = datetime.utcnow()
-                if ai_leg.started_at and ai_leg.ended_at:
-                    ai_leg.duration_seconds = int((ai_leg.ended_at - ai_leg.started_at).total_seconds())
+                # Prefer answered_at as the conversation start anchor to exclude pre-answer setup.
+                # This value will be recalculated again in update_leg_status once the
+                # transfer leg duration is authoritative (Task 3), so this is a best-effort
+                # intermediate value.
+                anchor = call_log.answered_at if call_log.answered_at else ai_leg.started_at
+                if anchor and ai_leg.ended_at:
+                    ai_leg.duration_seconds = max(0, int((ai_leg.ended_at - anchor).total_seconds()))
                 logger.info(f"Marked AI leg as completed (duration: {ai_leg.duration_seconds}s)")
             
             max_leg = self.db.query(CallLeg).filter(
@@ -480,11 +504,16 @@ class CallLogger:
             # Mark ended and calculate duration when call ends
             if status in ("completed", "busy", "failed", "no-answer", "canceled"):
                 leg.ended_at = datetime.utcnow()
-                # Always calculate duration from our tracked start time (includes ringing)
-                # Ignore Twilio's duration_seconds as it only counts from answer
-                if leg.started_at and leg.ended_at:
-                    leg.duration_seconds = int((leg.ended_at - leg.started_at).total_seconds())
-                
+                # Prefer Twilio's authoritative CallDuration for transfer/outbound legs.
+                # Twilio measures from the moment the called party answers to hang-up,
+                # which is the billable duration and avoids server clock drift issues.
+                # Fall back to wall-clock arithmetic only when Twilio doesn't provide it,
+                # and clamp to zero to prevent negative values from clock skew.
+                if duration_seconds is not None:
+                    leg.duration_seconds = duration_seconds
+                elif leg.started_at and leg.ended_at:
+                    leg.duration_seconds = max(0, int((leg.ended_at - leg.started_at).total_seconds()))
+
                 # When transfer leg ends (success or fail), update parent call.
                 if leg.leg_type in (LegType.TRANSFER_EXTERNAL.value, LegType.TRANSFER_SIP.value):
                     if not call_log and parent_call_sid:
@@ -513,6 +542,30 @@ class CallLogger:
                             CallLeg.call_log_id == call_log.id
                         ).all()
                         non_cold = [l for l in all_legs if l.leg_type != LegType.TRANSFER_COLD.value]
+
+                        # Recalculate AI leg duration now that transfer leg is authoritative.
+                        # Use answered_at -> ai_leg.ended_at for the most accurate value.
+                        # This corrects any drift introduced before the in-progress anchor.
+                        ai_leg_final = next(
+                            (l for l in all_legs if l.leg_type == LegType.AI_CONVERSATION.value),
+                            None,
+                        )
+                        if ai_leg_final and ai_leg_final.ended_at:
+                            if call_log.answered_at:
+                                corrected = max(0, int(
+                                    (ai_leg_final.ended_at - call_log.answered_at).total_seconds()
+                                ))
+                                ai_leg_final.duration_seconds = corrected
+                                logger.info(
+                                    f"Recalculated AI leg duration to {corrected}s "
+                                    f"(answered_at -> ai_leg.ended_at)"
+                                )
+                            elif ai_leg_final.started_at:
+                                corrected = max(0, int(
+                                    (ai_leg_final.ended_at - ai_leg_final.started_at).total_seconds()
+                                ))
+                                ai_leg_final.duration_seconds = corrected
+
                         total_dur = sum(l.duration_seconds or 0 for l in non_cold)
                         if total_dur > 0:
                             call_log.duration_seconds = total_dur
