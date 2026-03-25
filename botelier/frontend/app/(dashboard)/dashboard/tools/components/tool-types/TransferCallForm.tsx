@@ -90,13 +90,17 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
 
   useEffect(() => {
     if (tool) {
-      let countryCode = tool.config?.country_code || "+1";
-      let localNumber = tool.config?.phone_number || "";
+      const rawPhone = tool.config?.phone_number || "";
+      let countryCode: string;
+      let localNumber: string;
 
-      if (!tool.config?.country_code && tool.config?.phone_number) {
-        const parsed = parseE164(tool.config.phone_number);
+      if (rawPhone.startsWith("+")) {
+        const parsed = parseE164(rawPhone);
         countryCode = parsed.countryCode;
         localNumber = parsed.localNumber;
+      } else {
+        countryCode = tool.config?.country_code || "+1";
+        localNumber = rawPhone;
       }
 
       setFormData({
@@ -154,14 +158,13 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
     setSaving(true);
 
     try {
-      const e164 = `${formData.country_code}${formData.phone_number}`;
       const payload = {
         name: formData.name,
         description: formData.description,
         tool_type: "TRANSFER_CALL",
         config: {
           country_code: formData.country_code,
-          phone_number: e164,
+          phone_number: formData.phone_number,
           extension: formData.extension.trim() || null,
           pre_transfer_message: formData.pre_transfer_message,
           transfer_mode: formData.transfer_mode,

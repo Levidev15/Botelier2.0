@@ -358,8 +358,15 @@ class FunctionMapper:
         - Transfers call to configured number
         - Ends bot's session
         """
-        phone_number = tool.config.get("phone_number")
+        stored_phone = tool.config.get("phone_number") or ""
+        country_code = tool.config.get("country_code") or ""
         extension = tool.config.get("extension") or None
+        # Build E.164 dial target. New records store country_code + local digits
+        # separately; legacy records stored the full E.164 in phone_number.
+        if country_code and not stored_phone.startswith("+"):
+            phone_number = f"{country_code}{stored_phone}"
+        else:
+            phone_number = stored_phone
         pre_message = tool.config.get("pre_transfer_message", "One moment please...")
         transfer_mode = tool.config.get("transfer_mode", "warm")
         
