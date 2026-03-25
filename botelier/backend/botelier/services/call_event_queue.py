@@ -67,6 +67,14 @@ class CallEventQueue:
         If the queue is full (50 pending events), or if the queue has already
         been stopped (flush_and_stop called), the event is silently dropped.
 
+        The stop-event guard here is the canonical fix for the idle-timeout race
+        condition: engine.py's IdleTimeoutTracker._on_idle() fires a callback that
+        calls event_queue.log("idle_timeout", ...) — this can race with pipeline
+        teardown and flush_and_stop().  Guarding in log() is preferred over
+        adding a guard in every caller: a single check here protects all code
+        paths (idle_timeout, greeting_started, user_speech_detected, etc.) that
+        might fire after teardown.
+
         Args:
             event_type:   e.g. "websocket_connected", "greeting_started"
             event_source: "twilio" | "pipecat" | "app"
