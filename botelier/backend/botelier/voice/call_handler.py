@@ -334,6 +334,10 @@ class CallHandler:
                 # queue drains with a ~0.5 s delay, which is not reliable enough for
                 # that race window.  Opening a fresh session avoids re-using the
                 # already-closed startup session.
+                #
+                # The existence check below mirrors the _event_exists() helper in
+                # calls.py — it is intentionally inlined here to avoid importing a
+                # private helper from an API module into the voice layer.
                 from ..models.call_event import CallEvent as _CallEvent
                 import uuid as _uuid
                 _db_sync = SessionLocal()

@@ -136,7 +136,14 @@ class IdleTimeoutTracker:
         self._event_queue = event_queue
 
     async def _on_idle(self, processor: UserIdleProcessor, retry_count: int) -> bool:
-        """Called each time the idle timeout fires.  Returns False to stop retrying."""
+        """Called each time the idle timeout fires.  Returns False to stop retrying.
+
+        Note: there is no explicit stop-event guard here against a race with
+        pipeline teardown.  That guard lives in CallEventQueue.log() itself —
+        it checks _stop_event.is_set() and silently drops any event enqueued
+        after flush_and_stop() is called.  This single centralised guard
+        protects all callers, including this one.
+        """
         if self._event_queue is not None:
             self._event_queue.log(
                 "idle_timeout",
