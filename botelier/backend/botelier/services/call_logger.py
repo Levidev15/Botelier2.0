@@ -93,10 +93,22 @@ class CallLogger:
                 # For transferred calls, duration is finalized by update_leg_status
                 # after the transfer leg ends. Avoid overwriting it here with a
                 # wall-clock value that may not yet include the transfer time.
-                if not call_log.has_transfer and call_log.started_at and call_log.ended_at:
-                    call_log.duration_seconds = int(
-                        (call_log.ended_at - call_log.started_at).total_seconds()
-                    )
+                if not call_log.has_transfer:
+                    if duration_seconds is not None:
+                        # Twilio's CallDuration is authoritative: talk time only
+                        # (answer → hangup), excludes ring time.
+                        call_log.duration_seconds = duration_seconds
+                    elif call_log.answered_at and call_log.ended_at:
+                        # answered_at → ended_at matches Twilio's CallDuration
+                        # measurement and excludes ring time.
+                        call_log.duration_seconds = max(0, int(
+                            (call_log.ended_at - call_log.answered_at).total_seconds()
+                        ))
+                    elif call_log.started_at and call_log.ended_at:
+                        # Last resort: includes ring time, but better than nothing.
+                        call_log.duration_seconds = int(
+                            (call_log.ended_at - call_log.started_at).total_seconds()
+                        )
             
             ai_leg = self.db.query(CallLeg).filter(
                 CallLeg.call_log_id == call_log.id,
@@ -190,6 +202,12 @@ class CallLogger:
             
             if duration_seconds is not None:
                 call_log.duration_seconds = duration_seconds
+            elif call_log.answered_at and call_log.ended_at:
+                # answered_at → ended_at matches Twilio's CallDuration measurement
+                # (excludes ring time). answered_at is always set after Task #40.
+                call_log.duration_seconds = max(0, int(
+                    (call_log.ended_at - call_log.answered_at).total_seconds()
+                ))
             elif call_log.started_at and call_log.ended_at:
                 call_log.duration_seconds = int((call_log.ended_at - call_log.started_at).total_seconds())
             
@@ -218,10 +236,20 @@ class CallLogger:
                 # Cold transfer legs are already marked completed — leave duration as-is (None = unknown)
                 elif leg.leg_type == LegType.TRANSFER_COLD.value:
                     pass
-                # For other legs, just ensure they have an end time
+                # For other legs (primarily ai_conversation), just ensure they have
+                # an end time and an accurate duration.
                 elif not leg.ended_at:
                     leg.ended_at = call_log.ended_at or datetime.utcnow()
-                    if leg.started_at:
+                    if leg.leg_type == LegType.AI_CONVERSATION.value:
+                        # Use answered_at as the anchor — matches media stream billing
+                        # and is consistent with update_status(). answered_at is always
+                        # set after Task #40; fall back to started_at for safety.
+                        anchor = call_log.answered_at or leg.started_at
+                        if anchor:
+                            leg.duration_seconds = max(0, int(
+                                (leg.ended_at - anchor).total_seconds()
+                            ))
+                    elif leg.started_at:
                         leg.duration_seconds = int((leg.ended_at - leg.started_at).total_seconds())
             
             # Calculate total duration by summing all leg durations.
@@ -569,6 +597,12 @@ class CallLogger:
                         total_dur = sum(l.duration_seconds or 0 for l in non_cold)
                         if total_dur > 0:
                             call_log.duration_seconds = total_dur
+                        elif call_log.answered_at and call_log.ended_at:
+                            # answered_at → ended_at excludes ring time and matches
+                            # Twilio's CallDuration measurement.
+                            call_log.duration_seconds = max(0, int(
+                                (call_log.ended_at - call_log.answered_at).total_seconds()
+                            ))
                         elif call_log.started_at and call_log.ended_at:
                             call_log.duration_seconds = int(
                                 (call_log.ended_at - call_log.started_at).total_seconds()
