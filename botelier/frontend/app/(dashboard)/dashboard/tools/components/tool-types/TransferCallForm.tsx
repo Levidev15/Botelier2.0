@@ -54,21 +54,43 @@ const COMMON_COUNTRY_CODES = [
   { label: "MX +52", value: "+52" },
 ];
 
+const KNOWN_COUNTRY_CODES = [
+  "+1",
+  "+7",
+  "+20", "+27", "+30", "+31", "+32", "+33", "+34", "+36",
+  "+39", "+40", "+41", "+43", "+44", "+45", "+46", "+47", "+48", "+49",
+  "+51", "+52", "+53", "+54", "+55", "+56", "+57", "+58",
+  "+60", "+61", "+62", "+63", "+64", "+65", "+66",
+  "+81", "+82", "+84", "+86",
+  "+90", "+91", "+92", "+93", "+94", "+95",
+  "+212", "+213", "+216", "+218", "+220", "+221",
+  "+234", "+254", "+255", "+256", "+260", "+263",
+  "+351", "+352", "+353", "+354", "+355", "+356",
+  "+358", "+359", "+370", "+371", "+372", "+373",
+  "+374", "+375", "+376", "+377", "+380", "+381",
+  "+382", "+385", "+386", "+387", "+389",
+  "+420", "+421", "+423",
+  "+502", "+503", "+504", "+505", "+506", "+507",
+  "+509", "+591", "+593", "+595", "+598",
+  "+852", "+853", "+855", "+856",
+  "+880", "+886",
+  "+960", "+962", "+963", "+964", "+965", "+966",
+  "+971", "+972", "+973", "+974", "+975", "+976",
+];
+
 function parseE164(e164: string): { countryCode: string; localNumber: string } {
   if (!e164.startsWith("+")) {
     return { countryCode: "+1", localNumber: e164 };
   }
-  const digits = e164.slice(1);
-  if (digits.startsWith("1") && digits.length === 11) {
-    return { countryCode: "+1", localNumber: digits.slice(1) };
-  }
-  for (const cc of ["+52", "+61", "+44"]) {
-    const ccDigits = cc.slice(1);
-    if (digits.startsWith(ccDigits)) {
-      return { countryCode: cc, localNumber: digits.slice(ccDigits.length) };
+  for (const cc of KNOWN_COUNTRY_CODES) {
+    if (e164.startsWith(cc)) {
+      const local = e164.slice(cc.length);
+      if (local.length >= 4) {
+        return { countryCode: cc, localNumber: local };
+      }
     }
   }
-  return { countryCode: "+1", localNumber: digits };
+  return { countryCode: "+1", localNumber: e164.slice(1) };
 }
 
 export default function TransferCallForm({ onSuccess, onCancel, tool, accountId, toolSetId }: TransferCallFormProps) {
