@@ -49,6 +49,11 @@ class CallEventQueue:
         self._task: Optional[asyncio.Task] = None
         self._stop_event = asyncio.Event()
 
+    @property
+    def is_stopped(self) -> bool:
+        """True once flush_and_stop() has been called."""
+        return self._stop_event.is_set()
+
     def log(
         self,
         event_type: str,
@@ -59,8 +64,8 @@ class CallEventQueue:
         """
         Enqueue an event.  Synchronous — never blocks the caller.
 
-        If the queue is full (50 pending events), the event is silently
-        dropped rather than stalling the audio pipeline.
+        If the queue is full (50 pending events), or if the queue has already
+        been stopped (flush_and_stop called), the event is silently dropped.
 
         Args:
             event_type:   e.g. "websocket_connected", "greeting_started"
@@ -68,6 +73,12 @@ class CallEventQueue:
             severity:     "info" | "warning" | "error"
             details:      optional JSONB payload dict
         """
+        if self._stop_event.is_set():
+            logger.debug(
+                f"CallEventQueue already stopped for call_log {self.call_log_id} — "
+                f"dropping late event: {event_type}"
+            )
+            return
         now = datetime.utcnow()
         offset_ms = int((now - self.call_started_at).total_seconds() * 1000)
         event = {
