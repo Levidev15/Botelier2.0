@@ -906,7 +906,7 @@ export default function CallLogsPage() {
 
       {editLogTarget && accountId && (
         <EditCallLogModal
-          log={editLogTarget as any}
+          log={editLogTarget}
           hotelId={accountId}
           authFetch={authFetch}
           onClose={() => setEditLogTarget(null)}
@@ -1012,6 +1012,7 @@ function CallLogRow({
   }, [isMenuOpen]);
 
   const hasMenuItems =
+    !!log.recording_url ||
     canEditLogs ||
     (canDeleteLogs && hasTranscript && !log.ai_summary) ||
     (canViewTranscripts && !!log.ai_summary) ||
@@ -1151,17 +1152,6 @@ function CallLogRow({
         </td>
         <td className="px-4 py-3 text-right">
           <div className="flex items-center justify-end gap-1">
-            {log.recording_url && (
-              <a
-                href={log.recording_url}
-                target="_blank"
-                rel="noopener noreferrer"
-                className="p-2 text-gray-400 hover:text-green-400 hover:bg-gray-700 rounded-lg transition"
-                title="Play recording"
-              >
-                <Play className="h-4 w-4" />
-              </a>
-            )}
             {canViewTranscripts && hasTranscript && (
               <button
                 onClick={onViewTranscript}
@@ -1182,6 +1172,18 @@ function CallLogRow({
                 </button>
                 {isMenuOpen && (
                   <div className="absolute right-0 mt-1 w-48 bg-[#1c1c1c] border border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden">
+                    {log.recording_url && (
+                      <a
+                        href={log.recording_url}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        onClick={() => setIsMenuOpen(false)}
+                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-gray-300 hover:bg-[#252525] hover:text-foreground transition-colors"
+                      >
+                        <Play className="h-4 w-4 text-gray-500" />
+                        Play Recording
+                      </a>
+                    )}
                     {canEditLogs && (
                       <button
                         onClick={() => { setIsMenuOpen(false); onEditLog(); }}
@@ -1214,7 +1216,7 @@ function CallLogRow({
                         Generate Summary
                       </button>
                     )}
-                    {canDeleteLogs && (canEditLogs || (canDeleteLogs && hasTranscript && !log.ai_summary) || (canViewTranscripts && !!log.ai_summary)) && (
+                    {canDeleteLogs && (!!log.recording_url || canEditLogs || (hasTranscript && !log.ai_summary) || (canViewTranscripts && !!log.ai_summary)) && (
                       <div className="border-t border-gray-700 my-0.5" />
                     )}
                     {canDeleteLogs && (

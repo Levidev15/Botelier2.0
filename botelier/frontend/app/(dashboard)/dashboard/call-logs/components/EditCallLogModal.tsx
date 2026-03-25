@@ -10,7 +10,7 @@ interface Disposition {
   color: string;
 }
 
-interface CallLog {
+interface EditableCallLogFields {
   id: string;
   hotel_id: string;
   assistant_id: string | null;
@@ -21,11 +21,11 @@ interface CallLog {
 }
 
 interface EditCallLogModalProps {
-  log: CallLog;
+  log: EditableCallLogFields;
   hotelId: string;
   authFetch: (url: string, options?: RequestInit) => Promise<Response>;
   onClose: () => void;
-  onSaved: (updates: Partial<CallLog>) => void;
+  onSaved: (updates: Partial<EditableCallLogFields>) => void;
 }
 
 function DropdownSelect({
