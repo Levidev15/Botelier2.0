@@ -360,7 +360,11 @@ class FunctionMapper:
         """
         stored_phone = tool.config.get("phone_number") or ""
         country_code = tool.config.get("country_code") or ""
-        extension = tool.config.get("extension") or None
+        raw_extension = tool.config.get("extension") or ""
+        # Normalise extension to digits-only for safe TwiML/SIP interpolation.
+        import re as _re_ext
+        extension_digits = _re_ext.sub(r'[^\d]', '', raw_extension)
+        extension = extension_digits if extension_digits else None
         # Build E.164 dial target. New records store country_code + local digits
         # separately; legacy records stored the full E.164 in phone_number.
         if country_code and not stored_phone.startswith("+"):
