@@ -126,12 +126,19 @@ class CallHandler:
                     db.close()
                     return
                 
-                # Fetch call log for event queue
+                # Fetch call log for event queue and set answered_at.
+                # answered_at is normally set by the Twilio in-progress status
+                # callback, but that webhook is not reliably delivered in all
+                # environments.  Setting it here (when audio streaming begins)
+                # is the universal source of truth for when the call was answered.
                 from ..models.call_log import CallLog
                 call_log_record = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
                 if call_log_record:
                     call_log_id = call_log_record.id
                     call_started_at = call_log_record.started_at
+                    if not call_log_record.answered_at:
+                        call_log_record.answered_at = datetime.utcnow()
+                        db.commit()
                 
                 logger.info(f"🤖 Assistant: '{assistant.name}' (ID: {assistant.id})")
                 
@@ -315,6 +322,17 @@ class CallHandler:
                 # Log websocket_connected — stream established between Twilio and backend
                 event_queue.log(
                     "websocket_connected",
+                    event_source="pipecat",
+                    severity="info",
+                    details={"stream_sid": stream_sid},
+                )
+
+                # Log call_answered — audio path is active from this point.
+                # This is the pipeline-side fallback for the Twilio in-progress
+                # status callback, which is not reliably delivered in all environments.
+                # The Twilio webhook path deduplicates against this write.
+                event_queue.log(
+                    "call_answered",
                     event_source="pipecat",
                     severity="info",
                     details={"stream_sid": stream_sid},

@@ -30,6 +30,23 @@ def _get_call_handler():
     return call_handler
 
 
+def _event_exists(db: Session, call_log_id, event_type: str) -> bool:
+    """
+    Return True if a call event of the given type already exists for this call.
+
+    Used to prevent duplicate events when both the pipeline path and the Twilio
+    webhook path could write the same event type (e.g. call_answered is written
+    by the pipeline at WebSocket connect and may also arrive via the Twilio
+    in-progress status callback in production).
+    """
+    return (
+        db.query(CallEvent)
+        .filter(CallEvent.call_log_id == call_log_id, CallEvent.event_type == event_type)
+        .first()
+        is not None
+    )
+
+
 def _write_event(
     db: Session,
     call_log_id,
@@ -262,30 +279,35 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                     duration_seconds=duration_seconds,
                 )
 
-            # Log call_answered and call_ended events
+            # Log call_answered and call_ended events.
+            # Dedup: the pipeline path may have already written these (e.g.
+            # call_answered at WebSocket connect, call_ended at connect-complete).
+            # Skip the write when a record already exists to avoid duplicates.
             call_log = call_logger.get_call_log(call_sid)
             if call_log:
                 _TERMINAL = {"completed", "busy", "failed", "no-answer", "canceled"}
                 if call_status == "in-progress":
-                    _write_event(
-                        db,
-                        call_log_id=call_log.id,
-                        event_type="call_answered",
-                        event_source="twilio",
-                        severity="info",
-                        details={"CallStatus": call_status},
-                        call_started_at=call_log.started_at,
-                    )
+                    if not _event_exists(db, call_log.id, "call_answered"):
+                        _write_event(
+                            db,
+                            call_log_id=call_log.id,
+                            event_type="call_answered",
+                            event_source="twilio",
+                            severity="info",
+                            details={"CallStatus": call_status},
+                            call_started_at=call_log.started_at,
+                        )
                 elif call_status in _TERMINAL:
-                    _write_event(
-                        db,
-                        call_log_id=call_log.id,
-                        event_type="call_ended",
-                        event_source="twilio",
-                        severity="info" if call_status == "completed" else "warning",
-                        details={"CallStatus": call_status, "CallDuration": call_duration},
-                        call_started_at=call_log.started_at,
-                    )
+                    if not _event_exists(db, call_log.id, "call_ended"):
+                        _write_event(
+                            db,
+                            call_log_id=call_log.id,
+                            event_type="call_ended",
+                            event_source="twilio",
+                            severity="info" if call_status == "completed" else "warning",
+                            details={"CallStatus": call_status, "CallDuration": call_duration},
+                            call_started_at=call_log.started_at,
+                        )
         
         return {"status": "received"}
         
@@ -349,7 +371,22 @@ async def connect_complete(request: Request, db: Session = Depends(get_db), back
         
         call_logger.complete_call(call_sid)
         logger.info(f"Marked call {call_sid} as completed via connect-complete")
-        
+
+        # Log call_ended here for calls where Twilio's terminal status callback
+        # is not reliably delivered (common in dev; also a safety net for prod).
+        # Deduped so we never write a second event if Twilio's webhook arrived first.
+        call_log = call_logger.get_call_log(call_sid)
+        if call_log and not _event_exists(db, call_log.id, "call_ended"):
+            _write_event(
+                db,
+                call_log_id=call_log.id,
+                event_type="call_ended",
+                event_source="pipecat",
+                severity="info",
+                details={"source": "connect_complete"},
+                call_started_at=call_log.started_at,
+            )
+
         _maybe_enqueue_acw(call_sid, db, background_tasks)
         
         hangup_twiml = """<?xml version="1.0" encoding="UTF-8"?>
