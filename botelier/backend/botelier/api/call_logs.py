@@ -275,7 +275,7 @@ async def export_call_logs(
             )
             transfer_duration = sum(
                 leg.duration_seconds or 0 for leg in legs
-                if leg.leg_type in ("transfer_external", "transfer_warm", "transfer_sip")
+                if leg.leg_type in ("transfer_external", "transfer_sip", "transfer_internal", "transfer_cold")
             )
             
             writer.writerow([
