@@ -24,10 +24,15 @@ import {
   Play,
   Wrench,
   Tag,
+  MoreHorizontal,
+  Pencil,
+  Trash2,
+  AlertTriangle,
 } from "lucide-react";
 import { notify } from "@/lib/notifications";
 import TranscriptModal from "./components/TranscriptModal";
 import EventLogModal from "./components/EventLogModal";
+import EditCallLogModal from "./components/EditCallLogModal";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
@@ -234,6 +239,7 @@ export default function CallLogsPage() {
   const { can, isPlatformAdmin } = usePermissions();
   const canExport = isPlatformAdmin || can("call_logs", "export");
   const canViewTranscripts = isPlatformAdmin || can("call_logs", "view_transcripts");
+  const canEditLogs = isPlatformAdmin || can("call_logs", "edit");
   const canDeleteLogs = isPlatformAdmin || can("call_logs", "delete");
   const { authFetch } = useAuthToken();
   const [callLogs, setCallLogs] = useState<CallLog[]>([]);
@@ -245,6 +251,9 @@ export default function CallLogsPage() {
   const [showEventLog, setShowEventLog] = useState(false);
   const [eventLogLog, setEventLogLog] = useState<CallLog | null>(null);
   const [generatingIds, setGeneratingIds] = useState<Set<string>>(new Set());
+  const [editLogTarget, setEditLogTarget] = useState<CallLog | null>(null);
+  const [deleteLogTarget, setDeleteLogTarget] = useState<CallLog | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
@@ -454,6 +463,27 @@ export default function CallLogsPage() {
         next.delete(log.id);
         return next;
       });
+    }
+  };
+
+  const deleteCallLog = async (log: CallLog) => {
+    if (!accountId) return;
+    setDeletingId(log.id);
+    try {
+      const res = await authFetch(`/api/call-logs/${log.id}?hotel_id=${accountId}`, {
+        method: "DELETE",
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err.detail || "Failed to delete");
+      }
+      setCallLogs((prev) => prev.filter((l) => l.id !== log.id));
+      setDeleteLogTarget(null);
+      notify.success("Call log deleted");
+    } catch (err) {
+      notify.error(err instanceof Error ? err.message : "Failed to delete call log");
+    } finally {
+      setDeletingId(null);
     }
   };
 
@@ -805,8 +835,11 @@ export default function CallLogsPage() {
                       }}
                       onGenerateSummary={() => generateSummary(log)}
                       isGeneratingSummary={generatingIds.has(log.id)}
+                      onEditLog={() => setEditLogTarget(log)}
+                      onDeleteLog={() => setDeleteLogTarget(log)}
                       formatDateTime={formatDateTime}
                       canViewTranscripts={canViewTranscripts}
+                      canEditLogs={canEditLogs}
                       canDeleteLogs={canDeleteLogs}
                     />
                   ))}
@@ -870,6 +903,64 @@ export default function CallLogsPage() {
           }}
         />
       )}
+
+      {editLogTarget && accountId && (
+        <EditCallLogModal
+          log={editLogTarget as any}
+          hotelId={accountId}
+          authFetch={authFetch}
+          onClose={() => setEditLogTarget(null)}
+          onSaved={(updates) => {
+            setCallLogs((prev) =>
+              prev.map((l) => (l.id === editLogTarget.id ? { ...l, ...updates } : l))
+            );
+          }}
+        />
+      )}
+
+      {deleteLogTarget && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+          <div className="w-full max-w-sm mx-4 bg-[#141414] border border-gray-800 rounded-xl shadow-2xl">
+            <div className="px-6 pt-6 pb-4">
+              <div className="flex items-center gap-3 mb-3">
+                <div className="w-10 h-10 rounded-lg bg-red-500/10 flex items-center justify-center flex-shrink-0">
+                  <AlertTriangle className="h-5 w-5 text-red-400" />
+                </div>
+                <h2 className="text-base font-semibold">Delete Call Log</h2>
+              </div>
+              <p className="text-sm text-gray-400">
+                Are you sure you want to delete this call log? This action cannot be undone and will
+                permanently remove the call record, transcript, and all associated data.
+              </p>
+            </div>
+            <div className="flex gap-3 px-6 pb-5">
+              <button
+                type="button"
+                onClick={() => setDeleteLogTarget(null)}
+                disabled={deletingId === deleteLogTarget.id}
+                className="flex-1 px-4 py-2.5 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => deleteCallLog(deleteLogTarget)}
+                disabled={deletingId === deleteLogTarget.id}
+                className="flex-1 px-4 py-2.5 bg-red-600 hover:bg-red-700 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {deletingId === deleteLogTarget.id ? (
+                  <span className="flex items-center justify-center gap-2">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    Deleting...
+                  </span>
+                ) : (
+                  "Delete"
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -882,8 +973,11 @@ function CallLogRow({
   onViewEventLog,
   onGenerateSummary,
   isGeneratingSummary,
+  onEditLog,
+  onDeleteLog,
   formatDateTime,
   canViewTranscripts,
+  canEditLogs,
   canDeleteLogs,
 }: {
   log: CallLog;
@@ -893,12 +987,35 @@ function CallLogRow({
   onViewEventLog: () => void;
   onGenerateSummary: () => void;
   isGeneratingSummary: boolean;
+  onEditLog: () => void;
+  onDeleteLog: () => void;
   formatDateTime: (date: string | null) => string;
   canViewTranscripts: boolean;
+  canEditLogs: boolean;
   canDeleteLogs: boolean;
 }) {
   const hasLegs = log.legs && log.legs.length > 1;
   const hasTranscript = log.transcript && log.transcript.length > 0;
+  const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(e: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) {
+        setIsMenuOpen(false);
+      }
+    }
+    if (isMenuOpen) {
+      document.addEventListener("mousedown", handleClickOutside);
+      return () => document.removeEventListener("mousedown", handleClickOutside);
+    }
+  }, [isMenuOpen]);
+
+  const hasMenuItems =
+    canEditLogs ||
+    (canDeleteLogs && hasTranscript && !log.ai_summary) ||
+    (canViewTranscripts && !!log.ai_summary) ||
+    canDeleteLogs;
 
   return (
     <>
@@ -1045,28 +1162,6 @@ function CallLogRow({
                 <Play className="h-4 w-4" />
               </a>
             )}
-            {canViewTranscripts && log.ai_summary ? (
-              <button
-                onClick={onViewTranscript}
-                className="p-2 text-green-400 hover:bg-gray-700 rounded-lg transition"
-                title="View summary & transcript"
-              >
-                <MessageSquareText className="h-4 w-4" />
-              </button>
-            ) : canDeleteLogs && hasTranscript ? (
-              <button
-                onClick={onGenerateSummary}
-                disabled={isGeneratingSummary}
-                className="p-2 text-gray-400 hover:text-purple-400 hover:bg-gray-700 rounded-lg transition disabled:opacity-50"
-                title="Run Post Call QA"
-              >
-                {isGeneratingSummary ? (
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                ) : (
-                  <Sparkles className="h-4 w-4" />
-                )}
-              </button>
-            ) : null}
             {canViewTranscripts && hasTranscript && (
               <button
                 onClick={onViewTranscript}
@@ -1075,6 +1170,65 @@ function CallLogRow({
               >
                 <FileText className="h-4 w-4" />
               </button>
+            )}
+            {hasMenuItems && (
+              <div ref={menuRef} className="relative">
+                <button
+                  onClick={() => setIsMenuOpen((o) => !o)}
+                  className="p-2 text-gray-400 hover:text-foreground hover:bg-gray-700 rounded-lg transition"
+                  title="More actions"
+                >
+                  <MoreHorizontal className="h-4 w-4" />
+                </button>
+                {isMenuOpen && (
+                  <div className="absolute right-0 mt-1 w-48 bg-[#1c1c1c] border border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden">
+                    {canEditLogs && (
+                      <button
+                        onClick={() => { setIsMenuOpen(false); onEditLog(); }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-gray-300 hover:bg-[#252525] hover:text-foreground text-left transition-colors"
+                      >
+                        <Pencil className="h-4 w-4 text-gray-500" />
+                        Edit Call Log
+                      </button>
+                    )}
+                    {canViewTranscripts && log.ai_summary && (
+                      <button
+                        onClick={() => { setIsMenuOpen(false); onViewTranscript(); }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-gray-300 hover:bg-[#252525] hover:text-foreground text-left transition-colors"
+                      >
+                        <MessageSquareText className="h-4 w-4 text-gray-500" />
+                        View Summary
+                      </button>
+                    )}
+                    {canDeleteLogs && hasTranscript && !log.ai_summary && (
+                      <button
+                        onClick={() => { setIsMenuOpen(false); onGenerateSummary(); }}
+                        disabled={isGeneratingSummary}
+                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-gray-300 hover:bg-[#252525] hover:text-foreground text-left transition-colors disabled:opacity-50"
+                      >
+                        {isGeneratingSummary ? (
+                          <Loader2 className="h-4 w-4 text-gray-500 animate-spin" />
+                        ) : (
+                          <Sparkles className="h-4 w-4 text-gray-500" />
+                        )}
+                        Generate Summary
+                      </button>
+                    )}
+                    {canDeleteLogs && (canEditLogs || (canDeleteLogs && hasTranscript && !log.ai_summary) || (canViewTranscripts && !!log.ai_summary)) && (
+                      <div className="border-t border-gray-700 my-0.5" />
+                    )}
+                    {canDeleteLogs && (
+                      <button
+                        onClick={() => { setIsMenuOpen(false); onDeleteLog(); }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-red-400 hover:bg-red-500/10 text-left transition-colors"
+                      >
+                        <Trash2 className="h-4 w-4" />
+                        Delete Call Log
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
             )}
           </div>
         </td>

@@ -20,6 +20,7 @@ from loguru import logger
 
 from botelier.database import get_db
 from botelier.models import CallLog, CallLeg, CallStatus, Assistant, PhoneNumber, AssistantDisposition
+from botelier.models.resolution_option import AssistantResolutionOption
 from botelier.models.user import User
 from botelier.auth.middleware import get_current_user, check_account_permission
 from botelier.models.role import AccountMembership
@@ -400,7 +401,17 @@ async def get_filter_options(
             )
         resolution_rows = resolution_query.distinct().order_by(CallLog.acw_resolution).all()
         resolution_options = [r[0] for r in resolution_rows]
-        
+
+        configured_resolution_options: list = []
+        if assistant_id:
+            res_opts = (
+                db.query(AssistantResolutionOption)
+                .filter(AssistantResolutionOption.assistant_id == assistant_id)
+                .order_by(AssistantResolutionOption.name)
+                .all()
+            )
+            configured_resolution_options = [r.name for r in res_opts]
+
         return {
             "assistants": [{"id": str(a.id), "name": a.name} for a in assistants],
             "phone_numbers": [
@@ -413,6 +424,7 @@ async def get_filter_options(
                 for d in dispositions
             ],
             "resolution_options": resolution_options,
+            "configured_resolution_options": configured_resolution_options,
         }
         
     except Exception as e:
@@ -500,7 +512,7 @@ async def update_call_log(
     user: User = Depends(get_current_user),
 ):
     """Update a call log's disposition or summary."""
-    check_account_permission(user, str(hotel_id), "call_logs.delete", db)
+    check_account_permission(user, str(hotel_id), "call_logs.edit", db)
     try:
         call_log = db.query(CallLog).filter(
             CallLog.id == call_log_id,
@@ -543,3 +555,33 @@ async def update_call_log(
     except Exception as e:
         logger.exception(f"Error updating call log: {e}")
         raise HTTPException(status_code=500, detail="Failed to update call log")
+
+
+@router.delete("/{call_log_id}")
+async def delete_call_log(
+    call_log_id: UUID,
+    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Delete a call log and its associated legs and events."""
+    check_account_permission(user, str(hotel_id), "call_logs.delete", db)
+    try:
+        call_log = db.query(CallLog).filter(
+            CallLog.id == call_log_id,
+            CallLog.hotel_id == hotel_id,
+        ).first()
+
+        if not call_log:
+            raise HTTPException(status_code=404, detail="Call log not found")
+
+        db.delete(call_log)
+        db.commit()
+        logger.info(f"Deleted call log {call_log_id}")
+        return {"success": True}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error deleting call log: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete call log")
