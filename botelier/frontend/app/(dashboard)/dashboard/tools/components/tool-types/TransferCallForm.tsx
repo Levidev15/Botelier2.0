@@ -12,6 +12,8 @@ interface Tool {
   tool_type: string;
   config: {
     phone_number?: string;
+    country_code?: string;
+    extension?: string;
     pre_transfer_message?: string;
     transfer_mode?: string;
   };
@@ -29,9 +31,44 @@ interface TransferCallFormProps {
 interface FormData {
   name: string;
   description: string;
+  country_code: string;
   phone_number: string;
+  extension: string;
   pre_transfer_message: string;
   transfer_mode: "warm" | "cold";
+}
+
+interface FormErrors {
+  name?: string;
+  description?: string;
+  country_code?: string;
+  phone_number?: string;
+  extension?: string;
+}
+
+const COMMON_COUNTRY_CODES = [
+  { label: "US +1", value: "+1" },
+  { label: "CA +1", value: "+1" },
+  { label: "GB +44", value: "+44" },
+  { label: "AU +61", value: "+61" },
+  { label: "MX +52", value: "+52" },
+];
+
+function parseE164(e164: string): { countryCode: string; localNumber: string } {
+  if (!e164.startsWith("+")) {
+    return { countryCode: "+1", localNumber: e164 };
+  }
+  const digits = e164.slice(1);
+  if (digits.startsWith("1") && digits.length === 11) {
+    return { countryCode: "+1", localNumber: digits.slice(1) };
+  }
+  for (const cc of ["+52", "+61", "+44"]) {
+    const ccDigits = cc.slice(1);
+    if (digits.startsWith(ccDigits)) {
+      return { countryCode: cc, localNumber: digits.slice(ccDigits.length) };
+    }
+  }
+  return { countryCode: "+1", localNumber: digits };
 }
 
 export default function TransferCallForm({ onSuccess, onCancel, tool, accountId, toolSetId }: TransferCallFormProps) {
@@ -41,20 +78,33 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
   const [formData, setFormData] = useState<FormData>({
     name: "",
     description: "",
+    country_code: "+1",
     phone_number: "",
+    extension: "",
     pre_transfer_message: "Let me connect you with someone who can help...",
     transfer_mode: "warm",
   });
 
   const [saving, setSaving] = useState(false);
-  const [errors, setErrors] = useState<Partial<FormData>>({});
+  const [errors, setErrors] = useState<FormErrors>({});
 
   useEffect(() => {
     if (tool) {
+      let countryCode = tool.config?.country_code || "+1";
+      let localNumber = tool.config?.phone_number || "";
+
+      if (!tool.config?.country_code && tool.config?.phone_number) {
+        const parsed = parseE164(tool.config.phone_number);
+        countryCode = parsed.countryCode;
+        localNumber = parsed.localNumber;
+      }
+
       setFormData({
         name: tool.name || "",
         description: tool.description || "",
-        phone_number: tool.config?.phone_number || "",
+        country_code: countryCode,
+        phone_number: localNumber,
+        extension: tool.config?.extension || "",
         pre_transfer_message: tool.config?.pre_transfer_message || "Let me connect you with someone who can help...",
         transfer_mode: (tool.config?.transfer_mode as "warm" | "cold") || "warm",
       });
@@ -62,7 +112,7 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
   }, [tool]);
 
   const validateForm = (): boolean => {
-    const newErrors: Partial<FormData> = {};
+    const newErrors: FormErrors = {};
 
     if (!formData.name.trim()) {
       newErrors.name = "Tool name is required";
@@ -72,10 +122,24 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
       newErrors.description = "Description is required";
     }
 
+    if (!formData.country_code.trim()) {
+      newErrors.country_code = "Country code is required";
+    } else if (!/^\+\d{1,4}$/.test(formData.country_code)) {
+      newErrors.country_code = "Must be + followed by 1–4 digits (e.g. +1, +44)";
+    }
+
     if (!formData.phone_number.trim()) {
       newErrors.phone_number = "Phone number is required";
-    } else if (!/^[\+\d][\d\s\-\(\)]+$/.test(formData.phone_number)) {
-      newErrors.phone_number = "Invalid phone number format";
+    } else if (!/^\d+$/.test(formData.phone_number)) {
+      newErrors.phone_number = "Digits only — no spaces, dashes, or country code";
+    } else if (formData.country_code === "+1" && formData.phone_number.length !== 10) {
+      newErrors.phone_number = "US/CA numbers must be exactly 10 digits";
+    } else if (formData.country_code !== "+1" && (formData.phone_number.length < 5 || formData.phone_number.length > 15)) {
+      newErrors.phone_number = "Phone number must be 5–15 digits";
+    }
+
+    if (formData.extension.trim() && !/^\d{1,20}$/.test(formData.extension.trim())) {
+      newErrors.extension = "Extension must be digits only (max 20)";
     }
 
     setErrors(newErrors);
@@ -90,12 +154,15 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
     setSaving(true);
 
     try {
+      const e164 = `${formData.country_code}${formData.phone_number}`;
       const payload = {
         name: formData.name,
         description: formData.description,
         tool_type: "TRANSFER_CALL",
         config: {
-          phone_number: formData.phone_number,
+          country_code: formData.country_code,
+          phone_number: e164,
+          extension: formData.extension.trim() || null,
           pre_transfer_message: formData.pre_transfer_message,
           transfer_mode: formData.transfer_mode,
         },
@@ -116,7 +183,7 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
 
       if (!response.ok) {
         const errorData = await response.json();
-        let errorMsg = `Failed to ${isEditMode ? 'update' : 'create'} tool`;
+        let errorMsg = `Failed to ${isEditMode ? "update" : "create"} tool`;
         if (typeof errorData.detail === "string") {
           errorMsg = errorData.detail;
         } else if (Array.isArray(errorData.detail)) {
@@ -126,22 +193,25 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
       }
 
       const savedTool = await response.json();
-      notify.success(`Tool ${isEditMode ? 'updated' : 'created'} successfully`);
+      notify.success(`Tool ${isEditMode ? "updated" : "created"} successfully`);
       onSuccess(savedTool);
     } catch (error) {
-      console.error(`Error ${isEditMode ? 'updating' : 'creating'} tool:`, error);
-      notify.error(error instanceof Error ? error.message : `Failed to ${isEditMode ? 'update' : 'create'} tool. Please try again.`);
+      console.error(`Error ${isEditMode ? "updating" : "creating"} tool:`, error);
+      notify.error(error instanceof Error ? error.message : `Failed to ${isEditMode ? "update" : "create"} tool. Please try again.`);
     } finally {
       setSaving(false);
     }
   };
 
-  const handleChange = (field: keyof FormData, value: string) => {
+  const handleChange = <K extends keyof FormData>(field: K, value: FormData[K]) => {
     setFormData({ ...formData, [field]: value });
-    if (errors[field]) {
+    if (errors[field as keyof FormErrors]) {
       setErrors({ ...errors, [field]: undefined });
     }
   };
+
+  const isUs = formData.country_code === "+1";
+  const phonePlaceholder = isUs ? "5550123456" : "Enter local number";
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
@@ -150,7 +220,7 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
           <Phone className="text-blue-500" size={24} />
         </div>
         <div>
-          <h3 className="font-semibold">{isEditMode ? 'Edit' : 'Create'} Transfer Call Tool</h3>
+          <h3 className="font-semibold">{isEditMode ? "Edit" : "Create"} Transfer Call Tool</h3>
           <p className="text-sm text-gray-400">
             Route calls to human agents or other phone numbers
           </p>
@@ -203,20 +273,87 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
         <label className="block text-sm font-medium mb-2">
           Transfer to Phone Number <span className="text-red-500">*</span>
         </label>
+
+        <div className="flex gap-2">
+          <div className="relative flex-shrink-0">
+            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm font-medium pointer-events-none">
+              +
+            </div>
+            <input
+              type="text"
+              value={formData.country_code.replace(/^\+/, "")}
+              onChange={(e) => {
+                const raw = e.target.value.replace(/[^\d]/g, "").slice(0, 4);
+                handleChange("country_code", raw ? `+${raw}` : "+");
+              }}
+              placeholder="1"
+              className={`w-16 pl-6 pr-2 py-3 bg-[#141414] border ${
+                errors.country_code ? "border-red-500" : "border-gray-800"
+              } rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent text-center`}
+            />
+          </div>
+
+          <input
+            type="text"
+            inputMode="numeric"
+            value={formData.phone_number}
+            onChange={(e) => handleChange("phone_number", e.target.value.replace(/[^\d]/g, "").slice(0, 15))}
+            placeholder={phonePlaceholder}
+            className={`flex-1 px-4 py-3 bg-[#141414] border ${
+              errors.phone_number ? "border-red-500" : "border-gray-800"
+            } rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent`}
+          />
+        </div>
+
+        <div className="flex flex-wrap gap-1.5 mt-2">
+          {COMMON_COUNTRY_CODES.map((cc) => (
+            <button
+              key={cc.label}
+              type="button"
+              onClick={() => handleChange("country_code", cc.value)}
+              className={`px-2 py-1 text-xs rounded border transition-colors ${
+                formData.country_code === cc.value
+                  ? "border-blue-600 bg-blue-600/10 text-blue-400"
+                  : "border-gray-700 bg-[#141414] text-gray-400 hover:border-gray-600 hover:text-gray-300"
+              }`}
+            >
+              {cc.label}
+            </button>
+          ))}
+        </div>
+
+        {errors.country_code && (
+          <p className="text-xs text-red-500 mt-1">{errors.country_code}</p>
+        )}
+        {errors.phone_number && (
+          <p className="text-xs text-red-500 mt-1">{errors.phone_number}</p>
+        )}
+        {!errors.phone_number && !errors.country_code && (
+          <p className="text-xs text-gray-500 mt-1">
+            {isUs ? "10-digit US/CA number (e.g. 5550123456)" : "Local digits only — no country code prefix"}
+          </p>
+        )}
+      </div>
+
+      <div>
+        <label className="block text-sm font-medium mb-2">
+          Extension <span className="text-gray-500 font-normal">(optional)</span>
+        </label>
         <input
-          type="tel"
-          value={formData.phone_number}
-          onChange={(e) => handleChange("phone_number", e.target.value)}
-          placeholder="+1-555-0123"
+          type="text"
+          inputMode="numeric"
+          value={formData.extension}
+          onChange={(e) => handleChange("extension", e.target.value.replace(/[^\d]/g, "").slice(0, 20))}
+          placeholder="e.g. 1042"
           className={`w-full px-4 py-3 bg-[#141414] border ${
-            errors.phone_number ? "border-red-500" : "border-gray-800"
+            errors.extension ? "border-red-500" : "border-gray-800"
           } rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent`}
         />
         <p className="text-xs text-gray-500 mt-1">
-          Use E.164 format (e.g., +1-555-0123 for US numbers)
+          The system will automatically dial this after connecting.
         </p>
-        {errors.phone_number && (
-          <p className="text-xs text-red-500 mt-1">{errors.phone_number}</p>
+        {errors.extension && (
+          <p className="text-xs text-red-500 mt-1">{errors.extension}</p>
         )}
       </div>
 

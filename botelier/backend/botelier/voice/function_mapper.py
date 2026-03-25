@@ -359,6 +359,7 @@ class FunctionMapper:
         - Ends bot's session
         """
         phone_number = tool.config.get("phone_number")
+        extension = tool.config.get("extension") or None
         pre_message = tool.config.get("pre_transfer_message", "One moment please...")
         transfer_mode = tool.config.get("transfer_mode", "warm")
         
@@ -458,8 +459,10 @@ class FunctionMapper:
                                     # Twilio sends a SIP REFER to the destination and exits the bridge.
                                     # Charges stop at this point. No /transfer-status callbacks will arrive.
                                     # SIP URI requires E.164 digits only (e.g. +14155551234).
+                                    # Extension is appended to the user part with DTMF pauses (,,ext).
                                     digits_only = _re.sub(r'[^\d+]', '', phone_number)
-                                    sip_uri = f"sip:{digits_only}@pstn.twilio.com"
+                                    sip_user = f"{digits_only},,{extension}" if extension else digits_only
+                                    sip_uri = f"sip:{sip_user}@pstn.twilio.com"
                                     twiml_parts.append(f'<Refer><Sip>{sip_uri}</Sip></Refer>')
                                     twiml_parts.append('</Response>')
                                     transfer_twiml = '\n'.join(twiml_parts)
@@ -506,10 +509,11 @@ class FunctionMapper:
 
                                     base_url = get_public_base_url()
                                     status_callback = f"{base_url}/api/calls/transfer-status"
+                                    dial_number = f"{phone_number},,{extension}" if extension else phone_number
                                     twiml_parts.append(
                                         f'<Number statusCallback="{status_callback}" '
                                         f'statusCallbackEvent="initiated ringing answered completed">'
-                                        f'{phone_number}</Number>'
+                                        f'{dial_number}</Number>'
                                     )
 
                                     twiml_parts.append('</Dial>')
