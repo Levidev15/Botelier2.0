@@ -271,15 +271,6 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                         call_started_at=parent_log.started_at,
                     )
         else:
-            # Fetch call log BEFORE update_status so we can use answered_at as a
-            # synchronous dedup signal for call_answered.  The pipeline sets
-            # answered_at synchronously (with an immediate commit) when the WebSocket
-            # stream connects — always before Twilio can deliver the in-progress
-            # callback.  Checking the pre-update value is therefore race-free: if
-            # answered_at is already set, the pipeline already owns call_answered.
-            call_log = call_logger.get_call_log(call_sid)
-            pipeline_already_answered = call_log is not None and call_log.answered_at is not None
-
             call_logger.update_status(call_sid, call_status, duration_seconds)
             if call_status in ("completed", "busy", "failed", "no-answer", "canceled"):
                 call_logger.update_leg_status(
@@ -289,11 +280,17 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                 )
 
             # Log call_answered and call_ended events.
+            # Both paths use _event_exists() to dedup:
+            # - call_answered: pipeline writes it synchronously (with an immediate
+            #   DB commit) at WebSocket stream connect; by the time Twilio's
+            #   in-progress callback arrives the row is always visible.
+            # - call_ended: connect-complete commits synchronously before Twilio's
+            #   terminal status callback is delivered (seconds later).
+            call_log = call_logger.get_call_log(call_sid)
             if call_log:
                 _TERMINAL = {"completed", "busy", "failed", "no-answer", "canceled"}
                 if call_status == "in-progress":
-                    # Skip if the pipeline already wrote call_answered (answered_at set).
-                    if not pipeline_already_answered:
+                    if not _event_exists(db, call_log.id, "call_answered"):
                         _write_event(
                             db,
                             call_log_id=call_log.id,
@@ -304,8 +301,6 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                             call_started_at=call_log.started_at,
                         )
                 elif call_status in _TERMINAL:
-                    # connect-complete fires before terminal status callbacks so
-                    # call_ended is usually already committed — _event_exists is safe here.
                     if not _event_exists(db, call_log.id, "call_ended"):
                         _write_event(
                             db,

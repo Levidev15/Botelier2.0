@@ -327,16 +327,51 @@ class CallHandler:
                     details={"stream_sid": stream_sid},
                 )
 
-                # Log call_answered — audio path is active from this point.
-                # This is the pipeline-side fallback for the Twilio in-progress
-                # status callback, which is not reliably delivered in all environments.
-                # The Twilio webhook path deduplicates against this write.
-                event_queue.log(
-                    "call_answered",
-                    event_source="pipecat",
-                    severity="info",
-                    details={"stream_sid": stream_sid},
-                )
+                # Write call_answered synchronously via a short-lived DB session.
+                # A committed write is required here so that the Twilio in-progress
+                # status callback (which may arrive milliseconds later) can use
+                # _event_exists() to dedup and skip its own write.  The async event
+                # queue drains with a ~0.5 s delay, which is not reliable enough for
+                # that race window.  Opening a fresh session avoids re-using the
+                # already-closed startup session.
+                from ..models.call_event import CallEvent as _CallEvent
+                import uuid as _uuid
+                _db_sync = SessionLocal()
+                try:
+                    _already = (
+                        _db_sync.query(_CallEvent)
+                        .filter(
+                            _CallEvent.call_log_id == call_log_id,
+                            _CallEvent.event_type == "call_answered",
+                        )
+                        .first()
+                    )
+                    if not _already:
+                        _now = datetime.utcnow()
+                        _started = call_started_at or self.call_start_times.get(call_sid)
+                        _offset_ms = (
+                            int((_now - _started).total_seconds() * 1000) if _started else None
+                        )
+                        _db_sync.add(
+                            _CallEvent(
+                                id=_uuid.uuid4(),
+                                call_log_id=call_log_id,
+                                event_type="call_answered",
+                                event_source="pipecat",
+                                severity="info",
+                                occurred_at=_now,
+                                offset_ms=_offset_ms,
+                                details={"stream_sid": stream_sid},
+                            )
+                        )
+                        _db_sync.commit()
+                        logger.info("📞 call_answered event written synchronously (pipecat)")
+                    else:
+                        logger.debug("📞 call_answered already exists — skipping duplicate")
+                except Exception as _e:
+                    logger.error(f"❌ Failed to write call_answered event: {_e}")
+                finally:
+                    _db_sync.close()
 
                 # Pass the queue reference to FunctionMapper so it can log pipeline events
                 if call_sid in self.call_mappers:
