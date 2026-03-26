@@ -467,9 +467,9 @@ class VoiceEngineFactory:
             if hasattr(DeepgramTTSService, "Settings"):
                 return DeepgramTTSService(
                     api_key=api_keys.get("deepgram_api_key"),
+                    encoding=encoding,
                     settings=DeepgramTTSService.Settings(
                         voice=voice,
-                        encoding=encoding,
                     ),
                 )
             return DeepgramTTSService(
