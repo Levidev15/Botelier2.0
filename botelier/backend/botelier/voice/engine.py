@@ -361,7 +361,6 @@ class VoiceEngineFactory:
                             eot_threshold=config.stt_config.get("eot_threshold", 0.7),
                             eot_timeout_ms=config.stt_config.get("eot_timeout_ms", 5000),
                             keyterm=config.stt_config.get("keyterm", []),
-                            tag=config.stt_config.get("tag", []),
                         ),
                     )
                 # Fallback for older Pipecat versions without Settings API
@@ -370,7 +369,6 @@ class VoiceEngineFactory:
                     eot_threshold=config.stt_config.get("eot_threshold", 0.7),
                     eot_timeout_ms=config.stt_config.get("eot_timeout_ms", 5000),
                     keyterm=config.stt_config.get("keyterm", []),
-                    tag=config.stt_config.get("tag", []),
                 )
                 return DeepgramFluxSTTService(
                     api_key=api_keys.get("deepgram_api_key"),
