@@ -497,10 +497,54 @@ async def get_platform_stats(
 
 
 def _get_effective_permissions(membership: AccountMembership) -> dict:
-    """Compute effective permissions for a membership (role defaults + overrides)."""
-    import copy
-    perms = copy.deepcopy(membership.role.permissions or {})
+    """
+    Compute the effective permission set for a membership.
 
+    Resolution order (last writer wins per key):
+
+    1. ``DEFAULT_ROLES`` template (for system roles only) — provides the
+       baseline.  Any key present in the template but absent from the DB row
+       is filled in here.  This is the *defensive* layer: it guarantees that
+       a permission added to DEFAULT_ROLES is immediately visible after the
+       next deploy, even before the startup sync has had a chance to write
+       the updated JSON back to the DB row.
+
+    2. ``role.permissions`` (DB row) — the stored copy of the template,
+       kept in sync by ``_sync_system_role_permissions()`` at startup.  For
+       any key that exists in both the template and the DB row, the DB row
+       value wins (so manual overrides applied directly to the DB are
+       preserved).
+
+    3. ``membership.permission_overrides`` — per-user overrides that take
+       precedence over everything else.  Allows granting or revoking a
+       specific permission for a single team member without changing their
+       role.
+
+    Custom roles (``is_system_role == False``) skip step 1; they receive
+    only their stored permissions plus any user-level overrides.
+    """
+    import copy
+
+    # Step 1: start from the DEFAULT_ROLES template for system roles.
+    # This ensures that any permission added to the template after the role
+    # row was first seeded is still included in the resolved set.
+    perms: dict = {}
+    if membership.role.is_system_role:
+        template = DEFAULT_ROLES.get(membership.role.slug, {})
+        perms = copy.deepcopy(template.get("permissions", {}))
+
+    # Step 2: layer the DB row on top.  For keys that exist in both the
+    # template and the row, the DB value wins.  For keys only in the row
+    # (e.g. custom overrides written directly to the DB), they are preserved.
+    db_perms = membership.role.permissions or {}
+    for category, category_perms in db_perms.items():
+        if isinstance(category_perms, dict):
+            if category not in perms:
+                perms[category] = {}
+            for perm, value in category_perms.items():
+                perms[category][perm] = value
+
+    # Step 3: apply per-user overrides last.
     if membership.permission_overrides:
         for category, category_perms in membership.permission_overrides.items():
             if isinstance(category_perms, dict):

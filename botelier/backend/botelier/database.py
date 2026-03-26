@@ -57,14 +57,23 @@ def get_db():
 
 
 # ---------------------------------------------------------------------------
-# Additive column migrations
+# Schema migrations  (_ADDITIVE_MIGRATIONS / _run_additive_migrations)
 #
-# Each entry is a safe "ADD COLUMN IF NOT EXISTS" statement. These run at
-# startup and are idempotent — safe to re-run as many times as needed.
+# Each entry is idempotent SQL that adds or adjusts a schema object.
+# These run at every startup and are safe to re-run repeatedly.
 #
-# To add a new column in the future:
-#   1. Add the SQLAlchemy Column() to the model
-#   2. Append an ALTER TABLE statement here
+# Use this list for:
+#   • New columns    — "ALTER TABLE t ADD COLUMN IF NOT EXISTS …"
+#   • New indexes    — "CREATE INDEX IF NOT EXISTS …"
+#   • New tables     — "CREATE TABLE IF NOT EXISTS …"
+#   • Constraint tweaks, column type changes (with care)
+#
+# To add a new column:
+#   1. Add the SQLAlchemy Column() to the model file.
+#   2. Append an ALTER TABLE statement to _ADDITIVE_MIGRATIONS below.
+#
+# Do NOT use this list for reference-data changes (e.g. role permissions).
+# For that, see _sync_system_role_permissions() further below.
 # ---------------------------------------------------------------------------
 _ADDITIVE_MIGRATIONS = [
     # sms_conversations — handler_mode (AI vs human takeover)
@@ -149,10 +158,102 @@ def _run_additive_migrations():
                 conn.rollback()
 
 
+# ---------------------------------------------------------------------------
+# Reference-data sync  (_sync_system_role_permissions)
+#
+# Keeps system role permission rows in the database consistent with the
+# DEFAULT_ROLES template defined in botelier/auth/permissions.py.
+#
+# WHY THIS EXISTS
+# System roles (account_admin, staff, viewer) are seeded once at account
+# creation time.  When a developer adds a new permission to DEFAULT_ROLES,
+# the existing DB rows are never automatically updated — only newly created
+# accounts get the new permission.  This sync closes that gap.
+#
+# HOW IT WORKS
+# On every startup, this function queries all system-role rows and replaces
+# their permissions JSON with the canonical DEFAULT_ROLES template for their
+# slug.  If the row already matches, no write is issued (idempotent).
+#
+# Use this pattern for:
+#   • Adding/removing a permission to/from a system role
+#   • Renaming a permission key across the board
+#   • Any other change to DEFAULT_ROLES that should propagate to prod
+#
+# Do NOT use _ADDITIVE_MIGRATIONS for this — those are for schema objects
+# (tables, columns, indexes), not for seeded application data.
+# ---------------------------------------------------------------------------
+
+def _sync_system_role_permissions():
+    """
+    Idempotent data sync: align all system role permission rows with DEFAULT_ROLES.
+
+    Called during application startup (after schema migrations).  Updates any
+    system role whose stored permissions JSON does not exactly match the
+    canonical template in DEFAULT_ROLES.  Roles with an unrecognised slug
+    (e.g. custom roles) are left untouched.
+
+    This is the proactive half of the two-layer permissions strategy:
+    - Proactive (this function): writes correct permissions to the DB at boot
+      so every subsequent read returns the right value with no extra logic.
+    - Defensive (_get_effective_permissions in api/admin.py): merges the
+      DEFAULT_ROLES template at request time as a safety net against races
+      or any role rows that were missed here.
+    """
+    # Deferred imports to avoid circular dependencies at module load time.
+    from botelier.models.role import Role
+    from botelier.auth.permissions import DEFAULT_ROLES
+
+    db = SessionLocal()
+    try:
+        system_roles = db.query(Role).filter(Role.is_system_role == True).all()  # noqa: E712
+        updated = []
+
+        for role in system_roles:
+            template = DEFAULT_ROLES.get(role.slug)
+            if template is None:
+                # Custom or unrecognised system role — do not touch it.
+                continue
+
+            canonical_permissions = template["permissions"]
+            if role.permissions == canonical_permissions:
+                # Already up to date — skip the write.
+                continue
+
+            role.permissions = canonical_permissions
+            updated.append(role.slug)
+
+        if updated:
+            db.commit()
+            logger.info(f"Synced system role permissions: {', '.join(updated)}")
+        else:
+            logger.debug("System role permissions are already up to date — no sync needed")
+
+    except Exception as e:
+        logger.error(f"Failed to sync system role permissions: {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def init_db():
     """
-    Initialize database tables.
-    Call this once at application startup.
+    Initialize the database at application startup.
+
+    Runs three idempotent steps in order:
+
+    1. ``create_all`` — creates any tables that do not yet exist (SQLAlchemy
+       inspects the engine and skips tables that are already present).
+
+    2. ``_run_additive_migrations`` — applies schema changes (new columns,
+       indexes, constraints) that ``create_all`` cannot handle on existing
+       tables.  Safe to re-run on every boot.
+
+    3. ``_sync_system_role_permissions`` — brings all system role permission
+       rows in line with the DEFAULT_ROLES template in
+       ``botelier/auth/permissions.py``.  Ensures that adding a permission to
+       the template is automatically reflected in production on the next
+       deploy, without a manual SQL update.
     """
     from botelier.models import tool  # noqa: F401
     from botelier.models import hotel  # noqa: F401
@@ -172,3 +273,4 @@ def init_db():
 
     Base.metadata.create_all(bind=engine)
     _run_additive_migrations()
+    _sync_system_role_permissions()
