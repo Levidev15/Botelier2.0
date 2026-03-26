@@ -365,9 +365,10 @@ class FunctionMapper:
         import re as _re_ext
         extension_digits = _re_ext.sub(r'[^\d]', '', raw_extension)
         extension = extension_digits if extension_digits else None
-        # Configurable pause before DTMF extension digits. Each comma = 0.5 s.
+        # Configurable pause before DTMF extension digits. TwiML sendDigits uses
+        # 'w' for a 0.5-second pause (NOT comma, which is silently ignored).
         extension_pause_seconds = float(tool.config.get("extension_pause_seconds") or 1.0)
-        extension_pause_commas = "," * max(1, round(extension_pause_seconds / 0.5))
+        extension_pause_commas = "w" * max(1, round(extension_pause_seconds / 0.5))
         # Build E.164 dial target. New records store country_code + local digits
         # separately; legacy records stored the full E.164 in phone_number.
         if country_code and not stored_phone.startswith("+"):
