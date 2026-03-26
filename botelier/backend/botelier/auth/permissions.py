@@ -1,7 +1,35 @@
 """
 Permission Constants and Default Role Templates.
 
-Defines all available permissions in the system and default role configurations.
+Three-tier permission system
+-----------------------------
+1. ``PERMISSIONS`` — the canonical schema.
+   Declares every valid (resource, action) pair and a human-readable
+   description. Used for validation, UI dropdowns, and documentation.
+
+2. ``DEFAULT_ROLES`` — the template for each system role.
+   Defines what permissions ``account_admin``, ``staff``, and ``viewer``
+   get by default. This is the source of truth for role permissions.
+
+   **Adding or changing a permission here is all you need to do.**
+   The change is propagated to production automatically on the next deploy
+   via two mechanisms:
+
+   * *Startup sync* — ``_sync_system_role_permissions()`` in ``database.py``
+     rewrites every system role's ``permissions`` JSON column to match this
+     template at boot time.
+
+   * *Request-time merge* — ``_get_effective_permissions()`` in
+     ``api/admin.py`` fills any key that is still missing in a DB row
+     (e.g. during a startup-sync race) from this template at query time.
+
+3. ``roles.permissions`` (DB column) — the live copy.
+   Written once at account creation and kept in sync by the startup sync.
+   Per-user ``AccountMembership.permission_overrides`` are applied on top
+   of this value at request time.
+
+``PLATFORM_ADMIN_PERMISSIONS`` is separate — it grants every permission to
+platform admins regardless of account membership.
 """
 
 from typing import Dict, Any
