@@ -222,12 +222,24 @@ def _sync_system_role_permissions():
 
             role.permissions = canonical_permissions
             updated.append(role.slug)
+            # Log immediately per role so each update is visible in the audit trail
+            # even if a subsequent commit fails.
+            logger.info(
+                f"Syncing system role permissions: {role.slug} "
+                f"(account_id={role.account_id})"
+            )
 
+        # All role updates are committed in a single transaction for atomicity.
+        # If any update fails the entire batch is rolled back and the error is
+        # logged below — no partial state is written to the DB.
         if updated:
             db.commit()
-            logger.info(f"Synced system role permissions: {', '.join(updated)}")
+            logger.info(
+                f"System role permissions sync complete — "
+                f"updated {len(updated)} role(s): {', '.join(updated)}"
+            )
         else:
-            logger.debug("System role permissions are already up to date — no sync needed")
+            logger.info("System role permissions sync complete — all roles already up to date")
 
     except Exception as e:
         logger.error(f"Failed to sync system role permissions: {e}")
