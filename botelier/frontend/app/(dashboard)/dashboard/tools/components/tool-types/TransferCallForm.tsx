@@ -14,6 +14,7 @@ interface Tool {
     phone_number?: string;
     country_code?: string;
     extension?: string;
+    extension_pause_seconds?: number;
     pre_transfer_message?: string;
     transfer_mode?: string;
   };
@@ -34,6 +35,7 @@ interface FormData {
   country_code: string;
   phone_number: string;
   extension: string;
+  extension_pause_seconds: number;
   pre_transfer_message: string;
   transfer_mode: "warm" | "cold";
 }
@@ -46,36 +48,134 @@ interface FormErrors {
   extension?: string;
 }
 
-const COMMON_COUNTRY_CODES = [
-  { label: "US +1", value: "+1" },
-  { label: "CA +1", value: "+1" },
-  { label: "GB +44", value: "+44" },
-  { label: "AU +61", value: "+61" },
-  { label: "MX +52", value: "+52" },
+const COUNTRY_CODE_OPTIONS: { label: string; value: string }[] = [
+  { label: "United States +1", value: "+1" },
+  { label: "Canada +1", value: "+1" },
+  { label: "United Kingdom +44", value: "+44" },
+  { label: "Australia +61", value: "+61" },
+  { label: "Mexico +52", value: "+52" },
+  { label: "Afghanistan +93", value: "+93" },
+  { label: "Albania +355", value: "+355" },
+  { label: "Algeria +213", value: "+213" },
+  { label: "Andorra +376", value: "+376" },
+  { label: "Argentina +54", value: "+54" },
+  { label: "Armenia +374", value: "+374" },
+  { label: "Austria +43", value: "+43" },
+  { label: "Bahrain +973", value: "+973" },
+  { label: "Bangladesh +880", value: "+880" },
+  { label: "Belarus +375", value: "+375" },
+  { label: "Belgium +32", value: "+32" },
+  { label: "Bhutan +975", value: "+975" },
+  { label: "Bolivia +591", value: "+591" },
+  { label: "Bosnia & Herzegovina +387", value: "+387" },
+  { label: "Brazil +55", value: "+55" },
+  { label: "Bulgaria +359", value: "+359" },
+  { label: "Cambodia +855", value: "+855" },
+  { label: "Chile +56", value: "+56" },
+  { label: "China +86", value: "+86" },
+  { label: "Colombia +57", value: "+57" },
+  { label: "Costa Rica +506", value: "+506" },
+  { label: "Croatia +385", value: "+385" },
+  { label: "Cuba +53", value: "+53" },
+  { label: "Czech Republic +420", value: "+420" },
+  { label: "Denmark +45", value: "+45" },
+  { label: "Ecuador +593", value: "+593" },
+  { label: "Egypt +20", value: "+20" },
+  { label: "El Salvador +503", value: "+503" },
+  { label: "Estonia +372", value: "+372" },
+  { label: "Finland +358", value: "+358" },
+  { label: "France +33", value: "+33" },
+  { label: "Gambia +220", value: "+220" },
+  { label: "Germany +49", value: "+49" },
+  { label: "Greece +30", value: "+30" },
+  { label: "Guatemala +502", value: "+502" },
+  { label: "Haiti +509", value: "+509" },
+  { label: "Honduras +504", value: "+504" },
+  { label: "Hong Kong +852", value: "+852" },
+  { label: "Hungary +36", value: "+36" },
+  { label: "Iceland +354", value: "+354" },
+  { label: "India +91", value: "+91" },
+  { label: "Indonesia +62", value: "+62" },
+  { label: "Iraq +964", value: "+964" },
+  { label: "Ireland +353", value: "+353" },
+  { label: "Israel +972", value: "+972" },
+  { label: "Italy +39", value: "+39" },
+  { label: "Japan +81", value: "+81" },
+  { label: "Jordan +962", value: "+962" },
+  { label: "Kazakhstan +7", value: "+7" },
+  { label: "Kenya +254", value: "+254" },
+  { label: "Kuwait +965", value: "+965" },
+  { label: "Laos +856", value: "+856" },
+  { label: "Latvia +371", value: "+371" },
+  { label: "Liechtenstein +423", value: "+423" },
+  { label: "Lithuania +370", value: "+370" },
+  { label: "Libya +218", value: "+218" },
+  { label: "Luxembourg +352", value: "+352" },
+  { label: "Macau +853", value: "+853" },
+  { label: "Malaysia +60", value: "+60" },
+  { label: "Maldives +960", value: "+960" },
+  { label: "Malta +356", value: "+356" },
+  { label: "Moldova +373", value: "+373" },
+  { label: "Monaco +377", value: "+377" },
+  { label: "Mongolia +976", value: "+976" },
+  { label: "Montenegro +382", value: "+382" },
+  { label: "Morocco +212", value: "+212" },
+  { label: "Myanmar +95", value: "+95" },
+  { label: "Netherlands +31", value: "+31" },
+  { label: "New Zealand +64", value: "+64" },
+  { label: "Nicaragua +505", value: "+505" },
+  { label: "Nigeria +234", value: "+234" },
+  { label: "North Macedonia +389", value: "+389" },
+  { label: "Norway +47", value: "+47" },
+  { label: "Pakistan +92", value: "+92" },
+  { label: "Panama +507", value: "+507" },
+  { label: "Paraguay +595", value: "+595" },
+  { label: "Peru +51", value: "+51" },
+  { label: "Philippines +63", value: "+63" },
+  { label: "Poland +48", value: "+48" },
+  { label: "Portugal +351", value: "+351" },
+  { label: "Qatar +974", value: "+974" },
+  { label: "Romania +40", value: "+40" },
+  { label: "Russia +7", value: "+7" },
+  { label: "Saudi Arabia +966", value: "+966" },
+  { label: "Senegal +221", value: "+221" },
+  { label: "Serbia +381", value: "+381" },
+  { label: "Singapore +65", value: "+65" },
+  { label: "Slovakia +421", value: "+421" },
+  { label: "Slovenia +386", value: "+386" },
+  { label: "South Africa +27", value: "+27" },
+  { label: "South Korea +82", value: "+82" },
+  { label: "Spain +34", value: "+34" },
+  { label: "Sri Lanka +94", value: "+94" },
+  { label: "Sweden +46", value: "+46" },
+  { label: "Switzerland +41", value: "+41" },
+  { label: "Syria +963", value: "+963" },
+  { label: "Taiwan +886", value: "+886" },
+  { label: "Tanzania +255", value: "+255" },
+  { label: "Thailand +66", value: "+66" },
+  { label: "Tunisia +216", value: "+216" },
+  { label: "Turkey +90", value: "+90" },
+  { label: "Uganda +256", value: "+256" },
+  { label: "Ukraine +380", value: "+380" },
+  { label: "United Arab Emirates +971", value: "+971" },
+  { label: "Uruguay +598", value: "+598" },
+  { label: "Venezuela +58", value: "+58" },
+  { label: "Vietnam +84", value: "+84" },
+  { label: "Zambia +260", value: "+260" },
+  { label: "Zimbabwe +263", value: "+263" },
 ];
 
-const KNOWN_COUNTRY_CODES = [
-  "+1",
-  "+7",
-  "+20", "+27", "+30", "+31", "+32", "+33", "+34", "+36",
-  "+39", "+40", "+41", "+43", "+44", "+45", "+46", "+47", "+48", "+49",
-  "+51", "+52", "+53", "+54", "+55", "+56", "+57", "+58",
-  "+60", "+61", "+62", "+63", "+64", "+65", "+66",
-  "+81", "+82", "+84", "+86",
-  "+90", "+91", "+92", "+93", "+94", "+95",
-  "+212", "+213", "+216", "+218", "+220", "+221",
-  "+234", "+254", "+255", "+256", "+260", "+263",
-  "+351", "+352", "+353", "+354", "+355", "+356",
-  "+358", "+359", "+370", "+371", "+372", "+373",
-  "+374", "+375", "+376", "+377", "+380", "+381",
-  "+382", "+385", "+386", "+387", "+389",
-  "+420", "+421", "+423",
-  "+502", "+503", "+504", "+505", "+506", "+507",
-  "+509", "+591", "+593", "+595", "+598",
-  "+852", "+853", "+855", "+856",
-  "+880", "+886",
-  "+960", "+962", "+963", "+964", "+965", "+966",
-  "+971", "+972", "+973", "+974", "+975", "+976",
+const KNOWN_COUNTRY_CODES = COUNTRY_CODE_OPTIONS
+  .map((o) => o.value)
+  .filter((v, i, a) => a.indexOf(v) === i);
+
+const EXTENSION_PAUSE_OPTIONS = [
+  { label: "0.5 s", value: 0.5 },
+  { label: "1 s (default)", value: 1 },
+  { label: "1.5 s", value: 1.5 },
+  { label: "2 s", value: 2 },
+  { label: "2.5 s", value: 2.5 },
+  { label: "3 s", value: 3 },
 ];
 
 function parseE164(e164: string): { countryCode: string; localNumber: string } {
@@ -103,6 +203,7 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
     country_code: "+1",
     phone_number: "",
     extension: "",
+    extension_pause_seconds: 1,
     pre_transfer_message: "Let me connect you with someone who can help...",
     transfer_mode: "warm",
   });
@@ -131,6 +232,7 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
         country_code: countryCode,
         phone_number: localNumber,
         extension: tool.config?.extension || "",
+        extension_pause_seconds: tool.config?.extension_pause_seconds ?? 1,
         pre_transfer_message: tool.config?.pre_transfer_message || "Let me connect you with someone who can help...",
         transfer_mode: (tool.config?.transfer_mode as "warm" | "cold") || "warm",
       });
@@ -146,12 +248,6 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
 
     if (!formData.description.trim()) {
       newErrors.description = "Description is required";
-    }
-
-    if (!formData.country_code.trim()) {
-      newErrors.country_code = "Country code is required";
-    } else if (!/^\+\d{1,4}$/.test(formData.country_code)) {
-      newErrors.country_code = "Must be + followed by 1–4 digits (e.g. +1, +44)";
     }
 
     if (!formData.phone_number.trim()) {
@@ -188,6 +284,7 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
           country_code: formData.country_code,
           phone_number: formData.phone_number,
           extension: formData.extension.trim() || null,
+          extension_pause_seconds: formData.extension.trim() ? formData.extension_pause_seconds : null,
           pre_transfer_message: formData.pre_transfer_message,
           transfer_mode: formData.transfer_mode,
         },
@@ -237,6 +334,7 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
 
   const isUs = formData.country_code === "+1";
   const phonePlaceholder = isUs ? "5550123456" : "Enter local number";
+  const hasExtension = formData.extension.trim().length > 0;
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
@@ -299,61 +397,33 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
           Transfer to Phone Number <span className="text-red-500">*</span>
         </label>
 
-        <div className="flex gap-2">
-          <div className="relative flex-shrink-0">
-            <div className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm font-medium pointer-events-none">
-              +
-            </div>
-            <input
-              type="text"
-              value={formData.country_code.replace(/^\+/, "")}
-              onChange={(e) => {
-                const raw = e.target.value.replace(/[^\d]/g, "").slice(0, 4);
-                handleChange("country_code", raw ? `+${raw}` : "+");
-              }}
-              placeholder="1"
-              className={`w-16 pl-6 pr-2 py-3 bg-[#141414] border ${
-                errors.country_code ? "border-red-500" : "border-gray-800"
-              } rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent text-center`}
-            />
-          </div>
-
-          <input
-            type="text"
-            inputMode="numeric"
-            value={formData.phone_number}
-            onChange={(e) => handleChange("phone_number", e.target.value.replace(/[^\d]/g, "").slice(0, 15))}
-            placeholder={phonePlaceholder}
-            className={`flex-1 px-4 py-3 bg-[#141414] border ${
-              errors.phone_number ? "border-red-500" : "border-gray-800"
-            } rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent`}
-          />
-        </div>
-
-        <div className="flex flex-wrap gap-1.5 mt-2">
-          {COMMON_COUNTRY_CODES.map((cc) => (
-            <button
-              key={cc.label}
-              type="button"
-              onClick={() => handleChange("country_code", cc.value)}
-              className={`px-2 py-1 text-xs rounded border transition-colors ${
-                formData.country_code === cc.value
-                  ? "border-blue-600 bg-blue-600/10 text-blue-400"
-                  : "border-gray-700 bg-[#141414] text-gray-400 hover:border-gray-600 hover:text-gray-300"
-              }`}
-            >
+        <select
+          value={formData.country_code}
+          onChange={(e) => handleChange("country_code", e.target.value)}
+          className="w-full px-4 py-3 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent mb-2"
+        >
+          {COUNTRY_CODE_OPTIONS.map((cc) => (
+            <option key={cc.label} value={cc.value}>
               {cc.label}
-            </button>
+            </option>
           ))}
-        </div>
+        </select>
 
-        {errors.country_code && (
-          <p className="text-xs text-red-500 mt-1">{errors.country_code}</p>
-        )}
+        <input
+          type="text"
+          inputMode="numeric"
+          value={formData.phone_number}
+          onChange={(e) => handleChange("phone_number", e.target.value.replace(/[^\d]/g, "").slice(0, 15))}
+          placeholder={phonePlaceholder}
+          className={`w-full px-4 py-3 bg-[#141414] border ${
+            errors.phone_number ? "border-red-500" : "border-gray-800"
+          } rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent`}
+        />
+
         {errors.phone_number && (
           <p className="text-xs text-red-500 mt-1">{errors.phone_number}</p>
         )}
-        {!errors.phone_number && !errors.country_code && (
+        {!errors.phone_number && (
           <p className="text-xs text-gray-500 mt-1">
             {isUs ? "10-digit US/CA number (e.g. 5550123456)" : "Local digits only — no country code prefix"}
           </p>
@@ -374,11 +444,35 @@ export default function TransferCallForm({ onSuccess, onCancel, tool, accountId,
             errors.extension ? "border-red-500" : "border-gray-800"
           } rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent`}
         />
-        <p className="text-xs text-gray-500 mt-1">
-          The system will automatically dial this after connecting.
-        </p>
         {errors.extension && (
           <p className="text-xs text-red-500 mt-1">{errors.extension}</p>
+        )}
+        {!errors.extension && (
+          <p className="text-xs text-gray-500 mt-1">
+            The system will automatically dial this after connecting.
+          </p>
+        )}
+
+        {hasExtension && (
+          <div className="mt-3">
+            <label className="block text-sm font-medium mb-2">
+              Pause before extension
+            </label>
+            <select
+              value={formData.extension_pause_seconds}
+              onChange={(e) => handleChange("extension_pause_seconds", parseFloat(e.target.value))}
+              className="w-full px-4 py-3 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent"
+            >
+              {EXTENSION_PAUSE_OPTIONS.map((opt) => (
+                <option key={opt.value} value={opt.value}>
+                  {opt.label}
+                </option>
+              ))}
+            </select>
+            <p className="text-xs text-gray-500 mt-1">
+              How long to wait after connecting before dialing the extension. Increase if the PBX prompt is slow.
+            </p>
+          </div>
         )}
       </div>
 
