@@ -520,11 +520,12 @@ class FunctionMapper:
 
                                     base_url = get_public_base_url()
                                     status_callback = f"{base_url}/api/calls/transfer-status"
-                                    dial_number = f"{phone_number},,{extension}" if extension else phone_number
+                                    send_digits_attr = f' sendDigits=",,{extension}"' if extension else ""
                                     twiml_parts.append(
                                         f'<Number statusCallback="{status_callback}" '
-                                        f'statusCallbackEvent="initiated ringing answered completed">'
-                                        f'{dial_number}</Number>'
+                                        f'statusCallbackEvent="initiated ringing answered completed"'
+                                        f'{send_digits_attr}>'
+                                        f'{phone_number}</Number>'
                                     )
 
                                     twiml_parts.append('</Dial>')
