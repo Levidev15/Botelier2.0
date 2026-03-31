@@ -108,7 +108,19 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
         call_sid = form_data.get("CallSid")
         from_number = form_data.get("From")
         to_number = form_data.get("To")
-        call_status = form_data.get("CallStatus")
+        call_status = form_data.get("CallStatus", "")
+
+        # Twilio sends status-callback POSTs to this same URL for terminal call states.
+        # We must short-circuit here before spawning a WebSocket pipeline, otherwise
+        # a completed/failed call would create a ghost Pipecat pipeline that idles for
+        # 300 s before timing out.
+        _TERMINAL_STATUSES = {"completed", "failed", "busy", "no-answer"}
+        if call_status in _TERMINAL_STATUSES:
+            logger.debug(f"incoming_call_webhook: skipping pipeline for terminal status '{call_status}' on {call_sid}")
+            return Response(
+                content='<?xml version="1.0" encoding="UTF-8"?><Response/>',
+                media_type="application/xml",
+            )
         
         logger.info(f"Incoming call webhook - CallSid: {call_sid}")
         logger.info(f"From: {from_number} → To: {to_number}, Status: {call_status}")

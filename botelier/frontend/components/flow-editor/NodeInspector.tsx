@@ -697,6 +697,8 @@ function APIRequestNodePanel({ data, nodeId }: { data: APIRequestNodeData; nodeI
   );
   const [integrations, setIntegrations] = useState<AccountIntegration[]>([]);
   const [loadingIntegrations, setLoadingIntegrations] = useState(false);
+  const [availableSecrets, setAvailableSecrets] = useState<Array<{ key: string; name: string }>>([]);
+  const [secretPickerIndex, setSecretPickerIndex] = useState<number | null>(null);
 
   useEffect(() => {
     const fetchIntegrations = async () => {
@@ -713,7 +715,19 @@ function APIRequestNodePanel({ data, nodeId }: { data: APIRequestNodeData; nodeI
         setLoadingIntegrations(false);
       }
     };
+    const fetchSecrets = async () => {
+      try {
+        const response = await authFetch("/api/secrets");
+        if (response.ok) {
+          const data = await response.json();
+          setAvailableSecrets(data.map((s: { key: string; name: string }) => ({ key: s.key, name: s.name })));
+        }
+      } catch {
+        // non-fatal
+      }
+    };
     fetchIntegrations();
+    fetchSecrets();
   }, []);
 
   const updateApi = (updates: Partial<typeof api>) => {
@@ -949,16 +963,49 @@ function APIRequestNodePanel({ data, nodeId }: { data: APIRequestNodeData; nodeI
                   className={smallInputCls}
                   placeholder="Header-Name"
                 />
-                <input
-                  type="text"
-                  value={value}
-                  onChange={(e) => updateHeader(key, key, e.target.value, i)}
-                  className={smallInputCls}
-                  placeholder="value"
-                />
+                <div className="relative flex-1 min-w-0">
+                  <input
+                    type="text"
+                    value={value}
+                    onChange={(e) => updateHeader(key, key, e.target.value, i)}
+                    className={`${smallInputCls} w-full pr-7`}
+                    placeholder="value or {{secrets.key}}"
+                  />
+                  {availableSecrets.length > 0 && (
+                    <button
+                      type="button"
+                      title="Insert secret"
+                      onClick={() => setSecretPickerIndex(secretPickerIndex === i ? null : i)}
+                      className="absolute right-1.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-blue-400 transition"
+                    >
+                      <svg className="h-3 w-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 7a2 2 0 012 2m4 0a6 6 0 01-7.743 5.743L11 17H9v2H7v2H4a1 1 0 01-1-1v-2.586a1 1 0 01.293-.707l5.964-5.964A6 6 0 1121 9z" />
+                      </svg>
+                    </button>
+                  )}
+                  {secretPickerIndex === i && availableSecrets.length > 0 && (
+                    <div className="absolute right-0 top-full mt-1 z-20 bg-[#1a1a1a] border border-gray-700 rounded-lg shadow-xl min-w-[180px] overflow-hidden">
+                      <div className="px-2 py-1.5 text-xs text-gray-500 border-b border-gray-800">Insert secret</div>
+                      {availableSecrets.map((s) => (
+                        <button
+                          key={s.key}
+                          type="button"
+                          onClick={() => {
+                            updateHeader(key, key, `{{secrets.${s.key}}}`, i);
+                            setSecretPickerIndex(null);
+                          }}
+                          className="w-full text-left px-3 py-2 text-xs hover:bg-gray-800 transition"
+                        >
+                          <div className="font-medium text-white">{s.name}</div>
+                          <div className="text-blue-400 font-mono">{`{{secrets.${s.key}}}`}</div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <button
                   onClick={() => removeHeader(i)}
-                  className="text-red-400 hover:text-red-300 p-1"
+                  className="text-red-400 hover:text-red-300 p-1 flex-shrink-0"
                 >
                   <X className="h-3 w-3" />
                 </button>

@@ -143,6 +143,42 @@ _ADDITIVE_MIGRATIONS = [
     """,
     "CREATE INDEX IF NOT EXISTS ix_call_events_call_log_id ON call_events(call_log_id)",
     "CREATE INDEX IF NOT EXISTS ix_call_events_call_log_occurred ON call_events(call_log_id, occurred_at)",
+
+    # account_secrets — encrypted per-account key/value credential store
+    """
+    CREATE TABLE IF NOT EXISTS account_secrets (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        key VARCHAR(255) NOT NULL,
+        name VARCHAR(255),
+        description TEXT,
+        value_encrypted TEXT NOT NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        UNIQUE(account_id, key)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_account_secrets_account_id ON account_secrets(account_id)",
+
+    # integration_call_logs — fire-and-forget audit trail for every integration API call
+    """
+    CREATE TABLE IF NOT EXISTS integration_call_logs (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        integration_id UUID REFERENCES account_integrations(id) ON DELETE SET NULL,
+        endpoint_called VARCHAR(2048),
+        method VARCHAR(16),
+        status_code INTEGER,
+        success BOOLEAN NOT NULL DEFAULT FALSE,
+        latency_ms INTEGER,
+        error_type VARCHAR(64),
+        error_message TEXT,
+        called_at TIMESTAMP NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_integration_call_logs_account_id ON integration_call_logs(account_id)",
+    "CREATE INDEX IF NOT EXISTS ix_integration_call_logs_integration_id ON integration_call_logs(integration_id)",
+    "CREATE INDEX IF NOT EXISTS ix_integration_call_logs_called_at ON integration_call_logs(account_id, called_at DESC)",
 ]
 
 

@@ -17,8 +17,20 @@ import {
   Server,
   Trash2,
   Pencil,
-  Wrench
+  Wrench,
+  KeyRound,
+  Eye,
+  EyeOff
 } from "lucide-react";
+
+interface AccountSecret {
+  id: string;
+  key: string;
+  name: string;
+  description: string | null;
+  created_at: string;
+  updated_at: string;
+}
 
 interface IntegrationType {
   id: string;
@@ -112,6 +124,18 @@ export default function IntegrationsPage() {
     token: "",
   });
 
+  const [secrets, setSecrets] = useState<AccountSecret[]>([]);
+  const [showSecretModal, setShowSecretModal] = useState(false);
+  const [editingSecret, setEditingSecret] = useState<AccountSecret | null>(null);
+  const [savingSecret, setSavingSecret] = useState(false);
+  const [showSecretValue, setShowSecretValue] = useState(false);
+  const [secretForm, setSecretForm] = useState({
+    name: "",
+    key: "",
+    description: "",
+    value: "",
+  });
+
   const showNotification = (type: "success" | "error", message: string) => {
     setNotification({ type, message });
     setTimeout(() => setNotification(null), 5000);
@@ -121,6 +145,7 @@ export default function IntegrationsPage() {
     if (!contextLoading && !authLoading && isAuthenticated && accountId) {
       fetchIntegrations();
       fetchMCPConnections();
+      fetchSecrets();
     }
   }, [accountId, contextLoading, authLoading, isAuthenticated]);
 
@@ -162,6 +187,86 @@ export default function IntegrationsPage() {
       }
     } catch (error) {
       console.error("Failed to fetch MCP connections:", error);
+    }
+  };
+
+  const fetchSecrets = async () => {
+    try {
+      const response = await authFetch("/api/secrets");
+      if (response.ok) {
+        const data = await response.json();
+        setSecrets(data);
+      }
+    } catch (error) {
+      console.error("Failed to fetch secrets:", error);
+    }
+  };
+
+  const handleCreateSecret = () => {
+    setEditingSecret(null);
+    setShowSecretValue(false);
+    setSecretForm({ name: "", key: "", description: "", value: "" });
+    setShowSecretModal(true);
+  };
+
+  const handleEditSecret = (secret: AccountSecret) => {
+    setEditingSecret(secret);
+    setShowSecretValue(false);
+    setSecretForm({ name: secret.name, key: secret.key, description: secret.description || "", value: "" });
+    setShowSecretModal(true);
+  };
+
+  const handleDeleteSecret = async (secret: AccountSecret) => {
+    const confirmed = await confirmAction(`Delete secret "${secret.name}"? This will break any flows that reference {{secrets.${secret.key}}}.`);
+    if (!confirmed) return;
+    try {
+      const res = await authFetch(`/api/secrets/${secret.id}`, { method: "DELETE" });
+      if (res.ok) {
+        setSecrets(prev => prev.filter(s => s.id !== secret.id));
+        showNotification("success", "Secret deleted");
+      } else {
+        showNotification("error", "Failed to delete secret");
+      }
+    } catch {
+      showNotification("error", "Failed to delete secret");
+    }
+  };
+
+  const handleSaveSecret = async () => {
+    if (!secretForm.name.trim() || !secretForm.key.trim()) {
+      showNotification("error", "Name and key are required");
+      return;
+    }
+    if (!editingSecret && !secretForm.value.trim()) {
+      showNotification("error", "Value is required for a new secret");
+      return;
+    }
+    setSavingSecret(true);
+    try {
+      const payload: Record<string, string> = {
+        name: secretForm.name.trim(),
+        key: secretForm.key.trim().replace(/\s+/g, "_"),
+        description: secretForm.description.trim(),
+      };
+      if (secretForm.value.trim()) payload.value = secretForm.value;
+
+      const url = editingSecret ? `/api/secrets/${editingSecret.id}` : "/api/secrets";
+      const method = editingSecret ? "PATCH" : "POST";
+      const res = await authFetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        showNotification("success", editingSecret ? "Secret updated" : "Secret created");
+        setShowSecretModal(false);
+        fetchSecrets();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        showNotification("error", err.detail || "Failed to save secret");
+      }
+    } finally {
+      setSavingSecret(false);
     }
   };
 
@@ -747,6 +852,182 @@ export default function IntegrationsPage() {
           )}
         </div>
       </div>
+
+      {/* Account Secrets Section */}
+      <div className="mt-10">
+        <div className="flex items-center justify-between mb-4">
+          <div>
+            <h2 className="text-xl font-bold flex items-center gap-2">
+              <KeyRound className="h-5 w-5" />
+              Secrets
+            </h2>
+            <p className="text-sm text-gray-400 mt-1">
+              Encrypted API keys and credentials — reference them in flows as{" "}
+              <code className="text-xs bg-gray-800 px-1.5 py-0.5 rounded font-mono">{"{{secrets.key_name}}"}</code>
+            </p>
+          </div>
+          <button
+            onClick={handleCreateSecret}
+            className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition"
+          >
+            <Plus className="h-4 w-4 mr-2" />
+            Add Secret
+          </button>
+        </div>
+
+        {secrets.length === 0 ? (
+          <div className="bg-[#141414] border border-gray-800 rounded-lg p-12 text-center">
+            <KeyRound className="h-12 w-12 text-gray-600 mx-auto mb-4" />
+            <p className="text-gray-400 mb-2">No secrets stored yet</p>
+            <p className="text-sm text-gray-500">
+              Store API keys here and reference them in flows with{" "}
+              <span className="font-mono text-xs">{"{{secrets.key_name}}"}</span>
+            </p>
+          </div>
+        ) : (
+          <div className="bg-[#141414] border border-gray-800 rounded-lg overflow-hidden">
+            <table className="w-full text-sm">
+              <thead>
+                <tr className="border-b border-gray-800 text-left text-xs text-gray-500 uppercase tracking-wider">
+                  <th className="px-4 py-3">Name</th>
+                  <th className="px-4 py-3">Key</th>
+                  <th className="px-4 py-3">Description</th>
+                  <th className="px-4 py-3">Created</th>
+                  <th className="px-4 py-3 text-right">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-gray-800">
+                {secrets.map((secret) => (
+                  <tr key={secret.id} className="hover:bg-gray-800/30 transition">
+                    <td className="px-4 py-3 font-medium">{secret.name}</td>
+                    <td className="px-4 py-3">
+                      <code className="text-xs bg-gray-800 px-1.5 py-0.5 rounded font-mono text-blue-300">
+                        {`{{secrets.${secret.key}}}`}
+                      </code>
+                    </td>
+                    <td className="px-4 py-3 text-gray-400">{secret.description || "—"}</td>
+                    <td className="px-4 py-3 text-gray-500 text-xs">
+                      {new Date(secret.created_at).toLocaleDateString()}
+                    </td>
+                    <td className="px-4 py-3 text-right">
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          onClick={() => handleEditSecret(secret)}
+                          className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition"
+                          title="Edit secret"
+                        >
+                          <Pencil className="h-3.5 w-3.5" />
+                        </button>
+                        <button
+                          onClick={() => handleDeleteSecret(secret)}
+                          className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-gray-700 rounded-lg transition"
+                          title="Delete secret"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </div>
+
+      {/* Secret Modal */}
+      {showSecretModal && (
+        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
+          <div className="bg-[#1a1a1a] border border-gray-800 rounded-xl w-full max-w-md">
+            <div className="flex items-center justify-between p-4 border-b border-gray-800">
+              <h2 className="text-lg font-semibold">
+                {editingSecret ? "Edit Secret" : "Add Secret"}
+              </h2>
+              <button onClick={() => setShowSecretModal(false)} className="p-1 hover:bg-gray-800 rounded-lg transition">
+                <X className="h-5 w-5" />
+              </button>
+            </div>
+            <div className="p-5 space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Name <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="My API Key"
+                  value={secretForm.name}
+                  onChange={(e) => setSecretForm(prev => ({ ...prev, name: e.target.value }))}
+                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Key <span className="text-red-400">*</span>
+                </label>
+                <input
+                  type="text"
+                  placeholder="my_api_key"
+                  value={secretForm.key}
+                  disabled={!!editingSecret}
+                  onChange={(e) => setSecretForm(prev => ({ ...prev, key: e.target.value.replace(/[^a-zA-Z0-9_]/g, "_") }))}
+                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm font-mono disabled:opacity-50"
+                />
+                <p className="text-xs text-gray-500 mt-1">
+                  Used as <code className="text-blue-400">{`{{secrets.${secretForm.key || "key_name"}}}`}</code> in flows
+                </p>
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">Description</label>
+                <input
+                  type="text"
+                  placeholder="Optional description"
+                  value={secretForm.description}
+                  onChange={(e) => setSecretForm(prev => ({ ...prev, description: e.target.value }))}
+                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1">
+                  Value {!editingSecret && <span className="text-red-400">*</span>}
+                  {editingSecret && <span className="text-gray-500 font-normal"> (leave blank to keep current)</span>}
+                </label>
+                <div className="relative">
+                  <input
+                    type={showSecretValue ? "text" : "password"}
+                    placeholder="••••••••"
+                    value={secretForm.value}
+                    onChange={(e) => setSecretForm(prev => ({ ...prev, value: e.target.value }))}
+                    className="w-full px-3 py-2 pr-10 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm font-mono"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => setShowSecretValue(v => !v)}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
+                  >
+                    {showSecretValue ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                  </button>
+                </div>
+              </div>
+            </div>
+            <div className="flex items-center justify-end gap-3 p-4 border-t border-gray-800">
+              <button
+                onClick={() => setShowSecretModal(false)}
+                className="px-4 py-2 text-sm font-medium text-gray-300 hover:text-white transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleSaveSecret}
+                disabled={savingSecret}
+                className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition disabled:opacity-50"
+              >
+                {savingSecret ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+                {editingSecret ? "Update Secret" : "Save Secret"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* MCP Connection Modal */}
       {showMcpModal && (

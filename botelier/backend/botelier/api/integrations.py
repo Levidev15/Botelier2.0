@@ -5,11 +5,12 @@ import base64
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
+from sqlalchemy import Integer
 from sqlalchemy.orm import Session
 from loguru import logger
 
 from botelier.database import get_db
-from botelier.models.integration import IntegrationType, AccountIntegration, IntegrationStatus
+from botelier.models.integration import IntegrationType, AccountIntegration, IntegrationStatus, IntegrationCallLog
 from botelier.auth.middleware import get_current_user
 
 
@@ -484,6 +485,98 @@ async def disconnect_integration(
     logger.info(f"Disconnected integration {integration.integration_type.slug} for account {account_id}")
     
     return {"status": "disconnected"}
+
+
+class CallLogEntry(BaseModel):
+    id: str
+    integration_id: Optional[str]
+    endpoint_called: Optional[str]
+    method: Optional[str]
+    status_code: Optional[int]
+    success: bool
+    latency_ms: Optional[int]
+    error_type: Optional[str]
+    error_message: Optional[str]
+    called_at: datetime
+
+
+@router.get("/account/{account_id}/integration/{integration_id}/call-logs", response_model=List[CallLogEntry])
+async def get_integration_call_logs(
+    account_id: str,
+    integration_id: str,
+    limit: int = 20,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    integration = db.query(AccountIntegration).filter(
+        AccountIntegration.id == integration_id,
+        AccountIntegration.account_id == account_id
+    ).first()
+
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+
+    logs = (
+        db.query(IntegrationCallLog)
+        .filter(
+            IntegrationCallLog.account_id == account_id,
+            IntegrationCallLog.integration_id == integration_id,
+        )
+        .order_by(IntegrationCallLog.called_at.desc())
+        .limit(min(limit, 100))
+        .all()
+    )
+
+    return [
+        CallLogEntry(
+            id=str(l.id),
+            integration_id=str(l.integration_id) if l.integration_id else None,
+            endpoint_called=l.endpoint_called,
+            method=l.method,
+            status_code=l.status_code,
+            success=l.success,
+            latency_ms=l.latency_ms,
+            error_type=l.error_type,
+            error_message=l.error_message,
+            called_at=l.called_at,
+        )
+        for l in logs
+    ]
+
+
+@router.get("/account/{account_id}/integration/{integration_id}/call-stats")
+async def get_integration_call_stats(
+    account_id: str,
+    integration_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return quick health stats for an integration: total calls, success count, last called_at."""
+    integration = db.query(AccountIntegration).filter(
+        AccountIntegration.id == integration_id,
+        AccountIntegration.account_id == account_id
+    ).first()
+
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+
+    from sqlalchemy import func as sqlfunc
+    row = db.query(
+        sqlfunc.count(IntegrationCallLog.id).label("total"),
+        sqlfunc.sum(
+            sqlfunc.cast(IntegrationCallLog.success, Integer)
+        ).label("successes"),
+        sqlfunc.max(IntegrationCallLog.called_at).label("last_called_at"),
+    ).filter(
+        IntegrationCallLog.account_id == account_id,
+        IntegrationCallLog.integration_id == integration_id,
+    ).one()
+
+    return {
+        "total_calls": row.total or 0,
+        "successful_calls": int(row.successes or 0),
+        "last_called_at": row.last_called_at,
+    }
 
 
 async def obtain_oauth_token(integration_type: IntegrationType, credentials: dict) -> dict:

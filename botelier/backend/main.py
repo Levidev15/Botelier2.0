@@ -29,6 +29,7 @@ from botelier.api.auth import router as auth_router
 from botelier.api.dispositions import router as dispositions_router
 from botelier.api.resolution_options import router as resolution_options_router
 from botelier.api.integrations import router as integrations_router
+from botelier.api.secrets import router as secrets_router
 from botelier.api.tool_sets import router as tool_sets_router
 from botelier.api.mcp_connections import router as mcp_connections_router
 from botelier.api.api_tester import router as api_tester_router
@@ -74,6 +75,7 @@ app.include_router(auth_router)  # Email/password auth endpoints
 app.include_router(dispositions_router)  # Assistant dispositions
 app.include_router(resolution_options_router)  # Resolution status options
 app.include_router(integrations_router)  # Third-party integrations (Opera Cloud, etc.)
+app.include_router(secrets_router)  # Account secrets (encrypted API key store)
 app.include_router(tool_sets_router)  # Tool collection management
 app.include_router(mcp_connections_router)  # MCP server connections for dynamic tools
 app.include_router(api_tester_router)  # API testing proxy for tool configuration
@@ -94,12 +96,10 @@ async def startup_event():
     init_db()
     print("✅ Database initialized")
 
-    from botelier.seeds.opera_integration import seed_opera_integration
-    from botelier.seeds.guestcentric_integration import seed_guestcentric_integration
+    from botelier.seeds import seed_all_integrations
     db = SessionLocal()
     try:
-        seed_opera_integration(db)
-        seed_guestcentric_integration(db)
+        seed_all_integrations(db)
         print("✅ Integration types seeded")
     finally:
         db.close()

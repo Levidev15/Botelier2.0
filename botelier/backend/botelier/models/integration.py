@@ -3,12 +3,18 @@ Integration Models - Multi-tenant integration system for third-party services.
 
 Supports platform-level integration types (e.g., Oracle Opera Cloud) that accounts
 can connect to with their own credentials. Data is completely isolated per account.
+
+Models:
+  IntegrationType      — platform-level registry of available integration types (seeded)
+  AccountIntegration   — per-account connection to an integration type (encrypted creds)
+  AccountSecret        — per-account encrypted key-value secret store for custom API calls
+  IntegrationCallLog   — per-call log of every external API call made via integrations
 """
 
 import uuid
 import json
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Boolean, Text, ForeignKey, Enum as SQLEnum
+from sqlalchemy import Column, String, DateTime, Boolean, Text, ForeignKey, Integer, Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 import enum
@@ -203,3 +209,87 @@ class AccountIntegration(Base):
     
     def __repr__(self):
         return f"<AccountIntegration account={self.account_id} type={self.integration_type_id} status={self.status.value}>"
+
+
+class AccountSecret(Base):
+    """
+    Per-account encrypted key-value secret store.
+
+    Stores sensitive values (API keys, tokens) encrypted at rest using the same
+    Fernet key as AccountIntegration. Secrets are referenced in flow/tool configs
+    as {{secrets.key_name}} — the actual value is never stored in the config.
+
+    The secret value is NEVER returned by any API endpoint. Only metadata
+    (id, name, key, description, created_at) is exposed to the frontend.
+    """
+    __tablename__ = "account_secrets"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False, index=True)
+
+    name = Column(String(255), nullable=False)
+
+    key = Column(String(100), nullable=False, index=True)
+
+    value_encrypted = Column(Text, nullable=False)
+
+    description = Column(Text, nullable=True)
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
+
+    def _get_cipher(self):
+        return Fernet(get_encryption_key())
+
+    def set_value(self, value: str):
+        """Encrypt and store the secret value."""
+        cipher = self._get_cipher()
+        self.value_encrypted = cipher.encrypt(value.encode()).decode()
+
+    def get_value(self) -> str:
+        """Decrypt and return the secret value."""
+        if not self.value_encrypted:
+            return ""
+        cipher = self._get_cipher()
+        return cipher.decrypt(self.value_encrypted.encode()).decode()
+
+    def __repr__(self):
+        return f"<AccountSecret account={self.account_id} key={self.key}>"
+
+
+class IntegrationCallLog(Base):
+    """
+    Log of every external API call made via IntegrationClient or custom URL flows.
+
+    Written fire-and-forget after each call — logging failures never block the response.
+    Used for integration health monitoring and debugging.
+
+    integration_id is nullable to support custom URL calls (no AccountIntegration).
+    """
+    __tablename__ = "integration_call_logs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    account_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+
+    integration_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+
+    endpoint_called = Column(String(500), nullable=True)
+
+    method = Column(String(10), nullable=True)
+
+    status_code = Column(Integer, nullable=True)
+
+    success = Column(Boolean, nullable=False, default=False)
+
+    latency_ms = Column(Integer, nullable=True)
+
+    error_type = Column(String(50), nullable=True)
+
+    error_message = Column(Text, nullable=True)
+
+    called_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)
+
+    def __repr__(self):
+        return f"<IntegrationCallLog account={self.account_id} integration={self.integration_id} success={self.success}>"
