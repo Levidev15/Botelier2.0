@@ -17,6 +17,25 @@ from botelier.auth.middleware import get_current_user
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
 
 
+def _assert_account_access(current_user, account_id: str) -> None:
+    """
+    Raise 403 if the authenticated user does not have an active membership
+    for the requested account_id.  Platform admins bypass this check.
+
+    Call this at the top of every endpoint that takes {account_id} as a path
+    parameter so users cannot read or modify another account's data.
+    """
+    if getattr(current_user, "user_type", None) == "platform_admin":
+        return
+    memberships = getattr(current_user, "account_memberships", None) or []
+    allowed = {str(getattr(m, "account_id", "")) for m in memberships if getattr(m, "is_active", False)}
+    if account_id not in allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have access to this account",
+        )
+
+
 class IntegrationTypeResponse(BaseModel):
     id: str
     slug: str
@@ -262,6 +281,7 @@ async def get_integration_endpoints(
     current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    _assert_account_access(current_user, account_id)
     integration = db.query(AccountIntegration).filter(
         AccountIntegration.id == integration_id,
         AccountIntegration.account_id == account_id
@@ -413,6 +433,7 @@ async def test_integration_connection(
     current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    _assert_account_access(current_user, account_id)
     integration = db.query(AccountIntegration).filter(
         AccountIntegration.id == integration_id,
         AccountIntegration.account_id == account_id
@@ -464,6 +485,7 @@ async def disconnect_integration(
     current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    _assert_account_access(current_user, account_id)
     integration = db.query(AccountIntegration).filter(
         AccountIntegration.id == integration_id,
         AccountIntegration.account_id == account_id
@@ -508,6 +530,7 @@ async def get_integration_call_logs(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
+    _assert_account_access(current_user, account_id)
     integration = db.query(AccountIntegration).filter(
         AccountIntegration.id == integration_id,
         AccountIntegration.account_id == account_id
@@ -552,6 +575,7 @@ async def get_integration_call_stats(
     db: Session = Depends(get_db),
 ):
     """Return quick health stats for an integration: total calls, success count, last called_at."""
+    _assert_account_access(current_user, account_id)
     integration = db.query(AccountIntegration).filter(
         AccountIntegration.id == integration_id,
         AccountIntegration.account_id == account_id
