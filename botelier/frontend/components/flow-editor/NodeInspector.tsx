@@ -2,6 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
+import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { Trash2, ChevronDown, ChevronRight, Plus, X, Variable } from "lucide-react";
 import { 
   useFlowStore, 
@@ -688,6 +689,7 @@ interface AccountIntegration {
 function APIRequestNodePanel({ data, nodeId }: { data: APIRequestNodeData; nodeId: string }) {
   const { updateNodeData, variables } = useFlowStore();
   const { authFetch } = useAuthToken();
+  const { accountId } = useAccountContext();
   const api = data.api || { method: "GET" as const, url: "", apiSource: "custom" as const };
   const [showHeaders, setShowHeaders] = useState(
     !!(api.headers && Object.keys(api.headers).length > 0)
@@ -716,8 +718,9 @@ function APIRequestNodePanel({ data, nodeId }: { data: APIRequestNodeData; nodeI
       }
     };
     const fetchSecrets = async () => {
+      if (!accountId) return;
       try {
-        const response = await authFetch("/api/secrets");
+        const response = await authFetch(`/api/secrets/account/${accountId}`);
         if (response.ok) {
           const data = await response.json();
           setAvailableSecrets(data.map((s: { key: string; name: string }) => ({ key: s.key, name: s.name })));
@@ -728,7 +731,7 @@ function APIRequestNodePanel({ data, nodeId }: { data: APIRequestNodeData; nodeI
     };
     fetchIntegrations();
     fetchSecrets();
-  }, []);
+  }, [accountId]);
 
   const updateApi = (updates: Partial<typeof api>) => {
     updateNodeData(nodeId, { api: { ...api, ...updates } });
