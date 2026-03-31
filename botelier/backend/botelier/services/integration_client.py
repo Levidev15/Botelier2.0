@@ -15,6 +15,36 @@ from sqlalchemy.orm import Session
 from botelier.models.integration import AccountIntegration, IntegrationType, IntegrationStatus, IntegrationCallLog
 
 
+_SECRETS_PLACEHOLDER_RE = re.compile(r"\{\{secrets\.[^}]+\}\}")
+_COMMON_SECRET_PARAMS = re.compile(
+    r"(?i)(api[_-]?key|apikey|token|access[_-]?token|secret|password|passwd|auth|authorization|bearer)=[^&]*",
+    re.IGNORECASE,
+)
+
+
+def _sanitize_endpoint_for_log(endpoint: Optional[str]) -> Optional[str]:
+    """
+    Sanitize a URL or path before persisting to call logs.
+
+    Steps:
+    1. Strip the query string entirely (can contain API keys, secrets, etc.)
+    2. Remove any residual {{secrets.*}} placeholders that were not substituted.
+    3. Truncate to 500 characters.
+
+    This ensures that even if a secret value was resolved into the URL,
+    only the path portion is stored.
+    """
+    if not endpoint:
+        return endpoint
+    try:
+        parsed = urlparse(endpoint)
+        sanitized = urlunparse(parsed._replace(query="", fragment=""))
+    except Exception:
+        sanitized = endpoint
+    sanitized = _SECRETS_PLACEHOLDER_RE.sub("[REDACTED]", sanitized)
+    return sanitized[:500]
+
+
 class APIErrorType(str, Enum):
     SUCCESS = "success"
     AUTH_ERROR = "auth_error"
@@ -50,6 +80,7 @@ class IntegrationAPIConfig:
     endpoint_id: Optional[str] = None
     method: str = "GET"
     path: str = ""
+    endpoint_template: Optional[str] = None
     headers: Optional[dict[str, str]] = None
     body_template: Optional[str] = None
     timeout: int = 30
@@ -147,6 +178,7 @@ class IntegrationClient:
         url = self._build_url(integration, config, variables)
         headers = self._build_headers(integration, config)
         body = self._build_body(config, variables)
+        log_endpoint = config.endpoint_template or config.path
         
         attempt = 0
         last_error: Optional[Exception] = None
@@ -164,7 +196,7 @@ class IntegrationClient:
                 result = self._process_response(response, config)
                 self._write_call_log(
                     integration_id=str(integration.id),
-                    endpoint_called=url,
+                    endpoint_called=log_endpoint,
                     method=config.method,
                     status_code=result.status_code,
                     success=result.success,
@@ -188,7 +220,7 @@ class IntegrationClient:
                 logger.error(f"Unexpected error during API request: {e}")
                 self._write_call_log(
                     integration_id=str(integration.id),
-                    endpoint_called=url,
+                    endpoint_called=log_endpoint,
                     method=config.method,
                     status_code=0,
                     success=False,
@@ -240,7 +272,7 @@ class IntegrationClient:
                     id=uuid.uuid4(),
                     account_id=self.account_id,
                     integration_id=integration_id,
-                    endpoint_called=endpoint_called,
+                    endpoint_called=_sanitize_endpoint_for_log(endpoint_called),
                     method=method,
                     status_code=status_code,
                     success=success,

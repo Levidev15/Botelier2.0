@@ -1447,6 +1447,7 @@ You are executing a structured conversation flow. Follow these guidelines:
             endpoint_id=api_config.get("endpointId"),
             method=api_config.get("method", "GET"),
             path=resolved_path,
+            endpoint_template=raw_path,
             headers=resolved_headers,
             body_template=resolved_body_template,
             timeout=api_config.get("timeout", 30),
@@ -1549,11 +1550,12 @@ You are executing a structured conversation flow. Follow these guidelines:
             return
         try:
             from botelier.models.integration import IntegrationCallLog as _ICL
+            from botelier.services.integration_client import _sanitize_endpoint_for_log
             log = _ICL(
                 id=uuid.uuid4(),
                 account_id=self.account_id,
                 integration_id=None,
-                endpoint_called=endpoint[:500] if endpoint else None,
+                endpoint_called=_sanitize_endpoint_for_log(endpoint),
                 method=method,
                 status_code=status_code,
                 success=success,
