@@ -136,6 +136,14 @@ export default function IntegrationsPage() {
     value: "",
   });
 
+  const [integrationStats, setIntegrationStats] = useState<Record<string, {
+    total_calls: number;
+    successful_calls: number;
+    failed_calls: number;
+    last_called_at: string | null;
+    last_error: string | null;
+  }>>({});
+
   const showNotification = (type: "success" | "error", message: string) => {
     setNotification({ type, message });
     setTimeout(() => setNotification(null), 5000);
@@ -148,6 +156,27 @@ export default function IntegrationsPage() {
       fetchSecrets();
     }
   }, [accountId, contextLoading, authLoading, isAuthenticated]);
+
+  const fetchIntegrationStats = async (integrations: AccountIntegration[]) => {
+    const connected = integrations.filter(i => i.status === "connected");
+    if (!connected.length) return;
+    const results: typeof integrationStats = {};
+    await Promise.allSettled(
+      connected.map(async (conn) => {
+        try {
+          const res = await authFetch(
+            `/api/integrations/account/${accountId}/integration/${conn.id}/call-stats`
+          );
+          if (res.ok) {
+            results[conn.id] = await res.json();
+          }
+        } catch {
+          // non-fatal
+        }
+      })
+    );
+    setIntegrationStats(prev => ({ ...prev, ...results }));
+  };
 
   const fetchIntegrations = async () => {
     try {
@@ -166,6 +195,7 @@ export default function IntegrationsPage() {
       if (accountRes.ok) {
         const integrations = await accountRes.json();
         setAccountIntegrations(integrations);
+        fetchIntegrationStats(integrations);
       } else if (accountRes.status === 401) {
         console.error("Authentication failed - please log in again");
       }
@@ -689,6 +719,29 @@ export default function IntegrationsPage() {
                           {conn.last_error && (
                             <p className="text-xs text-red-400 mt-0.5">{conn.last_error}</p>
                           )}
+                          {integrationStats[conn.id] && (() => {
+                            const s = integrationStats[conn.id];
+                            return (
+                              <div className="flex items-center gap-3 mt-1.5">
+                                <span className="text-xs text-gray-500">
+                                  <span className="text-green-400 font-medium">{s.successful_calls}</span>/{s.total_calls} calls OK
+                                </span>
+                                {s.failed_calls > 0 && (
+                                  <span className="text-xs text-red-400">{s.failed_calls} failed</span>
+                                )}
+                                {s.last_called_at && (
+                                  <span className="text-xs text-gray-600">
+                                    Last: {new Date(s.last_called_at).toLocaleDateString()}
+                                  </span>
+                                )}
+                                {s.last_error && (
+                                  <span className="text-xs text-red-400 truncate max-w-[200px]" title={s.last_error}>
+                                    {s.last_error}
+                                  </span>
+                                )}
+                              </div>
+                            );
+                          })()}
                           {conn.connected_at && (
                             <p className="text-xs text-gray-500 mt-0.5">
                               Connected {new Date(conn.connected_at).toLocaleDateString()}
