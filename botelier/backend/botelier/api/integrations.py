@@ -47,6 +47,7 @@ class IntegrationTypeResponse(BaseModel):
     documentation_url: Optional[str]
     is_enabled: bool
     required_fields: List[dict]
+    endpoint_count: int = 0
     
     class Config:
         from_attributes = True
@@ -187,7 +188,8 @@ async def list_integration_types(
             auth_type=t.auth_type,
             documentation_url=t.documentation_url,
             is_enabled=t.is_enabled,
-            required_fields=t.get_required_fields()
+            required_fields=t.get_required_fields(),
+            endpoint_count=len(t.get_endpoints()),
         ))
     
     return result
@@ -215,7 +217,8 @@ async def get_integration_type(
         auth_type=integration_type.auth_type,
         documentation_url=integration_type.documentation_url,
         is_enabled=integration_type.is_enabled,
-        required_fields=integration_type.get_required_fields()
+        required_fields=integration_type.get_required_fields(),
+        endpoint_count=len(integration_type.get_endpoints()),
     )
 
 

@@ -271,9 +271,9 @@ class IntegrationCallLog(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    account_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id", ondelete="CASCADE"), nullable=False, index=True)
 
-    integration_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    integration_id = Column(UUID(as_uuid=True), ForeignKey("account_integrations.id", ondelete="SET NULL"), nullable=True, index=True)
 
     endpoint_called = Column(String(500), nullable=True)
 

@@ -43,6 +43,7 @@ interface IntegrationType {
   documentation_url: string | null;
   is_enabled: boolean;
   required_fields: RequiredField[];
+  endpoint_count: number;
 }
 
 interface RequiredField {
@@ -678,7 +679,14 @@ export default function IntegrationsPage() {
                     {slugInitials}
                   </div>
                   <div>
-                    <h3 className="text-lg font-semibold">{type.name}</h3>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-lg font-semibold">{type.name}</h3>
+                      {type.endpoint_count > 0 && (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-800 text-gray-400 border border-gray-700">
+                          {type.endpoint_count} endpoint{type.endpoint_count !== 1 ? "s" : ""}
+                        </span>
+                      )}
+                    </div>
                     <p className="text-sm text-gray-400 mt-1 max-w-lg">
                       {type.description}
                     </p>
