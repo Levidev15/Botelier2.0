@@ -561,6 +561,7 @@ async def get_integration_call_stats(
         raise HTTPException(status_code=404, detail="Integration not found")
 
     from sqlalchemy import func as sqlfunc
+
     row = db.query(
         sqlfunc.count(IntegrationCallLog.id).label("total"),
         sqlfunc.sum(
@@ -572,10 +573,26 @@ async def get_integration_call_stats(
         IntegrationCallLog.integration_id == integration_id,
     ).one()
 
+    total = row.total or 0
+    successes = int(row.successes or 0)
+
+    last_failed = (
+        db.query(IntegrationCallLog)
+        .filter(
+            IntegrationCallLog.account_id == account_id,
+            IntegrationCallLog.integration_id == integration_id,
+            IntegrationCallLog.success == False,  # noqa: E712
+        )
+        .order_by(IntegrationCallLog.called_at.desc())
+        .first()
+    )
+
     return {
-        "total_calls": row.total or 0,
-        "successful_calls": int(row.successes or 0),
+        "total_calls": total,
+        "successful_calls": successes,
+        "failed_calls": total - successes,
         "last_called_at": row.last_called_at,
+        "last_error": last_failed.error_message if last_failed else None,
     }
 
 

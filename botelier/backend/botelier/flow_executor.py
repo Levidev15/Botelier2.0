@@ -10,6 +10,8 @@ This module handles:
 
 import re
 import json
+import time
+import uuid
 import httpx
 from datetime import datetime, timezone
 from typing import Any, Optional, Callable, Awaitable
@@ -1437,11 +1439,14 @@ You are executing a structured conversation flow. Follow these guidelines:
         raw_headers = api_config.get("headers") or {}
         resolved_headers = {k: self._substitute_secrets(v) for k, v in raw_headers.items()} if raw_headers else None
 
+        raw_path = api_config.get("path", api_config.get("url", ""))
+        resolved_path = self._substitute_secrets(raw_path) if raw_path else raw_path
+
         config = IntegrationAPIConfig(
             integration_id=api_config.get("integrationId", ""),
             endpoint_id=api_config.get("endpointId"),
             method=api_config.get("method", "GET"),
-            path=api_config.get("path", api_config.get("url", "")),
+            path=resolved_path,
             headers=resolved_headers,
             body_template=resolved_body_template,
             timeout=api_config.get("timeout", 30),
@@ -1529,6 +1534,39 @@ You are executing a structured conversation flow. Follow these guidelines:
 
         return _re.sub(r"\{\{secrets\.(\w+)\}\}", replace_secret, text)
 
+    def _write_custom_call_log(
+        self,
+        endpoint: str,
+        method: str,
+        status_code: int,
+        success: bool,
+        latency_ms: int,
+        error_type: Optional[str] = None,
+        error_message: Optional[str] = None,
+    ) -> None:
+        """Fire-and-forget IntegrationCallLog write for custom-URL API calls (integration_id=None)."""
+        if not self.account_id or not self.db_session:
+            return
+        try:
+            from botelier.models.integration import IntegrationCallLog as _ICL
+            log = _ICL(
+                id=uuid.uuid4(),
+                account_id=self.account_id,
+                integration_id=None,
+                endpoint_called=endpoint[:500] if endpoint else None,
+                method=method,
+                status_code=status_code,
+                success=success,
+                latency_ms=latency_ms,
+                error_type=error_type,
+                error_message=error_message[:500] if error_message else None,
+                called_at=datetime.utcnow(),
+            )
+            self.db_session.add(log)
+            self.db_session.commit()
+        except Exception as exc:
+            logger.warning(f"Failed to write custom URL call log (non-fatal): {exc}")
+
     async def _handle_custom_api_request(self, node_id: str, node: FlowNode, api_config: dict) -> dict:
         """Handle direct custom URL API request."""
         url = substitute_variables(api_config.get("url", ""), self.state.collected_slots)
@@ -1537,7 +1575,8 @@ You are executing a structured conversation flow. Follow these guidelines:
         
         last_error = None
         attempt = 0
-        
+        _start_ms = int(time.time() * 1000)
+
         while attempt <= retry_count:
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
@@ -1567,9 +1606,20 @@ You are executing a structured conversation flow. Follow these guidelines:
                     elif method == "DELETE":
                         response = await client.delete(url, headers=headers)
                     else:
+                        self._write_custom_call_log(url, "UNKNOWN", 0, False,
+                            int(time.time() * 1000) - _start_ms, "validation_error",
+                            f"Unsupported method: {method}")
                         return {"success": False, "message": f"Unsupported method: {method}", "action": None}
                     
-                    return self._process_custom_api_response(node_id, api_config, response)
+                    result = self._process_custom_api_response(node_id, api_config, response)
+                    self._write_custom_call_log(
+                        url, method, response.status_code,
+                        result.get("success", False),
+                        int(time.time() * 1000) - _start_ms,
+                        None if result.get("success") else "http_error",
+                        None if result.get("success") else result.get("message"),
+                    )
+                    return result
             
             except httpx.TimeoutException:
                 last_error = "Request timed out"
@@ -1578,6 +1628,8 @@ You are executing a structured conversation flow. Follow these guidelines:
                 last_error = str(e)
                 attempt += 1
             except json.JSONDecodeError as e:
+                self._write_custom_call_log(url, api_config.get("method", "GET").upper(), 0, False,
+                    int(time.time() * 1000) - _start_ms, "json_error", str(e))
                 return {
                     "success": False,
                     "message": "Invalid request body format",
@@ -1586,6 +1638,8 @@ You are executing a structured conversation flow. Follow these guidelines:
                     "current_node_id": node_id
                 }
             except Exception as e:
+                self._write_custom_call_log(url, api_config.get("method", "GET").upper(), 0, False,
+                    int(time.time() * 1000) - _start_ms, "unknown_error", str(e))
                 return {
                     "success": False,
                     "message": api_config.get("onError", "There was an issue processing your request"),
@@ -1594,6 +1648,8 @@ You are executing a structured conversation flow. Follow these guidelines:
                     "current_node_id": node_id
                 }
         
+        self._write_custom_call_log(url, api_config.get("method", "GET").upper(), 0, False,
+            int(time.time() * 1000) - _start_ms, "timeout", last_error)
         return {
             "success": False,
             "message": api_config.get("onError", "Request failed after multiple attempts"),
