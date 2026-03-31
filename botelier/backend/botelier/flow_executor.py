@@ -1569,7 +1569,7 @@ You are executing a structured conversation flow. Follow these guidelines:
 
     async def _handle_custom_api_request(self, node_id: str, node: FlowNode, api_config: dict) -> dict:
         """Handle direct custom URL API request."""
-        url = substitute_variables(api_config.get("url", ""), self.state.collected_slots)
+        url = substitute_variables(self._substitute_secrets(api_config.get("url", "")), self.state.collected_slots)
         timeout = api_config.get("timeout", 30)
         retry_count = api_config.get("retryCount", 2)
         
@@ -1584,14 +1584,15 @@ You are executing a structured conversation flow. Follow these guidelines:
 
                     raw_headers = api_config.get("headers", {})
                     headers = {
-                        k: self._substitute_secrets(substitute_variables(v, self.state.collected_slots))
+                        k: substitute_variables(self._substitute_secrets(v), self.state.collected_slots)
                         for k, v in raw_headers.items()
                     }
                     
                     body = None
                     if api_config.get("bodyTemplate"):
-                        body_str = self._substitute_secrets(
-                            substitute_variables(api_config["bodyTemplate"], self.state.collected_slots)
+                        body_str = substitute_variables(
+                            self._substitute_secrets(api_config["bodyTemplate"]),
+                            self.state.collected_slots
                         )
                         body = json.loads(body_str)
                     

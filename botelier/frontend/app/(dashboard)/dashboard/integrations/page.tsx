@@ -221,8 +221,9 @@ export default function IntegrationsPage() {
   };
 
   const fetchSecrets = async () => {
+    if (!accountId) return;
     try {
-      const response = await authFetch("/api/secrets");
+      const response = await authFetch(`/api/secrets/account/${accountId}`);
       if (response.ok) {
         const data = await response.json();
         setSecrets(data);
@@ -250,7 +251,7 @@ export default function IntegrationsPage() {
     const confirmed = await confirmAction(`Delete secret "${secret.name}"? This will break any flows that reference {{secrets.${secret.key}}}.`);
     if (!confirmed) return;
     try {
-      const res = await authFetch(`/api/secrets/${secret.id}`, { method: "DELETE" });
+      const res = await authFetch(`/api/secrets/account/${accountId}/${secret.id}`, { method: "DELETE" });
       if (res.ok) {
         setSecrets(prev => prev.filter(s => s.id !== secret.id));
         showNotification("success", "Secret deleted");
@@ -280,7 +281,9 @@ export default function IntegrationsPage() {
       };
       if (secretForm.value.trim()) payload.value = secretForm.value;
 
-      const url = editingSecret ? `/api/secrets/${editingSecret.id}` : "/api/secrets";
+      const url = editingSecret
+        ? `/api/secrets/account/${accountId}/${editingSecret.id}`
+        : `/api/secrets/account/${accountId}`;
       const method = editingSecret ? "PATCH" : "POST";
       const res = await authFetch(url, {
         method,

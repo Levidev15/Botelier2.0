@@ -3,6 +3,10 @@ Account Secrets API — encrypted key-value store for sensitive credentials.
 
 Secrets are stored Fernet-encrypted and referenced in flow/tool configs as
 {{secrets.key_name}}. Secret VALUES are never returned by any endpoint.
+
+All routes are scoped under /api/secrets/account/{account_id} so that the
+caller's account is explicit and validated against current_user memberships,
+preventing cross-account access for users who belong to multiple accounts.
 """
 
 import re
@@ -23,12 +27,20 @@ router = APIRouter(prefix="/api/secrets", tags=["secrets"])
 _KEY_RE = re.compile(r"^[a-z0-9_]{1,100}$")
 
 
-def _get_account_id(current_user) -> str:
+def _assert_account_access(current_user, account_id: str) -> None:
+    """
+    Raise 403 if the authenticated user does not have an active membership
+    for the requested account_id.  Platform admins bypass this check.
+    """
+    if getattr(current_user, "user_type", None) == "platform_admin":
+        return
     memberships = getattr(current_user, "account_memberships", None) or []
-    active = [m for m in memberships if getattr(m, "is_active", False)]
-    if not active:
-        raise HTTPException(status_code=403, detail="No active account membership")
-    return str(active[0].account_id)
+    allowed = {str(getattr(m, "account_id", "")) for m in memberships if getattr(m, "is_active", False)}
+    if account_id not in allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have access to this account",
+        )
 
 
 class SecretMetadata(BaseModel):
@@ -79,12 +91,13 @@ class UpdateSecretRequest(BaseModel):
     value: Optional[str] = None
 
 
-@router.get("", response_model=List[SecretMetadata])
+@router.get("/account/{account_id}", response_model=List[SecretMetadata])
 async def list_secrets(
+    account_id: str,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    account_id = _get_account_id(current_user)
+    _assert_account_access(current_user, account_id)
     secrets = (
         db.query(AccountSecret)
         .filter(AccountSecret.account_id == account_id)
@@ -104,13 +117,14 @@ async def list_secrets(
     ]
 
 
-@router.post("", response_model=SecretMetadata, status_code=201)
+@router.post("/account/{account_id}", response_model=SecretMetadata, status_code=201)
 async def create_secret(
+    account_id: str,
     body: CreateSecretRequest,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    account_id = _get_account_id(current_user)
+    _assert_account_access(current_user, account_id)
 
     existing = (
         db.query(AccountSecret)
@@ -147,14 +161,15 @@ async def create_secret(
     )
 
 
-@router.patch("/{secret_id}", response_model=SecretMetadata)
+@router.patch("/account/{account_id}/{secret_id}", response_model=SecretMetadata)
 async def update_secret(
+    account_id: str,
     secret_id: str,
     body: UpdateSecretRequest,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    account_id = _get_account_id(current_user)
+    _assert_account_access(current_user, account_id)
 
     secret = (
         db.query(AccountSecret)
@@ -186,13 +201,14 @@ async def update_secret(
     )
 
 
-@router.delete("/{secret_id}", status_code=204)
+@router.delete("/account/{account_id}/{secret_id}", status_code=204)
 async def delete_secret(
+    account_id: str,
     secret_id: str,
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    account_id = _get_account_id(current_user)
+    _assert_account_access(current_user, account_id)
 
     secret = (
         db.query(AccountSecret)

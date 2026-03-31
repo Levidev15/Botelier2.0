@@ -225,6 +225,7 @@ async def list_account_integrations(
     current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    _assert_account_access(current_user, account_id)
     integrations = db.query(AccountIntegration).filter(
         AccountIntegration.account_id == account_id
     ).all()
@@ -252,6 +253,7 @@ async def list_connected_integrations(
     current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    _assert_account_access(current_user, account_id)
     integrations = db.query(AccountIntegration).filter(
         AccountIntegration.account_id == account_id,
         AccountIntegration.status == IntegrationStatus.CONNECTED
@@ -317,6 +319,7 @@ async def connect_integration(
     current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
+    _assert_account_access(current_user, account_id)
     integration_type = db.query(IntegrationType).filter(
         IntegrationType.id == request.integration_type_id
     ).first()
