@@ -1431,13 +1431,19 @@ You are executing a structured conversation flow. Follow these guidelines:
                 default_value=rv.get("defaultValue")
             ))
         
+        raw_body_template = api_config.get("bodyTemplate")
+        resolved_body_template = self._substitute_secrets(raw_body_template) if raw_body_template else raw_body_template
+
+        raw_headers = api_config.get("headers") or {}
+        resolved_headers = {k: self._substitute_secrets(v) for k, v in raw_headers.items()} if raw_headers else None
+
         config = IntegrationAPIConfig(
             integration_id=api_config.get("integrationId", ""),
             endpoint_id=api_config.get("endpointId"),
             method=api_config.get("method", "GET"),
             path=api_config.get("path", api_config.get("url", "")),
-            headers=api_config.get("headers"),
-            body_template=api_config.get("bodyTemplate"),
+            headers=resolved_headers,
+            body_template=resolved_body_template,
             timeout=api_config.get("timeout", 30),
             retry_count=api_config.get("retryCount", 2),
             response_variables=response_vars,
@@ -1492,6 +1498,37 @@ You are executing a structured conversation flow. Follow these guidelines:
                 "current_node_id": node_id
             }
     
+    def _substitute_secrets(self, text: str) -> str:
+        """
+        Replace {{secrets.key_name}} references with decrypted values from AccountSecret.
+
+        Substitution is server-side only — secret values never leave the backend.
+        Unresolvable references are left as-is so misconfiguration is visible in logs.
+        """
+        if not text or "{{secrets." not in text or not self.account_id or not self.db_session:
+            return text
+
+        import re as _re
+        secret_refs = set(_re.findall(r"\{\{secrets\.(\w+)\}\}", text))
+        if not secret_refs:
+            return text
+
+        from botelier.models.integration import AccountSecret
+        secrets = self.db_session.query(AccountSecret).filter(
+            AccountSecret.account_id == self.account_id,
+            AccountSecret.key.in_(list(secret_refs)),
+        ).all()
+        secret_map = {s.key: s.get_value() for s in secrets}
+
+        def replace_secret(m):
+            key = m.group(1)
+            if key in secret_map:
+                return secret_map[key]
+            logger.warning(f"Secret '{{secrets.{key}}}' not found for account {self.account_id}")
+            return m.group(0)
+
+        return _re.sub(r"\{\{secrets\.(\w+)\}\}", replace_secret, text)
+
     async def _handle_custom_api_request(self, node_id: str, node: FlowNode, api_config: dict) -> dict:
         """Handle direct custom URL API request."""
         url = substitute_variables(api_config.get("url", ""), self.state.collected_slots)
@@ -1505,11 +1542,18 @@ You are executing a structured conversation flow. Follow these guidelines:
             try:
                 async with httpx.AsyncClient(timeout=timeout) as client:
                     method = api_config.get("method", "GET").upper()
-                    headers = api_config.get("headers", {})
+
+                    raw_headers = api_config.get("headers", {})
+                    headers = {
+                        k: self._substitute_secrets(substitute_variables(v, self.state.collected_slots))
+                        for k, v in raw_headers.items()
+                    }
                     
                     body = None
                     if api_config.get("bodyTemplate"):
-                        body_str = substitute_variables(api_config["bodyTemplate"], self.state.collected_slots)
+                        body_str = self._substitute_secrets(
+                            substitute_variables(api_config["bodyTemplate"], self.state.collected_slots)
+                        )
                         body = json.loads(body_str)
                     
                     if method == "GET":

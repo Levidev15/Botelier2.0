@@ -1,6 +1,8 @@
 import re
 import json
 import base64
+import time
+import uuid
 import httpx
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -10,7 +12,7 @@ from urllib.parse import urlencode, urlparse, parse_qs, urlunparse
 from loguru import logger
 from sqlalchemy.orm import Session
 
-from botelier.models.integration import AccountIntegration, IntegrationType, IntegrationStatus
+from botelier.models.integration import AccountIntegration, IntegrationType, IntegrationStatus, IntegrationCallLog
 
 
 class APIErrorType(str, Enum):
@@ -77,8 +79,20 @@ class IntegrationClient:
         config: IntegrationAPIConfig,
         variables: dict[str, Any]
     ) -> APIResponse:
+        start_ms = int(time.time() * 1000)
+
         integration = await self._get_integration(config.integration_id)
         if not integration:
+            self._write_call_log(
+                integration_id=config.integration_id,
+                endpoint_called=config.path,
+                method=config.method,
+                status_code=0,
+                success=False,
+                latency_ms=0,
+                error_type=APIErrorType.AUTH_ERROR.value,
+                error_message="Integration not found or not connected",
+            )
             return APIResponse(
                 success=False,
                 status_code=0,
@@ -87,6 +101,16 @@ class IntegrationClient:
             )
         
         if integration.status != IntegrationStatus.CONNECTED:
+            self._write_call_log(
+                integration_id=str(integration.id),
+                endpoint_called=config.path,
+                method=config.method,
+                status_code=0,
+                success=False,
+                latency_ms=0,
+                error_type=APIErrorType.AUTH_ERROR.value,
+                error_message=f"Integration is not connected (status: {integration.status.value})",
+            )
             return APIResponse(
                 success=False,
                 status_code=0,
@@ -103,6 +127,16 @@ class IntegrationClient:
         if needs_token and integration.is_token_expired():
             refresh_success = await self._refresh_token(integration)
             if not refresh_success:
+                self._write_call_log(
+                    integration_id=str(integration.id),
+                    endpoint_called=config.path,
+                    method=config.method,
+                    status_code=0,
+                    success=False,
+                    latency_ms=int(time.time() * 1000) - start_ms,
+                    error_type=APIErrorType.AUTH_ERROR.value,
+                    error_message="Failed to refresh authentication token",
+                )
                 return APIResponse(
                     success=False,
                     status_code=0,
@@ -127,7 +161,18 @@ class IntegrationClient:
                     timeout=config.timeout
                 )
                 
-                return self._process_response(response, config)
+                result = self._process_response(response, config)
+                self._write_call_log(
+                    integration_id=str(integration.id),
+                    endpoint_called=url,
+                    method=config.method,
+                    status_code=result.status_code,
+                    success=result.success,
+                    latency_ms=int(time.time() * 1000) - start_ms,
+                    error_type=None if result.success else result.error_type.value,
+                    error_message=None if result.success else (result.error_message or "")[:500],
+                )
+                return result
                 
             except httpx.TimeoutException:
                 logger.warning(f"Request timeout (attempt {attempt + 1}/{config.retry_count + 1}): {url}")
@@ -141,19 +186,76 @@ class IntegrationClient:
                 
             except Exception as e:
                 logger.error(f"Unexpected error during API request: {e}")
+                self._write_call_log(
+                    integration_id=str(integration.id),
+                    endpoint_called=url,
+                    method=config.method,
+                    status_code=0,
+                    success=False,
+                    latency_ms=int(time.time() * 1000) - start_ms,
+                    error_type=APIErrorType.UNKNOWN.value,
+                    error_message=str(e)[:500],
+                )
                 return APIResponse(
                     success=False,
                     status_code=0,
                     error_type=APIErrorType.UNKNOWN,
                     error_message=str(e)
                 )
-        
+
+        error_type = APIErrorType.TIMEOUT if isinstance(last_error, httpx.TimeoutException) else APIErrorType.NETWORK_ERROR
+        self._write_call_log(
+            integration_id=str(integration.id),
+            endpoint_called=url,
+            method=config.method,
+            status_code=0,
+            success=False,
+            latency_ms=int(time.time() * 1000) - start_ms,
+            error_type=error_type.value,
+            error_message=str(last_error)[:500] if last_error else "Request failed after retries",
+        )
         return APIResponse(
             success=False,
             status_code=0,
-            error_type=APIErrorType.TIMEOUT if isinstance(last_error, httpx.TimeoutException) else APIErrorType.NETWORK_ERROR,
+            error_type=error_type,
             error_message=str(last_error) if last_error else "Request failed after retries"
         )
+
+    def _write_call_log(
+        self,
+        integration_id: Optional[str],
+        endpoint_called: Optional[str],
+        method: str,
+        status_code: int,
+        success: bool,
+        latency_ms: int,
+        error_type: Optional[str],
+        error_message: Optional[str],
+    ) -> None:
+        """Write an IntegrationCallLog row fire-and-forget; never raises."""
+        try:
+            db = self._get_db_session()
+            try:
+                log = IntegrationCallLog(
+                    id=uuid.uuid4(),
+                    account_id=self.account_id,
+                    integration_id=integration_id,
+                    endpoint_called=endpoint_called,
+                    method=method,
+                    status_code=status_code,
+                    success=success,
+                    latency_ms=latency_ms,
+                    error_type=error_type,
+                    error_message=error_message,
+                    called_at=datetime.utcnow(),
+                )
+                db.add(log)
+                db.commit()
+            finally:
+                if not self._external_db:
+                    db.close()
+        except Exception as exc:
+            logger.warning(f"Failed to write integration call log (non-fatal): {exc}")
     
     async def _get_integration(self, integration_id: str) -> Optional[AccountIntegration]:
         if integration_id in self._integration_cache:
