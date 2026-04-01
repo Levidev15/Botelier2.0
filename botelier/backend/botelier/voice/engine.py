@@ -40,8 +40,6 @@ from pipecat.processors.filters.stt_mute_filter import STTMuteFilter, STTMuteCon
 from .agent import VoiceAgentConfig
 from ..config.providers import is_flux_model
 
-from pipecat.services.deepgram.stt import LiveOptions
-
 
 class InterruptionTracker(FrameProcessor):
     """
