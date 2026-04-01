@@ -87,6 +87,7 @@ async def get_call_analytics(
         ).count()
         failed = _base().filter(CallLog.status == CallStatus.FAILED.value).count()
         transferred = _base().filter(CallLog.has_transfer == True).count()
+        ended_early = _base().filter(CallLog.ended_early == True).count()
 
         dur_row = (
             _base()
@@ -135,6 +136,8 @@ async def get_call_analytics(
             "missed": missed,
             "failed": failed,
             "transferred": transferred,
+            "ended_early_calls": ended_early,
+            "ended_early_rate": round(ended_early / total * 100, 1) if total else 0,
             "completion_rate": round(completed / total * 100, 1) if total else 0,
             "transfer_rate": round(transferred / total * 100, 1) if total else 0,
             "avg_duration_seconds": round(float(dur_row.avg), 1),
@@ -402,6 +405,8 @@ async def get_calls_drilldown(
         elif token.startswith("resolution:"):
             resolution_val = token[len("resolution:"):]
             query = query.filter(CallLog.acw_resolution == resolution_val)
+        elif token == "ended_early":
+            query = query.filter(CallLog.ended_early == True)
         # "all" — no extra filter
 
         total = query.count()
@@ -461,6 +466,7 @@ async def get_calls_drilldown(
                 "disposition_color": disp_map.get(str(log.disposition_id), {}).get("color") if log.disposition_id else None,
                 "acw_quality_score": log.acw_quality_score,
                 "acw_resolution": log.acw_resolution,
+                "ended_early": log.ended_early,
             })
 
         return {

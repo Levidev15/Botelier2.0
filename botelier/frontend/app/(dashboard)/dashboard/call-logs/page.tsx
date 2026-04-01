@@ -160,6 +160,7 @@ interface CallLog {
   tool_name: string | null;
   acw_resolution: string | null;
   acw_quality_score: number | null;
+  ended_early: boolean;
 }
 
 interface FilterOptions {
@@ -1137,7 +1138,7 @@ function CallLogRow({
           )}
         </td>
         <td className="px-4 py-3">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2 flex-wrap">
             <span
               className={`px-2 py-0.5 text-xs rounded-full border ${getStatusBadge(log.status || 'unknown')}`}
             >
@@ -1146,6 +1147,11 @@ function CallLogRow({
             {log.has_transfer && (
               <span className="flex items-center gap-1 text-xs text-purple-400">
                 <PhoneForwarded className="h-3 w-3" />
+              </span>
+            )}
+            {log.ended_early && (
+              <span className="px-1.5 py-0.5 text-xs rounded border bg-orange-500/10 border-orange-500/30 text-orange-400 whitespace-nowrap">
+                Early End
               </span>
             )}
           </div>

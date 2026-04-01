@@ -23,6 +23,8 @@ from ..services.acw_service import run_acw_background
 
 router = APIRouter(prefix="/api/calls", tags=["Calls"])
 
+EARLY_END_THRESHOLD = 30  # seconds — calls shorter than this are classified as ended early
+
 
 def _get_call_handler():
     """Lazy import to avoid circular dependencies"""
@@ -290,6 +292,13 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                     status=call_status,
                     duration_seconds=duration_seconds,
                 )
+                # Classify as ended_early if call was too short
+                _EARLY_FINAL = {"completed", "no-answer", "busy", "canceled"}
+                if call_status in _EARLY_FINAL and duration_seconds is not None and duration_seconds < EARLY_END_THRESHOLD:
+                    _early_log = call_logger.get_call_log(call_sid)
+                    if _early_log and not _early_log.ended_early:
+                        _early_log.ended_early = True
+                        db.commit()
 
             # Log call_answered and call_ended events.
             # Both paths use _event_exists() to dedup:

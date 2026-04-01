@@ -86,6 +86,8 @@ class CallLog(Base):
     ended_at = Column(DateTime, nullable=True)
     
     duration_seconds = Column(Integer, default=0)
+
+    ended_early = Column(Boolean, default=False, nullable=False)
     
     transcript = Column(JSONB, nullable=True)
     
@@ -138,6 +140,7 @@ class CallLog(Base):
             "answered_at": self.answered_at.isoformat() + "Z" if self.answered_at else None,
             "ended_at": self.ended_at.isoformat() + "Z" if self.ended_at else None,
             "duration_seconds": self.duration_seconds,
+            "ended_early": self.ended_early,
             "has_transfer": self.has_transfer,
             "flow_id": str(self.flow_id) if self.flow_id else None,
             "flow_name": self.flow_name,
