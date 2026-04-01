@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { useRouter } from "next/navigation";
-import { ArrowLeft, Info, Mic, MessageSquare, Volume2, Activity, ClipboardCheck, Smartphone } from "lucide-react";
+import { ArrowLeft, Info, Mic, MessageSquare, Volume2, Activity, ClipboardCheck, Smartphone, PhoneCall } from "lucide-react";
 import Link from "next/link";
 import TabNavigation, { Tab } from "@/components/tabs/TabNavigation";
 import FormSection from "@/components/forms/FormSection";
@@ -43,6 +43,7 @@ interface Assistant {
   mcp_connection_id: string | null;
   mcp_enabled_tools: string[];
   sms_config: any;
+  call_settings: any;
 }
 
 interface KnowledgeBase {
@@ -87,6 +88,7 @@ const TABS: Tab[] = [
   { id: "vad", label: "Voice Activity Detection", icon: <Activity className="h-4 w-4" /> },
   { id: "post-call-qa", label: "Post Call QA", icon: <ClipboardCheck className="h-4 w-4" /> },
   { id: "sms", label: "SMS", icon: <Smartphone className="h-4 w-4" /> },
+  { id: "call-settings", label: "Call Settings", icon: <PhoneCall className="h-4 w-4" /> },
 ];
 
 export default function AssistantConfigForm({ mode, assistantId }: AssistantConfigFormProps) {
@@ -120,6 +122,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
     max_tokens: 150,
     mcp_connection_id: null,
     mcp_enabled_tools: [],
+    call_settings: {},
   });
   
   const [providers, setProviders] = useState<ProviderConfig>({ stt: {}, llm: {}, tts: {} });
@@ -1102,6 +1105,94 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
                 </div>
               </>
             )}
+          </div>
+        </FormSection>
+        )}
+
+        {/* Call Settings Section */}
+        {activeTab === "call-settings" && (
+        <FormSection
+          title="Call Settings"
+          description="Configure per-assistant call control thresholds used for analytics and future call-lifecycle enforcement"
+        >
+          <div className="space-y-6">
+            <FormField
+              label="Early-End Threshold (seconds)"
+              tooltip="Calls shorter than this duration are flagged as 'ended early' in analytics. Default: 30 seconds."
+            >
+              <input
+                type="number"
+                value={formData.call_settings?.early_end_threshold_seconds ?? 30}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10);
+                  setFormData(prev => ({
+                    ...prev,
+                    call_settings: {
+                      ...(prev.call_settings || {}),
+                      early_end_threshold_seconds: isNaN(val) ? 30 : val,
+                    }
+                  }));
+                  setIsDirty(true);
+                }}
+                min={5}
+                max={600}
+                className="w-full px-3 py-2 bg-[#1a1a1a] border border-[#333] rounded-lg text-sm text-white focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
+              />
+            </FormField>
+
+            <FormField
+              label="Max Call Duration (seconds)"
+              tooltip="Reserved for future use: maximum allowed call length before automatic hang-up. Default: 600 seconds (10 min)."
+            >
+              <input
+                type="number"
+                value={formData.call_settings?.max_call_duration_seconds ?? 600}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10);
+                  setFormData(prev => ({
+                    ...prev,
+                    call_settings: {
+                      ...(prev.call_settings || {}),
+                      max_call_duration_seconds: isNaN(val) ? 600 : val,
+                    }
+                  }));
+                  setIsDirty(true);
+                }}
+                min={30}
+                max={3600}
+                className="w-full px-3 py-2 bg-[#1a1a1a] border border-[#333] rounded-lg text-sm text-white focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
+              />
+            </FormField>
+
+            <FormField
+              label="No-Response Timeout (seconds)"
+              tooltip="Reserved for future use: seconds of silence before the assistant ends the call. Default: 10 seconds."
+            >
+              <input
+                type="number"
+                value={formData.call_settings?.no_response_timeout_seconds ?? 10}
+                onChange={(e) => {
+                  const val = parseInt(e.target.value, 10);
+                  setFormData(prev => ({
+                    ...prev,
+                    call_settings: {
+                      ...(prev.call_settings || {}),
+                      no_response_timeout_seconds: isNaN(val) ? 10 : val,
+                    }
+                  }));
+                  setIsDirty(true);
+                }}
+                min={5}
+                max={120}
+                className="w-full px-3 py-2 bg-[#1a1a1a] border border-[#333] rounded-lg text-sm text-white focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
+              />
+            </FormField>
+
+            <div className="p-3 bg-[#1a1a1a] border border-[#333] rounded-lg">
+              <p className="text-xs text-gray-400">
+                <strong className="text-gray-300">Early-End Threshold</strong> is active now — calls shorter than the configured value appear in the &quot;Ended Early&quot; analytics widget. Max Call Duration and No-Response Timeout are stored but not yet enforced by the pipeline.
+              </p>
+            </div>
           </div>
         </FormSection>
         )}

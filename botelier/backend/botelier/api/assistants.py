@@ -53,6 +53,7 @@ class AssistantCreate(BaseModel):
     vad_provider: Optional[str] = None
     vad_config: Optional[dict] = None
     is_active: bool = True
+    call_settings: Optional[dict] = None
 
 
 class AssistantUpdate(BaseModel):
@@ -84,6 +85,7 @@ class AssistantUpdate(BaseModel):
     is_active: Optional[bool] = None
     flow_config: Optional[dict] = None
     sms_config: Optional[dict] = None
+    call_settings: Optional[dict] = None
 
 
 class FlowConfigUpdate(BaseModel):
@@ -122,6 +124,7 @@ class AssistantResponse(BaseModel):
     is_active: bool
     flow_config: Optional[dict]
     sms_config: Optional[dict] = None
+    call_settings: Optional[dict] = None
     created_at: Optional[str]
     updated_at: Optional[str]
 
@@ -203,6 +206,7 @@ async def create_assistant(
         vad_provider=data.vad_provider,
         vad_config=data.vad_config or {},
         is_active=data.is_active,
+        call_settings=data.call_settings or {},
     )
     
     db.add(assistant)

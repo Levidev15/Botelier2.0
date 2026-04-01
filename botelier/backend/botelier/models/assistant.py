@@ -92,6 +92,12 @@ class Assistant(Base):
     # After-Call Work / Post Call QA configuration (stored as JSONB)
     # Keys: auto_run (bool), quality_rubric (str), summary_enabled (bool), summary_prompt (str)
     acw_config = Column(JSONB, nullable=True, default=dict)
+
+    # Call control thresholds (stored as JSONB)
+    # Keys: early_end_threshold_seconds (int, default 30),
+    #       max_call_duration_seconds (int, default 600),
+    #       no_response_timeout_seconds (int, default 10)
+    call_settings = Column(JSONB, nullable=False, default=dict, server_default="{}")
     
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -133,6 +139,7 @@ class Assistant(Base):
             "flow_config": self.flow_config,
             "sms_config": self.sms_config or {},
             "acw_config": self.acw_config or {},
+            "call_settings": self.call_settings or {},
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
             "updated_at": self.updated_at.isoformat() + "Z" if self.updated_at else None,
         }
