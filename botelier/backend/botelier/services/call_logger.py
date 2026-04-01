@@ -181,11 +181,21 @@ class CallLogger:
                 formatted_transcript = []
                 for msg in transcript:
                     if msg.get("role") in ("user", "assistant"):
-                        formatted_transcript.append({
+                        entry: dict = {
                             "role": msg["role"],
                             "content": msg.get("content", ""),
-                            "timestamp": datetime.utcnow().isoformat()
-                        })
+                        }
+                        # Preserve existing timestamp if set by the capture layer.
+                        # Do NOT overwrite with datetime.utcnow() — doing so stamps
+                        # every message with the same save-time, making timestamps
+                        # meaningless.
+                        if msg.get("timestamp"):
+                            entry["timestamp"] = msg["timestamp"]
+                        if msg.get("interrupted"):
+                            entry["interrupted"] = True
+                        if msg.get("incomplete"):
+                            entry["incomplete"] = True
+                        formatted_transcript.append(entry)
                 call_log.transcript = formatted_transcript
                 logger.info(f"Saved transcript with {len(formatted_transcript)} messages for call {call_sid}")
             elif transcript and call_log.transcript:

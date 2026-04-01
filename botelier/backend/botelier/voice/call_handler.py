@@ -65,6 +65,7 @@ class CallHandler:
         self.call_contexts: Dict[str, Any] = {}
         self.call_start_times: Dict[str, datetime] = {}
         self.interrupted_responses: Dict[str, set] = {}  # call_sid -> set of interrupted message contents
+        self.pending_responses: Dict[str, List[dict]] = {}  # call_sid -> list of {text, timestamp} per LLM turn
         self.call_mcp_clients: Dict[str, PipecatMCPClient] = {}  # call_sid -> Pipecat MCPClient for MCP tool execution
         self.call_event_queues: Dict[str, CallEventQueue] = {}  # call_sid -> CallEventQueue
     
@@ -242,6 +243,20 @@ class CallHandler:
             # Create interruption callback to track interrupted responses
             def on_interruption(content: str):
                 self.mark_response_interrupted(call_sid, content)
+
+            # Create LLM response capture callback.
+            # Called by LLMResponseCapture each time the LLM finishes generating a
+            # complete response.  Stored in pending_responses so _extract_transcript
+            # can recover responses the LLM context never committed (caller hung up
+            # mid-generation).
+            self.pending_responses[call_sid] = []
+
+            def on_llm_response(text: str, timestamp: datetime):
+                self.pending_responses[call_sid].append({
+                    "text": text,
+                    "timestamp": timestamp.isoformat(),
+                })
+                logger.debug(f"📝 Captured LLM response ({len(text)} chars) for call {call_sid}")
             
             pipeline, task, llm, context_aggregator, llm_context, tts_completion_watcher, first_speech_tracker, greeting_completion_tracker, idle_timeout_tracker = VoiceEngineFactory.create_pipeline(
                 config=config,
@@ -250,6 +265,7 @@ class CallHandler:
                 function_schemas=function_schemas if function_schemas else None,
                 function_handlers=function_handlers if function_handlers else None,
                 on_interruption=on_interruption,
+                on_llm_response=on_llm_response,
             )
 
             # Link the TTS completion watcher to the FunctionMapper (if one was
@@ -461,6 +477,8 @@ class CallHandler:
                 del self.call_start_times[call_sid]
             if call_sid in self.interrupted_responses:
                 del self.interrupted_responses[call_sid]
+            if call_sid in self.pending_responses:
+                del self.pending_responses[call_sid]
             if call_sid in self.call_mcp_clients:
                 del self.call_mcp_clients[call_sid]
                 logger.debug(f"Cleaned up MCP client reference for call {call_sid}")
@@ -924,6 +942,45 @@ You have access to the following Q&A knowledge base. Use this information to ans
             
             tools_used = sorted(tools_used_set)
             logger.debug(f"Extracted {len(transcript)} conversation messages, {len(tools_used)} unique tools: {tools_used}")
+
+            # --- Incomplete response recovery ---
+            # If the transcript ends with a user message the LLM context never has the
+            # AI's reply (caller hung up while the LLM was still generating).  Check the
+            # pending_responses buffer populated by LLMResponseCapture and, when the last
+            # captured response is not already represented in the context, append it so
+            # reviewers and ACW see the full exchange.
+            captured_turns = self.pending_responses.get(call_sid, [])
+            if (
+                transcript
+                and transcript[-1]["role"] == "user"
+                and captured_turns
+            ):
+                last_capture = captured_turns[-1]
+                captured_text = last_capture["text"]
+                captured_key = captured_text[:80].lower()
+
+                # Only append if the captured text is not already in the transcript.
+                # This prevents re-appending a response that WAS committed to context
+                # (i.e. the last caller turn ends the conversation but the AI's prior
+                # response is already present in the context messages).
+                already_committed = any(
+                    entry["role"] == "assistant"
+                    and entry.get("content", "")[:80].lower() == captured_key
+                    for entry in transcript
+                )
+
+                if not already_committed:
+                    transcript.append({
+                        "role": "assistant",
+                        "content": captured_text,
+                        "interrupted": False,
+                        "incomplete": True,
+                        "timestamp": last_capture.get("timestamp"),
+                    })
+                    logger.info(
+                        f"📋 Recovered incomplete AI response ({len(captured_text)} chars) "
+                        f"for call {call_sid} — caller hung up before LLM context committed"
+                    )
                 
         except Exception as e:
             logger.exception(f"Error extracting transcript: {e}")

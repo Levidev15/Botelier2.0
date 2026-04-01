@@ -11,6 +11,7 @@ interface TranscriptEntry {
   text?: string;
   timestamp?: string;
   interrupted?: boolean;
+  incomplete?: boolean;
 }
 
 interface CallLeg {
@@ -260,9 +261,9 @@ export default function TranscriptModal({ log, onClose, onLogUpdated, onViewEven
                     <div className="flex items-center gap-2 mb-1">
                       {entry.role === "assistant" ? (
                         <>
-                          <Bot className={`h-3 w-3 ${entry.interrupted ? 'text-red-400' : 'text-blue-400'}`} />
-                          <span className={`text-xs font-medium ${entry.interrupted ? 'text-red-400' : 'text-blue-400'}`}>
-                            {entry.interrupted ? '[Interrupted] Assistant' : 'Assistant'}
+                          <Bot className={`h-3 w-3 ${entry.interrupted ? 'text-red-400' : entry.incomplete ? 'text-amber-400' : 'text-blue-400'}`} />
+                          <span className={`text-xs font-medium ${entry.interrupted ? 'text-red-400' : entry.incomplete ? 'text-amber-400' : 'text-blue-400'}`}>
+                            {entry.interrupted ? '[Interrupted] Assistant' : entry.incomplete ? '[Not Delivered] Assistant' : 'Assistant'}
                           </span>
                         </>
                       ) : (
@@ -277,7 +278,7 @@ export default function TranscriptModal({ log, onClose, onLogUpdated, onViewEven
                         </span>
                       )}
                     </div>
-                    <p className={`text-sm leading-relaxed ${entry.interrupted ? 'italic' : ''}`}>
+                    <p className={`text-sm leading-relaxed ${entry.interrupted || entry.incomplete ? 'italic' : ''}`}>
                       {entry.content || entry.text}
                     </p>
                   </div>
