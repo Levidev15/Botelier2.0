@@ -27,6 +27,7 @@ const WIDGETS: WidgetDef[] = [
   { id: "avg_duration", label: "Avg AI Duration", defaultVisible: true },
   { id: "outbound_duration", label: "Avg Outbound Duration", defaultVisible: true },
   { id: "transfer_rate", label: "Transfer Rate", defaultVisible: true },
+  { id: "early_ended", label: "Early Ended", defaultVisible: true },
   { id: "avg_quality", label: "Avg Quality Score", defaultVisible: true },
   { id: "volume_chart", label: "Call Volume Over Time", defaultVisible: true },
   { id: "hour_chart", label: "Calls by Hour of Day", defaultVisible: true },
@@ -74,6 +75,8 @@ interface AnalyticsData {
     missed: number;
     failed: number;
     transferred: number;
+    ended_early_calls: number;
+    ended_early_rate: number;
     completion_rate: number;
     transfer_rate: number;
     avg_duration_seconds: number;
@@ -333,6 +336,15 @@ export default function CallAnalyticsPage() {
             sub={`${o?.transferred ?? 0} transferred`}
             color="text-blue-400"
             onClick={() => openDrilldown("transferred", "Transferred Calls")}
+          />
+        )}
+        {isVisible("early_ended") && (
+          <StatCard
+            label="Early Ended"
+            value={o?.ended_early_calls ?? 0}
+            sub={`${o?.ended_early_rate ?? 0}% of total`}
+            color="text-orange-400"
+            onClick={() => openDrilldown("ended_early", "Early Ended Calls")}
           />
         )}
         {isVisible("avg_quality") && (

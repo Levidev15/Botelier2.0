@@ -179,6 +179,11 @@ _ADDITIVE_MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS ix_integration_call_logs_account_id ON integration_call_logs(account_id)",
     "CREATE INDEX IF NOT EXISTS ix_integration_call_logs_integration_id ON integration_call_logs(integration_id)",
     "CREATE INDEX IF NOT EXISTS ix_integration_call_logs_called_at ON integration_call_logs(account_id, called_at DESC)",
+
+    # ended_early — boolean flag for calls that finished before EARLY_END_THRESHOLD seconds
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS ended_early BOOLEAN NOT NULL DEFAULT FALSE",
+    # Backfill: mark completed/no-answer/busy/canceled calls with duration < 30s as ended early
+    "UPDATE call_logs SET ended_early = TRUE WHERE ended_early = FALSE AND duration_seconds IS NOT NULL AND duration_seconds < 30 AND status IN ('completed', 'no-answer', 'no_answer', 'busy', 'canceled')",
 ]
 
 
