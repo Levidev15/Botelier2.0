@@ -23,7 +23,17 @@ from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.transcriptions.language import Language
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
-from pipecat.frames.frames import Frame, BotStoppedSpeakingFrame, InterruptionFrame, TextFrame, TTSSpeakFrame, TranscriptionFrame
+from pipecat.frames.frames import (
+    Frame,
+    BotStoppedSpeakingFrame,
+    InterruptionFrame,
+    LLMFullResponseEndFrame,
+    LLMFullResponseStartFrame,
+    LLMTextFrame,
+    TextFrame,
+    TTSSpeakFrame,
+    TranscriptionFrame,
+)
 from pipecat.processors.user_idle_processor import UserIdleProcessor
 from pipecat.processors.filters.stt_mute_filter import STTMuteFilter, STTMuteConfig, STTMuteStrategy
 
@@ -67,6 +77,49 @@ class InterruptionTracker(FrameProcessor):
             self._current_text = ""  # Reset after interruption
         
         # CRITICAL: Always push frames through to next processor
+        await self.push_frame(frame, direction)
+
+
+class LLMResponseCapture(FrameProcessor):
+    """
+    Pure-observer processor that captures each complete LLM response.
+
+    Placed immediately after the LLM in the pipeline so it sees LLM output
+    frames before they reach the TTS service.  ALL frames are passed through
+    unmodified — this processor never drops or delays any frame.
+
+    When a complete response is assembled (LLMFullResponseEndFrame received),
+    ``on_llm_response(text, timestamp)`` is called.  The handler stores the
+    response in a per-call buffer that is consulted at transcript-save time to
+    recover responses that the LLM context never committed (caller hung up
+    mid-generation).
+    """
+
+    def __init__(self, on_llm_response=None, **kwargs):
+        super().__init__(**kwargs)
+        self._buffer: str = ""
+        self._on_llm_response = on_llm_response
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, LLMFullResponseStartFrame):
+            self._buffer = ""
+
+        elif isinstance(frame, LLMTextFrame):
+            if frame.text:
+                self._buffer += frame.text
+
+        elif isinstance(frame, LLMFullResponseEndFrame):
+            text = self._buffer.strip()
+            self._buffer = ""
+            if text and self._on_llm_response:
+                try:
+                    from datetime import datetime as _dt
+                    self._on_llm_response(text, _dt.utcnow())
+                except Exception:
+                    pass
+
         await self.push_frame(frame, direction)
 
 
@@ -506,6 +559,7 @@ class VoiceEngineFactory:
         function_schemas: Optional[list] = None,
         function_handlers: Optional[Dict[str, Any]] = None,
         on_interruption: Optional[Callable[[str], None]] = None,
+        on_llm_response: Optional[Callable] = None,
     ) -> tuple:
         """
         Create complete voice pipeline from agent configuration.
@@ -520,6 +574,9 @@ class VoiceEngineFactory:
             function_schemas: Optional list of FunctionSchema objects for function calling
             function_handlers: Optional dict mapping function names to async handlers
             on_interruption: Optional callback called when user interrupts (receives interrupted text)
+            on_llm_response: Optional callback(text, timestamp) called when each complete LLM
+                response is assembled.  Used to recover responses from calls that drop mid-
+                generation before the LLM context commits them.
 
         Returns:
             9-tuple: (pipeline, task, llm, context_aggregator, context,
@@ -536,6 +593,10 @@ class VoiceEngineFactory:
         stt = VoiceEngineFactory.create_stt_service(config, api_keys)
         llm = VoiceEngineFactory.create_llm_service(config, api_keys)
         tts = VoiceEngineFactory.create_tts_service(config, api_keys)
+
+        # Capture each complete LLM response for transcript recovery.
+        # Pure observer — passes all frames through unchanged.
+        llm_response_capture = LLMResponseCapture(on_llm_response=on_llm_response)
 
         # Track text frames/interruptions before TTS
         interruption_tracker = InterruptionTracker(on_interruption=on_interruption)
@@ -602,6 +663,7 @@ class VoiceEngineFactory:
                 idle_timeout_tracker.processor, # Logs idle_timeout when caller goes silent too long
                 context_aggregator.user(),
                 llm,
+                llm_response_capture,          # Captures complete LLM responses for transcript recovery
                 interruption_tracker,          # Observes text frames + InterruptionFrame before TTS
                 tts,
                 greeting_completion_tracker,   # Logs greeting_completed on first BotStoppedSpeakingFrame
