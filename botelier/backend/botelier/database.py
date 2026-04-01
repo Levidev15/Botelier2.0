@@ -182,8 +182,6 @@ _ADDITIVE_MIGRATIONS = [
 
     # ended_early — boolean flag for calls that finished before EARLY_END_THRESHOLD seconds
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS ended_early BOOLEAN NOT NULL DEFAULT FALSE",
-    # Backfill: mark completed/no-answer/busy/canceled calls with duration < 30s as ended early
-    "UPDATE call_logs SET ended_early = TRUE WHERE ended_early = FALSE AND duration_seconds IS NOT NULL AND duration_seconds < 30 AND status IN ('completed', 'no-answer', 'no_answer', 'busy', 'canceled')",
     # call_settings — per-assistant call control thresholds (early-end, max duration, no-response timeout)
     "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS call_settings JSONB NOT NULL DEFAULT '{}'",
 
@@ -192,9 +190,19 @@ _ADDITIVE_MIGRATIONS = [
     # of Twilio webhook timing. Used to classify calls as ended_early vs completed.
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS ai_greeting_completed BOOLEAN NOT NULL DEFAULT FALSE",
 
-    # Migrate existing ended_early calls: if ended_early=TRUE and status is a Twilio-reported
-    # terminal status, reclassify to ended_early so the status column is the single source of truth.
-    "UPDATE call_logs SET status = 'ended_early' WHERE ended_early = TRUE AND status IN ('completed', 'no_answer', 'no-answer', 'busy', 'canceled')",
+    # Backfill: for old calls (before ai_greeting_completed tracking), mark short completed calls
+    # as ended_early IF the greeting was not confirmed to have played.
+    # GUARD: ai_greeting_completed = FALSE ensures we never touch new calls where greeting played.
+    "UPDATE call_logs SET ended_early = TRUE WHERE ended_early = FALSE AND ai_greeting_completed = FALSE AND duration_seconds IS NOT NULL AND duration_seconds < 30 AND status IN ('completed', 'no-answer', 'no_answer', 'busy', 'canceled')",
+
+    # Migrate existing ended_early calls: reclassify status column to 'ended_early' as the
+    # single source of truth. GUARD: ai_greeting_completed = FALSE ensures we never reclassify
+    # calls where the greeting actually played (even if ended_early boolean was set incorrectly).
+    "UPDATE call_logs SET status = 'ended_early' WHERE ended_early = TRUE AND ai_greeting_completed = FALSE AND status IN ('completed', 'no_answer', 'no-answer', 'busy', 'canceled')",
+
+    # REPAIR: Restore calls that were wrongly classified as ended_early by the old duration-threshold
+    # migration. Any call where the AI greeting completed must be 'completed', not 'ended_early'.
+    "UPDATE call_logs SET status = 'completed', ended_early = FALSE WHERE ai_greeting_completed = TRUE AND status = 'ended_early'",
 ]
 
 
