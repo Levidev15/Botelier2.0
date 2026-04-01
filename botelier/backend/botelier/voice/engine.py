@@ -93,11 +93,15 @@ class LLMResponseCapture(FrameProcessor):
     response in a per-call buffer that is consulted at transcript-save time to
     recover responses that the LLM context never committed (caller hung up
     mid-generation).
+
+    Uses a TextFrame check (superclass of LLMTextFrame) gated by _in_response so
+    it works across all LLM providers that may emit generic TextFrame tokens.
     """
 
     def __init__(self, on_llm_response=None, **kwargs):
         super().__init__(**kwargs)
         self._buffer: str = ""
+        self._in_response: bool = False
         self._on_llm_response = on_llm_response
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -105,12 +109,14 @@ class LLMResponseCapture(FrameProcessor):
 
         if isinstance(frame, LLMFullResponseStartFrame):
             self._buffer = ""
+            self._in_response = True
 
-        elif isinstance(frame, LLMTextFrame):
+        elif isinstance(frame, TextFrame) and self._in_response:
             if frame.text:
                 self._buffer += frame.text
 
         elif isinstance(frame, LLMFullResponseEndFrame):
+            self._in_response = False
             text = self._buffer.strip()
             self._buffer = ""
             if text and self._on_llm_response:
@@ -118,7 +124,39 @@ class LLMResponseCapture(FrameProcessor):
                     from datetime import datetime as _dt
                     self._on_llm_response(text, _dt.utcnow())
                 except Exception:
-                    pass
+                    logger.exception("LLMResponseCapture: error in on_llm_response callback")
+
+        await self.push_frame(frame, direction)
+
+
+class UserTurnCapture(FrameProcessor):
+    """
+    Pure-observer processor that captures each finalized user utterance with a
+    wall-clock timestamp.
+
+    Placed immediately after the STT mute filter and before the LLM context
+    aggregator so it sees only the TranscriptionFrames that will be committed
+    to the LLM context (i.e. post-muting).  ALL frames pass through unmodified.
+
+    Calls ``on_user_turn(text, timestamp)`` for each non-empty transcription so
+    that ``_extract_transcript`` can annotate user messages with the actual time
+    they were finalized rather than the generic save-time stamp.
+    """
+
+    def __init__(self, on_user_turn=None, **kwargs):
+        super().__init__(**kwargs)
+        self._on_user_turn = on_user_turn
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, TranscriptionFrame) and frame.text and frame.text.strip():
+            if self._on_user_turn:
+                try:
+                    from datetime import datetime as _dt
+                    self._on_user_turn(frame.text.strip(), _dt.utcnow())
+                except Exception:
+                    logger.exception("UserTurnCapture: error in on_user_turn callback")
 
         await self.push_frame(frame, direction)
 
@@ -560,6 +598,7 @@ class VoiceEngineFactory:
         function_handlers: Optional[Dict[str, Any]] = None,
         on_interruption: Optional[Callable[[str], None]] = None,
         on_llm_response: Optional[Callable] = None,
+        on_user_turn: Optional[Callable] = None,
     ) -> tuple:
         """
         Create complete voice pipeline from agent configuration.
@@ -577,6 +616,8 @@ class VoiceEngineFactory:
             on_llm_response: Optional callback(text, timestamp) called when each complete LLM
                 response is assembled.  Used to recover responses from calls that drop mid-
                 generation before the LLM context commits them.
+            on_user_turn: Optional callback(text, timestamp) called for each finalized user
+                utterance.  Used to record per-turn timestamps for the call transcript.
 
         Returns:
             9-tuple: (pipeline, task, llm, context_aggregator, context,
@@ -597,6 +638,11 @@ class VoiceEngineFactory:
         # Capture each complete LLM response for transcript recovery.
         # Pure observer — passes all frames through unchanged.
         llm_response_capture = LLMResponseCapture(on_llm_response=on_llm_response)
+
+        # Capture finalized user utterances for per-turn timestamp recording.
+        # Placed after the STT mute filter so only post-muting transcriptions
+        # (i.e. those that reach the LLM) are captured.  Pure observer.
+        user_turn_capture = UserTurnCapture(on_user_turn=on_user_turn)
 
         # Track text frames/interruptions before TTS
         interruption_tracker = InterruptionTracker(on_interruption=on_interruption)
@@ -659,6 +705,7 @@ class VoiceEngineFactory:
                 transport.input(),
                 stt,
                 stt_mute_filter,               # Mutes STT during greeting + function calls (Pipecat native)
+                user_turn_capture,             # Records per-turn user timestamps for transcript (pure observer)
                 first_speech_tracker,          # Detects caller's first utterance (non-blocking event log)
                 idle_timeout_tracker.processor, # Logs idle_timeout when caller goes silent too long
                 context_aggregator.user(),
