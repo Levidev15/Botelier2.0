@@ -23,8 +23,6 @@ from ..services.acw_service import run_acw_background
 
 router = APIRouter(prefix="/api/calls", tags=["Calls"])
 
-_DEFAULT_EARLY_END_THRESHOLD = 30  # seconds — fallback when assistant has no call_settings
-
 
 def _get_call_handler():
     """Lazy import to avoid circular dependencies"""
@@ -292,29 +290,15 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                     status=call_status,
                     duration_seconds=duration_seconds,
                 )
-                # Classify as ended_early if call was too short.
-                # Use the per-assistant threshold from call_settings when available,
-                # falling back to the module-level default (30 s).
-                _EARLY_FINAL = {"completed", "no-answer", "busy", "canceled"}
-                if call_status in _EARLY_FINAL and duration_seconds is not None:
-                    _early_log = call_logger.get_call_log(call_sid)
-                    if _early_log and not _early_log.ended_early:
-                        # Resolve threshold: assistant's call_settings > module default
-                        _threshold = _DEFAULT_EARLY_END_THRESHOLD
-                        if _early_log.assistant_id:
-                            from ..models.assistant import Assistant as _Assistant
-                            _asst = db.query(_Assistant).filter(_Assistant.id == _early_log.assistant_id).first()
-                            if _asst and _asst.call_settings:
-                                _raw = _asst.call_settings.get(
-                                    "early_end_threshold_seconds", _DEFAULT_EARLY_END_THRESHOLD
-                                )
-                                try:
-                                    _threshold = int(_raw)
-                                except (TypeError, ValueError):
-                                    _threshold = _DEFAULT_EARLY_END_THRESHOLD
-                        if duration_seconds < _threshold:
-                            _early_log.ended_early = True
-                            db.commit()
+                # Classify completed calls as ended_early when the AI greeting never played.
+                # ai_greeting_completed is set directly from the pipeline the moment the
+                # greeting TTS finishes — it is reliable regardless of Twilio webhook timing.
+                if call_status == "completed":
+                    _classify_log = call_logger.get_call_log(call_sid)
+                    if _classify_log and not _classify_log.ai_greeting_completed:
+                        _classify_log.status = CallStatus.ENDED_EARLY.value
+                        _classify_log.ended_early = True
+                        db.commit()
 
             # Log call_answered and call_ended events.
             # Both paths use _event_exists() to dedup:

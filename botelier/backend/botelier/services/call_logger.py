@@ -31,7 +31,29 @@ class CallLogger:
     def get_call_log(self, call_sid: str) -> Optional[CallLog]:
         """Get a call log by call SID."""
         return self.db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
-    
+
+    def mark_greeting_completed(self, call_sid: str) -> bool:
+        """
+        Mark ai_greeting_completed=True on the call log.
+
+        Called when the greeting TTS finishes playing (GreetingCompletionTracker).
+        This is the reliable source of truth for whether the AI actually spoke to
+        the caller — used later to classify calls as completed vs ended_early.
+        """
+        try:
+            call_log = self.get_call_log(call_sid)
+            if not call_log:
+                logger.warning(f"mark_greeting_completed: call log not found for {call_sid}")
+                return False
+            call_log.ai_greeting_completed = True
+            self.db.commit()
+            logger.info(f"ai_greeting_completed=True for {call_sid}")
+            return True
+        except Exception as e:
+            logger.exception(f"Error marking greeting completed: {e}")
+            self.db.rollback()
+            return False
+
     def update_status(
         self,
         call_sid: str,
@@ -60,6 +82,7 @@ class CallLogger:
                 "ringing": CallStatus.RINGING.value,
                 "in-progress": CallStatus.IN_PROGRESS.value,
                 "completed": CallStatus.COMPLETED.value,
+                "ended_early": CallStatus.ENDED_EARLY.value,
                 "busy": CallStatus.BUSY.value,
                 "failed": CallStatus.FAILED.value,
                 "no-answer": CallStatus.NO_ANSWER.value,
@@ -165,8 +188,19 @@ class CallLogger:
                 logger.warning(f"Call log not found for SID: {call_sid}")
                 return False
             
-            if call_log.status != CallStatus.COMPLETED.value:
-                call_log.status = CallStatus.COMPLETED.value
+            # Determine terminal status: completed if AI greeted, ended_early otherwise.
+            # Only override if the call is not already in a terminal state.
+            _non_terminal = {CallStatus.INITIATED.value, CallStatus.RINGING.value, CallStatus.IN_PROGRESS.value}
+            if call_log.status in _non_terminal:
+                if call_log.ai_greeting_completed:
+                    call_log.status = CallStatus.COMPLETED.value
+                else:
+                    call_log.status = CallStatus.ENDED_EARLY.value
+                    call_log.ended_early = True
+            elif call_log.status == CallStatus.COMPLETED.value and not call_log.ai_greeting_completed:
+                # Reclassify: Twilio said completed but greeting never played.
+                call_log.status = CallStatus.ENDED_EARLY.value
+                call_log.ended_early = True
             
             if not call_log.ended_at:
                 call_log.ended_at = datetime.utcnow()

@@ -253,10 +253,15 @@ class GreetingCompletionTracker(FrameProcessor):
     def __init__(self, event_queue=None, **kwargs):
         super().__init__(**kwargs)
         self._event_queue = event_queue
+        self._greeting_callback = None
         self._logged = False
 
     def set_event_queue(self, event_queue) -> None:
         self._event_queue = event_queue
+
+    def set_greeting_callback(self, callback) -> None:
+        """Set an async callback invoked once when the greeting finishes playing."""
+        self._greeting_callback = callback
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -269,6 +274,11 @@ class GreetingCompletionTracker(FrameProcessor):
                     event_source="pipecat",
                     severity="info",
                 )
+            if self._greeting_callback is not None:
+                try:
+                    await self._greeting_callback()
+                except Exception as _cb_err:
+                    logger.error(f"greeting_callback error: {_cb_err}")
             logger.debug("greeting_completed logged")
 
         await self.push_frame(frame, direction)

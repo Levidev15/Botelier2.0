@@ -27,7 +27,8 @@ const WIDGETS: WidgetDef[] = [
   { id: "avg_duration", label: "Avg AI Duration", defaultVisible: true },
   { id: "outbound_duration", label: "Avg Outbound Duration", defaultVisible: true },
   { id: "transfer_rate", label: "Transfer Rate", defaultVisible: true },
-  { id: "early_ended", label: "Early Ended", defaultVisible: true },
+  { id: "ai_handled", label: "AI Handled", defaultVisible: true },
+  { id: "early_ended", label: "Dropped Before AI", defaultVisible: true },
   { id: "avg_quality", label: "Avg Quality Score", defaultVisible: true },
   { id: "volume_chart", label: "Call Volume Over Time", defaultVisible: true },
   { id: "hour_chart", label: "Calls by Hour of Day", defaultVisible: true },
@@ -41,6 +42,7 @@ const WIDGETS: WidgetDef[] = [
 const CHART_COLORS = ["#3b82f6", "#8b5cf6", "#22c55e", "#f59e0b", "#ef4444", "#06b6d4", "#ec4899", "#84cc16"];
 const STATUS_COLORS: Record<string, string> = {
   completed: "#22c55e",
+  ended_early: "#f97316",
   in_progress: "#3b82f6",
   failed: "#ef4444",
   no_answer: "#f59e0b",
@@ -72,6 +74,8 @@ interface AnalyticsData {
   overview: {
     total_calls: number;
     completed: number;
+    ai_handled_calls: number;
+    ai_handled_rate: number;
     missed: number;
     failed: number;
     transferred: number;
@@ -338,13 +342,22 @@ export default function CallAnalyticsPage() {
             onClick={() => openDrilldown("transferred", "Transferred Calls")}
           />
         )}
+        {isVisible("ai_handled") && (
+          <StatCard
+            label="AI Handled"
+            value={o?.ai_handled_calls ?? 0}
+            sub={`${o?.ai_handled_rate ?? 0}% of total`}
+            color="text-green-400"
+            onClick={() => openDrilldown("completed", "AI Handled Calls")}
+          />
+        )}
         {isVisible("early_ended") && (
           <StatCard
-            label="Early Ended"
+            label="Dropped Before AI"
             value={o?.ended_early_calls ?? 0}
             sub={`${o?.ended_early_rate ?? 0}% of total`}
             color="text-orange-400"
-            onClick={() => openDrilldown("ended_early", "Early Ended Calls")}
+            onClick={() => openDrilldown("ended_early", "Dropped Before AI")}
           />
         )}
         {isVisible("avg_quality") && (

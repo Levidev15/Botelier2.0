@@ -22,6 +22,7 @@ class CallStatus(str, Enum):
     RINGING = "ringing"
     IN_PROGRESS = "in_progress"
     COMPLETED = "completed"
+    ENDED_EARLY = "ended_early"
     FAILED = "failed"
     BUSY = "busy"
     NO_ANSWER = "no_answer"
@@ -88,6 +89,8 @@ class CallLog(Base):
     duration_seconds = Column(Integer, default=0)
 
     ended_early = Column(Boolean, default=False, nullable=False)
+
+    ai_greeting_completed = Column(Boolean, default=False, nullable=False)
     
     transcript = Column(JSONB, nullable=True)
     
@@ -141,6 +144,7 @@ class CallLog(Base):
             "ended_at": self.ended_at.isoformat() + "Z" if self.ended_at else None,
             "duration_seconds": self.duration_seconds,
             "ended_early": self.ended_early,
+            "ai_greeting_completed": self.ai_greeting_completed,
             "has_transfer": self.has_transfer,
             "flow_id": str(self.flow_id) if self.flow_id else None,
             "flow_name": self.flow_name,

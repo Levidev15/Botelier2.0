@@ -418,14 +418,29 @@ class CallHandler:
 
                 # Wire event_queue to the FirstUserSpeechTracker in the pipeline
                 first_speech_tracker.set_event_queue(event_queue)
-                greeting_completion_tracker.set_event_queue(event_queue)
-                idle_timeout_tracker.set_event_queue(event_queue)
-
                 # Wire event_queue to the GreetingCompletionTracker (first BotStoppedSpeakingFrame)
                 greeting_completion_tracker.set_event_queue(event_queue)
-
                 # Wire event_queue to the IdleTimeoutTracker (fires on caller silence)
                 idle_timeout_tracker.set_event_queue(event_queue)
+
+                # Wire a DB callback to GreetingCompletionTracker so ai_greeting_completed
+                # is set as soon as the greeting TTS finishes — reliably from our side,
+                # independent of Twilio status webhook timing.
+                _greeting_call_sid = call_sid  # capture for closure
+                async def _on_greeting_completed():
+                    _gdb = SessionLocal()
+                    try:
+                        from ..models.call_log import CallLog as _CallLog
+                        _glog = _gdb.query(_CallLog).filter(_CallLog.call_sid == _greeting_call_sid).first()
+                        if _glog:
+                            _glog.ai_greeting_completed = True
+                            _gdb.commit()
+                            logger.info(f"✅ ai_greeting_completed=True for {_greeting_call_sid}")
+                    except Exception as _ge:
+                        logger.error(f"Failed to set ai_greeting_completed: {_ge}")
+                    finally:
+                        _gdb.close()
+                greeting_completion_tracker.set_greeting_callback(_on_greeting_completed)
 
             # 8. Queue greeting message
             if call_sid in self.call_event_queues:
