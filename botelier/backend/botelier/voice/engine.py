@@ -40,10 +40,7 @@ from pipecat.processors.filters.stt_mute_filter import STTMuteFilter, STTMuteCon
 from .agent import VoiceAgentConfig
 from ..config.providers import is_flux_model
 
-try:
-    from deepgram import LiveOptions
-except ImportError:
-    LiveOptions = None
+from pipecat.services.deepgram.stt import LiveOptions
 
 
 class InterruptionTracker(FrameProcessor):
@@ -443,44 +440,29 @@ class VoiceEngineFactory:
             
             # Check if using Flux model (advanced turn detection)
             if is_flux_model(model):
-                if hasattr(DeepgramFluxSTTService, "Settings"):
-                    return DeepgramFluxSTTService(
-                        api_key=api_keys.get("deepgram_api_key"),
-                        settings=DeepgramFluxSTTService.Settings(
-                            model=model,
-                            eager_eot_threshold=config.stt_config.get("eager_eot_threshold"),
-                            eot_threshold=config.stt_config.get("eot_threshold", 0.7),
-                            eot_timeout_ms=config.stt_config.get("eot_timeout_ms", 5000),
-                            keyterm=config.stt_config.get("keyterm", []),
-                        ),
-                    )
-                # Fallback for older Pipecat versions without Settings API
-                params = DeepgramFluxSTTService.InputParams(
-                    eager_eot_threshold=config.stt_config.get("eager_eot_threshold"),
-                    eot_threshold=config.stt_config.get("eot_threshold", 0.7),
-                    eot_timeout_ms=config.stt_config.get("eot_timeout_ms", 5000),
-                    keyterm=config.stt_config.get("keyterm", []),
-                )
                 return DeepgramFluxSTTService(
                     api_key=api_keys.get("deepgram_api_key"),
-                    model=model,
-                    params=params,
+                    settings=DeepgramFluxSTTService.Settings(
+                        model=model,
+                        eager_eot_threshold=config.stt_config.get("eager_eot_threshold"),
+                        eot_threshold=config.stt_config.get("eot_threshold", 0.7),
+                        eot_timeout_ms=config.stt_config.get("eot_timeout_ms", 5000),
+                        keyterm=config.stt_config.get("keyterm", []),
+                    ),
                 )
             else:
-                # Use standard Deepgram with LiveOptions
-                live_options = LiveOptions(
-                    model=model,
-                    language=config.stt_language,
-                    punctuate=config.stt_config.get("punctuate", True),
-                    smart_format=config.stt_config.get("smart_format", True),
-                    profanity_filter=config.stt_config.get("profanity_filter", True),
-                    vad_events=config.stt_config.get("vad_events", False),
-                    interim_results=True,
-                    endpointing=config.stt_config.get("endpointing", 300),
-                )
+                # Standard Deepgram using the Settings API (pipecat 0.0.105+)
                 return DeepgramSTTService(
                     api_key=api_keys.get("deepgram_api_key"),
-                    live_options=live_options,
+                    settings=DeepgramSTTService.Settings(
+                        model=model,
+                        language=config.stt_language,
+                        punctuate=config.stt_config.get("punctuate", True),
+                        smart_format=config.stt_config.get("smart_format", True),
+                        profanity_filter=config.stt_config.get("profanity_filter", True),
+                        interim_results=True,
+                        endpointing=config.stt_config.get("endpointing", 300),
+                    ),
                 )
         elif provider == "openai_whisper":
             from pipecat.services.openai.stt import OpenAISTTService
