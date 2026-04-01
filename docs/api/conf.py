@@ -48,8 +48,6 @@ autodoc_default_options = {
 # Mock imports for optional dependencies
 autodoc_mock_imports = [
     # Krisp - has build issues on some platforms
-    "pipecat_ai_krisp",
-    "krisp",
     "krisp_audio",
     # System-specific GUI libraries
     "_tkinter",
@@ -61,9 +59,6 @@ autodoc_mock_imports = [
     # OpenCV - sometimes has import issues during docs build
     "cv2",
     # Heavy ML packages excluded from ReadTheDocs
-    # ultravox dependencies
-    "vllm",
-    "vllm.engine.arg_utils",
     # local-smart-turn dependencies
     "coremltools",
     "coremltools.models",
@@ -94,6 +89,24 @@ autodoc_mock_imports = [
     # MLX dependencies (Apple Silicon specific)
     "mlx",
     "mlx_whisper",  # Note: might need underscore format too
+    # Pydantic v2 compatibility issues in third-party SDKs
+    "hume",
+    "hume.tts",
+    "hume.tts.types",
+    "cartesia",
+    "camb",
+    "sarvamai",
+    "openai.types.beta.realtime",
+    "langchain_core",
+    "langchain_core.messages",
+    # FastAPI - Pydantic v2 compatibility issues during Sphinx autodoc
+    "fastapi",
+    "fastapi.applications",
+    "fastapi.routing",
+    "fastapi.params",
+    "fastapi.middleware",
+    "fastapi.responses",
+    "uvicorn",
 ]
 
 # HTML output settings
@@ -119,7 +132,6 @@ def import_core_modules():
         "pipecat.observers",
         "pipecat.runner",
         "pipecat.serializers",
-        "pipecat.sync",
         "pipecat.transcriptions",
         "pipecat.utils",
     ]
