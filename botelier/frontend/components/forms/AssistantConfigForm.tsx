@@ -87,8 +87,8 @@ const TABS: Tab[] = [
   { id: "transcriber", label: "Transcriber", icon: <Mic className="h-4 w-4" /> },
   { id: "vad", label: "Voice Activity Detection", icon: <Activity className="h-4 w-4" /> },
   { id: "post-call-qa", label: "Post Call QA", icon: <ClipboardCheck className="h-4 w-4" /> },
-  { id: "sms", label: "SMS", icon: <Smartphone className="h-4 w-4" /> },
   { id: "call-settings", label: "Call Settings", icon: <PhoneCall className="h-4 w-4" /> },
+  { id: "sms", label: "SMS", icon: <Smartphone className="h-4 w-4" /> },
 ];
 
 export default function AssistantConfigForm({ mode, assistantId }: AssistantConfigFormProps) {
