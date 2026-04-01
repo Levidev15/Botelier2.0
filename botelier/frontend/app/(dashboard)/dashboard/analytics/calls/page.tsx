@@ -23,12 +23,12 @@ import TimezonePicker, { loadTimezone, saveTimezone } from "@/components/analyti
 
 const WIDGETS: WidgetDef[] = [
   { id: "total_calls", label: "Total Calls", defaultVisible: true },
-  { id: "completion_rate", label: "Completion Rate", defaultVisible: true },
-  { id: "avg_duration", label: "Avg AI Duration", defaultVisible: true },
-  { id: "outbound_duration", label: "Avg Outbound Duration", defaultVisible: true },
-  { id: "transfer_rate", label: "Transfer Rate", defaultVisible: true },
   { id: "ai_handled", label: "AI Handled", defaultVisible: true },
   { id: "early_ended", label: "Dropped Before AI", defaultVisible: true },
+  { id: "completion_rate", label: "Completion Rate", defaultVisible: true },
+  { id: "transfer_rate", label: "Transfer Rate", defaultVisible: true },
+  { id: "avg_duration", label: "Avg AI Duration", defaultVisible: true },
+  { id: "outbound_duration", label: "Avg Outbound Duration", defaultVisible: true },
   { id: "avg_quality", label: "Avg Quality Score", defaultVisible: true },
   { id: "volume_chart", label: "Call Volume Over Time", defaultVisible: true },
   { id: "hour_chart", label: "Calls by Hour of Day", defaultVisible: true },
@@ -307,6 +307,24 @@ export default function CallAnalyticsPage() {
             onClick={() => openDrilldown("all", "All Calls")}
           />
         )}
+        {isVisible("ai_handled") && (
+          <StatCard
+            label="AI Handled"
+            value={o?.ai_handled_calls ?? 0}
+            sub={`${o?.ai_handled_rate ?? 0}% of total`}
+            color="text-green-400"
+            onClick={() => openDrilldown("completed", "AI Handled Calls")}
+          />
+        )}
+        {isVisible("early_ended") && (
+          <StatCard
+            label="Dropped Before AI"
+            value={o?.ended_early_calls ?? 0}
+            sub={`${o?.ended_early_rate ?? 0}% of total`}
+            color="text-orange-400"
+            onClick={() => openDrilldown("ended_early", "Dropped Before AI")}
+          />
+        )}
         {isVisible("completion_rate") && (
           <StatCard
             label="Completion Rate"
@@ -314,6 +332,15 @@ export default function CallAnalyticsPage() {
             sub={`${o?.missed ?? 0} missed`}
             color="text-green-400"
             onClick={() => openDrilldown("completed", "Completed Calls")}
+          />
+        )}
+        {isVisible("transfer_rate") && (
+          <StatCard
+            label="Transfer Rate"
+            value={`${o?.transfer_rate ?? 0}%`}
+            sub={`${o?.transferred ?? 0} transferred`}
+            color="text-blue-400"
+            onClick={() => openDrilldown("transferred", "Transferred Calls")}
           />
         )}
         {isVisible("avg_duration") && (
@@ -331,33 +358,6 @@ export default function CallAnalyticsPage() {
             sub={`${fmtDuration(o?.total_outbound_duration_seconds ?? 0)} total`}
             color="text-amber-400"
             onClick={() => openDrilldown("transferred", "Transferred Calls")}
-          />
-        )}
-        {isVisible("transfer_rate") && (
-          <StatCard
-            label="Transfer Rate"
-            value={`${o?.transfer_rate ?? 0}%`}
-            sub={`${o?.transferred ?? 0} transferred`}
-            color="text-blue-400"
-            onClick={() => openDrilldown("transferred", "Transferred Calls")}
-          />
-        )}
-        {isVisible("ai_handled") && (
-          <StatCard
-            label="AI Handled"
-            value={o?.ai_handled_calls ?? 0}
-            sub={`${o?.ai_handled_rate ?? 0}% of total`}
-            color="text-green-400"
-            onClick={() => openDrilldown("completed", "AI Handled Calls")}
-          />
-        )}
-        {isVisible("early_ended") && (
-          <StatCard
-            label="Dropped Before AI"
-            value={o?.ended_early_calls ?? 0}
-            sub={`${o?.ended_early_rate ?? 0}% of total`}
-            color="text-orange-400"
-            onClick={() => openDrilldown("ended_early", "Dropped Before AI")}
           />
         )}
         {isVisible("avg_quality") && (
