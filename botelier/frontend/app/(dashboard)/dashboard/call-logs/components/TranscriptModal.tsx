@@ -263,7 +263,7 @@ export default function TranscriptModal({ log, onClose, onLogUpdated, onViewEven
                         <>
                           <Bot className={`h-3 w-3 ${entry.interrupted ? 'text-red-400' : entry.incomplete ? 'text-amber-400' : 'text-blue-400'}`} />
                           <span className={`text-xs font-medium ${entry.interrupted ? 'text-red-400' : entry.incomplete ? 'text-amber-400' : 'text-blue-400'}`}>
-                            {entry.interrupted ? '[Interrupted] Assistant' : entry.incomplete ? '[Not Delivered] Assistant' : 'Assistant'}
+                            {entry.interrupted ? '[Interrupted] Assistant' : entry.incomplete ? '[Incomplete] Assistant' : 'Assistant'}
                           </span>
                         </>
                       ) : (

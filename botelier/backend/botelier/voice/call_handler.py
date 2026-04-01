@@ -65,7 +65,8 @@ class CallHandler:
         self.call_contexts: Dict[str, Any] = {}
         self.call_start_times: Dict[str, datetime] = {}
         self.interrupted_responses: Dict[str, set] = {}  # call_sid -> set of interrupted message contents
-        self.pending_responses: Dict[str, List[dict]] = {}  # call_sid -> list of {text, timestamp} per LLM turn
+        self.pending_responses: Dict[str, List[dict]] = {}  # call_sid -> list of {text, timestamp} per LLM turn (ALL turns, for timestamp lookup + incomplete recovery)
+        self.user_turn_timestamps: Dict[str, List[dict]] = {}  # call_sid -> list of {text, timestamp} per user utterance
         self.call_mcp_clients: Dict[str, PipecatMCPClient] = {}  # call_sid -> Pipecat MCPClient for MCP tool execution
         self.call_event_queues: Dict[str, CallEventQueue] = {}  # call_sid -> CallEventQueue
     
@@ -247,8 +248,9 @@ class CallHandler:
             # Create LLM response capture callback.
             # Called by LLMResponseCapture each time the LLM finishes generating a
             # complete response.  Stored in pending_responses so _extract_transcript
-            # can recover responses the LLM context never committed (caller hung up
-            # mid-generation).
+            # can (a) annotate committed assistant messages with their generation
+            # timestamps, and (b) recover responses the LLM context never committed
+            # (caller hung up mid-generation).
             self.pending_responses[call_sid] = []
 
             def on_llm_response(text: str, timestamp: datetime):
@@ -257,6 +259,18 @@ class CallHandler:
                     "timestamp": timestamp.isoformat(),
                 })
                 logger.debug(f"📝 Captured LLM response ({len(text)} chars) for call {call_sid}")
+
+            # Create user turn capture callback.
+            # Called by UserTurnCapture for each finalized user utterance, giving us
+            # the wall-clock time when the STT finalized each turn.
+            self.user_turn_timestamps[call_sid] = []
+
+            def on_user_turn(text: str, timestamp: datetime):
+                self.user_turn_timestamps[call_sid].append({
+                    "text": text,
+                    "timestamp": timestamp.isoformat(),
+                })
+                logger.debug(f"🗣️  Captured user turn ({len(text)} chars) for call {call_sid}")
             
             pipeline, task, llm, context_aggregator, llm_context, tts_completion_watcher, first_speech_tracker, greeting_completion_tracker, idle_timeout_tracker = VoiceEngineFactory.create_pipeline(
                 config=config,
@@ -266,6 +280,7 @@ class CallHandler:
                 function_handlers=function_handlers if function_handlers else None,
                 on_interruption=on_interruption,
                 on_llm_response=on_llm_response,
+                on_user_turn=on_user_turn,
             )
 
             # Link the TTS completion watcher to the FunctionMapper (if one was
@@ -479,6 +494,8 @@ class CallHandler:
                 del self.interrupted_responses[call_sid]
             if call_sid in self.pending_responses:
                 del self.pending_responses[call_sid]
+            if call_sid in self.user_turn_timestamps:
+                del self.user_turn_timestamps[call_sid]
             if call_sid in self.call_mcp_clients:
                 del self.call_mcp_clients[call_sid]
                 logger.debug(f"Cleaned up MCP client reference for call {call_sid}")
@@ -943,19 +960,45 @@ You have access to the following Q&A knowledge base. Use this information to ans
             tools_used = sorted(tools_used_set)
             logger.debug(f"Extracted {len(transcript)} conversation messages, {len(tools_used)} unique tools: {tools_used}")
 
+            # --- Per-turn timestamp annotation ---
+            # Build text-prefix → timestamp lookup maps from the capture buffers.
+            # Matching by the first 80 chars of text is reliable: two different
+            # messages are extremely unlikely to share the same 80-char prefix.
+            captured_user = self.user_turn_timestamps.get(call_sid, [])
+            captured_assistant = self.pending_responses.get(call_sid, [])
+
+            user_ts_map: dict = {}
+            for entry in captured_user:
+                key = entry["text"][:80].lower()
+                if key not in user_ts_map:
+                    user_ts_map[key] = entry["timestamp"]
+
+            assistant_ts_map: dict = {}
+            for entry in captured_assistant:
+                key = entry["text"][:80].lower()
+                if key not in assistant_ts_map:
+                    assistant_ts_map[key] = entry["timestamp"]
+
+            for msg in transcript:
+                if msg.get("timestamp"):
+                    continue  # already has a real timestamp — leave it alone
+                content = msg.get("content", "")
+                key = content[:80].lower()
+                if msg["role"] == "user":
+                    ts = user_ts_map.get(key)
+                else:
+                    ts = assistant_ts_map.get(key)
+                if ts:
+                    msg["timestamp"] = ts
+
             # --- Incomplete response recovery ---
             # If the transcript ends with a user message the LLM context never has the
             # AI's reply (caller hung up while the LLM was still generating).  Check the
             # pending_responses buffer populated by LLMResponseCapture and, when the last
             # captured response is not already represented in the context, append it so
             # reviewers and ACW see the full exchange.
-            captured_turns = self.pending_responses.get(call_sid, [])
-            if (
-                transcript
-                and transcript[-1]["role"] == "user"
-                and captured_turns
-            ):
-                last_capture = captured_turns[-1]
+            if transcript and transcript[-1]["role"] == "user" and captured_assistant:
+                last_capture = captured_assistant[-1]
                 captured_text = last_capture["text"]
                 captured_key = captured_text[:80].lower()
 
