@@ -430,12 +430,9 @@ class CallHandler:
                 async def _on_greeting_completed():
                     _gdb = SessionLocal()
                     try:
-                        from ..models.call_log import CallLog as _CallLog
-                        _glog = _gdb.query(_CallLog).filter(_CallLog.call_sid == _greeting_call_sid).first()
-                        if _glog:
-                            _glog.ai_greeting_completed = True
-                            _gdb.commit()
-                            logger.info(f"✅ ai_greeting_completed=True for {_greeting_call_sid}")
+                        from ..services.call_logger import CallLogger as _CallLogger
+                        _cl = _CallLogger(_gdb)
+                        _cl.mark_greeting_completed(_greeting_call_sid)
                     except Exception as _ge:
                         logger.error(f"Failed to set ai_greeting_completed: {_ge}")
                     finally:

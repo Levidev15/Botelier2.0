@@ -190,15 +190,16 @@ _ADDITIVE_MIGRATIONS = [
     # of Twilio webhook timing. Used to classify calls as ended_early vs completed.
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS ai_greeting_completed BOOLEAN NOT NULL DEFAULT FALSE",
 
-    # Backfill: for old calls (before ai_greeting_completed tracking), mark short completed calls
-    # as ended_early IF the greeting was not confirmed to have played.
+    # Backfill: for old calls (before ai_greeting_completed tracking), mark short *completed*
+    # calls as ended_early when greeting was not confirmed. Only targets 'completed' — no_answer,
+    # busy, canceled, failed already have their own clear Twilio-driven meaning.
     # GUARD: ai_greeting_completed = FALSE ensures we never touch new calls where greeting played.
-    "UPDATE call_logs SET ended_early = TRUE WHERE ended_early = FALSE AND ai_greeting_completed = FALSE AND duration_seconds IS NOT NULL AND duration_seconds < 30 AND status IN ('completed', 'no-answer', 'no_answer', 'busy', 'canceled')",
+    "UPDATE call_logs SET ended_early = TRUE WHERE ended_early = FALSE AND ai_greeting_completed = FALSE AND duration_seconds IS NOT NULL AND duration_seconds < 30 AND status = 'completed'",
 
-    # Migrate existing ended_early calls: reclassify status column to 'ended_early' as the
-    # single source of truth. GUARD: ai_greeting_completed = FALSE ensures we never reclassify
-    # calls where the greeting actually played (even if ended_early boolean was set incorrectly).
-    "UPDATE call_logs SET status = 'ended_early' WHERE ended_early = TRUE AND ai_greeting_completed = FALSE AND status IN ('completed', 'no_answer', 'no-answer', 'busy', 'canceled')",
+    # Migrate existing ended_early calls: reclassify status column for *completed* calls only.
+    # no_answer/busy/canceled/failed remain Twilio-driven and are never touched here.
+    # GUARD: ai_greeting_completed = FALSE ensures we never reclassify calls where greeting played.
+    "UPDATE call_logs SET status = 'ended_early' WHERE ended_early = TRUE AND ai_greeting_completed = FALSE AND status = 'completed'",
 
     # REPAIR: Restore calls that were wrongly classified as ended_early by the old duration-threshold
     # migration. Any call where the AI greeting completed must be 'completed', not 'ended_early'.
