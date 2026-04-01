@@ -184,6 +184,8 @@ _ADDITIVE_MIGRATIONS = [
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS ended_early BOOLEAN NOT NULL DEFAULT FALSE",
     # Backfill: mark completed/no-answer/busy/canceled calls with duration < 30s as ended early
     "UPDATE call_logs SET ended_early = TRUE WHERE ended_early = FALSE AND duration_seconds IS NOT NULL AND duration_seconds < 30 AND status IN ('completed', 'no-answer', 'no_answer', 'busy', 'canceled')",
+    # call_settings — per-assistant call control thresholds (early-end, max duration, no-response timeout)
+    "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS call_settings JSONB NOT NULL DEFAULT '{}'",
 ]
 
 
