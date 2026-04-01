@@ -305,9 +305,13 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                             from ..models.assistant import Assistant as _Assistant
                             _asst = db.query(_Assistant).filter(_Assistant.id == _early_log.assistant_id).first()
                             if _asst and _asst.call_settings:
-                                _threshold = _asst.call_settings.get(
+                                _raw = _asst.call_settings.get(
                                     "early_end_threshold_seconds", _DEFAULT_EARLY_END_THRESHOLD
                                 )
+                                try:
+                                    _threshold = int(_raw)
+                                except (TypeError, ValueError):
+                                    _threshold = _DEFAULT_EARLY_END_THRESHOLD
                         if duration_seconds < _threshold:
                             _early_log.ended_early = True
                             db.commit()
