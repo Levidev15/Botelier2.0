@@ -1117,30 +1117,6 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
         >
           <div className="space-y-6">
             <FormField
-              label="Early-End Threshold (seconds)"
-              tooltip="Calls shorter than this duration are flagged as 'ended early' in analytics. Default: 30 seconds."
-            >
-              <input
-                type="number"
-                value={formData.call_settings?.early_end_threshold_seconds ?? 30}
-                onChange={(e) => {
-                  const val = parseInt(e.target.value, 10);
-                  setFormData(prev => ({
-                    ...prev,
-                    call_settings: {
-                      ...(prev.call_settings || {}),
-                      early_end_threshold_seconds: isNaN(val) ? 30 : val,
-                    }
-                  }));
-                  setIsDirty(true);
-                }}
-                min={5}
-                max={600}
-                className="w-full px-3 py-2 bg-[#1a1a1a] border border-[#333] rounded-lg text-sm text-white focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
-              />
-            </FormField>
-
-            <FormField
               label="Max Call Duration (seconds)"
               tooltip="Reserved for future use: maximum allowed call length before automatic hang-up. Default: 600 seconds (10 min)."
             >
@@ -1190,7 +1166,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
 
             <div className="p-3 bg-[#1a1a1a] border border-[#333] rounded-lg">
               <p className="text-xs text-gray-400">
-                <strong className="text-gray-300">Early-End Threshold</strong> is active now — calls shorter than the configured value appear in the &quot;Ended Early&quot; analytics widget. Max Call Duration and No-Response Timeout are stored but not yet enforced by the pipeline.
+                <strong className="text-gray-300">Dropped Before AI</strong> calls are now detected directly by the pipeline — a call is classified as dropped when the AI greeting never finished playing. Max Call Duration and No-Response Timeout are stored but not yet enforced by the pipeline.
               </p>
             </div>
           </div>

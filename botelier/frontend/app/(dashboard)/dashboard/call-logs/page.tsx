@@ -190,6 +190,8 @@ function getStatusIcon(status: string) {
   switch (status) {
     case "completed":
       return <Phone className="h-4 w-4 text-green-400" />;
+    case "ended_early":
+      return <PhoneOff className="h-4 w-4 text-orange-400" />;
     case "failed":
       return <PhoneOff className="h-4 w-4 text-red-400" />;
     case "no_answer":
@@ -205,6 +207,7 @@ function getStatusIcon(status: string) {
 function getStatusBadge(status: string) {
   const styles: Record<string, string> = {
     completed: "bg-green-500/10 text-green-400 border-green-500/20",
+    ended_early: "bg-orange-500/10 text-orange-400 border-orange-500/20",
     failed: "bg-red-500/10 text-red-400 border-red-500/20",
     no_answer: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
     busy: "bg-yellow-500/10 text-yellow-400 border-yellow-500/20",
@@ -1149,7 +1152,7 @@ function CallLogRow({
                 <PhoneForwarded className="h-3 w-3" />
               </span>
             )}
-            {log.ended_early && (
+            {log.ended_early && log.status !== "ended_early" && (
               <span className="px-1.5 py-0.5 text-xs rounded border bg-orange-500/10 border-orange-500/30 text-orange-400 whitespace-nowrap">
                 Early End
               </span>

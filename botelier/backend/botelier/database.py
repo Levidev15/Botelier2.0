@@ -186,6 +186,15 @@ _ADDITIVE_MIGRATIONS = [
     "UPDATE call_logs SET ended_early = TRUE WHERE ended_early = FALSE AND duration_seconds IS NOT NULL AND duration_seconds < 30 AND status IN ('completed', 'no-answer', 'no_answer', 'busy', 'canceled')",
     # call_settings — per-assistant call control thresholds (early-end, max duration, no-response timeout)
     "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS call_settings JSONB NOT NULL DEFAULT '{}'",
+
+    # ai_greeting_completed — true when the AI's greeting TTS finished playing during the call.
+    # Set directly from the pipeline (GreetingCompletionTracker) so it is reliable regardless
+    # of Twilio webhook timing. Used to classify calls as ended_early vs completed.
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS ai_greeting_completed BOOLEAN NOT NULL DEFAULT FALSE",
+
+    # Migrate existing ended_early calls: if ended_early=TRUE and status is a Twilio-reported
+    # terminal status, reclassify to ended_early so the status column is the single source of truth.
+    "UPDATE call_logs SET status = 'ended_early' WHERE ended_early = TRUE AND status IN ('completed', 'no_answer', 'no-answer', 'busy', 'canceled')",
 ]
 
 

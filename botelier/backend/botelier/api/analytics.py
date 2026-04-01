@@ -87,7 +87,8 @@ async def get_call_analytics(
         ).count()
         failed = _base().filter(CallLog.status == CallStatus.FAILED.value).count()
         transferred = _base().filter(CallLog.has_transfer == True).count()
-        ended_early = _base().filter(CallLog.ended_early == True).count()
+        ended_early = _base().filter(CallLog.status == CallStatus.ENDED_EARLY.value).count()
+        ai_handled = completed
 
         dur_row = (
             _base()
@@ -133,11 +134,13 @@ async def get_call_analytics(
         overview = {
             "total_calls": total,
             "completed": completed,
+            "ai_handled_calls": ai_handled,
             "missed": missed,
             "failed": failed,
             "transferred": transferred,
             "ended_early_calls": ended_early,
             "ended_early_rate": round(ended_early / total * 100, 1) if total else 0,
+            "ai_handled_rate": round(ai_handled / total * 100, 1) if total else 0,
             "completion_rate": round(completed / total * 100, 1) if total else 0,
             "transfer_rate": round(transferred / total * 100, 1) if total else 0,
             "avg_duration_seconds": round(float(dur_row.avg), 1),
@@ -406,7 +409,7 @@ async def get_calls_drilldown(
             resolution_val = token[len("resolution:"):]
             query = query.filter(CallLog.acw_resolution == resolution_val)
         elif token == "ended_early":
-            query = query.filter(CallLog.ended_early == True)
+            query = query.filter(CallLog.status == CallStatus.ENDED_EARLY.value)
         # "all" — no extra filter
 
         total = query.count()
