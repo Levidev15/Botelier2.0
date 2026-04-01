@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024–2025, Daily
+# Copyright (c) 2024-2026, Daily
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 #
@@ -39,6 +39,7 @@ from loguru import logger
 
 from pipecat.runner.types import (
     DailyRunnerArguments,
+    LiveKitRunnerArguments,
     SmallWebRTCRunnerArguments,
     WebSocketRunnerArguments,
 )
@@ -95,6 +96,9 @@ def _detect_transport_type_from_message(message_data: dict) -> str:
 async def parse_telephony_websocket(websocket: WebSocket):
     """Parse telephony WebSocket messages and return transport type and call data.
 
+    Args:
+        websocket: FastAPI WebSocket connection from telephony provider.
+
     Returns:
         tuple: (transport_type: str, call_data: dict)
 
@@ -135,6 +139,9 @@ async def parse_telephony_websocket(websocket: WebSocket):
                 "to": str,
             }
 
+    Raises:
+        ValueError: If WebSocket closes before sending any messages.
+
     Example usage::
 
         transport_type, call_data = await parse_telephony_websocket(websocket)
@@ -142,25 +149,31 @@ async def parse_telephony_websocket(websocket: WebSocket):
             user_id = call_data["body"]["user_id"]
     """
     # Read first two messages
-    start_data = websocket.iter_text()
+    message_stream = websocket.iter_text()
+    first_message = {}
+    second_message = {}
 
     try:
-        # First message
-        first_message_raw = await start_data.__anext__()
+        # First message - required
+        first_message_raw = await message_stream.__anext__()
         logger.trace(f"First message: {first_message_raw}")
-        try:
-            first_message = json.loads(first_message_raw)
-        except json.JSONDecodeError:
-            first_message = {}
+        first_message = json.loads(first_message_raw) if first_message_raw else {}
+    except json.JSONDecodeError:
+        pass
+    except StopAsyncIteration:
+        raise ValueError("WebSocket closed before receiving telephony handshake messages")
 
-        # Second message
-        second_message_raw = await start_data.__anext__()
+    try:
+        # Second message - optional, some providers may only send one
+        second_message_raw = await message_stream.__anext__()
         logger.trace(f"Second message: {second_message_raw}")
-        try:
-            second_message = json.loads(second_message_raw)
-        except json.JSONDecodeError:
-            second_message = {}
+        second_message = json.loads(second_message_raw) if second_message_raw else {}
+    except json.JSONDecodeError:
+        pass
+    except StopAsyncIteration:
+        logger.warning("Only received one WebSocket message, expected two")
 
+    try:
         # Try auto-detection on both messages
         detected_type_first = _detect_transport_type_from_message(first_message)
         detected_type_second = _detect_transport_type_from_message(second_message)
@@ -281,6 +294,14 @@ async def maybe_capture_participant_camera(
     except ImportError:
         pass
 
+    try:
+        from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
+
+        if isinstance(transport, SmallWebRTCTransport):
+            await transport.capture_participant_video(video_source="camera")
+    except ImportError:
+        pass
+
 
 async def maybe_capture_participant_screen(
     transport: BaseTransport, client: Any, framerate: int = 0
@@ -300,6 +321,14 @@ async def maybe_capture_participant_screen(
                 client["id"], framerate=framerate, video_source="screenVideo"
             )
 
+    except ImportError:
+        pass
+
+    try:
+        from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
+
+        if isinstance(transport, SmallWebRTCTransport):
+            await transport.capture_participant_video(video_source="screenVideo")
     except ImportError:
         pass
 
@@ -551,6 +580,17 @@ async def create_transport(
         # Create telephony transport with pre-parsed data
         return await _create_telephony_transport(
             runner_args.websocket, params, transport_type, call_data
+        )
+    elif isinstance(runner_args, LiveKitRunnerArguments):
+        params = _get_transport_params("livekit", transport_params)
+
+        from pipecat.transports.livekit.transport import LiveKitTransport
+
+        return LiveKitTransport(
+            runner_args.url,
+            runner_args.token,
+            runner_args.room_name,
+            params=params,
         )
 
     else:

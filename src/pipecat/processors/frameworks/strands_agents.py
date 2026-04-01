@@ -16,14 +16,13 @@ from pipecat.frames.frames import (
     LLMTextFrame,
 )
 from pipecat.metrics.metrics import LLMTokenUsage
-from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContextFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 try:
     from strands import Agent
     from strands.multiagent.graph import Graph
 except ModuleNotFoundError as e:
-    logger.exception("In order to use Strands Agents, you need to `pip install strands-agents`.")
+    logger.error("In order to use Strands Agents, you need to `pip install strands-agents`.")
     raise Exception(f"Missing module: {e}")
 
 
@@ -72,7 +71,7 @@ class StrandsAgentsProcessor(FrameProcessor):
             direction: The direction of frame flow in the pipeline.
         """
         await super().process_frame(frame, direction)
-        if isinstance(frame, (LLMContextFrame, OpenAILLMContextFrame)):
+        if isinstance(frame, LLMContextFrame):
             messages = frame.context.get_messages()
             if messages:
                 last_message = messages[-1]
@@ -143,7 +142,7 @@ class StrandsAgentsProcessor(FrameProcessor):
         except GeneratorExit:
             logger.warning(f"{self} generator was closed prematurely")
         except Exception as e:
-            logger.exception(f"{self} an unknown error occurred: {e}")
+            await self.push_error(error_msg=f"Unknown error occurred: {e}", exception=e)
         finally:
             if ttfb_tracking:
                 await self.stop_ttfb_metrics()
