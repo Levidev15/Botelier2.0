@@ -254,23 +254,27 @@ class CallHandler:
             self.pending_responses[call_sid] = []
 
             def on_llm_response(text: str, timestamp: datetime):
+                start = self.call_start_times.get(call_sid)
+                elapsed_s = (timestamp - start).total_seconds() if start else 0.0
                 self.pending_responses[call_sid].append({
                     "text": text,
-                    "timestamp": timestamp.isoformat(),
+                    "elapsed_s": elapsed_s,
                 })
-                logger.debug(f"📝 Captured LLM response ({len(text)} chars) for call {call_sid}")
+                logger.debug(f"📝 Captured LLM response ({len(text)} chars) at T+{elapsed_s:.1f}s for call {call_sid}")
 
             # Create user turn capture callback.
             # Called by UserTurnCapture for each finalized user utterance, giving us
-            # the wall-clock time when the STT finalized each turn.
+            # the elapsed time from call start when the STT finalized each turn.
             self.user_turn_timestamps[call_sid] = []
 
             def on_user_turn(text: str, timestamp: datetime):
+                start = self.call_start_times.get(call_sid)
+                elapsed_s = (timestamp - start).total_seconds() if start else 0.0
                 self.user_turn_timestamps[call_sid].append({
                     "text": text,
-                    "timestamp": timestamp.isoformat(),
+                    "elapsed_s": elapsed_s,
                 })
-                logger.debug(f"🗣️  Captured user turn ({len(text)} chars) for call {call_sid}")
+                logger.debug(f"🗣️  Captured user turn ({len(text)} chars) at T+{elapsed_s:.1f}s for call {call_sid}")
             
             pipeline, task, llm, context_aggregator, llm_context, tts_completion_watcher, first_speech_tracker, greeting_completion_tracker, idle_timeout_tracker = VoiceEngineFactory.create_pipeline(
                 config=config,
@@ -961,9 +965,17 @@ You have access to the following Q&A knowledge base. Use this information to ans
             logger.debug(f"Extracted {len(transcript)} conversation messages, {len(tools_used)} unique tools: {tools_used}")
 
             # --- Per-turn timestamp annotation ---
-            # Build text-prefix → timestamp lookup maps from the capture buffers.
-            # Matching by the first 80 chars of text is reliable: two different
-            # messages are extremely unlikely to share the same 80-char prefix.
+            # Timestamps are stored as elapsed seconds from call start (see
+            # on_llm_response / on_user_turn callbacks).  Format as "M:SS" for
+            # display in the transcript viewer.
+            def _fmt_elapsed(elapsed_s: float) -> str:
+                total = max(0, int(elapsed_s))
+                return f"{total // 60}:{total % 60:02d}"
+
+            # Build text-prefix → elapsed-timestamp lookup maps from the capture
+            # buffers.  Matching by the first 80 chars of text is reliable: two
+            # different messages are extremely unlikely to share the same 80-char
+            # prefix within a single call.
             captured_user = self.user_turn_timestamps.get(call_sid, [])
             captured_assistant = self.pending_responses.get(call_sid, [])
 
@@ -971,23 +983,24 @@ You have access to the following Q&A knowledge base. Use this information to ans
             for entry in captured_user:
                 key = entry["text"][:80].lower()
                 if key not in user_ts_map:
-                    user_ts_map[key] = entry["timestamp"]
+                    user_ts_map[key] = _fmt_elapsed(entry["elapsed_s"])
 
             assistant_ts_map: dict = {}
             for entry in captured_assistant:
                 key = entry["text"][:80].lower()
                 if key not in assistant_ts_map:
-                    assistant_ts_map[key] = entry["timestamp"]
+                    assistant_ts_map[key] = _fmt_elapsed(entry["elapsed_s"])
 
             for msg in transcript:
                 if msg.get("timestamp"):
-                    continue  # already has a real timestamp — leave it alone
+                    continue  # already has a timestamp — leave it alone
                 content = msg.get("content", "")
                 key = content[:80].lower()
-                if msg["role"] == "user":
-                    ts = user_ts_map.get(key)
-                else:
-                    ts = assistant_ts_map.get(key)
+                ts = (
+                    user_ts_map.get(key)
+                    if msg["role"] == "user"
+                    else assistant_ts_map.get(key)
+                )
                 if ts:
                     msg["timestamp"] = ts
 
@@ -1018,11 +1031,12 @@ You have access to the following Q&A knowledge base. Use this information to ans
                         "content": captured_text,
                         "interrupted": False,
                         "incomplete": True,
-                        "timestamp": last_capture.get("timestamp"),
+                        "timestamp": _fmt_elapsed(last_capture["elapsed_s"]),
                     })
                     logger.info(
                         f"📋 Recovered incomplete AI response ({len(captured_text)} chars) "
-                        f"for call {call_sid} — caller hung up before LLM context committed"
+                        f"at T+{last_capture['elapsed_s']:.1f}s for call {call_sid} "
+                        f"— caller hung up before LLM context committed"
                     )
                 
         except Exception as e:
