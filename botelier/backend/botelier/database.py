@@ -180,29 +180,24 @@ _ADDITIVE_MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS ix_integration_call_logs_integration_id ON integration_call_logs(integration_id)",
     "CREATE INDEX IF NOT EXISTS ix_integration_call_logs_called_at ON integration_call_logs(account_id, called_at DESC)",
 
-    # ended_early — boolean flag for calls that finished before EARLY_END_THRESHOLD seconds
+    # ended_early — boolean flag, true when a call ends before the AI greeting finishes.
+    # Set in real-time by the pipeline (GreetingCompletionTracker) via ai_greeting_completed.
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS ended_early BOOLEAN NOT NULL DEFAULT FALSE",
-    # call_settings — per-assistant call control thresholds (early-end, max duration, no-response timeout)
+    # call_settings — per-assistant call control thresholds (max duration, no-response timeout)
     "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS call_settings JSONB NOT NULL DEFAULT '{}'",
 
     # ai_greeting_completed — true when the AI's greeting TTS finished playing during the call.
-    # Set directly from the pipeline (GreetingCompletionTracker) so it is reliable regardless
-    # of Twilio webhook timing. Used to classify calls as ended_early vs completed.
+    # Set directly from the pipeline so it is reliable regardless of Twilio webhook timing.
+    # Source of truth for classifying calls as completed vs ended_early going forward.
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS ai_greeting_completed BOOLEAN NOT NULL DEFAULT FALSE",
 
-    # Backfill: for old calls (before ai_greeting_completed tracking), mark short *completed*
-    # calls as ended_early when greeting was not confirmed. Only targets 'completed' — no_answer,
-    # busy, canceled, failed already have their own clear Twilio-driven meaning.
-    # GUARD: ai_greeting_completed = FALSE ensures we never touch new calls where greeting played.
-    "UPDATE call_logs SET ended_early = TRUE WHERE ended_early = FALSE AND ai_greeting_completed = FALSE AND duration_seconds IS NOT NULL AND duration_seconds < 30 AND status = 'completed'",
+    # REPAIR A — Restore calls wrongly classified as ended_early by the old duration-threshold
+    # backfill migration. Scoped to calls before pipeline deployment (2026-04-02 17:00 UTC) so
+    # future pipeline-classified ended_early calls are never affected. Safe no-op after first run.
+    "UPDATE call_logs SET status = 'completed', ended_early = FALSE WHERE status = 'ended_early' AND ai_greeting_completed = FALSE AND started_at < '2026-04-02 17:00:00'",
 
-    # Migrate existing ended_early calls: reclassify status column for *completed* calls only.
-    # no_answer/busy/canceled/failed remain Twilio-driven and are never touched here.
-    # GUARD: ai_greeting_completed = FALSE ensures we never reclassify calls where greeting played.
-    "UPDATE call_logs SET status = 'ended_early' WHERE ended_early = TRUE AND ai_greeting_completed = FALSE AND status = 'completed'",
-
-    # REPAIR: Restore calls that were wrongly classified as ended_early by the old duration-threshold
-    # migration. Any call where the AI greeting completed must be 'completed', not 'ended_early'.
+    # REPAIR B — Restore any calls with confirmed greeting (ai_greeting_completed=TRUE) that were
+    # somehow left as ended_early. Pipeline is the source of truth. No-op once data is clean.
     "UPDATE call_logs SET status = 'completed', ended_early = FALSE WHERE ai_greeting_completed = TRUE AND status = 'ended_early'",
 ]
 
