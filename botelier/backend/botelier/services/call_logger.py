@@ -46,6 +46,14 @@ class CallLogger:
                 logger.warning(f"mark_greeting_completed: call log not found for {call_sid}")
                 return False
             call_log.ai_greeting_completed = True
+            # Race-condition guard: the Twilio status webhook may have arrived and
+            # set status=ended_early before this pipeline callback fired (webhook sees
+            # ai_greeting_completed=FALSE in the brief window before we commit here).
+            # Since the greeting DID play, correct the status in the same transaction.
+            if call_log.status == CallStatus.ENDED_EARLY.value:
+                call_log.status = CallStatus.COMPLETED.value
+                call_log.ended_early = False
+                logger.info(f"Race correction: {call_sid} ended_early → completed (greeting confirmed)")
             self.db.commit()
             logger.info(f"ai_greeting_completed=True for {call_sid}")
             return True
