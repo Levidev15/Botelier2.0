@@ -256,12 +256,12 @@ class GreetingCompletionTracker(FrameProcessor):
     caller never heard those frames.
     """
 
-    def __init__(self, event_queue=None, **kwargs):
+    def __init__(self, event_queue=None, is_call_active=None, **kwargs):
         super().__init__(**kwargs)
         self._event_queue = event_queue
         self._greeting_callback = None
         self._logged = False
-        self._is_call_active = None  # Optional[Callable[[], bool]]
+        self._is_call_active = is_call_active  # Optional[Callable[[], bool]]
 
     def set_event_queue(self, event_queue) -> None:
         self._event_queue = event_queue
