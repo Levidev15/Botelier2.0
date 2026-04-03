@@ -248,6 +248,12 @@ class GreetingCompletionTracker(FrameProcessor):
     Placed immediately after the TTS service so it sees BotStoppedSpeakingFrame
     as it flows downstream.  Only the very first BotStoppedSpeakingFrame is
     reported — subsequent ones (regular turn-taking) are ignored.
+
+    WebSocket liveness guard: if ``is_call_active`` is wired (via
+    ``set_call_active``), the callback and event are suppressed when the
+    WebSocket is already closed.  This prevents buffered TTS frames that drain
+    after a hangup from incorrectly marking the greeting as completed — the
+    caller never heard those frames.
     """
 
     def __init__(self, event_queue=None, **kwargs):
@@ -255,6 +261,7 @@ class GreetingCompletionTracker(FrameProcessor):
         self._event_queue = event_queue
         self._greeting_callback = None
         self._logged = False
+        self._is_call_active = None  # Optional[Callable[[], bool]]
 
     def set_event_queue(self, event_queue) -> None:
         self._event_queue = event_queue
@@ -263,11 +270,34 @@ class GreetingCompletionTracker(FrameProcessor):
         """Set an async callback invoked once when the greeting finishes playing."""
         self._greeting_callback = callback
 
+    def set_call_active(self, is_call_active) -> None:
+        """
+        Wire a callable that returns True when the WebSocket is still connected.
+
+        If the callable returns False when BotStoppedSpeakingFrame arrives, the
+        greeting callback is suppressed — the audio drained after the caller hung
+        up and was never delivered.
+        """
+        self._is_call_active = is_call_active
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
         if not self._logged and isinstance(frame, BotStoppedSpeakingFrame):
             self._logged = True
+
+            # Guard: if the WebSocket is already closed the TTS frames are
+            # draining from an internal buffer after the caller hung up.
+            # Do NOT mark the greeting as completed — the caller never heard it.
+            if self._is_call_active is not None and not self._is_call_active():
+                logger.info(
+                    "GreetingCompletionTracker: WebSocket closed before "
+                    "BotStoppedSpeakingFrame — caller hung up mid-greeting, "
+                    "suppressing greeting_completed callback"
+                )
+                await self.push_frame(frame, direction)
+                return
+
             if self._event_queue is not None:
                 self._event_queue.log(
                     "greeting_completed",
