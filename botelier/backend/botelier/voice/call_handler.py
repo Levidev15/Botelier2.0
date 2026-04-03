@@ -439,6 +439,15 @@ class CallHandler:
                         _gdb.close()
                 greeting_completion_tracker.set_greeting_callback(_on_greeting_completed)
 
+                # Wire WebSocket liveness check: if the caller hangs up during the
+                # greeting, Pipecat continues draining buffered TTS frames and will
+                # fire BotStoppedSpeakingFrame even after the WebSocket closes.
+                # This guard ensures we do NOT mark the greeting as completed in
+                # that case — the caller never heard those buffered frames.
+                greeting_completion_tracker.set_call_active(
+                    lambda: websocket.client_state.name == "CONNECTED"
+                )
+
             # 8. Queue greeting message
             if call_sid in self.call_event_queues:
                 self.call_event_queues[call_sid].log(
