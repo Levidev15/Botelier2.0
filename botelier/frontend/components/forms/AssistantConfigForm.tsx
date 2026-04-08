@@ -1169,7 +1169,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
             {isFeatureEnabled("call_recording") && (
               <FormField
                 label="Call Recording"
-                tooltip="Record inbound calls. Recordings are available in the call log once the call ends."
+                tooltip="Record inbound calls as dual-channel audio. Recordings are available in the call log once the call ends. Recordings stop automatically before any call transfer."
               >
                 <label className="flex items-center gap-3 cursor-pointer">
                   <div className="relative">

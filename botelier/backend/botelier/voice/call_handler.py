@@ -477,13 +477,35 @@ class CallHandler:
 
             # 8.5 Start Twilio call recording if enabled for this assistant/account.
             #
-            # Guard: skip if a recording is already active for this call_sid.
-            # This prevents double-recording in the unlikely event handle_call() is
-            # invoked more than once for the same sid (e.g. reconnect race).
-            # Note: handle_call() is only invoked from the WebSocket endpoint which
-            # Twilio connects once per call leg, so the guard is defensive only.
+            # Guards before starting:
+            # (a) Duplicate-SID guard: skip if a recording is already active for this
+            #     call_sid, preventing double-recording on unexpected reconnects.
+            # (b) Transfer-state guard: skip if the CallLog already carries a terminal
+            #     or transfer status, which would indicate this leg arrived as a
+            #     transferred call where recording is undesirable.
             if call_recording_enabled and hotel_twilio_sid and hotel_twilio_token:
-                if call_sid in self.call_recording_sids:
+                # (b) Check CallLog status in a fresh DB session.
+                _transfer_statuses = {"transferred", "ended_early", "failed", "no_answer", "busy"}
+                _skip_recording_for_status = False
+                _db_rec_check = SessionLocal()
+                try:
+                    from ..models import CallLog as _CLCheck
+                    _cl = _db_rec_check.query(_CLCheck).filter(
+                        _CLCheck.call_sid == call_sid
+                    ).first()
+                    if _cl and _cl.status in _transfer_statuses:
+                        logger.info(
+                            f"Skipping recording for {call_sid} — call status is '{_cl.status}'"
+                        )
+                        _skip_recording_for_status = True
+                except Exception as _status_err:
+                    logger.warning(f"Failed to check call status before recording: {_status_err}")
+                finally:
+                    _db_rec_check.close()
+
+                if _skip_recording_for_status:
+                    pass  # recording start skipped due to transfer/terminal state
+                elif call_sid in self.call_recording_sids:
                     logger.warning(
                         f"Recording already active for {call_sid} "
                         f"(sid={self.call_recording_sids[call_sid]}) — skipping duplicate start"
