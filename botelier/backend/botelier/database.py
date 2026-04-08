@@ -306,25 +306,35 @@ def _run_hotel_account_migration():
         conn.commit()
 
         # Step 3: Verify zero orphan account_ids across all 8 dependent tables.
-        # (Columns may still be named hotel_id if RENAME COLUMN hasn't run yet.)
-        orphan_checks = [
-            ("assistants", "hotel_id"),
-            ("call_logs", "hotel_id"),
-            ("knowledge_entries", "hotel_id"),
-            ("phone_numbers", "hotel_id"),
-            ("sms_compliance_campaigns", "hotel_id"),
-            ("sms_conversations", "hotel_id"),
-            ("sms_notification_settings", "hotel_id"),
-            ("sms_templates", "hotel_id"),
+        # Checks BOTH column name variants: hotel_id (pre-rename) and account_id
+        # (post-rename). Each table is checked via whichever column name exists.
+        dep_tables = [
+            "assistants",
+            "call_logs",
+            "knowledge_entries",
+            "phone_numbers",
+            "sms_compliance_campaigns",
+            "sms_conversations",
+            "sms_notification_settings",
+            "sms_templates",
         ]
         orphan_found = False
-        for table, col in orphan_checks:
-            col_exists = conn.execute(text(
-                f"SELECT EXISTS (SELECT 1 FROM information_schema.columns "
-                f"WHERE table_name = '{table}' AND column_name = '{col}')"
-            )).scalar()
-            if not col_exists:
-                continue  # Column already renamed to account_id — skip
+        for table in dep_tables:
+            # Determine the actual column name (may be hotel_id or account_id).
+            col: str | None = None
+            for candidate in ("hotel_id", "account_id"):
+                exists = conn.execute(text(
+                    "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+                    f"WHERE table_name = '{table}' AND column_name = '{candidate}')"
+                )).scalar()
+                if exists:
+                    col = candidate
+                    break
+            if col is None:
+                logger.warning(
+                    f"Hotel→account migration: no hotel_id/account_id column in {table} — skipping."
+                )
+                continue
             count = conn.execute(text(
                 f"SELECT COUNT(*) FROM {table} t "
                 f"WHERE t.{col} IS NOT NULL "
@@ -336,11 +346,15 @@ def _run_hotel_account_migration():
                     f"{count} orphan rows in {table}.{col}"
                 )
                 orphan_found = True
+            else:
+                logger.debug(
+                    f"Hotel→account migration: {table}.{col} ✓ (no orphans)"
+                )
 
         if orphan_found:
             raise RuntimeError(
-                "Hotel→account migration aborted: orphan account_id values found. "
-                "Hotels table preserved. Check logs for details."
+                "Hotel→account migration aborted: orphan account_id values detected. "
+                "Hotels table preserved — check logs for details."
             )
 
         logger.info("Hotel→account migration: integrity verified — no orphan rows found.")
