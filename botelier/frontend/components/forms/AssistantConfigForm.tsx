@@ -13,7 +13,7 @@ import { notify } from "@/lib/notifications";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import PostCallQATab from "@/components/forms/PostCallQATab";
-import { useAccountFeatures } from "@/hooks/useAccountFeatures";
+import { useAccountFeatures } from "@/lib/hooks/useAccountFeatures";
 
 interface Assistant {
   id: string;

@@ -1,32 +1,20 @@
 "use client";
 
-import { useState, useEffect, useCallback, useRef } from "react";
-import {
-  Download,
-  Search,
-  ChevronDown,
-  Filter,
-  Globe,
-  X,
-  Loader2,
-  RefreshCw,
-  Tag,
-  Trash2,
-  AlertTriangle,
-  Phone,
-} from "lucide-react";
+import { useState, useEffect, useCallback } from "react";
+import { Download, Search, Filter, RefreshCw } from "lucide-react";
 import { notify } from "@/lib/notifications";
 import TranscriptModal from "./components/TranscriptModal";
 import EventLogModal from "./components/EventLogModal";
 import EditCallLogModal from "./components/EditCallLogModal";
-import DispositionSelect from "./components/DispositionSelect";
-import CallLogRow from "./components/CallLogRow";
+import CallLogsFilterPanel from "./components/CallLogsFilterPanel";
+import CallLogsTable from "./components/CallLogsTable";
+import DeleteCallLogDialog from "./components/DeleteCallLogDialog";
 import type { CallLog, FilterOptions } from "./types";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
-import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
+import { usePagePermission, AccessDeniedPage } from "@/components/ui/PermissionGate";
 import { usePermissions } from "@/lib/auth/usePermissions";
-import { loadTimezone, saveTimezone, TIMEZONE_OPTIONS } from "@/components/analytics/TimezonePicker";
+import { loadTimezone, saveTimezone } from "@/components/analytics/TimezonePicker";
 
 export default function CallLogsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
@@ -386,287 +374,64 @@ export default function CallLogsPage() {
             </div>
 
             {showFilters && (
-              <div className="p-4 bg-[#141414] border border-gray-800 rounded-lg space-y-3">
-                {/* Row 1 */}
-                <div className="grid grid-cols-5 gap-3">
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Status</label>
-                    <select
-                      value={statusFilter}
-                      onChange={(e) => setStatusFilter(e.target.value)}
-                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    >
-                      <option value="">All statuses</option>
-                      {filterOptions?.statuses.map((status) => (
-                        <option key={status} value={status}>
-                          {status.charAt(0).toUpperCase() + status.slice(1).replace(/_/g, " ")}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Assistant</label>
-                    <select
-                      value={assistantFilter}
-                      onChange={(e) => setAssistantFilter(e.target.value)}
-                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    >
-                      <option value="">All assistants</option>
-                      {filterOptions?.assistants.map((a) => (
-                        <option key={a.id} value={a.id}>{a.name}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Disposition</label>
-                    <DispositionSelect
-                      value={dispositionIdFilter}
-                      onChange={setDispositionIdFilter}
-                      dispositions={filterOptions?.dispositions || []}
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Resolution Status</label>
-                    <select
-                      value={acwResolutionFilter}
-                      onChange={(e) => setAcwResolutionFilter(e.target.value)}
-                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    >
-                      <option value="">All resolutions</option>
-                      {filterOptions?.resolution_options.map((r) => (
-                        <option key={r} value={r}>{r}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Transferred</label>
-                    <select
-                      value={hasTransferFilter === null ? "" : String(hasTransferFilter)}
-                      onChange={(e) => {
-                        const v = e.target.value;
-                        setHasTransferFilter(v === "" ? null : v === "true");
-                      }}
-                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    >
-                      <option value="">All calls</option>
-                      <option value="true">Transferred</option>
-                      <option value="false">Not transferred</option>
-                    </select>
-                  </div>
-                </div>
-
-                {/* Row 2 */}
-                <div className="grid grid-cols-5 gap-3">
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">From Date</label>
-                    <input
-                      type="date"
-                      value={dateFrom}
-                      onChange={(e) => setDateFrom(e.target.value)}
-                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">To Date</label>
-                    <input
-                      type="date"
-                      value={dateTo}
-                      onChange={(e) => setDateTo(e.target.value)}
-                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Post Call QA</label>
-                    <select
-                      value={acwCompletedFilter === null ? "" : "true"}
-                      onChange={(e) => setAcwCompletedFilter(e.target.value === "" ? null : true)}
-                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    >
-                      <option value="">All calls</option>
-                      <option value="true">Has QA completed</option>
-                    </select>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Quality Score Min</label>
-                    <input
-                      type="number"
-                      min={0}
-                      max={100}
-                      placeholder="0"
-                      value={qualityMin ?? ""}
-                      onChange={(e) => setQualityMin(e.target.value === "" ? null : Number(e.target.value))}
-                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    />
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500 mb-1">Quality Score Max</label>
-                    <input
-                      type="number"
-                      min={0}
-                      max={100}
-                      placeholder="100"
-                      value={qualityMax ?? ""}
-                      onChange={(e) => setQualityMax(e.target.value === "" ? null : Number(e.target.value))}
-                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    />
-                  </div>
-                </div>
-
-                {/* Timezone + Clear row */}
-                <div className="flex items-end justify-between gap-3">
-                  <div className="w-48">
-                    <label className="block text-xs text-gray-500 mb-1">Timezone</label>
-                    <select
-                      value={timezone}
-                      onChange={(e) => handleTimezoneChange(e.target.value)}
-                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
-                    >
-                      {TIMEZONE_OPTIONS.map((tz) => (
-                        <option key={tz.value} value={tz.value}>{tz.label}</option>
-                      ))}
-                    </select>
-                  </div>
-                  {hasActiveFilters && (
-                    <button
-                      onClick={clearFilters}
-                      className="text-sm text-gray-400 hover:text-foreground flex items-center gap-1 pb-2"
-                    >
-                      <X className="h-3 w-3" />
-                      Clear all filters
-                    </button>
-                  )}
-                </div>
-              </div>
+              <CallLogsFilterPanel
+                filterOptions={filterOptions}
+                statusFilter={statusFilter}
+                setStatusFilter={setStatusFilter}
+                assistantFilter={assistantFilter}
+                setAssistantFilter={setAssistantFilter}
+                dispositionIdFilter={dispositionIdFilter}
+                setDispositionIdFilter={setDispositionIdFilter}
+                acwResolutionFilter={acwResolutionFilter}
+                setAcwResolutionFilter={setAcwResolutionFilter}
+                hasTransferFilter={hasTransferFilter}
+                setHasTransferFilter={setHasTransferFilter}
+                dateFrom={dateFrom}
+                setDateFrom={setDateFrom}
+                dateTo={dateTo}
+                setDateTo={setDateTo}
+                acwCompletedFilter={acwCompletedFilter}
+                setAcwCompletedFilter={setAcwCompletedFilter}
+                qualityMin={qualityMin}
+                setQualityMin={setQualityMin}
+                qualityMax={qualityMax}
+                setQualityMax={setQualityMax}
+                timezone={timezone}
+                onTimezoneChange={handleTimezoneChange}
+                hasActiveFilters={!!hasActiveFilters}
+                onClearFilters={clearFilters}
+              />
             )}
           </div>
         </div>
       </div>
 
       <div className="flex-1 overflow-auto p-8">
-        {contextLoading || loading ? (
-          <div className="flex items-center justify-center py-12">
-            <Loader2 className="h-6 w-6 text-gray-400 animate-spin" />
-            <span className="ml-2 text-gray-400">Loading call logs...</span>
-          </div>
-        ) : callLogs.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16">
-            <div className="w-20 h-20 bg-gray-800 rounded-full flex items-center justify-center mb-4">
-              <Phone className="h-10 w-10 text-gray-600" />
-            </div>
-            <h2 className="text-xl font-semibold text-foreground mb-2">No calls yet</h2>
-            <p className="text-gray-400 text-center mb-2 max-w-md">
-              {hasActiveFilters
-                ? "No calls match your current filters"
-                : "Call logs will appear here once you start receiving calls"}
-            </p>
-            {hasActiveFilters && (
-              <button
-                onClick={clearFilters}
-                className="mt-4 text-blue-400 hover:text-blue-300 text-sm"
-              >
-                Clear filters
-              </button>
-            )}
-          </div>
-        ) : (
-          <>
-            <div className="mb-4 flex items-center justify-between text-sm text-gray-400">
-              <span>
-                Showing {callLogs.length} of {total} calls
-              </span>
-              <div className="flex items-center gap-2">
-                <Globe className="h-4 w-4" />
-                <span>{TIMEZONE_OPTIONS.find((t) => t.value === timezone)?.label || timezone}</span>
-              </div>
-            </div>
-
-            <div className="bg-[#141414] border border-gray-800 rounded-lg overflow-hidden">
-              <table className="w-full">
-                <thead>
-                  <tr className="border-b border-gray-800 bg-[#0f0f0f]">
-                    <th className="w-10 px-4 py-3"></th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                      Ref
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                      Date / Duration
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                      Caller
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                      Assistant
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                      Tool / Flow
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                      Disposition
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                      Resolution
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                      Score
-                    </th>
-                    <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                      Status
-                    </th>
-                    <th className="px-4 py-3 text-right text-xs font-medium text-gray-400 uppercase tracking-wider">
-                      Actions
-                    </th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-gray-800">
-                  {callLogs.map((log) => (
-                    <CallLogRow
-                      key={log.id}
-                      log={log}
-                      isExpanded={expandedRows.has(log.id)}
-                      onToggleExpand={() => toggleRowExpanded(log.id)}
-                      onViewTranscript={() => openTranscript(log)}
-                      onViewEventLog={() => {
-                        setEventLogLog(log);
-                        setShowEventLog(true);
-                      }}
-                      onGenerateSummary={() => generateSummary(log)}
-                      isGeneratingSummary={generatingIds.has(log.id)}
-                      onEditLog={() => setEditLogTarget(log)}
-                      onDeleteLog={() => setDeleteLogTarget(log)}
-                      formatDateTime={formatDateTime}
-                      canViewTranscripts={canViewTranscripts}
-                      canEditLogs={canEditLogs}
-                      canDeleteLogs={canDeleteLogs}
-                      canPlayRecordings={canPlayRecordings}
-                    />
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            {totalPages > 1 && (
-              <div className="mt-6 flex items-center justify-center gap-2">
-                <button
-                  onClick={() => setPage((p) => Math.max(1, p - 1))}
-                  disabled={page === 1}
-                  className="px-3 py-1.5 text-sm bg-[#141414] border border-gray-800 rounded-lg hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Previous
-                </button>
-                <span className="text-sm text-gray-400">
-                  Page {page} of {totalPages}
-                </span>
-                <button
-                  onClick={() => setPage((p) => Math.min(totalPages, p + 1))}
-                  disabled={page === totalPages}
-                  className="px-3 py-1.5 text-sm bg-[#141414] border border-gray-800 rounded-lg hover:bg-gray-800 disabled:opacity-50 disabled:cursor-not-allowed"
-                >
-                  Next
-                </button>
-              </div>
-            )}
-          </>
-        )}
+        <CallLogsTable
+          loading={loading}
+          contextLoading={contextLoading}
+          callLogs={callLogs}
+          total={total}
+          timezone={timezone}
+          hasActiveFilters={!!hasActiveFilters}
+          onClearFilters={clearFilters}
+          expandedRows={expandedRows}
+          onToggleExpand={toggleRowExpanded}
+          onViewTranscript={openTranscript}
+          onViewEventLog={(log) => { setEventLogLog(log); setShowEventLog(true); }}
+          onGenerateSummary={generateSummary}
+          generatingIds={generatingIds}
+          onEditLog={setEditLogTarget}
+          onDeleteLog={setDeleteLogTarget}
+          formatDateTime={formatDateTime}
+          canViewTranscripts={canViewTranscripts}
+          canEditLogs={canEditLogs}
+          canDeleteLogs={canDeleteLogs}
+          canPlayRecordings={canPlayRecordings}
+          page={page}
+          totalPages={totalPages}
+          onPageChange={setPage}
+        />
       </div>
 
       {showTranscript && selectedLog && (
@@ -716,47 +481,12 @@ export default function CallLogsPage() {
       )}
 
       {deleteLogTarget && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
-          <div className="w-full max-w-sm mx-4 bg-[#141414] border border-gray-800 rounded-xl shadow-2xl">
-            <div className="px-6 pt-6 pb-4">
-              <div className="flex items-center gap-3 mb-3">
-                <div className="w-10 h-10 rounded-lg bg-red-500/10 flex items-center justify-center flex-shrink-0">
-                  <AlertTriangle className="h-5 w-5 text-red-400" />
-                </div>
-                <h2 className="text-base font-semibold">Delete Call Log</h2>
-              </div>
-              <p className="text-sm text-gray-400">
-                Are you sure you want to delete this call log? This action cannot be undone and will
-                permanently remove the call record, transcript, and all associated data.
-              </p>
-            </div>
-            <div className="flex gap-3 px-6 pb-5">
-              <button
-                type="button"
-                onClick={() => setDeleteLogTarget(null)}
-                disabled={deletingId === deleteLogTarget.id}
-                className="flex-1 px-4 py-2.5 bg-gray-800 hover:bg-gray-700 rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-              >
-                Cancel
-              </button>
-              <button
-                type="button"
-                onClick={() => deleteCallLog(deleteLogTarget)}
-                disabled={deletingId === deleteLogTarget.id}
-                className="flex-1 px-4 py-2.5 bg-red-600 hover:bg-red-700 rounded-lg text-sm font-medium transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-              >
-                {deletingId === deleteLogTarget.id ? (
-                  <span className="flex items-center justify-center gap-2">
-                    <Loader2 className="h-4 w-4 animate-spin" />
-                    Deleting...
-                  </span>
-                ) : (
-                  "Delete"
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
+        <DeleteCallLogDialog
+          log={deleteLogTarget}
+          deletingId={deletingId}
+          onCancel={() => setDeleteLogTarget(null)}
+          onConfirm={() => deleteCallLog(deleteLogTarget)}
+        />
       )}
     </div>
   );

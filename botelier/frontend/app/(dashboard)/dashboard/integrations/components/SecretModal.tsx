@@ -1,36 +1,76 @@
 "use client";
 
+import { useState } from "react";
 import { Loader2, X, Eye, EyeOff } from "lucide-react";
 import type { AccountSecret } from "../types";
 
-interface SecretForm {
-  name: string;
-  key: string;
-  description: string;
-  value: string;
-}
-
 interface SecretModalProps {
   editingSecret: AccountSecret | null;
-  secretForm: SecretForm;
-  setSecretForm: (fn: (prev: SecretForm) => SecretForm) => void;
-  showSecretValue: boolean;
-  setShowSecretValue: (fn: (prev: boolean) => boolean) => void;
-  handleSaveSecret: () => void;
-  savingSecret: boolean;
+  accountId: string;
+  authFetch: (url: string, options?: RequestInit) => Promise<Response>;
+  onSuccess: () => void;
+  onNotify: (type: "success" | "error", message: string) => void;
   onClose: () => void;
 }
 
+const defaultForm = { name: "", key: "", description: "", value: "" };
+
 export default function SecretModal({
   editingSecret,
-  secretForm,
-  setSecretForm,
-  showSecretValue,
-  setShowSecretValue,
-  handleSaveSecret,
-  savingSecret,
+  accountId,
+  authFetch,
+  onSuccess,
+  onNotify,
   onClose,
 }: SecretModalProps) {
+  const [form, setForm] = useState(() =>
+    editingSecret
+      ? { name: editingSecret.name, key: editingSecret.key, description: editingSecret.description || "", value: "" }
+      : defaultForm
+  );
+  const [saving, setSaving] = useState(false);
+  const [showValue, setShowValue] = useState(false);
+
+  const handleSave = async () => {
+    if (!form.name.trim() || !form.key.trim()) {
+      onNotify("error", "Name and key are required");
+      return;
+    }
+    if (!editingSecret && !form.value.trim()) {
+      onNotify("error", "Value is required for a new secret");
+      return;
+    }
+    setSaving(true);
+    try {
+      const payload: Record<string, string> = {
+        name: form.name.trim(),
+        key: form.key.trim().replace(/\s+/g, "_"),
+        description: form.description.trim(),
+      };
+      if (form.value.trim()) payload.value = form.value;
+
+      const url = editingSecret
+        ? `/api/secrets/account/${accountId}/${editingSecret.id}`
+        : `/api/secrets/account/${accountId}`;
+      const method = editingSecret ? "PATCH" : "POST";
+      const res = await authFetch(url, {
+        method,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      });
+      if (res.ok) {
+        onNotify("success", editingSecret ? "Secret updated" : "Secret created");
+        onSuccess();
+        onClose();
+      } else {
+        const err = await res.json().catch(() => ({}));
+        onNotify("error", err.detail || "Failed to save secret");
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
       <div className="bg-[#1a1a1a] border border-gray-800 rounded-xl w-full max-w-md">
@@ -50,8 +90,8 @@ export default function SecretModal({
             <input
               type="text"
               placeholder="My API Key"
-              value={secretForm.name}
-              onChange={(e) => setSecretForm(prev => ({ ...prev, name: e.target.value }))}
+              value={form.name}
+              onChange={(e) => setForm(prev => ({ ...prev, name: e.target.value }))}
               className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
             />
           </div>
@@ -62,13 +102,13 @@ export default function SecretModal({
             <input
               type="text"
               placeholder="my_api_key"
-              value={secretForm.key}
+              value={form.key}
               disabled={!!editingSecret}
-              onChange={(e) => setSecretForm(prev => ({ ...prev, key: e.target.value.replace(/[^a-zA-Z0-9_]/g, "_") }))}
+              onChange={(e) => setForm(prev => ({ ...prev, key: e.target.value.replace(/[^a-zA-Z0-9_]/g, "_") }))}
               className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm font-mono disabled:opacity-50"
             />
             <p className="text-xs text-gray-500 mt-1">
-              Used as <code className="text-blue-400">{`{{secrets.${secretForm.key || "key_name"}}}`}</code> in flows
+              Used as <code className="text-blue-400">{`{{secrets.${form.key || "key_name"}}}`}</code> in flows
             </p>
           </div>
           <div>
@@ -76,8 +116,8 @@ export default function SecretModal({
             <input
               type="text"
               placeholder="Optional description"
-              value={secretForm.description}
-              onChange={(e) => setSecretForm(prev => ({ ...prev, description: e.target.value }))}
+              value={form.description}
+              onChange={(e) => setForm(prev => ({ ...prev, description: e.target.value }))}
               className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
             />
           </div>
@@ -88,18 +128,18 @@ export default function SecretModal({
             </label>
             <div className="relative">
               <input
-                type={showSecretValue ? "text" : "password"}
+                type={showValue ? "text" : "password"}
                 placeholder="••••••••"
-                value={secretForm.value}
-                onChange={(e) => setSecretForm(prev => ({ ...prev, value: e.target.value }))}
+                value={form.value}
+                onChange={(e) => setForm(prev => ({ ...prev, value: e.target.value }))}
                 className="w-full px-3 py-2 pr-10 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm font-mono"
               />
               <button
                 type="button"
-                onClick={() => setShowSecretValue(v => !v)}
+                onClick={() => setShowValue(v => !v)}
                 className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
               >
-                {showSecretValue ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                {showValue ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
               </button>
             </div>
           </div>
@@ -112,11 +152,11 @@ export default function SecretModal({
             Cancel
           </button>
           <button
-            onClick={handleSaveSecret}
-            disabled={savingSecret}
+            onClick={handleSave}
+            disabled={saving}
             className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition disabled:opacity-50"
           >
-            {savingSecret ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
+            {saving ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
             {editingSecret ? "Update Secret" : "Save Secret"}
           </button>
         </div>

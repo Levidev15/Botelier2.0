@@ -3,17 +3,15 @@
 import { useState, useEffect } from "react";
 import {
   Shield, Plus, RefreshCw, Trash2, Edit3, Phone,
-  AlertCircle, Clock, Send, X,
+  AlertCircle, Clock, Send,
 } from "lucide-react";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { toast } from "sonner";
 import type { Brand, Campaign, PhoneNumberOption } from "./types";
-import {
-  BUSINESS_TYPES, BUSINESS_INDUSTRIES, COMPANY_TYPES, BRAND_TYPES, USE_CASES,
-  defaultBrandForm, defaultCampaignForm, getStatusBadge, StatusIcon,
-} from "./types";
+import { getStatusBadge, StatusIcon } from "./types";
 import CampaignCard from "./components/CampaignCard";
-import { Modal, FormSection, Input, Select } from "./components/FormElements";
+import BrandModal from "./components/BrandModal";
+import CampaignModal from "./components/CampaignModal";
 
 export default function SMSCompliancePage() {
   const { accountId, loading: contextLoading } = useAccountContext();
@@ -25,13 +23,9 @@ export default function SMSCompliancePage() {
 
   const [showBrandForm, setShowBrandForm] = useState(false);
   const [editingBrand, setEditingBrand] = useState<Brand | null>(null);
-  const [brandForm, setBrandForm] = useState({ ...defaultBrandForm });
-  const [brandSubmitting, setBrandSubmitting] = useState(false);
 
   const [showCampaignForm, setShowCampaignForm] = useState(false);
   const [editingCampaign, setEditingCampaign] = useState<Campaign | null>(null);
-  const [campaignForm, setCampaignForm] = useState({ ...defaultCampaignForm });
-  const [campaignSubmitting, setCampaignSubmitting] = useState(false);
 
   const [actionLoading, setActionLoading] = useState<string | null>(null);
   const [selectedPhoneNumber, setSelectedPhoneNumber] = useState<Record<string, string>>({});
@@ -89,70 +83,8 @@ export default function SMSCompliancePage() {
     }
   }, [accountId, contextLoading]);
 
-  const openBrandCreate = () => {
-    setEditingBrand(null);
-    setBrandForm({ ...defaultBrandForm });
-    setShowBrandForm(true);
-  };
-
-  const openBrandEdit = (b: Brand) => {
-    setEditingBrand(b);
-    setBrandForm({
-      business_name: b.business_name || "",
-      business_type: b.business_type || "",
-      business_industry: b.business_industry || "",
-      ein: b.ein || "",
-      ein_issuing_country: b.ein_issuing_country || "US",
-      company_type: b.company_type || "",
-      website_url: b.website_url || "",
-      street: b.street || "",
-      city: b.city || "",
-      region: b.region || "",
-      postal_code: b.postal_code || "",
-      country: b.country || "US",
-      rep_first_name: b.rep_first_name || "",
-      rep_last_name: b.rep_last_name || "",
-      rep_email: b.rep_email || "",
-      rep_phone: b.rep_phone || "",
-      rep_title: b.rep_title || "",
-      rep_job_position: b.rep_job_position || "",
-      brand_type: b.brand_type || "standard",
-    });
-    setShowBrandForm(true);
-  };
-
-  const handleBrandSubmit = async () => {
-    if (!accountId) return;
-    setBrandSubmitting(true);
-    try {
-      const url = editingBrand
-        ? `/api/sms-compliance/brands/${editingBrand.id}`
-        : `/api/sms-compliance/brands`;
-      const method = editingBrand ? "PUT" : "POST";
-      const body = editingBrand
-        ? { ...brandForm }
-        : { ...brandForm, account_id: accountId };
-
-      const res = await fetch(url, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-
-      if (res.ok) {
-        toast.success(editingBrand ? "Brand updated" : "Brand created");
-        setShowBrandForm(false);
-        await fetchBrands();
-      } else {
-        const err = await res.json();
-        toast.error(err.detail || "Failed to save brand");
-      }
-    } catch (error) {
-      toast.error("Failed to save brand");
-    } finally {
-      setBrandSubmitting(false);
-    }
-  };
+  const openBrandCreate = () => { setEditingBrand(null); setShowBrandForm(true); };
+  const openBrandEdit = (b: Brand) => { setEditingBrand(b); setShowBrandForm(true); };
 
   const handleBrandAction = async (action: string, brandId: string) => {
     setActionLoading(`brand-${action}-${brandId}`);
@@ -184,65 +116,8 @@ export default function SMSCompliancePage() {
     }
   };
 
-  const openCampaignCreate = () => {
-    setEditingCampaign(null);
-    setCampaignForm({ ...defaultCampaignForm });
-    setShowCampaignForm(true);
-  };
-
-  const openCampaignEdit = (c: Campaign) => {
-    setEditingCampaign(c);
-    setCampaignForm({
-      friendly_name: c.friendly_name || "",
-      use_case: c.use_case || "CUSTOMER_CARE",
-      description: c.description || "",
-      message_samples: c.message_samples?.length > 0 ? [...c.message_samples] : [""],
-      message_flow: c.message_flow || "",
-      has_embedded_links: c.has_embedded_links || false,
-      has_embedded_phone: c.has_embedded_phone || false,
-      opt_in_message: c.opt_in_message || "",
-      opt_in_keywords: c.opt_in_keywords || "YES,START",
-      opt_out_message: c.opt_out_message || "",
-      opt_out_keywords: c.opt_out_keywords || "STOP,END,CANCEL,UNSUBSCRIBE,QUIT",
-      help_message: c.help_message || "",
-      help_keywords: c.help_keywords || "HELP,INFO",
-    });
-    setShowCampaignForm(true);
-  };
-
-  const handleCampaignSubmit = async () => {
-    if (!accountId || !brand) return;
-    setCampaignSubmitting(true);
-    try {
-      const url = editingCampaign
-        ? `/api/sms-compliance/campaigns/${editingCampaign.id}`
-        : `/api/sms-compliance/campaigns`;
-      const method = editingCampaign ? "PUT" : "POST";
-      const samples = campaignForm.message_samples.filter((s) => s.trim() !== "");
-      const body = editingCampaign
-        ? { ...campaignForm, message_samples: samples }
-        : { ...campaignForm, message_samples: samples, brand_id: brand.id, account_id: accountId };
-
-      const res = await fetch(url, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-      });
-
-      if (res.ok) {
-        toast.success(editingCampaign ? "Campaign updated" : "Campaign created");
-        setShowCampaignForm(false);
-        await fetchCampaigns();
-      } else {
-        const err = await res.json();
-        toast.error(err.detail || "Failed to save campaign");
-      }
-    } catch (error) {
-      toast.error("Failed to save campaign");
-    } finally {
-      setCampaignSubmitting(false);
-    }
-  };
+  const openCampaignCreate = () => { setEditingCampaign(null); setShowCampaignForm(true); };
+  const openCampaignEdit = (c: Campaign) => { setEditingCampaign(c); setShowCampaignForm(true); };
 
   const handleCampaignAction = async (action: string, campaignId: string) => {
     setActionLoading(`campaign-${action}-${campaignId}`);
@@ -318,27 +193,6 @@ export default function SMSCompliancePage() {
     } finally {
       setActionLoading(null);
     }
-  };
-
-  const addMessageSample = () => {
-    setCampaignForm((prev) => ({
-      ...prev,
-      message_samples: [...prev.message_samples, ""],
-    }));
-  };
-
-  const removeMessageSample = (idx: number) => {
-    setCampaignForm((prev) => ({
-      ...prev,
-      message_samples: prev.message_samples.filter((_, i) => i !== idx),
-    }));
-  };
-
-  const updateMessageSample = (idx: number, value: string) => {
-    setCampaignForm((prev) => ({
-      ...prev,
-      message_samples: prev.message_samples.map((s, i) => (i === idx ? value : s)),
-    }));
   };
 
   if (contextLoading || loading) {
@@ -598,216 +452,23 @@ export default function SMSCompliancePage() {
         )}
       </div>
 
-      {showBrandForm && (
-        <Modal title={editingBrand ? "Edit Brand" : "Register Brand"} onClose={() => setShowBrandForm(false)}>
-          <div className="space-y-6 max-h-[70vh] overflow-y-auto pr-2">
-            <FormSection title="Brand Type">
-              <div className="flex flex-wrap gap-3">
-                {BRAND_TYPES.map((bt) => (
-                  <label key={bt.value} className="flex items-center gap-2 cursor-pointer">
-                    <input
-                      type="radio"
-                      name="brand_type"
-                      value={bt.value}
-                      checked={brandForm.brand_type === bt.value}
-                      onChange={(e) => setBrandForm((f) => ({ ...f, brand_type: e.target.value }))}
-                      className="accent-blue-600"
-                    />
-                    <span className="text-sm text-gray-300">{bt.label}</span>
-                  </label>
-                ))}
-              </div>
-            </FormSection>
-
-            <FormSection title="Business Information">
-              <div className="grid grid-cols-2 gap-3">
-                <Input label="Business Name *" value={brandForm.business_name} onChange={(v) => setBrandForm((f) => ({ ...f, business_name: v }))} />
-                <Select label="Business Type" value={brandForm.business_type} options={BUSINESS_TYPES} onChange={(v) => setBrandForm((f) => ({ ...f, business_type: v }))} />
-                <Select label="Business Industry" value={brandForm.business_industry} options={BUSINESS_INDUSTRIES} onChange={(v) => setBrandForm((f) => ({ ...f, business_industry: v }))} />
-                <Input label="EIN" value={brandForm.ein} onChange={(v) => setBrandForm((f) => ({ ...f, ein: v }))} />
-                <Input label="EIN Issuing Country" value={brandForm.ein_issuing_country} onChange={(v) => setBrandForm((f) => ({ ...f, ein_issuing_country: v }))} />
-                <Select label="Company Type" value={brandForm.company_type} options={COMPANY_TYPES.map((ct) => ct.value)} labels={COMPANY_TYPES.map((ct) => ct.label)} onChange={(v) => setBrandForm((f) => ({ ...f, company_type: v }))} />
-                <Input label="Website URL" value={brandForm.website_url} onChange={(v) => setBrandForm((f) => ({ ...f, website_url: v }))} className="col-span-2" />
-              </div>
-            </FormSection>
-
-            <FormSection title="Address">
-              <div className="grid grid-cols-2 gap-3">
-                <Input label="Street" value={brandForm.street} onChange={(v) => setBrandForm((f) => ({ ...f, street: v }))} className="col-span-2" />
-                <Input label="City" value={brandForm.city} onChange={(v) => setBrandForm((f) => ({ ...f, city: v }))} />
-                <Input label="State/Region" value={brandForm.region} onChange={(v) => setBrandForm((f) => ({ ...f, region: v }))} />
-                <Input label="Postal Code" value={brandForm.postal_code} onChange={(v) => setBrandForm((f) => ({ ...f, postal_code: v }))} />
-                <Input label="Country" value={brandForm.country} onChange={(v) => setBrandForm((f) => ({ ...f, country: v }))} />
-              </div>
-            </FormSection>
-
-            <FormSection title="Authorized Representative">
-              <div className="grid grid-cols-2 gap-3">
-                <Input label="First Name" value={brandForm.rep_first_name} onChange={(v) => setBrandForm((f) => ({ ...f, rep_first_name: v }))} />
-                <Input label="Last Name" value={brandForm.rep_last_name} onChange={(v) => setBrandForm((f) => ({ ...f, rep_last_name: v }))} />
-                <Input label="Email" value={brandForm.rep_email} onChange={(v) => setBrandForm((f) => ({ ...f, rep_email: v }))} />
-                <Input label="Phone" value={brandForm.rep_phone} onChange={(v) => setBrandForm((f) => ({ ...f, rep_phone: v }))} />
-                <Input label="Title" value={brandForm.rep_title} onChange={(v) => setBrandForm((f) => ({ ...f, rep_title: v }))} />
-                <Input label="Job Position" value={brandForm.rep_job_position} onChange={(v) => setBrandForm((f) => ({ ...f, rep_job_position: v }))} />
-              </div>
-            </FormSection>
-          </div>
-
-          <div className="flex items-center justify-end gap-3 mt-6 pt-4 border-t border-gray-800">
-            <button
-              onClick={() => setShowBrandForm(false)}
-              className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg text-sm transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleBrandSubmit}
-              disabled={brandSubmitting || !brandForm.business_name}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-            >
-              {brandSubmitting && <RefreshCw className="h-4 w-4 animate-spin" />}
-              {editingBrand ? "Update Brand" : "Create Brand"}
-            </button>
-          </div>
-        </Modal>
+      {showBrandForm && accountId && (
+        <BrandModal
+          brand={editingBrand}
+          accountId={accountId}
+          onClose={() => setShowBrandForm(false)}
+          onSave={fetchBrands}
+        />
       )}
 
-      {showCampaignForm && (
-        <Modal title={editingCampaign ? "Edit Campaign" : "Create Campaign"} onClose={() => setShowCampaignForm(false)}>
-          <div className="space-y-6 max-h-[70vh] overflow-y-auto pr-2">
-            <FormSection title="Campaign Details">
-              <div className="grid grid-cols-2 gap-3">
-                <Input label="Friendly Name *" value={campaignForm.friendly_name} onChange={(v) => setCampaignForm((f) => ({ ...f, friendly_name: v }))} />
-                <Select label="Use Case" value={campaignForm.use_case} options={USE_CASES} onChange={(v) => setCampaignForm((f) => ({ ...f, use_case: v }))} />
-              </div>
-              <div className="mt-3">
-                <label className="block text-xs text-gray-400 mb-1">Description</label>
-                <textarea
-                  value={campaignForm.description}
-                  onChange={(e) => setCampaignForm((f) => ({ ...f, description: e.target.value }))}
-                  rows={3}
-                  className="w-full px-3 py-2 bg-[#1a1a1a] border border-gray-700 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 resize-none"
-                />
-              </div>
-            </FormSection>
-
-            <FormSection title="Message Samples">
-              <div className="space-y-2">
-                {campaignForm.message_samples.map((sample, idx) => (
-                  <div key={idx} className="flex items-center gap-2">
-                    <input
-                      type="text"
-                      value={sample}
-                      onChange={(e) => updateMessageSample(idx, e.target.value)}
-                      placeholder={`Sample message ${idx + 1}`}
-                      className="flex-1 px-3 py-2 bg-[#1a1a1a] border border-gray-700 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500"
-                    />
-                    {campaignForm.message_samples.length > 1 && (
-                      <button
-                        onClick={() => removeMessageSample(idx)}
-                        className="p-1.5 text-gray-500 hover:text-red-400 transition-colors"
-                      >
-                        <X className="h-4 w-4" />
-                      </button>
-                    )}
-                  </div>
-                ))}
-                <button
-                  onClick={addMessageSample}
-                  className="flex items-center gap-1.5 text-xs text-blue-400 hover:text-blue-300 transition-colors"
-                >
-                  <Plus className="h-3.5 w-3.5" />
-                  Add Sample
-                </button>
-              </div>
-            </FormSection>
-
-            <FormSection title="Message Flow">
-              <label className="block text-xs text-gray-400 mb-1">Describe how users opt in to receive messages</label>
-              <textarea
-                value={campaignForm.message_flow}
-                onChange={(e) => setCampaignForm((f) => ({ ...f, message_flow: e.target.value }))}
-                rows={3}
-                className="w-full px-3 py-2 bg-[#1a1a1a] border border-gray-700 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 resize-none"
-              />
-            </FormSection>
-
-            <FormSection title="Content Flags">
-              <div className="flex gap-6">
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={campaignForm.has_embedded_links}
-                    onChange={(e) => setCampaignForm((f) => ({ ...f, has_embedded_links: e.target.checked }))}
-                    className="accent-blue-600"
-                  />
-                  <span className="text-sm text-gray-300">Has Embedded Links</span>
-                </label>
-                <label className="flex items-center gap-2 cursor-pointer">
-                  <input
-                    type="checkbox"
-                    checked={campaignForm.has_embedded_phone}
-                    onChange={(e) => setCampaignForm((f) => ({ ...f, has_embedded_phone: e.target.checked }))}
-                    className="accent-blue-600"
-                  />
-                  <span className="text-sm text-gray-300">Has Embedded Phone Numbers</span>
-                </label>
-              </div>
-            </FormSection>
-
-            <FormSection title="Opt-In / Opt-Out / Help">
-              <div className="grid grid-cols-2 gap-3">
-                <div className="col-span-2">
-                  <label className="block text-xs text-gray-400 mb-1">Opt-In Message</label>
-                  <textarea
-                    value={campaignForm.opt_in_message}
-                    onChange={(e) => setCampaignForm((f) => ({ ...f, opt_in_message: e.target.value }))}
-                    rows={2}
-                    className="w-full px-3 py-2 bg-[#1a1a1a] border border-gray-700 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 resize-none"
-                  />
-                </div>
-                <Input label="Opt-In Keywords" value={campaignForm.opt_in_keywords} onChange={(v) => setCampaignForm((f) => ({ ...f, opt_in_keywords: v }))} />
-                <Input label="Opt-Out Keywords" value={campaignForm.opt_out_keywords} onChange={(v) => setCampaignForm((f) => ({ ...f, opt_out_keywords: v }))} />
-                <div className="col-span-2">
-                  <label className="block text-xs text-gray-400 mb-1">Opt-Out Message</label>
-                  <textarea
-                    value={campaignForm.opt_out_message}
-                    onChange={(e) => setCampaignForm((f) => ({ ...f, opt_out_message: e.target.value }))}
-                    rows={2}
-                    className="w-full px-3 py-2 bg-[#1a1a1a] border border-gray-700 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 resize-none"
-                  />
-                </div>
-                <div className="col-span-2">
-                  <label className="block text-xs text-gray-400 mb-1">Help Message</label>
-                  <textarea
-                    value={campaignForm.help_message}
-                    onChange={(e) => setCampaignForm((f) => ({ ...f, help_message: e.target.value }))}
-                    rows={2}
-                    className="w-full px-3 py-2 bg-[#1a1a1a] border border-gray-700 rounded-lg text-sm text-white placeholder-gray-500 focus:outline-none focus:border-blue-500 resize-none"
-                  />
-                </div>
-                <Input label="Help Keywords" value={campaignForm.help_keywords} onChange={(v) => setCampaignForm((f) => ({ ...f, help_keywords: v }))} />
-              </div>
-            </FormSection>
-          </div>
-
-          <div className="flex items-center justify-end gap-3 mt-6 pt-4 border-t border-gray-800">
-            <button
-              onClick={() => setShowCampaignForm(false)}
-              className="px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-200 rounded-lg text-sm transition-colors"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleCampaignSubmit}
-              disabled={campaignSubmitting || !campaignForm.friendly_name}
-              className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition-colors disabled:opacity-50"
-            >
-              {campaignSubmitting && <RefreshCw className="h-4 w-4 animate-spin" />}
-              {editingCampaign ? "Update Campaign" : "Create Campaign"}
-            </button>
-          </div>
-        </Modal>
+      {showCampaignForm && accountId && brand && (
+        <CampaignModal
+          campaign={editingCampaign}
+          brand={brand}
+          accountId={accountId}
+          onClose={() => setShowCampaignForm(false)}
+          onSave={fetchCampaigns}
+        />
       )}
     </div>
   );

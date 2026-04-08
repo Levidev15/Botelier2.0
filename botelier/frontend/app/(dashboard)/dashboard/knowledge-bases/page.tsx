@@ -1,19 +1,17 @@
 "use client";
 
 import { useState, useEffect, useRef } from "react";
-import { BookOpen, Plus, Pencil, Trash2, ChevronRight, ArrowLeft, Upload, Download, Search, Tag, AlertCircle, X, Grid3x3, List } from "lucide-react";
+import { Plus, ArrowLeft, Upload, Download, Search, AlertCircle, Grid3x3, List } from "lucide-react";
 import { notify, confirmAction } from "@/lib/notifications";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
-import { usePagePermission, PermissionGate, AccessDeniedPage } from "@/components/ui/PermissionGate";
+import { usePagePermission, AccessDeniedPage } from "@/components/ui/PermissionGate";
 import { usePermissions } from "@/lib/auth/usePermissions";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 import type { KnowledgeBase, Entry, ParsedRow, ImportResult } from "./types";
 import { parseCSVLine, formatDate } from "./types";
-import ReviewModal from "./components/ReviewModal";
-import ResultModal from "./components/ResultModal";
-import KBModal from "./components/KBModal";
-import EntryModal from "./components/EntryModal";
+import KBList from "./components/KBList";
+import KBEntryList from "./components/KBEntryList";
 
 export default function KnowledgeBasesPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
@@ -384,113 +382,20 @@ export default function KnowledgeBasesPage() {
         </div>
 
         <div className="p-8">
-        {filteredEntries.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-16 text-center">
-            <BookOpen className="w-12 h-12 text-white/20 mb-4" />
-            <h3 className="text-lg font-medium text-white/80 mb-2">No entries yet</h3>
-            <p className="text-white/40 text-sm mb-4">Add Q&A entries to build your knowledge base</p>
-            {canCreate && (
-              <button onClick={() => setShowAddEntryModal(true)} className="flex items-center gap-2 px-4 py-2 bg-[#3B82F6] hover:bg-[#3B82F6]/80 text-black font-medium rounded-lg transition-colors">
-                <Plus className="w-4 h-4" />
-                Add First Entry
-              </button>
-            )}
-          </div>
-        ) : view === "grid" ? (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {filteredEntries.map((entry) => (
-              <div key={entry.id} className="bg-[#1A1A1A] border border-white/10 rounded-xl p-4 hover:border-white/20 transition-colors group">
-                <div className="flex items-start justify-between gap-2 mb-2">
-                  <h3 className="text-white font-medium line-clamp-2">{entry.question}</h3>
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
-                    {canEdit && (
-                      <button onClick={() => { setEditingEntry(entry); setShowAddEntryModal(true); }} className="p-1.5 hover:bg-white/5 rounded">
-                        <Pencil className="w-3.5 h-3.5 text-white/60" />
-                      </button>
-                    )}
-                    {canDelete && (
-                      <button onClick={() => handleDeleteEntry(entry)} className="p-1.5 hover:bg-red-500/20 rounded">
-                        <Trash2 className="w-3.5 h-3.5 text-red-400" />
-                      </button>
-                    )}
-                  </div>
-                </div>
-                <p className="text-white/60 text-sm line-clamp-3 mb-3">{entry.answer}</p>
-                <div className="flex items-center justify-between">
-                  {entry.category && (
-                    <span className="inline-flex items-center gap-1 px-2 py-1 bg-[#3B82F6]/10 text-[#3B82F6] text-xs rounded-full">
-                      <Tag className="w-3 h-3" />
-                      {entry.category}
-                    </span>
-                  )}
-                  <span className="text-white/40 text-xs ml-auto">{formatDate(entry.updated_at)}</span>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="bg-[#1A1A1A] border border-white/10 rounded-xl overflow-hidden">
-            <table className="w-full">
-              <thead className="bg-[#2A2A2A]">
-                <tr>
-                  <th className="text-left text-xs text-white/60 font-medium px-4 py-3">Question</th>
-                  <th className="text-left text-xs text-white/60 font-medium px-4 py-3">Answer</th>
-                  <th className="text-left text-xs text-white/60 font-medium px-4 py-3 w-24">Category</th>
-                  <th className="text-left text-xs text-white/60 font-medium px-4 py-3 w-28">Expiration</th>
-                  <th className="text-left text-xs text-white/60 font-medium px-4 py-3 w-24">Updated</th>
-                  <th className="w-20"></th>
-                </tr>
-              </thead>
-              <tbody>
-                {filteredEntries.map((entry) => (
-                  <tr key={entry.id} className="border-t border-white/5 hover:bg-white/[0.02]">
-                    <td className="px-4 py-3 text-white text-sm">{entry.question}</td>
-                    <td className="px-4 py-3 text-white/60 text-sm line-clamp-2">{entry.answer}</td>
-                    <td className="px-4 py-3">
-                      {entry.category && (
-                        <span className="inline-flex items-center gap-1 px-2 py-1 bg-[#3B82F6]/10 text-[#3B82F6] text-xs rounded-full">
-                          {entry.category}
-                        </span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3">
-                      {entry.expiration_date ? (
-                        <span className={`text-xs ${entry.is_expired ? 'text-red-400' : 'text-white/60'}`}>
-                          {new Date(entry.expiration_date).toLocaleDateString()}
-                          {entry.is_expired && <AlertCircle className="w-3 h-3 inline ml-1" />}
-                        </span>
-                      ) : (
-                        <span className="text-white/30 text-xs">-</span>
-                      )}
-                    </td>
-                    <td className="px-4 py-3 text-white/40 text-xs">{formatDate(entry.updated_at)}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex items-center gap-1">
-                        {canEdit && (
-                          <button onClick={() => { setEditingEntry(entry); setShowAddEntryModal(true); }} className="p-1.5 hover:bg-white/5 rounded">
-                            <Pencil className="w-3.5 h-3.5 text-white/60" />
-                          </button>
-                        )}
-                        {canDelete && (
-                          <button onClick={() => handleDeleteEntry(entry)} className="p-1.5 hover:bg-red-500/20 rounded">
-                            <Trash2 className="w-3.5 h-3.5 text-red-400" />
-                          </button>
-                        )}
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-
-        {showAddEntryModal && (
-          <EntryModal
-            entry={editingEntry}
+          <KBEntryList
+            filteredEntries={filteredEntries}
+            view={view}
+            canCreate={canCreate}
+            canEdit={canEdit}
+            canDelete={canDelete}
             knowledgeBaseId={selectedKB.id}
-            onClose={() => { setShowAddEntryModal(false); setEditingEntry(null); }}
-            onSave={(saved) => {
+            onAddEntry={() => setShowAddEntryModal(true)}
+            onEditEntry={(entry) => { setEditingEntry(entry); setShowAddEntryModal(true); }}
+            onDeleteEntry={handleDeleteEntry}
+            showAddEntryModal={showAddEntryModal}
+            editingEntry={editingEntry}
+            onEntryClose={() => { setShowAddEntryModal(false); setEditingEntry(null); }}
+            onEntrySave={(saved) => {
               setShowAddEntryModal(false);
               setEditingEntry(null);
               setEntries(prev => {
@@ -498,25 +403,14 @@ export default function KnowledgeBasesPage() {
                 return exists ? prev.map(e => e.id === saved.id ? saved : e) : [saved, ...prev];
               });
             }}
-          />
-        )}
-
-        {reviewRows && (
-          <ReviewModal
-            rows={reviewRows}
+            reviewRows={reviewRows}
             replaceDuplicates={replaceDuplicates}
             onToggleReplace={() => setReplaceDuplicates(r => !r)}
-            onCancel={() => { setReviewRows(null); }}
-            onImport={handleImportConfirm}
+            onCancelReview={() => setReviewRows(null)}
+            onImportConfirm={handleImportConfirm}
+            importResult={importResult}
+            onDismissResult={() => setImportResult(null)}
           />
-        )}
-
-        {importResult && (
-          <ResultModal
-            result={importResult}
-            onDone={() => setImportResult(null)}
-          />
-        )}
         </div>
       </div>
     );
@@ -527,95 +421,21 @@ export default function KnowledgeBasesPage() {
   }
 
   return (
-    <div className="h-full">
-      <div className="border-b border-gray-800 bg-[#0a0a0a] sticky top-0 z-10">
-        <div className="px-8 py-6">
-          <div className="flex justify-between items-center">
-            <div>
-              <h1 className="text-2xl font-bold">Knowledge Bases</h1>
-              <p className="text-sm text-gray-400 mt-1">Manage Q&A knowledge for your AI assistants</p>
-            </div>
-            {canCreate && (
-              <button onClick={() => setShowCreateModal(true)} className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition text-sm font-medium">
-                <Plus className="h-4 w-4 mr-2" />
-                Create Knowledge Base
-              </button>
-            )}
-          </div>
-        </div>
-      </div>
-
-      <div className="p-8">
-      {knowledgeBases.length === 0 ? (
-        <div className="flex flex-col items-center justify-center py-16">
-          <div className="w-20 h-20 bg-gray-800 rounded-full flex items-center justify-center mb-4">
-            <BookOpen className="h-10 w-10 text-gray-600" />
-          </div>
-          <h2 className="text-xl font-semibold text-white mb-2">No knowledge bases yet</h2>
-          <p className="text-gray-400 text-center mb-6 max-w-md">Create a knowledge base to store Q&A content for your assistants</p>
-          {canCreate && (
-            <button onClick={() => setShowCreateModal(true)} className="flex items-center space-x-2 bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg transition-colors">
-              <Plus className="h-5 w-5" />
-              <span>Create Knowledge Base</span>
-            </button>
-          )}
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {knowledgeBases.map((kb) => (
-            <div
-              key={kb.id}
-              onClick={() => selectKnowledgeBase(kb)}
-              className="flex items-center justify-between p-4 bg-[#141414] border border-gray-800 rounded-xl hover:border-gray-700 transition-colors cursor-pointer group"
-            >
-              <div className="flex items-center gap-4 flex-1 min-w-0">
-                <div className="p-2.5 bg-blue-600/10 rounded-lg shrink-0">
-                  <BookOpen className="w-5 h-5 text-blue-500" />
-                </div>
-                <div className="min-w-0 flex-1">
-                  <h3 className="text-white font-medium truncate">{kb.name}</h3>
-                  <p className="text-gray-500 text-sm truncate mt-0.5">{kb.description || "No description"}</p>
-                </div>
-              </div>
-              <div className="flex items-center gap-6 shrink-0 ml-4">
-                <div className="text-right">
-                  <div className="text-sm text-white">{kb.entry_count}</div>
-                  <div className="text-xs text-gray-500">entries</div>
-                </div>
-                <div className="text-right min-w-[80px]">
-                  <div className="text-sm text-gray-400">{formatDate(kb.updated_at)}</div>
-                  <div className="text-xs text-gray-500">modified</div>
-                </div>
-                {(canEdit || canDelete) && (
-                  <div className="flex items-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity" onClick={(e) => e.stopPropagation()}>
-                    {canEdit && (
-                      <button onClick={(e) => { e.stopPropagation(); setEditingKB(kb); setShowCreateModal(true); }} className="p-1.5 hover:bg-white/5 rounded">
-                        <Pencil className="w-4 h-4 text-gray-500" />
-                      </button>
-                    )}
-                    {canDelete && (
-                      <button onClick={(e) => { e.stopPropagation(); handleDeleteKB(kb); }} className="p-1.5 hover:bg-red-500/20 rounded">
-                        <Trash2 className="w-4 h-4 text-red-400" />
-                      </button>
-                    )}
-                  </div>
-                )}
-                <ChevronRight className="w-4 h-4 text-gray-600 group-hover:text-blue-500 transition-colors" />
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-      </div>
-
-      {showCreateModal && (
-        <KBModal
-          kb={editingKB}
-          accountId={accountId!}
-          onClose={() => { setShowCreateModal(false); setEditingKB(null); }}
-          onSave={() => { setShowCreateModal(false); setEditingKB(null); fetchKnowledgeBases(); }}
-        />
-      )}
-    </div>
+    <KBList
+      knowledgeBases={knowledgeBases}
+      canCreate={canCreate}
+      canEdit={canEdit}
+      canDelete={canDelete}
+      onSelect={selectKnowledgeBase}
+      onEdit={(kb) => { setEditingKB(kb); setShowCreateModal(true); }}
+      onDelete={handleDeleteKB}
+      showCreateModal={showCreateModal}
+      setShowCreateModal={setShowCreateModal}
+      editingKB={editingKB}
+      setEditingKB={setEditingKB}
+      accountId={accountId!}
+      onKBSaved={() => { setShowCreateModal(false); setEditingKB(null); fetchKnowledgeBases(); }}
+      formatDate={formatDate}
+    />
   );
 }
