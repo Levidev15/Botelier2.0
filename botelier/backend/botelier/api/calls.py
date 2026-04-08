@@ -641,24 +641,45 @@ async def get_call_recording(
     recording_url = call_log.recording_url
 
     try:
-        async def stream_recording():
-            async with httpx.AsyncClient() as client:
-                async with client.stream(
-                    "GET",
-                    recording_url,
-                    auth=(twilio_account_sid, twilio_auth_token),
-                    follow_redirects=True,
-                    timeout=30.0,
-                ) as response:
-                    async for chunk in response.aiter_bytes(chunk_size=8192):
-                        yield chunk
+        async with httpx.AsyncClient() as client:
+            twilio_response = await client.get(
+                recording_url,
+                auth=(twilio_account_sid, twilio_auth_token),
+                follow_redirects=True,
+                timeout=30.0,
+            )
 
-        return StreamingResponse(
-            stream_recording(),
+        if twilio_response.status_code == 404:
+            raise HTTPException(status_code=404, detail="Recording not found on Twilio")
+        if twilio_response.status_code == 401 or twilio_response.status_code == 403:
+            logger.error(
+                f"Twilio auth error ({twilio_response.status_code}) fetching recording for call {call_id}"
+            )
+            raise HTTPException(status_code=502, detail="Could not authenticate with Twilio")
+        if twilio_response.status_code != 200:
+            logger.error(
+                f"Twilio returned HTTP {twilio_response.status_code} for recording {call_id}"
+            )
+            raise HTTPException(
+                status_code=502,
+                detail=f"Twilio returned unexpected status {twilio_response.status_code}",
+            )
+
+        content_type = twilio_response.headers.get("content-type", "audio/mpeg")
+        if "audio" not in content_type and "octet-stream" not in content_type:
+            logger.warning(
+                f"Unexpected content-type '{content_type}' from Twilio for call {call_id}"
+            )
+            raise HTTPException(status_code=502, detail="Twilio returned non-audio content")
+
+        from fastapi.responses import Response as _BytesResponse
+        return _BytesResponse(
+            content=twilio_response.content,
             media_type="audio/mpeg",
-            headers={"Accept-Ranges": "none"},
         )
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(f"Error proxying recording for call {call_id}: {e}")
         raise HTTPException(status_code=502, detail="Failed to fetch recording from Twilio")
