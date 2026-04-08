@@ -18,8 +18,10 @@ from ..config.domain import get_websocket_url, get_public_base_url
 from ..database import get_db
 from ..models import CallLog, CallLeg, PhoneNumber, CallStatus, LegType
 from ..models.call_event import CallEvent
+from ..models.user import User
 from ..services.call_logger import CallLogger
 from ..services.acw_service import run_acw_background
+from ..auth.middleware import get_current_user, check_account_permission
 
 
 router = APIRouter(prefix="/api/calls", tags=["Calls"])
@@ -545,29 +547,30 @@ async def recording_status_callback(request: Request, db: Session = Depends(get_
 @router.get("/{call_id}/recording")
 async def get_call_recording(
     call_id: str,
-    request: Request,
-    hotel_id: str = None,
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
     Proxy endpoint to stream a Twilio call recording to authenticated clients.
 
-    Twilio recordings require HTTP Basic auth — credentials must stay server-side.
-    This endpoint verifies the call belongs to the requested hotel/account, then
-    proxies the audio from Twilio so the browser's <audio> element can play it.
+    Requires a valid JWT (Bearer token in Authorization header).
+    Verifies the authenticated user has call_logs.play_recordings permission
+    for the account that owns the call. Platform admins bypass the check.
 
-    hotel_id query param is used for tenant scoping.
+    The frontend fetches this via authFetch and creates a blob URL so the
+    <audio> element can play it without needing to send auth headers.
+
+    Twilio recordings require HTTP Basic auth — credentials stay server-side.
     """
     import httpx
-    from fastapi import HTTPException, Query
+    from fastapi import HTTPException
     from fastapi.responses import StreamingResponse
 
     call_log = db.query(CallLog).filter(CallLog.id == call_id).first()
     if not call_log:
         raise HTTPException(status_code=404, detail="Call log not found")
 
-    if hotel_id and str(call_log.hotel_id) != hotel_id:
-        raise HTTPException(status_code=403, detail="Access denied")
+    check_account_permission(user, str(call_log.hotel_id), "call_logs.play_recordings", db)
 
     if not call_log.recording_url:
         raise HTTPException(status_code=404, detail="No recording available for this call")

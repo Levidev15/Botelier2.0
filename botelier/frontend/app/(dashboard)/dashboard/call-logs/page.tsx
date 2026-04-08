@@ -847,7 +847,6 @@ export default function CallLogsPage() {
                       canEditLogs={canEditLogs}
                       canDeleteLogs={canDeleteLogs}
                       canPlayRecordings={canPlayRecordings}
-                      accountId={accountId}
                     />
                   ))}
                 </tbody>
@@ -987,7 +986,6 @@ function CallLogRow({
   canEditLogs,
   canDeleteLogs,
   canPlayRecordings,
-  accountId,
 }: {
   log: CallLog;
   isExpanded: boolean;
@@ -1003,13 +1001,21 @@ function CallLogRow({
   canEditLogs: boolean;
   canDeleteLogs: boolean;
   canPlayRecordings: boolean;
-  accountId: string | null;
 }) {
   const hasLegs = log.legs && log.legs.length > 1;
   const hasTranscript = log.transcript && log.transcript.length > 0;
   const [isMenuOpen, setIsMenuOpen] = useState(false);
   const [showPlayer, setShowPlayer] = useState(false);
+  const [blobUrl, setBlobUrl] = useState<string | null>(null);
+  const [loadingAudio, setLoadingAudio] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
+  const { authFetch } = useAuthToken();
+
+  useEffect(() => {
+    return () => {
+      if (blobUrl) URL.revokeObjectURL(blobUrl);
+    };
+  }, [blobUrl]);
 
   useEffect(() => {
     function handleClickOutside(e: MouseEvent) {
@@ -1024,8 +1030,30 @@ function CallLogRow({
   }, [isMenuOpen]);
 
   const hasRecording = !!log.recording_url && canPlayRecordings;
+
+  const togglePlayer = async () => {
+    if (showPlayer) {
+      setShowPlayer(false);
+      return;
+    }
+    if (!blobUrl && !loadingAudio) {
+      setLoadingAudio(true);
+      try {
+        const res = await authFetch(`/api/calls/${log.id}/recording`);
+        if (!res.ok) throw new Error("Failed to load recording");
+        const blob = await res.blob();
+        setBlobUrl(URL.createObjectURL(blob));
+      } catch {
+        notify.error("Failed to load recording");
+        setLoadingAudio(false);
+        return;
+      }
+      setLoadingAudio(false);
+    }
+    setShowPlayer(true);
+  };
+
   const hasMenuItems =
-    hasRecording ||
     canEditLogs ||
     (canDeleteLogs && hasTranscript && !log.ai_summary) ||
     (canViewTranscripts && !!log.ai_summary) ||
@@ -1070,10 +1098,25 @@ function CallLogRow({
               <div className="text-sm font-medium text-foreground">
                 {formatDateTime(log.started_at)}
               </div>
-              <div className="text-xs text-gray-500 flex items-center gap-1">
-                <Clock className="h-3 w-3" />
-                {formatDuration(log.duration_seconds)}
-              </div>
+              {hasRecording ? (
+                <button
+                  onClick={togglePlayer}
+                  className={`flex items-center gap-1 text-xs transition ${showPlayer ? "text-blue-400" : "text-gray-500 hover:text-blue-400"}`}
+                  title={showPlayer ? "Hide recording" : "Play recording"}
+                >
+                  {loadingAudio ? (
+                    <Loader2 className="h-3 w-3 animate-spin" />
+                  ) : (
+                    <Play className="h-3 w-3" />
+                  )}
+                  {formatDuration(log.duration_seconds)}
+                </button>
+              ) : (
+                <div className="text-xs text-gray-500 flex items-center gap-1">
+                  <Clock className="h-3 w-3" />
+                  {formatDuration(log.duration_seconds)}
+                </div>
+              )}
             </div>
           </div>
         </td>
@@ -1190,15 +1233,6 @@ function CallLogRow({
                 </button>
                 {isMenuOpen && (
                   <div className="absolute right-0 mt-1 w-48 bg-[#1c1c1c] border border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden">
-                    {hasRecording && (
-                      <button
-                        onClick={() => { setIsMenuOpen(false); setShowPlayer((p) => !p); }}
-                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-gray-300 hover:bg-[#252525] hover:text-foreground transition-colors text-left"
-                      >
-                        <Play className="h-4 w-4 text-gray-500" />
-                        {showPlayer ? "Hide Recording" : "Play Recording"}
-                      </button>
-                    )}
                     {canEditLogs && (
                       <button
                         onClick={() => { setIsMenuOpen(false); onEditLog(); }}
@@ -1231,7 +1265,7 @@ function CallLogRow({
                         Generate Summary
                       </button>
                     )}
-                    {canDeleteLogs && (hasRecording || canEditLogs || (hasTranscript && !log.ai_summary) || (canViewTranscripts && !!log.ai_summary)) && (
+                    {canDeleteLogs && (canEditLogs || (hasTranscript && !log.ai_summary) || (canViewTranscripts && !!log.ai_summary)) && (
                       <div className="border-t border-gray-700 my-0.5" />
                     )}
                     {canDeleteLogs && (
@@ -1255,12 +1289,20 @@ function CallLogRow({
           <td colSpan={11} className="bg-[#0f0f0f] px-8 py-3 border-t border-gray-800">
             <div className="flex items-center gap-3">
               <Play className="h-4 w-4 text-gray-400 flex-shrink-0" />
-              <audio
-                controls
-                className="w-full max-w-lg h-8"
-                src={`/api/calls/${log.id}/recording${accountId ? `?hotel_id=${accountId}` : ""}`}
-                style={{ colorScheme: "dark" }}
-              />
+              {blobUrl ? (
+                <audio
+                  controls
+                  autoPlay
+                  className="w-full max-w-lg h-8"
+                  src={blobUrl}
+                  style={{ colorScheme: "dark" }}
+                />
+              ) : (
+                <div className="flex items-center gap-2 text-sm text-gray-500">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Loading…
+                </div>
+              )}
               <button
                 onClick={() => setShowPlayer(false)}
                 className="p-1 text-gray-500 hover:text-gray-300 transition flex-shrink-0"
