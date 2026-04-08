@@ -615,7 +615,6 @@ async def get_call_recording(
     """
     import httpx
     from fastapi import HTTPException
-    from fastapi.responses import StreamingResponse
 
     call_log = db.query(CallLog).filter(CallLog.id == call_id).first()
     if not call_log:
