@@ -165,7 +165,7 @@ async def sms_webhook(
                     conv_id_str = str(conversation.id)
 
                     await broadcaster.broadcast(
-                        hotel_id=account_id_str,
+                        account_id=account_id_str,
                         event_type="new_message",
                         data={
                             "conversation_id": conv_id_str,
@@ -177,7 +177,7 @@ async def sms_webhook(
 
                     if ai_response:
                         await broadcaster.broadcast(
-                            hotel_id=account_id_str,
+                            account_id=account_id_str,
                             event_type="new_reply",
                             data={
                                 "conversation_id": conv_id_str,
@@ -189,7 +189,7 @@ async def sms_webhook(
 
                     if handoff_triggered:
                         await broadcaster.broadcast(
-                            hotel_id=account_id_str,
+                            account_id=account_id_str,
                             event_type="handoff_requested",
                             data={
                                 "conversation_id": conv_id_str,
@@ -247,7 +247,7 @@ async def sms_status_callback(
 
 @router.get("/stream")
 async def sms_event_stream(
-    hotel_id: str,
+    account_id: str,
 ):
     """
     Server-Sent Events stream for real-time SMS notifications.
@@ -263,6 +263,6 @@ async def sms_event_stream(
         keepalive         — every 15s to keep proxies alive
     """
     return EventSourceResponse(
-        broadcaster.event_generator(hotel_id=hotel_id),
+        broadcaster.event_generator(account_id=account_id),
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )
