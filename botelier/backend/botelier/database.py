@@ -253,6 +253,8 @@ _ADDITIVE_MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS ix_sms_template_account ON sms_templates(account_id)",
     # Drop the legacy hotels table (only after all FKs are gone).
     "DROP TABLE IF EXISTS hotels",
+    # Rename the legacy tools.hotel_id column to account_id (orphan column, no FK).
+    "ALTER TABLE tools RENAME COLUMN hotel_id TO account_id",
 ]
 
 

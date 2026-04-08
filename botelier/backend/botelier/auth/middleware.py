@@ -385,12 +385,12 @@ def check_account_permission(
 
 def get_hotel_context(permission: str):
     """
-    Reusable FastAPI dependency factory for query-param scoped hotel endpoints.
+    Reusable FastAPI dependency factory for query-param scoped account endpoints.
 
-    Accepts ``hotel_id`` **or** ``account_id`` from the query string (hotel_id
-    takes precedence), validates the UUID, loads the membership, performs a
-    permission check, and returns a fully-populated ``AccountContext`` with
-    platform-admin bypass support.
+    Accepts ``account_id`` from the query string (``hotel_id`` is accepted as a
+    deprecated alias for backward compatibility), validates the UUID, loads the
+    membership, performs a permission check, and returns a fully-populated
+    ``AccountContext`` with platform-admin bypass support.
 
     Usage::
 
@@ -399,7 +399,7 @@ def get_hotel_context(permission: str):
             ctx: AccountContext = Depends(get_hotel_context("resource.view")),
         ):
             ctx.require_permission("resource.edit")  # optional extra check
-            hotel_id = str(ctx.account.id)
+            account_id = str(ctx.account.id)
             ...
     """
     from uuid import UUID as _UUID
@@ -407,23 +407,23 @@ def get_hotel_context(permission: str):
     from typing import Optional as _Optional
 
     async def _dependency(
-        hotel_id: _Optional[str] = _Query(None, description="Hotel/account UUID"),
-        account_id: _Optional[str] = _Query(None, description="Account UUID (alias for hotel_id)"),
+        account_id: _Optional[str] = _Query(None, description="Account UUID"),
+        hotel_id: _Optional[str] = _Query(None, description="Deprecated alias for account_id"),
         user: User = Depends(get_current_user),
         db: Session = Depends(get_db),
     ) -> AccountContext:
-        raw_id = hotel_id or account_id
+        raw_id = account_id or hotel_id
         if not raw_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="hotel_id (or account_id) is required",
+                detail="account_id is required",
             )
         try:
             _UUID(raw_id)
         except (ValueError, AttributeError):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Invalid hotel_id — must be a valid UUID",
+                detail="Invalid account_id — must be a valid UUID",
             )
 
         account = db.query(Account).filter(Account.id == raw_id).first()

@@ -75,7 +75,7 @@ class Tool(Base):
     
     # Multi-tenancy - tools belong to a ToolSet collection
     tool_set_id = Column(UUID(as_uuid=True), ForeignKey("tool_sets.id"), nullable=True, index=True)
-    hotel_id = Column(UUID(as_uuid=True), nullable=True, index=True)  # Legacy, nullable during migration
+    account_id = Column(UUID(as_uuid=True), nullable=True, index=True)  # Orphan legacy column (no FK)
     assistant_id = Column(String(36), nullable=True, index=True)  # Legacy
     
     tool_set = relationship("ToolSet", back_populates="tools")
@@ -104,7 +104,7 @@ class Tool(Base):
             "tool_type": self.tool_type.value,
             "config": self.config,
             "tool_set_id": str(self.tool_set_id) if self.tool_set_id else None,
-            "hotel_id": str(self.hotel_id) if self.hotel_id else None,  # Legacy
+            "account_id": str(self.account_id) if self.account_id else None,
             "assistant_id": self.assistant_id,
             "is_active": self.is_active == "true",
             "created_at": self.created_at.isoformat() if self.created_at else None,
