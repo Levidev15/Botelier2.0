@@ -55,6 +55,7 @@ PERMISSIONS = {
         "export": "Export call logs to CSV",
         "edit": "Edit call log fields (disposition, resolution status)",
         "delete": "Delete call logs",
+        "play_recordings": "Play call recordings",
     },
     "knowledge_base": {
         "view": "View knowledge base entries",
@@ -98,7 +99,7 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
         "permissions": {
             "assistants": {"view": True, "create": True, "edit": True, "delete": True, "publish": True},
             "phone_numbers": {"view": True, "purchase": True, "configure": True, "release": True},
-            "call_logs": {"view": True, "view_transcripts": True, "export": True, "edit": True, "delete": True},
+            "call_logs": {"view": True, "view_transcripts": True, "export": True, "edit": True, "delete": True, "play_recordings": True},
             "knowledge_base": {"view": True, "create": True, "edit": True, "delete": True, "import": True},
             "tools": {"view": True, "create": True, "edit": True, "delete": True},
             "flows": {"view": True, "edit": True, "publish": True, "revert": True},
@@ -113,7 +114,7 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
         "permissions": {
             "assistants": {"view": True, "create": False, "edit": True, "delete": False, "publish": False},
             "phone_numbers": {"view": True, "purchase": False, "configure": False, "release": False},
-            "call_logs": {"view": True, "view_transcripts": True, "export": True, "edit": True, "delete": False},
+            "call_logs": {"view": True, "view_transcripts": True, "export": True, "edit": True, "delete": False, "play_recordings": True},
             "knowledge_base": {"view": True, "create": True, "edit": True, "delete": False, "import": False},
             "tools": {"view": True, "create": False, "edit": False, "delete": False},
             "flows": {"view": True, "edit": True, "publish": False, "revert": False},
@@ -128,7 +129,7 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
         "permissions": {
             "assistants": {"view": True, "create": False, "edit": False, "delete": False, "publish": False},
             "phone_numbers": {"view": True, "purchase": False, "configure": False, "release": False},
-            "call_logs": {"view": True, "view_transcripts": True, "export": True, "edit": False, "delete": False},
+            "call_logs": {"view": True, "view_transcripts": True, "export": True, "edit": False, "delete": False, "play_recordings": False},
             "knowledge_base": {"view": True, "create": False, "edit": False, "delete": False, "import": False},
             "tools": {"view": True, "create": False, "edit": False, "delete": False},
             "flows": {"view": True, "edit": False, "publish": False, "revert": False},

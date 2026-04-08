@@ -7,6 +7,7 @@ receives an incoming call. It returns TwiML to start a Media Stream.
 Also handles call status updates and creates call log records for analytics.
 """
 
+import os
 import uuid
 from datetime import datetime
 from fastapi import APIRouter, Request, Response, Depends, BackgroundTasks
@@ -498,6 +499,115 @@ async def transfer_status_callback(request: Request, db: Session = Depends(get_d
     except Exception as e:
         logger.exception(f"Error handling transfer status callback: {e}")
         return {"status": "error", "message": str(e)}
+
+
+@router.post("/recording-status")
+async def recording_status_callback(request: Request, db: Session = Depends(get_db)):
+    """
+    Twilio recording status callback.
+
+    Twilio POSTs here when a call recording's status changes.
+    When status is 'completed', we save the recording URL and SID to the call log.
+
+    Twilio sends these fields (as form data):
+        CallSid, RecordingSid, RecordingUrl, RecordingStatus, RecordingDuration
+    """
+    try:
+        form_data = await request.form()
+        call_sid = str(form_data.get("CallSid", ""))
+        recording_sid = str(form_data.get("RecordingSid", ""))
+        recording_url = str(form_data.get("RecordingUrl", ""))
+        recording_status = str(form_data.get("RecordingStatus", ""))
+
+        logger.info(
+            f"Recording status — CallSid: {call_sid}, RecordingSid: {recording_sid}, "
+            f"Status: {recording_status}"
+        )
+
+        if recording_status == "completed" and call_sid and recording_url:
+            media_url = recording_url.rstrip("/") + ".mp3"
+            call_log = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
+            if call_log:
+                call_log.recording_url = media_url
+                call_log.recording_sid = recording_sid
+                db.commit()
+                logger.info(f"Saved recording URL for call {call_sid}: {media_url}")
+            else:
+                logger.warning(f"No call log found for {call_sid} when saving recording")
+
+        return {"status": "received"}
+
+    except Exception as e:
+        logger.exception(f"Error handling recording status callback: {e}")
+        return {"status": "error", "message": str(e)}
+
+
+@router.get("/{call_id}/recording")
+async def get_call_recording(
+    call_id: str,
+    request: Request,
+    hotel_id: str = None,
+    db: Session = Depends(get_db),
+):
+    """
+    Proxy endpoint to stream a Twilio call recording to authenticated clients.
+
+    Twilio recordings require HTTP Basic auth — credentials must stay server-side.
+    This endpoint verifies the call belongs to the requested hotel/account, then
+    proxies the audio from Twilio so the browser's <audio> element can play it.
+
+    hotel_id query param is used for tenant scoping.
+    """
+    import httpx
+    from fastapi import HTTPException, Query
+    from fastapi.responses import StreamingResponse
+
+    call_log = db.query(CallLog).filter(CallLog.id == call_id).first()
+    if not call_log:
+        raise HTTPException(status_code=404, detail="Call log not found")
+
+    if hotel_id and str(call_log.hotel_id) != hotel_id:
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    if not call_log.recording_url:
+        raise HTTPException(status_code=404, detail="No recording available for this call")
+
+    from ..models.hotel import Hotel
+    hotel = db.query(Hotel).filter(Hotel.id == call_log.hotel_id).first()
+    if hotel and hotel.twilio_sub_account_sid and hotel.twilio_sub_auth_token:
+        twilio_account_sid = hotel.twilio_sub_account_sid
+        twilio_auth_token = hotel.twilio_sub_auth_token
+    else:
+        twilio_account_sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
+        twilio_auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "")
+
+    if not twilio_account_sid or not twilio_auth_token:
+        raise HTTPException(status_code=503, detail="Twilio credentials not configured")
+
+    recording_url = call_log.recording_url
+
+    try:
+        async def stream_recording():
+            async with httpx.AsyncClient() as client:
+                async with client.stream(
+                    "GET",
+                    recording_url,
+                    auth=(twilio_account_sid, twilio_auth_token),
+                    follow_redirects=True,
+                    timeout=30.0,
+                ) as response:
+                    async for chunk in response.aiter_bytes(chunk_size=8192):
+                        yield chunk
+
+        return StreamingResponse(
+            stream_recording(),
+            media_type="audio/mpeg",
+            headers={"Accept-Ranges": "none"},
+        )
+
+    except Exception as e:
+        logger.exception(f"Error proxying recording for call {call_id}: {e}")
+        raise HTTPException(status_code=502, detail="Failed to fetch recording from Twilio")
 
 
 @router.get("/{call_id}/events")

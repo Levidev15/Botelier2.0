@@ -439,6 +439,16 @@ class FunctionMapper:
                             try:
                                 call_logger = CallLogger(db)
 
+                                # Stop any active call recording before transferring
+                                if self.call_handler and hasattr(self.call_handler, 'call_recording_sids'):
+                                    _rec_sid = self.call_handler.call_recording_sids.get(self.call_sid)
+                                    if _rec_sid:
+                                        try:
+                                            self.twilio_client.calls(self.call_sid).recordings(_rec_sid).update(status="stopped")
+                                            logger.info(f"🛑 Recording {_rec_sid} stopped before transfer for call {self.call_sid}")
+                                        except Exception as _stop_err:
+                                            logger.warning(f"Failed to stop recording before transfer for call {self.call_sid}: {_stop_err}")
+
                                 # Save transcript BEFORE transfer (WebSocket closes after).
                                 # Append the pre-transfer message that was spoken via TTSSpeakFrame
                                 # (bypasses LLM context, so must be injected manually here).

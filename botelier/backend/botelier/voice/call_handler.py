@@ -69,6 +69,7 @@ class CallHandler:
         self.user_turn_timestamps: Dict[str, List[dict]] = {}  # call_sid -> list of {text, timestamp} per user utterance
         self.call_mcp_clients: Dict[str, PipecatMCPClient] = {}  # call_sid -> Pipecat MCPClient for MCP tool execution
         self.call_event_queues: Dict[str, CallEventQueue] = {}  # call_sid -> CallEventQueue
+        self.call_recording_sids: Dict[str, str] = {}  # call_sid -> Twilio RecordingSid
     
     async def handle_call(
         self,
@@ -196,6 +197,21 @@ class CallHandler:
                         mcp_enabled_tools = assistant.mcp_enabled_tools or []
                         logger.info(f"Loaded MCP connection {mcp_conn.name} with {len(mcp_enabled_tools)} enabled tools")
                 
+                # Check call recording entitlement
+                call_recording_enabled = False
+                if (assistant.call_settings or {}).get("call_recording_enabled"):
+                    from ..models.account import Account
+                    from ..auth.features import get_account_features
+                    acct = db.query(Account).filter(Account.id == assistant.hotel_id).first()
+                    if acct:
+                        features = get_account_features(
+                            subscription_tier=acct.subscription_tier.value,
+                            feature_flags_override=acct.feature_flags or {},
+                        )
+                        call_recording_enabled = features.get("call_recording", False)
+                    else:
+                        logger.warning(f"Account not found for hotel_id {assistant.hotel_id} — recording skipped")
+
             finally:
                 # CRITICAL: Close database session immediately after fetching data
                 # WebSocket connections are long-lived - keeping sessions open exhausts the connection pool
@@ -458,7 +474,24 @@ class CallHandler:
             await task.queue_frames([TTSSpeakFrame(text=config.greeting_message)])
             
             logger.info(f"▶️ Pipeline starting: STT ({config.stt_provider}) → LLM ({config.llm_provider}) → TTS ({config.tts_provider})")
-            
+
+            # 8.5 Start Twilio call recording if enabled for this assistant/account
+            if call_recording_enabled and hotel_twilio_sid and hotel_twilio_token:
+                try:
+                    from twilio.rest import Client as _TwilioClient
+                    from ..config.domain import get_public_base_url as _get_base_url
+                    _rec_client = _TwilioClient(hotel_twilio_sid, hotel_twilio_token)
+                    _base_url = _get_base_url()
+                    _recording = _rec_client.calls(call_sid).recordings.create(
+                        recording_channel="dual",
+                        recording_status_callback=f"{_base_url}/api/calls/recording-status",
+                        recording_status_callback_method="POST",
+                    )
+                    self.call_recording_sids[call_sid] = _recording.sid
+                    logger.info(f"🎙️ Recording started for call {call_sid}: {_recording.sid}")
+                except Exception as _rec_err:
+                    logger.error(f"Failed to start recording for call {call_sid}: {_rec_err}")
+
             # 9. Run pipeline (blocks until call ends)
             # Pipecat handles all remaining WebSocket messages (media, dtmf, stop)
             runner = PipelineRunner()
@@ -524,6 +557,8 @@ class CallHandler:
             if call_sid in self.call_mcp_clients:
                 del self.call_mcp_clients[call_sid]
                 logger.debug(f"Cleaned up MCP client reference for call {call_sid}")
+            if call_sid in self.call_recording_sids:
+                del self.call_recording_sids[call_sid]
     
     def mark_response_interrupted(self, call_sid: str, content: str):
         """

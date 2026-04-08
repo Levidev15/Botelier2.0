@@ -13,6 +13,7 @@ import { notify } from "@/lib/notifications";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import PostCallQATab from "@/components/forms/PostCallQATab";
+import { useAccountFeatures } from "@/hooks/useAccountFeatures";
 
 interface Assistant {
   id: string;
@@ -95,6 +96,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
   const router = useRouter();
   const { accountId, loading: contextLoading } = useAccountContext();
   const { authFetch } = useAuthToken();
+  const { isFeatureEnabled } = useAccountFeatures();
   const [activeTab, setActiveTab] = useState("info");
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -1163,6 +1165,38 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
                 className="w-full px-3 py-2 bg-[#1a1a1a] border border-[#333] rounded-lg text-sm text-white focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
               />
             </FormField>
+
+            {isFeatureEnabled("call_recording") && (
+              <FormField
+                label="Call Recording"
+                tooltip="Record inbound calls. Recordings are available in the call log once the call ends."
+              >
+                <label className="flex items-center gap-3 cursor-pointer">
+                  <div className="relative">
+                    <input
+                      type="checkbox"
+                      className="sr-only"
+                      checked={!!(formData.call_settings?.call_recording_enabled)}
+                      onChange={(e) => {
+                        setFormData(prev => ({
+                          ...prev,
+                          call_settings: {
+                            ...(prev.call_settings || {}),
+                            call_recording_enabled: e.target.checked,
+                          }
+                        }));
+                        setIsDirty(true);
+                      }}
+                    />
+                    <div className={`w-10 h-5 rounded-full transition-colors ${formData.call_settings?.call_recording_enabled ? "bg-indigo-600" : "bg-gray-700"}`} />
+                    <div className={`absolute top-0.5 left-0.5 w-4 h-4 bg-white rounded-full shadow transition-transform ${formData.call_settings?.call_recording_enabled ? "translate-x-5" : ""}`} />
+                  </div>
+                  <span className="text-sm text-gray-300">
+                    {formData.call_settings?.call_recording_enabled ? "Recording enabled" : "Recording disabled"}
+                  </span>
+                </label>
+              </FormField>
+            )}
 
             <div className="p-3 bg-[#1a1a1a] border border-[#333] rounded-lg">
               <p className="text-xs text-gray-400">
