@@ -479,6 +479,14 @@ class CallHandler:
 
             # 8.5 Start Twilio call recording if enabled for this assistant/account.
             #
+            # Why recording starts before runner.run():
+            # recordings.create() is a Twilio REST API call that attaches a recording
+            # to the live call object — it must be issued while the call is still active.
+            # runner.run() blocks until the entire pipeline finishes (i.e. the call ends),
+            # so recording MUST be started before run() or it would start after the call
+            # has already ended. Recording begins capturing from the moment it is created
+            # by Twilio, so starting just before run() means the full call audio is captured.
+            #
             # Guards before starting:
             # (a) Duplicate-SID guard: skip if a recording is already active for this
             #     call_sid, preventing double-recording on unexpected reconnects.
