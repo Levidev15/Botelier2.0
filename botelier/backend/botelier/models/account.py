@@ -8,7 +8,7 @@ Each account gets its own Twilio sub-account for isolation and billing.
 import uuid
 from datetime import datetime
 from sqlalchemy import Column, String, DateTime, Boolean, Text, Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 import enum
 
@@ -70,7 +70,9 @@ class Account(Base):
     trial_ends_at = Column(DateTime, nullable=True)
     
     settings = Column(Text, nullable=True)
-    
+
+    feature_flags = Column(JSONB, nullable=False, server_default='{}')
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
     
