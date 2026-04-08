@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, ReactNode } from "react";
-import { useAccountFeatures, FeatureMap } from "@/hooks/useAccountFeatures";
+import { useAccountFeatures, FeatureMap } from "@/lib/hooks/useAccountFeatures";
 
 interface AccountFeaturesContextValue {
   features: FeatureMap;

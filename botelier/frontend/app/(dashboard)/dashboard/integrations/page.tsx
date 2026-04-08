@@ -20,36 +20,17 @@ export default function IntegrationsPage() {
   const [loading, setLoading] = useState(true);
   const [selectedType, setSelectedType] = useState<IntegrationType | null>(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
-  const [connecting, setConnecting] = useState(false);
   const [testing, setTesting] = useState<string | null>(null);
-  const [credentials, setCredentials] = useState<Record<string, string>>({});
-  const [connectError, setConnectError] = useState<string | null>(null);
   const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
   
   const [mcpConnections, setMcpConnections] = useState<MCPConnection[]>([]);
   const [showMcpModal, setShowMcpModal] = useState(false);
   const [editingMcp, setEditingMcp] = useState<MCPConnection | null>(null);
   const [testingMcp, setTestingMcp] = useState<string | null>(null);
-  const [mcpForm, setMcpForm] = useState({
-    name: "",
-    description: "",
-    server_url: "",
-    auth_type: "none",
-    api_key: "",
-    token: "",
-  });
 
   const [secrets, setSecrets] = useState<AccountSecret[]>([]);
   const [showSecretModal, setShowSecretModal] = useState(false);
   const [editingSecret, setEditingSecret] = useState<AccountSecret | null>(null);
-  const [savingSecret, setSavingSecret] = useState(false);
-  const [showSecretValue, setShowSecretValue] = useState(false);
-  const [secretForm, setSecretForm] = useState({
-    name: "",
-    key: "",
-    description: "",
-    value: "",
-  });
 
   const [integrationStats, setIntegrationStats] = useState<Record<string, {
     total_calls: number;
@@ -150,15 +131,11 @@ export default function IntegrationsPage() {
 
   const handleCreateSecret = () => {
     setEditingSecret(null);
-    setShowSecretValue(false);
-    setSecretForm({ name: "", key: "", description: "", value: "" });
     setShowSecretModal(true);
   };
 
   const handleEditSecret = (secret: AccountSecret) => {
     setEditingSecret(secret);
-    setShowSecretValue(false);
-    setSecretForm({ name: secret.name, key: secret.key, description: secret.description || "", value: "" });
     setShowSecretModal(true);
   };
 
@@ -178,119 +155,14 @@ export default function IntegrationsPage() {
     }
   };
 
-  const handleSaveSecret = async () => {
-    if (!secretForm.name.trim() || !secretForm.key.trim()) {
-      showNotification("error", "Name and key are required");
-      return;
-    }
-    if (!editingSecret && !secretForm.value.trim()) {
-      showNotification("error", "Value is required for a new secret");
-      return;
-    }
-    setSavingSecret(true);
-    try {
-      const payload: Record<string, string> = {
-        name: secretForm.name.trim(),
-        key: secretForm.key.trim().replace(/\s+/g, "_"),
-        description: secretForm.description.trim(),
-      };
-      if (secretForm.value.trim()) payload.value = secretForm.value;
-
-      const url = editingSecret
-        ? `/api/secrets/account/${accountId}/${editingSecret.id}`
-        : `/api/secrets/account/${accountId}`;
-      const method = editingSecret ? "PATCH" : "POST";
-      const res = await authFetch(url, {
-        method,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(payload),
-      });
-      if (res.ok) {
-        showNotification("success", editingSecret ? "Secret updated" : "Secret created");
-        setShowSecretModal(false);
-        fetchSecrets();
-      } else {
-        const err = await res.json().catch(() => ({}));
-        showNotification("error", err.detail || "Failed to save secret");
-      }
-    } finally {
-      setSavingSecret(false);
-    }
-  };
-
   const handleCreateMcp = () => {
     setEditingMcp(null);
-    setMcpForm({
-      name: "",
-      description: "",
-      server_url: "",
-      auth_type: "none",
-      api_key: "",
-      token: "",
-    });
     setShowMcpModal(true);
   };
 
   const handleEditMcp = (mcp: MCPConnection) => {
     setEditingMcp(mcp);
-    setMcpForm({
-      name: mcp.name,
-      description: mcp.description || "",
-      server_url: mcp.server_url,
-      auth_type: mcp.auth_type,
-      api_key: "",
-      token: "",
-    });
     setShowMcpModal(true);
-  };
-
-  const handleSaveMcp = async () => {
-    if (!mcpForm.name || !mcpForm.server_url) {
-      alert("Name and Server URL are required");
-      return;
-    }
-
-    setConnecting(true);
-
-    try {
-      const credentials: Record<string, string> = {};
-      if (mcpForm.auth_type === "api_key" && mcpForm.api_key) {
-        credentials.api_key = mcpForm.api_key;
-      } else if (mcpForm.auth_type === "bearer" && mcpForm.token) {
-        credentials.token = mcpForm.token;
-      }
-
-      const payload = {
-        account_id: accountId,
-        name: mcpForm.name,
-        description: mcpForm.description || null,
-        server_url: mcpForm.server_url,
-        auth_type: mcpForm.auth_type,
-        credentials: Object.keys(credentials).length > 0 ? credentials : null,
-      };
-
-      const url = editingMcp
-        ? `/api/mcp-connections/${editingMcp.id}`
-        : "/api/mcp-connections";
-      const method = editingMcp ? "PUT" : "POST";
-
-      const response = await authFetch(url, {
-        method,
-        body: JSON.stringify(payload),
-      });
-
-      if (response.ok) {
-        setShowMcpModal(false);
-        fetchMCPConnections();
-      } else {
-        const error = await response.json();
-        alert(`Failed to save: ${error.detail || "Unknown error"}`);
-      }
-    } catch (error) {
-      console.error("Failed to save MCP connection:", error);
-    } finally {
-      setConnecting(false);
-    }
   };
 
   const handleDeleteMcp = async (mcp: MCPConnection) => {
@@ -341,14 +213,6 @@ export default function IntegrationsPage() {
 
   const handleConnect = (type: IntegrationType) => {
     setSelectedType(type);
-    setConnectError(null);
-    const defaults: Record<string, string> = {};
-    type.required_fields.forEach(field => {
-      if (field.type === "select" && field.options && field.options.length > 0) {
-        defaults[field.key] = field.options[0];
-      }
-    });
-    setCredentials(defaults);
     setShowConnectModal(true);
   };
 
@@ -397,66 +261,6 @@ export default function IntegrationsPage() {
       showNotification("error", "Connection test failed — please try again");
     } finally {
       setTesting(null);
-    }
-  };
-
-  const handleSubmitConnect = async () => {
-    if (!selectedType) return;
-    setConnectError(null);
-
-    if (!credentials["_connection_name"]?.trim()) {
-      setConnectError("Please enter a connection name");
-      return;
-    }
-
-    const visibleFields = selectedType.required_fields.filter(field => {
-      if (!field.show_when) return true;
-      return Object.entries(field.show_when).every(
-        ([key, value]) => (credentials[key] || selectedType.required_fields.find(f => f.key === key)?.options?.[0]) === value
-      );
-    });
-
-    const missingFields = visibleFields
-      .filter(f => f.required && !credentials[f.key])
-      .map(f => f.label);
-
-    if (missingFields.length > 0) {
-      setConnectError(`Missing required fields: ${missingFields.join(", ")}`);
-      return;
-    }
-
-    setConnecting(true);
-
-    const { _connection_name, ...apiCredentials } = credentials;
-
-    try {
-      const response = await authFetch(`/api/integrations/account/${accountId}/connect`, {
-        method: "POST",
-        body: JSON.stringify({
-          integration_type_id: selectedType.id,
-          credentials: apiCredentials,
-          connection_name: _connection_name
-        })
-      });
-
-      const result = await response.json();
-
-      if (result.status === "connected") {
-        setShowConnectModal(false);
-        showNotification("success", `${_connection_name} connected successfully`);
-        fetchIntegrations();
-      } else if (result.status === "error" || result.last_error) {
-        setConnectError(result.last_error || "Connection failed — check your credentials and try again");
-        fetchIntegrations();
-      } else if (result.detail) {
-        setConnectError(result.detail);
-      } else {
-        setConnectError("Connection failed — an unexpected error occurred");
-      }
-    } catch (error: any) {
-      setConnectError(error?.message || "Connection failed — please check your network and try again");
-    } finally {
-      setConnecting(false);
     }
   };
 
@@ -647,41 +451,35 @@ export default function IntegrationsPage() {
         )}
       </div>
 
-      {/* Secret Modal */}
-      {showSecretModal && (
+      {showSecretModal && accountId && (
         <SecretModal
           editingSecret={editingSecret}
-          secretForm={secretForm}
-          setSecretForm={setSecretForm}
-          showSecretValue={showSecretValue}
-          setShowSecretValue={setShowSecretValue}
-          handleSaveSecret={handleSaveSecret}
-          savingSecret={savingSecret}
+          accountId={accountId}
+          authFetch={authFetch}
+          onSuccess={fetchSecrets}
+          onNotify={showNotification}
           onClose={() => setShowSecretModal(false)}
         />
       )}
 
-      {/* MCP Connection Modal */}
-      {showMcpModal && (
+      {showMcpModal && accountId && (
         <MCPModal
           editingMcp={editingMcp}
-          mcpForm={mcpForm}
-          setMcpForm={setMcpForm}
-          handleSaveMcp={handleSaveMcp}
-          connecting={connecting}
+          accountId={accountId}
+          authFetch={authFetch}
+          onSuccess={fetchMCPConnections}
           onClose={() => setShowMcpModal(false)}
         />
       )}
 
-      {showConnectModal && selectedType && (
+      {showConnectModal && selectedType && accountId && (
         <ConnectModal
           selectedType={selectedType}
-          credentials={credentials}
-          setCredentials={setCredentials}
-          connectError={connectError}
-          handleSubmitConnect={handleSubmitConnect}
-          connecting={connecting}
-          onClose={() => { setShowConnectModal(false); setConnectError(null); }}
+          accountId={accountId}
+          authFetch={authFetch}
+          onSuccess={fetchIntegrations}
+          onNotify={showNotification}
+          onClose={() => setShowConnectModal(false)}
         />
       )}
     </div>
