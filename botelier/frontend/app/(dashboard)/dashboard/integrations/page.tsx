@@ -4,99 +4,13 @@ import { useState, useEffect } from "react";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { confirmAction } from "@/lib/notifications";
-import { 
-  Plug, 
-  Check, 
-  AlertCircle, 
-  ExternalLink,
-  RefreshCw,
-  Loader2,
-  X,
-  ChevronRight,
-  Plus,
-  Server,
-  Trash2,
-  Pencil,
-  Wrench,
-  KeyRound,
-  Eye,
-  EyeOff
-} from "lucide-react";
-
-interface AccountSecret {
-  id: string;
-  key: string;
-  name: string;
-  description: string | null;
-  created_at: string;
-  updated_at: string;
-}
-
-interface IntegrationType {
-  id: string;
-  slug: string;
-  name: string;
-  description: string;
-  logo_url: string | null;
-  provider: string;
-  auth_type: string;
-  documentation_url: string | null;
-  is_enabled: boolean;
-  required_fields: RequiredField[];
-  endpoint_count: number;
-}
-
-interface RequiredField {
-  key: string;
-  label: string;
-  type: string;
-  placeholder?: string;
-  description?: string;
-  required: boolean;
-  options?: string[];
-  option_labels?: Record<string, string>;
-  show_when?: Record<string, string>;
-}
-
-interface AccountIntegration {
-  id: string;
-  integration_type_id: string;
-  integration_slug: string;
-  integration_name: string;
-  connection_name: string | null;
-  status: string;
-  connected_at: string | null;
-  last_sync_at: string | null;
-  last_error: string | null;
-}
-
-interface MCPConnection {
-  id: string;
-  account_id: string;
-  name: string;
-  description: string | null;
-  transport_type: string;
-  server_url: string;
-  auth_type: string;
-  status: string;
-  last_connected_at: string | null;
-  last_error: string | null;
-  is_active: boolean;
-  discovered_tools: MCPTool[];
-  created_at: string;
-  updated_at: string | null;
-}
-
-interface MCPTool {
-  name: string;
-  description: string;
-  parameters: {
-    type: string;
-    properties: Record<string, unknown>;
-    required: string[];
-  };
-  source: string;
-}
+import { Check, AlertCircle, X, Loader2, Plug, Pencil, Trash2, Plus, Server, KeyRound } from "lucide-react";
+import type { AccountSecret, IntegrationType, AccountIntegration, MCPConnection, IntegrationStats } from "./types";
+import IntegrationCard from "./components/IntegrationCard";
+import MCPConnectionCard from "./components/MCPConnectionCard";
+import SecretModal from "./components/SecretModal";
+import MCPModal from "./components/MCPModal";
+import ConnectModal from "./components/ConnectModal";
 
 export default function IntegrationsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
@@ -421,38 +335,6 @@ export default function IntegrationsPage() {
     }
   };
 
-  const getMcpStatusBadge = (status: string) => {
-    switch (status) {
-      case "connected":
-        return (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-900/50 text-green-400 border border-green-700">
-            <Check className="h-3 w-3 mr-1" />
-            Connected
-          </span>
-        );
-      case "error":
-        return (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-900/50 text-red-400 border border-red-700">
-            <AlertCircle className="h-3 w-3 mr-1" />
-            Error
-          </span>
-        );
-      case "connecting":
-        return (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-900/50 text-yellow-400 border border-yellow-700">
-            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-            Connecting
-          </span>
-        );
-      default:
-        return (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-800 text-gray-400 border border-gray-700">
-            Not Tested
-          </span>
-        );
-    }
-  };
-
   const getIntegrationConnections = (typeId: string): AccountIntegration[] => {
     return accountIntegrations.filter(i => i.integration_type_id === typeId);
   };
@@ -578,52 +460,6 @@ export default function IntegrationsPage() {
     }
   };
 
-  const getStatusBadge = (status: string) => {
-    switch (status) {
-      case "connected":
-        return (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-green-900/50 text-green-400 border border-green-700">
-            <span className="w-2 h-2 rounded-full bg-green-400 mr-1.5 animate-pulse" />
-            Connected
-          </span>
-        );
-      case "error":
-        return (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-red-900/50 text-red-400 border border-red-700">
-            <span className="w-2 h-2 rounded-full bg-red-400 mr-1.5" />
-            Error
-          </span>
-        );
-      case "token_expired":
-        return (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-900/50 text-amber-400 border border-amber-700">
-            <AlertCircle className="h-3 w-3 mr-1" />
-            Token Expired
-          </span>
-        );
-      case "connecting":
-        return (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-yellow-900/50 text-yellow-400 border border-yellow-700">
-            <Loader2 className="h-3 w-3 mr-1 animate-spin" />
-            Connecting
-          </span>
-        );
-      case "disconnected":
-        return (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-800 text-gray-400 border border-gray-700">
-            <span className="w-2 h-2 rounded-full bg-gray-500 mr-1.5" />
-            Disconnected
-          </span>
-        );
-      default:
-        return (
-          <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-gray-800 text-gray-400 border border-gray-700">
-            {status.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}
-          </span>
-        );
-    }
-  };
-
   if (loading || contextLoading || authLoading) {
     return (
       <div className="p-8 flex items-center justify-center">
@@ -663,131 +499,18 @@ export default function IntegrationsPage() {
       </div>
 
       <div className="space-y-4">
-        {integrationTypes.map((type) => {
-          const connections = getIntegrationConnections(type.id);
-          const slugInitials = type.slug === "opera-cloud" ? "OC" : type.slug === "guestcentric-crs" ? "GC" : type.name.slice(0, 2).toUpperCase();
-          const gradientClass = type.slug === "opera-cloud" ? "from-orange-500 to-red-600" : "from-emerald-500 to-teal-600";
-
-          return (
-            <div
-              key={type.id}
-              className="bg-[#141414] border border-gray-800 rounded-lg p-6 hover:border-gray-700 transition"
-            >
-              <div className="flex items-start justify-between">
-                <div className="flex items-start gap-4">
-                  <div className={`w-12 h-12 bg-gradient-to-br ${gradientClass} rounded-lg flex items-center justify-center text-white font-bold text-lg`}>
-                    {slugInitials}
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-2">
-                      <h3 className="text-lg font-semibold">{type.name}</h3>
-                      {type.endpoint_count > 0 && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-800 text-gray-400 border border-gray-700">
-                          {type.endpoint_count} endpoint{type.endpoint_count !== 1 ? "s" : ""}
-                        </span>
-                      )}
-                    </div>
-                    <p className="text-sm text-gray-400 mt-1 max-w-lg">
-                      {type.description}
-                    </p>
-                    {type.documentation_url && (
-                      <a
-                        href={type.documentation_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="inline-flex items-center text-xs text-blue-400 hover:text-blue-300 mt-2"
-                      >
-                        View Documentation
-                        <ExternalLink className="h-3 w-3 ml-1" />
-                      </a>
-                    )}
-                  </div>
-                </div>
-
-                <button
-                  onClick={() => handleConnect(type)}
-                  className="inline-flex items-center px-4 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition"
-                >
-                  <Plus className="h-4 w-4 mr-1" />
-                  Add Connection
-                </button>
-              </div>
-
-              {connections.length > 0 && (
-                <div className="mt-4 space-y-2 border-t border-gray-800 pt-4">
-                  {connections.map((conn) => (
-                    <div
-                      key={conn.id}
-                      className="flex items-center justify-between bg-[#0a0a0a] border border-gray-800 rounded-lg px-4 py-3"
-                    >
-                      <div className="flex items-center gap-3">
-                        <Plug className="h-4 w-4 text-gray-500" />
-                        <div>
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm font-medium">{conn.connection_name || conn.integration_name}</span>
-                            {getStatusBadge(conn.status)}
-                          </div>
-                          {conn.last_error && (
-                            <p className="text-xs text-red-400 mt-0.5">{conn.last_error}</p>
-                          )}
-                          {integrationStats[conn.id] && (() => {
-                            const s = integrationStats[conn.id];
-                            return (
-                              <div className="flex items-center gap-3 mt-1.5">
-                                <span className="text-xs text-gray-500">
-                                  <span className="text-green-400 font-medium">{s.successful_calls}</span>/{s.total_calls} calls OK
-                                </span>
-                                {s.failed_calls > 0 && (
-                                  <span className="text-xs text-red-400">{s.failed_calls} failed</span>
-                                )}
-                                {s.last_called_at && (
-                                  <span className="text-xs text-gray-600">
-                                    Last: {new Date(s.last_called_at).toLocaleDateString()}
-                                  </span>
-                                )}
-                                {s.last_error && (
-                                  <span className="text-xs text-red-400 truncate max-w-[200px]" title={s.last_error}>
-                                    {s.last_error}
-                                  </span>
-                                )}
-                              </div>
-                            );
-                          })()}
-                          {conn.connected_at && (
-                            <p className="text-xs text-gray-500 mt-0.5">
-                              Connected {new Date(conn.connected_at).toLocaleDateString()}
-                            </p>
-                          )}
-                        </div>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <button
-                          onClick={() => handleTestConnection(conn)}
-                          disabled={testing === conn.id}
-                          className="px-2.5 py-1 text-sm text-gray-300 bg-gray-800 hover:bg-gray-700 rounded-lg transition disabled:opacity-50"
-                          title="Test connection"
-                        >
-                          {testing === conn.id ? (
-                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                          ) : (
-                            <RefreshCw className="h-3.5 w-3.5" />
-                          )}
-                        </button>
-                        <button
-                          onClick={() => handleDisconnect(conn)}
-                          className="px-2.5 py-1 text-sm text-red-400 hover:text-red-300 bg-gray-800 hover:bg-gray-700 rounded-lg transition"
-                          title="Remove connection"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </div>
-          );
-        })}
+        {integrationTypes.map((type) => (
+          <IntegrationCard
+            key={type.id}
+            type={type}
+            connections={getIntegrationConnections(type.id)}
+            integrationStats={integrationStats}
+            testing={testing}
+            handleConnect={handleConnect}
+            handleTestConnection={handleTestConnection}
+            handleDisconnect={handleDisconnect}
+          />
+        ))}
 
         {integrationTypes.length === 0 && (
           <div className="bg-[#141414] border border-gray-800 rounded-lg p-12 text-center">
@@ -820,89 +543,14 @@ export default function IntegrationsPage() {
 
         <div className="space-y-4">
           {mcpConnections.map((mcp) => (
-            <div
+            <MCPConnectionCard
               key={mcp.id}
-              className="bg-[#141414] border border-gray-800 rounded-lg p-6 hover:border-gray-700 transition"
-            >
-              <div className="flex items-start justify-between">
-                <div className="flex items-start gap-4">
-                  <div className="w-12 h-12 bg-gradient-to-br from-purple-500 to-blue-600 rounded-lg flex items-center justify-center text-white">
-                    <Server className="h-6 w-6" />
-                  </div>
-                  <div>
-                    <div className="flex items-center gap-3">
-                      <h3 className="text-lg font-semibold">{mcp.name}</h3>
-                      {getMcpStatusBadge(mcp.status)}
-                      {!mcp.is_active && (
-                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-800 text-gray-500">
-                          Inactive
-                        </span>
-                      )}
-                    </div>
-                    {mcp.description && (
-                      <p className="text-sm text-gray-400 mt-1">{mcp.description}</p>
-                    )}
-                    <p className="text-xs text-gray-500 mt-2 font-mono">{mcp.server_url}</p>
-                    {mcp.last_error && (
-                      <p className="text-xs text-red-400 mt-1">Error: {mcp.last_error}</p>
-                    )}
-                    {mcp.discovered_tools && mcp.discovered_tools.length > 0 && (
-                      <div className="mt-3">
-                        <p className="text-xs text-gray-500 mb-1 flex items-center gap-1">
-                          <Wrench className="h-3 w-3" />
-                          {mcp.discovered_tools.length} tool{mcp.discovered_tools.length !== 1 ? "s" : ""} available
-                        </p>
-                        <div className="flex flex-wrap gap-1">
-                          {mcp.discovered_tools.slice(0, 5).map((tool) => (
-                            <span
-                              key={tool.name}
-                              className="px-2 py-0.5 text-xs bg-gray-800 text-gray-300 rounded"
-                              title={tool.description}
-                            >
-                              {tool.name}
-                            </span>
-                          ))}
-                          {mcp.discovered_tools.length > 5 && (
-                            <span className="px-2 py-0.5 text-xs text-gray-500">
-                              +{mcp.discovered_tools.length - 5} more
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                </div>
-
-                <div className="flex items-center gap-2">
-                  <button
-                    onClick={() => handleTestMcp(mcp)}
-                    disabled={testingMcp === mcp.id}
-                    className="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition disabled:opacity-50"
-                    title="Test Connection"
-                  >
-                    {testingMcp === mcp.id ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <RefreshCw className="h-4 w-4" />
-                    )}
-                  </button>
-                  <button
-                    onClick={() => handleEditMcp(mcp)}
-                    className="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition"
-                    title="Edit"
-                  >
-                    <Pencil className="h-4 w-4" />
-                  </button>
-                  <button
-                    onClick={() => handleDeleteMcp(mcp)}
-                    className="p-2 text-gray-400 hover:text-red-400 hover:bg-gray-800 rounded-lg transition"
-                    title="Delete"
-                  >
-                    <Trash2 className="h-4 w-4" />
-                  </button>
-                </div>
-              </div>
-            </div>
+              mcp={mcp}
+              testingMcp={testingMcp}
+              handleTestMcp={handleTestMcp}
+              handleEditMcp={handleEditMcp}
+              handleDeleteMcp={handleDeleteMcp}
+            />
           ))}
 
           {mcpConnections.length === 0 && (
@@ -1001,348 +649,40 @@ export default function IntegrationsPage() {
 
       {/* Secret Modal */}
       {showSecretModal && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-[#1a1a1a] border border-gray-800 rounded-xl w-full max-w-md">
-            <div className="flex items-center justify-between p-4 border-b border-gray-800">
-              <h2 className="text-lg font-semibold">
-                {editingSecret ? "Edit Secret" : "Add Secret"}
-              </h2>
-              <button onClick={() => setShowSecretModal(false)} className="p-1 hover:bg-gray-800 rounded-lg transition">
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-            <div className="p-5 space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Name <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="My API Key"
-                  value={secretForm.name}
-                  onChange={(e) => setSecretForm(prev => ({ ...prev, name: e.target.value }))}
-                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Key <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="my_api_key"
-                  value={secretForm.key}
-                  disabled={!!editingSecret}
-                  onChange={(e) => setSecretForm(prev => ({ ...prev, key: e.target.value.replace(/[^a-zA-Z0-9_]/g, "_") }))}
-                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm font-mono disabled:opacity-50"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  Used as <code className="text-blue-400">{`{{secrets.${secretForm.key || "key_name"}}}`}</code> in flows
-                </p>
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">Description</label>
-                <input
-                  type="text"
-                  placeholder="Optional description"
-                  value={secretForm.description}
-                  onChange={(e) => setSecretForm(prev => ({ ...prev, description: e.target.value }))}
-                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                />
-              </div>
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Value {!editingSecret && <span className="text-red-400">*</span>}
-                  {editingSecret && <span className="text-gray-500 font-normal"> (leave blank to keep current)</span>}
-                </label>
-                <div className="relative">
-                  <input
-                    type={showSecretValue ? "text" : "password"}
-                    placeholder="••••••••"
-                    value={secretForm.value}
-                    onChange={(e) => setSecretForm(prev => ({ ...prev, value: e.target.value }))}
-                    className="w-full px-3 py-2 pr-10 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm font-mono"
-                  />
-                  <button
-                    type="button"
-                    onClick={() => setShowSecretValue(v => !v)}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-gray-300"
-                  >
-                    {showSecretValue ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
-                  </button>
-                </div>
-              </div>
-            </div>
-            <div className="flex items-center justify-end gap-3 p-4 border-t border-gray-800">
-              <button
-                onClick={() => setShowSecretModal(false)}
-                className="px-4 py-2 text-sm font-medium text-gray-300 hover:text-white transition"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSaveSecret}
-                disabled={savingSecret}
-                className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition disabled:opacity-50"
-              >
-                {savingSecret ? <Loader2 className="h-4 w-4 mr-2 animate-spin" /> : null}
-                {editingSecret ? "Update Secret" : "Save Secret"}
-              </button>
-            </div>
-          </div>
-        </div>
+        <SecretModal
+          editingSecret={editingSecret}
+          secretForm={secretForm}
+          setSecretForm={setSecretForm}
+          showSecretValue={showSecretValue}
+          setShowSecretValue={setShowSecretValue}
+          handleSaveSecret={handleSaveSecret}
+          savingSecret={savingSecret}
+          onClose={() => setShowSecretModal(false)}
+        />
       )}
 
       {/* MCP Connection Modal */}
       {showMcpModal && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-[#1a1a1a] border border-gray-800 rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between p-4 border-b border-gray-800">
-              <h2 className="text-lg font-semibold">
-                {editingMcp ? "Edit MCP Connection" : "Add MCP Connection"}
-              </h2>
-              <button
-                onClick={() => setShowMcpModal(false)}
-                className="p-1 hover:bg-gray-800 rounded-lg transition"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="p-6 space-y-4">
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Name <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="My MCP Server"
-                  value={mcpForm.name}
-                  onChange={(e) => setMcpForm(prev => ({ ...prev, name: e.target.value }))}
-                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Description
-                </label>
-                <input
-                  type="text"
-                  placeholder="Optional description"
-                  value={mcpForm.description}
-                  onChange={(e) => setMcpForm(prev => ({ ...prev, description: e.target.value }))}
-                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                />
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Server URL <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder="https://your-mcp-server.com/sse"
-                  value={mcpForm.server_url}
-                  onChange={(e) => setMcpForm(prev => ({ ...prev, server_url: e.target.value }))}
-                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm font-mono"
-                />
-                <p className="text-xs text-gray-500 mt-1">
-                  The SSE endpoint of your MCP server
-                </p>
-              </div>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Authentication
-                </label>
-                <select
-                  value={mcpForm.auth_type}
-                  onChange={(e) => setMcpForm(prev => ({ ...prev, auth_type: e.target.value }))}
-                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                >
-                  <option value="none">No Authentication</option>
-                  <option value="api_key">API Key</option>
-                  <option value="bearer">Bearer Token</option>
-                </select>
-              </div>
-
-              {mcpForm.auth_type === "api_key" && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
-                    API Key
-                  </label>
-                  <input
-                    type="password"
-                    placeholder={editingMcp ? "Leave empty to keep existing" : "Enter API key"}
-                    value={mcpForm.api_key}
-                    onChange={(e) => setMcpForm(prev => ({ ...prev, api_key: e.target.value }))}
-                    className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                  />
-                </div>
-              )}
-
-              {mcpForm.auth_type === "bearer" && (
-                <div>
-                  <label className="block text-sm font-medium text-gray-300 mb-1">
-                    Bearer Token
-                  </label>
-                  <input
-                    type="password"
-                    placeholder={editingMcp ? "Leave empty to keep existing" : "Enter token"}
-                    value={mcpForm.token}
-                    onChange={(e) => setMcpForm(prev => ({ ...prev, token: e.target.value }))}
-                    className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                  />
-                </div>
-              )}
-            </div>
-
-            <div className="flex items-center justify-end gap-3 p-4 border-t border-gray-800">
-              <button
-                onClick={() => setShowMcpModal(false)}
-                className="px-4 py-2 text-sm font-medium text-gray-300 hover:text-white transition"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSaveMcp}
-                disabled={connecting}
-                className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition disabled:opacity-50"
-              >
-                {connecting ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Saving...
-                  </>
-                ) : (
-                  editingMcp ? "Update" : "Create"
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
+        <MCPModal
+          editingMcp={editingMcp}
+          mcpForm={mcpForm}
+          setMcpForm={setMcpForm}
+          handleSaveMcp={handleSaveMcp}
+          connecting={connecting}
+          onClose={() => setShowMcpModal(false)}
+        />
       )}
 
       {showConnectModal && selectedType && (
-        <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
-          <div className="bg-[#1a1a1a] border border-gray-800 rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
-            <div className="flex items-center justify-between p-4 border-b border-gray-800">
-              <h2 className="text-lg font-semibold">Connect {selectedType.name}</h2>
-              <button
-                onClick={() => setShowConnectModal(false)}
-                className="p-1 hover:bg-gray-800 rounded-lg transition"
-              >
-                <X className="h-5 w-5" />
-              </button>
-            </div>
-
-            <div className="p-6 space-y-4">
-              <p className="text-sm text-gray-400">
-                Enter your credentials to connect to {selectedType.name}. 
-                Your credentials are encrypted and stored securely.
-              </p>
-
-              <div>
-                <label className="block text-sm font-medium text-gray-300 mb-1">
-                  Connection Name <span className="text-red-400">*</span>
-                </label>
-                <input
-                  type="text"
-                  placeholder={`e.g., ${selectedType.name} - Hotel Name`}
-                  value={credentials["_connection_name"] || ""}
-                  onChange={(e) => setCredentials(prev => ({ ...prev, _connection_name: e.target.value }))}
-                  className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                />
-                <p className="text-xs text-gray-500 mt-1">A label to identify this connection (e.g., hotel or property name)</p>
-              </div>
-
-              {selectedType.required_fields.map((field) => {
-                if (field.show_when) {
-                  const shouldShow = Object.entries(field.show_when).every(
-                    ([key, value]) => (credentials[key] || selectedType.required_fields.find(f => f.key === key)?.options?.[0]) === value
-                  );
-                  if (!shouldShow) return null;
-                }
-
-                return (
-                  <div key={field.key}>
-                    <label className="block text-sm font-medium text-gray-300 mb-1">
-                      {field.label}
-                      {field.required && <span className="text-red-400 ml-1">*</span>}
-                    </label>
-                    {field.type === "select" && field.options ? (
-                      <select
-                        value={credentials[field.key] || field.options[0] || ""}
-                        onChange={(e) => setCredentials(prev => ({ ...prev, [field.key]: e.target.value }))}
-                        className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                      >
-                        {field.options.map((opt) => (
-                          <option key={opt} value={opt}>
-                            {field.option_labels?.[opt] || opt.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase())}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <input
-                        type={field.type === "password" ? "password" : "text"}
-                        placeholder={field.placeholder}
-                        value={credentials[field.key] || ""}
-                        onChange={(e) => setCredentials(prev => ({ ...prev, [field.key]: e.target.value }))}
-                        className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                      />
-                    )}
-                    {field.description && (
-                      <p className="text-xs text-gray-500 mt-1">{field.description}</p>
-                    )}
-                  </div>
-                );
-              })}
-
-              {connectError && (
-                <div className="flex items-start gap-2 p-3 bg-red-900/30 border border-red-800 rounded-lg">
-                  <AlertCircle className="h-4 w-4 text-red-400 flex-shrink-0 mt-0.5" />
-                  <p className="text-sm text-red-300">{connectError}</p>
-                </div>
-              )}
-
-              {selectedType.documentation_url && (
-                <a
-                  href={selectedType.documentation_url}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center text-sm text-blue-400 hover:text-blue-300"
-                >
-                  Need help finding your credentials?
-                  <ExternalLink className="h-3 w-3 ml-1" />
-                </a>
-              )}
-            </div>
-
-            <div className="flex items-center justify-end gap-3 p-4 border-t border-gray-800">
-              <button
-                onClick={() => { setShowConnectModal(false); setConnectError(null); }}
-                className="px-4 py-2 text-sm font-medium text-gray-300 hover:text-white transition"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={handleSubmitConnect}
-                disabled={connecting}
-                className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition disabled:opacity-50"
-              >
-                {connecting ? (
-                  <>
-                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                    Connecting...
-                  </>
-                ) : (
-                  "Connect Integration"
-                )}
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConnectModal
+          selectedType={selectedType}
+          credentials={credentials}
+          setCredentials={setCredentials}
+          connectError={connectError}
+          handleSubmitConnect={handleSubmitConnect}
+          connecting={connecting}
+          onClose={() => { setShowConnectModal(false); setConnectError(null); }}
+        />
       )}
     </div>
   );
