@@ -245,6 +245,7 @@ export default function CallLogsPage() {
   const canViewTranscripts = isPlatformAdmin || can("call_logs", "view_transcripts");
   const canEditLogs = isPlatformAdmin || can("call_logs", "edit");
   const canDeleteLogs = isPlatformAdmin || can("call_logs", "delete");
+  const canPlayRecordings = isPlatformAdmin || can("call_logs", "play_recordings");
   const { authFetch } = useAuthToken();
   const [callLogs, setCallLogs] = useState<CallLog[]>([]);
   const [loading, setLoading] = useState(true);
@@ -845,6 +846,8 @@ export default function CallLogsPage() {
                       canViewTranscripts={canViewTranscripts}
                       canEditLogs={canEditLogs}
                       canDeleteLogs={canDeleteLogs}
+                      canPlayRecordings={canPlayRecordings}
+                      accountId={accountId}
                     />
                   ))}
                 </tbody>
@@ -983,6 +986,8 @@ function CallLogRow({
   canViewTranscripts,
   canEditLogs,
   canDeleteLogs,
+  canPlayRecordings,
+  accountId,
 }: {
   log: CallLog;
   isExpanded: boolean;
@@ -997,10 +1002,13 @@ function CallLogRow({
   canViewTranscripts: boolean;
   canEditLogs: boolean;
   canDeleteLogs: boolean;
+  canPlayRecordings: boolean;
+  accountId: string | null;
 }) {
   const hasLegs = log.legs && log.legs.length > 1;
   const hasTranscript = log.transcript && log.transcript.length > 0;
   const [isMenuOpen, setIsMenuOpen] = useState(false);
+  const [showPlayer, setShowPlayer] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -1015,8 +1023,9 @@ function CallLogRow({
     }
   }, [isMenuOpen]);
 
+  const hasRecording = !!log.recording_url && canPlayRecordings;
   const hasMenuItems =
-    !!log.recording_url ||
+    hasRecording ||
     canEditLogs ||
     (canDeleteLogs && hasTranscript && !log.ai_summary) ||
     (canViewTranscripts && !!log.ai_summary) ||
@@ -1181,17 +1190,14 @@ function CallLogRow({
                 </button>
                 {isMenuOpen && (
                   <div className="absolute right-0 mt-1 w-48 bg-[#1c1c1c] border border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden">
-                    {log.recording_url && (
-                      <a
-                        href={log.recording_url}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        onClick={() => setIsMenuOpen(false)}
-                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-gray-300 hover:bg-[#252525] hover:text-foreground transition-colors"
+                    {hasRecording && (
+                      <button
+                        onClick={() => { setIsMenuOpen(false); setShowPlayer((p) => !p); }}
+                        className="w-full flex items-center gap-2.5 px-3 py-2.5 text-sm text-gray-300 hover:bg-[#252525] hover:text-foreground transition-colors text-left"
                       >
                         <Play className="h-4 w-4 text-gray-500" />
-                        Play Recording
-                      </a>
+                        {showPlayer ? "Hide Recording" : "Play Recording"}
+                      </button>
                     )}
                     {canEditLogs && (
                       <button
@@ -1225,7 +1231,7 @@ function CallLogRow({
                         Generate Summary
                       </button>
                     )}
-                    {canDeleteLogs && (!!log.recording_url || canEditLogs || (hasTranscript && !log.ai_summary) || (canViewTranscripts && !!log.ai_summary)) && (
+                    {canDeleteLogs && (hasRecording || canEditLogs || (hasTranscript && !log.ai_summary) || (canViewTranscripts && !!log.ai_summary)) && (
                       <div className="border-t border-gray-700 my-0.5" />
                     )}
                     {canDeleteLogs && (
@@ -1244,6 +1250,28 @@ function CallLogRow({
           </div>
         </td>
       </tr>
+      {showPlayer && hasRecording && (
+        <tr>
+          <td colSpan={11} className="bg-[#0f0f0f] px-8 py-3 border-t border-gray-800">
+            <div className="flex items-center gap-3">
+              <Play className="h-4 w-4 text-gray-400 flex-shrink-0" />
+              <audio
+                controls
+                className="w-full max-w-lg h-8"
+                src={`/api/calls/${log.id}/recording${accountId ? `?hotel_id=${accountId}` : ""}`}
+                style={{ colorScheme: "dark" }}
+              />
+              <button
+                onClick={() => setShowPlayer(false)}
+                className="p-1 text-gray-500 hover:text-gray-300 transition flex-shrink-0"
+                title="Close player"
+              >
+                <X className="h-4 w-4" />
+              </button>
+            </div>
+          </td>
+        </tr>
+      )}
       {isExpanded && hasLegs && (
         <tr>
           <td colSpan={11} className="bg-[#0f0f0f] px-4 py-3">
