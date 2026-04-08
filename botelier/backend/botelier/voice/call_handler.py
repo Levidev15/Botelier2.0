@@ -197,7 +197,9 @@ class CallHandler:
                         mcp_enabled_tools = assistant.mcp_enabled_tools or []
                         logger.info(f"Loaded MCP connection {mcp_conn.name} with {len(mcp_enabled_tools)} enabled tools")
                 
-                # Check call recording entitlement
+                # Check call recording entitlement.
+                # Account and Hotel share the same UUID primary key (hotel_id == account_id),
+                # so assistant.hotel_id can be used directly as the Account lookup key.
                 call_recording_enabled = False
                 if (assistant.call_settings or {}).get("call_recording_enabled"):
                     from ..models.account import Account
@@ -483,7 +485,14 @@ class CallHandler:
             # (b) Transfer-state guard: skip if the CallLog already carries a terminal
             #     or transfer status, which would indicate this leg arrived as a
             #     transferred call where recording is undesirable.
-            if call_recording_enabled and hotel_twilio_sid and hotel_twilio_token:
+
+            # Determine effective Twilio credentials for recording.
+            # Prefer hotel-level sub-account creds; fall back to platform env vars so
+            # that recording works even for accounts without a provisioned sub-account.
+            _eff_twilio_sid = hotel_twilio_sid or os.environ.get("TWILIO_ACCOUNT_SID", "")
+            _eff_twilio_token = hotel_twilio_token or os.environ.get("TWILIO_AUTH_TOKEN", "")
+
+            if call_recording_enabled and _eff_twilio_sid and _eff_twilio_token:
                 # (b) Check CallLog status in a fresh DB session.
                 _transfer_statuses = {"transferred", "ended_early", "failed", "no_answer", "busy"}
                 _skip_recording_for_status = False
@@ -514,7 +523,7 @@ class CallHandler:
                     try:
                         from twilio.rest import Client as _TwilioClient
                         from ..config.domain import get_public_base_url as _get_base_url
-                        _rec_client = _TwilioClient(hotel_twilio_sid, hotel_twilio_token)
+                        _rec_client = _TwilioClient(_eff_twilio_sid, _eff_twilio_token)
                         _base_url = _get_base_url()
                         _recording = _rec_client.calls(call_sid).recordings.create(
                             recording_channel="dual",
