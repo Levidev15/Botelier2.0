@@ -641,6 +641,10 @@ async def get_call_recording(
     recording_url = call_log.recording_url
 
     try:
+        # Buffer the full recording so we can inspect the HTTP status code and
+        # Content-Type BEFORE sending bytes to the client.  Hotel call recordings
+        # are typically short (< 40 MB), making buffering acceptable over the
+        # complexity of a two-round-trip HEAD+stream approach.
         async with httpx.AsyncClient() as client:
             twilio_response = await client.get(
                 recording_url,

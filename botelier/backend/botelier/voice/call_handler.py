@@ -510,9 +510,15 @@ class CallHandler:
                     _cl = _db_rec_check.query(_CLCheck).filter(
                         _CLCheck.call_sid == call_sid
                     ).first()
-                    if _cl and _cl.status in _transfer_statuses:
+                    # Check both status AND has_transfer flag.
+                    # has_transfer is normally set during the pipeline (after runner.run
+                    # begins), so it will be False here for typical inbound calls.
+                    # If a prior pathway already marked this call as transferred (e.g.
+                    # via a race-condition re-entry), has_transfer provides an extra guard.
+                    if _cl and (_cl.status in _transfer_statuses or _cl.has_transfer):
                         logger.info(
-                            f"Skipping recording for {call_sid} — call status is '{_cl.status}'"
+                            f"Skipping recording for {call_sid} — status='{_cl.status}' "
+                            f"has_transfer={_cl.has_transfer}"
                         )
                         _skip_recording_for_status = True
                 except Exception as _status_err:
