@@ -17,7 +17,7 @@ interface PhoneNumberCardProps {
     friendly_name: string | null;
     country_code: string;
     assistant_id: string | null;
-    hotel_id: string;
+    account_id: string;
     is_active: boolean;
     sms_enabled?: boolean;
     sms_assistant_id?: string | null;
@@ -65,7 +65,7 @@ export default function PhoneNumberCard({ phoneNumber, assistants, onDelete, onU
       const response = await authFetch(`/api/phone-numbers/${phoneNumber.id}/sms-config`, {
         method: "PUT",
         body: JSON.stringify({
-          hotel_id: phoneNumber.hotel_id,
+          account_id: phoneNumber.account_id,
           sms_enabled: enabled,
           sms_assistant_id: phoneNumber.sms_assistant_id || null,
         }),
@@ -92,7 +92,7 @@ export default function PhoneNumberCard({ phoneNumber, assistants, onDelete, onU
       const response = await authFetch(`/api/phone-numbers/${phoneNumber.id}/sms-config`, {
         method: "PUT",
         body: JSON.stringify({
-          hotel_id: phoneNumber.hotel_id,
+          account_id: phoneNumber.account_id,
           sms_enabled: phoneNumber.sms_enabled || false,
           sms_assistant_id: assistantId || null,
         }),

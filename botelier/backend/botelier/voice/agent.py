@@ -22,7 +22,7 @@ class VoiceAgentConfig(BaseModel):
     """Configuration for a Botelier voice agent"""
     
     agent_id: str
-    hotel_id: str
+    account_id: str
     name: str
     description: Optional[str] = None
     status: AgentStatus = AgentStatus.DRAFT

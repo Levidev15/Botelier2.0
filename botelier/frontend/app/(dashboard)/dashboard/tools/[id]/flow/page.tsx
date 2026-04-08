@@ -18,7 +18,7 @@ interface Tool {
   description: string;
   tool_type: string;
   config: any;
-  hotel_id: string;
+  account_id: string;
 }
 
 const FlowEditor = dynamic(
@@ -80,7 +80,7 @@ export default function FlowToolEditorPage() {
     
     const fetchTool = async () => {
       try {
-        const response = await authFetch(`/api/tools/${toolId}?hotel_id=${accountId}`);
+        const response = await authFetch(`/api/tools/${toolId}?account_id=${accountId}`);
         if (!response.ok) {
           throw new Error("Tool not found");
         }
@@ -162,7 +162,7 @@ export default function FlowToolEditorPage() {
       <main className="flex-1 overflow-hidden">
         <FlowEditor 
           toolId={toolId} 
-          hotelId={accountId}
+          accountId={accountId}
           toolName={tool.name}
         />
       </main>

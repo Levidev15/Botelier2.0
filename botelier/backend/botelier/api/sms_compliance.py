@@ -12,7 +12,6 @@ from botelier.models.sms_compliance import (
     BrandStatus, CampaignStatus, BrandType, CampaignUseCase,
 )
 from botelier.models.account import Account
-from botelier.models.hotel import Hotel
 from botelier.models.phone_number import PhoneNumber
 from botelier.services.sms_compliance_service import SMSComplianceService
 
@@ -69,7 +68,7 @@ class BrandUpdateRequest(BaseModel):
 
 class CampaignCreateRequest(BaseModel):
     brand_id: str
-    hotel_id: str
+    account_id: str
     friendly_name: str
     use_case: str = "CUSTOMER_CARE"
     description: Optional[str] = None
@@ -280,13 +279,13 @@ async def delete_brand(brand_id: str, db: Session = Depends(get_db)):
 
 @router.get("/campaigns")
 async def list_campaigns(
-    hotel_id: Optional[str] = Query(None, description="Filter by hotel"),
+    account_id: Optional[str] = Query(None, description="Filter by account"),
     brand_id: Optional[str] = Query(None, description="Filter by brand"),
     db: Session = Depends(get_db),
 ):
     query = db.query(SMSComplianceCampaign)
-    if hotel_id:
-        query = query.filter(SMSComplianceCampaign.hotel_id == hotel_id)
+    if account_id:
+        query = query.filter(SMSComplianceCampaign.account_id == account_id)
     if brand_id:
         query = query.filter(SMSComplianceCampaign.brand_id == brand_id)
 
@@ -318,16 +317,16 @@ async def create_campaign(request: CampaignCreateRequest, db: Session = Depends(
             detail="Brand must be approved before creating campaigns. Current status: " + brand.status.value
         )
 
-    hotel = db.query(Hotel).filter(Hotel.id == request.hotel_id).first()
-    if not hotel:
-        raise HTTPException(status_code=404, detail="Hotel not found")
+    account = db.query(Account).filter(Account.id == request.account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
 
     use_case_map = {v.value: v for v in CampaignUseCase}
     use_case = use_case_map.get(request.use_case, CampaignUseCase.CUSTOMER_CARE)
 
     campaign = SMSComplianceCampaign(
         brand_id=request.brand_id,
-        hotel_id=request.hotel_id,
+        account_id=request.account_id,
         friendly_name=request.friendly_name,
         use_case=use_case,
         description=request.description,
@@ -449,12 +448,12 @@ async def assign_phone_number_to_campaign(
 
     phone = db.query(PhoneNumber).filter(
         PhoneNumber.twilio_sid == request.phone_number_sid,
-        PhoneNumber.hotel_id == campaign.hotel_id,
+        PhoneNumber.account_id == campaign.account_id,
     ).first()
     if not phone:
         raise HTTPException(
             status_code=404,
-            detail="Phone number not found or doesn't belong to this hotel"
+            detail="Phone number not found or doesn't belong to this account"
         )
 
     try:
@@ -487,13 +486,13 @@ async def remove_phone_number_from_campaign(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/hotels/{hotel_id}/phone-numbers")
-async def get_hotel_phone_numbers(
-    hotel_id: str,
+@router.get("/accounts/{account_id}/phone-numbers")
+async def get_account_phone_numbers(
+    account_id: str,
     db: Session = Depends(get_db),
 ):
     numbers = db.query(PhoneNumber).filter(
-        PhoneNumber.hotel_id == hotel_id,
+        PhoneNumber.account_id == account_id,
         PhoneNumber.is_active == True,
     ).all()
     return [n.to_dict() for n in numbers]

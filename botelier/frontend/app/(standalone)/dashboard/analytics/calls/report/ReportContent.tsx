@@ -115,7 +115,7 @@ export default function ReportContent() {
   const params = useSearchParams();
   const { authFetch, loading: authLoading } = useAuthToken();
 
-  const hotelId = params.get("hotel_id") || "";
+  const accountId = params.get("account_id") || "";
   const tz = params.get("tz") || "UTC";
   const accountName = params.get("account_name") || "Account";
   const daysParam = params.get("days");
@@ -135,9 +135,9 @@ export default function ReportContent() {
   const generatedAt = useMemo(() => new Date().toLocaleString("en-US", { dateStyle: "long", timeStyle: "short" }), []);
 
   useEffect(() => {
-    if (authLoading || !hotelId) return;
+    if (authLoading || !accountId) return;
     setLoading(true);
-    const urlParams = new URLSearchParams({ hotel_id: hotelId, timezone: tz });
+    const urlParams = new URLSearchParams({ account_id: accountId, timezone: tz });
     if (dateFrom) urlParams.set("date_from", dateFrom);
     if (dateTo) urlParams.set("date_to", dateTo);
     authFetch(`/api/analytics/calls?${urlParams}`)
@@ -148,7 +148,7 @@ export default function ReportContent() {
       .then(setData)
       .catch((e) => setError(e.message))
       .finally(() => setLoading(false));
-  }, [authLoading, hotelId, dateFrom, dateTo, tz]);
+  }, [authLoading, accountId, dateFrom, dateTo, tz]);
 
   const volumeData = useMemo(() => {
     if (!data) return [];
@@ -165,12 +165,12 @@ export default function ReportContent() {
     return full;
   }, [data]);
 
-  if (!hotelId) {
+  if (!accountId) {
     return (
       <div className="min-h-screen bg-white flex items-center justify-center">
         <div className="text-center max-w-sm">
           <p className="text-red-500 font-medium mb-2">Missing required parameter</p>
-          <p className="text-gray-400 text-sm">The <code className="bg-gray-100 px-1 rounded">hotel_id</code> query parameter is required to generate this report.</p>
+          <p className="text-gray-400 text-sm">The <code className="bg-gray-100 px-1 rounded">account_id</code> query parameter is required to generate this report.</p>
         </div>
       </div>
     );

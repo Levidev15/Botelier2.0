@@ -66,7 +66,7 @@ class SMSConversation(Base):
 
     reference_id = Column(String(8), nullable=True)
 
-    hotel_id = Column(UUID(as_uuid=True), ForeignKey("hotels.id"), nullable=False)
+    account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=False)
     assistant_id = Column(UUID(as_uuid=True), ForeignKey("assistants.id"), nullable=True)
     phone_number_id = Column(UUID(as_uuid=True), ForeignKey("phone_numbers.id"), nullable=True)
 
@@ -106,10 +106,10 @@ class SMSConversation(Base):
     disposition = relationship("AssistantDisposition", foreign_keys=[disposition_id])
 
     __table_args__ = (
-        Index('ix_sms_conv_hotel_status', 'hotel_id', 'status'),
-        Index('ix_sms_conv_hotel_last_msg', 'hotel_id', 'last_message_at'),
-        Index('ix_sms_conv_customer_number', 'hotel_id', 'customer_number', 'botelier_number'),
-        Index('ix_sms_conv_started_at', 'hotel_id', 'started_at'),
+        Index('ix_sms_conv_account_status', 'account_id', 'status'),
+        Index('ix_sms_conv_account_last_msg', 'account_id', 'last_message_at'),
+        Index('ix_sms_conv_account_customer_number', 'account_id', 'customer_number', 'botelier_number'),
+        Index('ix_sms_conv_account_started_at', 'account_id', 'started_at'),
     )
 
     def __repr__(self):
@@ -118,7 +118,7 @@ class SMSConversation(Base):
     def to_dict(self, include_messages=False):
         result = {
             "id": str(self.id),
-            "hotel_id": str(self.hotel_id),
+            "account_id": str(self.account_id),
             "reference_id": self.reference_id,
             "assistant_id": str(self.assistant_id) if self.assistant_id else None,
             "phone_number_id": str(self.phone_number_id) if self.phone_number_id else None,

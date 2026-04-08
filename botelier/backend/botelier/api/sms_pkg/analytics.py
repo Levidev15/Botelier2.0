@@ -27,12 +27,12 @@ router = APIRouter(prefix="/api/sms", tags=["SMS"])
 
 @router.get("/pending-handoffs")
 async def get_pending_handoffs(
-    hotel_id: str = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: str = Query(..., description="Account ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
 ):
     """Return count of active conversations waiting for a human agent."""
     count = db.query(func.count(SMSConversation.id)).filter(
-        SMSConversation.hotel_id == UUID(hotel_id),
+        SMSConversation.account_id == UUID(account_id),
         SMSConversation.needs_attention == True,
         SMSConversation.status == ConversationStatus.ACTIVE.value,
     ).scalar() or 0
@@ -41,12 +41,12 @@ async def get_pending_handoffs(
 
 @router.get("/unread-count")
 async def get_unread_count(
-    hotel_id: str = Query(...),
+    account_id: str = Query(...),
     db: Session = Depends(get_db),
 ):
     """Count of active conversations with messages newer than last_read_at."""
     count = db.query(func.count(SMSConversation.id)).filter(
-        SMSConversation.hotel_id == UUID(hotel_id),
+        SMSConversation.account_id == UUID(account_id),
         SMSConversation.status == ConversationStatus.ACTIVE.value,
         SMSConversation.last_message_at > func.coalesce(
             SMSConversation.last_read_at,
@@ -58,7 +58,7 @@ async def get_unread_count(
 
 @router.get("/stats")
 async def get_sms_stats(
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     date_from: Optional[datetime] = Query(None, description="Start of reporting window (ISO 8601)"),
     date_to: Optional[datetime] = Query(None, description="End of reporting window (ISO 8601)"),
     assistant_ids: Optional[List[UUID]] = Query(None, description="Filter to these assistants (repeat param for multiple)."),
@@ -68,8 +68,8 @@ async def get_sms_stats(
     """
     Aggregated analytics for SMS conversations.
 
-    All figures are scoped to hotel_id. Optional filters narrow the window
-    by date range, assistant, or hotel phone number.
+    All figures are scoped to account_id. Optional filters narrow the window
+    by date range, assistant, or account phone number.
     """
     try:
         from botelier.models.assistant import Assistant
@@ -84,7 +84,7 @@ async def get_sms_stats(
             _since = _until - timedelta(days=_MAX_RANGE_DAYS)
 
         def _base_q():
-            q = db.query(SMSConversation).filter(SMSConversation.hotel_id == hotel_id)
+            q = db.query(SMSConversation).filter(SMSConversation.account_id == account_id)
             q = q.filter(SMSConversation.started_at >= _since)
             q = q.filter(SMSConversation.started_at <= _until)
             if assistant_ids:
@@ -336,7 +336,7 @@ async def get_sms_stats(
 
 @router.get("/export")
 async def export_sms_conversations(
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     status: Optional[str] = Query(None),
     assistant_id: Optional[UUID] = Query(None),
     handler_mode: Optional[str] = Query(None),
@@ -355,7 +355,7 @@ async def export_sms_conversations(
       disposition, ai_summary, assistant_id
     """
     try:
-        query = db.query(SMSConversation).filter(SMSConversation.hotel_id == hotel_id)
+        query = db.query(SMSConversation).filter(SMSConversation.account_id == account_id)
 
         if status:
             query = query.filter(SMSConversation.status == status)

@@ -32,8 +32,7 @@ class KnowledgeEntry(Base):
     
     knowledge_base_id = Column(UUID(as_uuid=True), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False, index=True)
     
-    # Legacy: hotel_id kept temporarily for migration (nullable)
-    hotel_id = Column(UUID(as_uuid=True), ForeignKey("hotels.id", ondelete="SET NULL"), nullable=True)
+    account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True)
     
     # Q&A content
     question = Column(Text, nullable=False)

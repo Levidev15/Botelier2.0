@@ -11,7 +11,7 @@ import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface Assistant {
   id: string;
-  hotel_id: string;
+  account_id: string;
   name: string;
   description: string | null;
   stt_provider: string;
@@ -46,7 +46,7 @@ export default function AssistantsPage() {
 
   const fetchAssistants = async () => {
     try {
-      const response = await authFetch(`/api/assistants?hotel_id=${accountId}`);
+      const response = await authFetch(`/api/assistants?account_id=${accountId}`);
       const data = await response.json();
       setAssistants(data.assistants || []);
     } catch (error) {

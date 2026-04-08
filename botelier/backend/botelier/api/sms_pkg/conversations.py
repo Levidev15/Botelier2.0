@@ -54,7 +54,7 @@ _openai = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
 
 @router.get("/conversations")
 async def list_conversations(
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     status: Optional[str] = Query(None, description="Filter by status"),
     search: Optional[str] = Query(None, description="Search by customer phone number"),
     assistant_id: Optional[UUID] = Query(None, description="Filter by assistant"),
@@ -69,9 +69,9 @@ async def list_conversations(
     limit: int = Query(50, ge=1, le=100),
     db: Session = Depends(get_db),
 ):
-    """Get paginated SMS conversations for a hotel."""
+    """Get paginated SMS conversations for an account."""
     try:
-        query = db.query(SMSConversation).filter(SMSConversation.hotel_id == hotel_id)
+        query = db.query(SMSConversation).filter(SMSConversation.account_id == account_id)
 
         if status:
             query = query.filter(SMSConversation.status == status)
@@ -139,14 +139,14 @@ async def list_conversations(
 @router.get("/conversations/{conversation_id}")
 async def get_conversation(
     conversation_id: UUID,
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
 ):
     """Get a single SMS conversation with all messages."""
     try:
         conversation = db.query(SMSConversation).filter(
             SMSConversation.id == conversation_id,
-            SMSConversation.hotel_id == hotel_id,
+            SMSConversation.account_id == account_id,
         ).first()
 
         if not conversation:
@@ -168,7 +168,7 @@ async def get_conversation(
 
 
 class HandlerModeRequest(BaseModel):
-    hotel_id: str
+    account_id: str
 
 
 @router.post("/conversations/{conversation_id}/take-over")
@@ -181,7 +181,7 @@ async def take_over_conversation(
     try:
         conversation = db.query(SMSConversation).filter(
             SMSConversation.id == conversation_id,
-            SMSConversation.hotel_id == UUID(request.hotel_id),
+            SMSConversation.account_id == UUID(request.account_id),
         ).first()
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
@@ -192,7 +192,7 @@ async def take_over_conversation(
 
         try:
             await broadcaster.broadcast(
-                hotel_id=request.hotel_id,
+                hotel_id=request.account_id,
                 event_type="handler_changed",
                 data={
                     "conversation_id": str(conversation_id),
@@ -222,7 +222,7 @@ async def return_to_ai(
     try:
         conversation = db.query(SMSConversation).filter(
             SMSConversation.id == conversation_id,
-            SMSConversation.hotel_id == UUID(request.hotel_id),
+            SMSConversation.account_id == UUID(request.account_id),
         ).first()
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
@@ -233,7 +233,7 @@ async def return_to_ai(
 
         try:
             await broadcaster.broadcast(
-                hotel_id=request.hotel_id,
+                hotel_id=request.account_id,
                 event_type="handler_changed",
                 data={
                     "conversation_id": str(conversation_id),
@@ -254,7 +254,7 @@ async def return_to_ai(
 
 
 class CloseConversationRequest(BaseModel):
-    hotel_id: str
+    account_id: str
 
 
 @router.post("/conversations/{conversation_id}/close")
@@ -267,7 +267,7 @@ async def close_conversation(
     try:
         conversation = db.query(SMSConversation).filter(
             SMSConversation.id == conversation_id,
-            SMSConversation.hotel_id == UUID(request.hotel_id),
+            SMSConversation.account_id == UUID(request.account_id),
         ).first()
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
@@ -286,7 +286,7 @@ async def close_conversation(
 
 
 class MarkReadRequest(BaseModel):
-    hotel_id: str
+    account_id: str
 
 
 @router.post("/conversations/{conversation_id}/read")
@@ -299,7 +299,7 @@ async def mark_conversation_read(
     try:
         conversation = db.query(SMSConversation).filter(
             SMSConversation.id == conversation_id,
-            SMSConversation.hotel_id == UUID(request.hotel_id),
+            SMSConversation.account_id == UUID(request.account_id),
         ).first()
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
@@ -316,7 +316,7 @@ async def mark_conversation_read(
 
 
 class PresenceRequest(BaseModel):
-    hotel_id: str
+    account_id: str
     agent_id: str
     agent_name: str
 
@@ -331,7 +331,7 @@ async def set_agent_presence(
     try:
         conversation = db.query(SMSConversation).filter(
             SMSConversation.id == conversation_id,
-            SMSConversation.hotel_id == UUID(request.hotel_id),
+            SMSConversation.account_id == UUID(request.account_id),
         ).first()
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
@@ -350,7 +350,7 @@ async def set_agent_presence(
 
 
 class ClearPresenceRequest(BaseModel):
-    hotel_id: str
+    account_id: str
     agent_id: str
 
 
@@ -364,7 +364,7 @@ async def clear_agent_presence(
     try:
         conversation = db.query(SMSConversation).filter(
             SMSConversation.id == conversation_id,
-            SMSConversation.hotel_id == UUID(request.hotel_id),
+            SMSConversation.account_id == UUID(request.account_id),
         ).first()
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
@@ -384,7 +384,7 @@ async def clear_agent_presence(
 
 
 class AgentReplyRequest(BaseModel):
-    hotel_id: str
+    account_id: str
     message: str
     media_urls: Optional[List[str]] = None
 
@@ -399,7 +399,7 @@ async def agent_reply(
     try:
         conversation = db.query(SMSConversation).filter(
             SMSConversation.id == conversation_id,
-            SMSConversation.hotel_id == UUID(request.hotel_id),
+            SMSConversation.account_id == UUID(request.account_id),
         ).first()
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
@@ -416,7 +416,7 @@ async def agent_reply(
             from_number=conversation.botelier_number,
             to_number=conversation.customer_number,
             body=message_text or "",
-            hotel_id=conversation.hotel_id,
+            account_id=conversation.account_id,
             media_urls=request.media_urls,
         )
 
@@ -442,23 +442,23 @@ async def agent_reply(
 
         db.commit()
 
-        hotel_id_str = str(conversation.hotel_id)
-        conv_id_str  = str(conversation.id)
+        account_id_str = str(conversation.account_id)
+        conv_id_str    = str(conversation.id)
 
         try:
             await broadcaster.broadcast(
-                hotel_id=hotel_id_str,
+                hotel_id=account_id_str,
                 event_type="new_reply",
                 data={
                     "conversation_id": conv_id_str,
                     "customer_number": conversation.customer_number,
                     "preview": (message_text or "")[:100],
-                    "hotel_id": hotel_id_str,
+                    "account_id": account_id_str,
                 },
             )
             if attention_was_set:
                 await broadcaster.broadcast(
-                    hotel_id=hotel_id_str,
+                    hotel_id=account_id_str,
                     event_type="handler_changed",
                     data={
                         "conversation_id": conv_id_str,
@@ -479,7 +479,7 @@ async def agent_reply(
 
 
 class GenerateSMSSummaryRequest(BaseModel):
-    hotel_id: str
+    account_id: str
 
 
 @router.post("/conversations/{conversation_id}/generate-summary")
@@ -492,7 +492,7 @@ async def generate_sms_summary(
     try:
         conversation = db.query(SMSConversation).filter(
             SMSConversation.id == conversation_id,
-            SMSConversation.hotel_id == UUID(request.hotel_id),
+            SMSConversation.account_id == UUID(request.account_id),
         ).first()
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")

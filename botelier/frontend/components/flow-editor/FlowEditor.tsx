@@ -26,7 +26,7 @@ import { X } from "lucide-react";
 
 interface FlowEditorProps {
   toolId: string;
-  hotelId: string;
+  accountId: string;
   toolName?: string;
 }
 
@@ -89,7 +89,7 @@ const edgeTypes = {
   deletable: DeletableEdge,
 };
 
-function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
+function FlowEditorInner({ toolId, accountId, toolName }: FlowEditorProps) {
   const {
     nodes,
     edges,
@@ -111,8 +111,8 @@ function FlowEditorInner({ toolId, hotelId, toolName }: FlowEditorProps) {
   const [showSchema, setShowSchema] = useState(false);
 
   useEffect(() => {
-    loadFlow(toolId, hotelId);
-  }, [toolId, hotelId, loadFlow]);
+    loadFlow(toolId, accountId);
+  }, [toolId, accountId, loadFlow]);
 
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: any) => {

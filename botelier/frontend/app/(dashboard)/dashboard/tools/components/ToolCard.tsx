@@ -21,13 +21,13 @@ interface ToolCardProps {
   typeLabel: string;
   onDelete: (toolId: string) => void;
   onEdit?: (tool: Tool) => void;
-  hotelId: string;
+  accountId: string;
   toolSetId?: string;
   canEdit?: boolean;
   canDelete?: boolean;
 }
 
-export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit, hotelId, toolSetId, canEdit = true, canDelete = true }: ToolCardProps) {
+export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit, accountId, toolSetId, canEdit = true, canDelete = true }: ToolCardProps) {
   const router = useRouter();
   const [deleting, setDeleting] = useState(false);
   const { authFetch } = useAuthToken();
@@ -60,7 +60,7 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit
     setDeleting(true);
 
     try {
-      const scopeParam = toolSetId ? `tool_set_id=${toolSetId}` : `hotel_id=${hotelId}`;
+      const scopeParam = toolSetId ? `tool_set_id=${toolSetId}` : `account_id=${accountId}`;
       const response = await authFetch(`/api/tools/${tool.id}?${scopeParam}`, {
         method: "DELETE",
       });

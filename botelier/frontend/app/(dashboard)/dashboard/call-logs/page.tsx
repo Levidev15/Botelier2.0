@@ -132,7 +132,7 @@ interface TranscriptEntry {
 
 interface CallLog {
   id: string;
-  hotel_id: string;
+  account_id: string;
   reference_id: string | null;
   call_sid: string;
   phone_number_id: string | null;
@@ -310,7 +310,7 @@ export default function CallLogsPage() {
     if (!accountId) return;
     setLoading(true);
     try {
-      const params = new URLSearchParams({ hotel_id: accountId, page: page.toString() });
+      const params = new URLSearchParams({ account_id: accountId, page: page.toString() });
       if (search) params.append("search", search);
       if (statusFilter) params.append("status", statusFilter);
       if (assistantFilter) params.append("assistant_id", assistantFilter);
@@ -344,8 +344,8 @@ export default function CallLogsPage() {
     if (!accountId) return;
     try {
       const url = assistantFilter
-        ? `/api/call-logs/filters/options?hotel_id=${accountId}&assistant_id=${assistantFilter}`
-        : `/api/call-logs/filters/options?hotel_id=${accountId}`;
+        ? `/api/call-logs/filters/options?account_id=${accountId}&assistant_id=${assistantFilter}`
+        : `/api/call-logs/filters/options?account_id=${accountId}`;
       const response = await authFetch(url);
       if (response.ok) {
         const data = await response.json();
@@ -372,7 +372,7 @@ export default function CallLogsPage() {
   const handleExport = async () => {
     if (!accountId) return;
     try {
-      const params = new URLSearchParams({ hotel_id: accountId });
+      const params = new URLSearchParams({ account_id: accountId });
       if (statusFilter) params.append("status", statusFilter);
       if (assistantFilter) params.append("assistant_id", assistantFilter);
       if (dateFrom) params.append("date_from", new Date(dateFrom).toISOString());
@@ -415,7 +415,7 @@ export default function CallLogsPage() {
       setShowTranscript(true);
     } else {
       try {
-        const response = await authFetch(`/api/call-logs/${log.id}?hotel_id=${accountId}`);
+        const response = await authFetch(`/api/call-logs/${log.id}?account_id=${accountId}`);
         if (response.ok) {
           const fullLog = await response.json();
           setSelectedLog(fullLog);
@@ -435,7 +435,7 @@ export default function CallLogsPage() {
     try {
       const response = await authFetch(`/api/call-logs/${log.id}/generate-summary`, {
         method: "POST",
-        body: JSON.stringify({ hotel_id: accountId }),
+        body: JSON.stringify({ account_id: accountId }),
       });
 
       if (response.ok) {
@@ -475,7 +475,7 @@ export default function CallLogsPage() {
     if (!accountId) return;
     setDeletingId(log.id);
     try {
-      const res = await authFetch(`/api/call-logs/${log.id}?hotel_id=${accountId}`, {
+      const res = await authFetch(`/api/call-logs/${log.id}?account_id=${accountId}`, {
         method: "DELETE",
       });
       if (!res.ok) {
@@ -913,7 +913,7 @@ export default function CallLogsPage() {
       {editLogTarget && accountId && (
         <EditCallLogModal
           log={editLogTarget}
-          hotelId={accountId}
+          accountId={accountId}
           authFetch={authFetch}
           onClose={() => setEditLogTarget(null)}
           onSaved={(updates) => {

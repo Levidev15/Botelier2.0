@@ -82,40 +82,40 @@ def load_knowledge_for_prompt(knowledge_base_id: str) -> str:
 
 async def query_hotel_knowledge(params: FunctionCallParams) -> None:
     """
-    Query the hotel's knowledge base to answer guest questions.
+    Query the account's knowledge base to answer guest questions.
     
     This function is called by Pipecat when the voice LLM needs to
-    look up information from the hotel's knowledge base.
+    look up information from the knowledge base.
     
     Args:
         params: FunctionCallParams containing:
             - arguments["question"]: The guest's question
-            - arguments["hotel_id"]: Hotel UUID
+            - arguments["account_id"]: Account UUID
             - result_callback: Async function to return the answer
     
     Returns:
         None (result returned via params.result_callback)
     """
     question = params.arguments.get("question", "")
-    hotel_id = params.arguments.get("hotel_id", "")
+    account_id = params.arguments.get("account_id", "")
     
     if not question:
         logger.warning("Knowledge base query called without question")
         await params.result_callback({"answer": "I didn't catch your question. Could you please repeat that?"})
         return
     
-    if not hotel_id:
-        logger.warning("Knowledge base query called without hotel_id")
-        await params.result_callback({"answer": "I'm sorry, I don't have access to hotel information right now."})
+    if not account_id:
+        logger.warning("Knowledge base query called without account_id")
+        await params.result_callback({"answer": "I'm sorry, I don't have access to the information right now."})
         return
     
-    logger.info(f"Querying knowledge base for hotel {hotel_id}: {question}")
+    logger.info(f"Querying knowledge base for account {account_id}: {question}")
     
     try:
-        knowledge_content = await load_hotel_knowledge(hotel_id)
+        knowledge_content = await load_hotel_knowledge(account_id)
         
         if not knowledge_content:
-            logger.warning(f"No knowledge base content found for hotel {hotel_id}")
+            logger.warning(f"No knowledge base content found for account {account_id}")
             await params.result_callback({"answer": "I don't have that information available. Let me connect you with our front desk."})
             return
         
@@ -129,15 +129,15 @@ async def query_hotel_knowledge(params: FunctionCallParams) -> None:
         await params.result_callback({"answer": "I'm having trouble accessing that information. Please ask the front desk for assistance."})
 
 
-async def load_hotel_knowledge(hotel_id: str) -> str:
+async def load_hotel_knowledge(account_id: str) -> str:
     """
-    Load all active (non-expired) Q&A entries for a hotel.
+    Load all active (non-expired) Q&A entries for an account.
     
     DEPRECATED: Use load_knowledge_for_prompt() instead for system prompt injection.
     This async version is kept for backward compatibility with tool-based RAG.
     
     Args:
-        hotel_id: Hotel UUID
+        account_id: Account UUID
     
     Returns:
         Formatted Q&A entries ready for RAG context
@@ -148,10 +148,10 @@ async def load_hotel_knowledge(hotel_id: str) -> str:
     db = SessionLocal()
     
     try:
-        # Load only non-expired entries for this hotel
+        # Load only non-expired entries for this account
         today = date.today()
         entries = db.query(KnowledgeEntry).filter(
-            KnowledgeEntry.hotel_id == hotel_id,
+            KnowledgeEntry.account_id == account_id,
             (KnowledgeEntry.expiration_date.is_(None)) | 
             (KnowledgeEntry.expiration_date >= today)
         ).all()
@@ -173,7 +173,7 @@ async def load_hotel_knowledge(hotel_id: str) -> str:
             logger.warning(f"Knowledge base too large ({len(combined_content)} chars), truncating to {MAX_KNOWLEDGE_CHARS}")
             combined_content = combined_content[:MAX_KNOWLEDGE_CHARS] + "\n\n[... content truncated for length]"
         
-        logger.info(f"Loaded {len(entries)} active Q&A entries ({len(combined_content)} chars) for hotel {hotel_id}")
+        logger.info(f"Loaded {len(entries)} active Q&A entries ({len(combined_content)} chars) for account {account_id}")
         
         return combined_content
         

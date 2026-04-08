@@ -37,7 +37,7 @@ export default function BuyBotelierForm({ onNumberAdded, onClose }: BuyBotelierF
     
     try {
       const params = new URLSearchParams({
-        hotel_id: accountId,
+        account_id: accountId,
         country,
         limit: "10",
       });
@@ -83,7 +83,7 @@ export default function BuyBotelierForm({ onNumberAdded, onClose }: BuyBotelierF
         body: JSON.stringify({
           phone_number: selectedNumber,
           friendly_name: friendlyName || null,
-          hotel_id: accountId,
+          account_id: accountId,
         }),
       });
 

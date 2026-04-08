@@ -145,14 +145,14 @@ class CallHandler:
                 
                 logger.info(f"🤖 Assistant: '{assistant.name}' (ID: {assistant.id})")
                 
-                # Fetch hotel's Twilio sub-account credentials (for transfers)
-                from ..models.hotel import Hotel
-                hotel = db.query(Hotel).filter(Hotel.id == assistant.hotel_id).first()
-                if hotel:
-                    hotel_twilio_sid = hotel.twilio_sub_account_sid
-                    hotel_twilio_token = hotel.twilio_sub_auth_token
+                # Fetch account's Twilio sub-account credentials (for transfers)
+                from ..models.account import Account as _CallAccount
+                _call_acct = db.query(_CallAccount).filter(_CallAccount.id == assistant.account_id).first()
+                if _call_acct:
+                    hotel_twilio_sid = _call_acct.twilio_sub_account_sid
+                    hotel_twilio_token = _call_acct.twilio_sub_auth_token
                     if hotel_twilio_sid:
-                        logger.info(f"🏨 Using hotel sub-account: {hotel_twilio_sid[:10]}...")
+                        logger.info(f"🏨 Using account sub-account: {hotel_twilio_sid[:10]}...")
                 
                 # Convert database model to VoiceAgentConfig
                 config = self._create_agent_config(assistant)
@@ -198,13 +198,11 @@ class CallHandler:
                         logger.info(f"Loaded MCP connection {mcp_conn.name} with {len(mcp_enabled_tools)} enabled tools")
                 
                 # Check call recording entitlement.
-                # Account and Hotel share the same UUID primary key (hotel_id == account_id),
-                # so assistant.hotel_id can be used directly as the Account lookup key.
                 call_recording_enabled = False
                 if (assistant.call_settings or {}).get("call_recording_enabled"):
                     from ..models.account import Account
                     from ..auth.features import get_account_features
-                    acct = db.query(Account).filter(Account.id == assistant.hotel_id).first()
+                    acct = db.query(Account).filter(Account.id == assistant.account_id).first()
                     if acct:
                         features = get_account_features(
                             subscription_tier=acct.subscription_tier.value,
@@ -212,7 +210,7 @@ class CallHandler:
                         )
                         call_recording_enabled = features.get("call_recording", False)
                     else:
-                        logger.warning(f"Account not found for hotel_id {assistant.hotel_id} — recording skipped")
+                        logger.warning(f"Account not found for account_id {assistant.account_id} — recording skipped")
 
             finally:
                 # CRITICAL: Close database session immediately after fetching data
@@ -688,7 +686,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
         
         return VoiceAgentConfig(
             agent_id=str(assistant.id),
-            hotel_id=str(assistant.hotel_id),
+            account_id=str(assistant.account_id),
             name=assistant.name,
             description=assistant.description,
             status=status,
@@ -826,7 +824,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
                     twilio_account_sid=twilio_account_sid,
                     twilio_auth_token=twilio_auth_token,
                     call_handler=self,
-                    account_id=str(assistant.hotel_id),
+                    account_id=str(assistant.account_id),
                 )
                 self.call_mappers[call_sid] = mapper
                 logger.info(f"Created FunctionMapper for call {call_sid}")

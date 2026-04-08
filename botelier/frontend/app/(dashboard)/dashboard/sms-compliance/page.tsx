@@ -46,7 +46,7 @@ interface Brand {
 interface Campaign {
   id: string;
   brand_id: string;
-  hotel_id: string;
+  account_id: string;
   friendly_name: string;
   use_case: string;
   description: string | null;
@@ -197,7 +197,7 @@ export default function SMSCompliancePage() {
   const fetchCampaigns = async () => {
     if (!accountId) return;
     try {
-      const res = await fetch(`/api/sms-compliance/campaigns?hotel_id=${accountId}`);
+      const res = await fetch(`/api/sms-compliance/campaigns?account_id=${accountId}`);
       if (res.ok) {
         const data = await res.json();
         setCampaigns(data);
@@ -364,7 +364,7 @@ export default function SMSCompliancePage() {
       const samples = campaignForm.message_samples.filter((s) => s.trim() !== "");
       const body = editingCampaign
         ? { ...campaignForm, message_samples: samples }
-        : { ...campaignForm, message_samples: samples, brand_id: brand.id, hotel_id: accountId };
+        : { ...campaignForm, message_samples: samples, brand_id: brand.id, account_id: accountId };
 
       const res = await fetch(url, {
         method,

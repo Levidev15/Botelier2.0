@@ -156,7 +156,7 @@ export default function ApiRequestForm({ onSuccess, onCancel, tool, accountId, t
         is_active: true,
       };
 
-      const scopeParam = toolSetId ? `tool_set_id=${toolSetId}` : `hotel_id=${accountId}`;
+      const scopeParam = toolSetId ? `tool_set_id=${toolSetId}` : `account_id=${accountId}`;
       const apiUrl = isEditMode
         ? `/api/tools/${tool.id}?${scopeParam}`
         : "/api/tools";

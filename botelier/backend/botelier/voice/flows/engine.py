@@ -40,7 +40,7 @@ class BoteilerFlowEngine:
     
     def __init__(
         self,
-        hotel_id: str,
+        account_id: str,
         flow_config: Optional[Dict[str, Any]] = None,
         function_handlers: Optional[Dict[str, Callable]] = None
     ):
@@ -48,11 +48,11 @@ class BoteilerFlowEngine:
         Initialize the flow engine.
         
         Args:
-            hotel_id: UUID of the hotel (for security scoping)
+            account_id: UUID of the account (for security scoping)
             flow_config: Flow configuration from visual editor
             function_handlers: Custom function handlers (from FunctionMapper)
         """
-        self.hotel_id = hotel_id
+        self.account_id = account_id
         self.flow_config = flow_config or {}
         self.function_handlers = function_handlers or {}
         
@@ -96,7 +96,7 @@ class BoteilerFlowEngine:
                 edge_map.get(node_id, [])
             )
         
-        logger.info(f"🔄 Parsed flow config: {len(self._nodes)} nodes for hotel {self.hotel_id}")
+        logger.info(f"🔄 Parsed flow config: {len(self._nodes)} nodes for account {self.account_id}")
     
     def _convert_to_pipecat_node(
         self,

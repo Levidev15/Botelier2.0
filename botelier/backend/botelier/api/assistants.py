@@ -27,7 +27,7 @@ router = APIRouter(prefix="/api/assistants", tags=["assistants"])
 
 class AssistantCreate(BaseModel):
     """Assistant creation model."""
-    hotel_id: str
+    account_id: str
     knowledge_base_id: Optional[str] = None
     tool_set_id: Optional[str] = None
     mcp_connection_id: Optional[str] = None
@@ -96,7 +96,7 @@ class FlowConfigUpdate(BaseModel):
 class AssistantResponse(BaseModel):
     """Assistant response model."""
     id: str
-    hotel_id: str
+    account_id: str
     knowledge_base_id: Optional[str] = None
     tool_set_id: Optional[str] = None
     mcp_connection_id: Optional[str] = None
@@ -132,7 +132,7 @@ class AssistantResponse(BaseModel):
 class FlowConfigResponse(BaseModel):
     """Flow configuration response model."""
     assistant_id: str
-    hotel_id: str
+    account_id: str
     flow_config: Optional[dict]
     has_flow: bool
 
@@ -144,9 +144,9 @@ async def list_assistants(
     db: Session = Depends(get_db),
 ):
     """List all assistants for the authenticated account."""
-    hotel_id = str(ctx.account.id)
+    account_id = str(ctx.account.id)
 
-    query = db.query(Assistant).filter(Assistant.hotel_id == hotel_id)
+    query = db.query(Assistant).filter(Assistant.account_id == account_id)
     
     if is_active is not None:
         query = query.filter(Assistant.is_active == is_active)
@@ -169,7 +169,7 @@ async def get_assistant(
     assistant = db.query(Assistant).filter(Assistant.id == assistant_id).first()
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
-    check_account_permission(user, str(assistant.hotel_id), "assistants.view", db)
+    check_account_permission(user, str(assistant.account_id), "assistants.view", db)
     return assistant.to_dict()
 
 
@@ -180,9 +180,9 @@ async def create_assistant(
     user: User = Depends(get_current_user),
 ):
     """Create a new assistant."""
-    check_account_permission(user, data.hotel_id, "assistants.create", db)
+    check_account_permission(user, data.account_id, "assistants.create", db)
     assistant = Assistant(
-        hotel_id=data.hotel_id,
+        account_id=data.account_id,
         knowledge_base_id=data.knowledge_base_id,
         tool_set_id=data.tool_set_id,
         name=data.name,
@@ -227,7 +227,7 @@ async def update_assistant(
     assistant = db.query(Assistant).filter(Assistant.id == assistant_id).first()
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
-    check_account_permission(user, str(assistant.hotel_id), "assistants.edit", db)
+    check_account_permission(user, str(assistant.account_id), "assistants.edit", db)
     
     # Update only fields that are provided
     update_data = data.dict(exclude_unset=True)
@@ -250,7 +250,7 @@ async def delete_assistant(
     assistant = db.query(Assistant).filter(Assistant.id == assistant_id).first()
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
-    check_account_permission(user, str(assistant.hotel_id), "assistants.delete", db)
+    check_account_permission(user, str(assistant.account_id), "assistants.delete", db)
     
     db.delete(assistant)
     db.commit()
@@ -268,11 +268,11 @@ async def get_assistant_flow(
     assistant = db.query(Assistant).filter(Assistant.id == assistant_id).first()
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
-    check_account_permission(user, str(assistant.hotel_id), "flows.view", db)
+    check_account_permission(user, str(assistant.account_id), "flows.view", db)
     
     return {
         "assistant_id": str(assistant.id),
-        "hotel_id": str(assistant.hotel_id),
+        "account_id": str(assistant.account_id),
         "flow_config": assistant.flow_config,
         "has_flow": assistant.flow_config is not None
     }
@@ -289,7 +289,7 @@ async def update_assistant_flow(
     assistant = db.query(Assistant).filter(Assistant.id == assistant_id).first()
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
-    check_account_permission(user, str(assistant.hotel_id), "flows.edit", db)
+    check_account_permission(user, str(assistant.account_id), "flows.edit", db)
     
     assistant.flow_config = data.flow_config
     db.commit()
@@ -297,7 +297,7 @@ async def update_assistant_flow(
     
     return {
         "assistant_id": str(assistant.id),
-        "hotel_id": str(assistant.hotel_id),
+        "account_id": str(assistant.account_id),
         "flow_config": assistant.flow_config,
         "has_flow": True
     }
@@ -313,7 +313,7 @@ async def delete_assistant_flow(
     assistant = db.query(Assistant).filter(Assistant.id == assistant_id).first()
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
-    check_account_permission(user, str(assistant.hotel_id), "flows.edit", db)
+    check_account_permission(user, str(assistant.account_id), "flows.edit", db)
     
     assistant.flow_config = None
     db.commit()
@@ -324,14 +324,14 @@ async def delete_assistant_flow(
 @router.get("/{assistant_id}/acw-config")
 async def get_acw_config(
     assistant_id: str,
-    hotel_id: str = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: str = Query(..., description="Account ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, hotel_id, "assistants.view", db)
+    check_account_permission(user, account_id, "assistants.view", db)
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
-        Assistant.hotel_id == hotel_id
+        Assistant.account_id == account_id
     ).first()
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
@@ -351,14 +351,14 @@ class AcwConfigUpdate(BaseModel):
 async def update_acw_config(
     assistant_id: str,
     updates: AcwConfigUpdate,
-    hotel_id: str = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: str = Query(..., description="Account ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, hotel_id, "assistants.edit", db)
+    check_account_permission(user, account_id, "assistants.edit", db)
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
-        Assistant.hotel_id == hotel_id
+        Assistant.account_id == account_id
     ).first()
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")

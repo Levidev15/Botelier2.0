@@ -494,23 +494,23 @@ legacy_router = APIRouter(prefix="/api/entries", tags=["entries-legacy"])
 
 @legacy_router.get("")
 async def legacy_list_entries(
-    hotel_id: str = Query(None, description="Hotel UUID (legacy)"),
+    account_id: str = Query(None, description="Account UUID (legacy)"),
     knowledge_base_id: str = Query(None, description="Knowledge Base UUID"),
     include_expired: bool = Query(False),
     category: Optional[str] = Query(None),
     db: Session = Depends(get_db)
 ):
-    """Legacy endpoint - list entries by hotel_id or knowledge_base_id."""
+    """Legacy endpoint - list entries by account_id or knowledge_base_id."""
     if knowledge_base_id:
         query = db.query(KnowledgeEntry).filter(
             KnowledgeEntry.knowledge_base_id == knowledge_base_id
         )
-    elif hotel_id:
+    elif account_id:
         query = db.query(KnowledgeEntry).filter(
-            KnowledgeEntry.hotel_id == hotel_id
+            KnowledgeEntry.account_id == account_id
         )
     else:
-        raise HTTPException(status_code=400, detail="Either hotel_id or knowledge_base_id required")
+        raise HTTPException(status_code=400, detail="Either account_id or knowledge_base_id required")
     
     if category:
         query = query.filter(KnowledgeEntry.category == category)

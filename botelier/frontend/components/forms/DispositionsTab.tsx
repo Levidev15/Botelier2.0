@@ -53,7 +53,7 @@ export default function DispositionsTab({ assistantId, accountId }: Dispositions
   const fetchDispositions = async () => {
     try {
       const response = await authFetch(
-        `/api/assistants/${assistantId}/dispositions?hotel_id=${accountId}`
+        `/api/assistants/${assistantId}/dispositions?account_id=${accountId}`
       );
       if (response.ok) {
         const data = await response.json();
@@ -71,8 +71,8 @@ export default function DispositionsTab({ assistantId, accountId }: Dispositions
     
     try {
       const url = editingId
-        ? `/api/assistants/${assistantId}/dispositions/${editingId}?hotel_id=${accountId}`
-        : `/api/assistants/${assistantId}/dispositions?hotel_id=${accountId}`;
+        ? `/api/assistants/${assistantId}/dispositions/${editingId}?account_id=${accountId}`
+        : `/api/assistants/${assistantId}/dispositions?account_id=${accountId}`;
       
       const response = await authFetch(url, {
         method: editingId ? "PATCH" : "POST",
@@ -99,7 +99,7 @@ export default function DispositionsTab({ assistantId, accountId }: Dispositions
     
     try {
       const response = await authFetch(
-        `/api/assistants/${assistantId}/dispositions/${id}?hotel_id=${accountId}`,
+        `/api/assistants/${assistantId}/dispositions/${id}?account_id=${accountId}`,
         { method: "DELETE" }
       );
 

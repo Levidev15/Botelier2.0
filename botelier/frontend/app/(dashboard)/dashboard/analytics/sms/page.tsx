@@ -118,7 +118,7 @@ export default function SMSAnalyticsPage() {
     setLoading(true);
     setError(null);
     const params = new URLSearchParams({
-      hotel_id: accountId,
+      account_id: accountId,
       date_from: dateRange.from.toISOString(),
       date_to: dateRange.to.toISOString(),
     });

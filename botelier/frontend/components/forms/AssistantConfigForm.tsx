@@ -17,7 +17,7 @@ import { useAccountFeatures } from "@/hooks/useAccountFeatures";
 
 interface Assistant {
   id: string;
-  hotel_id: string;
+  account_id: string;
   name: string;
   description: string | null;
   stt_provider: string;
@@ -272,7 +272,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
           method: "POST",
           body: JSON.stringify({
             ...formData,
-            hotel_id: accountId,
+            account_id: accountId,
             is_active: true,
           }),
         });

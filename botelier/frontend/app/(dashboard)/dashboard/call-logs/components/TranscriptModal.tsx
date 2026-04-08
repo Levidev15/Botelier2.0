@@ -26,7 +26,7 @@ interface CallLeg {
 
 interface CallLog {
   id: string;
-  hotel_id?: string;
+  account_id?: string;
   reference_id?: string | null;
   caller_number: string | null;
   to_number: string | null;
@@ -85,7 +85,7 @@ export default function TranscriptModal({ log, onClose, onLogUpdated, onViewEven
     try {
       const response = await authFetch(`/api/call-logs/${log.id}/generate-summary`, {
         method: "POST",
-        body: JSON.stringify({ hotel_id: log.hotel_id }),
+        body: JSON.stringify({ account_id: log.account_id }),
       });
       if (response.ok) {
         const result = await response.json();
