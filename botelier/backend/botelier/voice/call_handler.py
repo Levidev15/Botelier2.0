@@ -475,22 +475,34 @@ class CallHandler:
             
             logger.info(f"▶️ Pipeline starting: STT ({config.stt_provider}) → LLM ({config.llm_provider}) → TTS ({config.tts_provider})")
 
-            # 8.5 Start Twilio call recording if enabled for this assistant/account
+            # 8.5 Start Twilio call recording if enabled for this assistant/account.
+            #
+            # Guard: skip if a recording is already active for this call_sid.
+            # This prevents double-recording in the unlikely event handle_call() is
+            # invoked more than once for the same sid (e.g. reconnect race).
+            # Note: handle_call() is only invoked from the WebSocket endpoint which
+            # Twilio connects once per call leg, so the guard is defensive only.
             if call_recording_enabled and hotel_twilio_sid and hotel_twilio_token:
-                try:
-                    from twilio.rest import Client as _TwilioClient
-                    from ..config.domain import get_public_base_url as _get_base_url
-                    _rec_client = _TwilioClient(hotel_twilio_sid, hotel_twilio_token)
-                    _base_url = _get_base_url()
-                    _recording = _rec_client.calls(call_sid).recordings.create(
-                        recording_channel="dual",
-                        recording_status_callback=f"{_base_url}/api/calls/recording-status",
-                        recording_status_callback_method="POST",
+                if call_sid in self.call_recording_sids:
+                    logger.warning(
+                        f"Recording already active for {call_sid} "
+                        f"(sid={self.call_recording_sids[call_sid]}) — skipping duplicate start"
                     )
-                    self.call_recording_sids[call_sid] = _recording.sid
-                    logger.info(f"🎙️ Recording started for call {call_sid}: {_recording.sid}")
-                except Exception as _rec_err:
-                    logger.error(f"Failed to start recording for call {call_sid}: {_rec_err}")
+                else:
+                    try:
+                        from twilio.rest import Client as _TwilioClient
+                        from ..config.domain import get_public_base_url as _get_base_url
+                        _rec_client = _TwilioClient(hotel_twilio_sid, hotel_twilio_token)
+                        _base_url = _get_base_url()
+                        _recording = _rec_client.calls(call_sid).recordings.create(
+                            recording_channel="dual",
+                            recording_status_callback=f"{_base_url}/api/calls/recording-status",
+                            recording_status_callback_method="POST",
+                        )
+                        self.call_recording_sids[call_sid] = _recording.sid
+                        logger.info(f"🎙️ Recording started for call {call_sid}: {_recording.sid}")
+                    except Exception as _rec_err:
+                        logger.error(f"Failed to start recording for call {call_sid}: {_rec_err}")
 
             # 9. Run pipeline (blocks until call ends)
             # Pipecat handles all remaining WebSocket messages (media, dtmf, stop)

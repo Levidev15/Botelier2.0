@@ -503,23 +503,74 @@ async def transfer_status_callback(request: Request, db: Session = Depends(get_d
         return {"status": "error", "message": str(e)}
 
 
+def _validate_recording_webhook_signature(
+    request: Request, form_data: dict, auth_token: str
+) -> tuple[bool, str]:
+    """
+    Validate the X-Twilio-Signature on the recording-status callback.
+
+    Skips validation (returns True) when no auth_token is available,
+    matching the pattern used in the SMS webhook.
+    """
+    from ..config.domain import get_public_base_url
+
+    fallback_host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host", "")
+    base = get_public_base_url(fallback_host=fallback_host)
+    url = f"{base}/api/calls/recording-status"
+
+    if not auth_token:
+        logger.debug("Twilio signature validation skipped for recording-status — no auth token")
+        return True, url
+
+    try:
+        from twilio.request_validator import RequestValidator
+
+        signature = request.headers.get("X-Twilio-Signature", "")
+        is_valid = RequestValidator(auth_token).validate(url, form_data, signature)
+        return is_valid, url
+    except Exception as exc:
+        logger.warning(f"Twilio signature validation error on recording-status: {exc}")
+        return False, url
+
+
 @router.post("/recording-status")
 async def recording_status_callback(request: Request, db: Session = Depends(get_db)):
     """
     Twilio recording status callback.
 
     Twilio POSTs here when a call recording's status changes.
-    When status is 'completed', we save the recording URL and SID to the call log.
+    Validates the X-Twilio-Signature before processing to prevent replay attacks.
+    When status is 'completed', saves the recording URL and SID to the call log.
 
     Twilio sends these fields (as form data):
         CallSid, RecordingSid, RecordingUrl, RecordingStatus, RecordingDuration
     """
     try:
-        form_data = await request.form()
+        form_data = dict(await request.form())
         call_sid = str(form_data.get("CallSid", ""))
         recording_sid = str(form_data.get("RecordingSid", ""))
         recording_url = str(form_data.get("RecordingUrl", ""))
         recording_status = str(form_data.get("RecordingStatus", ""))
+
+        # Validate Twilio signature using the hotel's sub-account auth token when
+        # available, falling back to the platform-level token.
+        auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "")
+        if call_sid:
+            call_log_for_auth = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
+            if call_log_for_auth:
+                from ..models.hotel import Hotel as _Hotel
+                _hotel = db.query(_Hotel).filter(_Hotel.id == call_log_for_auth.hotel_id).first()
+                if _hotel and _hotel.twilio_sub_auth_token:
+                    auth_token = _hotel.twilio_sub_auth_token
+
+        is_valid, validated_url = _validate_recording_webhook_signature(request, form_data, auth_token)
+        if not is_valid:
+            logger.warning(
+                f"Invalid Twilio signature on recording-status for CallSid={call_sid} "
+                f"(validated against: {validated_url})"
+            )
+            from fastapi.responses import Response as _Response
+            return _Response(status_code=403, content="Forbidden")
 
         logger.info(
             f"Recording status — CallSid: {call_sid}, RecordingSid: {recording_sid}, "
