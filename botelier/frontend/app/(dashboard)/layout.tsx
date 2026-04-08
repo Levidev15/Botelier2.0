@@ -84,9 +84,9 @@ export default function DashboardLayout({
     }
   };
 
-  const fetchPendingHandoffs = async (hotelId: string) => {
+  const fetchPendingHandoffs = async (accountId: string) => {
     try {
-      const res = await authFetch(`/api/sms/pending-handoffs?hotel_id=${hotelId}`);
+      const res = await authFetch(`/api/sms/pending-handoffs?account_id=${accountId}`);
       if (res.ok) {
         const data = await res.json();
         setPendingHandoffs(data.count ?? 0);

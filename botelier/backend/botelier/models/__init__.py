@@ -4,7 +4,6 @@ Database models for Botelier platform.
 All SQLAlchemy models should be imported here for database initialization.
 """
 
-from botelier.models.hotel import Hotel
 from botelier.models.account import Account, AccountStatus, SubscriptionTier
 from botelier.models.user import User, UserType
 from botelier.models.role import Role, AccountMembership
@@ -25,7 +24,6 @@ from botelier.models.sms_compliance import SMSComplianceBrand, SMSComplianceCamp
 from botelier.models.call_event import CallEvent
 
 __all__ = [
-    "Hotel",
     "Account",
     "AccountStatus",
     "SubscriptionTier",

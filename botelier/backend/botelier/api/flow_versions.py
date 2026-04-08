@@ -27,13 +27,13 @@ from botelier.auth.middleware import get_current_user, check_account_permission
 router = APIRouter(prefix="/api/tools", tags=["flow-versions"])
 
 
-def _get_flow_tool(db: Session, tool_id: str, hotel_id: str) -> Tool:
+def _get_flow_tool(db: Session, tool_id: str, account_id: str) -> Tool:
     """Fetch a flow tool by ID, scoped through ToolSet.account_id."""
     tool = db.query(Tool).join(
         ToolSet, Tool.tool_set_id == ToolSet.id
     ).filter(
         Tool.id == tool_id,
-        ToolSet.account_id == hotel_id
+        ToolSet.account_id == account_id
     ).first()
 
     if not tool:
@@ -159,13 +159,13 @@ def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str]]:
 @router.get("/{tool_id}/flow")
 def get_tool_flow(
     tool_id: str,
-    hotel_id: str,
+    account_id: str,
     source: Optional[str] = None,
     version: Optional[int] = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, hotel_id, "flows.view", db)
+    check_account_permission(user, account_id, "flows.view", db)
     """
     Get flow configuration for a flow-type tool.
     
@@ -175,7 +175,7 @@ def get_tool_flow(
     
     Returns the visual flow editor data (nodes, edges, variables).
     """
-    tool = _get_flow_tool(db, tool_id, hotel_id)
+    tool = _get_flow_tool(db, tool_id, account_id)
     
     flow_version = None
     
@@ -222,7 +222,7 @@ def get_tool_flow(
             flow_config = tool.config or {}
             return {
                 "tool_id": tool.id,
-                "hotel_id": hotel_id,
+                "account_id": account_id,
                 "name": tool.name,
                 "source": "legacy",
                 "version_number": 0,
@@ -238,7 +238,7 @@ def get_tool_flow(
     
     return {
         "tool_id": tool.id,
-        "hotel_id": hotel_id,
+        "account_id": account_id,
         "name": tool.name,
         "source": flow_version.status.value,
         "version_number": flow_version.version_number,
@@ -254,12 +254,12 @@ def get_tool_flow(
 @router.put("/{tool_id}/flow/draft")
 def save_flow_draft(
     tool_id: str,
-    hotel_id: str,
+    account_id: str,
     draft_data: dict,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, hotel_id, "flows.edit", db)
+    check_account_permission(user, account_id, "flows.edit", db)
     """
     Save flow as a draft.
     
@@ -270,7 +270,7 @@ def save_flow_draft(
         - flow_config: The flow configuration (nodes, edges, variables)
         - description: Optional description for this version
     """
-    tool = _get_flow_tool(db, tool_id, hotel_id)
+    tool = _get_flow_tool(db, tool_id, account_id)
     
     flow_config = draft_data.get("flow_config", {})
     description = draft_data.get("description")
@@ -314,12 +314,12 @@ def save_flow_draft(
 @router.post("/{tool_id}/flow/publish")
 def publish_flow(
     tool_id: str,
-    hotel_id: str,
+    account_id: str,
     publish_data: Optional[dict] = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, hotel_id, "flows.publish", db)
+    check_account_permission(user, account_id, "flows.publish", db)
     """
     Publish the current draft as a new version.
     
@@ -329,7 +329,7 @@ def publish_flow(
     Body (optional):
         - description: Override or set the version description
     """
-    tool = _get_flow_tool(db, tool_id, hotel_id)
+    tool = _get_flow_tool(db, tool_id, account_id)
     
     if not tool.draft_version_id:
         raise HTTPException(
@@ -386,17 +386,17 @@ def publish_flow(
 @router.delete("/{tool_id}/flow/draft")
 def discard_draft(
     tool_id: str,
-    hotel_id: str,
+    account_id: str,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, hotel_id, "flows.edit", db)
+    check_account_permission(user, account_id, "flows.edit", db)
     """
     Discard the current draft.
     
     Reverts to the last published version for editing.
     """
-    tool = _get_flow_tool(db, tool_id, hotel_id)
+    tool = _get_flow_tool(db, tool_id, account_id)
     
     if not tool.draft_version_id:
         raise HTTPException(
@@ -423,17 +423,17 @@ def discard_draft(
 @router.get("/{tool_id}/flow/versions")
 def list_flow_versions(
     tool_id: str,
-    hotel_id: str,
+    account_id: str,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, hotel_id, "flows.view", db)
+    check_account_permission(user, account_id, "flows.view", db)
     """
     List all versions of a flow.
     
     Returns version history without full flow_config (for performance).
     """
-    tool = _get_flow_tool(db, tool_id, hotel_id)
+    tool = _get_flow_tool(db, tool_id, account_id)
     
     versions = db.query(FlowVersion).filter(
         FlowVersion.tool_id == tool_id
@@ -451,17 +451,17 @@ def list_flow_versions(
 def get_flow_version(
     tool_id: str,
     version_number: int,
-    hotel_id: str,
+    account_id: str,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, hotel_id, "flows.view", db)
+    check_account_permission(user, account_id, "flows.view", db)
     """
     Get a specific version of a flow.
     
     Returns the full flow_config for the requested version.
     """
-    _get_flow_tool(db, tool_id, hotel_id)
+    _get_flow_tool(db, tool_id, account_id)
     
     version = db.query(FlowVersion).filter(
         FlowVersion.tool_id == tool_id,
@@ -481,19 +481,19 @@ def get_flow_version(
 def revert_to_version(
     tool_id: str,
     version_number: int,
-    hotel_id: str,
+    account_id: str,
     revert_data: Optional[dict] = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, hotel_id, "flows.revert", db)
+    check_account_permission(user, account_id, "flows.revert", db)
     """
     Revert to a previous version.
     
     Updates the current draft with content from the selected version.
     Does not create a new version number - simply restores the content.
     """
-    tool = _get_flow_tool(db, tool_id, hotel_id)
+    tool = _get_flow_tool(db, tool_id, account_id)
     
     source_version = db.query(FlowVersion).filter(
         FlowVersion.tool_id == tool_id,
@@ -564,7 +564,7 @@ def revert_to_version(
 @router.put("/{tool_id}/flow")
 def update_tool_flow_legacy(
     tool_id: str,
-    hotel_id: str,
+    account_id: str,
     flow_data: dict,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
@@ -575,4 +575,4 @@ def update_tool_flow_legacy(
     Now saves as a draft for versioning workflow.
     Use PUT /flow/draft for explicit draft saves.
     """
-    return save_flow_draft(tool_id, hotel_id, flow_data, db, user)
+    return save_flow_draft(tool_id, account_id, flow_data, db, user)

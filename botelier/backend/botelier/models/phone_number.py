@@ -39,7 +39,7 @@ class PhoneNumber(Base):
     twilio_capabilities = Column(String, nullable=True)  # JSON: {"voice": true, "sms": true}
     
     # Ownership
-    hotel_id = Column(UUID(as_uuid=True), ForeignKey("hotels.id"), nullable=False)
+    account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=False)
     
     # Assignment to voice assistant
     assistant_id = Column(UUID(as_uuid=True), nullable=True)  # Which assistant handles calls
@@ -66,7 +66,7 @@ class PhoneNumber(Base):
             "friendly_name": self.friendly_name,
             "country_code": self.country_code,
             "twilio_sid": self.twilio_sid,
-            "hotel_id": str(self.hotel_id),
+            "account_id": str(self.account_id),
             "assistant_id": str(self.assistant_id) if self.assistant_id else None,
             "sms_enabled": self.sms_enabled or False,
             "sms_assistant_id": str(self.sms_assistant_id) if self.sms_assistant_id else None,

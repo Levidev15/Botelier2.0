@@ -9,7 +9,7 @@ import { useAuthToken } from "@/lib/auth/useAuthToken";
 interface Assistant {
   id: string;
   name: string;
-  hotel_id: string;
+  account_id: string;
 }
 
 export default function FlowEditorPage() {

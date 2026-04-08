@@ -26,7 +26,7 @@ export default function AssistantFilter({ selected, onChange }: AssistantFilterP
 
   useEffect(() => {
     if (!accountId) return;
-    authFetch(`/api/assistants?hotel_id=${accountId}`)
+    authFetch(`/api/assistants?account_id=${accountId}`)
       .then((r) => r.json())
       .then((data) => setAssistants(Array.isArray(data) ? data : (data.assistants ?? [])))
       .catch(() => {});

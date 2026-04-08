@@ -88,7 +88,7 @@ _ADDITIVE_MIGRATIONS = [
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS transfer_mode VARCHAR",
 
     # Indexes (CREATE INDEX IF NOT EXISTS is idempotent)
-    "CREATE INDEX IF NOT EXISTS ix_sms_conv_started_at ON sms_conversations(hotel_id, started_at DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_sms_conv_account_started_at ON sms_conversations(account_id, started_at DESC)",
 
     # --- Pricing columns (deferred — uncomment when ready to capture Twilio costs) ---
     # "ALTER TABLE sms_messages ADD COLUMN IF NOT EXISTS price NUMERIC(10,4)",
@@ -203,6 +203,50 @@ _ADDITIVE_MIGRATIONS = [
     # feature_flags — per-account feature override dict for subscription tier gating.
     # Effective entitlements = tier defaults (from FEATURE_CATALOG) merged with this dict.
     "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS feature_flags JSONB NOT NULL DEFAULT '{}'",
+
+    # ── hotel_id → account_id unification ────────────────────────────────────
+    # Drop FK constraints pointing at the legacy hotels table (idempotent).
+    "ALTER TABLE assistants DROP CONSTRAINT IF EXISTS assistants_hotel_id_fkey",
+    "ALTER TABLE call_logs DROP CONSTRAINT IF EXISTS call_logs_hotel_id_fkey",
+    "ALTER TABLE knowledge_entries DROP CONSTRAINT IF EXISTS knowledge_entries_hotel_id_fkey",
+    "ALTER TABLE phone_numbers DROP CONSTRAINT IF EXISTS phone_numbers_hotel_id_fkey",
+    "ALTER TABLE sms_compliance_campaigns DROP CONSTRAINT IF EXISTS sms_compliance_campaigns_hotel_id_fkey",
+    "ALTER TABLE sms_conversations DROP CONSTRAINT IF EXISTS sms_conversations_hotel_id_fkey",
+    "ALTER TABLE sms_notification_settings DROP CONSTRAINT IF EXISTS sms_notification_settings_hotel_id_fkey",
+    "ALTER TABLE sms_templates DROP CONSTRAINT IF EXISTS sms_templates_hotel_id_fkey",
+    # Rename the column on each table (no-op if already renamed).
+    "ALTER TABLE assistants RENAME COLUMN hotel_id TO account_id",
+    "ALTER TABLE call_logs RENAME COLUMN hotel_id TO account_id",
+    "ALTER TABLE knowledge_entries RENAME COLUMN hotel_id TO account_id",
+    "ALTER TABLE phone_numbers RENAME COLUMN hotel_id TO account_id",
+    "ALTER TABLE sms_compliance_campaigns RENAME COLUMN hotel_id TO account_id",
+    "ALTER TABLE sms_conversations RENAME COLUMN hotel_id TO account_id",
+    "ALTER TABLE sms_notification_settings RENAME COLUMN hotel_id TO account_id",
+    "ALTER TABLE sms_templates RENAME COLUMN hotel_id TO account_id",
+    # Add FK constraints pointing at accounts (idempotent via DO blocks).
+    """DO $$ BEGIN ALTER TABLE assistants ADD CONSTRAINT assistants_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id); EXCEPTION WHEN duplicate_object THEN NULL; END $$""",
+    """DO $$ BEGIN ALTER TABLE call_logs ADD CONSTRAINT call_logs_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id); EXCEPTION WHEN duplicate_object THEN NULL; END $$""",
+    """DO $$ BEGIN ALTER TABLE knowledge_entries ADD CONSTRAINT knowledge_entries_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE SET NULL; EXCEPTION WHEN duplicate_object THEN NULL; END $$""",
+    """DO $$ BEGIN ALTER TABLE phone_numbers ADD CONSTRAINT phone_numbers_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id); EXCEPTION WHEN duplicate_object THEN NULL; END $$""",
+    """DO $$ BEGIN ALTER TABLE sms_compliance_campaigns ADD CONSTRAINT sms_compliance_campaigns_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id); EXCEPTION WHEN duplicate_object THEN NULL; END $$""",
+    """DO $$ BEGIN ALTER TABLE sms_conversations ADD CONSTRAINT sms_conversations_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id); EXCEPTION WHEN duplicate_object THEN NULL; END $$""",
+    """DO $$ BEGIN ALTER TABLE sms_notification_settings ADD CONSTRAINT sms_notification_settings_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id); EXCEPTION WHEN duplicate_object THEN NULL; END $$""",
+    """DO $$ BEGIN ALTER TABLE sms_templates ADD CONSTRAINT sms_templates_account_id_fkey FOREIGN KEY (account_id) REFERENCES accounts(id); EXCEPTION WHEN duplicate_object THEN NULL; END $$""",
+    # Recreate indexes under their new names.
+    "DROP INDEX IF EXISTS ix_call_logs_hotel_started",
+    "CREATE INDEX IF NOT EXISTS ix_call_logs_account_started ON call_logs(account_id, started_at)",
+    "DROP INDEX IF EXISTS ix_call_logs_hotel_status",
+    "CREATE INDEX IF NOT EXISTS ix_call_logs_account_status ON call_logs(account_id, status)",
+    "DROP INDEX IF EXISTS ix_sms_conv_hotel_status",
+    "CREATE INDEX IF NOT EXISTS ix_sms_conv_account_status ON sms_conversations(account_id, status)",
+    "DROP INDEX IF EXISTS ix_sms_conv_hotel_last_msg",
+    "CREATE INDEX IF NOT EXISTS ix_sms_conv_account_last_msg ON sms_conversations(account_id, last_message_at)",
+    "DROP INDEX IF EXISTS ix_sms_conv_customer_number",
+    "CREATE INDEX IF NOT EXISTS ix_sms_conv_account_customer_number ON sms_conversations(account_id, customer_number, botelier_number)",
+    "DROP INDEX IF EXISTS ix_sms_template_hotel",
+    "CREATE INDEX IF NOT EXISTS ix_sms_template_account ON sms_templates(account_id)",
+    # Drop the legacy hotels table (only after all FKs are gone).
+    "DROP TABLE IF EXISTS hotels",
 ]
 
 
@@ -328,7 +372,6 @@ def init_db():
        deploy, without a manual SQL update.
     """
     from botelier.models import tool  # noqa: F401
-    from botelier.models import hotel  # noqa: F401
     from botelier.models import account  # noqa: F401
     from botelier.models import user  # noqa: F401
     from botelier.models import role  # noqa: F401

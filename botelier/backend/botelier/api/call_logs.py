@@ -32,13 +32,13 @@ router = APIRouter(prefix="/api/call-logs", tags=["Call Logs"])
 _MISSED_STATUSES = ("no_answer", "busy", "canceled")
 
 
-def _can_view_transcripts(user: User, hotel_id: str, db: Session) -> bool:
+def _can_view_transcripts(user: User, account_id: str, db: Session) -> bool:
     """Return True if user has call_logs.view_transcripts for this account."""
     if user.is_platform_admin:
         return True
     membership = db.query(AccountMembership).filter(
         AccountMembership.user_id == user.id,
-        AccountMembership.account_id == hotel_id,
+        AccountMembership.account_id == account_id,
         AccountMembership.is_active == True,
     ).first()
     if not membership:
@@ -48,7 +48,7 @@ def _can_view_transcripts(user: User, hotel_id: str, db: Session) -> bool:
 
 @router.get("")
 async def get_call_logs(
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     status: Optional[str] = Query(None, description="Filter by call status. Use 'missed' to match no_answer|busy|canceled."),
     assistant_id: Optional[UUID] = Query(None, description="Filter by assistant"),
     phone_number_id: Optional[UUID] = Query(None, description="Filter by phone number"),
@@ -68,9 +68,9 @@ async def get_call_logs(
     user: User = Depends(get_current_user),
 ):
     """Get paginated call logs for a hotel."""
-    check_account_permission(user, str(hotel_id), "call_logs.view", db)
+    check_account_permission(user, str(account_id), "call_logs.view", db)
     try:
-        query = db.query(CallLog).filter(CallLog.hotel_id == hotel_id)
+        query = db.query(CallLog).filter(CallLog.account_id == account_id)
         
         if status:
             if status == "missed":
@@ -139,7 +139,7 @@ async def get_call_logs(
         if assistant_ids:
             assistant_records = db.query(Assistant).filter(
                 Assistant.id.in_(assistant_ids),
-                Assistant.hotel_id == hotel_id
+                Assistant.account_id == account_id
             ).all()
             assistants = {str(a.id): a.name for a in assistant_records}
         
@@ -147,11 +147,11 @@ async def get_call_logs(
         if phone_ids:
             phone_records = db.query(PhoneNumber).filter(
                 PhoneNumber.id.in_(phone_ids),
-                PhoneNumber.hotel_id == hotel_id
+                PhoneNumber.account_id == account_id
             ).all()
             phone_numbers = {str(p.id): p.phone_number for p in phone_records}
         
-        include_transcript = _can_view_transcripts(user, str(hotel_id), db)
+        include_transcript = _can_view_transcripts(user, str(account_id), db)
         logs_with_names = []
         for log in call_logs:
             log_dict = log.to_dict(include_legs=True, include_transcript=include_transcript)
@@ -174,18 +174,18 @@ async def get_call_logs(
 
 @router.get("/stats")
 async def get_call_stats(
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     days: int = Query(7, ge=1, le=90, description="Number of days to analyze"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Get call statistics for quick summary display."""
-    check_account_permission(user, str(hotel_id), "call_logs.view", db)
+    check_account_permission(user, str(account_id), "call_logs.view", db)
     try:
         since = datetime.utcnow() - timedelta(days=days)
         
         base_query = db.query(CallLog).filter(
-            CallLog.hotel_id == hotel_id,
+            CallLog.account_id == account_id,
             CallLog.started_at >= since
         )
         
@@ -194,7 +194,7 @@ async def get_call_stats(
         transferred_calls = base_query.filter(CallLog.has_transfer == True).count()
         
         total_duration = db.query(func.sum(CallLog.duration_seconds)).filter(
-            CallLog.hotel_id == hotel_id,
+            CallLog.account_id == account_id,
             CallLog.started_at >= since
         ).scalar() or 0
         
@@ -216,7 +216,7 @@ async def get_call_stats(
 
 @router.get("/export")
 async def export_call_logs(
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     status: Optional[str] = Query(None),
     assistant_id: Optional[UUID] = Query(None),
     date_from: Optional[datetime] = Query(None),
@@ -225,9 +225,9 @@ async def export_call_logs(
     user: User = Depends(get_current_user),
 ):
     """Export call logs as CSV file."""
-    check_account_permission(user, str(hotel_id), "call_logs.export", db)
+    check_account_permission(user, str(account_id), "call_logs.export", db)
     try:
-        query = db.query(CallLog).filter(CallLog.hotel_id == hotel_id)
+        query = db.query(CallLog).filter(CallLog.account_id == account_id)
         
         if status:
             query = query.filter(CallLog.status == status)
@@ -245,7 +245,7 @@ async def export_call_logs(
         if assistant_ids:
             records = db.query(Assistant).filter(
                 Assistant.id.in_(assistant_ids),
-                Assistant.hotel_id == hotel_id
+                Assistant.account_id == account_id
             ).all()
             assistants = {str(a.id): a.name for a in records}
         
@@ -312,19 +312,19 @@ async def export_call_logs(
 @router.get("/{call_log_id}")
 async def get_call_log(
     call_log_id: UUID,
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Get a single call log with full details including transcript and legs."""
-    check_account_permission(user, str(hotel_id), "call_logs.view", db)
+    check_account_permission(user, str(account_id), "call_logs.view", db)
     try:
         call_log = (
             db.query(CallLog)
             .options(joinedload(CallLog.legs), joinedload(CallLog.disposition))
             .filter(
                 CallLog.id == call_log_id,
-                CallLog.hotel_id == hotel_id
+                CallLog.account_id == account_id
             )
             .first()
         )
@@ -332,20 +332,20 @@ async def get_call_log(
         if not call_log:
             raise HTTPException(status_code=404, detail="Call log not found")
         
-        include_transcript = _can_view_transcripts(user, str(hotel_id), db)
+        include_transcript = _can_view_transcripts(user, str(account_id), db)
         result = call_log.to_dict(include_legs=True, include_transcript=include_transcript)
         
         if call_log.assistant_id:
             assistant = db.query(Assistant).filter(
                 Assistant.id == call_log.assistant_id,
-                Assistant.hotel_id == hotel_id
+                Assistant.account_id == account_id
             ).first()
             result["assistant_name"] = assistant.name if assistant else None
         
         if call_log.phone_number_id:
             phone = db.query(PhoneNumber).filter(
                 PhoneNumber.id == call_log.phone_number_id,
-                PhoneNumber.hotel_id == hotel_id
+                PhoneNumber.account_id == account_id
             ).first()
             result["phone_number_display"] = phone.phone_number if phone else None
         
@@ -360,20 +360,20 @@ async def get_call_log(
 
 @router.get("/filters/options")
 async def get_filter_options(
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     assistant_id: Optional[UUID] = Query(None, description="Scope dispositions and resolutions to this assistant"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Get available filter options (assistants, phone numbers, statuses, dispositions, resolutions)."""
-    check_account_permission(user, str(hotel_id), "call_logs.view", db)
+    check_account_permission(user, str(account_id), "call_logs.view", db)
     try:
         assistants = db.query(Assistant).filter(
-            Assistant.hotel_id == hotel_id
+            Assistant.account_id == account_id
         ).order_by(Assistant.name).all()
         
         phone_numbers = db.query(PhoneNumber).filter(
-            PhoneNumber.hotel_id == hotel_id
+            PhoneNumber.account_id == account_id
         ).order_by(PhoneNumber.phone_number).all()
         
         statuses = [status.value for status in CallStatus]
@@ -381,7 +381,7 @@ async def get_filter_options(
         disposition_query = db.query(AssistantDisposition).join(
             Assistant, AssistantDisposition.assistant_id == Assistant.id
         ).filter(
-            Assistant.hotel_id == hotel_id,
+            Assistant.account_id == account_id,
             AssistantDisposition.is_active == True,
         )
         if assistant_id:
@@ -391,7 +391,7 @@ async def get_filter_options(
         dispositions = disposition_query.order_by(AssistantDisposition.name).all()
 
         resolution_query = db.query(CallLog.acw_resolution).filter(
-            CallLog.hotel_id == hotel_id,
+            CallLog.account_id == account_id,
             CallLog.acw_resolution.isnot(None),
             CallLog.acw_resolution != "",
         )
@@ -433,7 +433,7 @@ async def get_filter_options(
 
 
 class GenerateSummaryRequest(BaseModel):
-    hotel_id: str
+    account_id: str
 
 
 class UpdateCallLogRequest(BaseModel):
@@ -458,12 +458,12 @@ async def generate_summary(
     quality score, and summary (if enabled).
     """
     try:
-        hotel_id = UUID(request.hotel_id)
-        check_account_permission(user, str(hotel_id), "call_logs.delete", db)
+        account_id = UUID(request.account_id)
+        check_account_permission(user, str(account_id), "call_logs.delete", db)
 
         call_log = db.query(CallLog).filter(
             CallLog.id == call_log_id,
-            CallLog.hotel_id == hotel_id
+            CallLog.account_id == account_id
         ).first()
 
         if not call_log:
@@ -507,16 +507,16 @@ async def generate_summary(
 async def update_call_log(
     call_log_id: UUID,
     request: UpdateCallLogRequest,
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Update a call log's disposition or summary."""
-    check_account_permission(user, str(hotel_id), "call_logs.edit", db)
+    check_account_permission(user, str(account_id), "call_logs.edit", db)
     try:
         call_log = db.query(CallLog).filter(
             CallLog.id == call_log_id,
-            CallLog.hotel_id == hotel_id
+            CallLog.account_id == account_id
         ).first()
         
         if not call_log:
@@ -560,16 +560,16 @@ async def update_call_log(
 @router.delete("/{call_log_id}")
 async def delete_call_log(
     call_log_id: UUID,
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Delete a call log and its associated legs and events."""
-    check_account_permission(user, str(hotel_id), "call_logs.delete", db)
+    check_account_permission(user, str(account_id), "call_logs.delete", db)
     try:
         call_log = db.query(CallLog).filter(
             CallLog.id == call_log_id,
-            CallLog.hotel_id == hotel_id,
+            CallLog.account_id == account_id,
         ).first()
 
         if not call_log:

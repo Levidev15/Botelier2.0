@@ -50,7 +50,7 @@ def _resolve_date_range(
 
 @router.get("/calls")
 async def get_call_analytics(
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     date_from: Optional[datetime] = Query(None, description="Start of window (ISO 8601). Defaults to 7 days ago."),
     date_to: Optional[datetime] = Query(None, description="End of window (ISO 8601). Defaults to now."),
     assistant_ids: Optional[List[UUID]] = Query(None, description="Filter to these assistants (repeat param for multiple)."),
@@ -58,7 +58,7 @@ async def get_call_analytics(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, str(hotel_id), "call_logs.view", db)
+    check_account_permission(user, str(account_id), "call_logs.view", db)
     try:
         ZoneInfo(timezone)
     except (ZoneInfoNotFoundError, KeyError):
@@ -68,7 +68,7 @@ async def get_call_analytics(
 
         def _base():
             q = db.query(CallLog).filter(
-                CallLog.hotel_id == hotel_id,
+                CallLog.account_id == account_id,
                 CallLog.started_at >= since,
                 CallLog.started_at <= until,
             )
@@ -324,7 +324,7 @@ async def get_call_analytics(
 
 @router.get("/calls/drilldown")
 async def get_calls_drilldown(
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     date_from: Optional[datetime] = Query(None, description="Start of window (ISO 8601)."),
     date_to: Optional[datetime] = Query(None, description="End of window (ISO 8601)."),
     assistant_ids: Optional[List[UUID]] = Query(None, description="Filter to these assistants."),
@@ -339,7 +339,7 @@ async def get_calls_drilldown(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, str(hotel_id), "call_logs.view", db)
+    check_account_permission(user, str(account_id), "call_logs.view", db)
     """
     Return a paginated list of individual call records that make up a given
     analytics metric slice.  Supports the same date/assistant filters as
@@ -353,7 +353,7 @@ async def get_calls_drilldown(
         since, until = _resolve_date_range(date_from, date_to)
 
         query = db.query(CallLog).filter(
-            CallLog.hotel_id == hotel_id,
+            CallLog.account_id == account_id,
             CallLog.started_at >= since,
             CallLog.started_at <= until,
         )
@@ -430,14 +430,14 @@ async def get_calls_drilldown(
         asst_map: dict = {}
         if asst_id_set:
             rows = db.query(Assistant.id, Assistant.name).filter(
-                Assistant.id.in_(asst_id_set), Assistant.hotel_id == hotel_id
+                Assistant.id.in_(asst_id_set), Assistant.account_id == account_id
             ).all()
             asst_map = {str(r.id): r.name for r in rows}
 
         phone_map: dict = {}
         if phone_id_set:
             rows = db.query(PhoneNumber.id, PhoneNumber.phone_number).filter(
-                PhoneNumber.id.in_(phone_id_set), PhoneNumber.hotel_id == hotel_id
+                PhoneNumber.id.in_(phone_id_set), PhoneNumber.account_id == account_id
             ).all()
             phone_map = {str(r.id): r.phone_number for r in rows}
 

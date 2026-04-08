@@ -208,7 +208,7 @@ export interface FlowState {
   isDirty: boolean;
   isLoading: boolean;
   toolId: string | null;
-  hotelId: string | null;
+  accountId: string | null;
   
   // Versioning state
   currentSource: "draft" | "published" | "legacy";
@@ -238,7 +238,7 @@ export interface FlowState {
   
   setGlobalPrompt: (prompt: string) => void;
   
-  loadFlow: (toolId: string, hotelId: string, source?: "draft" | "published") => Promise<void>;
+  loadFlow: (toolId: string, accountId: string, source?: "draft" | "published") => Promise<void>;
   saveFlow: (description?: string) => Promise<void>;
   publishFlow: (description?: string) => Promise<void>;
   discardDraft: () => Promise<void>;
@@ -700,7 +700,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   isDirty: false,
   isLoading: false,
   toolId: null,
-  hotelId: null,
+  accountId: null,
   
   // Versioning state
   currentSource: "legacy",
@@ -828,11 +828,11 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     });
   },
 
-  loadFlow: async (toolId: string, hotelId: string, source?: "draft" | "published") => {
-    set({ isLoading: true, toolId, hotelId });
+  loadFlow: async (toolId: string, accountId: string, source?: "draft" | "published") => {
+    set({ isLoading: true, toolId, accountId });
     try {
       const sourceParam = source ? `&source=${source}` : "";
-      const response = await fetch(`/api/tools/${toolId}/flow?hotel_id=${hotelId}${sourceParam}`);
+      const response = await fetch(`/api/tools/${toolId}/flow?account_id=${accountId}${sourceParam}`);
       if (!response.ok) throw new Error("Failed to load flow");
       
       const data = await response.json();
@@ -888,8 +888,8 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   saveFlow: async (description?: string) => {
-    const { toolId, hotelId, nodes, edges, variables, globalPrompt, draftDescription } = get();
-    if (!toolId || !hotelId) return;
+    const { toolId, accountId, nodes, edges, variables, globalPrompt, draftDescription } = get();
+    if (!toolId || !accountId) return;
 
     set({ isLoading: true });
     try {
@@ -914,7 +914,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         })),
       };
 
-      const response = await fetch(`/api/tools/${toolId}/flow/draft?hotel_id=${hotelId}`, {
+      const response = await fetch(`/api/tools/${toolId}/flow/draft?account_id=${accountId}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ 
@@ -945,12 +945,12 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
   
   publishFlow: async (description?: string) => {
-    const { toolId, hotelId } = get();
-    if (!toolId || !hotelId) return;
+    const { toolId, accountId } = get();
+    if (!toolId || !accountId) return;
     
     set({ isLoading: true });
     try {
-      const response = await fetch(`/api/tools/${toolId}/flow/publish?hotel_id=${hotelId}`, {
+      const response = await fetch(`/api/tools/${toolId}/flow/publish?account_id=${accountId}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ description }),
@@ -987,19 +987,19 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
   
   discardDraft: async () => {
-    const { toolId, hotelId } = get();
-    if (!toolId || !hotelId) return;
+    const { toolId, accountId } = get();
+    if (!toolId || !accountId) return;
     
     set({ isLoading: true });
     try {
-      const response = await fetch(`/api/tools/${toolId}/flow/draft?hotel_id=${hotelId}`, {
+      const response = await fetch(`/api/tools/${toolId}/flow/draft?account_id=${accountId}`, {
         method: "DELETE",
       });
       
       if (!response.ok) throw new Error("Failed to discard draft");
       
       // Reload the published version
-      await get().loadFlow(toolId, hotelId, "published");
+      await get().loadFlow(toolId, accountId, "published");
     } catch (error) {
       console.error("Failed to discard draft:", error);
       throw error;
@@ -1009,11 +1009,11 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
   
   loadVersions: async () => {
-    const { toolId, hotelId } = get();
-    if (!toolId || !hotelId) return;
+    const { toolId, accountId } = get();
+    if (!toolId || !accountId) return;
     
     try {
-      const response = await fetch(`/api/tools/${toolId}/flow/versions?hotel_id=${hotelId}`);
+      const response = await fetch(`/api/tools/${toolId}/flow/versions?account_id=${accountId}`);
       if (!response.ok) return;
       
       const data = await response.json();
@@ -1028,13 +1028,13 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
   
   revertToVersion: async (versionNumber: number, publishImmediately = false) => {
-    const { toolId, hotelId } = get();
-    if (!toolId || !hotelId) return;
+    const { toolId, accountId } = get();
+    if (!toolId || !accountId) return;
     
     set({ isLoading: true });
     try {
       const response = await fetch(
-        `/api/tools/${toolId}/flow/versions/${versionNumber}/revert?hotel_id=${hotelId}`,
+        `/api/tools/${toolId}/flow/versions/${versionNumber}/revert?account_id=${accountId}`,
         {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1045,7 +1045,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       if (!response.ok) throw new Error("Failed to revert to version");
       
       // Reload the flow
-      await get().loadFlow(toolId, hotelId);
+      await get().loadFlow(toolId, accountId);
     } catch (error) {
       console.error("Failed to revert to version:", error);
       throw error;
@@ -1094,7 +1094,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
 
   setIsDirty: (dirty) => set({ isDirty: dirty }),
   setToolId: (id) => set({ toolId: id }),
-  setHotelId: (id) => set({ hotelId: id }),
+  setHotelId: (id) => set({ accountId: id }),
 
   getFlowConfig: () => {
     const { nodes, edges, variables, globalPrompt } = get();

@@ -32,14 +32,14 @@ class ResolutionOptionUpdate(BaseModel):
 @router.get("/{assistant_id}/resolution-options")
 async def list_resolution_options(
     assistant_id: UUID,
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, str(hotel_id), "assistants.edit", db)
+    check_account_permission(user, str(account_id), "assistants.edit", db)
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
-        Assistant.hotel_id == hotel_id
+        Assistant.account_id == account_id
     ).first()
 
     if not assistant:
@@ -56,14 +56,14 @@ async def list_resolution_options(
 async def create_resolution_option(
     assistant_id: UUID,
     data: ResolutionOptionCreate,
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, str(hotel_id), "assistants.edit", db)
+    check_account_permission(user, str(account_id), "assistants.edit", db)
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
-        Assistant.hotel_id == hotel_id
+        Assistant.account_id == account_id
     ).first()
 
     if not assistant:
@@ -94,14 +94,14 @@ async def update_resolution_option(
     assistant_id: UUID,
     option_id: UUID,
     data: ResolutionOptionUpdate,
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, str(hotel_id), "assistants.edit", db)
+    check_account_permission(user, str(account_id), "assistants.edit", db)
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
-        Assistant.hotel_id == hotel_id
+        Assistant.account_id == account_id
     ).first()
 
     if not assistant:
@@ -131,14 +131,14 @@ async def update_resolution_option(
 async def delete_resolution_option(
     assistant_id: UUID,
     option_id: UUID,
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, str(hotel_id), "assistants.edit", db)
+    check_account_permission(user, str(account_id), "assistants.edit", db)
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
-        Assistant.hotel_id == hotel_id
+        Assistant.account_id == account_id
     ).first()
 
     if not assistant:

@@ -134,7 +134,7 @@ class SMSComplianceCampaign(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     brand_id = Column(UUID(as_uuid=True), ForeignKey("sms_compliance_brands.id"), nullable=False, index=True)
-    hotel_id = Column(UUID(as_uuid=True), ForeignKey("hotels.id"), nullable=False, index=True)
+    account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=False, index=True)
 
     friendly_name = Column(String, nullable=False)
     use_case = Column(SQLEnum(CampaignUseCase), default=CampaignUseCase.CUSTOMER_CARE, nullable=False)
@@ -168,7 +168,7 @@ class SMSComplianceCampaign(Base):
         return {
             "id": str(self.id),
             "brand_id": str(self.brand_id),
-            "hotel_id": str(self.hotel_id),
+            "account_id": str(self.account_id),
             "friendly_name": self.friendly_name,
             "use_case": self.use_case.value if self.use_case else None,
             "description": self.description,

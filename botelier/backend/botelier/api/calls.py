@@ -141,7 +141,7 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
             if not existing_log:
                 now = datetime.utcnow()
                 call_log = CallLog(
-                    hotel_id=phone_record.hotel_id,
+                    account_id=phone_record.account_id,
                     call_sid=call_sid,
                     phone_number_id=phone_record.id,
                     assistant_id=phone_record.assistant_id,
@@ -558,10 +558,10 @@ async def recording_status_callback(request: Request, db: Session = Depends(get_
         if call_sid:
             call_log_for_auth = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
             if call_log_for_auth:
-                from ..models.hotel import Hotel as _Hotel
-                _hotel = db.query(_Hotel).filter(_Hotel.id == call_log_for_auth.hotel_id).first()
-                if _hotel and _hotel.twilio_sub_auth_token:
-                    auth_token = _hotel.twilio_sub_auth_token
+                from ..models.account import Account as _Account
+                _acct = db.query(_Account).filter(_Account.id == call_log_for_auth.account_id).first()
+                if _acct and _acct.twilio_sub_auth_token:
+                    auth_token = _acct.twilio_sub_auth_token
 
         is_valid, validated_url = _validate_recording_webhook_signature(request, form_data, auth_token)
         if not is_valid:
@@ -620,16 +620,16 @@ async def get_call_recording(
     if not call_log:
         raise HTTPException(status_code=404, detail="Call log not found")
 
-    check_account_permission(user, str(call_log.hotel_id), "call_logs.play_recordings", db)
+    check_account_permission(user, str(call_log.account_id), "call_logs.play_recordings", db)
 
     if not call_log.recording_url:
         raise HTTPException(status_code=404, detail="No recording available for this call")
 
-    from ..models.hotel import Hotel
-    hotel = db.query(Hotel).filter(Hotel.id == call_log.hotel_id).first()
-    if hotel and hotel.twilio_sub_account_sid and hotel.twilio_sub_auth_token:
-        twilio_account_sid = hotel.twilio_sub_account_sid
-        twilio_auth_token = hotel.twilio_sub_auth_token
+    from ..models.account import Account
+    acct = db.query(Account).filter(Account.id == call_log.account_id).first()
+    if acct and acct.twilio_sub_account_sid and acct.twilio_sub_auth_token:
+        twilio_account_sid = acct.twilio_sub_account_sid
+        twilio_auth_token = acct.twilio_sub_auth_token
     else:
         twilio_account_sid = os.environ.get("TWILIO_ACCOUNT_SID", "")
         twilio_auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "")

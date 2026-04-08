@@ -26,22 +26,22 @@ from botelier.schemas.tool_schemas import (
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
 
-def _scope_query_by_account(query, db, tool_set_id: str = None, hotel_id: str = None):
+def _scope_query_by_account(query, db, tool_set_id: str = None, account_id: str = None):
     """Apply multi-tenant scoping to a tool query.
     
     Tools are scoped through their ToolSet's account_id.
-    When hotel_id is provided, it resolves through ToolSet.account_id.
+    When account_id is provided, it resolves through ToolSet.account_id.
     """
     if tool_set_id:
         query = query.filter(Tool.tool_set_id == tool_set_id)
-    elif hotel_id:
+    elif account_id:
         query = query.join(ToolSet, Tool.tool_set_id == ToolSet.id).filter(
-            ToolSet.account_id == hotel_id
+            ToolSet.account_id == account_id
         )
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Either tool_set_id or hotel_id is required"
+            detail="Either tool_set_id or account_id is required"
         )
     return query
 
@@ -54,10 +54,10 @@ def list_tools(
     ctx: AccountContext = Depends(get_hotel_context("tools.view")),
     db: Session = Depends(get_db),
 ):
-    """List tools scoped by tool_set_id or account (hotel_id)."""
-    hotel_id = str(ctx.account.id)
+    """List tools scoped by tool_set_id or account_id."""
+    account_id = str(ctx.account.id)
     query = db.query(Tool)
-    query = _scope_query_by_account(query, db, tool_set_id, hotel_id)
+    query = _scope_query_by_account(query, db, tool_set_id, account_id)
 
     if assistant_id:
         query = query.filter(Tool.assistant_id == assistant_id)
@@ -80,19 +80,19 @@ def list_tools(
 def get_tool(
     tool_id: str,
     tool_set_id: str = None,
-    hotel_id: str = None,
+    account_id: str = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Get a specific tool by ID, scoped by tool_set_id or account (hotel_id)."""
-    if hotel_id:
-        check_account_permission(user, hotel_id, "tools.view", db)
+    """Get a specific tool by ID, scoped by tool_set_id or account_id."""
+    if account_id:
+        check_account_permission(user, account_id, "tools.view", db)
     elif tool_set_id:
         ts = db.query(ToolSet).filter(ToolSet.id == tool_set_id).first()
         if ts:
             check_account_permission(user, str(ts.account_id), "tools.view", db)
     query = db.query(Tool).filter(Tool.id == tool_id)
-    query = _scope_query_by_account(query, db, tool_set_id, hotel_id)
+    query = _scope_query_by_account(query, db, tool_set_id, account_id)
 
     tool = query.first()
 
@@ -151,19 +151,19 @@ def update_tool(
     tool_id: str,
     tool_data: ToolUpdate,
     tool_set_id: str = None,
-    hotel_id: str = None,
+    account_id: str = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Update an existing tool, scoped by tool_set_id or account (hotel_id)."""
-    if hotel_id:
-        check_account_permission(user, hotel_id, "tools.edit", db)
+    """Update an existing tool, scoped by tool_set_id or account_id."""
+    if account_id:
+        check_account_permission(user, account_id, "tools.edit", db)
     elif tool_set_id:
         ts = db.query(ToolSet).filter(ToolSet.id == tool_set_id).first()
         if ts:
             check_account_permission(user, str(ts.account_id), "tools.edit", db)
     query = db.query(Tool).filter(Tool.id == tool_id)
-    query = _scope_query_by_account(query, db, tool_set_id, hotel_id)
+    query = _scope_query_by_account(query, db, tool_set_id, account_id)
 
     tool = query.first()
 
@@ -192,19 +192,19 @@ def update_tool(
 def delete_tool(
     tool_id: str,
     tool_set_id: str = None,
-    hotel_id: str = None,
+    account_id: str = None,
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Delete a tool, scoped by tool_set_id or account (hotel_id)."""
-    if hotel_id:
-        check_account_permission(user, hotel_id, "tools.delete", db)
+    """Delete a tool, scoped by tool_set_id or account_id."""
+    if account_id:
+        check_account_permission(user, account_id, "tools.delete", db)
     elif tool_set_id:
         ts = db.query(ToolSet).filter(ToolSet.id == tool_set_id).first()
         if ts:
             check_account_permission(user, str(ts.account_id), "tools.delete", db)
     query = db.query(Tool).filter(Tool.id == tool_id)
-    query = _scope_query_by_account(query, db, tool_set_id, hotel_id)
+    query = _scope_query_by_account(query, db, tool_set_id, account_id)
 
     tool = query.first()
 

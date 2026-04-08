@@ -78,14 +78,14 @@ async def _get_auth_token_for_number(to_number: str, db: Session) -> str:
     """
     try:
         from botelier.models.phone_number import PhoneNumber
-        from botelier.models.hotel import Hotel
+        from botelier.models.account import Account
         phone = db.query(PhoneNumber).filter(
             PhoneNumber.phone_number == to_number
         ).first()
         if phone:
-            hotel = db.query(Hotel).filter(Hotel.id == phone.hotel_id).first()
-            if hotel and hotel.twilio_sub_auth_token:
-                return hotel.twilio_sub_auth_token
+            account = db.query(Account).filter(Account.id == phone.account_id).first()
+            if account and account.twilio_sub_auth_token:
+                return account.twilio_sub_auth_token
     except Exception:
         pass
     return os.environ.get("TWILIO_AUTH_TOKEN", "")
@@ -148,7 +148,7 @@ async def sms_webhook(
                 PhoneNumber.phone_number == to_number
             ).first()
             if phone_number:
-                hotel_id_str = str(phone_number.hotel_id)
+                account_id_str = str(phone_number.account_id)
 
                 if conv_id:
                     conversation = db.query(SMSConversation).filter(
@@ -158,43 +158,43 @@ async def sms_webhook(
                     conversation = db.query(SMSConversation).filter(
                         SMSConversation.customer_number == from_number,
                         SMSConversation.botelier_number == to_number,
-                        SMSConversation.hotel_id == phone_number.hotel_id,
+                        SMSConversation.account_id == phone_number.account_id,
                     ).order_by(desc(SMSConversation.last_message_at)).first()
 
                 if conversation:
                     conv_id_str = str(conversation.id)
 
                     await broadcaster.broadcast(
-                        hotel_id=hotel_id_str,
+                        hotel_id=account_id_str,
                         event_type="new_message",
                         data={
                             "conversation_id": conv_id_str,
                             "customer_number": from_number,
                             "preview": (body or "")[:100],
-                            "hotel_id": hotel_id_str,
+                            "account_id": account_id_str,
                         },
                     )
 
                     if ai_response:
                         await broadcaster.broadcast(
-                            hotel_id=hotel_id_str,
+                            hotel_id=account_id_str,
                             event_type="new_reply",
                             data={
                                 "conversation_id": conv_id_str,
                                 "customer_number": from_number,
                                 "preview": ai_response[:100],
-                                "hotel_id": hotel_id_str,
+                                "account_id": account_id_str,
                             },
                         )
 
                     if handoff_triggered:
                         await broadcaster.broadcast(
-                            hotel_id=hotel_id_str,
+                            hotel_id=account_id_str,
                             event_type="handoff_requested",
                             data={
                                 "conversation_id": conv_id_str,
                                 "customer_number": from_number,
-                                "hotel_id": hotel_id_str,
+                                "account_id": account_id_str,
                                 "last_ai_message": (ai_response or "")[:100],
                             },
                         )

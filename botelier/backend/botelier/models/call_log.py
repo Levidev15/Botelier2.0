@@ -65,7 +65,7 @@ class CallLog(Base):
     
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     
-    hotel_id = Column(UUID(as_uuid=True), ForeignKey("hotels.id"), nullable=False, index=True)
+    account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=False, index=True)
     
     reference_id = Column(String(8), nullable=True)
 
@@ -119,8 +119,8 @@ class CallLog(Base):
     disposition = relationship("AssistantDisposition", foreign_keys=[disposition_id])
     
     __table_args__ = (
-        Index('ix_call_logs_hotel_started', 'hotel_id', 'started_at'),
-        Index('ix_call_logs_hotel_status', 'hotel_id', 'status'),
+        Index('ix_call_logs_account_started', 'account_id', 'started_at'),
+        Index('ix_call_logs_account_status', 'account_id', 'status'),
     )
     
     def __repr__(self):
@@ -130,7 +130,7 @@ class CallLog(Base):
         """Convert to dictionary for API responses."""
         result = {
             "id": str(self.id),
-            "hotel_id": str(self.hotel_id),
+            "account_id": str(self.account_id),
             "reference_id": self.reference_id,
             "call_sid": self.call_sid,
             "phone_number_id": str(self.phone_number_id) if self.phone_number_id else None,

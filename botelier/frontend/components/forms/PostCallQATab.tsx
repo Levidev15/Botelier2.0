@@ -68,7 +68,7 @@ export default function PostCallQATab({ assistantId, accountId }: PostCallQATabP
   const fetchAcwConfig = async () => {
     try {
       const response = await authFetch(
-        `/api/assistants/${assistantId}/acw-config?hotel_id=${accountId}`
+        `/api/assistants/${assistantId}/acw-config?account_id=${accountId}`
       );
       if (response.ok) {
         const data = await response.json();
@@ -87,7 +87,7 @@ export default function PostCallQATab({ assistantId, accountId }: PostCallQATabP
   const patchAcwConfig = async (updates: Partial<AcwConfig>) => {
     try {
       const response = await authFetch(
-        `/api/assistants/${assistantId}/acw-config?hotel_id=${accountId}`,
+        `/api/assistants/${assistantId}/acw-config?account_id=${accountId}`,
         {
           method: "PATCH",
           body: JSON.stringify(updates),
@@ -109,7 +109,7 @@ export default function PostCallQATab({ assistantId, accountId }: PostCallQATabP
   const fetchResolutionOptions = async () => {
     try {
       const response = await authFetch(
-        `/api/assistants/${assistantId}/resolution-options?hotel_id=${accountId}`
+        `/api/assistants/${assistantId}/resolution-options?account_id=${accountId}`
       );
       if (response.ok) {
         const data = await response.json();
@@ -126,8 +126,8 @@ export default function PostCallQATab({ assistantId, accountId }: PostCallQATabP
     e.preventDefault();
     try {
       const url = resEditingId
-        ? `/api/assistants/${assistantId}/resolution-options/${resEditingId}?hotel_id=${accountId}`
-        : `/api/assistants/${assistantId}/resolution-options?hotel_id=${accountId}`;
+        ? `/api/assistants/${assistantId}/resolution-options/${resEditingId}?account_id=${accountId}`
+        : `/api/assistants/${assistantId}/resolution-options?account_id=${accountId}`;
       const response = await authFetch(url, {
         method: resEditingId ? "PATCH" : "POST",
         body: JSON.stringify(resFormData),
@@ -151,7 +151,7 @@ export default function PostCallQATab({ assistantId, accountId }: PostCallQATabP
     if (!confirmed) return;
     try {
       const response = await authFetch(
-        `/api/assistants/${assistantId}/resolution-options/${id}?hotel_id=${accountId}`,
+        `/api/assistants/${assistantId}/resolution-options/${id}?account_id=${accountId}`,
         { method: "DELETE" }
       );
       if (response.ok) {

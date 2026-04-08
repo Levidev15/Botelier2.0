@@ -54,7 +54,7 @@ export interface ConversationDetail extends Conversation {
 
 export interface SMSTemplate {
   id: string;
-  hotel_id: string;
+  account_id: string;
   name: string;
   content: string;
   category: string | null;
@@ -221,7 +221,7 @@ export function useSMSData() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          hotel_id: accountId,
+          account_id: accountId,
           agent_id: user.id,
           agent_name: user.email?.split("@")[0] || "Agent",
         }),
@@ -235,7 +235,7 @@ export function useSMSData() {
       await fetch(`/api/sms/conversations/${convId}/presence`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hotel_id: accountId, agent_id: user.id }),
+        body: JSON.stringify({ account_id: accountId, agent_id: user.id }),
       });
     } catch {}
   }, [accountId, user]);
@@ -271,7 +271,7 @@ export function useSMSData() {
     if (!accountId) return;
     try {
       setLoading(true);
-      const params = new URLSearchParams({ hotel_id: accountId });
+      const params = new URLSearchParams({ account_id: accountId });
       if (search)                params.set("search", search);
       if (statusFilter)          params.set("status", statusFilter);
       if (assistantFilter)       params.set("assistant_id", assistantFilter);
@@ -290,7 +290,7 @@ export function useSMSData() {
     if (!accountId) return;
     try {
       setLoadingConv(true);
-      const res = await fetch(`/api/sms/conversations/${id}?hotel_id=${accountId}`);
+      const res = await fetch(`/api/sms/conversations/${id}?account_id=${accountId}`);
       const data = await res.json();
       setSelectedConv(data);
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
@@ -298,7 +298,7 @@ export function useSMSData() {
       fetch(`/api/sms/conversations/${id}/read`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hotel_id: accountId }),
+        body: JSON.stringify({ account_id: accountId }),
       })
         .then(() => setConversations(prev => prev.map(c => c.id === id ? { ...c, has_unread: false } : c)))
         .catch(() => {});
@@ -320,7 +320,7 @@ export function useSMSData() {
   const fetchSingleConversationIntoList = useCallback(async (id: string) => {
     if (!accountId) return;
     try {
-      const res = await fetch(`/api/sms/conversations/${id}?hotel_id=${accountId}`);
+      const res = await fetch(`/api/sms/conversations/${id}?account_id=${accountId}`);
       if (!res.ok) return;
       const conv: Conversation = await res.json();
 
@@ -361,7 +361,7 @@ export function useSMSData() {
   const fetchAssistants = useCallback(async () => {
     if (!accountId) return;
     try {
-      const res = await fetch(`/api/assistants?hotel_id=${accountId}&is_active=true`);
+      const res = await fetch(`/api/assistants?account_id=${accountId}&is_active=true`);
       const data = await res.json();
       setAssistants(data.assistants || []);
     } catch {}
@@ -370,7 +370,7 @@ export function useSMSData() {
   const fetchTemplates = useCallback(async () => {
     if (!accountId) return;
     try {
-      const res = await fetch(`/api/sms/templates?hotel_id=${accountId}`);
+      const res = await fetch(`/api/sms/templates?account_id=${accountId}`);
       setTemplates(await res.json());
     } catch {}
   }, [accountId]);
@@ -378,7 +378,7 @@ export function useSMSData() {
   const fetchNotifSettings = useCallback(async () => {
     if (!accountId) return;
     try {
-      const res = await fetch(`/api/sms/settings/notifications?hotel_id=${accountId}`);
+      const res = await fetch(`/api/sms/settings/notifications?account_id=${accountId}`);
       setNotifSettings(await res.json());
     } catch {}
   }, [accountId]);
@@ -390,7 +390,7 @@ export function useSMSData() {
   useEffect(() => {
     if (!accountId) return;
 
-    const es = new EventSource(`/api/sms/stream?hotel_id=${accountId}`);
+    const es = new EventSource(`/api/sms/stream?account_id=${accountId}`);
     eventSourceRef.current = es;
 
     const handleNewMessage = (event: MessageEvent) => {
@@ -399,7 +399,7 @@ export function useSMSData() {
           conversation_id: string;
           customer_number: string;
           preview: string;
-          hotel_id: string;
+          account_id: string;
         };
 
         // Snapshot current list synchronously so we can decide on side-effects
@@ -482,7 +482,7 @@ export function useSMSData() {
         const data = JSON.parse(event.data) as {
           conversation_id: string;
           customer_number: string;
-          hotel_id: string;
+          account_id: string;
           last_ai_message: string;
         };
 
@@ -571,7 +571,7 @@ export function useSMSData() {
       const res = await fetch(`/api/sms/conversations/${selectedConv.id}/generate-summary`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hotel_id: accountId }),
+        body: JSON.stringify({ account_id: accountId }),
       });
       const data = await res.json();
       if (data.success) {
@@ -591,7 +591,7 @@ export function useSMSData() {
       const res = await fetch(`/api/sms/conversations/${selectedConv.id}/close`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hotel_id: accountId }),
+        body: JSON.stringify({ account_id: accountId }),
       });
       if (res.ok) {
         notify.success("Conversation closed");
@@ -619,7 +619,7 @@ export function useSMSData() {
         }
         const formData = new FormData();
         formData.append("file", file);
-        formData.append("hotel_id", accountId);
+        formData.append("account_id", accountId);
         const res = await fetch("/api/sms/upload", { method: "POST", body: formData });
         const data = await res.json();
         if (!res.ok) {
@@ -643,7 +643,7 @@ export function useSMSData() {
       const res = await fetch(`/api/sms/conversations/${selectedConv.id}/take-over`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hotel_id: accountId }),
+        body: JSON.stringify({ account_id: accountId }),
       });
       if (!res.ok) {
         const data = await res.json();
@@ -668,7 +668,7 @@ export function useSMSData() {
       const res = await fetch(`/api/sms/conversations/${selectedConv.id}/return-to-ai`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hotel_id: accountId }),
+        body: JSON.stringify({ account_id: accountId }),
       });
       if (!res.ok) {
         const data = await res.json();
@@ -691,7 +691,7 @@ export function useSMSData() {
     if (!replyText.trim() && attachedFiles.length === 0) return;
     setSendingReply(true);
     try {
-      const body: Record<string, any> = { hotel_id: accountId, message: replyText.trim() };
+      const body: Record<string, any> = { account_id: accountId, message: replyText.trim() };
       if (attachedFiles.length > 0) body.media_urls = attachedFiles.map(f => f.url);
       const res = await fetch(`/api/sms/conversations/${selectedConv.id}/reply`, {
         method: "POST",
@@ -733,7 +733,7 @@ export function useSMSData() {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          hotel_id: accountId,
+          account_id: accountId,
           name: newTemplate.name.trim(),
           content: newTemplate.content.trim(),
           category: newTemplate.category.trim() || null,
@@ -757,7 +757,7 @@ export function useSMSData() {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
-          hotel_id: accountId,
+          account_id: accountId,
           name: template.name,
           content: template.content,
           category: template.category || null,
@@ -777,7 +777,7 @@ export function useSMSData() {
   const handleDeleteTemplate = async (id: string) => {
     if (!accountId) return;
     try {
-      await fetch(`/api/sms/templates/${id}?hotel_id=${accountId}`, { method: "DELETE" });
+      await fetch(`/api/sms/templates/${id}?account_id=${accountId}`, { method: "DELETE" });
       fetchTemplates();
       notify.success("Template deleted");
     } catch {
@@ -792,7 +792,7 @@ export function useSMSData() {
       await fetch("/api/sms/settings/notifications", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ hotel_id: accountId, ...notifSettings }),
+        body: JSON.stringify({ account_id: accountId, ...notifSettings }),
       });
       notify.success("Notification settings saved");
     } catch {

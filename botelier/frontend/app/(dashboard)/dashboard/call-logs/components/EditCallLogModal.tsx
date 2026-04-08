@@ -12,7 +12,7 @@ interface Disposition {
 
 interface EditableCallLogFields {
   id: string;
-  hotel_id: string;
+  account_id: string;
   assistant_id: string | null;
   disposition_id: string | null;
   disposition_name: string | null;
@@ -22,7 +22,7 @@ interface EditableCallLogFields {
 
 interface EditCallLogModalProps {
   log: EditableCallLogFields;
-  hotelId: string;
+  accountId: string;
   authFetch: (url: string, options?: RequestInit) => Promise<Response>;
   onClose: () => void;
   onSaved: (updates: Partial<EditableCallLogFields>) => void;
@@ -119,7 +119,7 @@ function DropdownSelect({
 
 export default function EditCallLogModal({
   log,
-  hotelId,
+  accountId,
   authFetch,
   onClose,
   onSaved,
@@ -135,7 +135,7 @@ export default function EditCallLogModal({
   useEffect(() => {
     async function fetchOptions() {
       try {
-        const params = new URLSearchParams({ hotel_id: hotelId });
+        const params = new URLSearchParams({ account_id: accountId });
         if (log.assistant_id) params.set("assistant_id", log.assistant_id);
         const res = await authFetch(`/api/call-logs/filters/options?${params}`);
         if (res.ok) {
@@ -153,7 +153,7 @@ export default function EditCallLogModal({
       }
     }
     fetchOptions();
-  }, [log.assistant_id, hotelId]);
+  }, [log.assistant_id, accountId]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -162,7 +162,7 @@ export default function EditCallLogModal({
         disposition_id: selectedDispositionId || "",
         acw_resolution: selectedResolution || "",
       };
-      const res = await authFetch(`/api/call-logs/${log.id}?hotel_id=${hotelId}`, {
+      const res = await authFetch(`/api/call-logs/${log.id}?account_id=${accountId}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -204,7 +204,7 @@ export default function EditCallLogModal({
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800">
           <div>
             <h2 className="text-base font-semibold text-foreground">Edit Call Log</h2>
-            {log.hotel_id && (
+            {log.account_id && (
               <p className="text-xs text-gray-500 mt-0.5">
                 Correct AI-determined fields for this call
               </p>

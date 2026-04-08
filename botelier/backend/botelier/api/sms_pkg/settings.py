@@ -39,17 +39,17 @@ UPLOAD_DIR = os.path.join(
 
 @router.get("/templates")
 async def list_templates(
-    hotel_id: str = Query(...),
+    account_id: str = Query(...),
     db: Session = Depends(get_db),
 ):
     templates = db.query(SMSTemplate).filter(
-        SMSTemplate.hotel_id == UUID(hotel_id),
+        SMSTemplate.account_id == UUID(account_id),
     ).order_by(SMSTemplate.category, SMSTemplate.name).all()
     return [t.to_dict() for t in templates]
 
 
 class TemplateRequest(BaseModel):
-    hotel_id: str
+    account_id: str
     name: str
     content: str
     category: Optional[str] = None
@@ -62,7 +62,7 @@ async def create_template(
     db: Session = Depends(get_db),
 ):
     template = SMSTemplate(
-        hotel_id=UUID(request.hotel_id),
+        account_id=UUID(request.account_id),
         name=request.name,
         content=request.content,
         category=request.category,
@@ -82,7 +82,7 @@ async def update_template(
 ):
     template = db.query(SMSTemplate).filter(
         SMSTemplate.id == template_id,
-        SMSTemplate.hotel_id == UUID(request.hotel_id),
+        SMSTemplate.account_id == UUID(request.account_id),
     ).first()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -99,12 +99,12 @@ async def update_template(
 @router.delete("/templates/{template_id}")
 async def delete_template(
     template_id: UUID,
-    hotel_id: str = Query(...),
+    account_id: str = Query(...),
     db: Session = Depends(get_db),
 ):
     template = db.query(SMSTemplate).filter(
         SMSTemplate.id == template_id,
-        SMSTemplate.hotel_id == UUID(hotel_id),
+        SMSTemplate.account_id == UUID(account_id),
     ).first()
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
@@ -115,11 +115,11 @@ async def delete_template(
 
 @router.get("/settings/notifications")
 async def get_notification_settings(
-    hotel_id: str = Query(...),
+    account_id: str = Query(...),
     db: Session = Depends(get_db),
 ):
     settings = db.query(SMSNotificationSettings).filter(
-        SMSNotificationSettings.hotel_id == UUID(hotel_id),
+        SMSNotificationSettings.account_id == UUID(account_id),
     ).first()
     if not settings:
         return {"sound_enabled": True, "visual_enabled": True, "threshold": 1, "sound_type": "chime"}
@@ -127,7 +127,7 @@ async def get_notification_settings(
 
 
 class NotificationSettingsRequest(BaseModel):
-    hotel_id: str
+    account_id: str
     sound_enabled: bool = True
     visual_enabled: bool = True
     threshold: int = 1
@@ -140,12 +140,12 @@ async def update_notification_settings(
     db: Session = Depends(get_db),
 ):
     settings = db.query(SMSNotificationSettings).filter(
-        SMSNotificationSettings.hotel_id == UUID(request.hotel_id),
+        SMSNotificationSettings.account_id == UUID(request.account_id),
     ).first()
 
     if not settings:
         settings = SMSNotificationSettings(
-            hotel_id=UUID(request.hotel_id),
+            account_id=UUID(request.account_id),
             sound_enabled=request.sound_enabled,
             visual_enabled=request.visual_enabled,
             threshold=str(request.threshold),
@@ -167,7 +167,7 @@ async def update_notification_settings(
 @router.post("/upload")
 async def upload_file(
     file: UploadFile = File(...),
-    hotel_id: str = Form(...),
+    account_id: str = Form(...),
     request: Request = None,
 ):
     """Upload a file attachment for MMS sending (images + PDF, max 5 MB)."""

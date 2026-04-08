@@ -365,7 +365,7 @@ export default function ToolsPage() {
                 typeLabel={getToolTypeLabel(tool.tool_type)}
                 onDelete={handleToolDeleted}
                 onEdit={handleEditTool as any}
-                hotelId={accountId}
+                accountId={accountId}
                 toolSetId={selectedToolSet?.id}
                 canEdit={canEditTool}
                 canDelete={canDeleteTool}

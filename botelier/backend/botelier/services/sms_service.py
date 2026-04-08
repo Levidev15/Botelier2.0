@@ -196,7 +196,7 @@ class SMSService:
             ai_response = ai_response[:max_length - 3] + "..."
 
         twilio_sid_out = self._send_twilio_sms(
-            to_number, from_number, ai_response, phone_number.hotel_id
+            to_number, from_number, ai_response, phone_number.account_id
         )
 
         outbound_msg = SMSMessage(
@@ -238,7 +238,7 @@ class SMSService:
         conversation = self.db.query(SMSConversation).filter(
             SMSConversation.customer_number == from_number,
             SMSConversation.botelier_number == to_number,
-            SMSConversation.hotel_id == phone_number.hotel_id,
+            SMSConversation.account_id == phone_number.account_id,
         ).order_by(SMSConversation.last_message_at.desc()).first()
 
         if conversation:
@@ -246,7 +246,7 @@ class SMSService:
             conversation.closed_at = datetime.utcnow()
         else:
             conversation = SMSConversation(
-                hotel_id=phone_number.hotel_id,
+                account_id=phone_number.account_id,
                 customer_number=from_number,
                 botelier_number=to_number,
                 phone_number_id=phone_number.id,
@@ -279,7 +279,7 @@ class SMSService:
         conversation = self.db.query(SMSConversation).filter(
             SMSConversation.customer_number == from_number,
             SMSConversation.botelier_number == to_number,
-            SMSConversation.hotel_id == phone_number.hotel_id,
+            SMSConversation.account_id == phone_number.account_id,
             SMSConversation.status == ConversationStatus.OPTED_OUT.value,
         ).order_by(SMSConversation.last_message_at.desc()).first()
 
@@ -309,7 +309,7 @@ class SMSService:
         conversation = self.db.query(SMSConversation).filter(
             SMSConversation.customer_number == from_number,
             SMSConversation.botelier_number == to_number,
-            SMSConversation.hotel_id == phone_number.hotel_id,
+            SMSConversation.account_id == phone_number.account_id,
             SMSConversation.status != ConversationStatus.OPTED_OUT.value,
         ).order_by(SMSConversation.last_message_at.desc()).first()
 
@@ -326,7 +326,7 @@ class SMSService:
             return conversation
 
         conversation = SMSConversation(
-            hotel_id=phone_number.hotel_id,
+            account_id=phone_number.account_id,
             assistant_id=assistant.id,
             phone_number_id=phone_number.id,
             customer_number=from_number,
@@ -631,18 +631,18 @@ class SMSService:
         return result
 
     def _send_twilio_sms(
-        self, from_number: str, to_number: str, body: str, hotel_id,
+        self, from_number: str, to_number: str, body: str, account_id,
         media_urls: Optional[List[str]] = None,
     ) -> Optional[str]:
         try:
-            from botelier.models.hotel import Hotel
-            hotel = self.db.query(Hotel).filter(Hotel.id == hotel_id).first()
-            if not hotel:
-                logger.error(f"Hotel {hotel_id} not found for SMS sending")
+            from botelier.models.account import Account
+            account = self.db.query(Account).filter(Account.id == account_id).first()
+            if not account:
+                logger.error(f"Account {account_id} not found for SMS sending")
                 return None
 
-            account_sid = hotel.twilio_sub_account_sid
-            auth_token = hotel.twilio_sub_auth_token
+            account_sid = account.twilio_sub_account_sid
+            auth_token = account.twilio_sub_auth_token
 
             if not account_sid or not auth_token:
                 account_sid = os.environ.get("TWILIO_ACCOUNT_SID")

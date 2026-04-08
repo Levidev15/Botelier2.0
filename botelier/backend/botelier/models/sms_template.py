@@ -9,7 +9,7 @@ class SMSTemplate(Base):
     __tablename__ = "sms_templates"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    hotel_id = Column(UUID(as_uuid=True), ForeignKey("hotels.id"), nullable=False)
+    account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=False)
 
     name = Column(String(100), nullable=False)
     content = Column(Text, nullable=False)
@@ -20,13 +20,13 @@ class SMSTemplate(Base):
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
 
     __table_args__ = (
-        Index('ix_sms_template_hotel', 'hotel_id'),
+        Index('ix_sms_template_account', 'account_id'),
     )
 
     def to_dict(self):
         return {
             "id": str(self.id),
-            "hotel_id": str(self.hotel_id),
+            "account_id": str(self.account_id),
             "name": self.name,
             "content": self.content,
             "category": self.category,
@@ -40,7 +40,7 @@ class SMSNotificationSettings(Base):
     __tablename__ = "sms_notification_settings"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    hotel_id = Column(UUID(as_uuid=True), ForeignKey("hotels.id"), nullable=False, unique=True)
+    account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=False, unique=True)
 
     sound_enabled = Column(Boolean, default=True, nullable=False)
     visual_enabled = Column(Boolean, default=True, nullable=False)
@@ -53,7 +53,7 @@ class SMSNotificationSettings(Base):
     def to_dict(self):
         return {
             "id": str(self.id),
-            "hotel_id": str(self.hotel_id),
+            "account_id": str(self.account_id),
             "sound_enabled": self.sound_enabled,
             "visual_enabled": self.visual_enabled,
             "threshold": int(self.threshold) if self.threshold else 1,

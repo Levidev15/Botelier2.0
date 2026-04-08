@@ -16,7 +16,7 @@ interface PhoneNumber {
   friendly_name: string | null;
   country_code: string;
   assistant_id: string | null;
-  hotel_id: string;
+  account_id: string;
   is_active: boolean;
   created_at: string;
   sms_enabled?: boolean;
@@ -45,7 +45,7 @@ export default function PhoneNumbersPage() {
     if (!accountId) return;
     try {
       setLoading(true);
-      const response = await authFetch(`/api/phone-numbers?hotel_id=${accountId}`);
+      const response = await authFetch(`/api/phone-numbers?account_id=${accountId}`);
       const data = await response.json();
       setPhoneNumbers(data.phone_numbers || []);
     } catch (error) {
@@ -59,7 +59,7 @@ export default function PhoneNumbersPage() {
   const fetchAssistants = async () => {
     if (!accountId) return;
     try {
-      const response = await authFetch(`/api/assistants?hotel_id=${accountId}`);
+      const response = await authFetch(`/api/assistants?account_id=${accountId}`);
       const data = await response.json();
       setAssistants(data.assistants || []);
     } catch (error) {

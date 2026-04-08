@@ -1,5 +1,5 @@
 """
-Assistant Model - Represents a voice AI assistant for a hotel.
+Assistant Model - Represents a voice AI assistant for an account.
 
 Each assistant has:
 - Voice configuration (STT, LLM, TTS providers)
@@ -30,7 +30,7 @@ class Assistant(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     
     # Ownership
-    hotel_id = Column(UUID(as_uuid=True), ForeignKey("hotels.id"), nullable=False)
+    account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=False)
     
     # Assigned collections (named KB and ToolSet)
     knowledge_base_id = Column(UUID(as_uuid=True), ForeignKey("knowledge_bases.id"), nullable=True)
@@ -110,7 +110,7 @@ class Assistant(Base):
         """Convert to dictionary for API responses."""
         return {
             "id": str(self.id),
-            "hotel_id": str(self.hotel_id),
+            "account_id": str(self.account_id),
             "knowledge_base_id": str(self.knowledge_base_id) if self.knowledge_base_id else None,
             "tool_set_id": str(self.tool_set_id) if self.tool_set_id else None,
             "mcp_connection_id": str(self.mcp_connection_id) if self.mcp_connection_id else None,

@@ -42,15 +42,15 @@ class DispositionReorder(BaseModel):
 @router.get("/{assistant_id}/dispositions")
 async def list_dispositions(
     assistant_id: UUID,
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, str(hotel_id), "assistants.edit", db)
+    check_account_permission(user, str(account_id), "assistants.edit", db)
     """List all dispositions for an assistant."""
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
-        Assistant.hotel_id == hotel_id
+        Assistant.account_id == account_id
     ).first()
     
     if not assistant:
@@ -67,15 +67,15 @@ async def list_dispositions(
 async def create_disposition(
     assistant_id: UUID,
     data: DispositionCreate,
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, str(hotel_id), "assistants.edit", db)
+    check_account_permission(user, str(account_id), "assistants.edit", db)
     """Create a new disposition for an assistant."""
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
-        Assistant.hotel_id == hotel_id
+        Assistant.account_id == account_id
     ).first()
     
     if not assistant:
@@ -106,15 +106,15 @@ async def create_disposition(
 async def get_disposition(
     assistant_id: UUID,
     disposition_id: UUID,
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, str(hotel_id), "assistants.edit", db)
+    check_account_permission(user, str(account_id), "assistants.edit", db)
     """Get a specific disposition."""
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
-        Assistant.hotel_id == hotel_id
+        Assistant.account_id == account_id
     ).first()
     
     if not assistant:
@@ -136,15 +136,15 @@ async def update_disposition(
     assistant_id: UUID,
     disposition_id: UUID,
     data: DispositionUpdate,
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, str(hotel_id), "assistants.edit", db)
+    check_account_permission(user, str(account_id), "assistants.edit", db)
     """Update a disposition."""
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
-        Assistant.hotel_id == hotel_id
+        Assistant.account_id == account_id
     ).first()
     
     if not assistant:
@@ -174,15 +174,15 @@ async def update_disposition(
 async def delete_disposition(
     assistant_id: UUID,
     disposition_id: UUID,
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, str(hotel_id), "assistants.edit", db)
+    check_account_permission(user, str(account_id), "assistants.edit", db)
     """Delete a disposition."""
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
-        Assistant.hotel_id == hotel_id
+        Assistant.account_id == account_id
     ).first()
     
     if not assistant:
@@ -207,15 +207,15 @@ async def delete_disposition(
 async def reorder_dispositions(
     assistant_id: UUID,
     data: DispositionReorder,
-    hotel_id: UUID = Query(..., description="Hotel ID for multi-tenant isolation"),
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    check_account_permission(user, str(hotel_id), "assistants.edit", db)
+    check_account_permission(user, str(account_id), "assistants.edit", db)
     """Reorder dispositions by providing ordered list of IDs."""
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
-        Assistant.hotel_id == hotel_id
+        Assistant.account_id == account_id
     ).first()
     
     if not assistant:

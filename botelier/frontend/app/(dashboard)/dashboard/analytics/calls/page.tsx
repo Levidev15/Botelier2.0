@@ -162,7 +162,7 @@ export default function CallAnalyticsPage() {
     setLoading(true);
     setError(null);
     const params = new URLSearchParams({
-      hotel_id: accountId,
+      account_id: accountId,
       date_from: dateRange.from.toISOString(),
       date_to: dateRange.to.toISOString(),
       timezone,
@@ -207,7 +207,7 @@ export default function CallAnalyticsPage() {
   const handleExportReport = useCallback(() => {
     if (!accountId) return;
     const p = new URLSearchParams({
-      hotel_id: accountId,
+      account_id: accountId,
       date_from: dateRange.from.toISOString(),
       date_to: dateRange.to.toISOString(),
       tz: timezone,
@@ -221,7 +221,7 @@ export default function CallAnalyticsPage() {
       if (!accountId) return;
       setTranscriptLoading(true);
       try {
-        const r = await authFetch(`/api/call-logs/${logId}?hotel_id=${accountId}`);
+        const r = await authFetch(`/api/call-logs/${logId}?account_id=${accountId}`);
         if (!r.ok) throw new Error("Failed to load transcript");
         const log = await r.json();
         setTranscriptLog(log);

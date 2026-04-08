@@ -37,7 +37,7 @@ interface DrilldownResponse {
 
 export interface TranscriptCallLog {
   id: string;
-  hotel_id?: string;
+  account_id?: string;
   reference_id?: string | null;
   caller_number: string | null;
   to_number: string | null;
@@ -118,7 +118,7 @@ export default function DrilldownPanel({
       setLoading(true);
       try {
         const params = new URLSearchParams({
-          hotel_id: accountId,
+          account_id: accountId,
           metric,
           date_from: dateRange.from.toISOString(),
           date_to: dateRange.to.toISOString(),
