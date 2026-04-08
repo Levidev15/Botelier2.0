@@ -192,7 +192,7 @@ async def take_over_conversation(
 
         try:
             await broadcaster.broadcast(
-                hotel_id=request.account_id,
+                account_id=request.account_id,
                 event_type="handler_changed",
                 data={
                     "conversation_id": str(conversation_id),
@@ -233,7 +233,7 @@ async def return_to_ai(
 
         try:
             await broadcaster.broadcast(
-                hotel_id=request.account_id,
+                account_id=request.account_id,
                 event_type="handler_changed",
                 data={
                     "conversation_id": str(conversation_id),
@@ -447,7 +447,7 @@ async def agent_reply(
 
         try:
             await broadcaster.broadcast(
-                hotel_id=account_id_str,
+                account_id=account_id_str,
                 event_type="new_reply",
                 data={
                     "conversation_id": conv_id_str,
@@ -458,7 +458,7 @@ async def agent_reply(
             )
             if attention_was_set:
                 await broadcaster.broadcast(
-                    hotel_id=account_id_str,
+                    account_id=account_id_str,
                     event_type="handler_changed",
                     data={
                         "conversation_id": conv_id_str,
