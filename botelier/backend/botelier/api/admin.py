@@ -485,43 +485,6 @@ async def update_account_features_admin(
     }
 
 
-# ---------------------------------------------------------------------------
-# Client-facing feature endpoint (any authenticated account member)
-# ---------------------------------------------------------------------------
-
-@router.get("/account/features")
-async def get_my_account_features(
-    account_id: str = Query(..., description="Account ID to retrieve features for"),
-    user: User = Depends(get_current_user),
-    db: Session = Depends(get_db),
-):
-    """
-    Return the resolved feature map for an account.
-
-    Platform admins may query any account.  Regular users must be an active
-    member of the requested account.
-
-    Response: ``{"call_recording": true, "qa_scoring": false, ...}``
-    """
-    account = db.query(Account).filter(Account.id == account_id).first()
-    if not account:
-        raise HTTPException(status_code=404, detail="Account not found")
-
-    if not user.is_platform_admin:
-        membership = db.query(AccountMembership).filter(
-            AccountMembership.user_id == user.id,
-            AccountMembership.account_id == account_id,
-            AccountMembership.is_active == True,
-        ).first()
-        if not membership:
-            raise HTTPException(status_code=403, detail="You don't have access to this account")
-
-    return get_account_features(
-        subscription_tier=account.subscription_tier.value,
-        feature_flags_override=account.feature_flags or {},
-    )
-
-
 @router.get("/users", response_model=List[UserResponse])
 async def list_users(
     page: int = Query(1, ge=1),
