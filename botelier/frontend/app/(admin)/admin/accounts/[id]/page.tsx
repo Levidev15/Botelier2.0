@@ -19,6 +19,9 @@ import {
   AlertTriangle,
   Clock,
   ExternalLink,
+  ChevronDown,
+  ChevronUp,
+  Zap,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
@@ -50,6 +53,18 @@ interface SupportSession {
   expires_at: string;
 }
 
+interface FeatureMeta {
+  name: string;
+  description: string;
+  tier_defaults: Record<string, boolean>;
+}
+
+interface AccountFeaturesData {
+  resolved: Record<string, boolean>;
+  overrides: Record<string, boolean | null>;
+  catalog: Record<string, FeatureMeta>;
+}
+
 export default function AccountDetailPage() {
   const { token, user, loading: authLoading, authFetch } = useAuthToken();
   const router = useRouter();
@@ -64,6 +79,10 @@ export default function AccountDetailPage() {
   const [supportReason, setSupportReason] = useState("");
   const [creatingSupportSession, setCreatingSupportSession] = useState(false);
   const [activeSession, setActiveSession] = useState<SupportSession | null>(null);
+  const [featuresData, setFeaturesData] = useState<AccountFeaturesData | null>(null);
+  const [featuresLoading, setFeaturesLoading] = useState(false);
+  const [featuresSaving, setFeaturesSaving] = useState<string | null>(null);
+  const [featuresExpanded, setFeaturesExpanded] = useState(false);
   const [editForm, setEditForm] = useState({
     name: "",
     email: "",
@@ -115,6 +134,57 @@ export default function AccountDetailPage() {
       toast.error("Failed to load account");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const fetchFeatures = async () => {
+    try {
+      setFeaturesLoading(true);
+      const res = await authFetch(`/api/admin/accounts/${accountId}/features`);
+      if (res.ok) {
+        const data = await res.json();
+        setFeaturesData(data);
+      }
+    } catch (err) {
+      console.error("Error fetching features:", err);
+    } finally {
+      setFeaturesLoading(false);
+    }
+  };
+
+  const handleFeaturesExpand = () => {
+    const next = !featuresExpanded;
+    setFeaturesExpanded(next);
+    if (next && !featuresData) {
+      fetchFeatures();
+    }
+  };
+
+  const handleFeatureToggle = async (slug: string, currentResolved: boolean) => {
+    if (!featuresData) return;
+    const newValue = !currentResolved;
+    const tierDefault = featuresData.catalog[slug]?.tier_defaults[account?.subscription_tier ?? "free"] ?? false;
+    const overrideValue = newValue === tierDefault ? null : newValue;
+
+    setFeaturesSaving(slug);
+    try {
+      const res = await authFetch(`/api/admin/accounts/${accountId}/features`, {
+        method: "PATCH",
+        body: JSON.stringify({ overrides: { [slug]: overrideValue } }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setFeaturesData(data);
+        toast.success(`${featuresData.catalog[slug]?.name ?? slug} ${newValue ? "enabled" : "disabled"}`);
+      } else {
+        const err = await res.json();
+        toast.error(err.detail || "Failed to update feature");
+      }
+    } catch (err) {
+      console.error("Error updating feature:", err);
+      toast.error("Failed to update feature");
+    } finally {
+      setFeaturesSaving(null);
     }
   };
 
@@ -496,6 +566,91 @@ export default function AccountDetailPage() {
                 </p>
               </div>
             </div>
+          </div>
+
+          <div className="bg-[#111111] border border-[#222222] rounded-xl overflow-hidden">
+            <button
+              onClick={handleFeaturesExpand}
+              className="w-full flex items-center justify-between px-6 py-5 hover:bg-[#161616] transition-colors"
+            >
+              <div className="flex items-center gap-3">
+                <Zap className="h-5 w-5 text-yellow-500" />
+                <h2 className="text-lg font-semibold text-white">Features &amp; Entitlements</h2>
+              </div>
+              {featuresExpanded ? (
+                <ChevronUp className="h-5 w-5 text-gray-400" />
+              ) : (
+                <ChevronDown className="h-5 w-5 text-gray-400" />
+              )}
+            </button>
+
+            {featuresExpanded && (
+              <div className="border-t border-[#222222] px-6 pb-6 pt-4">
+                {featuresLoading && !featuresData ? (
+                  <div className="flex items-center gap-2 text-gray-400 py-4">
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                    <span className="text-sm">Loading features...</span>
+                  </div>
+                ) : featuresData ? (
+                  <div className="space-y-4">
+                    {Object.entries(featuresData.catalog).map(([slug, meta]) => {
+                      const resolved = featuresData.resolved[slug] ?? false;
+                      const tierDefault = meta.tier_defaults[account.subscription_tier] ?? false;
+                      const hasOverride = slug in featuresData.overrides;
+                      const isSaving = featuresSaving === slug;
+
+                      return (
+                        <div
+                          key={slug}
+                          className="flex items-start justify-between gap-4 p-4 bg-[#0a0a0a] border border-[#1a1a1a] rounded-lg"
+                        >
+                          <div className="flex-1 min-w-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                              <p className="text-white font-medium text-sm">{meta.name}</p>
+                              {hasOverride ? (
+                                <span className="inline-flex px-1.5 py-0.5 text-[10px] font-semibold rounded bg-orange-600/20 text-orange-400 border border-orange-600/30">
+                                  Overridden
+                                </span>
+                              ) : (
+                                <span className="inline-flex px-1.5 py-0.5 text-[10px] font-medium rounded bg-[#1a1a1a] text-gray-500 border border-[#2a2a2a]">
+                                  {tierDefault
+                                    ? `Included in ${account.subscription_tier.charAt(0).toUpperCase() + account.subscription_tier.slice(1)}`
+                                    : `Not in ${account.subscription_tier.charAt(0).toUpperCase() + account.subscription_tier.slice(1)}`}
+                                </span>
+                              )}
+                            </div>
+                            <p className="text-gray-500 text-xs mt-1">{meta.description}</p>
+                          </div>
+
+                          <button
+                            onClick={() => handleFeatureToggle(slug, resolved)}
+                            disabled={isSaving}
+                            className={`relative flex-shrink-0 w-11 h-6 rounded-full transition-colors focus:outline-none ${
+                              resolved ? "bg-blue-600" : "bg-[#333333]"
+                            } ${isSaving ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+                            title={resolved ? "Disable" : "Enable"}
+                          >
+                            {isSaving ? (
+                              <span className="absolute inset-0 flex items-center justify-center">
+                                <Loader2 className="h-3 w-3 text-white animate-spin" />
+                              </span>
+                            ) : (
+                              <span
+                                className={`absolute top-0.5 left-0.5 w-5 h-5 bg-white rounded-full shadow transition-transform ${
+                                  resolved ? "translate-x-5" : "translate-x-0"
+                                }`}
+                              />
+                            )}
+                          </button>
+                        </div>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-gray-500 text-sm py-2">Failed to load features.</p>
+                )}
+              </div>
+            )}
           </div>
         </div>
 

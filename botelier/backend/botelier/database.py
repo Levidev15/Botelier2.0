@@ -199,6 +199,10 @@ _ADDITIVE_MIGRATIONS = [
     # REPAIR B — Restore any calls with confirmed greeting (ai_greeting_completed=TRUE) that were
     # somehow left as ended_early. Pipeline is the source of truth. No-op once data is clean.
     "UPDATE call_logs SET status = 'completed', ended_early = FALSE WHERE ai_greeting_completed = TRUE AND status = 'ended_early'",
+
+    # feature_flags — per-account feature override dict for subscription tier gating.
+    # Effective entitlements = tier defaults (from FEATURE_CATALOG) merged with this dict.
+    "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS feature_flags JSONB NOT NULL DEFAULT '{}'",
 ]
 
 

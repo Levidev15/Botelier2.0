@@ -22,6 +22,7 @@ from botelier.models.role import Role, AccountMembership
 from botelier.models.invitation import AccountInvitation, InvitationStatus
 from botelier.auth.permissions import DEFAULT_ROLES, PLATFORM_ADMIN_PERMISSIONS
 from botelier.auth.middleware import get_platform_admin, get_current_user
+from botelier.auth.features import FEATURE_CATALOG, get_account_features
 
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
@@ -382,6 +383,143 @@ async def provision_twilio_for_account(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to provision Twilio: {str(e)}")
+
+
+# ---------------------------------------------------------------------------
+# Feature entitlement endpoints (admin)
+# ---------------------------------------------------------------------------
+
+class FeatureOverrideUpdate(BaseModel):
+    """
+    PATCH body for updating feature overrides.
+
+    Each key is a feature slug.  Values:
+      True  — force-enable regardless of tier
+      False — force-disable regardless of tier
+      None  — remove override, revert to tier default
+    """
+    overrides: Dict[str, Optional[bool]]
+
+
+@router.get("/accounts/{account_id}/features")
+async def get_account_features_admin(
+    account_id: str,
+    admin: User = Depends(get_platform_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Return resolved feature entitlements for an account plus catalog metadata.
+
+    Response shape:
+        {
+            "resolved": {"call_recording": true, "qa_scoring": false, ...},
+            "overrides": {"call_recording": true},   # raw per-account overrides only
+            "catalog": {
+                "call_recording": {
+                    "name": "Call Recording",
+                    "description": "...",
+                    "tier_defaults": {"free": false, "professional": true, ...},
+                },
+                ...
+            }
+        }
+    """
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    overrides = account.feature_flags or {}
+    resolved = get_account_features(
+        subscription_tier=account.subscription_tier.value,
+        feature_flags_override=overrides,
+    )
+
+    return {
+        "resolved": resolved,
+        "overrides": overrides,
+        "catalog": FEATURE_CATALOG,
+    }
+
+
+@router.patch("/accounts/{account_id}/features")
+async def update_account_features_admin(
+    account_id: str,
+    data: FeatureOverrideUpdate,
+    admin: User = Depends(get_platform_admin),
+    db: Session = Depends(get_db),
+):
+    """
+    Update per-account feature overrides.
+
+    Pass ``null`` (JSON) / ``None`` for a feature slug to remove the override
+    and revert to the tier default.  Unrecognised slugs are silently ignored.
+    """
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    current_overrides: dict = dict(account.feature_flags or {})
+
+    for slug, value in data.overrides.items():
+        if slug not in FEATURE_CATALOG:
+            continue
+        if value is None:
+            current_overrides.pop(slug, None)
+        else:
+            current_overrides[slug] = bool(value)
+
+    account.feature_flags = current_overrides
+    db.commit()
+    db.refresh(account)
+
+    overrides = account.feature_flags or {}
+    resolved = get_account_features(
+        subscription_tier=account.subscription_tier.value,
+        feature_flags_override=overrides,
+    )
+
+    return {
+        "resolved": resolved,
+        "overrides": overrides,
+        "catalog": FEATURE_CATALOG,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Client-facing feature endpoint (any authenticated account member)
+# ---------------------------------------------------------------------------
+
+@router.get("/account/features")
+async def get_my_account_features(
+    account_id: str = Query(..., description="Account ID to retrieve features for"),
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """
+    Return the resolved feature map for an account.
+
+    Platform admins may query any account.  Regular users must be an active
+    member of the requested account.
+
+    Response: ``{"call_recording": true, "qa_scoring": false, ...}``
+    """
+    account = db.query(Account).filter(Account.id == account_id).first()
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    if not user.is_platform_admin:
+        membership = db.query(AccountMembership).filter(
+            AccountMembership.user_id == user.id,
+            AccountMembership.account_id == account_id,
+            AccountMembership.is_active == True,
+        ).first()
+        if not membership:
+            raise HTTPException(status_code=403, detail="You don't have access to this account")
+
+    return get_account_features(
+        subscription_tier=account.subscription_tier.value,
+        feature_flags_override=account.feature_flags or {},
+    )
 
 
 @router.get("/users", response_model=List[UserResponse])
