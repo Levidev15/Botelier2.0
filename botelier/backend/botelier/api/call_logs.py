@@ -1,7 +1,7 @@
 """
 Call Logs API - CRUD operations for call history.
 
-SECURITY: All endpoints enforce hotel_id filtering to prevent cross-tenant data access.
+SECURITY: All endpoints enforce account_id filtering to prevent cross-tenant data access.
 This is critical for multi-tenant isolation in the SaaS platform.
 """
 

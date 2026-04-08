@@ -408,7 +408,7 @@ def get_hotel_context(permission: str):
 
     async def _dependency(
         account_id: _Optional[str] = _Query(None, description="Account UUID"),
-        hotel_id: _Optional[str] = _Query(None, description="Deprecated alias for account_id"),
+        hotel_id: _Optional[str] = _Query(None, description="Deprecated: use account_id instead. Will be removed in a future release."),
         user: User = Depends(get_current_user),
         db: Session = Depends(get_db),
     ) -> AccountContext:
