@@ -1,7 +1,7 @@
 """
 CallLog and CallLeg Models - Track call history and transfer legs.
 
-Multi-tenant isolation: All queries MUST filter by hotel_id to prevent data leakage.
+Multi-tenant isolation: All queries MUST filter by account_id to prevent data leakage.
 
 CallLog represents a single incoming call to the hotel.
 CallLeg represents individual segments of a call (AI conversation, transfers, etc.)
@@ -53,7 +53,7 @@ class CallLog(Base):
     """
     CallLog model for tracking call history.
     
-    SECURITY: Always filter by hotel_id to prevent cross-tenant data access.
+    SECURITY: Always filter by account_id to prevent cross-tenant data access.
     
     Each call log represents an incoming call and includes:
     - Call metadata (duration, timestamps, status)

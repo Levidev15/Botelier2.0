@@ -1,7 +1,7 @@
 """
 SMSConversation and SMSMessage Models - Track SMS conversation history.
 
-Multi-tenant isolation: All queries MUST filter by hotel_id to prevent data leakage.
+Multi-tenant isolation: All queries MUST filter by account_id to prevent data leakage.
 
 SMSConversation represents a threaded conversation with a customer via SMS.
 SMSMessage represents individual messages within a conversation.
@@ -56,7 +56,7 @@ class SMSConversation(Base):
     """
     Represents a unified SMS conversation thread with a customer.
 
-    One conversation per customer_number + botelier_number + hotel_id.
+    One conversation per customer_number + botelier_number + account_id.
     Session boundaries are tracked on individual messages rather than
     splitting into separate conversations.
     """

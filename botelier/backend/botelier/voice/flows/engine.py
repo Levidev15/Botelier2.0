@@ -8,7 +8,7 @@ This engine:
 4. Manages conversation state per call
 
 Security:
-- All flows are scoped by hotel_id
+- All flows are scoped by account_id
 - Function handlers are sandboxed
 - No arbitrary code execution from flow configs
 """
@@ -26,7 +26,7 @@ class BoteilerFlowEngine:
     
     Usage:
         engine = BoteilerFlowEngine(
-            hotel_id="uuid",
+            account_id="uuid",
             flow_config=assistant.flow_config,
             function_handlers=custom_handlers
         )
