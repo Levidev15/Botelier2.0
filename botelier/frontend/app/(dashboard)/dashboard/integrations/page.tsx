@@ -4,13 +4,14 @@ import { useState, useEffect } from "react";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { confirmAction } from "@/lib/notifications";
-import { Check, AlertCircle, X, Loader2, Plug, Pencil, Trash2, Plus, Server, KeyRound } from "lucide-react";
+import { Check, AlertCircle, X, Loader2, Plug } from "lucide-react";
 import type { AccountSecret, IntegrationType, AccountIntegration, MCPConnection, IntegrationStats } from "./types";
 import IntegrationCard from "./components/IntegrationCard";
-import MCPConnectionCard from "./components/MCPConnectionCard";
 import SecretModal from "./components/SecretModal";
 import MCPModal from "./components/MCPModal";
 import ConnectModal from "./components/ConnectModal";
+import MCPSection from "./components/MCPSection";
+import SecretsSection from "./components/SecretsSection";
 
 export default function IntegrationsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
@@ -324,132 +325,21 @@ export default function IntegrationsPage() {
         )}
       </div>
 
-      {/* MCP Connections Section */}
-      <div className="mt-10">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-xl font-bold flex items-center gap-2">
-              <Server className="h-5 w-5" />
-              MCP Connections
-            </h2>
-            <p className="text-sm text-gray-400 mt-1">
-              Connect to external MCP servers to enable dynamic tools for your assistants
-            </p>
-          </div>
-          <button
-            onClick={handleCreateMcp}
-            className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition"
-          >
-            <Plus className="h-4 w-4 mr-2" />
-            Add Connection
-          </button>
-        </div>
+      <MCPSection
+        mcpConnections={mcpConnections}
+        testingMcp={testingMcp}
+        onCreateMcp={handleCreateMcp}
+        onTestMcp={handleTestMcp}
+        onEditMcp={handleEditMcp}
+        onDeleteMcp={handleDeleteMcp}
+      />
 
-        <div className="space-y-4">
-          {mcpConnections.map((mcp) => (
-            <MCPConnectionCard
-              key={mcp.id}
-              mcp={mcp}
-              testingMcp={testingMcp}
-              handleTestMcp={handleTestMcp}
-              handleEditMcp={handleEditMcp}
-              handleDeleteMcp={handleDeleteMcp}
-            />
-          ))}
-
-          {mcpConnections.length === 0 && (
-            <div className="bg-[#141414] border border-gray-800 rounded-lg p-12 text-center">
-              <Server className="h-12 w-12 text-gray-600 mx-auto mb-4" />
-              <p className="text-gray-400 mb-2">No MCP connections yet</p>
-              <p className="text-sm text-gray-500">
-                Connect to an MCP server to provide external tools for your voice assistants
-              </p>
-            </div>
-          )}
-        </div>
-      </div>
-
-      {/* Account Secrets Section */}
-      <div className="mt-10">
-        <div className="flex items-center justify-between mb-4">
-          <div>
-            <h2 className="text-xl font-bold flex items-center gap-2">
-              <KeyRound className="h-5 w-5" />
-              Secrets
-            </h2>
-            <p className="text-sm text-gray-400 mt-1">
-              Encrypted API keys and credentials — reference them in flows as{" "}
-              <code className="text-xs bg-gray-800 px-1.5 py-0.5 rounded font-mono">{"{{secrets.key_name}}"}</code>
-            </p>
-          </div>
-          <button
-            onClick={handleCreateSecret}
-            className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition"
-          >
-            <Plus className="h-4 w-4 mr-2" />
-            Add Secret
-          </button>
-        </div>
-
-        {secrets.length === 0 ? (
-          <div className="bg-[#141414] border border-gray-800 rounded-lg p-12 text-center">
-            <KeyRound className="h-12 w-12 text-gray-600 mx-auto mb-4" />
-            <p className="text-gray-400 mb-2">No secrets stored yet</p>
-            <p className="text-sm text-gray-500">
-              Store API keys here and reference them in flows with{" "}
-              <span className="font-mono text-xs">{"{{secrets.key_name}}"}</span>
-            </p>
-          </div>
-        ) : (
-          <div className="bg-[#141414] border border-gray-800 rounded-lg overflow-hidden">
-            <table className="w-full text-sm">
-              <thead>
-                <tr className="border-b border-gray-800 text-left text-xs text-gray-500 uppercase tracking-wider">
-                  <th className="px-4 py-3">Name</th>
-                  <th className="px-4 py-3">Key</th>
-                  <th className="px-4 py-3">Description</th>
-                  <th className="px-4 py-3">Created</th>
-                  <th className="px-4 py-3 text-right">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-gray-800">
-                {secrets.map((secret) => (
-                  <tr key={secret.id} className="hover:bg-gray-800/30 transition">
-                    <td className="px-4 py-3 font-medium">{secret.name}</td>
-                    <td className="px-4 py-3">
-                      <code className="text-xs bg-gray-800 px-1.5 py-0.5 rounded font-mono text-blue-300">
-                        {`{{secrets.${secret.key}}}`}
-                      </code>
-                    </td>
-                    <td className="px-4 py-3 text-gray-400">{secret.description || "—"}</td>
-                    <td className="px-4 py-3 text-gray-500 text-xs">
-                      {new Date(secret.created_at).toLocaleDateString()}
-                    </td>
-                    <td className="px-4 py-3 text-right">
-                      <div className="flex items-center justify-end gap-1">
-                        <button
-                          onClick={() => handleEditSecret(secret)}
-                          className="p-1.5 text-gray-400 hover:text-white hover:bg-gray-700 rounded-lg transition"
-                          title="Edit secret"
-                        >
-                          <Pencil className="h-3.5 w-3.5" />
-                        </button>
-                        <button
-                          onClick={() => handleDeleteSecret(secret)}
-                          className="p-1.5 text-gray-400 hover:text-red-400 hover:bg-gray-700 rounded-lg transition"
-                          title="Delete secret"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        )}
-      </div>
+      <SecretsSection
+        secrets={secrets}
+        onCreateSecret={handleCreateSecret}
+        onEditSecret={handleEditSecret}
+        onDeleteSecret={handleDeleteSecret}
+      />
 
       {showSecretModal && accountId && (
         <SecretModal

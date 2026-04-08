@@ -1,14 +1,10 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { Download, Search, Filter, RefreshCw } from "lucide-react";
 import { notify } from "@/lib/notifications";
-import TranscriptModal from "./components/TranscriptModal";
-import EventLogModal from "./components/EventLogModal";
-import EditCallLogModal from "./components/EditCallLogModal";
-import CallLogsFilterPanel from "./components/CallLogsFilterPanel";
+import CallLogsToolbar from "./components/CallLogsToolbar";
 import CallLogsTable from "./components/CallLogsTable";
-import DeleteCallLogDialog from "./components/DeleteCallLogDialog";
+import CallLogsModals from "./components/CallLogsModals";
 import type { CallLog, FilterOptions } from "./types";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
@@ -45,7 +41,6 @@ export default function CallLogsPage() {
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
 
-  // Deep-link params from analytics drilldown "View all in Call Logs"
   const [hasTransferFilter, setHasTransferFilter] = useState<boolean | null>(null);
   const [dispositionIdFilter, setDispositionIdFilter] = useState("");
   const [acwResolutionFilter, setAcwResolutionFilter] = useState("");
@@ -54,7 +49,6 @@ export default function CallLogsPage() {
   const [qualityMax, setQualityMax] = useState<number | null>(null);
   const [hourFilter, setHourFilter] = useState<number | null>(null);
 
-  // Pre-populate filters from URL params (e.g. from analytics drilldown "View all" link)
   useEffect(() => {
     if (typeof window === "undefined") return;
     const sp = new URLSearchParams(window.location.search);
@@ -315,96 +309,41 @@ export default function CallLogsPage() {
 
   return (
     <div className="h-full flex flex-col">
-      <div className="border-b border-gray-800 bg-[#0a0a0a] sticky top-0 z-10">
-        <div className="px-8 py-6">
-          <div className="flex justify-between items-center">
-            <div>
-              <h1 className="text-2xl font-bold">Call Logs</h1>
-              <p className="text-sm text-gray-400 mt-1">
-                View and analyze call history
-              </p>
-            </div>
-            <div className="flex items-center gap-3">
-              <button
-                onClick={fetchCallLogs}
-                className="p-2 text-gray-400 hover:text-foreground hover:bg-gray-800 rounded-lg transition"
-                title="Refresh"
-              >
-                <RefreshCw className="h-4 w-4" />
-              </button>
-              {canExport && (
-                <button
-                  onClick={handleExport}
-                  className="inline-flex items-center px-4 py-2 bg-[#141414] border border-gray-800 hover:bg-gray-800 rounded-lg transition text-sm font-medium"
-                >
-                  <Download className="h-4 w-4 mr-2" />
-                  Export CSV
-                </button>
-              )}
-            </div>
-          </div>
-
-          <div className="mt-6 space-y-4">
-            <div className="flex gap-3">
-              <div className="flex-1 relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
-                <input
-                  type="text"
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && fetchCallLogs()}
-                  placeholder="Search by caller, reference ID..."
-                  className="w-full pl-10 pr-4 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                />
-              </div>
-              <button
-                onClick={() => setShowFilters(!showFilters)}
-                className={`inline-flex items-center px-4 py-2 border rounded-lg transition text-sm font-medium ${
-                  showFilters || hasActiveFilters
-                    ? "bg-blue-600/10 border-blue-600/30 text-blue-400"
-                    : "bg-[#141414] border-gray-800 hover:bg-gray-800 text-gray-300"
-                }`}
-              >
-                <Filter className="h-4 w-4 mr-2" />
-                Filters
-                {hasActiveFilters && (
-                  <span className="ml-2 w-2 h-2 bg-blue-500 rounded-full" />
-                )}
-              </button>
-            </div>
-
-            {showFilters && (
-              <CallLogsFilterPanel
-                filterOptions={filterOptions}
-                statusFilter={statusFilter}
-                setStatusFilter={setStatusFilter}
-                assistantFilter={assistantFilter}
-                setAssistantFilter={setAssistantFilter}
-                dispositionIdFilter={dispositionIdFilter}
-                setDispositionIdFilter={setDispositionIdFilter}
-                acwResolutionFilter={acwResolutionFilter}
-                setAcwResolutionFilter={setAcwResolutionFilter}
-                hasTransferFilter={hasTransferFilter}
-                setHasTransferFilter={setHasTransferFilter}
-                dateFrom={dateFrom}
-                setDateFrom={setDateFrom}
-                dateTo={dateTo}
-                setDateTo={setDateTo}
-                acwCompletedFilter={acwCompletedFilter}
-                setAcwCompletedFilter={setAcwCompletedFilter}
-                qualityMin={qualityMin}
-                setQualityMin={setQualityMin}
-                qualityMax={qualityMax}
-                setQualityMax={setQualityMax}
-                timezone={timezone}
-                onTimezoneChange={handleTimezoneChange}
-                hasActiveFilters={!!hasActiveFilters}
-                onClearFilters={clearFilters}
-              />
-            )}
-          </div>
-        </div>
-      </div>
+      <CallLogsToolbar
+        canExport={canExport}
+        onRefresh={fetchCallLogs}
+        onExport={handleExport}
+        search={search}
+        setSearch={setSearch}
+        onSearch={fetchCallLogs}
+        showFilters={showFilters}
+        setShowFilters={setShowFilters}
+        hasActiveFilters={!!hasActiveFilters}
+        filterOptions={filterOptions}
+        statusFilter={statusFilter}
+        setStatusFilter={setStatusFilter}
+        assistantFilter={assistantFilter}
+        setAssistantFilter={setAssistantFilter}
+        dispositionIdFilter={dispositionIdFilter}
+        setDispositionIdFilter={setDispositionIdFilter}
+        acwResolutionFilter={acwResolutionFilter}
+        setAcwResolutionFilter={setAcwResolutionFilter}
+        hasTransferFilter={hasTransferFilter}
+        setHasTransferFilter={setHasTransferFilter}
+        dateFrom={dateFrom}
+        setDateFrom={setDateFrom}
+        dateTo={dateTo}
+        setDateTo={setDateTo}
+        acwCompletedFilter={acwCompletedFilter}
+        setAcwCompletedFilter={setAcwCompletedFilter}
+        qualityMin={qualityMin}
+        setQualityMin={setQualityMin}
+        qualityMax={qualityMax}
+        setQualityMax={setQualityMax}
+        timezone={timezone}
+        onTimezoneChange={handleTimezoneChange}
+        onClearFilters={clearFilters}
+      />
 
       <div className="flex-1 overflow-auto p-8">
         <CallLogsTable
@@ -434,60 +373,28 @@ export default function CallLogsPage() {
         />
       </div>
 
-      {showTranscript && selectedLog && (
-        <TranscriptModal
-          log={selectedLog as any}
-          onClose={() => {
-            setShowTranscript(false);
-            setSelectedLog(null);
-          }}
-          onLogUpdated={(updates) => {
-            setSelectedLog((prev) => prev ? { ...prev, ...updates } as any : prev);
-            setCallLogs((prev) =>
-              prev.map((l) =>
-                l.id === selectedLog.id ? { ...l, ...updates } as any : l
-              )
-            );
-          }}
-          onViewEventLog={(log) => {
-            setEventLogLog(log as any);
-            setShowEventLog(true);
-          }}
-        />
-      )}
-
-      {showEventLog && eventLogLog && (
-        <EventLogModal
-          log={eventLogLog as any}
-          onClose={() => {
-            setShowEventLog(false);
-            setEventLogLog(null);
-          }}
-        />
-      )}
-
-      {editLogTarget && accountId && (
-        <EditCallLogModal
-          log={editLogTarget}
-          accountId={accountId}
-          authFetch={authFetch}
-          onClose={() => setEditLogTarget(null)}
-          onSaved={(updates) => {
-            setCallLogs((prev) =>
-              prev.map((l) => (l.id === editLogTarget.id ? { ...l, ...updates } : l))
-            );
-          }}
-        />
-      )}
-
-      {deleteLogTarget && (
-        <DeleteCallLogDialog
-          log={deleteLogTarget}
-          deletingId={deletingId}
-          onCancel={() => setDeleteLogTarget(null)}
-          onConfirm={() => deleteCallLog(deleteLogTarget)}
-        />
-      )}
+      <CallLogsModals
+        showTranscript={showTranscript}
+        selectedLog={selectedLog}
+        showEventLog={showEventLog}
+        eventLogLog={eventLogLog}
+        editLogTarget={editLogTarget}
+        deleteLogTarget={deleteLogTarget}
+        deletingId={deletingId}
+        accountId={accountId}
+        authFetch={authFetch}
+        onTranscriptClose={() => { setShowTranscript(false); setSelectedLog(null); }}
+        onLogUpdated={(updates) => {
+          setSelectedLog((prev) => prev ? { ...prev, ...updates } as any : prev);
+          setCallLogs((prev) => prev.map((l) => l.id === selectedLog?.id ? { ...l, ...updates } as any : l));
+        }}
+        onViewEventLog={(log) => { setEventLogLog(log as any); setShowEventLog(true); }}
+        onEventLogClose={() => { setShowEventLog(false); setEventLogLog(null); }}
+        onEditClose={() => setEditLogTarget(null)}
+        onEditSaved={(updates) => setCallLogs((prev) => prev.map((l) => l.id === editLogTarget?.id ? { ...l, ...updates } : l))}
+        onDeleteCancel={() => setDeleteLogTarget(null)}
+        onDeleteConfirm={() => deleteLogTarget && deleteCallLog(deleteLogTarget)}
+      />
     </div>
   );
 }
