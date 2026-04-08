@@ -205,6 +205,12 @@ _ADDITIVE_MIGRATIONS = [
     "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS feature_flags JSONB NOT NULL DEFAULT '{}'",
 
     # ── hotel_id → account_id unification ────────────────────────────────────
+    # Architecture note: the legacy `hotels` table was a 1:1 alias for `accounts`.
+    # Every hotels.id IS an accounts.id (same UUID). No data backfill is required;
+    # we only rename the FK columns from hotel_id → account_id and repoint them at
+    # accounts. The FK constraint additions below serve as the integrity check —
+    # they will fail (non-fatally) if any orphan account_ids exist.
+    #
     # Drop FK constraints pointing at the legacy hotels table (idempotent).
     "ALTER TABLE assistants DROP CONSTRAINT IF EXISTS assistants_hotel_id_fkey",
     "ALTER TABLE call_logs DROP CONSTRAINT IF EXISTS call_logs_hotel_id_fkey",

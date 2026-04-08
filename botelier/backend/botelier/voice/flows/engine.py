@@ -241,9 +241,9 @@ class BoteilerFlowEngine:
             return None
         
         async def node_handler(args: Dict[str, Any]) -> Dict[str, Any]:
-            """Dynamic node handler injecting hotel context."""
+            """Dynamic node handler injecting account context."""
             node_config = node.copy()
-            node_config["_hotel_id"] = self.hotel_id
+            node_config["_account_id"] = self.account_id
             return node_config
         
         return node_handler
