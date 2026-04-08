@@ -258,6 +258,94 @@ _ADDITIVE_MIGRATIONS = [
 ]
 
 
+def _run_hotel_account_migration():
+    """
+    Pre-cutover hotel → account data integrity step (fail-fast).
+
+    Architecture: The legacy `hotels` table was a 1:1 alias for `accounts`.
+    Every hotels.id is (or was) an accounts.id — hotels were always created
+    alongside their matching account row. This function:
+
+    1. Checks whether `hotels` still exists (no-op if already dropped).
+    2. Backfills missing accounts from hotels (safety net for edge cases).
+    3. Verifies all dependent tables have zero orphan account_ids.
+    4. RAISES if integrity fails — does NOT silently proceed to drop hotels.
+
+    This function must run BEFORE _run_additive_migrations() so that FK
+    re-addition and the final DROP TABLE hotels can succeed cleanly.
+    """
+    with engine.connect() as conn:
+        # Step 1: Check if hotels table still exists.
+        result = conn.execute(text(
+            "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+            "WHERE table_name = 'hotels')"
+        ))
+        hotels_exists = result.scalar()
+        if not hotels_exists:
+            logger.info("Hotel→account migration: hotels table already dropped — skipping.")
+            return
+
+        logger.info("Hotel→account migration: hotels table exists — running pre-cutover checks.")
+
+        # Step 2: Backfill any hotels missing from accounts.
+        # Hotels were always co-created with accounts, so this is a safety net.
+        conn.execute(text("""
+            INSERT INTO accounts (id, name, slug, email, status, subscription_tier, created_at)
+            SELECT
+                h.id,
+                COALESCE(h.name, 'Migrated Account'),
+                COALESCE(h.slug, h.id::text),
+                COALESCE(h.email, 'migrated@botelier.io'),
+                'active',
+                'free',
+                NOW()
+            FROM hotels h
+            WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = h.id)
+            ON CONFLICT (id) DO NOTHING
+        """))
+        conn.commit()
+
+        # Step 3: Verify zero orphan account_ids across all 8 dependent tables.
+        # (Columns may still be named hotel_id if RENAME COLUMN hasn't run yet.)
+        orphan_checks = [
+            ("assistants", "hotel_id"),
+            ("call_logs", "hotel_id"),
+            ("knowledge_entries", "hotel_id"),
+            ("phone_numbers", "hotel_id"),
+            ("sms_compliance_campaigns", "hotel_id"),
+            ("sms_conversations", "hotel_id"),
+            ("sms_notification_settings", "hotel_id"),
+            ("sms_templates", "hotel_id"),
+        ]
+        orphan_found = False
+        for table, col in orphan_checks:
+            col_exists = conn.execute(text(
+                f"SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+                f"WHERE table_name = '{table}' AND column_name = '{col}')"
+            )).scalar()
+            if not col_exists:
+                continue  # Column already renamed to account_id — skip
+            count = conn.execute(text(
+                f"SELECT COUNT(*) FROM {table} t "
+                f"WHERE t.{col} IS NOT NULL "
+                f"AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = t.{col})"
+            )).scalar()
+            if count > 0:
+                logger.error(
+                    f"Hotel→account migration: INTEGRITY FAILURE — "
+                    f"{count} orphan rows in {table}.{col}"
+                )
+                orphan_found = True
+
+        if orphan_found:
+            raise RuntimeError(
+                "Hotel→account migration aborted: orphan account_id values found. "
+                "Hotels table preserved. Check logs for details."
+            )
+
+        logger.info("Hotel→account migration: integrity verified — no orphan rows found.")
+
+
 def _run_additive_migrations():
     """Run idempotent schema additions that SQLAlchemy create_all won't handle."""
     with engine.connect() as conn:
@@ -364,16 +452,21 @@ def init_db():
     """
     Initialize the database at application startup.
 
-    Runs three idempotent steps in order:
+    Runs four idempotent steps in order:
 
     1. ``create_all`` — creates any tables that do not yet exist (SQLAlchemy
        inspects the engine and skips tables that are already present).
 
-    2. ``_run_additive_migrations`` — applies schema changes (new columns,
-       indexes, constraints) that ``create_all`` cannot handle on existing
-       tables.  Safe to re-run on every boot.
+    2. ``_run_hotel_account_migration`` — fail-fast pre-cutover step that
+       backfills any missing accounts from hotels, verifies referential
+       integrity, and only then permits the DROP TABLE hotels to proceed.
+       No-op if hotels table is already gone.
 
-    3. ``_sync_system_role_permissions`` — brings all system role permission
+    3. ``_run_additive_migrations`` — applies schema changes (new columns,
+       indexes, constraints, column renames, DROP TABLE hotels) that
+       ``create_all`` cannot handle on existing tables.  Safe to re-run.
+
+    4. ``_sync_system_role_permissions`` — brings all system role permission
        rows in line with the DEFAULT_ROLES template in
        ``botelier/auth/permissions.py``.  Ensures that adding a permission to
        the template is automatically reflected in production on the next
@@ -395,5 +488,6 @@ def init_db():
     from botelier.models import call_event  # noqa: F401
 
     Base.metadata.create_all(bind=engine)
+    _run_hotel_account_migration()
     _run_additive_migrations()
     _sync_system_role_permissions()
