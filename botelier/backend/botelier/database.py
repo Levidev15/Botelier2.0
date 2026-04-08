@@ -288,22 +288,66 @@ def _run_hotel_account_migration():
         logger.info("Hotel→account migration: hotels table exists — running pre-cutover checks.")
 
         # Step 2: Backfill any hotels missing from accounts.
-        # Hotels were always co-created with accounts, so this is a safety net.
-        conn.execute(text("""
-            INSERT INTO accounts (id, name, slug, email, status, subscription_tier, created_at)
-            SELECT
-                h.id,
-                COALESCE(h.name, 'Migrated Account'),
-                COALESCE(h.slug, h.id::text),
-                COALESCE(h.email, 'migrated@botelier.io'),
-                'active',
-                'free',
-                NOW()
-            FROM hotels h
-            WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = h.id)
-            ON CONFLICT (id) DO NOTHING
-        """))
+        # Hotels were always co-created with accounts in this SaaS, so orphan
+        # hotels are rare edge cases. We copy all shared columns to preserve
+        # data (Twilio credentials, phone, metadata, etc.) and apply sensible
+        # defaults only for accounts columns that hotels never had.
+        hotels_cols_res = conn.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'hotels' ORDER BY ordinal_position"
+        ))
+        hotels_cols = {r[0] for r in hotels_cols_res}
+
+        accounts_cols_res = conn.execute(text(
+            "SELECT column_name FROM information_schema.columns "
+            "WHERE table_name = 'accounts' ORDER BY ordinal_position"
+        ))
+        accounts_cols = {r[0] for r in accounts_cols_res}
+
+        # Shared columns are copied directly; accounts-only required fields
+        # get sensible defaults if not present in hotels.
+        shared = sorted(hotels_cols & accounts_cols - {"id"})
+        col_list = ["id"] + shared
+        select_exprs = ["h.id"] + [f"h.{c}" for c in shared]
+
+        # Required accounts columns not in hotels → inject defaults.
+        required_defaults = {
+            "name": "COALESCE(h.name, 'Migrated Account')",
+            "slug": "COALESCE(h.slug, h.id::text)",
+            "email": "COALESCE(h.email, 'migrated@botelier.io')",
+            "status": "'active'",
+            "subscription_tier": "'free'",
+            "created_at": "NOW()",
+        }
+        for req_col, default_expr in required_defaults.items():
+            if req_col not in col_list:
+                col_list.append(req_col)
+                select_exprs.append(default_expr)
+            else:
+                # Override the direct copy for required fields with COALESCE.
+                idx = col_list.index(req_col)
+                if req_col in ("name", "slug", "email"):
+                    select_exprs[idx] = default_expr
+
+        col_sql = ", ".join(col_list)
+        select_sql = ", ".join(select_exprs)
+        backfill_sql = (
+            f"INSERT INTO accounts ({col_sql}) "
+            f"SELECT {select_sql} "
+            f"FROM hotels h "
+            f"WHERE NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = h.id) "
+            f"ON CONFLICT (id) DO NOTHING"
+        )
+        result = conn.execute(text(backfill_sql))
+        backfill_count = result.rowcount
         conn.commit()
+        if backfill_count > 0:
+            logger.info(
+                f"Hotel→account migration: backfilled {backfill_count} account(s) from hotels. "
+                f"Columns copied: {col_sql}"
+            )
+        else:
+            logger.info("Hotel→account migration: no missing accounts — backfill not needed.")
 
         # Step 3: Verify zero orphan account_ids across all 8 dependent tables.
         # Checks BOTH column name variants: hotel_id (pre-rename) and account_id
