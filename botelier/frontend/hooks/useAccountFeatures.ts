@@ -43,7 +43,7 @@ export function useAccountFeatures(): UseAccountFeaturesResult {
 
       setLoading(true);
       try {
-        const res = await authFetch(`/api/admin/account/features?account_id=${accountId}`);
+        const res = await authFetch(`/api/account/features?account_id=${accountId}`);
         if (res.ok && mountedRef.current) {
           const data: FeatureMap = await res.json();
           cache[accountId] = { data, ts: Date.now() };

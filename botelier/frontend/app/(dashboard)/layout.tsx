@@ -8,6 +8,7 @@ import { useEffect, useRef, useState } from "react";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useTheme } from "@/lib/theme/ThemeContext";
+import { AccountFeaturesProvider } from "@/contexts/AccountFeaturesContext";
 
 export default function DashboardLayout({
   children,
@@ -265,9 +266,11 @@ export default function DashboardLayout({
         </div>
       </aside>
 
-      <main className="flex-1 overflow-auto">
-        {children}
-      </main>
+      <AccountFeaturesProvider>
+        <main className="flex-1 overflow-auto">
+          {children}
+        </main>
+      </AccountFeaturesProvider>
     </div>
   );
 }
