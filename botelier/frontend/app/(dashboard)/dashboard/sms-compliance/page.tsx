@@ -210,7 +210,7 @@ export default function SMSCompliancePage() {
   const fetchPhoneNumbers = async () => {
     if (!accountId) return;
     try {
-      const res = await fetch(`/api/sms-compliance/hotels/${accountId}/phone-numbers`);
+      const res = await fetch(`/api/sms-compliance/accounts/${accountId}/phone-numbers`);
       if (res.ok) {
         const data = await res.json();
         setPhoneNumbers(data);
