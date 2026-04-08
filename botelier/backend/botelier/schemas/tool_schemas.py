@@ -101,7 +101,7 @@ class ToolCreate(BaseModel):
     tool_type: ToolType
     config: Dict[str, Any] = Field(..., description="Tool-specific configuration")
     tool_set_id: Optional[str] = Field(None, description="Tool set ID")
-    hotel_id: Optional[str] = Field(None, description="Legacy hotel ID")
+    account_id: Optional[str] = Field(None, description="Account UUID")
     assistant_id: Optional[str] = Field(None, description="Associated assistant ID")
     is_active: bool = Field(True, description="Whether tool is enabled")
 
@@ -126,7 +126,7 @@ class ToolResponse(BaseModel):
     tool_type: str
     config: Dict[str, Any]
     tool_set_id: Optional[str] = None
-    hotel_id: Optional[str] = None
+    account_id: Optional[str] = None
     assistant_id: Optional[str] = None
     is_active: bool
     created_at: Optional[datetime] = None
