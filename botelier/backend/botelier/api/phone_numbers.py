@@ -48,10 +48,30 @@ def _sync_phone_number_recording(
     request to Twilio because the Python SDK's ``incoming_phone_numbers().update()``
     does not expose the ``VoiceRecord`` parameter.
 
+    Credential resolution order:
+    1. Account sub-account credentials (``twilio_sub_account_sid`` /
+       ``twilio_sub_auth_token``) — preferred; used when present.
+    2. Main account / environment credentials (``TWILIO_ACCOUNT_SID`` /
+       ``TWILIO_AUTH_TOKEN`` env vars) — fallback for accounts that share the
+       main Twilio account rather than having a dedicated sub-account.
+
     Silently logs warnings on failure so that transient Twilio errors never
     prevent the primary DB operation from succeeding.
     """
-    if not (account.twilio_sub_account_sid and account.twilio_sub_auth_token):
+    import os as _os
+
+    has_sub_creds = bool(
+        account.twilio_sub_account_sid and account.twilio_sub_auth_token
+    )
+    has_main_creds = bool(
+        _os.environ.get("TWILIO_ACCOUNT_SID") and _os.environ.get("TWILIO_AUTH_TOKEN")
+    )
+
+    if not has_sub_creds and not has_main_creds:
+        _log.warning(
+            "No Twilio credentials available for account %s — skipping recording sync",
+            account.id,
+        )
         return
 
     try:
@@ -73,10 +93,17 @@ def _sync_phone_number_recording(
 
         should_record = account_recording_allowed and assistant_recording_enabled
 
-        manager = PhoneNumberManager(
-            sub_account_sid=account.twilio_sub_account_sid,
-            sub_auth_token=account.twilio_sub_auth_token,
-        )
+        if has_sub_creds:
+            manager = PhoneNumberManager(
+                sub_account_sid=account.twilio_sub_account_sid,
+                sub_auth_token=account.twilio_sub_auth_token,
+            )
+        else:
+            manager = PhoneNumberManager(
+                sub_account_sid=_os.environ["TWILIO_ACCOUNT_SID"],
+                sub_auth_token=_os.environ["TWILIO_AUTH_TOKEN"],
+            )
+
         base_url = get_public_base_url()
         manager.sync_recording_config(
             phone_number_sid=phone_number.twilio_sid,
