@@ -277,9 +277,8 @@ async def assign_to_assistant(
     db.commit()
     db.refresh(phone_number)
 
-    account = db.query(Account).filter(Account.id == phone_number.account_id).first()
-    if account:
-        _sync_phone_number_recording(phone_number=phone_number, account=account, db=db)
+    # Recording is handled per-call via the in-call Recordings REST API
+    # (start_in_call_recording in call_handler.py). No VoiceRecord sync needed on assignment.
 
     return phone_number.to_dict()
 
