@@ -4,6 +4,7 @@ Twilio Phone Number Operations.
 Handles searching, purchasing, and managing phone numbers for hotel sub-accounts.
 """
 
+import requests as _requests
 from typing import List, Dict, Any, Optional
 from twilio.base.exceptions import TwilioRestException
 from .client import BotelierTwilioClient
@@ -236,6 +237,46 @@ class PhoneNumberManager:
             print(f"Failed to update number {phone_number_sid}: {e}")
             raise
     
+    def sync_recording_config(
+        self,
+        phone_number_sid: str,
+        recording_enabled: bool,
+        recording_status_callback_url: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Sync call recording settings on a Twilio phone number.
+
+        Uses a direct REST API call because the Twilio Python SDK's
+        incoming_phone_numbers().update() does not expose the VoiceRecord
+        parameter.  Recording via the REST Recordings API is also blocked for
+        <Connect><Stream> (Pipecat bidirectional WebSocket) calls, so
+        phone-number-level config is the only supported approach.
+
+        Args:
+            phone_number_sid: Twilio incoming phone number SID (PN...)
+            recording_enabled: Whether recording should be active
+            recording_status_callback_url: URL for Twilio to POST recording events
+        """
+        account_sid = self.client.account_sid
+        auth_token = self.client.auth_token
+        url = (
+            f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}"
+            f"/IncomingPhoneNumbers/{phone_number_sid}.json"
+        )
+
+        data: Dict[str, str] = {
+            "VoiceRecord": "record-from-answer-dual" if recording_enabled else "do-not-record",
+        }
+        if recording_enabled and recording_status_callback_url:
+            data["VoiceRecordingStatusCallback"] = recording_status_callback_url
+            data["VoiceRecordingStatusCallbackMethod"] = "POST"
+        else:
+            data["VoiceRecordingStatusCallback"] = ""
+
+        response = _requests.post(url, data=data, auth=(account_sid, auth_token))
+        response.raise_for_status()
+        return response.json()
+
     def release_number(self, phone_number_sid: str) -> bool:
         """
         Release a phone number back to Twilio.
