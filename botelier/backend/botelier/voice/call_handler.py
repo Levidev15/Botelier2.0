@@ -106,6 +106,7 @@ class CallHandler:
             hotel_twilio_token = None
             call_log_id = None
             call_started_at = None
+            should_record_call = False
             
             try:
                 phone_record = db.query(PhoneNumber).filter(
@@ -152,7 +153,24 @@ class CallHandler:
                     hotel_twilio_token = _call_acct.twilio_sub_auth_token
                     if hotel_twilio_sid:
                         logger.info(f"🏨 Using account sub-account: {hotel_twilio_sid[:10]}...")
-                
+
+                    # Resolve whether this call should be recorded.
+                    # Done here (while DB is open) so we don't need the session later.
+                    from ..auth.features import get_account_features as _get_acct_features
+                    _acct_features = _get_acct_features(
+                        subscription_tier=getattr(_call_acct, "subscription_tier", None) or "free",
+                        feature_flags_override=(_call_acct.feature_flags or {}),
+                    )
+                    _acct_recording_allowed = _acct_features.get("call_recording", False)
+                    _asst_recording_enabled = bool(
+                        (assistant.call_settings or {}).get("call_recording_enabled", False)
+                    )
+                    should_record_call = _acct_recording_allowed and _asst_recording_enabled
+                    logger.debug(
+                        f"🎙️ Recording check — account_allowed={_acct_recording_allowed}, "
+                        f"assistant_enabled={_asst_recording_enabled}, should_record={should_record_call}"
+                    )
+
                 # Convert database model to VoiceAgentConfig
                 config = self._create_agent_config(assistant)
                 
@@ -411,6 +429,23 @@ class CallHandler:
                     logger.error(f"❌ Failed to write call_answered event: {_e}")
                 finally:
                     _db_sync.close()
+
+                # Fire in-call recording as a non-blocking background task.
+                # This replaces the phone-number-level VoiceRecord approach; no
+                # Reconfigure step is needed.  Failures are logged but never abort
+                # the call.
+                if should_record_call:
+                    from ..services.recording_sync import start_in_call_recording as _start_rec
+                    from ..config.domain import get_public_base_url as _get_base_url
+                    asyncio.create_task(
+                        _start_rec(
+                            call_sid=call_sid,
+                            account_sub_sid=hotel_twilio_sid,
+                            account_sub_token=hotel_twilio_token,
+                            base_url=_get_base_url(),
+                        )
+                    )
+                    logger.info(f"🎙️ In-call recording task queued for {call_sid}")
 
                 # Pass the queue reference to FunctionMapper so it can log pipeline events
                 if call_sid in self.call_mappers:
