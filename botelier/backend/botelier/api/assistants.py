@@ -20,9 +20,6 @@ from botelier.models.assistant import Assistant
 from botelier.models.user import User
 from botelier.auth.middleware import get_current_user, check_account_permission, get_hotel_context, AccountContext
 from botelier.models.user import UserType
-from botelier.models.phone_number import PhoneNumber
-from botelier.models.account import Account
-from botelier.services.recording_sync import sync_phone_number_recording as _sync_phone_number_recording
 
 
 router = APIRouter(prefix="/api/assistants", tags=["assistants"])
@@ -232,10 +229,6 @@ async def update_assistant(
         raise HTTPException(status_code=404, detail="Assistant not found")
     check_account_permission(user, str(assistant.account_id), "assistants.edit", db)
 
-    prev_recording_enabled = bool(
-        (assistant.call_settings or {}).get("call_recording_enabled", False)
-    )
-
     # Update only fields that are provided
     update_data = data.dict(exclude_unset=True)
     for field, value in update_data.items():
@@ -244,19 +237,9 @@ async def update_assistant(
     db.commit()
     db.refresh(assistant)
 
-    new_recording_enabled = bool(
-        (assistant.call_settings or {}).get("call_recording_enabled", False)
-    )
-    if new_recording_enabled != prev_recording_enabled:
-        phone_number = db.query(PhoneNumber).filter(
-            PhoneNumber.assistant_id == assistant.id
-        ).first()
-        if phone_number:
-            account = db.query(Account).filter(Account.id == phone_number.account_id).first()
-            if account:
-                _sync_phone_number_recording(
-                    phone_number=phone_number, account=account, db=db
-                )
+    # Recording is handled per-call via the in-call Recordings REST API
+    # (start_in_call_recording in call_handler.py). No phone-number-level
+    # VoiceRecord sync needed when the setting changes.
 
     return assistant.to_dict()
 
