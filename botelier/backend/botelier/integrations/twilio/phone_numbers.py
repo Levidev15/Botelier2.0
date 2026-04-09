@@ -273,7 +273,7 @@ class PhoneNumberManager:
         else:
             data["VoiceRecordingStatusCallback"] = ""
 
-        response = _requests.post(url, data=data, auth=(account_sid, auth_token))
+        response = _requests.post(url, data=data, auth=(account_sid, auth_token), timeout=10)
         response.raise_for_status()
         return response.json()
 
