@@ -1,13 +1,26 @@
 """
 Recording Sync Service.
 
-Provides the shared utility for syncing Twilio phone-number-level call recording
-configuration.  Imported by both the phone-numbers and assistants API routers to
-avoid cross-router coupling.
+Provides utilities for managing Twilio call recording.
+
+Two approaches are available:
+
+1. ``sync_phone_number_recording`` — Legacy phone-number-level ``VoiceRecord``
+   configuration via IncomingPhoneNumbers REST API.  Kept for reference but no
+   longer called automatically; the in-call approach below supersedes it.
+
+2. ``start_in_call_recording`` — Preferred.  Calls the Twilio Recordings REST
+   API (POST /Calls/{CallSid}/Recordings) once the call is answered.  Fires as
+   a non-blocking asyncio task from ``call_handler.py`` so it never delays the
+   pipeline start.
 """
 
+import asyncio
 import logging
 import os as _os
+from typing import Optional
+
+import requests as _requests
 
 from sqlalchemy.orm import Session
 
@@ -22,6 +35,70 @@ from botelier.config.domain import get_public_base_url
 _log = logging.getLogger(__name__)
 
 
+async def start_in_call_recording(
+    call_sid: str,
+    account_sub_sid: Optional[str],
+    account_sub_token: Optional[str],
+    base_url: str,
+) -> None:
+    """
+    Start recording an in-progress Twilio call via the Recordings REST API.
+
+    Uses ``POST /2010-04-01/Accounts/{AccountSid}/Calls/{CallSid}/Recordings.json``
+    (Twilio docs option 6).  This approach requires no phone-number-level
+    pre-configuration — the decision to record is made per-call at answer time
+    using credentials already in memory.
+
+    The HTTP call is offloaded to a thread via ``asyncio.to_thread`` so it never
+    blocks the Pipecat pipeline event loop.
+
+    Credential resolution order:
+    1. Account sub-account SID / auth token (``account_sub_sid`` / ``account_sub_token``)
+    2. Platform-level env vars (``TWILIO_ACCOUNT_SID`` / ``TWILIO_AUTH_TOKEN``)
+
+    Failures are logged as warnings and never propagate — a recording error must
+    never abort an active call.
+    """
+    account_sid = account_sub_sid or _os.environ.get("TWILIO_ACCOUNT_SID")
+    auth_token = account_sub_token or _os.environ.get("TWILIO_AUTH_TOKEN")
+
+    if not account_sid or not auth_token:
+        _log.warning(
+            "No Twilio credentials available for in-call recording — skipping (call %s)",
+            call_sid,
+        )
+        return
+
+    url = (
+        f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}"
+        f"/Calls/{call_sid}/Recordings.json"
+    )
+    data = {
+        "RecordingChannels": "dual",
+        "RecordingStatusCallback": f"{base_url}/api/calls/recording-status",
+        "RecordingStatusCallbackMethod": "POST",
+    }
+
+    def _post() -> _requests.Response:
+        return _requests.post(url, data=data, auth=(account_sid, auth_token), timeout=10)
+
+    try:
+        response = await asyncio.to_thread(_post)
+        if response.status_code == 201:
+            recording_sid = response.json().get("sid", "unknown")
+            _log.info(
+                "✅ Started in-call recording for %s (SID %s)",
+                call_sid, recording_sid,
+            )
+        else:
+            _log.warning(
+                "Failed to start in-call recording for %s: HTTP %s — %s",
+                call_sid, response.status_code, response.text[:300],
+            )
+    except Exception as exc:
+        _log.warning("Error starting in-call recording for %s: %s", call_sid, exc)
+
+
 def sync_phone_number_recording(
     phone_number: PhoneNumber,
     account: Account,
@@ -29,6 +106,11 @@ def sync_phone_number_recording(
 ) -> None:
     """
     Sync Twilio phone-number-level call recording config for *phone_number*.
+
+    NOTE: This function is superseded by ``start_in_call_recording`` which fires
+    at call-answer time and requires no phone-number pre-configuration.  It is
+    kept here for reference and is no longer called automatically by the platform.
+    Manual calls from the Admin UI (Reconfigure button) still work.
 
     Resolves whether recording should be active by combining the account's
     feature entitlement (``call_recording``) with the assistant's per-instance
