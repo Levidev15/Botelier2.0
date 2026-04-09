@@ -16,7 +16,7 @@ from loguru import logger
 
 from ..config.domain import get_websocket_url, get_public_base_url
 from ..database import get_db
-from ..models import CallLog, CallLeg, PhoneNumber, CallStatus, LegType
+from ..models import CallLog, CallLeg, PhoneNumber, CallStatus, LegType, Assistant
 from ..models.call_event import CallEvent
 from ..models.user import User
 from ..services.call_logger import CallLogger
@@ -191,11 +191,34 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
         
         base_url = get_public_base_url(fallback_host=fallback_host)
         status_callback_url = f"{base_url}/api/calls/status"
-        
+
+        # Determine whether to enable call recording for this call.
+        # <Start><Record> is the correct TwiML approach for recording calls that
+        # use <Connect><Stream> (Pipecat bidirectional WebSocket) — the REST
+        # Recordings API is blocked while a bidirectional stream is active.
+        recording_twiml = ""
+        if phone_record and phone_record.assistant_id:
+            try:
+                assistant = db.query(Assistant).filter(
+                    Assistant.id == phone_record.assistant_id
+                ).first()
+                call_settings = assistant.call_settings or {} if assistant else {}
+                if call_settings.get("call_recording_enabled", False):
+                    recording_callback = f"{base_url}/api/calls/recording-status"
+                    recording_twiml = (
+                        f'\n    <Start>\n'
+                        f'        <Record recordingStatusCallback="{recording_callback}"'
+                        f' recordingStatusCallbackMethod="POST" />\n'
+                        f'    </Start>'
+                    )
+                    logger.info(f"Recording enabled for call {call_sid} (assistant {assistant.id})")
+            except Exception as rec_err:
+                logger.warning(f"Could not check recording setting for {call_sid}: {rec_err}")
+
         logger.info(f"Directing call to WebSocket: {ws_url}")
         
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
-<Response>
+<Response>{recording_twiml}
     <Connect action="{base_url}/api/calls/connect-complete">
         <Stream url="{ws_url}" statusCallback="{status_callback_url}" statusCallbackMethod="POST">
             <Parameter name="to" value="{to_number}" />

@@ -69,7 +69,6 @@ class CallHandler:
         self.user_turn_timestamps: Dict[str, List[dict]] = {}  # call_sid -> list of {text, timestamp} per user utterance
         self.call_mcp_clients: Dict[str, PipecatMCPClient] = {}  # call_sid -> Pipecat MCPClient for MCP tool execution
         self.call_event_queues: Dict[str, CallEventQueue] = {}  # call_sid -> CallEventQueue
-        self.call_recording_sids: Dict[str, str] = {}  # call_sid -> Twilio RecordingSid
     
     async def handle_call(
         self,
@@ -197,21 +196,6 @@ class CallHandler:
                         mcp_enabled_tools = assistant.mcp_enabled_tools or []
                         logger.info(f"Loaded MCP connection {mcp_conn.name} with {len(mcp_enabled_tools)} enabled tools")
                 
-                # Check call recording entitlement.
-                call_recording_enabled = False
-                if (assistant.call_settings or {}).get("call_recording_enabled"):
-                    from ..models.account import Account
-                    from ..auth.features import get_account_features
-                    acct = db.query(Account).filter(Account.id == assistant.account_id).first()
-                    if acct:
-                        features = get_account_features(
-                            subscription_tier=acct.subscription_tier.value,
-                            feature_flags_override=acct.feature_flags or {},
-                        )
-                        call_recording_enabled = features.get("call_recording", False)
-                    else:
-                        logger.warning(f"Account not found for account_id {assistant.account_id} — recording skipped")
-
             finally:
                 # CRITICAL: Close database session immediately after fetching data
                 # WebSocket connections are long-lived - keeping sessions open exhausts the connection pool
@@ -475,77 +459,6 @@ class CallHandler:
             
             logger.info(f"▶️ Pipeline starting: STT ({config.stt_provider}) → LLM ({config.llm_provider}) → TTS ({config.tts_provider})")
 
-            # 8.5 Start Twilio call recording if enabled for this assistant/account.
-            #
-            # Why recording starts before runner.run():
-            # recordings.create() is a Twilio REST API call that attaches a recording
-            # to the live call object — it must be issued while the call is still active.
-            # runner.run() blocks until the entire pipeline finishes (i.e. the call ends),
-            # so recording MUST be started before run() or it would start after the call
-            # has already ended. Recording begins capturing from the moment it is created
-            # by Twilio, so starting just before run() means the full call audio is captured.
-            #
-            # Guards before starting:
-            # (a) Duplicate-SID guard: skip if a recording is already active for this
-            #     call_sid, preventing double-recording on unexpected reconnects.
-            # (b) Transfer-state guard: skip if the CallLog already carries a terminal
-            #     or transfer status, which would indicate this leg arrived as a
-            #     transferred call where recording is undesirable.
-
-            # Determine effective Twilio credentials for recording.
-            # Prefer hotel-level sub-account creds; fall back to platform env vars so
-            # that recording works even for accounts without a provisioned sub-account.
-            _eff_twilio_sid = hotel_twilio_sid or os.environ.get("TWILIO_ACCOUNT_SID", "")
-            _eff_twilio_token = hotel_twilio_token or os.environ.get("TWILIO_AUTH_TOKEN", "")
-
-            if call_recording_enabled and _eff_twilio_sid and _eff_twilio_token:
-                # (b) Check CallLog status in a fresh DB session.
-                _transfer_statuses = {"transferred", "ended_early", "failed", "no_answer", "busy"}
-                _skip_recording_for_status = False
-                _db_rec_check = SessionLocal()
-                try:
-                    from ..models import CallLog as _CLCheck
-                    _cl = _db_rec_check.query(_CLCheck).filter(
-                        _CLCheck.call_sid == call_sid
-                    ).first()
-                    # Check both status AND has_transfer flag.
-                    # has_transfer is normally set during the pipeline (after runner.run
-                    # begins), so it will be False here for typical inbound calls.
-                    # If a prior pathway already marked this call as transferred (e.g.
-                    # via a race-condition re-entry), has_transfer provides an extra guard.
-                    if _cl and (_cl.status in _transfer_statuses or _cl.has_transfer):
-                        logger.info(
-                            f"Skipping recording for {call_sid} — status='{_cl.status}' "
-                            f"has_transfer={_cl.has_transfer}"
-                        )
-                        _skip_recording_for_status = True
-                except Exception as _status_err:
-                    logger.warning(f"Failed to check call status before recording: {_status_err}")
-                finally:
-                    _db_rec_check.close()
-
-                if _skip_recording_for_status:
-                    pass  # recording start skipped due to transfer/terminal state
-                elif call_sid in self.call_recording_sids:
-                    logger.warning(
-                        f"Recording already active for {call_sid} "
-                        f"(sid={self.call_recording_sids[call_sid]}) — skipping duplicate start"
-                    )
-                else:
-                    try:
-                        from twilio.rest import Client as _TwilioClient
-                        from ..config.domain import get_public_base_url as _get_base_url
-                        _rec_client = _TwilioClient(_eff_twilio_sid, _eff_twilio_token)
-                        _base_url = _get_base_url()
-                        _recording = _rec_client.calls(call_sid).recordings.create(
-                            recording_status_callback=f"{_base_url}/api/calls/recording-status",
-                            recording_status_callback_method="POST",
-                        )
-                        self.call_recording_sids[call_sid] = _recording.sid
-                        logger.info(f"🎙️ Recording started for call {call_sid}: {_recording.sid}")
-                    except Exception as _rec_err:
-                        logger.error(f"Failed to start recording for call {call_sid}: {_rec_err}")
-
             # 9. Run pipeline (blocks until call ends)
             # Pipecat handles all remaining WebSocket messages (media, dtmf, stop)
             runner = PipelineRunner()
@@ -611,8 +524,6 @@ class CallHandler:
             if call_sid in self.call_mcp_clients:
                 del self.call_mcp_clients[call_sid]
                 logger.debug(f"Cleaned up MCP client reference for call {call_sid}")
-            if call_sid in self.call_recording_sids:
-                del self.call_recording_sids[call_sid]
     
     def mark_response_interrupted(self, call_sid: str, content: str):
         """
