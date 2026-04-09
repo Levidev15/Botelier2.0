@@ -538,7 +538,7 @@ class CallHandler:
                         _rec_client = _TwilioClient(_eff_twilio_sid, _eff_twilio_token)
                         _base_url = _get_base_url()
                         _recording = _rec_client.calls(call_sid).recordings.create(
-                            recording_channels="dual",
+                            recording_track="both",
                             recording_status_callback=f"{_base_url}/api/calls/recording-status",
                             recording_status_callback_method="POST",
                         )
