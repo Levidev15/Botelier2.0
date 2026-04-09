@@ -104,7 +104,7 @@ export default function CallLogsTable({
           <thead>
             <tr className="border-b border-gray-800 bg-[#0f0f0f]">
               <th className="w-10 px-4 py-3"></th>
-              {["Ref", "Date / Duration", "Caller", "Assistant", "Tool / Flow", "Disposition", "Resolution", "Score", "Status"].map((h) => (
+              {["Ref", "Date", "Duration", "Caller", "Assistant", "Tool / Flow", "Disposition", "Resolution", "Score", "Status"].map((h) => (
                 <th key={h} className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">{h}</th>
               ))}
               <th className="px-4 py-3 text-right text-xs font-medium text-gray-400 uppercase tracking-wider">Actions</th>
