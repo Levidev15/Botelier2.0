@@ -20,9 +20,9 @@ from botelier.models.assistant import Assistant
 from botelier.models.user import User
 from botelier.auth.middleware import get_current_user, check_account_permission, get_hotel_context, AccountContext
 from botelier.models.user import UserType
-from botelier.api.phone_numbers import _sync_phone_number_recording
 from botelier.models.phone_number import PhoneNumber
 from botelier.models.account import Account
+from botelier.services.recording_sync import sync_phone_number_recording as _sync_phone_number_recording
 
 
 router = APIRouter(prefix="/api/assistants", tags=["assistants"])
