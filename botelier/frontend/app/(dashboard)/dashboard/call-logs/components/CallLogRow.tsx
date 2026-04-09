@@ -135,34 +135,38 @@ export default function CallLogRow({
             <span className="text-gray-700 text-xs">—</span>
           )}
         </td>
-        <td className="px-4 py-3">
-          <div className="flex items-center gap-3">
+        <td className="px-4 py-3 whitespace-nowrap">
+          <div className="flex items-center gap-2">
             {getStatusIcon(log.status)}
-            <div>
-              <div className="text-sm font-medium text-foreground">
-                {formatDateTime(log.started_at)}
-              </div>
-              {hasRecording ? (
-                <button
-                  onClick={togglePlayer}
-                  className={`flex items-center gap-1 text-xs transition ${showPlayer ? "text-blue-400" : "text-gray-500 hover:text-blue-400"}`}
-                  title={showPlayer ? "Hide recording" : "Play recording"}
-                >
-                  {loadingAudio ? (
-                    <Loader2 className="h-3 w-3 animate-spin" />
-                  ) : (
-                    <Play className="h-3 w-3" />
-                  )}
-                  {formatDuration(log.duration_seconds)}
-                </button>
-              ) : (
-                <div className="text-xs text-gray-500 flex items-center gap-1">
-                  <Clock className="h-3 w-3" />
-                  {formatDuration(log.duration_seconds)}
-                </div>
-              )}
-            </div>
+            <span className="text-sm font-medium text-foreground">
+              {formatDateTime(log.started_at)}
+            </span>
           </div>
+        </td>
+        <td className="px-4 py-3 whitespace-nowrap">
+          {hasRecording ? (
+            <button
+              onClick={togglePlayer}
+              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all ${
+                showPlayer
+                  ? "bg-blue-500/20 border-blue-500/50 text-blue-300"
+                  : "bg-blue-500/10 border-blue-500/30 text-blue-400 hover:bg-blue-500/20 hover:border-blue-500/50 hover:text-blue-300"
+              }`}
+              title={showPlayer ? "Hide recording" : "Play recording"}
+            >
+              {loadingAudio ? (
+                <Loader2 className="h-3 w-3 animate-spin" />
+              ) : (
+                <Play className="h-3 w-3 fill-current" />
+              )}
+              {formatDuration(log.duration_seconds)}
+            </button>
+          ) : (
+            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-gray-800 border border-gray-700 text-gray-400">
+              <Clock className="h-3 w-3" />
+              {formatDuration(log.duration_seconds)}
+            </span>
+          )}
         </td>
         <td className="px-4 py-3">
           <div className="flex items-center gap-2">
@@ -330,7 +334,7 @@ export default function CallLogRow({
       </tr>
       {showPlayer && hasRecording && (
         <tr>
-          <td colSpan={11} className="bg-[#0f0f0f] px-8 py-3 border-t border-gray-800">
+          <td colSpan={12} className="bg-[#0f0f0f] px-8 py-3 border-t border-gray-800">
             <div className="flex items-center gap-3">
               <Play className="h-4 w-4 text-gray-400 flex-shrink-0" />
               {blobUrl ? (
@@ -360,7 +364,7 @@ export default function CallLogRow({
       )}
       {isExpanded && hasLegs && (
         <tr>
-          <td colSpan={11} className="bg-[#0f0f0f] px-4 py-3">
+          <td colSpan={12} className="bg-[#0f0f0f] px-4 py-3">
             <div className="ml-10">
               <div className="text-xs text-gray-500 mb-2 font-medium uppercase tracking-wider">
                 Call Segments
