@@ -508,12 +508,14 @@ class FunctionMapper:
                                     logger.info(f"🔄 Cold SIP REFER transfer for call {self.call_sid} to {phone_number} ({sip_uri})")
                                     logger.debug(f"Cold Transfer TwiML:\n{transfer_twiml}")
 
-                                    call_logger.record_transfer(
-                                        call_sid=self.call_sid,
-                                        transfer_to=phone_number,
-                                        transfer_type="cold"
-                                    )
-                                    self.twilio_client.calls(self.call_sid).update(twiml=transfer_twiml)
+                                    def _do_cold_transfer():
+                                        call_logger.record_transfer(
+                                            call_sid=self.call_sid,
+                                            transfer_to=phone_number,
+                                            transfer_type="cold"
+                                        )
+                                        self.twilio_client.calls(self.call_sid).update(twiml=transfer_twiml)
+                                    await _asyncio.to_thread(_do_cold_transfer)
                                     logger.info(f"✅ Cold SIP REFER transfer initiated for call {self.call_sid} to {phone_number}")
                                     _transfer_succeeded = True
 
@@ -563,12 +565,14 @@ class FunctionMapper:
                                     logger.info(f"🔄 Warm transfer for call {self.call_sid} to {phone_number}")
                                     logger.debug(f"Warm Transfer TwiML:\n{transfer_twiml}")
 
-                                    call_logger.record_transfer(
-                                        call_sid=self.call_sid,
-                                        transfer_to=phone_number,
-                                        transfer_type="external"
-                                    )
-                                    self.twilio_client.calls(self.call_sid).update(twiml=transfer_twiml)
+                                    def _do_warm_transfer():
+                                        call_logger.record_transfer(
+                                            call_sid=self.call_sid,
+                                            transfer_to=phone_number,
+                                            transfer_type="external"
+                                        )
+                                        self.twilio_client.calls(self.call_sid).update(twiml=transfer_twiml)
+                                    await _asyncio.to_thread(_do_warm_transfer)
                                     logger.info(f"✅ Warm transfer initiated for call {self.call_sid} to {phone_number}")
                                     _transfer_succeeded = True
 
