@@ -588,15 +588,18 @@ class CallHandler:
                 # independent of Twilio status webhook timing.
                 _greeting_call_sid = call_sid  # capture for closure
                 async def _on_greeting_completed():
-                    _gdb = SessionLocal()
-                    try:
+                    def _sync_mark_greeting():
                         from ..services.call_logger import CallLogger as _CallLogger
-                        _cl = _CallLogger(_gdb)
-                        _cl.mark_greeting_completed(_greeting_call_sid)
+                        gdb = SessionLocal()
+                        try:
+                            _cl = _CallLogger(gdb)
+                            _cl.mark_greeting_completed(_greeting_call_sid)
+                        finally:
+                            gdb.close()
+                    try:
+                        await asyncio.to_thread(_sync_mark_greeting)
                     except Exception as _ge:
                         logger.error(f"Failed to set ai_greeting_completed: {_ge}")
-                    finally:
-                        _gdb.close()
                 greeting_completion_tracker.set_greeting_callback(_on_greeting_completed)
 
                 # Wire WebSocket liveness check: if the caller hangs up during the
