@@ -11,6 +11,7 @@ import secrets
 from typing import Optional, List, Dict
 from datetime import datetime, timedelta
 from fastapi import APIRouter, Depends, HTTPException, Query
+from loguru import logger
 from pydantic import BaseModel, EmailStr, Field, validator
 from sqlalchemy.orm import Session
 from sqlalchemy import func
@@ -249,7 +250,7 @@ async def create_account(
         account.twilio_sub_account_sid = sub_account_data["sid"]
         account.twilio_sub_auth_token = sub_account_data["auth_token"]
     except Exception as e:
-        print(f"WARNING: Failed to auto-provision Twilio sub-account for '{data.name}': {e}")
+        logger.warning("Failed to auto-provision Twilio sub-account for '{}': {}", data.name, e)
         twilio_warning = "Twilio sub-account provisioning failed — use 'Retry Twilio Provisioning' on the account page."
     
     db.commit()
