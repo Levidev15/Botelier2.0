@@ -40,7 +40,7 @@ async def start_in_call_recording(
     account_sub_sid: Optional[str],
     account_sub_token: Optional[str],
     base_url: str,
-) -> None:
+) -> Optional[str]:
     """
     Start recording an in-progress Twilio call via the Recordings REST API.
 
@@ -58,6 +58,11 @@ async def start_in_call_recording(
 
     Failures are logged as warnings and never propagate — a recording error must
     never abort an active call.
+
+    Returns:
+        The Twilio recording SID (e.g. ``"RE..."``), or ``None`` if recording
+        could not be started.  The caller should store this SID so it can stop
+        the recording explicitly before a call transfer.
     """
     account_sid = account_sub_sid or _os.environ.get("TWILIO_ACCOUNT_SID")
     auth_token = account_sub_token or _os.environ.get("TWILIO_AUTH_TOKEN")
@@ -67,7 +72,7 @@ async def start_in_call_recording(
             "No Twilio credentials available for in-call recording — skipping (call %s)",
             call_sid,
         )
-        return
+        return None
 
     url = (
         f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}"
@@ -85,18 +90,21 @@ async def start_in_call_recording(
     try:
         response = await asyncio.to_thread(_post)
         if response.status_code == 201:
-            recording_sid = response.json().get("sid", "unknown")
+            recording_sid = response.json().get("sid")
             _log.info(
                 "✅ Started in-call recording for %s (SID %s)",
                 call_sid, recording_sid,
             )
+            return recording_sid
         else:
             _log.warning(
                 "Failed to start in-call recording for %s: HTTP %s — %s",
                 call_sid, response.status_code, response.text[:300],
             )
+            return None
     except Exception as exc:
         _log.warning("Error starting in-call recording for %s: %s", call_sid, exc)
+        return None
 
 
 def sync_phone_number_recording(

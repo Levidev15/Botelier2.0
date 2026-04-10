@@ -439,15 +439,22 @@ class FunctionMapper:
                             try:
                                 call_logger = CallLogger(db)
 
-                                # Stop any active call recording before transferring
-                                if self.call_handler and hasattr(self.call_handler, 'call_recording_sids'):
-                                    _rec_sid = self.call_handler.call_recording_sids.get(self.call_sid)
-                                    if _rec_sid:
-                                        try:
-                                            self.twilio_client.calls(self.call_sid).recordings(_rec_sid).update(status="stopped")
-                                            logger.info(f"🛑 Recording {_rec_sid} stopped before transfer for call {self.call_sid}")
-                                        except Exception as _stop_err:
-                                            logger.warning(f"Failed to stop recording before transfer for call {self.call_sid}: {_stop_err}")
+                                # Stop any active call recording before transferring.
+                                # Uses asyncio.to_thread so the blocking Twilio SDK call
+                                # never stalls the event loop. Failures are warned only.
+                                _rec_sid = (self.call_handler.call_recording_sids.get(self.call_sid)
+                                            if self.call_handler else None)
+                                if _rec_sid:
+                                    try:
+                                        await asyncio.to_thread(
+                                            lambda: self.twilio_client.calls(self.call_sid)
+                                                        .recordings(_rec_sid)
+                                                        .update(status="stopped")
+                                        )
+                                        logger.info(f"🛑 Recording {_rec_sid} stopped before transfer for call {self.call_sid}")
+                                        self.call_handler.call_recording_sids.pop(self.call_sid, None)
+                                    except Exception as _stop_err:
+                                        logger.warning(f"Failed to stop recording before transfer for call {self.call_sid}: {_stop_err}")
 
                                 # Save transcript BEFORE transfer (WebSocket closes after).
                                 # Append the pre-transfer message that was spoken via TTSSpeakFrame
@@ -1044,6 +1051,23 @@ class FunctionMapper:
                                         logger.info(f"📝 Saved transcript before flow transfer for call {self.call_sid}")
                                     except Exception as _e:
                                         logger.error(f"Error saving transcript before flow transfer: {_e}")
+
+                                # Stop any active call recording before transferring.
+                                # Uses asyncio.to_thread so the blocking Twilio SDK call
+                                # never stalls the event loop. Failures are warned only.
+                                _flow_rec_sid = (self.call_handler.call_recording_sids.get(self.call_sid)
+                                                 if self.call_handler else None)
+                                if _flow_rec_sid:
+                                    try:
+                                        await asyncio.to_thread(
+                                            lambda: self.twilio_client.calls(self.call_sid)
+                                                        .recordings(_flow_rec_sid)
+                                                        .update(status="stopped")
+                                        )
+                                        logger.info(f"🛑 Recording {_flow_rec_sid} stopped before flow transfer for call {self.call_sid}")
+                                        self.call_handler.call_recording_sids.pop(self.call_sid, None)
+                                    except Exception as _stop_err_flow:
+                                        logger.warning(f"Failed to stop recording before flow transfer for call {self.call_sid}: {_stop_err_flow}")
 
                                 # Build mode-specific TwiML.
                                 # Cold REFER: omit <Stop><Stream> so Twilio lets audio drain naturally.
