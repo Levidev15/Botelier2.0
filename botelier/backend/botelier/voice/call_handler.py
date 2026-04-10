@@ -45,6 +45,29 @@ except ImportError:
     SseServerParameters = None
 
 
+def _fetch_call_log_retry(call_sid: str):
+    """Synchronous helper: open a fresh DB session, query for the CallLog,
+    optionally stamp answered_at, then close the session.
+
+    Returns (id, started_at) on success, None if the record is not found.
+    Must be called via asyncio.to_thread so that the synchronous DB round-trip
+    does not block the asyncio event loop.
+    """
+    from ..models.call_log import CallLog
+    from ..database import SessionLocal as _SessionLocal
+    _db = _SessionLocal()
+    try:
+        rec = _db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
+        if rec is None:
+            return None
+        if not rec.answered_at:
+            rec.answered_at = datetime.utcnow()
+            _db.commit()
+        return (rec.id, rec.started_at)
+    finally:
+        _db.close()
+
+
 class CallHandler:
     """
     Handles incoming Twilio call sessions.
@@ -142,41 +165,21 @@ class CallHandler:
                 # callback, but that webhook is not reliably delivered in all
                 # environments.  Setting it here (when audio streaming begins)
                 # is the universal source of truth for when the call was answered.
-                #
-                # Production retry: Neon cloud DB has TCP latency that can cause
-                # the call log inserted by the /incoming webhook to not yet be
-                # visible to a brand-new SQLAlchemy session snapshot.  Retry up
-                # to 3 times with a fresh session each attempt (200 ms gap) so
-                # the event queue is always populated and recording starts.
                 from ..models.call_log import CallLog
                 call_log_record = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
                 if call_log_record is None:
-                    from ..database import SessionLocal as _SessionLocal
+                    _call_log_found = False
                     for _attempt in range(3):
                         await asyncio.sleep(0.2)
-                        _retry_db = _SessionLocal()
-                        try:
-                            _retry_record = _retry_db.query(CallLog).filter(
-                                CallLog.call_sid == call_sid
-                            ).first()
-                            if _retry_record is not None:
-                                # Update answered_at in the SAME session while it is
-                                # still open — the retry-loaded instance is detached
-                                # once the session closes so we cannot use `db` here.
-                                if not _retry_record.answered_at:
-                                    _retry_record.answered_at = datetime.utcnow()
-                                    _retry_db.commit()
-                                call_log_id = _retry_record.id
-                                call_started_at = _retry_record.started_at
-                                call_log_record = _retry_record
-                        finally:
-                            _retry_db.close()
-                        if call_log_record is not None:
+                        _result = await asyncio.to_thread(_fetch_call_log_retry, call_sid)
+                        if _result is not None:
+                            call_log_id, call_started_at = _result
+                            _call_log_found = True
                             logger.info(
                                 f"call_log found on retry attempt {_attempt + 1} for {call_sid}"
                             )
                             break
-                    if call_log_record is None:
+                    if not _call_log_found:
                         logger.warning(
                             f"call_log not found after 3 retries for {call_sid} — "
                             f"recording and event queue will be skipped"
