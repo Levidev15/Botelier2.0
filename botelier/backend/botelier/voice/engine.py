@@ -116,7 +116,7 @@ class LLMResponseCapture(FrameProcessor):
             _elapsed_ms = (self._llm_turn_start_mono - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
             _t_stt = self._timing_state.get("t_stt", 0.0)
             _stt_to_llm_ms = (self._llm_turn_start_mono - _t_stt) * 1000 if _t_stt else 0.0
-            logger.info(
+            logger.debug(
                 f"⏱️ [T+{_elapsed_ms:.0f}ms] LLM first token received | "
                 f"STT→LLM: {_stt_to_llm_ms:.0f}ms"
             )
@@ -138,7 +138,7 @@ class LLMResponseCapture(FrameProcessor):
             self._timing_state["t_llm_end"] = _now_mono
             _elapsed_ms = (_now_mono - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
             _gen_ms = (_now_mono - self._llm_turn_start_mono) * 1000 if self._llm_turn_start_mono else 0.0
-            logger.info(
+            logger.debug(
                 f"⏱️ [T+{_elapsed_ms:.0f}ms] LLM response complete: "
                 f"{len(text)} chars, generation={_gen_ms:.0f}ms"
             )
@@ -179,9 +179,12 @@ class UserTurnCapture(FrameProcessor):
             _t_stt = time.monotonic()
             self._timing_state["t_stt"] = _t_stt
             _elapsed_ms = (_t_stt - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
-            logger.info(
+            _t_last_inbound = self._timing_state.get("t_last_inbound", 0.0)
+            _inbound_to_stt_ms = (_t_stt - _t_last_inbound) * 1000 if _t_last_inbound else 0.0
+            logger.debug(
                 f"⏱️ [T+{_elapsed_ms:.0f}ms] STT transcript finalized: "
-                f'"{frame.text.strip()[:60]}"'
+                f'"{frame.text.strip()[:60]}" | '
+                f"inbound→STT: {_inbound_to_stt_ms:.0f}ms"
             )
             if self._on_user_turn:
                 try:
@@ -495,18 +498,47 @@ class TtsCompletionWatcher(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class InboundAudioTracker(FrameProcessor):
+    """
+    Pure-observer placed immediately after ``transport.input()`` in the pipeline.
+
+    Stamps ``timing_state["t_last_inbound"]`` with a monotonic clock on every
+    inbound AudioRawFrame.  UserTurnCapture reads this to compute:
+
+        Twilio inbound audio → STT transcript finalized  (inbound→STT delta)
+
+    The delta captures total STT processing latency: the time from when the last
+    audio chunk was delivered to the pipeline until Deepgram returned the final
+    transcript.  Typical range for short utterances: 100–600 ms.
+    """
+
+    def __init__(self, timing_state: dict = None, **kwargs):
+        super().__init__(**kwargs)
+        self._timing_state = timing_state if timing_state is not None else {}
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if isinstance(frame, AudioRawFrame):
+            self._timing_state["t_last_inbound"] = time.monotonic()
+        await self.push_frame(frame, direction)
+
+
 class TtsPipelineLatencyTracker(FrameProcessor):
     """
-    Measures the remaining two pipeline-stage handoffs:
+    Measures two pipeline-stage handoffs:
 
-      3. LLM first token → TTS first audio chunk
-         (reads ``t_llm_start`` written by LLMResponseCapture)
+      3. LLM last token → TTS first audio chunk
+         Streaming TTS often starts before LLM finishes; the delta may be
+         negative (audio leading LLM end) — that is expected and informative.
+         Logged when LLMFullResponseEndFrame arrives if first audio is already seen,
+         or when first audio arrives if LLM already ended.
 
       4. TTS first audio chunk dispatched to transport
-         (the monotonic timestamp just before push_frame to transport.output())
+         Logged as a call-relative timestamp (T+Xms) on the first AudioRawFrame
+         after an LLM response starts, capturing the moment audio hits transport.output().
 
     Place this processor immediately before ``transport.output()`` so it sees
-    both the control frames from the LLM and the audio frames from TTS.
+    both the control frames from the LLM and the AudioRawFrames from TTS.
 
     The shared ``timing_state`` dict (passed by reference) is the only coupling
     between this processor and LLMResponseCapture / UserTurnCapture.
@@ -516,24 +548,43 @@ class TtsPipelineLatencyTracker(FrameProcessor):
         super().__init__(**kwargs)
         self._call_start_mono = call_start_mono
         self._timing_state = timing_state if timing_state is not None else {}
-        self._waiting_for_first_audio: bool = False
+        self._expecting_audio: bool = False
+        self._t_first_audio: float = 0.0
+
+    def _log_llm_end_to_tts(self, t_llm_end: float) -> None:
+        """Log LLM last token → TTS first audio delta once both timestamps are known."""
+        _delta_ms = (self._t_first_audio - t_llm_end) * 1000
+        _sign = "" if _delta_ms >= 0 else ""
+        logger.debug(
+            f"⏱️ LLM last token → TTS first audio: {_sign}{_delta_ms:.0f}ms "
+            f"({'TTS led LLM end — streaming' if _delta_ms < 0 else 'TTS trailed LLM end'})"
+        )
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, LLMFullResponseStartFrame):
-            self._waiting_for_first_audio = True
+            self._expecting_audio = True
+            self._t_first_audio = 0.0
 
-        elif self._waiting_for_first_audio and isinstance(frame, AudioRawFrame):
-            self._waiting_for_first_audio = False
-            _t_now = time.monotonic()
-            _elapsed_ms = (_t_now - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
-            _t_llm_start = self._timing_state.get("t_llm_start", 0.0)
-            _llm_to_tts_ms = (_t_now - _t_llm_start) * 1000 if _t_llm_start else 0.0
-            logger.info(
-                f"⏱️ [T+{_elapsed_ms:.0f}ms] TTS first audio chunk dispatched to transport | "
-                f"LLM→TTS: {_llm_to_tts_ms:.0f}ms"
+        elif self._expecting_audio and isinstance(frame, AudioRawFrame):
+            self._expecting_audio = False
+            self._t_first_audio = time.monotonic()
+            _elapsed_ms = (self._t_first_audio - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
+            logger.debug(
+                f"⏱️ [T+{_elapsed_ms:.0f}ms] TTS first audio chunk dispatched to transport"
             )
+            # If LLM already ended (t_llm_end set), log the delta immediately.
+            # Otherwise it will be logged when LLMFullResponseEndFrame arrives below.
+            _t_llm_end = self._timing_state.get("t_llm_end", 0.0)
+            if _t_llm_end:
+                self._log_llm_end_to_tts(_t_llm_end)
+
+        elif isinstance(frame, LLMFullResponseEndFrame) and self._t_first_audio:
+            # LLM just finished; first audio already arrived (streaming overlap).
+            _t_llm_end = self._timing_state.get("t_llm_end", 0.0)
+            if _t_llm_end:
+                self._log_llm_end_to_tts(_t_llm_end)
 
         await self.push_frame(frame, direction)
 
@@ -790,8 +841,13 @@ class VoiceEngineFactory:
         # UserIdleProcessor fires a callback after `timeout` seconds of silence.
         idle_timeout_tracker = IdleTimeoutTracker(timeout=30.0)
 
+        # Stamps t_last_inbound on every inbound AudioRawFrame from Twilio so that
+        # UserTurnCapture can compute "Twilio inbound audio → STT finalized" delta.
+        # Placed immediately after transport.input() — pure observer, zero latency impact.
+        inbound_audio_tracker = InboundAudioTracker(timing_state=_timing_state)
+
         # Measures the final two pipeline-stage handoffs:
-        #   3. LLM first token → TTS first audio chunk  (LLM→TTS delta)
+        #   3. LLM last token → TTS first audio chunk  (LLM→TTS delta, may be negative for streaming TTS)
         #   4. Dispatch of first audio chunk to transport.output() (call-relative timestamp)
         # Placed just before transport.output() so it sees AudioRawFrames on their way out
         # and also receives LLMFullResponseStartFrame flowing downstream from the LLM.
@@ -839,6 +895,7 @@ class VoiceEngineFactory:
         pipeline = Pipeline(
             [
                 transport.input(),
+                inbound_audio_tracker,         # Stamps t_last_inbound for Twilio→STT latency measurement
                 stt,
                 stt_mute_filter,               # Mutes STT during greeting + function calls (Pipecat native)
                 user_turn_capture,             # Records per-turn user timestamps for transcript (pure observer)
