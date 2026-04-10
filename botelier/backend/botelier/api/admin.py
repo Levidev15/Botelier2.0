@@ -210,11 +210,10 @@ async def list_accounts(
 @router.post("/accounts", response_model=AccountResponse)
 async def create_account(
     data: AccountCreate,
-    provision_twilio: bool = Query(False, description="Auto-provision Twilio sub-account"),
     admin: User = Depends(get_platform_admin),
     db: Session = Depends(get_db),
 ):
-    """Create a new account."""
+    """Create a new account. A Twilio sub-account is provisioned automatically."""
     base_slug = generate_slug(data.name)
     slug = ensure_unique_slug(db, base_slug)
     
@@ -243,19 +242,20 @@ async def create_account(
         )
         db.add(role)
     
-    if provision_twilio:
-        try:
-            from botelier.integrations.twilio.sub_accounts import create_sub_account
-            sub_account_data = create_sub_account(data.name)
-            account.twilio_sub_account_sid = sub_account_data["sid"]
-            account.twilio_sub_auth_token = sub_account_data["auth_token"]
-        except Exception as e:
-            print(f"Failed to provision Twilio sub-account: {e}")
+    twilio_warning = None
+    try:
+        from botelier.integrations.twilio.sub_accounts import create_sub_account
+        sub_account_data = create_sub_account(data.name)
+        account.twilio_sub_account_sid = sub_account_data["sid"]
+        account.twilio_sub_auth_token = sub_account_data["auth_token"]
+    except Exception as e:
+        print(f"WARNING: Failed to auto-provision Twilio sub-account for '{data.name}': {e}")
+        twilio_warning = "Twilio sub-account provisioning failed — use 'Retry Twilio Provisioning' on the account page."
     
     db.commit()
     db.refresh(account)
     
-    return AccountResponse(
+    response = AccountResponse(
         id=str(account.id),
         name=account.name,
         slug=account.slug,
@@ -269,6 +269,13 @@ async def create_account(
         member_count=0,
         created_at=account.created_at,
     )
+    if twilio_warning:
+        from fastapi.responses import JSONResponse
+        return JSONResponse(
+            status_code=201,
+            content={**response.model_dump(mode="json"), "warning": twilio_warning},
+        )
+    return response
 
 
 @router.get("/accounts/{account_id}", response_model=AccountResponse)
@@ -360,14 +367,14 @@ async def provision_twilio_for_account(
     admin: User = Depends(get_platform_admin),
     db: Session = Depends(get_db),
 ):
-    """Provision a Twilio sub-account for an existing account."""
+    """Retry Twilio sub-account provisioning for an account that has none (initial provisioning failed)."""
     account = db.query(Account).filter(Account.id == account_id).first()
     
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
     
     if account.has_twilio:
-        raise HTTPException(status_code=400, detail="Account already has Twilio configured")
+        raise HTTPException(status_code=400, detail="Account already has a Twilio sub-account. Use PATCH /admin/accounts/{id}/twilio to update the SID.")
     
     try:
         from botelier.integrations.twilio.sub_accounts import create_sub_account
@@ -383,6 +390,40 @@ async def provision_twilio_for_account(
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to provision Twilio: {str(e)}")
+
+
+class TwilioCredentialsUpdate(BaseModel):
+    twilio_sub_account_sid: str = Field(..., description="Twilio sub-account SID (AC...)")
+    twilio_sub_auth_token: str = Field(..., description="Twilio sub-account auth token")
+
+
+@router.patch("/accounts/{account_id}/twilio")
+async def update_twilio_credentials(
+    account_id: str,
+    data: TwilioCredentialsUpdate,
+    admin: User = Depends(get_platform_admin),
+    db: Session = Depends(get_db),
+):
+    """Update (or correct) the Twilio sub-account SID and auth token for an account.
+
+    Use this when the stored SID is mismatched with the phone numbers in Twilio — for
+    example, when a phone number was provisioned on a different Twilio sub-account than
+    what is recorded in the database.  Restricted to platform admins.
+    """
+    account = db.query(Account).filter(Account.id == account_id).first()
+    
+    if not account:
+        raise HTTPException(status_code=404, detail="Account not found")
+    
+    account.twilio_sub_account_sid = data.twilio_sub_account_sid.strip()
+    account.twilio_sub_auth_token = data.twilio_sub_auth_token.strip()
+    db.commit()
+    
+    return {
+        "success": True,
+        "message": "Twilio credentials updated successfully",
+        "twilio_sub_account_sid": account.twilio_sub_account_sid,
+    }
 
 
 # ---------------------------------------------------------------------------

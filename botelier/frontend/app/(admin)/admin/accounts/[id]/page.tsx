@@ -83,6 +83,9 @@ export default function AccountDetailPage() {
   const [featuresLoading, setFeaturesLoading] = useState(false);
   const [featuresSaving, setFeaturesSaving] = useState<string | null>(null);
   const [featuresExpanded, setFeaturesExpanded] = useState(false);
+  const [showTwilioUpdateForm, setShowTwilioUpdateForm] = useState(false);
+  const [twilioUpdateForm, setTwilioUpdateForm] = useState({ sid: "", token: "" });
+  const [savingTwilio, setSavingTwilio] = useState(false);
   const [editForm, setEditForm] = useState({
     name: "",
     email: "",
@@ -236,6 +239,38 @@ export default function AccountDetailPage() {
     } catch (err) {
       console.error("Error provisioning Twilio:", err);
       toast.error("Failed to provision Twilio");
+    }
+  };
+
+  const handleUpdateTwilioCredentials = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!twilioUpdateForm.sid.trim().startsWith("AC") || !twilioUpdateForm.token.trim()) {
+      toast.error("Sub-account SID must start with 'AC' and auth token is required");
+      return;
+    }
+    setSavingTwilio(true);
+    try {
+      const res = await authFetch(`/api/admin/accounts/${accountId}/twilio`, {
+        method: "PATCH",
+        body: JSON.stringify({
+          twilio_sub_account_sid: twilioUpdateForm.sid.trim(),
+          twilio_sub_auth_token: twilioUpdateForm.token.trim(),
+        }),
+      });
+      if (res.ok) {
+        toast.success("Twilio credentials updated successfully");
+        setShowTwilioUpdateForm(false);
+        setTwilioUpdateForm({ sid: "", token: "" });
+        fetchAccount();
+      } else {
+        const error = await res.json();
+        toast.error(error.detail || "Failed to update Twilio credentials");
+      }
+    } catch (err) {
+      console.error("Error updating Twilio credentials:", err);
+      toast.error("Failed to update Twilio credentials");
+    } finally {
+      setSavingTwilio(false);
     }
   };
 
@@ -697,6 +732,39 @@ export default function AccountDetailPage() {
                     SID: {account.twilio_sub_account_sid}
                   </p>
                 )}
+                <button
+                  onClick={() => setShowTwilioUpdateForm(!showTwilioUpdateForm)}
+                  className="w-full px-3 py-2 bg-[#1a1a1a] hover:bg-[#222222] text-gray-400 hover:text-gray-300 rounded-lg transition-colors text-xs"
+                >
+                  {showTwilioUpdateForm ? "Cancel" : "Update Sub-Account SID"}
+                </button>
+                {showTwilioUpdateForm && (
+                  <form onSubmit={handleUpdateTwilioCredentials} className="space-y-2 pt-1">
+                    <input
+                      type="text"
+                      value={twilioUpdateForm.sid}
+                      onChange={(e) => setTwilioUpdateForm({ ...twilioUpdateForm, sid: e.target.value })}
+                      placeholder="Sub-account SID (ACxxx...)"
+                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-[#222222] rounded-lg text-white text-xs font-mono focus:outline-none focus:border-blue-600"
+                      required
+                    />
+                    <input
+                      type="password"
+                      value={twilioUpdateForm.token}
+                      onChange={(e) => setTwilioUpdateForm({ ...twilioUpdateForm, token: e.target.value })}
+                      placeholder="Auth token"
+                      className="w-full px-3 py-2 bg-[#0a0a0a] border border-[#222222] rounded-lg text-white text-xs font-mono focus:outline-none focus:border-blue-600"
+                      required
+                    />
+                    <button
+                      type="submit"
+                      disabled={savingTwilio}
+                      className="w-full px-3 py-2 bg-orange-600 hover:bg-orange-700 disabled:bg-orange-600/50 text-white rounded-lg transition-colors text-xs"
+                    >
+                      {savingTwilio ? "Saving..." : "Save Credentials"}
+                    </button>
+                  </form>
+                )}
               </div>
             ) : (
               <div className="space-y-3">
@@ -707,7 +775,7 @@ export default function AccountDetailPage() {
                   onClick={handleProvisionTwilio}
                   className="w-full px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors text-sm"
                 >
-                  Provision Twilio
+                  Retry Twilio Provisioning
                 </button>
               </div>
             )}
