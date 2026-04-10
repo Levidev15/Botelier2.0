@@ -26,6 +26,7 @@ from pipecat.transcriptions.language import Language
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.frames.frames import (
     Frame,
+    AudioRawFrame,
     BotStoppedSpeakingFrame,
     InterruptionFrame,
     LLMFullResponseEndFrame,
@@ -94,13 +95,14 @@ class LLMResponseCapture(FrameProcessor):
     it works across all LLM providers that may emit generic TextFrame tokens.
     """
 
-    def __init__(self, on_llm_response=None, on_llm_start=None, call_start_mono: float = 0.0, **kwargs):
+    def __init__(self, on_llm_response=None, on_llm_start=None, call_start_mono: float = 0.0, timing_state: dict = None, **kwargs):
         super().__init__(**kwargs)
         self._buffer: str = ""
         self._in_response: bool = False
         self._on_llm_response = on_llm_response
         self._on_llm_start = on_llm_start
         self._call_start_mono = call_start_mono
+        self._timing_state = timing_state if timing_state is not None else {}
         self._llm_turn_start_mono: float = 0.0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -110,8 +112,14 @@ class LLMResponseCapture(FrameProcessor):
             self._buffer = ""
             self._in_response = True
             self._llm_turn_start_mono = time.monotonic()
+            self._timing_state["t_llm_start"] = self._llm_turn_start_mono
             _elapsed_ms = (self._llm_turn_start_mono - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
-            logger.info(f"⏱️ [T+{_elapsed_ms:.0f}ms] LLM first token received")
+            _t_stt = self._timing_state.get("t_stt", 0.0)
+            _stt_to_llm_ms = (self._llm_turn_start_mono - _t_stt) * 1000 if _t_stt else 0.0
+            logger.info(
+                f"⏱️ [T+{_elapsed_ms:.0f}ms] LLM first token received | "
+                f"STT→LLM: {_stt_to_llm_ms:.0f}ms"
+            )
             if self._on_llm_start:
                 try:
                     self._on_llm_start()
@@ -127,6 +135,7 @@ class LLMResponseCapture(FrameProcessor):
             text = self._buffer.strip()
             self._buffer = ""
             _now_mono = time.monotonic()
+            self._timing_state["t_llm_end"] = _now_mono
             _elapsed_ms = (_now_mono - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
             _gen_ms = (_now_mono - self._llm_turn_start_mono) * 1000 if self._llm_turn_start_mono else 0.0
             logger.info(
@@ -157,16 +166,19 @@ class UserTurnCapture(FrameProcessor):
     they were finalized rather than the generic save-time stamp.
     """
 
-    def __init__(self, on_user_turn=None, call_start_mono: float = 0.0, **kwargs):
+    def __init__(self, on_user_turn=None, call_start_mono: float = 0.0, timing_state: dict = None, **kwargs):
         super().__init__(**kwargs)
         self._on_user_turn = on_user_turn
         self._call_start_mono = call_start_mono
+        self._timing_state = timing_state if timing_state is not None else {}
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, TranscriptionFrame) and frame.text and frame.text.strip():
-            _elapsed_ms = (time.monotonic() - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
+            _t_stt = time.monotonic()
+            self._timing_state["t_stt"] = _t_stt
+            _elapsed_ms = (_t_stt - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
             logger.info(
                 f"⏱️ [T+{_elapsed_ms:.0f}ms] STT transcript finalized: "
                 f'"{frame.text.strip()[:60]}"'
@@ -483,6 +495,49 @@ class TtsCompletionWatcher(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class TtsPipelineLatencyTracker(FrameProcessor):
+    """
+    Measures the remaining two pipeline-stage handoffs:
+
+      3. LLM first token → TTS first audio chunk
+         (reads ``t_llm_start`` written by LLMResponseCapture)
+
+      4. TTS first audio chunk dispatched to transport
+         (the monotonic timestamp just before push_frame to transport.output())
+
+    Place this processor immediately before ``transport.output()`` so it sees
+    both the control frames from the LLM and the audio frames from TTS.
+
+    The shared ``timing_state`` dict (passed by reference) is the only coupling
+    between this processor and LLMResponseCapture / UserTurnCapture.
+    """
+
+    def __init__(self, call_start_mono: float = 0.0, timing_state: dict = None, **kwargs):
+        super().__init__(**kwargs)
+        self._call_start_mono = call_start_mono
+        self._timing_state = timing_state if timing_state is not None else {}
+        self._waiting_for_first_audio: bool = False
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, LLMFullResponseStartFrame):
+            self._waiting_for_first_audio = True
+
+        elif self._waiting_for_first_audio and isinstance(frame, AudioRawFrame):
+            self._waiting_for_first_audio = False
+            _t_now = time.monotonic()
+            _elapsed_ms = (_t_now - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
+            _t_llm_start = self._timing_state.get("t_llm_start", 0.0)
+            _llm_to_tts_ms = (_t_now - _t_llm_start) * 1000 if _t_llm_start else 0.0
+            logger.info(
+                f"⏱️ [T+{_elapsed_ms:.0f}ms] TTS first audio chunk dispatched to transport | "
+                f"LLM→TTS: {_llm_to_tts_ms:.0f}ms"
+            )
+
+        await self.push_frame(frame, direction)
+
+
 class VoiceEngineFactory:
     """
     Factory for creating voice AI pipelines
@@ -688,14 +743,21 @@ class VoiceEngineFactory:
         llm = VoiceEngineFactory.create_llm_service(config, api_keys)
         tts = VoiceEngineFactory.create_tts_service(config, api_keys)
 
-        # Capture each complete LLM response for transcript recovery.
-        # Pure observer — passes all frames through unchanged.
-        # call_start_mono threads wall-clock timing into the processor so it can
-        # emit per-stage latency logs (LLM first-token, LLM complete).
+        # Shared mutable timing state threaded through all latency-tracking processors.
+        # Each processor writes a monotonic timestamp on its key event; downstream
+        # processors read earlier timestamps to compute inter-stage deltas.
+        #
+        # Keys written per turn:
+        #   "t_stt"       — UserTurnCapture on TranscriptionFrame
+        #   "t_llm_start" — LLMResponseCapture on LLMFullResponseStartFrame
+        #   "t_llm_end"   — LLMResponseCapture on LLMFullResponseEndFrame
+        _timing_state: dict = {}
+
         llm_response_capture = LLMResponseCapture(
             on_llm_response=on_llm_response,
             on_llm_start=on_llm_start,
             call_start_mono=call_start_mono,
+            timing_state=_timing_state,
         )
 
         # Capture finalized user utterances for per-turn timestamp recording.
@@ -705,6 +767,7 @@ class VoiceEngineFactory:
         user_turn_capture = UserTurnCapture(
             on_user_turn=on_user_turn,
             call_start_mono=call_start_mono,
+            timing_state=_timing_state,
         )
 
         # Track text frames/interruptions before TTS
@@ -726,6 +789,16 @@ class VoiceEngineFactory:
         # Log idle_timeout when the caller goes silent for too long.
         # UserIdleProcessor fires a callback after `timeout` seconds of silence.
         idle_timeout_tracker = IdleTimeoutTracker(timeout=30.0)
+
+        # Measures the final two pipeline-stage handoffs:
+        #   3. LLM first token → TTS first audio chunk  (LLM→TTS delta)
+        #   4. Dispatch of first audio chunk to transport.output() (call-relative timestamp)
+        # Placed just before transport.output() so it sees AudioRawFrames on their way out
+        # and also receives LLMFullResponseStartFrame flowing downstream from the LLM.
+        tts_latency_tracker = TtsPipelineLatencyTracker(
+            call_start_mono=call_start_mono,
+            timing_state=_timing_state,
+        )
 
         # Pipecat-native STT mute gate.
         # MUTE_UNTIL_FIRST_BOT_COMPLETE — suppresses all VAD/transcription frames until
@@ -778,6 +851,7 @@ class VoiceEngineFactory:
                 tts,
                 greeting_completion_tracker,   # Logs greeting_completed on first BotStoppedSpeakingFrame
                 tts_completion_watcher,        # Observes BotStoppedSpeakingFrame after TTS
+                tts_latency_tracker,           # Measures LLM→TTS and TTS→transport handoff latencies
                 transport.output(),
                 context_aggregator.assistant(),
             ]
