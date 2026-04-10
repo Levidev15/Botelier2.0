@@ -208,7 +208,7 @@ async def list_accounts(
     )
 
 
-@router.post("/accounts", response_model=AccountResponse)
+@router.post("/accounts", status_code=201)
 async def create_account(
     data: AccountCreate,
     admin: User = Depends(get_platform_admin),
