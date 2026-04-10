@@ -547,14 +547,13 @@ class CallHandler:
             _greeting_played_from_cache = False
             if config.tts_provider.lower() == "deepgram" and api_keys.get("deepgram_api_key"):
                 try:
-                    _tts_cfg = {
-                        "voice": config.tts_voice_id or "aura-2-helena-en",
-                        "sample_rate": config.tts_config.get("sample_rate", 8000),
-                    }
+                    _voice = config.tts_voice_id or "aura-2-helena-en"
+                    _tts_cfg = {"model": _voice, "voice": _voice}
                     _audio = await get_or_generate_greeting_audio(
                         greeting_text=config.greeting_message,
                         tts_config=_tts_cfg,
                         api_key=api_keys["deepgram_api_key"],
+                        assistant_id=str(assistant.id),
                     )
                     # Split into 160-byte frames (20 ms @ 8 kHz μ-law).
                     _chunk_size = 160

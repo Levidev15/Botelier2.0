@@ -2,15 +2,18 @@
 Greeting audio cache for Botelier voice assistants.
 
 Generates TTS audio via the Deepgram REST API and persists it locally as raw
-μ-law bytes so that subsequent calls replay the cached file directly, bypassing
-Deepgram and saving per-call TTS tokens.
+μ-law bytes (8 kHz, mono) so subsequent calls replay the cached file directly,
+saving per-call Deepgram TTS tokens.
 
-Cache key  : SHA-256(greeting_text | voice | sample_rate)
+Cache key  : SHA-256(greeting_text | tts_model | tts_voice | "8000" | "mulaw")
 Cache dir  : <project_root>/uploads/greeting_cache/
 File ext   : .ul  (raw μ-law, 8 kHz, mono, no container header)
+Sidecar    : assistant_<id>.json — records the most-recently-cached key so the
+             status endpoint can detect outdated (stale) cached audio.
 """
 
 import hashlib
+import json
 import os
 from datetime import datetime, timezone
 from typing import Optional
@@ -35,9 +38,16 @@ def _get_cache_dir() -> str:
 
 
 def _cache_key(greeting_text: str, tts_config: dict) -> str:
+    """
+    Deterministic cache key from greeting text and TTS configuration.
+
+    Includes ``model``, ``voice``, a fixed ``"8000"`` sample-rate, and a
+    fixed ``"mulaw"`` encoding.  The cache always stores 8 kHz μ-law audio
+    regardless of any other encoding the assistant may use at runtime.
+    """
+    model = tts_config.get("model") or tts_config.get("voice") or "aura-2-helena-en"
     voice = tts_config.get("voice") or "aura-2-helena-en"
-    sample_rate = str(tts_config.get("sample_rate", 8000))
-    raw = f"{greeting_text}|{voice}|{sample_rate}|mulaw"
+    raw = f"{greeting_text}|{model}|{voice}|8000|mulaw"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -45,44 +55,98 @@ def _cache_path(key: str) -> str:
     return os.path.join(_get_cache_dir(), f"{key}.ul")
 
 
-def get_cache_status(greeting_text: str, tts_config: dict) -> dict:
+def _sidecar_path(assistant_id: str) -> str:
+    return os.path.join(_get_cache_dir(), f"assistant_{assistant_id}.json")
+
+
+def _write_sidecar(assistant_id: str, key: str) -> None:
+    """Record the most-recently-cached key for *assistant_id*."""
+    path = _sidecar_path(assistant_id)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump({"last_key": key}, fh)
+    os.replace(tmp, path)
+
+
+def _read_sidecar(assistant_id: str) -> Optional[str]:
+    """Return the last-cached key for *assistant_id*, or ``None``."""
+    path = _sidecar_path(assistant_id)
+    if not os.path.exists(path):
+        return None
+    try:
+        with open(path) as fh:
+            return json.load(fh).get("last_key")
+    except Exception:
+        return None
+
+
+def get_cache_status(
+    greeting_text: str,
+    tts_config: dict,
+    assistant_id: Optional[str] = None,
+) -> dict:
     """
-    Return the current cache status for the given greeting + TTS config.
+    Return the cache status for the given greeting + TTS configuration.
 
     Returns a dict:
-      cached     : bool     – whether a cached file exists for the current text+voice
-      cached_at  : datetime | None – UTC mtime of the cached file
-      cache_key  : str      – hex digest used as the cache file name
+      cached            : bool      – current text+voice is cached
+      cached_at         : datetime | None – UTC timestamp of the active cache file
+                          (or the old file when outdated)
+      text_matches_cache: bool      – True when ``cached=True``; False otherwise
+      outdated          : bool      – True when an older cache exists for a
+                          different text (only detectable if *assistant_id* is
+                          provided and a sidecar was previously written)
+      cache_key         : str       – hex digest for the current parameters
     """
     key = _cache_key(greeting_text, tts_config)
     path = _cache_path(key)
-    if os.path.exists(path):
-        mtime = os.path.getmtime(path)
-        return {
-            "cached": True,
-            "cached_at": datetime.fromtimestamp(mtime, tz=timezone.utc),
-            "cache_key": key,
-        }
-    return {"cached": False, "cached_at": None, "cache_key": key}
+    current_cached = os.path.exists(path)
+    outdated = False
+    cached_at = None
+
+    if current_cached:
+        cached_at = datetime.fromtimestamp(os.path.getmtime(path), tz=timezone.utc)
+    elif assistant_id:
+        last_key = _read_sidecar(assistant_id)
+        if last_key and last_key != key:
+            old_path = _cache_path(last_key)
+            if os.path.exists(old_path):
+                outdated = True
+                cached_at = datetime.fromtimestamp(
+                    os.path.getmtime(old_path), tz=timezone.utc
+                )
+
+    return {
+        "cached": current_cached,
+        "cached_at": cached_at,
+        "text_matches_cache": current_cached,
+        "outdated": outdated,
+        "cache_key": key,
+    }
 
 
 async def get_or_generate_greeting_audio(
     greeting_text: str,
     tts_config: dict,
     api_key: str,
+    assistant_id: Optional[str] = None,
 ) -> bytes:
     """
     Return raw μ-law audio bytes (8 kHz, mono) for *greeting_text*.
 
     Cache hit  → reads and returns the cached .ul file (no API call).
-    Cache miss → calls the Deepgram TTS REST API, writes atomically, returns bytes.
+    Cache miss → calls the Deepgram TTS REST API at 8 kHz μ-law, writes the
+                 result atomically, updates the per-assistant sidecar, and
+                 returns the bytes.
 
     Args:
         greeting_text: The greeting text to synthesise.
-        tts_config:    Dict with optional keys ``voice`` and ``sample_rate``.
-                       ``voice`` must be a Deepgram model name
+        tts_config:    Dict with optional keys ``model``, ``voice``.
+                       ``voice`` / ``model`` must be a Deepgram model name
                        (e.g. ``"aura-2-helena-en"``).
         api_key:       Deepgram API key (``DEEPGRAM_API_KEY``).
+        assistant_id:  Optional assistant UUID; used to write the sidecar file
+                       for outdated-cache detection.
     """
     key = _cache_key(greeting_text, tts_config)
     path = _cache_path(key)
@@ -93,17 +157,16 @@ async def get_or_generate_greeting_audio(
         with open(path, "rb") as fh:
             return fh.read()
 
-    voice = tts_config.get("voice") or "aura-2-helena-en"
-    sample_rate = tts_config.get("sample_rate", 8000)
-
+    model = tts_config.get("model") or tts_config.get("voice") or "aura-2-helena-en"
     logger.info(
         f"🎙️ Cache MISS — calling Deepgram TTS REST "
-        f"(voice={voice}, sr={sample_rate}, key={key[:8]}…)"
+        f"(model={model}, sr=8000/mulaw, key={key[:8]}…)"
     )
 
+    # Always generate at 8 kHz μ-law (Twilio / TwilioFrameSerializer requirement).
     url = (
         "https://api.deepgram.com/v1/speak"
-        f"?model={voice}&encoding=mulaw&sample_rate={sample_rate}&container=none"
+        f"?model={model}&encoding=mulaw&sample_rate=8000&container=none"
     )
     headers = {
         "Authorization": f"Token {api_key}",
@@ -115,11 +178,14 @@ async def get_or_generate_greeting_audio(
         resp.raise_for_status()
         audio_bytes = resp.content
 
-    # Atomic write: temp file → rename so concurrent readers never see partial data.
+    # Atomic write: temp file → rename so readers never see a partial file.
     tmp = path + ".tmp"
     with open(tmp, "wb") as fh:
         fh.write(audio_bytes)
     os.replace(tmp, path)
+
+    if assistant_id:
+        _write_sidecar(assistant_id, key)
 
     logger.info(
         f"🎙️ Greeting cached — {len(audio_bytes)} bytes (key={key[:8]}…)"

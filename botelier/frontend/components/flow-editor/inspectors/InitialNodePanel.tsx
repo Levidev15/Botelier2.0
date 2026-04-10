@@ -10,7 +10,7 @@ interface Props {
 }
 
 export default function InitialNodePanel({ data, nodeId, assistantId }: Props) {
-  const { updateNodeData } = useFlowStore();
+  const { updateNodeData, isDirty } = useFlowStore();
 
   return (
     <div className="space-y-4">
@@ -37,7 +37,7 @@ export default function InitialNodePanel({ data, nodeId, assistantId }: Props) {
         {assistantId && (
           <GreetingCacheButton
             assistantId={assistantId}
-            hasUnsavedChanges={false}
+            hasUnsavedChanges={isDirty}
           />
         )}
       </div>

@@ -403,13 +403,15 @@ async def get_greeting_cache_status(
     from botelier.voice.greeting_cache import get_cache_status
     greeting_text = assistant.first_message or "Hello! How can I help you today?"
     tts_cfg = {
+        "model": assistant.tts_voice or "aura-2-helena-en",
         "voice": assistant.tts_voice or "aura-2-helena-en",
-        "sample_rate": (assistant.tts_config or {}).get("sample_rate", 8000),
     }
-    status = get_cache_status(greeting_text, tts_cfg)
+    status = get_cache_status(greeting_text, tts_cfg, assistant_id=assistant_id)
     return {
         "cached": status["cached"],
         "cached_at": status["cached_at"].isoformat() if status["cached_at"] else None,
+        "text_matches_cache": status["text_matches_cache"],
+        "outdated": status["outdated"],
         "supported": True,
     }
 
@@ -444,19 +446,21 @@ async def cache_assistant_greeting(
     from botelier.voice.greeting_cache import get_or_generate_greeting_audio, get_cache_status
     greeting_text = assistant.first_message or "Hello! How can I help you today?"
     tts_cfg = {
+        "model": assistant.tts_voice or "aura-2-helena-en",
         "voice": assistant.tts_voice or "aura-2-helena-en",
-        "sample_rate": (assistant.tts_config or {}).get("sample_rate", 8000),
     }
 
     try:
-        await get_or_generate_greeting_audio(greeting_text, tts_cfg, api_key)
+        await get_or_generate_greeting_audio(
+            greeting_text, tts_cfg, api_key, assistant_id=assistant_id
+        )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Deepgram TTS error: {exc}")
 
-    status = get_cache_status(greeting_text, tts_cfg)
+    status = get_cache_status(greeting_text, tts_cfg, assistant_id=assistant_id)
     return {
         "cached": status["cached"],
         "cached_at": status["cached_at"].isoformat() if status["cached_at"] else None,
+        "text_matches_cache": status["text_matches_cache"],
+        "outdated": status["outdated"],
     }
-
-    return assistant.acw_config

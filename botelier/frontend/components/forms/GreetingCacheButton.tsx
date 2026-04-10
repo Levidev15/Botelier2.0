@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback } from "react";
-import { CheckCircle, AlertCircle, Loader2, Volume2 } from "lucide-react";
+import { CheckCircle, AlertCircle, AlertTriangle, Loader2, Volume2 } from "lucide-react";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 
@@ -13,6 +13,8 @@ interface GreetingCacheButtonProps {
 interface CacheStatus {
   cached: boolean;
   cached_at: string | null;
+  text_matches_cache: boolean;
+  outdated: boolean;
   supported: boolean;
 }
 
@@ -48,7 +50,7 @@ export default function GreetingCacheButton({
         `/api/assistants/${assistantId}/greeting-cache-status?account_id=${accountId}`
       );
       if (!res.ok) throw new Error("Failed to fetch status");
-      const data = await res.json();
+      const data: CacheStatus = await res.json();
       setStatus(data);
     } catch {
       setStatus(null);
@@ -71,18 +73,26 @@ export default function GreetingCacheButton({
         { method: "POST" }
       );
       if (!res.ok) {
-        const body = await res.json().catch(() => ({}));
-        throw new Error(body.detail || "Generation failed");
+        const body: unknown = await res.json().catch(() => ({}));
+        const detail =
+          body !== null &&
+          typeof body === "object" &&
+          "detail" in body &&
+          typeof (body as Record<string, unknown>).detail === "string"
+            ? (body as Record<string, string>).detail
+            : "Generation failed";
+        throw new Error(detail);
       }
-      const data = await res.json();
-      setStatus((prev) => ({
-        ...prev!,
-        cached: data.cached,
-        cached_at: data.cached_at,
-        supported: prev?.supported ?? true,
-      }));
-    } catch (err: any) {
-      setError(err.message || "Failed to generate audio");
+      const data: CacheStatus = await res.json();
+      setStatus((prev) =>
+        prev
+          ? { ...prev, ...data }
+          : { ...data, supported: true }
+      );
+    } catch (err: unknown) {
+      setError(
+        err instanceof Error ? err.message : "Failed to generate audio"
+      );
     } finally {
       setIsGenerating(false);
     }
@@ -93,6 +103,9 @@ export default function GreetingCacheButton({
   const buttonDisabled = hasUnsavedChanges || isGenerating || isFetching;
   const buttonTitle = hasUnsavedChanges ? "Save changes first" : undefined;
 
+  const isOutdated = status ? !status.cached && status.outdated : false;
+  const isCached = status?.cached ?? false;
+
   return (
     <div className="mt-2 flex items-center gap-3 flex-wrap">
       <button
@@ -102,6 +115,8 @@ export default function GreetingCacheButton({
         className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors
           ${buttonDisabled
             ? "bg-gray-800 text-gray-500 cursor-not-allowed"
+            : isOutdated
+            ? "bg-yellow-700 hover:bg-yellow-600 text-white cursor-pointer"
             : "bg-blue-700 hover:bg-blue-600 text-white cursor-pointer"
           }`}
       >
@@ -112,7 +127,7 @@ export default function GreetingCacheButton({
         )}
         {isGenerating
           ? "Generating…"
-          : status?.cached
+          : isCached
           ? "Regenerate Audio"
           : "Generate Audio"}
       </button>
@@ -120,10 +135,17 @@ export default function GreetingCacheButton({
       <span className="text-xs text-gray-500 flex items-center gap-1">
         {isFetching ? (
           <Loader2 className="h-3 w-3 animate-spin" />
-        ) : status?.cached && status.cached_at ? (
+        ) : isCached && status?.cached_at ? (
           <>
             <CheckCircle className="h-3.5 w-3.5 text-green-500 flex-shrink-0" />
             <span className="text-green-400">Cached {timeAgo(status.cached_at)}</span>
+          </>
+        ) : isOutdated && status?.cached_at ? (
+          <>
+            <AlertTriangle className="h-3.5 w-3.5 text-yellow-500 flex-shrink-0" />
+            <span className="text-yellow-400">
+              Outdated — regenerate to update
+            </span>
           </>
         ) : (
           <>
