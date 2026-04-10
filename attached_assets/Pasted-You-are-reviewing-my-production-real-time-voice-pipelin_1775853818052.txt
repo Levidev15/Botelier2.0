@@ -1,0 +1,84 @@
+You are reviewing my production real-time voice pipeline for timing problems.
+
+My stack:
+- Replit
+- Pipecat
+- Twilio
+- OpenAI LLM
+- Deepgram STT
+- Deepgram TTS
+- Neon database in production
+
+Problem:
+Local dev works better because the local database has almost no latency.
+Production uses Neon, which adds latency.
+I need you to inspect my CURRENT codebase and determine whether any database work is happening inside the live voice path in a way that can delay, offset, interrupt, or break audio, STT, TTS, or turn-taking.
+
+What I want you to do:
+1. Search the repo for all database calls and all awaited database calls.
+2. Find every place where DB reads/writes happen in:
+   - websocket handlers
+   - Twilio media stream handlers
+   - Pipecat processors
+   - STT event handlers
+   - TTS event handlers
+   - turn-taking logic
+   - interruption/barge-in logic
+   - call setup / call teardown
+3. Tell me whether each DB operation is:
+   - safe to keep synchronous
+   - should be moved to async background work
+   - should be removed from the live path entirely
+4. Identify any code path where production DB latency could cause:
+   - delayed transcript handling
+   - delayed LLM start
+   - delayed TTS start
+   - audio cutouts
+   - dropped or late chunks
+   - offset turn-taking
+   - race conditions
+   - blocking of the event loop
+5. Show me the exact files and functions involved.
+6. Quote the relevant code and explain why it is risky in a real-time pipeline.
+7. Recommend a better architecture using:
+   - in-memory per-call state for live timing
+   - async queue/background worker for DB writes
+   - monotonic timestamps for event timing
+   - eventual persistence to Neon
+8. Be concrete. Do not give generic advice.
+
+Important rules:
+- Assume I am not a developer, so explain in plain English too.
+- But be code-specific and exact.
+- Focus on what we CURRENTLY have in this repo, not ideal theory only.
+- Prioritize the top 3 most dangerous timing problems first.
+
+Also do these searches explicitly:
+- search for: await db
+- search for: await prisma
+- search for: await sql
+- search for: await neon
+- search for: insert
+- search for: update
+- search for: save_
+- search for: create_
+- search for: websocket
+- search for: twilio
+- search for: pipecat
+- search for: deepgram
+- search for: tts
+- search for: stt
+- search for: interrupt
+- search for: barge
+- search for: vad
+- search for: queue
+- search for: asyncio.create_task
+- search for any long-running awaited call inside the live call path
+
+Output format:
+A. End-to-end live call path
+B. Every DB call found in that path
+C. Which ones are dangerous and why
+D. Exact changes to make
+E. What should become async background work
+F. Plain-English summary
