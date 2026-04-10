@@ -11,7 +11,7 @@ interface Props {
 }
 
 export default function InitialNodePanel({ data, nodeId, assistantId, assistantTtsProvider }: Props) {
-  const { updateNodeData } = useFlowStore();
+  const { updateNodeData, isDirty } = useFlowStore();
 
   const showCacheButton =
     !!assistantId && (assistantTtsProvider || "").toLowerCase() === "deepgram";
@@ -39,9 +39,11 @@ export default function InitialNodePanel({ data, nodeId, assistantId, assistantT
           placeholder="Hello! How may I assist you today?"
         />
         {showCacheButton && (
-          <div className="mt-2">
-            <GreetingCacheButton assistantId={assistantId!} hasUnsavedChanges={false} />
-          </div>
+          <GreetingCacheButton
+            assistantId={assistantId!}
+            hasUnsavedChanges={isDirty}
+            greetingText={data.greeting || undefined}
+          />
         )}
       </div>
 

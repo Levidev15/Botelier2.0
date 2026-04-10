@@ -8,6 +8,7 @@ import { useAccountContext } from "@/lib/auth/useAccountContext";
 interface GreetingCacheButtonProps {
   assistantId: string;
   hasUnsavedChanges: boolean;
+  greetingText?: string;
 }
 
 interface CacheStatus {
@@ -32,6 +33,7 @@ function timeAgo(isoString: string): string {
 export default function GreetingCacheButton({
   assistantId,
   hasUnsavedChanges,
+  greetingText,
 }: GreetingCacheButtonProps) {
   const { authFetch } = useAuthToken();
   const { accountId } = useAccountContext();
@@ -41,13 +43,16 @@ export default function GreetingCacheButton({
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
+  const buildTextParam = (text?: string) =>
+    text ? `&greeting_text=${encodeURIComponent(text)}` : "";
+
   const fetchStatus = useCallback(async () => {
     if (!assistantId || !accountId) return;
     setIsFetching(true);
     setError(null);
     try {
       const res = await authFetch(
-        `/api/assistants/${assistantId}/greeting-cache-status?account_id=${accountId}`
+        `/api/assistants/${assistantId}/greeting-cache-status?account_id=${accountId}${buildTextParam(greetingText)}`
       );
       if (!res.ok) throw new Error("Failed to fetch status");
       const data: CacheStatus = await res.json();
@@ -57,7 +62,7 @@ export default function GreetingCacheButton({
     } finally {
       setIsFetching(false);
     }
-  }, [assistantId, accountId, authFetch]);
+  }, [assistantId, accountId, greetingText, authFetch]);
 
   useEffect(() => {
     fetchStatus();
@@ -69,7 +74,7 @@ export default function GreetingCacheButton({
     setError(null);
     try {
       const res = await authFetch(
-        `/api/assistants/${assistantId}/cache-greeting?account_id=${accountId}`,
+        `/api/assistants/${assistantId}/cache-greeting?account_id=${accountId}${buildTextParam(greetingText)}`,
         { method: "POST" }
       );
       if (!res.ok) {
