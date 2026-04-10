@@ -386,10 +386,16 @@ async def update_acw_config(
 async def get_greeting_cache_status(
     assistant_id: str,
     account_id: str = Query(..., description="Account ID for multi-tenant isolation"),
+    greeting_text: Optional[str] = Query(None, description="Override greeting text; defaults to assistant.first_message"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Return whether the greeting audio is currently cached for this assistant."""
+    """Return whether the greeting audio is currently cached for this assistant.
+
+    An optional ``greeting_text`` query parameter allows callers such as the flow
+    editor (where the initial-node greeting may differ from ``first_message``) to
+    check the cache status for an arbitrary text without modifying the assistant.
+    """
     check_account_permission(user, account_id, "assistants.view", db)
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
@@ -402,13 +408,13 @@ async def get_greeting_cache_status(
         return {"cached": False, "cached_at": None, "supported": False}
 
     from botelier.voice.greeting_cache import get_cache_status
-    greeting_text = assistant.first_message or "Hello! How can I help you today?"
+    effective_text = greeting_text or assistant.first_message or "Hello! How can I help you today?"
     _voice = assistant.tts_voice or "aura-2-helena-en"
     tts_cfg = {
         "model": assistant.tts_model or _voice,
         "voice": _voice,
     }
-    status = get_cache_status(greeting_text, tts_cfg, assistant_id=assistant_id)
+    status = get_cache_status(effective_text, tts_cfg, assistant_id=assistant_id)
     return {
         "cached": status["cached"],
         "cached_at": status["cached_at"].isoformat() if status["cached_at"] else None,
@@ -422,10 +428,16 @@ async def get_greeting_cache_status(
 async def cache_assistant_greeting(
     assistant_id: str,
     account_id: str = Query(..., description="Account ID for multi-tenant isolation"),
+    greeting_text: Optional[str] = Query(None, description="Override greeting text; defaults to assistant.first_message"),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Generate and cache the greeting audio for this assistant."""
+    """Generate and cache the greeting audio for this assistant.
+
+    An optional ``greeting_text`` query parameter allows callers such as the flow
+    editor to pre-generate the cache for a specific text (e.g. the Initial Node
+    greeting) that may differ from ``assistant.first_message``.
+    """
     check_account_permission(user, account_id, "assistants.edit", db)
     assistant = db.query(Assistant).filter(
         Assistant.id == assistant_id,
@@ -446,7 +458,7 @@ async def cache_assistant_greeting(
         raise HTTPException(status_code=500, detail="DEEPGRAM_API_KEY not configured")
 
     from botelier.voice.greeting_cache import get_or_generate_greeting_audio, get_cache_status
-    greeting_text = assistant.first_message or "Hello! How can I help you today?"
+    effective_text = greeting_text or assistant.first_message or "Hello! How can I help you today?"
     _voice = assistant.tts_voice or "aura-2-helena-en"
     tts_cfg = {
         "model": assistant.tts_model or _voice,
@@ -455,12 +467,12 @@ async def cache_assistant_greeting(
 
     try:
         await get_or_generate_greeting_audio(
-            greeting_text, tts_cfg, api_key, assistant_id=assistant_id
+            effective_text, tts_cfg, api_key, assistant_id=assistant_id
         )
     except Exception as exc:
         raise HTTPException(status_code=502, detail=f"Deepgram TTS error: {exc}")
 
-    status = get_cache_status(greeting_text, tts_cfg, assistant_id=assistant_id)
+    status = get_cache_status(effective_text, tts_cfg, assistant_id=assistant_id)
     return {
         "cached": status["cached"],
         "cached_at": status["cached_at"].isoformat() if status["cached_at"] else None,

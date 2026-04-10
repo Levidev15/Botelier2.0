@@ -542,7 +542,7 @@ class CallHandler:
                     event_source="pipecat",
                     severity="info",
                 )
-            # Attempt to play cached μ-law greeting to avoid a Deepgram TTS token.
+            # Attempt to play cached PCM greeting to avoid a Deepgram TTS token.
             # Falls back to TTSSpeakFrame (normal TTS path) on any error.
             _greeting_played_from_cache = False
             if config.tts_provider.lower() == "deepgram" and api_keys.get("deepgram_api_key"):
