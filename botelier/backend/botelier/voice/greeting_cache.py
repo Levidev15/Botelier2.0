@@ -54,7 +54,7 @@ def _cache_key(greeting_text: str, tts_config: dict) -> str:
     ``"linear16"`` encoding.  The cache always stores 8 kHz linear16 PCM
     regardless of the runtime encoding the assistant may use.
     """
-    model = tts_config.get("model") or tts_config.get("voice") or "aura-2-helena-en"
+    model = tts_config.get("voice") or tts_config.get("model") or "aura-2-helena-en"
     voice = tts_config.get("voice") or "aura-2-helena-en"
     raw = f"{greeting_text}|{model}|{voice}|8000|linear16"
     return hashlib.sha256(raw.encode()).hexdigest()
@@ -168,7 +168,7 @@ async def get_or_generate_greeting_audio(
         with open(path, "rb") as fh:
             return fh.read()
 
-    model = tts_config.get("model") or tts_config.get("voice") or "aura-2-helena-en"
+    model = tts_config.get("voice") or tts_config.get("model") or "aura-2-helena-en"
     logger.info(
         f"🎙️ Cache MISS — calling Deepgram TTS REST "
         f"(model={model}, sr=8000/linear16, key={key[:8]}…)"
