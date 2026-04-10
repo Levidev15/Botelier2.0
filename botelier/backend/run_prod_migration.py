@@ -1,16 +1,45 @@
 """
-One-time hotel_id → account_id migration script for the production Neon database.
-Run with: python run_prod_migration.py
-Reads NEON_DATABASE_URL from environment.
+One-time hotel_id → account_id migration script.
+
+IMPORTANT — verify the target database before running:
+  - This script reads DATABASE_URL from the environment (preferred).
+  - Falls back to NEON_DATABASE_URL if DATABASE_URL is not set.
+  - NEON_DATABASE_URL may point to a staging/dev branch that does NOT have
+    the SMS tables. If that is the case, run against the correct production
+    branch using DATABASE_URL instead.
+
+Pre-flight check: before running, confirm the target DB has these tables:
+  sms_conversations, sms_notification_settings, sms_templates
+
+Run with: DATABASE_URL=<prod-url> python run_prod_migration.py
 """
 import os
 import sys
 import psycopg2
 
-db_url = os.environ.get("NEON_DATABASE_URL")
+db_url = os.environ.get("DATABASE_URL") or os.environ.get("NEON_DATABASE_URL")
 if not db_url:
-    print("ERROR: NEON_DATABASE_URL is not set")
+    print("ERROR: Neither DATABASE_URL nor NEON_DATABASE_URL is set")
     sys.exit(1)
+
+conn_check = psycopg2.connect(db_url)
+cur_check = conn_check.cursor()
+cur_check.execute("SELECT current_database(), current_user")
+dbname, dbuser = cur_check.fetchone()
+cur_check.execute("""
+    SELECT count(*) FROM information_schema.tables
+    WHERE table_schema='public' AND table_name IN
+    ('sms_conversations','sms_notification_settings','sms_templates')
+""")
+sms_count = cur_check.fetchone()[0]
+cur_check.close()
+conn_check.close()
+
+print(f"Target database: {dbname} (user: {dbuser})")
+if sms_count < 3:
+    print(f"WARNING: Only {sms_count}/3 SMS tables found. This may be a dev/staging branch.")
+    print("Set DATABASE_URL to the production branch URL and retry.")
+    print("Continuing anyway — missing tables will be skipped safely.")
 
 print(f"Connecting to production database...")
 

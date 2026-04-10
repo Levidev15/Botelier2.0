@@ -1,7 +1,19 @@
 -- ============================================================
 -- hotel_id → account_id production migration
--- Run this in the Neon SQL Editor against the production branch.
--- All statements are idempotent — safe to run multiple times.
+-- ============================================================
+--
+-- PRE-FLIGHT CHECKLIST (complete before running):
+--   1. Log into neon.tech and open the correct Neon project.
+--   2. Verify you are on the MAIN (production) branch — NOT a dev/staging branch.
+--      The production branch should have these SMS tables:
+--        sms_conversations, sms_notification_settings, sms_templates,
+--        sms_compliance_campaigns
+--      If those tables are MISSING, you are on the wrong branch. Stop.
+--   3. Run the verification query at the bottom first (in isolation) to
+--      capture the before-state as deployment evidence.
+--   4. Only then run the full script.
+--
+-- All statements are idempotent — safe to re-run if interrupted.
 -- ============================================================
 
 -- Step 1: Drop legacy FK constraints pointing at hotels table
