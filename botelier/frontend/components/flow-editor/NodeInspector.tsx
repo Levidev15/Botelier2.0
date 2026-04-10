@@ -31,11 +31,7 @@ import SetVariableNodePanel from "./inspectors/SetVariableNodePanel";
 import TransferNodePanel from "./inspectors/TransferNodePanel";
 import EndNodePanel from "./inspectors/EndNodePanel";
 
-interface NodeInspectorProps {
-  assistantId?: string;
-}
-
-export default function NodeInspector({ assistantId }: NodeInspectorProps) {
+export default function NodeInspector() {
   const { selectedNode, updateNodeData, deleteNode } = useFlowStore();
 
   if (!selectedNode) {
@@ -55,7 +51,7 @@ export default function NodeInspector({ assistantId }: NodeInspectorProps) {
   const renderNodePanel = () => {
     switch (nodeType) {
       case "initial":
-        return <InitialNodePanel data={data as InitialNodeData} nodeId={selectedNode.id} assistantId={assistantId} />;
+        return <InitialNodePanel data={data as InitialNodeData} nodeId={selectedNode.id} />;
       case "message":
         return <MessageNodePanel data={data as MessageNodeData} nodeId={selectedNode.id} />;
       case "collect_slot":

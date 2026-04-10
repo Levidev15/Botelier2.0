@@ -21,7 +21,7 @@ from pipecat.frames.frames import (
     TTSSpeakFrame,
     TTSStartedFrame,
     TTSStoppedFrame,
-    AudioRawFrame,
+    TTSAudioRawFrame,
 )
 from pipecat.pipeline.runner import PipelineRunner
 
@@ -555,12 +555,16 @@ class CallHandler:
                         api_key=api_keys["deepgram_api_key"],
                         assistant_id=str(assistant.id),
                     )
-                    # Split into 160-byte frames (20 ms @ 8 kHz μ-law).
-                    _chunk_size = 160
+                    # Split into 320-byte frames (20 ms @ 8 kHz linear16 PCM).
+                    # TTSAudioRawFrame is required — the transport only processes
+                    # OutputAudioRawFrame subclasses, and uses TTSAudioRawFrame
+                    # to track bot-speaking state and set _tts_audio_received so
+                    # that TTSStoppedFrame correctly fires BotStoppedSpeakingFrame.
+                    _chunk_size = 320  # 8000 Hz * 2 bytes/sample * 0.020 s
                     _frames = [TTSStartedFrame()]
                     for _i in range(0, len(_audio), _chunk_size):
                         _frames.append(
-                            AudioRawFrame(
+                            TTSAudioRawFrame(
                                 audio=_audio[_i : _i + _chunk_size],
                                 sample_rate=8000,
                                 num_channels=1,
