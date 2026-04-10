@@ -54,7 +54,6 @@ export default function AccountsPage() {
     phone: "",
     business_type: "",
     subscription_tier: "free",
-    provision_twilio: false,
   });
 
   useEffect(() => {
@@ -115,12 +114,7 @@ export default function AccountsPage() {
 
     setCreating(true);
     try {
-      const params = new URLSearchParams();
-      if (newAccount.provision_twilio) {
-        params.set("provision_twilio", "true");
-      }
-
-      const res = await authFetch(`/api/admin/accounts?${params}`, {
+      const res = await authFetch(`/api/admin/accounts`, {
         method: "POST",
         body: JSON.stringify({
           name: newAccount.name,
@@ -132,7 +126,12 @@ export default function AccountsPage() {
       });
 
       if (res.ok) {
-        toast.success("Account created successfully");
+        const data = await res.json();
+        if (data.warning) {
+          toast.warning(data.warning);
+        } else {
+          toast.success("Account created successfully");
+        }
         setShowCreateModal(false);
         setNewAccount({
           name: "",
@@ -140,7 +139,6 @@ export default function AccountsPage() {
           phone: "",
           business_type: "",
           subscription_tier: "free",
-          provision_twilio: false,
         });
         fetchAccounts();
       } else {
@@ -495,26 +493,11 @@ export default function AccountsPage() {
                 </select>
               </div>
 
-              <div className="flex items-center gap-3 p-3 bg-[#0a0a0a] border border-[#1a1a1a] rounded-lg">
-                <input
-                  type="checkbox"
-                  id="provision_twilio"
-                  checked={newAccount.provision_twilio}
-                  onChange={(e) =>
-                    setNewAccount({
-                      ...newAccount,
-                      provision_twilio: e.target.checked,
-                    })
-                  }
-                  className="w-4 h-4 bg-[#0a0a0a] border border-[#222222] rounded text-blue-600 focus:ring-blue-600"
-                />
-                <label
-                  htmlFor="provision_twilio"
-                  className="text-sm text-gray-300"
-                >
-                  <span className="font-medium">Provision Twilio</span>
-                  <p className="text-gray-500 text-xs mt-0.5">Create a dedicated phone number sub-account</p>
-                </label>
+              <div className="flex items-center gap-3 p-3 bg-blue-600/10 border border-blue-600/20 rounded-lg">
+                <Phone className="h-4 w-4 text-blue-400 flex-shrink-0" />
+                <p className="text-sm text-blue-300">
+                  A dedicated Twilio sub-account will be provisioned automatically for this hotel.
+                </p>
               </div>
 
               <div className="flex gap-3 pt-4">

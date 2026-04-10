@@ -1,0 +1,94 @@
+Fix 2 — call_answered event write (call_handler.py lines 491–528)
+Before
+from ..models.call_event import CallEvent as _CallEvent
+import uuid as _uuid
+_db_sync = SessionLocal()                   # opened in async context
+try:
+    _already = (
+        _db_sync.query(_CallEvent)
+        .filter(
+            _CallEvent.call_log_id == call_log_id,
+            _CallEvent.event_type == "call_answered",
+        )
+        .first()
+    )                                        # blocking query on event loop
+    if not _already:
+        _now = datetime.utcnow()
+        _started = call_started_at or self.call_start_times.get(call_sid)
+        _offset_ms = (
+            int((_now - _started).total_seconds() * 1000) if _started else None
+        )
+        _db_sync.add(
+            _CallEvent(
+                id=_uuid.uuid4(),
+                call_log_id=call_log_id,
+                event_type="call_answered",
+                event_source="pipecat",
+                severity="info",
+                occurred_at=_now,
+                offset_ms=_offset_ms,
+                details={"stream_sid": stream_sid},
+            )
+        )
+        _db_sync.commit()                   # blocking commit on event loop
+        logger.info("📞 call_answered event written synchronously (pipecat)")
+    else:
+        logger.debug("📞 call_answered already exists — skipping duplicate")
+except Exception as _e:
+    logger.error(f"❌ Failed to write call_answered event: {_e}")
+finally:
+    _db_sync.close()
+
+After
+from ..models.call_event import CallEvent as _CallEvent
+import uuid as _uuid
+# Capture all values as plain scalars before entering the thread.
+_now_for_event = datetime.utcnow()
+_started_for_event = call_started_at or self.call_start_times.get(call_sid)
+_offset_ms_for_event = (
+    int((_now_for_event - _started_for_event).total_seconds() * 1000)
+    if _started_for_event else None
+)
+_event_id = _uuid.uuid4()
+def _write_call_answered():
+    # All DB work in one thread. Takes only plain Python values from closure.
+    db = SessionLocal()
+    try:
+        already = (
+            db.query(_CallEvent)
+            .filter(
+                _CallEvent.call_log_id == call_log_id,
+                _CallEvent.event_type == "call_answered",
+            )
+            .first()
+        )
+        if not already:
+            db.add(
+                _CallEvent(
+                    id=_event_id,
+                    call_log_id=call_log_id,
+                    event_type="call_answered",
+                    event_source="pipecat",
+                    severity="info",
+                    occurred_at=_now_for_event,
+                    offset_ms=_offset_ms_for_event,
+                    details={"stream_sid": stream_sid},
+                )
+            )
+            db.commit()
+            logger.info("📞 call_answered event written synchronously (pipecat)")
+        else:
+            logger.debug("📞 call_answered already exists — skipping duplicate")
+    except Exception as _e:
+        logger.error(f"❌ Failed to write call_answered event: {_e}")
+    finally:
+        db.close()
+await asyncio.to_thread(_write_call_answered)
+
+Criteria:
+
+Session created and closed in same thread: db = SessionLocal() and db.close() both happen inside _write_call_answered. ✓
+Awaited: await asyncio.to_thread(...) means the committed write completes before execution continues — preserving the dedup guarantee for the in-progress Twilio status callback. ✓
+Exception handling: try/except/finally is reproduced verbatim inside the sync function, identical error logging. ✓
+Ordering: The write still completes before event_queue.start() (line 470) and event_queue.log("websocket_connected", ...) (line 472). ✓
+No ORM cross-thread: _CallEvent(...) is constructed inside the thread. The only values from the outer scope (call_log_id, stream_sid, _now_for_event, etc.) are plain Python scalars captured before the thread starts. ✓
