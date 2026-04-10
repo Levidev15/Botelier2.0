@@ -14,6 +14,7 @@ import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import PostCallQATab from "@/components/forms/PostCallQATab";
 import { useAccountFeatures } from "@/lib/hooks/useAccountFeatures";
+import GreetingCacheButton from "@/components/forms/GreetingCacheButton";
 
 interface Assistant {
   id: string;
@@ -405,6 +406,15 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
               rows={3}
               className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm resize-none"
             />
+            {mode === "edit" && assistantId && formData.tts_provider === "deepgram" && (
+              <GreetingCacheButton
+                assistantId={assistantId}
+                hasUnsavedChanges={
+                  isDirty ||
+                  formData.first_message !== assistant?.first_message
+                }
+              />
+            )}
           </FormField>
 
           <FormField label="Language">

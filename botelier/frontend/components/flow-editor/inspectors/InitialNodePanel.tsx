@@ -1,13 +1,15 @@
 "use client";
 
 import { useFlowStore, InitialNodeData } from "../store";
+import GreetingCacheButton from "@/components/forms/GreetingCacheButton";
 
 interface Props {
   data: InitialNodeData;
   nodeId: string;
+  assistantId?: string;
 }
 
-export default function InitialNodePanel({ data, nodeId }: Props) {
+export default function InitialNodePanel({ data, nodeId, assistantId }: Props) {
   const { updateNodeData } = useFlowStore();
 
   return (
@@ -32,6 +34,12 @@ export default function InitialNodePanel({ data, nodeId }: Props) {
           className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-green-500 focus:outline-none resize-none"
           placeholder="Hello! How may I assist you today?"
         />
+        {assistantId && (
+          <GreetingCacheButton
+            assistantId={assistantId}
+            hasUnsavedChanges={false}
+          />
+        )}
       </div>
 
       <div className="flex items-center gap-2">

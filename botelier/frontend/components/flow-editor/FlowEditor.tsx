@@ -257,7 +257,7 @@ function FlowEditorInner({ toolId, accountId, toolName }: FlowEditorProps) {
           )}
         </div>
 
-        <NodeInspector />
+        <NodeInspector assistantId={toolId} />
 
         {showSimulator && (
           <div className="w-80 flex-shrink-0">
