@@ -69,6 +69,7 @@ class CallHandler:
         self.user_turn_timestamps: Dict[str, List[dict]] = {}  # call_sid -> list of {text, timestamp} per user utterance
         self.call_mcp_clients: Dict[str, PipecatMCPClient] = {}  # call_sid -> Pipecat MCPClient for MCP tool execution
         self.call_event_queues: Dict[str, CallEventQueue] = {}  # call_sid -> CallEventQueue
+        self.call_recording_sids: Dict[str, str] = {}  # call_sid -> Twilio recording SID (set when recording starts)
     
     async def handle_call(
         self,
@@ -437,7 +438,7 @@ class CallHandler:
                 if should_record_call:
                     from ..services.recording_sync import start_in_call_recording as _start_rec
                     from ..config.domain import get_public_base_url as _get_base_url
-                    asyncio.create_task(
+                    _rec_task = asyncio.create_task(
                         _start_rec(
                             call_sid=call_sid,
                             account_sub_sid=hotel_twilio_sid,
@@ -445,6 +446,17 @@ class CallHandler:
                             base_url=_get_base_url(),
                         )
                     )
+                    # Store the recording SID when the task completes so transfer
+                    # handlers can stop the recording before handing off.
+                    # done_callback runs synchronously in the event loop — no awaiting.
+                    def _on_rec_started(_t, _sid_store=self.call_recording_sids, _csid=call_sid):
+                        try:
+                            sid = _t.result()
+                            if sid:
+                                _sid_store[_csid] = sid
+                        except Exception:
+                            pass
+                    _rec_task.add_done_callback(_on_rec_started)
                     logger.info(f"🎙️ In-call recording task queued for {call_sid}")
 
                 # Pass the queue reference to FunctionMapper so it can log pipeline events
@@ -559,6 +571,8 @@ class CallHandler:
             if call_sid in self.call_mcp_clients:
                 del self.call_mcp_clients[call_sid]
                 logger.debug(f"Cleaned up MCP client reference for call {call_sid}")
+            if call_sid in self.call_recording_sids:
+                del self.call_recording_sids[call_sid]
     
     def mark_response_interrupted(self, call_sid: str, content: str):
         """
