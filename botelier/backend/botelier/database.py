@@ -230,8 +230,7 @@ _ADDITIVE_MIGRATIONS = [
 BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='assistants' AND column_name='hotel_id') THEN
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='assistants' AND column_name='account_id') THEN
-      UPDATE assistants SET account_id = hotel_id;
-      ALTER TABLE assistants ALTER COLUMN account_id SET NOT NULL;
+      UPDATE assistants SET account_id = hotel_id WHERE account_id IS NULL;
       ALTER TABLE assistants DROP COLUMN hotel_id;
     ELSE
       ALTER TABLE assistants RENAME COLUMN hotel_id TO account_id;
@@ -242,8 +241,7 @@ END $$""",
 BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='call_logs' AND column_name='hotel_id') THEN
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='call_logs' AND column_name='account_id') THEN
-      UPDATE call_logs SET account_id = hotel_id;
-      ALTER TABLE call_logs ALTER COLUMN account_id SET NOT NULL;
+      UPDATE call_logs SET account_id = hotel_id WHERE account_id IS NULL;
       ALTER TABLE call_logs DROP COLUMN hotel_id;
     ELSE
       ALTER TABLE call_logs RENAME COLUMN hotel_id TO account_id;
@@ -254,8 +252,7 @@ END $$""",
 BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='knowledge_entries' AND column_name='hotel_id') THEN
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='knowledge_entries' AND column_name='account_id') THEN
-      UPDATE knowledge_entries SET account_id = hotel_id;
-      ALTER TABLE knowledge_entries ALTER COLUMN account_id SET NOT NULL;
+      UPDATE knowledge_entries SET account_id = hotel_id WHERE account_id IS NULL;
       ALTER TABLE knowledge_entries DROP COLUMN hotel_id;
     ELSE
       ALTER TABLE knowledge_entries RENAME COLUMN hotel_id TO account_id;
@@ -266,8 +263,7 @@ END $$""",
 BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='phone_numbers' AND column_name='hotel_id') THEN
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='phone_numbers' AND column_name='account_id') THEN
-      UPDATE phone_numbers SET account_id = hotel_id;
-      ALTER TABLE phone_numbers ALTER COLUMN account_id SET NOT NULL;
+      UPDATE phone_numbers SET account_id = hotel_id WHERE account_id IS NULL;
       ALTER TABLE phone_numbers DROP COLUMN hotel_id;
     ELSE
       ALTER TABLE phone_numbers RENAME COLUMN hotel_id TO account_id;
@@ -278,8 +274,7 @@ END $$""",
 BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='sms_compliance_campaigns' AND column_name='hotel_id') THEN
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='sms_compliance_campaigns' AND column_name='account_id') THEN
-      UPDATE sms_compliance_campaigns SET account_id = hotel_id;
-      ALTER TABLE sms_compliance_campaigns ALTER COLUMN account_id SET NOT NULL;
+      UPDATE sms_compliance_campaigns SET account_id = hotel_id WHERE account_id IS NULL;
       ALTER TABLE sms_compliance_campaigns DROP COLUMN hotel_id;
     ELSE
       ALTER TABLE sms_compliance_campaigns RENAME COLUMN hotel_id TO account_id;
@@ -290,8 +285,7 @@ END $$""",
 BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='sms_conversations' AND column_name='hotel_id') THEN
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='sms_conversations' AND column_name='account_id') THEN
-      UPDATE sms_conversations SET account_id = hotel_id;
-      ALTER TABLE sms_conversations ALTER COLUMN account_id SET NOT NULL;
+      UPDATE sms_conversations SET account_id = hotel_id WHERE account_id IS NULL;
       ALTER TABLE sms_conversations DROP COLUMN hotel_id;
     ELSE
       ALTER TABLE sms_conversations RENAME COLUMN hotel_id TO account_id;
@@ -302,8 +296,7 @@ END $$""",
 BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='sms_notification_settings' AND column_name='hotel_id') THEN
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='sms_notification_settings' AND column_name='account_id') THEN
-      UPDATE sms_notification_settings SET account_id = hotel_id;
-      ALTER TABLE sms_notification_settings ALTER COLUMN account_id SET NOT NULL;
+      UPDATE sms_notification_settings SET account_id = hotel_id WHERE account_id IS NULL;
       ALTER TABLE sms_notification_settings DROP COLUMN hotel_id;
     ELSE
       ALTER TABLE sms_notification_settings RENAME COLUMN hotel_id TO account_id;
@@ -314,8 +307,7 @@ END $$""",
 BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='sms_templates' AND column_name='hotel_id') THEN
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='sms_templates' AND column_name='account_id') THEN
-      UPDATE sms_templates SET account_id = hotel_id;
-      ALTER TABLE sms_templates ALTER COLUMN account_id SET NOT NULL;
+      UPDATE sms_templates SET account_id = hotel_id WHERE account_id IS NULL;
       ALTER TABLE sms_templates DROP COLUMN hotel_id;
     ELSE
       ALTER TABLE sms_templates RENAME COLUMN hotel_id TO account_id;
@@ -351,8 +343,7 @@ END $$""",
 BEGIN
   IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tools' AND column_name='hotel_id') THEN
     IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='tools' AND column_name='account_id') THEN
-      UPDATE tools SET account_id = hotel_id;
-      ALTER TABLE tools ALTER COLUMN account_id SET NOT NULL;
+      UPDATE tools SET account_id = hotel_id WHERE account_id IS NULL;
       ALTER TABLE tools DROP COLUMN hotel_id;
     ELSE
       ALTER TABLE tools RENAME COLUMN hotel_id TO account_id;
