@@ -105,6 +105,47 @@ def get_tool(
     return tool.to_dict()
 
 
+@router.get("/{tool_id}/primary-assistant")
+def get_primary_assistant_for_tool(
+    tool_id: str,
+    account_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Return the first assistant that uses the ToolSet containing this tool.
+
+    Used by the flow editor to provide context for assistant-scoped features
+    (e.g. greeting audio cache button) when a tool is known but the assistant
+    context is not directly available.
+
+    Returns ``{assistant_id, tts_provider}`` or ``null`` when no assistant is
+    linked to this tool's ToolSet.
+    """
+    check_account_permission(user, account_id, "tools.view", db)
+
+    tool = db.query(Tool).filter(Tool.id == tool_id).first()
+    if not tool or not tool.tool_set_id:
+        return None
+
+    from botelier.models.assistant import Assistant
+    assistant = (
+        db.query(Assistant)
+        .filter(
+            Assistant.tool_set_id == tool.tool_set_id,
+            Assistant.account_id == account_id,
+        )
+        .first()
+    )
+
+    if not assistant:
+        return None
+
+    return {
+        "assistant_id": str(assistant.id),
+        "tts_provider": assistant.tts_provider or "",
+    }
+
+
 @router.post("", status_code=status.HTTP_201_CREATED)
 def create_tool(
     tool_data: ToolCreate,

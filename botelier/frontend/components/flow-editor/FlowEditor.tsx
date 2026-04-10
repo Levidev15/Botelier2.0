@@ -28,6 +28,8 @@ interface FlowEditorProps {
   toolId: string;
   accountId: string;
   toolName?: string;
+  assistantId?: string;
+  assistantTtsProvider?: string;
 }
 
 function DeletableEdge({
@@ -89,7 +91,7 @@ const edgeTypes = {
   deletable: DeletableEdge,
 };
 
-function FlowEditorInner({ toolId, accountId, toolName }: FlowEditorProps) {
+function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTtsProvider }: FlowEditorProps) {
   const {
     nodes,
     edges,
@@ -257,7 +259,7 @@ function FlowEditorInner({ toolId, accountId, toolName }: FlowEditorProps) {
           )}
         </div>
 
-        <NodeInspector />
+        <NodeInspector assistantId={assistantId} assistantTtsProvider={assistantTtsProvider} />
 
         {showSimulator && (
           <div className="w-80 flex-shrink-0">

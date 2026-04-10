@@ -548,7 +548,7 @@ class CallHandler:
             if config.tts_provider.lower() == "deepgram" and api_keys.get("deepgram_api_key"):
                 try:
                     _voice = config.tts_voice_id or "aura-2-helena-en"
-                    _tts_cfg = {"model": _voice, "voice": _voice}
+                    _tts_cfg = {"model": config.tts_model or _voice, "voice": _voice}
                     _audio = await get_or_generate_greeting_audio(
                         greeting_text=config.greeting_message,
                         tts_config=_tts_cfg,
