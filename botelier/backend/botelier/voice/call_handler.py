@@ -156,9 +156,19 @@ class CallHandler:
                         await asyncio.sleep(0.2)
                         _retry_db = _SessionLocal()
                         try:
-                            call_log_record = _retry_db.query(CallLog).filter(
+                            _retry_record = _retry_db.query(CallLog).filter(
                                 CallLog.call_sid == call_sid
                             ).first()
+                            if _retry_record is not None:
+                                # Update answered_at in the SAME session while it is
+                                # still open — the retry-loaded instance is detached
+                                # once the session closes so we cannot use `db` here.
+                                if not _retry_record.answered_at:
+                                    _retry_record.answered_at = datetime.utcnow()
+                                    _retry_db.commit()
+                                call_log_id = _retry_record.id
+                                call_started_at = _retry_record.started_at
+                                call_log_record = _retry_record
                         finally:
                             _retry_db.close()
                         if call_log_record is not None:
@@ -171,16 +181,19 @@ class CallHandler:
                             f"call_log not found after 3 retries for {call_sid} — "
                             f"recording and event queue will be skipped"
                         )
-                if call_log_record:
+                if call_log_record and call_log_id is None:
+                    # Record was found by the INITIAL query (not a retry) —
+                    # update answered_at via the original session.
                     call_log_id = call_log_record.id
                     call_started_at = call_log_record.started_at
+                    if not call_log_record.answered_at:
+                        call_log_record.answered_at = datetime.utcnow()
+                        db.commit()
+                if call_log_id is not None:
                     logger.info(
                         f"call_log_id={call_log_id} resolved for {call_sid} — "
                         f"event queue and recording will be active"
                     )
-                    if not call_log_record.answered_at:
-                        call_log_record.answered_at = datetime.utcnow()
-                        db.commit()
                 
                 logger.info(f"🤖 Assistant: '{assistant.name}' (ID: {assistant.id})")
                 

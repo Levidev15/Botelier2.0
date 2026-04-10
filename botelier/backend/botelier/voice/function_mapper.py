@@ -577,9 +577,23 @@ class FunctionMapper:
                             missing.append("call_sid")
                         logger.warning(f"⚠️ Cannot transfer call: missing {', '.join(missing)}")
                 finally:
-                    # Always end the pipeline after the transfer attempt.
-                    # The Twilio REST call above is synchronous, so Twilio has already
-                    # received the updated TwiML before this EndFrame is pushed.
+                    # End the pipeline after the transfer attempt.
+                    #
+                    # With auto_hang_up=False (TwilioFrameSerializer), pushing
+                    # EndFrame here closes the WebSocket cleanly from our side
+                    # WITHOUT sending a Twilio REST hangup call.  Twilio continues
+                    # executing its TwiML (warm <Dial> or cold REFER) independently.
+                    #
+                    # For successful warm transfer: Twilio's <Stop><Stream> will
+                    # also close the WebSocket from its side; this EndFrame fires
+                    # first (synchronous REST call ensures TwiML is already
+                    # submitted), so the pipeline exits cleanly before the
+                    # WebSocket close arrives — no double-EndFrame risk.
+                    #
+                    # For 404/4xx (call already terminated by the time we ran):
+                    # EndFrame still ends our pipeline cleanly.  The WebSocket is
+                    # already closed so the EndFrame propagates into a shutting-
+                    # down pipeline, which is harmless.
                     await params.llm.push_frame(EndFrame())
 
             # Register _execute_transfer to fire after speech ends (outside Pipecat timeout).
