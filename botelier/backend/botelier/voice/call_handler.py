@@ -449,10 +449,13 @@ class CallHandler:
                     # Store the recording SID when the task completes so transfer
                     # handlers can stop the recording before handing off.
                     # done_callback runs synchronously in the event loop — no awaiting.
-                    def _on_rec_started(_t, _sid_store=self.call_recording_sids, _csid=call_sid):
+                    # Guard with active_calls check: if cleanup already ran the SID
+                    # must not be re-inserted as a stale entry.
+                    def _on_rec_started(_t, _sid_store=self.call_recording_sids,
+                                        _active=self.active_calls, _csid=call_sid):
                         try:
                             sid = _t.result()
-                            if sid:
+                            if sid and _csid in _active:
                                 _sid_store[_csid] = sid
                         except Exception:
                             pass
