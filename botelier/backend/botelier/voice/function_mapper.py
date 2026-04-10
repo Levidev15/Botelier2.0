@@ -1068,94 +1068,136 @@ class FunctionMapper:
                         Performs the Twilio REST call for a flow-triggered transfer.
                         Runs as an asyncio task after speech ends — outside Pipecat's
                         function-call timeout. Pushes EndFrame after initiating transfer.
+
+                        Thread-safety contract:
+                        - _save_call_transcript is awaited BEFORE any session opens.
+                        - Recording stop is already off-loop via to_thread; kept outside the DB block.
+                        - TwiML is built on the event loop — pure Python string ops, no I/O.
+                        - ALL DB work (record_transfer, get_call_log, ACW query) and the blocking
+                          Twilio calls().update() REST call run inside _db_flow_record_and_transfer,
+                          which is called via asyncio.to_thread. The session is opened and closed
+                          entirely within that function.
+                        - self.twilio_client is the Twilio helper-library Client (uses requests
+                          internally). It holds no event-loop references and is safe to call from
+                          any thread — consistent with existing to_thread usage elsewhere.
+                        - Only plain Python scalars cross the thread boundary (strings, bool).
+                        - No ORM object leaves the thread.
                         """
                         try:
-                            from ..database import SessionLocal
-                            from ..services.call_logger import CallLogger as _CLFlow
-                            _db_flow = SessionLocal()
-                            try:
-                                _cl_flow = _CLFlow(_db_flow)
+                            # ── Step 1: Save transcript ──────────────────────────────────────────
+                            # Must happen before any session opens — _save_call_transcript is async
+                            # and opens/closes its own session internally.
+                            if self.call_handler and hasattr(self.call_handler, '_save_call_transcript'):
+                                try:
+                                    llm_context = self.call_handler.call_contexts.get(self.call_sid)
+                                    await self.call_handler._save_call_transcript(self.call_sid, llm_context)
+                                    logger.info(f"📝 Saved transcript before flow transfer for call {self.call_sid}")
+                                except Exception as _e:
+                                    logger.error(f"Error saving transcript before flow transfer: {_e}")
 
-                                # Save transcript BEFORE the Twilio REST call for both cold and
-                                # warm transfers — the WebSocket closes immediately after the update
-                                # and /connect-complete is never called for cold transfers.
-                                if self.call_handler and hasattr(self.call_handler, '_save_call_transcript'):
-                                    try:
-                                        llm_context = self.call_handler.call_contexts.get(self.call_sid)
-                                        await self.call_handler._save_call_transcript(self.call_sid, llm_context)
-                                        logger.info(f"📝 Saved transcript before flow transfer for call {self.call_sid}")
-                                    except Exception as _e:
-                                        logger.error(f"Error saving transcript before flow transfer: {_e}")
-
-                                # Stop any active call recording before transferring.
-                                # Uses _asyncio_flow.to_thread so the blocking Twilio SDK
-                                # call never stalls the event loop. Failures are warned only.
-                                _flow_rec_sid = (self.call_handler.call_recording_sids.get(self.call_sid)
-                                                 if self.call_handler else None)
-                                if _flow_rec_sid:
-                                    try:
-                                        await _asyncio_flow.to_thread(
-                                            lambda: self.twilio_client.calls(self.call_sid)
-                                                        .recordings(_flow_rec_sid)
-                                                        .update(status="stopped")
-                                        )
-                                        logger.info(f"🛑 Recording {_flow_rec_sid} stopped before flow transfer for call {self.call_sid}")
-                                        self.call_handler.call_recording_sids.pop(self.call_sid, None)
-                                    except Exception as _stop_err_flow:
-                                        logger.warning(f"Failed to stop recording before flow transfer for call {self.call_sid}: {_stop_err_flow}")
-
-                                # Build mode-specific TwiML.
-                                # Cold REFER: omit <Stop><Stream> so Twilio lets audio drain naturally.
-                                # Warm <Dial>: include <Stop><Stream> to close stream before bridging.
-                                twiml_parts = ['<?xml version="1.0" encoding="UTF-8"?>', '<Response>']
-
-                                if flow_transfer_mode == "cold":
-                                    digits_only = _re_flow.sub(r'[^\d+]', '', target)
-                                    sip_uri = f"sip:{digits_only}@pstn.twilio.com"
-                                    twiml_parts.append(f'<Refer><Sip>{sip_uri}</Sip></Refer>')
-                                    twiml_parts.append('</Response>')
-                                    _cl_flow.record_transfer(call_sid=self.call_sid, transfer_to=target, transfer_type="cold")
-                                    logger.info(f"🔄 Cold SIP REFER flow transfer to {target}")
-                                else:
-                                    # Warm transfer: close the stream before bridging via <Dial>
-                                    if self.stream_sid:
-                                        twiml_parts.append(f'<Stop><Stream name="{self.stream_sid}"/></Stop>')
-                                    caller_id = self.to_number or os.environ.get("TWILIO_PHONE_NUMBER", "")
-                                    if caller_id:
-                                        twiml_parts.append(f'<Dial timeout="30" callerId="{caller_id}">')
-                                    else:
-                                        twiml_parts.append('<Dial timeout="30">')
-                                    base_url = get_public_base_url()
-                                    status_callback = f"{base_url}/api/calls/transfer-status"
-                                    twiml_parts.append(
-                                        f'<Number statusCallback="{status_callback}" '
-                                        f'statusCallbackEvent="initiated ringing answered completed">'
-                                        f'{target}</Number>'
+                            # ── Step 2: Stop recording ────────────────────────────────────────────
+                            # Already off-loop via to_thread. Kept outside the DB block so no
+                            # session is open across this await.
+                            _flow_rec_sid = (self.call_handler.call_recording_sids.get(self.call_sid)
+                                             if self.call_handler else None)
+                            if _flow_rec_sid:
+                                try:
+                                    _frs_cap   = _flow_rec_sid          # plain string
+                                    _fcsid_cap = self.call_sid          # plain string
+                                    _ftcl_cap  = self.twilio_client     # thread-safe SDK client
+                                    await _asyncio_flow.to_thread(
+                                        lambda: _ftcl_cap.calls(_fcsid_cap)
+                                                    .recordings(_frs_cap)
+                                                    .update(status="stopped")
                                     )
-                                    twiml_parts.append('</Dial>')
-                                    twiml_parts.append('</Response>')
-                                    _cl_flow.record_transfer(call_sid=self.call_sid, transfer_to=target, transfer_type="external")
-                                    logger.info(f"🔄 Warm flow transfer to {target}")
+                                    logger.info(f"🛑 Recording {_flow_rec_sid} stopped before flow transfer for call {self.call_sid}")
+                                    self.call_handler.call_recording_sids.pop(self.call_sid, None)
+                                except Exception as _stop_err_flow:
+                                    logger.warning(f"Failed to stop recording before flow transfer for call {self.call_sid}: {_stop_err_flow}")
 
-                                self.twilio_client.calls(self.call_sid).update(twiml='\n'.join(twiml_parts))
-                                logger.info(f"✅ Flow transfer to {target} initiated")
+                            # ── Step 3: Build TwiML on event loop ────────────────────────────────
+                            # Pure Python string operations — no DB, no network, no await.
+                            # Cold REFER: omit <Stop><Stream> so Twilio lets audio drain naturally.
+                            # Warm <Dial>: include <Stop><Stream> to close stream before bridging.
+                            twiml_parts = ['<?xml version="1.0" encoding="UTF-8"?>', '<Response>']
+                            if flow_transfer_mode == "cold":
+                                digits_only = _re_flow.sub(r'[^\d+]', '', target)
+                                sip_uri = f"sip:{digits_only}@pstn.twilio.com"
+                                twiml_parts.append(f'<Refer><Sip>{sip_uri}</Sip></Refer>')
+                                twiml_parts.append('</Response>')
+                                logger.info(f"🔄 Cold SIP REFER flow transfer to {target}")
+                            else:
+                                # Warm transfer: close the stream before bridging via <Dial>
+                                if self.stream_sid:
+                                    twiml_parts.append(f'<Stop><Stream name="{self.stream_sid}"/></Stop>')
+                                caller_id = self.to_number or os.environ.get("TWILIO_PHONE_NUMBER", "")
+                                if caller_id:
+                                    twiml_parts.append(f'<Dial timeout="30" callerId="{caller_id}">')
+                                else:
+                                    twiml_parts.append('<Dial timeout="30">')
+                                base_url = get_public_base_url()
+                                status_callback = f"{base_url}/api/calls/transfer-status"
+                                twiml_parts.append(
+                                    f'<Number statusCallback="{status_callback}" '
+                                    f'statusCallbackEvent="initiated ringing answered completed">'
+                                    f'{target}</Number>'
+                                )
+                                twiml_parts.append('</Dial>')
+                                twiml_parts.append('</Response>')
+                                logger.info(f"🔄 Warm flow transfer to {target}")
 
-                                # Trigger ACW for cold flow transfers — Twilio won't call /connect-complete
-                                if flow_transfer_mode == "cold":
-                                    try:
-                                        from ..services.acw_service import run_acw_background as _run_acw_bg2
-                                        from ..models import Assistant as _Assistant2
-                                        _flow_call_log = _cl_flow.get_call_log(self.call_sid)
-                                        if _flow_call_log and _flow_call_log.assistant_id:
-                                            _flow_asst = _db_flow.query(_Assistant2).filter(_Assistant2.id == _flow_call_log.assistant_id).first()
-                                            if _flow_asst and (_flow_asst.acw_config or {}).get("auto_run"):
-                                                import threading
-                                                threading.Thread(target=_run_acw_bg2, args=(_flow_call_log.id,), daemon=True).start()
-                                                logger.info(f"ACW background thread started for cold flow transfer call {self.call_sid}")
-                                    except Exception as _acw_e2:
-                                        logger.error(f"Failed to start ACW thread after cold flow transfer: {_acw_e2}")
-                            finally:
-                                _db_flow.close()
+                            # ── Step 4: All DB + Twilio REST in one thread ───────────────────────
+                            # Capture plain scalars before crossing the thread boundary.
+                            # No ORM object and no session handle may cross this line.
+                            _cap_call_sid = self.call_sid           # str
+                            _cap_twilio   = self.twilio_client      # thread-safe SDK client
+                            _cap_twiml    = '\n'.join(twiml_parts)  # str
+                            _cap_target   = target                  # str
+                            _cap_mode     = flow_transfer_mode      # str
+
+                            def _db_flow_record_and_transfer():
+                                from ..database import SessionLocal as _SL
+                                from ..services.call_logger import CallLogger as _CL
+                                _db = _SL()
+                                try:
+                                    _cl = _CL(_db)
+                                    transfer_type = "cold" if _cap_mode == "cold" else "external"
+                                    _cl.record_transfer(
+                                        call_sid=_cap_call_sid,
+                                        transfer_to=_cap_target,
+                                        transfer_type=transfer_type,
+                                    )
+                                    # Blocking Twilio REST — safe here, we are in a thread
+                                    _cap_twilio.calls(_cap_call_sid).update(twiml=_cap_twiml)
+                                    logger.info(f"✅ Flow transfer to {_cap_target} initiated")
+
+                                    # Trigger ACW for cold flow transfers — Twilio won't call /connect-complete
+                                    if _cap_mode == "cold":
+                                        try:
+                                            from ..services.acw_service import run_acw_background as _run_acw_bg2
+                                            from ..models import Assistant as _Assistant2
+                                            _flow_call_log = _cl.get_call_log(_cap_call_sid)
+                                            if _flow_call_log and _flow_call_log.assistant_id:
+                                                _flow_asst = _db.query(_Assistant2).filter(
+                                                    _Assistant2.id == _flow_call_log.assistant_id
+                                                ).first()
+                                                if _flow_asst and (_flow_asst.acw_config or {}).get("auto_run"):
+                                                    import threading
+                                                    # Extract scalar ID before ORM object goes out of scope
+                                                    _acw_log_id = _flow_call_log.id
+                                                    threading.Thread(
+                                                        target=_run_acw_bg2,
+                                                        args=(_acw_log_id,),
+                                                        daemon=True,
+                                                    ).start()
+                                                    logger.info(f"ACW background thread started for cold flow transfer call {_cap_call_sid}")
+                                        except Exception as _acw_e2:
+                                            logger.error(f"Failed to start ACW thread after cold flow transfer: {_acw_e2}")
+                                finally:
+                                    _db.close()
+
+                            await _asyncio_flow.to_thread(_db_flow_record_and_transfer)
+
                         except Exception as e:
                             logger.error(f"Flow transfer failed: {e}")
                         finally:

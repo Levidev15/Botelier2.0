@@ -1037,18 +1037,29 @@ You have access to the following Q&A knowledge base. Use this information to ans
     async def _save_call_transcript(self, call_sid: str, llm_context: Optional[Any], extra_messages: Optional[list] = None):
         """
         Save call transcript to database.
-        
+
         Uses tracked transcript (actual spoken content) if available,
         falls back to extracting from LLM context.
-        
+
         Args:
             call_sid: Twilio call SID
             llm_context: Pipecat's LLMContext object with conversation history (may be None)
             extra_messages: Optional list of additional transcript entries to append after
                 extraction (e.g. the spoken pre-transfer message that bypasses LLM context).
+
+        Thread-safety contract:
+        - _extract_transcript only accesses plain Python dicts (self.interrupted_responses,
+          self.pending_responses, self.user_turn_timestamps) and iterates llm_context messages.
+          No I/O. Safe on the event loop.
+        - SessionLocal(), CallLogger.complete_call(), and db.close() all run inside _sync_save,
+          which executes in a worker thread via asyncio.to_thread. No session ever touches the
+          event loop.
+        - transcript is a list of plain dicts (role: str, content: str, timestamp: str, etc.).
+          tools_used is a list of strings. Both are safe to pass across thread boundaries.
+        - No ORM object is created on the event loop; none leaves the worker thread.
         """
-        db = None
         try:
+            # ── Extract on event loop — pure Python, no I/O ──────────────────────
             if llm_context:
                 transcript, tools_used = self._extract_transcript(call_sid, llm_context)
                 if extra_messages:
@@ -1060,34 +1071,47 @@ You have access to the following Q&A knowledge base. Use this information to ans
                 transcript = []
                 tools_used = []
                 logger.warning(f"No LLM context available for call {call_sid}")
-            
+
             if not transcript and not tools_used:
                 logger.warning(f"No transcript messages or tools found for call {call_sid}")
                 return
-            
+
+            # Datetime arithmetic — no I/O, safe on event loop
             duration_seconds = None
             if call_sid in self.call_start_times:
                 start_time = self.call_start_times[call_sid]
                 duration_seconds = max(0, int((datetime.utcnow() - start_time).total_seconds()))
-            
-            db = SessionLocal()
-            call_logger = CallLogger(db)
-            success = call_logger.complete_call(
-                call_sid=call_sid,
-                transcript=transcript if transcript else None,
-                duration_seconds=duration_seconds,
-                tools_used=tools_used
-            )
+
+            # ── Capture plain values before thread boundary ───────────────────────
+            # transcript is a list of plain dicts; tools_used is a list of strings.
+            # All other values are plain Python scalars.
+            _cap_call_sid   = call_sid
+            _cap_transcript = transcript if transcript else None
+            _cap_duration   = duration_seconds
+            _cap_tools      = tools_used
+
+            # ── All DB work in a thread — session never touches the event loop ────
+            def _sync_save():
+                db = SessionLocal()
+                try:
+                    cl = CallLogger(db)
+                    return cl.complete_call(
+                        call_sid=_cap_call_sid,
+                        transcript=_cap_transcript,
+                        duration_seconds=_cap_duration,
+                        tools_used=_cap_tools,
+                    )
+                finally:
+                    db.close()
+
+            success = await asyncio.to_thread(_sync_save)
             if success:
                 logger.info(f"📝 Saved transcript ({len(transcript)} messages) for call {call_sid}")
             else:
                 logger.warning(f"Failed to save transcript for call {call_sid}")
-                
+
         except Exception as e:
             logger.exception(f"Error saving transcript for call {call_sid}: {e}")
-        finally:
-            if db:
-                db.close()
     
     def _extract_transcript(self, call_sid: str, llm_context: Any) -> tuple:
         """
