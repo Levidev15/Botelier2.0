@@ -12,6 +12,7 @@ Key Design Principle:
 
 import asyncio
 import os
+import time
 from typing import Optional, Dict, Any, Callable
 from loguru import logger
 
@@ -93,11 +94,14 @@ class LLMResponseCapture(FrameProcessor):
     it works across all LLM providers that may emit generic TextFrame tokens.
     """
 
-    def __init__(self, on_llm_response=None, **kwargs):
+    def __init__(self, on_llm_response=None, on_llm_start=None, call_start_mono: float = 0.0, **kwargs):
         super().__init__(**kwargs)
         self._buffer: str = ""
         self._in_response: bool = False
         self._on_llm_response = on_llm_response
+        self._on_llm_start = on_llm_start
+        self._call_start_mono = call_start_mono
+        self._llm_turn_start_mono: float = 0.0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -105,6 +109,14 @@ class LLMResponseCapture(FrameProcessor):
         if isinstance(frame, LLMFullResponseStartFrame):
             self._buffer = ""
             self._in_response = True
+            self._llm_turn_start_mono = time.monotonic()
+            _elapsed_ms = (self._llm_turn_start_mono - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
+            logger.info(f"⏱️ [T+{_elapsed_ms:.0f}ms] LLM first token received")
+            if self._on_llm_start:
+                try:
+                    self._on_llm_start()
+                except Exception:
+                    logger.exception("LLMResponseCapture: error in on_llm_start callback")
 
         elif isinstance(frame, TextFrame) and self._in_response:
             if frame.text:
@@ -114,6 +126,13 @@ class LLMResponseCapture(FrameProcessor):
             self._in_response = False
             text = self._buffer.strip()
             self._buffer = ""
+            _now_mono = time.monotonic()
+            _elapsed_ms = (_now_mono - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
+            _gen_ms = (_now_mono - self._llm_turn_start_mono) * 1000 if self._llm_turn_start_mono else 0.0
+            logger.info(
+                f"⏱️ [T+{_elapsed_ms:.0f}ms] LLM response complete: "
+                f"{len(text)} chars, generation={_gen_ms:.0f}ms"
+            )
             if text and self._on_llm_response:
                 try:
                     from datetime import datetime as _dt
@@ -138,14 +157,20 @@ class UserTurnCapture(FrameProcessor):
     they were finalized rather than the generic save-time stamp.
     """
 
-    def __init__(self, on_user_turn=None, **kwargs):
+    def __init__(self, on_user_turn=None, call_start_mono: float = 0.0, **kwargs):
         super().__init__(**kwargs)
         self._on_user_turn = on_user_turn
+        self._call_start_mono = call_start_mono
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, TranscriptionFrame) and frame.text and frame.text.strip():
+            _elapsed_ms = (time.monotonic() - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
+            logger.info(
+                f"⏱️ [T+{_elapsed_ms:.0f}ms] STT transcript finalized: "
+                f'"{frame.text.strip()[:60]}"'
+            )
             if self._on_user_turn:
                 try:
                     from datetime import datetime as _dt
@@ -499,7 +524,7 @@ class VoiceEngineFactory:
                         smart_format=config.stt_config.get("smart_format", True),
                         profanity_filter=config.stt_config.get("profanity_filter", True),
                         interim_results=True,
-                        endpointing=config.stt_config.get("endpointing", 300),
+                        endpointing=config.stt_config.get("endpointing", 500),
                     ),
                 )
         elif provider == "openai_whisper":
@@ -574,10 +599,15 @@ class VoiceEngineFactory:
         if provider == "deepgram":
             from pipecat.services.deepgram.tts import DeepgramTTSService
             voice = config.tts_voice_id or "aura-2-helena-en"
+            # Twilio Media Streams require 8 kHz audio; tell Deepgram to encode at
+            # 8000 Hz so no downstream resampling is needed before the Twilio
+            # serialiser μ-law-encodes it for transmission.
+            sample_rate = config.tts_config.get("sample_rate", 8000)
             encoding = config.tts_config.get("encoding", "linear16")
             if hasattr(DeepgramTTSService, "Settings"):
                 return DeepgramTTSService(
                     api_key=api_keys.get("deepgram_api_key"),
+                    sample_rate=sample_rate,
                     encoding=encoding,
                     settings=DeepgramTTSService.Settings(
                         voice=voice,
@@ -586,6 +616,7 @@ class VoiceEngineFactory:
             return DeepgramTTSService(
                 api_key=api_keys.get("deepgram_api_key"),
                 voice=voice,
+                sample_rate=sample_rate,
                 encoding=encoding,
             )
         elif provider == "cartesia":
@@ -619,6 +650,8 @@ class VoiceEngineFactory:
         on_interruption: Optional[Callable[[str], None]] = None,
         on_llm_response: Optional[Callable] = None,
         on_user_turn: Optional[Callable] = None,
+        call_start_mono: float = 0.0,
+        on_llm_start: Optional[Callable] = None,
     ) -> tuple:
         """
         Create complete voice pipeline from agent configuration.
@@ -657,12 +690,22 @@ class VoiceEngineFactory:
 
         # Capture each complete LLM response for transcript recovery.
         # Pure observer — passes all frames through unchanged.
-        llm_response_capture = LLMResponseCapture(on_llm_response=on_llm_response)
+        # call_start_mono threads wall-clock timing into the processor so it can
+        # emit per-stage latency logs (LLM first-token, LLM complete).
+        llm_response_capture = LLMResponseCapture(
+            on_llm_response=on_llm_response,
+            on_llm_start=on_llm_start,
+            call_start_mono=call_start_mono,
+        )
 
         # Capture finalized user utterances for per-turn timestamp recording.
         # Placed after the STT mute filter so only post-muting transcriptions
         # (i.e. those that reach the LLM) are captured.  Pure observer.
-        user_turn_capture = UserTurnCapture(on_user_turn=on_user_turn)
+        # call_start_mono enables per-turn STT latency logging.
+        user_turn_capture = UserTurnCapture(
+            on_user_turn=on_user_turn,
+            call_start_mono=call_start_mono,
+        )
 
         # Track text frames/interruptions before TTS
         interruption_tracker = InterruptionTracker(on_interruption=on_interruption)

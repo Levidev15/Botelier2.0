@@ -8,6 +8,7 @@ Pipecat pipelines with TwilioFrameSerializer for real-time audio streaming.
 import os
 import json
 import asyncio
+import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from fastapi import WebSocket
@@ -173,7 +174,9 @@ class CallHandler:
                     )
 
                 # Convert database model to VoiceAgentConfig
-                config = self._create_agent_config(assistant)
+                # _create_agent_config is async — it loads the knowledge base in
+                # a thread pool to avoid blocking the event loop.
+                config = await self._create_agent_config(assistant)
                 
                 # Fetch tools for function calling (if enabled) before closing session
                 tools = []
@@ -249,20 +252,47 @@ class CallHandler:
             )
             
             # 5. Create WebSocket transport (WebSocket ALREADY ACCEPTED, 'start' ALREADY READ)
+            #
+            # Twilio Media Streams are always 8 kHz μ-law on both directions.
+            # audio_in_sample_rate=8000  — inbound μ-law decoded to 8 kHz PCM for STT
+            # audio_out_sample_rate=8000 — TTS output resampled to 8 kHz before μ-law
+            #                              encoding by TwilioFrameSerializer
+            #
+            # Without these, Pipecat's resampling chain is misconfigured: Deepgram TTS
+            # defaults to 24 kHz linear16, causing 3× playback speed / corrupted audio.
+            #
+            # VAD is wired by calling create_transport_params so that Silero/WebRTC/AIC
+            # VAD configured per-assistant is actually active in the transport.
+            _vad_p = VoiceEngineFactory.create_transport_params(config)
+            _ws_params_kwargs = dict(
+                audio_in_enabled=True,
+                audio_out_enabled=True,
+                audio_in_sample_rate=8000,   # Twilio sends μ-law at 8 kHz
+                audio_out_sample_rate=8000,  # Twilio expects μ-law at 8 kHz
+                add_wav_header=False,        # Twilio uses raw μ-law, not WAV
+                serializer=serializer,
+                vad_analyzer=_vad_p.vad_analyzer,
+            )
+            _turn_analyzer = getattr(_vad_p, "turn_analyzer", None)
+            if _turn_analyzer is not None:
+                _ws_params_kwargs["turn_analyzer"] = _turn_analyzer
             transport = FastAPIWebsocketTransport(
                 websocket=websocket,
-                params=FastAPIWebsocketParams(
-                    audio_in_enabled=True,
-                    audio_out_enabled=True,
-                    add_wav_header=False,  # Twilio uses raw μ-law, not WAV
-                    serializer=serializer,
-                ),
+                params=FastAPIWebsocketParams(**_ws_params_kwargs),
+            )
+            logger.info(
+                f"🔊 Transport sample rates: in=8000Hz, out=8000Hz | "
+                f"VAD={'enabled (' + config.vad_provider + ')' if _vad_p.vad_analyzer else 'disabled'}"
             )
             
             # 6. Create Pipecat pipeline with function calling support
             # Create interruption callback to track interrupted responses
             def on_interruption(content: str):
                 self.mark_response_interrupted(call_sid, content)
+
+            # Monotonic clock reference used for per-stage latency logging in the
+            # pipeline processors (UserTurnCapture, LLMResponseCapture).
+            _call_start_mono = time.monotonic()
 
             # Create LLM response capture callback.
             # Called by LLMResponseCapture each time the LLM finishes generating a
@@ -304,6 +334,7 @@ class CallHandler:
                 on_interruption=on_interruption,
                 on_llm_response=on_llm_response,
                 on_user_turn=on_user_turn,
+                call_start_mono=_call_start_mono,
             )
 
             # Link the TTS completion watcher to the FunctionMapper (if one was
@@ -596,7 +627,7 @@ class CallHandler:
             self.interrupted_responses[call_sid].add(key)
             logger.debug(f"🛑 Marked interrupted: {key[:50]}...")
     
-    def _create_agent_config(self, assistant: Assistant) -> VoiceAgentConfig:
+    async def _create_agent_config(self, assistant: Assistant) -> VoiceAgentConfig:
         """
         Convert database Assistant model to VoiceAgentConfig.
         
@@ -604,6 +635,10 @@ class CallHandler:
         - Immediate access without tool-call latency
         - Prompt caching on subsequent turns
         - Better answer quality (LLM has full context)
+        
+        The knowledge base load is run in a thread (asyncio.to_thread) so that
+        the synchronous SQLAlchemy query does not block the event loop during
+        call setup.
         
         Args:
             assistant: Database assistant model
@@ -621,7 +656,9 @@ class CallHandler:
         kb_content = ""
         if assistant.knowledge_base_id:
             try:
-                kb_content = load_knowledge_for_prompt(str(assistant.knowledge_base_id))
+                kb_content = await asyncio.to_thread(
+                    load_knowledge_for_prompt, str(assistant.knowledge_base_id)
+                )
             except Exception as e:
                 logger.error(f"Failed to load KB for assistant {assistant.id}: {e}")
                 kb_content = ""
