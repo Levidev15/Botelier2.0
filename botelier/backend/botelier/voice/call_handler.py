@@ -17,10 +17,16 @@ from loguru import logger
 
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketTransport, FastAPIWebsocketParams
 from pipecat.serializers.twilio import TwilioFrameSerializer
-from pipecat.frames.frames import TTSSpeakFrame
+from pipecat.frames.frames import (
+    TTSSpeakFrame,
+    TTSStartedFrame,
+    TTSStoppedFrame,
+    AudioRawFrame,
+)
 from pipecat.pipeline.runner import PipelineRunner
 
 from .engine import VoiceEngineFactory
+from .greeting_cache import get_or_generate_greeting_audio
 from .agent import VoiceAgentConfig
 from .function_mapper import FunctionMapper
 from ..models.assistant import Assistant
@@ -536,7 +542,42 @@ class CallHandler:
                     event_source="pipecat",
                     severity="info",
                 )
-            await task.queue_frames([TTSSpeakFrame(text=config.greeting_message)])
+            # Attempt to play cached μ-law greeting to avoid a Deepgram TTS token.
+            # Falls back to TTSSpeakFrame (normal TTS path) on any error.
+            _greeting_played_from_cache = False
+            if config.tts_provider.lower() == "deepgram" and api_keys.get("deepgram_api_key"):
+                try:
+                    _tts_cfg = {
+                        "voice": config.tts_voice_id or "aura-2-helena-en",
+                        "sample_rate": config.tts_config.get("sample_rate", 8000),
+                    }
+                    _audio = await get_or_generate_greeting_audio(
+                        greeting_text=config.greeting_message,
+                        tts_config=_tts_cfg,
+                        api_key=api_keys["deepgram_api_key"],
+                    )
+                    # Split into 160-byte frames (20 ms @ 8 kHz μ-law).
+                    _chunk_size = 160
+                    _frames = [TTSStartedFrame()]
+                    for _i in range(0, len(_audio), _chunk_size):
+                        _frames.append(
+                            AudioRawFrame(
+                                audio=_audio[_i : _i + _chunk_size],
+                                sample_rate=8000,
+                                num_channels=1,
+                            )
+                        )
+                    _frames.append(TTSStoppedFrame())
+                    await task.queue_frames(_frames)
+                    _greeting_played_from_cache = True
+                    logger.info("🎙️ Greeting played from cache (no Deepgram TTS token)")
+                except Exception as _cache_err:
+                    logger.warning(
+                        f"Greeting cache failed, falling back to TTSSpeakFrame: {_cache_err}"
+                    )
+
+            if not _greeting_played_from_cache:
+                await task.queue_frames([TTSSpeakFrame(text=config.greeting_message)])
             
             logger.info(f"▶️ Pipeline starting: STT ({config.stt_provider}) → LLM ({config.llm_provider}) → TTS ({config.tts_provider})")
 

@@ -380,4 +380,83 @@ async def update_acw_config(
     db.commit()
     db.refresh(assistant)
 
+
+@router.get("/{assistant_id}/greeting-cache-status")
+async def get_greeting_cache_status(
+    assistant_id: str,
+    account_id: str = Query(..., description="Account ID for multi-tenant isolation"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Return whether the greeting audio is currently cached for this assistant."""
+    check_account_permission(user, account_id, "assistants.view", db)
+    assistant = db.query(Assistant).filter(
+        Assistant.id == assistant_id,
+        Assistant.account_id == account_id,
+    ).first()
+    if not assistant:
+        raise HTTPException(status_code=404, detail="Assistant not found")
+
+    if (assistant.tts_provider or "").lower() != "deepgram":
+        return {"cached": False, "cached_at": None, "supported": False}
+
+    from botelier.voice.greeting_cache import get_cache_status
+    greeting_text = assistant.first_message or "Hello! How can I help you today?"
+    tts_cfg = {
+        "voice": assistant.tts_voice or "aura-2-helena-en",
+        "sample_rate": (assistant.tts_config or {}).get("sample_rate", 8000),
+    }
+    status = get_cache_status(greeting_text, tts_cfg)
+    return {
+        "cached": status["cached"],
+        "cached_at": status["cached_at"].isoformat() if status["cached_at"] else None,
+        "supported": True,
+    }
+
+
+@router.post("/{assistant_id}/cache-greeting")
+async def cache_assistant_greeting(
+    assistant_id: str,
+    account_id: str = Query(..., description="Account ID for multi-tenant isolation"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Generate and cache the greeting audio for this assistant."""
+    check_account_permission(user, account_id, "assistants.edit", db)
+    assistant = db.query(Assistant).filter(
+        Assistant.id == assistant_id,
+        Assistant.account_id == account_id,
+    ).first()
+    if not assistant:
+        raise HTTPException(status_code=404, detail="Assistant not found")
+
+    if (assistant.tts_provider or "").lower() != "deepgram":
+        raise HTTPException(
+            status_code=400,
+            detail="Greeting cache is only supported for the Deepgram TTS provider",
+        )
+
+    import os
+    api_key = os.environ.get("DEEPGRAM_API_KEY")
+    if not api_key:
+        raise HTTPException(status_code=500, detail="DEEPGRAM_API_KEY not configured")
+
+    from botelier.voice.greeting_cache import get_or_generate_greeting_audio, get_cache_status
+    greeting_text = assistant.first_message or "Hello! How can I help you today?"
+    tts_cfg = {
+        "voice": assistant.tts_voice or "aura-2-helena-en",
+        "sample_rate": (assistant.tts_config or {}).get("sample_rate", 8000),
+    }
+
+    try:
+        await get_or_generate_greeting_audio(greeting_text, tts_cfg, api_key)
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=f"Deepgram TTS error: {exc}")
+
+    status = get_cache_status(greeting_text, tts_cfg)
+    return {
+        "cached": status["cached"],
+        "cached_at": status["cached_at"].isoformat() if status["cached_at"] else None,
+    }
+
     return assistant.acw_config
