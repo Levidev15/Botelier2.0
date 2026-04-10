@@ -1,14 +1,20 @@
 "use client";
 
 import { useFlowStore, InitialNodeData } from "../store";
+import GreetingCacheButton from "@/components/forms/GreetingCacheButton";
 
 interface Props {
   data: InitialNodeData;
   nodeId: string;
+  assistantId?: string;
+  assistantTtsProvider?: string;
 }
 
-export default function InitialNodePanel({ data, nodeId }: Props) {
+export default function InitialNodePanel({ data, nodeId, assistantId, assistantTtsProvider }: Props) {
   const { updateNodeData } = useFlowStore();
+
+  const showCacheButton =
+    !!assistantId && (assistantTtsProvider || "").toLowerCase() === "deepgram";
 
   return (
     <div className="space-y-4">
@@ -32,6 +38,11 @@ export default function InitialNodePanel({ data, nodeId }: Props) {
           className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-green-500 focus:outline-none resize-none"
           placeholder="Hello! How may I assist you today?"
         />
+        {showCacheButton && (
+          <div className="mt-2">
+            <GreetingCacheButton assistantId={assistantId!} hasUnsavedChanges={false} />
+          </div>
+        )}
       </div>
 
       <div className="flex items-center gap-2">

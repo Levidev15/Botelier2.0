@@ -46,6 +46,8 @@ export default function FlowToolEditorPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [isSaving, setIsSaving] = useState(false);
+  const [primaryAssistantId, setPrimaryAssistantId] = useState<string | null>(null);
+  const [primaryTtsProvider, setPrimaryTtsProvider] = useState<string>("");
   
   const isDirty = useFlowStore((state) => state.isDirty);
   const saveFlowFn = useFlowStore((state) => state.saveFlow);
@@ -80,11 +82,14 @@ export default function FlowToolEditorPage() {
     
     const fetchTool = async () => {
       try {
-        const response = await authFetch(`/api/tools/${toolId}?account_id=${accountId}`);
-        if (!response.ok) {
+        const [toolResp, assistantResp] = await Promise.all([
+          authFetch(`/api/tools/${toolId}?account_id=${accountId}`),
+          authFetch(`/api/tools/${toolId}/primary-assistant?account_id=${accountId}`),
+        ]);
+        if (!toolResp.ok) {
           throw new Error("Tool not found");
         }
-        const data = await response.json();
+        const data = await toolResp.json();
         
         if (data.tool_type !== "FLOW") {
           setError("This tool is not a conversation flow");
@@ -92,6 +97,14 @@ export default function FlowToolEditorPage() {
         }
         
         setTool(data);
+
+        if (assistantResp.ok) {
+          const assistantData = await assistantResp.json();
+          if (assistantData) {
+            setPrimaryAssistantId(assistantData.assistant_id);
+            setPrimaryTtsProvider(assistantData.tts_provider || "");
+          }
+        }
       } catch (error) {
         console.error("Failed to fetch tool:", error);
         setError("Failed to load tool");
@@ -164,6 +177,8 @@ export default function FlowToolEditorPage() {
           toolId={toolId} 
           accountId={accountId}
           toolName={tool.name}
+          assistantId={primaryAssistantId ?? undefined}
+          assistantTtsProvider={primaryTtsProvider}
         />
       </main>
     </div>

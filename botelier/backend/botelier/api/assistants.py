@@ -403,9 +403,10 @@ async def get_greeting_cache_status(
 
     from botelier.voice.greeting_cache import get_cache_status
     greeting_text = assistant.first_message or "Hello! How can I help you today?"
+    _voice = assistant.tts_voice or "aura-2-helena-en"
     tts_cfg = {
-        "model": assistant.tts_voice or "aura-2-helena-en",
-        "voice": assistant.tts_voice or "aura-2-helena-en",
+        "model": assistant.tts_model or _voice,
+        "voice": _voice,
     }
     status = get_cache_status(greeting_text, tts_cfg, assistant_id=assistant_id)
     return {
@@ -446,9 +447,10 @@ async def cache_assistant_greeting(
 
     from botelier.voice.greeting_cache import get_or_generate_greeting_audio, get_cache_status
     greeting_text = assistant.first_message or "Hello! How can I help you today?"
+    _voice = assistant.tts_voice or "aura-2-helena-en"
     tts_cfg = {
-        "model": assistant.tts_voice or "aura-2-helena-en",
-        "voice": assistant.tts_voice or "aura-2-helena-en",
+        "model": assistant.tts_model or _voice,
+        "voice": _voice,
     }
 
     try:
