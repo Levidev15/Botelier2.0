@@ -424,11 +424,17 @@ class FunctionMapper:
                 Performs the actual Twilio transfer — runs as an asyncio task after
                 TTS finishes, completely outside Pipecat's function-call timeout.
 
-                Always ends with EndFrame so the pipeline shuts down cleanly.
-                The Twilio SDK's REST call (calls().update()) is synchronous, so
-                the transfer is fully submitted before EndFrame is pushed — this
-                guarantees the call is still active when Twilio receives the TwiML.
+                Pushes EndFrame only after a confirmed successful Twilio update
+                (2xx response from calls().update()).  On 404 / any transfer error
+                EndFrame is NOT pushed so the pipeline remains active — the AI can
+                continue the conversation or Twilio's natural WebSocket close will
+                end the pipeline when the call actually terminates.
+
+                With auto_hang_up=False (TwilioFrameSerializer), EndFrame closes
+                the WebSocket without issuing a Twilio REST hangup, so Twilio
+                continues executing the TwiML it received (warm <Dial> or cold REFER).
                 """
+                _transfer_succeeded = False
                 try:
                     if self.twilio_client and self.call_sid:
                         try:
@@ -509,6 +515,7 @@ class FunctionMapper:
                                     )
                                     self.twilio_client.calls(self.call_sid).update(twiml=transfer_twiml)
                                     logger.info(f"✅ Cold SIP REFER transfer initiated for call {self.call_sid} to {phone_number}")
+                                    _transfer_succeeded = True
 
                                     # Twilio does NOT call /connect-complete after a REST API <Refer> update,
                                     # so ACW must be triggered here directly. Transcript was saved above.
@@ -563,6 +570,7 @@ class FunctionMapper:
                                     )
                                     self.twilio_client.calls(self.call_sid).update(twiml=transfer_twiml)
                                     logger.info(f"✅ Warm transfer initiated for call {self.call_sid} to {phone_number}")
+                                    _transfer_succeeded = True
 
                             finally:
                                 db.close()
@@ -577,24 +585,26 @@ class FunctionMapper:
                             missing.append("call_sid")
                         logger.warning(f"⚠️ Cannot transfer call: missing {', '.join(missing)}")
                 finally:
-                    # End the pipeline after the transfer attempt.
+                    # Gate EndFrame on a confirmed successful Twilio update.
                     #
-                    # With auto_hang_up=False (TwilioFrameSerializer), pushing
-                    # EndFrame here closes the WebSocket cleanly from our side
-                    # WITHOUT sending a Twilio REST hangup call.  Twilio continues
-                    # executing its TwiML (warm <Dial> or cold REFER) independently.
+                    # SUCCESS (2xx): the transfer TwiML was accepted — end our
+                    # pipeline now.  With auto_hang_up=False the WebSocket closes
+                    # without a REST hangup, so Twilio executes <Dial>/<Refer>
+                    # independently.  The synchronous calls().update() call above
+                    # guarantees TwiML is submitted BEFORE this EndFrame fires.
                     #
-                    # For successful warm transfer: Twilio's <Stop><Stream> will
-                    # also close the WebSocket from its side; this EndFrame fires
-                    # first (synchronous REST call ensures TwiML is already
-                    # submitted), so the pipeline exits cleanly before the
-                    # WebSocket close arrives — no double-EndFrame risk.
-                    #
-                    # For 404/4xx (call already terminated by the time we ran):
-                    # EndFrame still ends our pipeline cleanly.  The WebSocket is
-                    # already closed so the EndFrame propagates into a shutting-
-                    # down pipeline, which is harmless.
-                    await params.llm.push_frame(EndFrame())
+                    # FAILURE (404 / exception / missing credentials): do NOT push
+                    # EndFrame — leave the pipeline running so the AI can continue
+                    # the conversation.  If the call is truly gone (404), Twilio
+                    # will close the WebSocket on its side and the transport will
+                    # push EndFrame naturally.
+                    if _transfer_succeeded:
+                        await params.llm.push_frame(EndFrame())
+                    else:
+                        logger.warning(
+                            f"Transfer did not succeed for {self.call_sid} — "
+                            f"EndFrame not pushed; pipeline remains active"
+                        )
 
             # Register _execute_transfer to fire after speech ends (outside Pipecat timeout).
             # Reset first so the watcher waits for the TTSSpeakFrame we're about to push.
