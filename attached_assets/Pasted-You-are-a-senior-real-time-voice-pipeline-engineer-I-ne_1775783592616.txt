@@ -1,0 +1,92 @@
+You are a senior real-time voice pipeline engineer.
+
+I need you to inspect my entire voice pipeline for why audio is cutting in and out. My stack uses:
+
+* Pipecat
+* Twilio
+* OpenAI LLM
+* Deepgram STT
+* Deepgram TTS
+* Replit hosting/runtime
+
+My goal:
+Find the exact causes of audio dropouts, interruptions, lag spikes, missing words, choppy playback, or broken turn-taking.
+
+What I need from you:
+
+1. Read the full codebase and trace the live audio path end to end.
+2. Identify every place where audio can be delayed, dropped, blocked, chunked incorrectly, or interrupted.
+3. Look for issues in:
+
+   * websocket handling
+   * async tasks
+   * buffering
+   * queue backpressure
+   * sample rate mismatches
+   * frame sizing
+   * codec or encoding mismatches
+   * Twilio media stream handling
+   * Pipecat pipeline timing
+   * Deepgram streaming STT/TTS configuration
+   * OpenAI response latency
+   * cancellation/interruption logic
+   * VAD / barge-in logic
+   * network timeouts / reconnects
+   * CPU / memory / event loop blocking
+   * Replit deployment/runtime limitations
+4. Do not just describe possibilities. Inspect the actual code and tell me:
+
+   * which files matter
+   * which functions are likely causing the issue
+   * what the bug or risk is
+   * how confident you are
+   * the exact code changes you recommend
+5. For every suspected cause, provide:
+
+   * symptom
+   * root cause
+   * evidence from code
+   * exact fix
+   * how to test the fix
+6. Add logging/instrumentation anywhere needed so we can measure:
+
+   * time from Twilio inbound audio -> STT
+   * STT final transcript delay
+   * time from transcript -> LLM response start
+   * time from LLM -> TTS start
+   * time from TTS -> Twilio outbound audio
+   * queue sizes
+   * dropped frames
+   * websocket disconnects
+   * retries / reconnections
+7. Create a debugging report in plain English for a non-developer.
+
+Important:
+
+* Be code-oriented and specific.
+* Show exact file names, function names, and code edits.
+* If something is missing, say exactly what logs or files you need.
+* Prioritize the top 3 most likely causes first.
+* Assume the problem may be caused by more than one issue at once.
+
+Also specifically check for these common real-time audio problems:
+
+* mismatched audio formats between Twilio, Pipecat, Deepgram, and TTS output
+* audio chunks sent too slowly or in irregular burst patterns
+* blocking code in async handlers
+* multiple consumers fighting over the same stream
+* turn-taking logic interrupting TTS too aggressively
+* websocket packets arriving but not being forwarded immediately
+* buffering thresholds too large
+* Replit sleeping, throttling, or unstable websocket behavior
+* retry logic causing stream resets
+* deepgram/openai latency causing gaps mistaken for audio cutouts
+
+Output format:
+A. End-to-end architecture summary
+B. Top 3 likely root causes
+C. Full code findings by file
+D. Exact patch recommendations
+E. Logging to add
+F. Step-by-step test plan
+G. Plain-English summary for me
