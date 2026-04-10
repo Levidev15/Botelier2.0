@@ -142,11 +142,42 @@ class CallHandler:
                 # callback, but that webhook is not reliably delivered in all
                 # environments.  Setting it here (when audio streaming begins)
                 # is the universal source of truth for when the call was answered.
+                #
+                # Production retry: Neon cloud DB has TCP latency that can cause
+                # the call log inserted by the /incoming webhook to not yet be
+                # visible to a brand-new SQLAlchemy session snapshot.  Retry up
+                # to 3 times with a fresh session each attempt (200 ms gap) so
+                # the event queue is always populated and recording starts.
                 from ..models.call_log import CallLog
                 call_log_record = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
+                if call_log_record is None:
+                    from ..database import SessionLocal as _SessionLocal
+                    for _attempt in range(3):
+                        await asyncio.sleep(0.2)
+                        _retry_db = _SessionLocal()
+                        try:
+                            call_log_record = _retry_db.query(CallLog).filter(
+                                CallLog.call_sid == call_sid
+                            ).first()
+                        finally:
+                            _retry_db.close()
+                        if call_log_record is not None:
+                            logger.info(
+                                f"call_log found on retry attempt {_attempt + 1} for {call_sid}"
+                            )
+                            break
+                    if call_log_record is None:
+                        logger.warning(
+                            f"call_log not found after 3 retries for {call_sid} — "
+                            f"recording and event queue will be skipped"
+                        )
                 if call_log_record:
                     call_log_id = call_log_record.id
                     call_started_at = call_log_record.started_at
+                    logger.info(
+                        f"call_log_id={call_log_id} resolved for {call_sid} — "
+                        f"event queue and recording will be active"
+                    )
                     if not call_log_record.answered_at:
                         call_log_record.answered_at = datetime.utcnow()
                         db.commit()
@@ -247,13 +278,28 @@ class CallHandler:
             )
             
             # 4. Create TwilioFrameSerializer (Pipecat pattern)
+            #
+            # auto_hang_up=False: disables the automatic REST hangup that
+            # TwilioFrameSerializer sends when EndFrame flows through it.
+            #
+            # Rationale: with auto_hang_up=True, warm transfers fail with HTTP
+            # 404 because TwilioFrameSerializer's _hang_up_call() fires and
+            # terminates the Twilio call before (or immediately after) our
+            # _execute_transfer REST call can send the <Dial> TwiML.  With
+            # auto_hang_up=False the pipeline ends cleanly on our side, the
+            # WebSocket connection closes, and Twilio handles call teardown via
+            # its own TwiML execution path:
+            #   - Warm transfer: Twilio bridges via <Dial> after <Stop><Stream>
+            #   - Cold transfer: Twilio SIP REFERs the call away
+            #   - Normal hangup: caller hangs up → WebSocket close → Twilio
+            #     ends the call naturally (no separate hangup REST needed)
             serializer = TwilioFrameSerializer(
                 stream_sid=stream_sid,
                 call_sid=call_sid,
                 account_sid=os.environ.get("TWILIO_ACCOUNT_SID"),
                 auth_token=os.environ.get("TWILIO_AUTH_TOKEN"),
                 params=TwilioFrameSerializer.InputParams(
-                    auto_hang_up=True,  # Automatically hang up when pipeline ends
+                    auto_hang_up=False,
                 )
             )
             

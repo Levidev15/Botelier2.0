@@ -10,8 +10,10 @@ which leverages prompt caching and eliminates tool-call latency.
 """
 
 import os
+import time
+import threading
 from datetime import date
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Tuple
 from loguru import logger
 from openai import AsyncOpenAI
 
@@ -21,6 +23,33 @@ from pipecat.services.llm_service import FunctionCallParams
 RAG_MODEL = "gpt-4o-mini"
 RAG_MAX_TOKENS = 100
 MAX_KNOWLEDGE_CHARS = 50000  # ~12.5k tokens - safe limit for context window
+
+# In-process TTL cache for knowledge base content.
+# Keyed by knowledge_base_id → (content_str, loaded_at_monotonic).
+# 5-minute TTL: stale enough to persist across a long call sequence,
+# fresh enough that KB edits become visible within 5 minutes.
+_KB_CACHE_TTL_SECONDS = 300  # 5 minutes
+_kb_cache: Dict[str, Tuple[str, float]] = {}
+_kb_cache_lock = threading.Lock()
+
+
+def _kb_cache_get(knowledge_base_id: str) -> Optional[str]:
+    """Return cached KB content if still within TTL, otherwise None (cache miss)."""
+    with _kb_cache_lock:
+        entry = _kb_cache.get(knowledge_base_id)
+        if entry is None:
+            return None
+        content, loaded_at = entry
+        if time.monotonic() - loaded_at <= _KB_CACHE_TTL_SECONDS:
+            return content
+        del _kb_cache[knowledge_base_id]
+        return None
+
+
+def _kb_cache_set(knowledge_base_id: str, content: str) -> None:
+    """Store KB content in the cache with the current timestamp."""
+    with _kb_cache_lock:
+        _kb_cache[knowledge_base_id] = (content, time.monotonic())
 
 
 def load_knowledge_for_prompt(knowledge_base_id: str) -> str:
@@ -33,6 +62,10 @@ def load_knowledge_for_prompt(knowledge_base_id: str) -> str:
     - No tool-call latency (LLM has context immediately)
     - Consistent behavior (LLM always has KB available)
     
+    Results are cached in-process for 5 minutes (TTL).  Subsequent calls for
+    the same knowledge_base_id within the TTL window return immediately without
+    any DB round-trip, eliminating the 5–7 s greeting latency on warm calls.
+    
     Args:
         knowledge_base_id: Knowledge base UUID
         
@@ -43,6 +76,14 @@ def load_knowledge_for_prompt(knowledge_base_id: str) -> str:
     if not knowledge_base_id or not knowledge_base_id.strip():
         logger.warning("load_knowledge_for_prompt called without knowledge_base_id - returning empty KB")
         return ""
+
+    cached = _kb_cache_get(knowledge_base_id)
+    if cached is not None:
+        logger.info(
+            f"KB cache HIT for knowledge_base {knowledge_base_id} "
+            f"({len(cached)} chars) — skipping DB query"
+        )
+        return cached
     
     from botelier.database import SessionLocal
     from botelier.models.knowledge_entry import KnowledgeEntry
@@ -59,6 +100,7 @@ def load_knowledge_for_prompt(knowledge_base_id: str) -> str:
         
         if not entries:
             logger.info(f"No KB entries found for knowledge_base {knowledge_base_id}")
+            _kb_cache_set(knowledge_base_id, "")
             return ""
         
         qa_blocks = []
@@ -73,7 +115,11 @@ def load_knowledge_for_prompt(knowledge_base_id: str) -> str:
             logger.warning(f"KB too large ({len(content)} chars), truncating")
             content = content[:MAX_KNOWLEDGE_CHARS] + "\n\n[... truncated]"
         
-        logger.info(f"Loaded {len(entries)} KB entries ({len(content)} chars) for knowledge_base {knowledge_base_id}")
+        logger.info(
+            f"KB cache MISS — loaded {len(entries)} KB entries "
+            f"({len(content)} chars) from DB for knowledge_base {knowledge_base_id}"
+        )
+        _kb_cache_set(knowledge_base_id, content)
         return content
         
     finally:
