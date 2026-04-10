@@ -440,13 +440,13 @@ class FunctionMapper:
                                 call_logger = CallLogger(db)
 
                                 # Stop any active call recording before transferring.
-                                # Uses asyncio.to_thread so the blocking Twilio SDK call
+                                # Uses _asyncio.to_thread so the blocking Twilio SDK call
                                 # never stalls the event loop. Failures are warned only.
                                 _rec_sid = (self.call_handler.call_recording_sids.get(self.call_sid)
                                             if self.call_handler else None)
                                 if _rec_sid:
                                     try:
-                                        await asyncio.to_thread(
+                                        await _asyncio.to_thread(
                                             lambda: self.twilio_client.calls(self.call_sid)
                                                         .recordings(_rec_sid)
                                                         .update(status="stopped")
@@ -1053,13 +1053,13 @@ class FunctionMapper:
                                         logger.error(f"Error saving transcript before flow transfer: {_e}")
 
                                 # Stop any active call recording before transferring.
-                                # Uses asyncio.to_thread so the blocking Twilio SDK call
-                                # never stalls the event loop. Failures are warned only.
+                                # Uses _asyncio_flow.to_thread so the blocking Twilio SDK
+                                # call never stalls the event loop. Failures are warned only.
                                 _flow_rec_sid = (self.call_handler.call_recording_sids.get(self.call_sid)
                                                  if self.call_handler else None)
                                 if _flow_rec_sid:
                                     try:
-                                        await asyncio.to_thread(
+                                        await _asyncio_flow.to_thread(
                                             lambda: self.twilio_client.calls(self.call_sid)
                                                         .recordings(_flow_rec_sid)
                                                         .update(status="stopped")
