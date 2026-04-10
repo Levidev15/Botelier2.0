@@ -2,14 +2,23 @@
 Greeting audio cache for Botelier voice assistants.
 
 Generates TTS audio via the Deepgram REST API and persists it locally as raw
-μ-law bytes (8 kHz, mono) so subsequent calls replay the cached file directly,
-saving per-call Deepgram TTS tokens.
+PCM bytes (linear16, 8 kHz, mono) so subsequent calls replay the cached file
+directly, saving per-call Deepgram TTS tokens.
 
-Cache key  : SHA-256(greeting_text | tts_model | tts_voice | "8000" | "mulaw")
-Cache dir  : <project_root>/uploads/greeting_cache/
-File ext   : .ul  (raw μ-law, 8 kHz, mono, no container header)
-Sidecar    : assistant_<id>.json — records the most-recently-cached key so the
-             status endpoint can detect outdated (stale) cached audio.
+Audio format : linear16 PCM, 8 kHz, mono (16 bits / sample, 2 bytes / sample)
+Cache key    : SHA-256(greeting_text | tts_model | tts_voice | "8000" | "linear16")
+Cache dir    : <project_root>/uploads/greeting_cache/
+File ext     : .pcm  (raw int16-LE, 8 kHz, mono, no container header)
+Sidecar      : assistant_<id>.json — records the most-recently-cached key so the
+               status endpoint can detect outdated (stale) cached audio.
+
+Rationale for PCM instead of μ-law
+-----------------------------------
+Pipecat's TwilioFrameSerializer.serialize() calls pcm_to_ulaw() internally when
+it processes OutputAudioRawFrame / TTSAudioRawFrame.  If we stored μ-law and
+fed it as an AudioRawFrame, the serializer would double-encode and produce
+corrupted output.  Storing PCM lets the normal serialization path work without
+modification.
 """
 
 import hashlib
@@ -41,18 +50,18 @@ def _cache_key(greeting_text: str, tts_config: dict) -> str:
     """
     Deterministic cache key from greeting text and TTS configuration.
 
-    Includes ``model``, ``voice``, a fixed ``"8000"`` sample-rate, and a
-    fixed ``"mulaw"`` encoding.  The cache always stores 8 kHz μ-law audio
-    regardless of any other encoding the assistant may use at runtime.
+    Incorporates ``model``, ``voice``, fixed ``"8000"`` sample-rate, and fixed
+    ``"linear16"`` encoding.  The cache always stores 8 kHz linear16 PCM
+    regardless of the runtime encoding the assistant may use.
     """
     model = tts_config.get("model") or tts_config.get("voice") or "aura-2-helena-en"
     voice = tts_config.get("voice") or "aura-2-helena-en"
-    raw = f"{greeting_text}|{model}|{voice}|8000|mulaw"
+    raw = f"{greeting_text}|{model}|{voice}|8000|linear16"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
 def _cache_path(key: str) -> str:
-    return os.path.join(_get_cache_dir(), f"{key}.ul")
+    return os.path.join(_get_cache_dir(), f"{key}.pcm")
 
 
 def _sidecar_path(assistant_id: str) -> str:
@@ -132,41 +141,44 @@ async def get_or_generate_greeting_audio(
     assistant_id: Optional[str] = None,
 ) -> bytes:
     """
-    Return raw μ-law audio bytes (8 kHz, mono) for *greeting_text*.
+    Return raw linear16 PCM audio bytes (8 kHz, mono) for *greeting_text*.
 
-    Cache hit  → reads and returns the cached .ul file (no API call).
-    Cache miss → calls the Deepgram TTS REST API at 8 kHz μ-law, writes the
-                 result atomically, updates the per-assistant sidecar, and
-                 returns the bytes.
+    Cache hit  → reads and returns the cached .pcm file (no API call).
+    Cache miss → calls the Deepgram TTS REST API (linear16, 8 kHz), writes the
+                 result atomically, updates the per-assistant sidecar, returns bytes.
+
+    The returned bytes are suitable for direct use in ``TTSAudioRawFrame``
+    (sample_rate=8000, num_channels=1).  The Pipecat TwilioFrameSerializer
+    will then encode them to μ-law for transmission to Twilio.
 
     Args:
-        greeting_text: The greeting text to synthesise.
-        tts_config:    Dict with optional keys ``model``, ``voice``.
-                       ``voice`` / ``model`` must be a Deepgram model name
-                       (e.g. ``"aura-2-helena-en"``).
+        greeting_text: Text to synthesise.
+        tts_config:    Dict with optional keys ``model`` and ``voice``.
+                       Both must be a Deepgram model name (e.g. ``"aura-2-helena-en"``).
         api_key:       Deepgram API key (``DEEPGRAM_API_KEY``).
-        assistant_id:  Optional assistant UUID; used to write the sidecar file
-                       for outdated-cache detection.
+        assistant_id:  Optional assistant UUID; used to write the sidecar for
+                       outdated-cache detection.
     """
     key = _cache_key(greeting_text, tts_config)
     path = _cache_path(key)
 
     if os.path.exists(path):
         size = os.path.getsize(path)
-        logger.info(f"🎙️ Cache HIT — greeting audio {size} bytes (key={key[:8]}…)")
+        logger.info(f"🎙️ Cache HIT — greeting PCM {size} bytes (key={key[:8]}…)")
         with open(path, "rb") as fh:
             return fh.read()
 
     model = tts_config.get("model") or tts_config.get("voice") or "aura-2-helena-en"
     logger.info(
         f"🎙️ Cache MISS — calling Deepgram TTS REST "
-        f"(model={model}, sr=8000/mulaw, key={key[:8]}…)"
+        f"(model={model}, sr=8000/linear16, key={key[:8]}…)"
     )
 
-    # Always generate at 8 kHz μ-law (Twilio / TwilioFrameSerializer requirement).
+    # Always generate at 8 kHz linear16 PCM, no container, mono.
+    # The TwilioFrameSerializer handles PCM→μ-law encoding during playback.
     url = (
         "https://api.deepgram.com/v1/speak"
-        f"?model={model}&encoding=mulaw&sample_rate=8000&container=none"
+        f"?model={model}&encoding=linear16&sample_rate=8000&container=none"
     )
     headers = {
         "Authorization": f"Token {api_key}",
@@ -176,18 +188,18 @@ async def get_or_generate_greeting_audio(
     async with httpx.AsyncClient(timeout=30.0) as client:
         resp = await client.post(url, headers=headers, json={"text": greeting_text})
         resp.raise_for_status()
-        audio_bytes = resp.content
+        pcm_bytes = resp.content
 
     # Atomic write: temp file → rename so readers never see a partial file.
     tmp = path + ".tmp"
     with open(tmp, "wb") as fh:
-        fh.write(audio_bytes)
+        fh.write(pcm_bytes)
     os.replace(tmp, path)
 
     if assistant_id:
         _write_sidecar(assistant_id, key)
 
     logger.info(
-        f"🎙️ Greeting cached — {len(audio_bytes)} bytes (key={key[:8]}…)"
+        f"🎙️ Greeting PCM cached — {len(pcm_bytes)} bytes (key={key[:8]}…)"
     )
-    return audio_bytes
+    return pcm_bytes
