@@ -379,6 +379,7 @@ async def update_acw_config(
     flag_modified(assistant, "acw_config")
     db.commit()
     db.refresh(assistant)
+    return assistant.acw_config
 
 
 @router.get("/{assistant_id}/greeting-cache-status")
