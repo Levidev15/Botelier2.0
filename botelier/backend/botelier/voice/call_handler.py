@@ -491,44 +491,55 @@ class CallHandler:
                 # The existence check below mirrors the _event_exists() helper in
                 # calls.py — it is intentionally inlined here to avoid importing a
                 # private helper from an API module into the voice layer.
+                #
+                # All scalar values are captured before entering the thread so that
+                # no ORM objects or mutable async state cross the thread boundary.
                 from ..models.call_event import CallEvent as _CallEvent
                 import uuid as _uuid
-                _db_sync = SessionLocal()
-                try:
-                    _already = (
-                        _db_sync.query(_CallEvent)
-                        .filter(
-                            _CallEvent.call_log_id == call_log_id,
-                            _CallEvent.event_type == "call_answered",
-                        )
-                        .first()
-                    )
-                    if not _already:
-                        _now = datetime.utcnow()
-                        _started = call_started_at or self.call_start_times.get(call_sid)
-                        _offset_ms = (
-                            int((_now - _started).total_seconds() * 1000) if _started else None
-                        )
-                        _db_sync.add(
-                            _CallEvent(
-                                id=_uuid.uuid4(),
-                                call_log_id=call_log_id,
-                                event_type="call_answered",
-                                event_source="pipecat",
-                                severity="info",
-                                occurred_at=_now,
-                                offset_ms=_offset_ms,
-                                details={"stream_sid": stream_sid},
+                _t_call_log_id = call_log_id
+                _t_stream_sid = stream_sid
+                _t_started = call_started_at or self.call_start_times.get(call_sid)
+
+                def _write_call_answered() -> None:
+                    _db = SessionLocal()
+                    try:
+                        _already = (
+                            _db.query(_CallEvent)
+                            .filter(
+                                _CallEvent.call_log_id == _t_call_log_id,
+                                _CallEvent.event_type == "call_answered",
                             )
+                            .first()
                         )
-                        _db_sync.commit()
-                        logger.info("📞 call_answered event written synchronously (pipecat)")
-                    else:
-                        logger.debug("📞 call_answered already exists — skipping duplicate")
-                except Exception as _e:
-                    logger.error(f"❌ Failed to write call_answered event: {_e}")
-                finally:
-                    _db_sync.close()
+                        if not _already:
+                            _now = datetime.utcnow()
+                            _offset_ms = (
+                                int((_now - _t_started).total_seconds() * 1000)
+                                if _t_started
+                                else None
+                            )
+                            _db.add(
+                                _CallEvent(
+                                    id=_uuid.uuid4(),
+                                    call_log_id=_t_call_log_id,
+                                    event_type="call_answered",
+                                    event_source="pipecat",
+                                    severity="info",
+                                    occurred_at=_now,
+                                    offset_ms=_offset_ms,
+                                    details={"stream_sid": _t_stream_sid},
+                                )
+                            )
+                            _db.commit()
+                            logger.info("📞 call_answered event written synchronously (pipecat)")
+                        else:
+                            logger.debug("📞 call_answered already exists — skipping duplicate")
+                    except Exception as _e:
+                        logger.error(f"❌ Failed to write call_answered event: {_e}")
+                    finally:
+                        _db.close()
+
+                await asyncio.to_thread(_write_call_answered)
 
                 # Fire in-call recording as a non-blocking background task.
                 # This replaces the phone-number-level VoiceRecord approach; no
