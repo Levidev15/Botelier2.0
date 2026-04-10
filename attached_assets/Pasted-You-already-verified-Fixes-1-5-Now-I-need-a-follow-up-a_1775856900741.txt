@@ -1,0 +1,106 @@
+You already verified Fixes 1–5. Now I need a follow-up audit and remediation pass focused ONLY on the remaining blocking paths you found.
+
+Known remaining issues from the last audit:
+
+1. function_mapper.py: _execute_flow_transfer() still contains the old pre-Fix-5 pattern
+2. call_handler.py: _save_call_transcript() still performs synchronous DB work inside async code
+3. greeting_cache.py: get_or_generate_greeting_audio() still does synchronous file I/O in async code
+4. call_handler.py: initial call setup still does multiple serial blocking DB queries on the event loop
+5. call_event_queue.py: uses asyncio.get_event_loop() with run_in_executor instead of the cleaner to_thread pattern
+
+Your task:
+Inspect these exact areas in the CURRENT repo and do a corrective engineering review.
+
+What I want:
+
+* Verify each issue is real in the current code
+* Show the exact code path
+* Show whether it runs during a live call, call setup, transfer, or post-call
+* Rank each issue by risk to:
+
+  * audio cutouts
+  * turn timing
+  * transfer reliability
+  * startup delay
+  * concurrent-call performance
+* Propose the exact code changes needed
+* Be strict about thread/session/ORM safety
+
+Highest priority:
+A. _execute_flow_transfer()
+Check whether it still:
+
+* opens SessionLocal() before an await
+* keeps the session open across await self.call_handler._save_call_transcript(...)
+* does synchronous call_logger.record_transfer(...)
+* does synchronous self.twilio_client.calls(...).update(...)
+* does synchronous get_call_log(...)
+* does synchronous db.query(_Assistant).first(...)
+  If yes, rewrite it using the same safe pattern as Fix 5:
+* save transcript before session opens, or outside the DB block
+* move DB + Twilio REST work into one sync helper
+* call it with await asyncio.to_thread(...)
+* create and close the DB session inside that helper
+* do not let ORM objects cross thread boundaries
+
+B. _save_call_transcript()
+Check whether it still:
+
+* opens SessionLocal() inside an async function
+* calls complete_call(...) synchronously on the event loop
+* runs during live transfer paths
+  If yes, rewrite it safely using await asyncio.to_thread(...)
+  Keep behavior the same:
+* extract transcript on the event loop if it is pure Python
+* move DB open / complete_call / close into one sync helper
+* preserve error handling and ordering
+
+C. greeting_cache.py
+Check whether cache hit reads and cache miss writes are synchronous disk I/O inside async code.
+If yes, offload them with asyncio.to_thread().
+Explain whether this affects:
+
+* greeting startup latency
+* live audio path
+* only cold cache vs warm cache
+
+D. initial call setup queries
+Review the DB queries at call start and tell me:
+
+* which ones are necessary before the pipeline starts
+* which can be combined
+* which can be deferred
+* whether wrapping them in to_thread is enough for now
+  Give me the least risky short-term fix first.
+
+E. call_event_queue.py
+Replace deprecated asyncio.get_event_loop()/run_in_executor usage with asyncio.to_thread if appropriate.
+Confirm behavior is unchanged.
+
+Important implementation rules:
+
+1. Any SQLAlchemy session must be created and closed in the same thread
+2. No ORM object may cross a thread boundary
+3. No DB session may stay open across an await
+4. Any blocking Twilio REST call must be off the event loop
+5. Keep ordering and exception behavior the same unless clearly justified
+6. If a helper returns data from a thread, return only plain Python scalars or dicts
+
+For each issue, output:
+
+* file
+* function
+* why it is dangerous
+* whether it affects live audio, live transfer, or startup only
+* exact before/after fix
+* regression risks
+* confidence level
+
+At the end, provide:
+
+1. A “must fix now” list
+2. A “safe to defer” list
+3. A final verdict on whether Neon latency can still interfere with live timing after these remaining fixes are applied
+
+Do not give general advice.
+Inspect the actual current code and propose exact code-level changes.

@@ -21,6 +21,7 @@ corrupted output.  Storing PCM lets the normal serialization path work without
 modification.
 """
 
+import asyncio
 import hashlib
 import json
 import os
@@ -165,8 +166,13 @@ async def get_or_generate_greeting_audio(
     if os.path.exists(path):
         size = os.path.getsize(path)
         logger.info(f"🎙️ Cache HIT — greeting PCM {size} bytes (key={key[:8]}…)")
-        with open(path, "rb") as fh:
-            return fh.read()
+        _hit_path = path  # capture before entering thread
+
+        def _read_cache():
+            with open(_hit_path, "rb") as fh:
+                return fh.read()
+
+        return await asyncio.to_thread(_read_cache)
 
     model = tts_config.get("voice") or tts_config.get("model") or "aura-2-helena-en"
     logger.info(
@@ -190,14 +196,22 @@ async def get_or_generate_greeting_audio(
         resp.raise_for_status()
         pcm_bytes = resp.content
 
-    # Atomic write: temp file → rename so readers never see a partial file.
-    tmp = path + ".tmp"
-    with open(tmp, "wb") as fh:
-        fh.write(pcm_bytes)
-    os.replace(tmp, path)
+    # Atomic write offloaded to thread — open/write/os.replace are blocking syscalls.
+    # _write_sidecar is also a file write; kept inside the same thread call.
+    _write_path = path
+    _write_pcm  = pcm_bytes
+    _write_key  = key
+    _write_aid  = assistant_id
 
-    if assistant_id:
-        _write_sidecar(assistant_id, key)
+    def _write_cache():
+        tmp = _write_path + ".tmp"
+        with open(tmp, "wb") as fh:
+            fh.write(_write_pcm)
+        os.replace(tmp, _write_path)
+        if _write_aid:
+            _write_sidecar(_write_aid, _write_key)
+
+    await asyncio.to_thread(_write_cache)
 
     logger.info(
         f"🎙️ Greeting PCM cached — {len(pcm_bytes)} bytes (key={key[:8]}…)"

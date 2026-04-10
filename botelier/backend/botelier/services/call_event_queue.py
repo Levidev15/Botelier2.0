@@ -173,9 +173,8 @@ class CallEventQueue:
         Runs the synchronous DB call in the default executor to avoid
         blocking the event loop during I/O.
         """
-        loop = asyncio.get_event_loop()
         try:
-            await loop.run_in_executor(None, self._sync_insert_batch, events)
+            await asyncio.to_thread(self._sync_insert_batch, events)
         except Exception as e:
             logger.error(
                 f"CallEventQueue batch insert failed for call_log {self.call_log_id}: {e}"
