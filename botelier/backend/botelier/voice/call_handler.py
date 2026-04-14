@@ -125,6 +125,7 @@ class CallHandler:
         self.call_mcp_clients: Dict[str, PipecatMCPClient] = {}  # call_sid -> Pipecat MCPClient for MCP tool execution
         self.call_event_queues: Dict[str, CallEventQueue] = {}  # call_sid -> CallEventQueue
         self.call_recording_sids: Dict[str, str] = {}  # call_sid -> Twilio recording SID (set when recording starts)
+        self.call_tasks: Dict[str, Any] = {}  # call_sid -> PipelineTask (cancelled by connect-complete when stream ends)
     
     async def handle_call(
         self,
@@ -704,6 +705,7 @@ class CallHandler:
             # 9. Run pipeline (blocks until call ends)
             # Pipecat handles all remaining WebSocket messages (media, dtmf, stop)
             runner = PipelineRunner()
+            self.call_tasks[call_sid] = task
             await runner.run(task)
             
             logger.info(f"✅ Call {call_sid} ended")
@@ -768,7 +770,31 @@ class CallHandler:
                 logger.debug(f"Cleaned up MCP client reference for call {call_sid}")
             if call_sid in self.call_recording_sids:
                 del self.call_recording_sids[call_sid]
-    
+            if call_sid in self.call_tasks:
+                del self.call_tasks[call_sid]
+
+    async def cancel_call_pipeline(self, call_sid: str) -> None:
+        """
+        Cancel the running PipelineTask for a call.
+
+        Called from connect_complete when Twilio signals the media stream has
+        ended.  Sends a CancelFrame through the pipeline, which triggers a
+        clean ordered shutdown of all processors (STT, LLM, TTS) and unblocks
+        runner.run(task) so the handle_call finally block runs immediately.
+
+        Safe to call multiple times or when no pipeline is running — if
+        call_sid is not in call_tasks the method returns silently.
+        """
+        task = self.call_tasks.get(call_sid)
+        if task is None:
+            logger.debug(f"cancel_call_pipeline: no active pipeline for {call_sid} (already ended or never started)")
+            return
+        logger.info(f"Cancelling pipeline for call {call_sid} via connect-complete signal")
+        try:
+            await task.cancel()
+        except Exception as e:
+            logger.warning(f"cancel_call_pipeline: error cancelling pipeline for {call_sid}: {e}")
+
     def mark_response_interrupted(self, call_sid: str, content: str):
         """
         Mark an assistant response as interrupted.
