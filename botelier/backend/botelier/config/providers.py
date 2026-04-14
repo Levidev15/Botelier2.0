@@ -110,7 +110,6 @@ STT_PROVIDERS: Dict[STTProvider, STTConfig] = {
         available_models=[
             "nova-3-general",
             "nova-3-meeting",
-            "nova-3-phonecall",
             "nova-3-voicemail",
             "nova-3-finance",
             "nova-3-medical",
@@ -118,7 +117,6 @@ STT_PROVIDERS: Dict[STTProvider, STTConfig] = {
             "nova-2-meeting",
             "nova-2-phonecall",
             "nova-2-voicemail",
-            "flux-general-en",  # Advanced turn detection for conversational AI
         ],
         supports_vad=True,
         supports_diarization=True,
