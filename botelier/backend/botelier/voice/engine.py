@@ -942,6 +942,7 @@ class VoiceEngineFactory:
                 if config.vad_provider == "silero":
                     from pipecat.audio.vad.silero import SileroVADAnalyzer
                     from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+                    from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
                     
                     vad_params = VADParams(
                         confidence=vad_config.get("confidence", 0.5),
@@ -950,7 +951,11 @@ class VoiceEngineFactory:
                         min_volume=vad_config.get("min_volume", 0.0)
                     )
                     params.vad_analyzer = SileroVADAnalyzer(params=vad_params)
-                    params.turn_analyzer = LocalSmartTurnAnalyzerV3()
+                    params.turn_analyzer = LocalSmartTurnAnalyzerV3(
+                        params=SmartTurnParams(
+                            stop_secs=vad_config.get("smart_turn_stop_secs", 0.8)
+                        )
+                    )
                     logger.info(f"Silero VAD enabled with params: {vad_params}")
                     
                 elif config.vad_provider == "webrtc":
