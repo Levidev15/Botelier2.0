@@ -589,10 +589,9 @@ class TtsPipelineLatencyTracker(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
-_DEEPGRAM_VALID_MODELS = frozenset(
-    STTConfig.available_models
-    for STTConfig in []  # populated below after import
-) or frozenset([
+# Fallback allowlist used only if providers.py cannot be imported at runtime.
+# Keep in sync with STT_PROVIDERS[STTProvider.DEEPGRAM].available_models.
+_DEEPGRAM_VALID_MODELS_FALLBACK: frozenset = frozenset([
     "nova-3-general",
     "nova-3-meeting",
     "nova-3-voicemail",
@@ -606,45 +605,43 @@ _DEEPGRAM_VALID_MODELS = frozenset(
 
 
 def _get_deepgram_valid_models() -> frozenset:
-    """Return the canonical Deepgram model allowlist from providers.py."""
-    try:
-        from ..config.providers import STT_PROVIDERS, STTProvider
-        cfg = STT_PROVIDERS.get(STTProvider.DEEPGRAM)
-        if cfg and cfg.available_models:
-            return frozenset(cfg.available_models)
-    except Exception:
-        pass
-    return _DEEPGRAM_VALID_MODELS
+    """Return the canonical Deepgram model allowlist from providers.py.
+
+    Reads the live ``available_models`` list so changes to providers.py are
+    reflected without modifying engine.py.  Falls back to the static list
+    above only if the import fails, which should never happen in production.
+    """
+    from ..config.providers import STT_PROVIDERS, STTProvider
+    cfg = STT_PROVIDERS.get(STTProvider.DEEPGRAM)
+    if cfg and cfg.available_models:
+        return frozenset(cfg.available_models)
+    return _DEEPGRAM_VALID_MODELS_FALLBACK
 
 
 class BotelierDeepgramSTTService:
     """
-    Thin mixin that must be combined with DeepgramSTTService via multiple
-    inheritance.  Overrides ``_connection_handler`` to break the infinite
-    retry loop when Deepgram returns a permanent HTTP error (4xx).
+    Mixin for DeepgramSTTService that aborts the retry loop on permanent
+    HTTP errors (400, 401, 403) instead of retrying forever.
 
-    Used as: class _Impl(BotelierDeepgramSTTService, DeepgramSTTService): pass
+    Pipecat's ``_connection_handler`` catches every non-CancelledError
+    exception and loops unconditionally.  When Deepgram rejects a model
+    name with HTTP 400, this creates an infinite zombie loop that only a
+    server restart can clear.  This mixin overrides ``_connection_handler``
+    to detect 4xx status codes in the exception message and break the loop,
+    logging an actionable ERROR instead.
+
+    Use via multiple inheritance so MRO resolves this override first:
+        class _Impl(BotelierDeepgramSTTService, DeepgramSTTService): pass
     """
 
     async def _connection_handler(self):
-        """
-        Wrapper around the parent _connection_handler that aborts on permanent
-        4xx HTTP errors instead of retrying forever.
+        from deepgram.core.events import EventType
 
-        The Deepgram WebSocket handshake failure propagates as a generic
-        Exception whose str() contains the HTTP status code.  We detect 4xx
-        codes by scanning the exception message.  On 400/401/403 we log an
-        ERROR and exit the retry loop — Pipecat's CancelFrame teardown then
-        proceeds normally.
-        """
         while True:
-            from pipecat.utils.utils import create_task
-            import asyncio
             connect_kwargs = self._build_connect_kwargs()
             try:
                 async with self._client.listen.v1.connect(**connect_kwargs) as connection:
                     self._connection = connection
-                    from deepgram.core.events import EventType
                     connection.on(EventType.MESSAGE, self._on_message)
                     connection.on(EventType.ERROR, self._on_error)
                     logger.debug(f"{self}: Websocket connection initialized")
@@ -659,18 +656,16 @@ class BotelierDeepgramSTTService:
                 raise
             except Exception as e:
                 err_str = str(e)
-                # Detect permanent HTTP errors (400, 401, 403) — retrying
-                # these forever creates a zombie loop that only a server
-                # restart can kill.  We break out of the retry loop instead.
-                is_permanent = any(code in err_str for code in ("400", "401", "403"))
-                if is_permanent:
-                    model = getattr(self, "_settings", None)
-                    model_name = getattr(model, "model", "unknown") if model else "unknown"
+                # Detect permanent HTTP errors — break the loop rather than
+                # retrying, which would create an infinite zombie loop.
+                if any(code in err_str for code in ("400", "401", "403")):
+                    settings = getattr(self, "_settings", None)
+                    model_name = getattr(settings, "model", "unknown") if settings else "unknown"
                     logger.error(
-                        f"{self}: Deepgram rejected connection with permanent error "
-                        f"(HTTP {err_str[:3] if err_str[:3].isdigit() else 'error'}) "
-                        f"for model '{model_name}'. Stopping retry loop. "
-                        f"Fix: update assistant stt_model to a valid model such as 'nova-3-general'."
+                        f"{self}: Deepgram rejected connection with a permanent HTTP error "
+                        f"for model '{model_name}': {err_str}. "
+                        f"Retry loop stopped. Update the assistant stt_model to a valid value "
+                        f"(e.g. 'nova-3-general') and restart the call."
                     )
                     break
                 logger.warning(f"{self}: Connection lost, will retry: {e}")
@@ -695,7 +690,20 @@ class VoiceEngineFactory:
         if provider == "deepgram":
             from pipecat.services.deepgram.stt import DeepgramSTTService
             from pipecat.services.deepgram.flux.stt import DeepgramFluxSTTService
-            
+
+            # Validate the model against the canonical allowlist before
+            # opening any Deepgram WebSocket.  This runs for ALL Deepgram
+            # models — both standard and Flux — so an invalid model name
+            # always fails immediately with a clear error rather than creating
+            # an infinite retry loop (HTTP 400 → reconnect every ~250 ms).
+            valid_models = _get_deepgram_valid_models()
+            if model not in valid_models:
+                raise ValueError(
+                    f"Invalid Deepgram STT model '{model}'. "
+                    f"Valid models: {sorted(valid_models)}. "
+                    f"Update the assistant's stt_model field to a supported value."
+                )
+
             # Check if using Flux model (advanced turn detection)
             if is_flux_model(model):
                 return DeepgramFluxSTTService(
@@ -709,21 +717,9 @@ class VoiceEngineFactory:
                     ),
                 )
             else:
-                # Validate the model before opening any Deepgram WebSocket.
-                # An invalid model causes a permanent HTTP 400, which normally
-                # starts an infinite retry loop.  Failing early here prevents
-                # that entirely — the call ends cleanly with a clear error.
-                valid_models = _get_deepgram_valid_models()
-                if model not in valid_models:
-                    raise ValueError(
-                        f"Invalid Deepgram STT model '{model}'. "
-                        f"Valid models: {sorted(valid_models)}. "
-                        f"Update the assistant's stt_model field to a supported value."
-                    )
-
                 # Build a subclass that inherits BotelierDeepgramSTTService's
-                # 4xx-abort logic.  Done inline so DeepgramSTTService can be
-                # imported lazily (it's only available inside the if-branch).
+                # 4xx-abort logic as a defence-in-depth fallback.  Done inline
+                # so DeepgramSTTService can be imported lazily.
                 class _BotelierDeepgramSTTService(BotelierDeepgramSTTService, DeepgramSTTService):
                     pass
 
