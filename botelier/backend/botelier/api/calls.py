@@ -395,7 +395,13 @@ async def connect_complete(request: Request, db: Session = Depends(get_db), back
                 logger.info(f"Warm transfer call {call_sid} — keeping alive for status callbacks")
             
             return Response(content="", media_type="application/xml")
-        
+
+        # Cancel the Pipecat pipeline now that the media stream has ended.
+        # This is placed after the transfer early-return above so transferred
+        # calls (where the pipeline must keep running) are never cancelled here.
+        # cancel_call_pipeline() is a no-op if the pipeline already stopped.
+        await call_handler.cancel_call_pipeline(call_sid)
+
         call_logger.complete_call(call_sid)
         logger.info(f"Marked call {call_sid} as completed via connect-complete")
 
