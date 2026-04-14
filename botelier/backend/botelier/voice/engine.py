@@ -656,8 +656,9 @@ class BotelierDeepgramSTTService:
                 raise
             except Exception as e:
                 err_str = str(e)
-                # Detect permanent HTTP errors — break the loop rather than
-                # retrying, which would create an infinite zombie loop.
+                # Detect permanent HTTP errors — abort rather than retrying
+                # forever, which would create an infinite zombie loop that
+                # only a server restart can clear.
                 if any(code in err_str for code in ("400", "401", "403")):
                     settings = getattr(self, "_settings", None)
                     model_name = getattr(settings, "model", "unknown") if settings else "unknown"
@@ -668,7 +669,11 @@ class BotelierDeepgramSTTService:
                         f"(e.g. 'nova-3-general') and restart the call."
                     )
                     break
+                # Transient error — wait before retrying to avoid a tight
+                # loop when the connection fails too quickly to impose its
+                # own natural backoff (e.g. DNS error, refused).
                 logger.warning(f"{self}: Connection lost, will retry: {e}")
+                await asyncio.sleep(0.5)
             finally:
                 self._connection = None
 
