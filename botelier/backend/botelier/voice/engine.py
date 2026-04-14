@@ -589,6 +589,95 @@ class TtsPipelineLatencyTracker(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+_DEEPGRAM_VALID_MODELS = frozenset(
+    STTConfig.available_models
+    for STTConfig in []  # populated below after import
+) or frozenset([
+    "nova-3-general",
+    "nova-3-meeting",
+    "nova-3-voicemail",
+    "nova-3-finance",
+    "nova-3-medical",
+    "nova-2-general",
+    "nova-2-meeting",
+    "nova-2-phonecall",
+    "nova-2-voicemail",
+])
+
+
+def _get_deepgram_valid_models() -> frozenset:
+    """Return the canonical Deepgram model allowlist from providers.py."""
+    try:
+        from ..config.providers import STT_PROVIDERS, STTProvider
+        cfg = STT_PROVIDERS.get(STTProvider.DEEPGRAM)
+        if cfg and cfg.available_models:
+            return frozenset(cfg.available_models)
+    except Exception:
+        pass
+    return _DEEPGRAM_VALID_MODELS
+
+
+class BotelierDeepgramSTTService:
+    """
+    Thin mixin that must be combined with DeepgramSTTService via multiple
+    inheritance.  Overrides ``_connection_handler`` to break the infinite
+    retry loop when Deepgram returns a permanent HTTP error (4xx).
+
+    Used as: class _Impl(BotelierDeepgramSTTService, DeepgramSTTService): pass
+    """
+
+    async def _connection_handler(self):
+        """
+        Wrapper around the parent _connection_handler that aborts on permanent
+        4xx HTTP errors instead of retrying forever.
+
+        The Deepgram WebSocket handshake failure propagates as a generic
+        Exception whose str() contains the HTTP status code.  We detect 4xx
+        codes by scanning the exception message.  On 400/401/403 we log an
+        ERROR and exit the retry loop — Pipecat's CancelFrame teardown then
+        proceeds normally.
+        """
+        while True:
+            from pipecat.utils.utils import create_task
+            import asyncio
+            connect_kwargs = self._build_connect_kwargs()
+            try:
+                async with self._client.listen.v1.connect(**connect_kwargs) as connection:
+                    self._connection = connection
+                    from deepgram.core.events import EventType
+                    connection.on(EventType.MESSAGE, self._on_message)
+                    connection.on(EventType.ERROR, self._on_error)
+                    logger.debug(f"{self}: Websocket connection initialized")
+                    keepalive_task = self.create_task(
+                        self._keepalive_handler(), f"{self}::keepalive"
+                    )
+                    try:
+                        await connection.start_listening()
+                    finally:
+                        await self.cancel_task(keepalive_task)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:
+                err_str = str(e)
+                # Detect permanent HTTP errors (400, 401, 403) — retrying
+                # these forever creates a zombie loop that only a server
+                # restart can kill.  We break out of the retry loop instead.
+                is_permanent = any(code in err_str for code in ("400", "401", "403"))
+                if is_permanent:
+                    model = getattr(self, "_settings", None)
+                    model_name = getattr(model, "model", "unknown") if model else "unknown"
+                    logger.error(
+                        f"{self}: Deepgram rejected connection with permanent error "
+                        f"(HTTP {err_str[:3] if err_str[:3].isdigit() else 'error'}) "
+                        f"for model '{model_name}'. Stopping retry loop. "
+                        f"Fix: update assistant stt_model to a valid model such as 'nova-3-general'."
+                    )
+                    break
+                logger.warning(f"{self}: Connection lost, will retry: {e}")
+            finally:
+                self._connection = None
+
+
 class VoiceEngineFactory:
     """
     Factory for creating voice AI pipelines
@@ -620,8 +709,26 @@ class VoiceEngineFactory:
                     ),
                 )
             else:
+                # Validate the model before opening any Deepgram WebSocket.
+                # An invalid model causes a permanent HTTP 400, which normally
+                # starts an infinite retry loop.  Failing early here prevents
+                # that entirely — the call ends cleanly with a clear error.
+                valid_models = _get_deepgram_valid_models()
+                if model not in valid_models:
+                    raise ValueError(
+                        f"Invalid Deepgram STT model '{model}'. "
+                        f"Valid models: {sorted(valid_models)}. "
+                        f"Update the assistant's stt_model field to a supported value."
+                    )
+
+                # Build a subclass that inherits BotelierDeepgramSTTService's
+                # 4xx-abort logic.  Done inline so DeepgramSTTService can be
+                # imported lazily (it's only available inside the if-branch).
+                class _BotelierDeepgramSTTService(BotelierDeepgramSTTService, DeepgramSTTService):
+                    pass
+
                 # Standard Deepgram using the Settings API (pipecat 0.0.105+)
-                return DeepgramSTTService(
+                return _BotelierDeepgramSTTService(
                     api_key=api_keys.get("deepgram_api_key"),
                     settings=DeepgramSTTService.Settings(
                         model=model,

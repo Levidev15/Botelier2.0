@@ -103,6 +103,27 @@ async def startup_event():
     try:
         seed_all_integrations(db)
         print("✅ Integration types seeded")
+
+        # One-time idempotent migration: replace invalid Deepgram model names
+        # that cause permanent HTTP 400 errors and infinite retry loops.
+        # nova-3-phonecall and flux-general-en are not accepted by Deepgram's API.
+        from sqlalchemy import text as _text
+        _invalid_models = ("nova-3-phonecall", "flux-general-en")
+        _fallback = "nova-3-general"
+        for _bad in _invalid_models:
+            result = db.execute(
+                _text(
+                    "UPDATE assistants SET stt_model = :good "
+                    "WHERE stt_model = :bad"
+                ),
+                {"good": _fallback, "bad": _bad},
+            )
+            if result.rowcount:
+                print(
+                    f"✅ Migrated {result.rowcount} assistant(s) from "
+                    f"stt_model='{_bad}' → '{_fallback}'"
+                )
+        db.commit()
     finally:
         db.close()
 
