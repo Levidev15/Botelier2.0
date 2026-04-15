@@ -444,6 +444,12 @@ class FunctionMapper:
                 continues executing the TwiML it received (warm <Dial> or cold REFER).
                 """
                 _transfer_succeeded = False
+                # Capture T0 at function entry — this coroutine is scheduled
+                # immediately after BotStoppedSpeakingFrame fires (via
+                # asyncio.create_task()), so this timestamp is the best
+                # approximation of when the last audio byte left Pipecat.
+                # Used below to compute the remaining PSTN drain budget.
+                _t0_pre_transfer = _asyncio.get_event_loop().time()
                 try:
                     if self.twilio_client and self.call_sid:
                         try:
@@ -495,12 +501,12 @@ class FunctionMapper:
                                     except Exception as e:
                                         logger.error(f"Error saving transcript before transfer: {e}")
 
-                            _t0_pre_transfer = _asyncio.get_event_loop().time()
+                            _gather_t0 = _asyncio.get_event_loop().time()
                             await _asyncio.gather(
                                 _stop_recording_task(),
                                 _save_transcript_task(),
                             )
-                            _pre_transfer_ms = int((_asyncio.get_event_loop().time() - _t0_pre_transfer) * 1000)
+                            _pre_transfer_ms = int((_asyncio.get_event_loop().time() - _gather_t0) * 1000)
                             logger.info(
                                 f"⏱️ Pre-transfer tasks completed in {_pre_transfer_ms}ms "
                                 f"(recording stop + transcript save, parallel) for call {self.call_sid}"
@@ -543,13 +549,13 @@ class FunctionMapper:
                                 _elapsed_secs = _asyncio.get_event_loop().time() - _t0_pre_transfer
                                 _drain_remaining = WARM_TRANSFER_PSTN_DRAIN_SECS - _elapsed_secs
                                 if _drain_remaining > 0:
+                                    await _asyncio.sleep(_drain_remaining)
                                     logger.debug(
-                                        f"⏳ PSTN drain: waiting {int(_drain_remaining * 1000)}ms "
+                                        f"⏳ PSTN drain: waited {int(_drain_remaining * 1000)}ms "
                                         f"(elapsed={int(_elapsed_secs * 1000)}ms, "
                                         f"target={int(WARM_TRANSFER_PSTN_DRAIN_SECS * 1000)}ms) "
                                         f"for call {self.call_sid}"
                                     )
-                                    await _asyncio.sleep(_drain_remaining)
                                 else:
                                     logger.debug(
                                         f"⏳ PSTN drain: no wait needed "
@@ -1197,13 +1203,13 @@ class FunctionMapper:
                                 _flow_elapsed = _asyncio_flow.get_event_loop().time() - _flow_t0
                                 _flow_drain = WARM_TRANSFER_PSTN_DRAIN_SECS - _flow_elapsed
                                 if _flow_drain > 0:
+                                    await _asyncio_flow.sleep(_flow_drain)
                                     logger.debug(
-                                        f"⏳ PSTN drain: waiting {int(_flow_drain * 1000)}ms "
+                                        f"⏳ PSTN drain: waited {int(_flow_drain * 1000)}ms "
                                         f"(elapsed={int(_flow_elapsed * 1000)}ms, "
                                         f"target={int(WARM_TRANSFER_PSTN_DRAIN_SECS * 1000)}ms) "
                                         f"for call {self.call_sid}"
                                     )
-                                    await _asyncio_flow.sleep(_flow_drain)
                                 else:
                                     logger.debug(
                                         f"⏳ PSTN drain: no wait needed "
