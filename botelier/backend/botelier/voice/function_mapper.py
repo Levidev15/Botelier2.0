@@ -486,9 +486,15 @@ class FunctionMapper:
                                     except Exception as e:
                                         logger.error(f"Error saving transcript before transfer: {e}")
 
+                            _t0_pre_transfer = _asyncio.get_event_loop().time()
                             await _asyncio.gather(
                                 _stop_recording_task(),
                                 _save_transcript_task(),
+                            )
+                            _pre_transfer_ms = int((_asyncio.get_event_loop().time() - _t0_pre_transfer) * 1000)
+                            logger.info(
+                                f"⏱️ Pre-transfer tasks completed in {_pre_transfer_ms}ms "
+                                f"(recording stop + transcript save, parallel) for call {self.call_sid}"
                             )
 
                             # Build mode-specific TwiML.
