@@ -471,11 +471,15 @@ async def transfer_status_callback(request: Request, db: Session = Depends(get_d
                 to_number=to_number,
             )
             
-            # Log transfer_connected / transfer_ended on parent call
-            if parent_call_sid:
+            # Log transfer_connected / transfer_ended on parent call.
+            # Only query the parent record when we will actually write an event —
+            # "initiated" and "ringing" callbacks carry no event so the query
+            # would be wasted.  "in-progress" writes transfer_connected;
+            # terminal statuses write transfer_ended.
+            _TERMINAL = {"completed", "no-answer", "busy", "failed", "canceled"}
+            if parent_call_sid and (call_status == "in-progress" or call_status in _TERMINAL):
                 parent_log = call_logger.get_call_log(parent_call_sid)
                 if parent_log:
-                    _TERMINAL = {"completed", "no-answer", "busy", "failed", "canceled"}
                     if call_status == "in-progress":
                         _write_event(
                             db,
@@ -497,8 +501,7 @@ async def transfer_status_callback(request: Request, db: Session = Depends(get_d
                             call_started_at=parent_log.started_at,
                         )
 
-            _TERMINAL_TRANSFER_STATUSES = {"completed", "no-answer", "busy", "failed", "canceled"}
-            if call_status in _TERMINAL_TRANSFER_STATUSES and parent_call_sid:
+            if call_status in _TERMINAL and parent_call_sid:
                 logger.info(f"Transfer leg {call_sid} ended ({call_status}) — enqueueing ACW for parent call {parent_call_sid}")
                 _maybe_enqueue_acw(parent_call_sid, db, background_tasks)
         

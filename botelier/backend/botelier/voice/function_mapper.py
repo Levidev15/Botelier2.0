@@ -438,44 +438,58 @@ class FunctionMapper:
                 try:
                     if self.twilio_client and self.call_sid:
                         try:
-                            # Stop any active call recording before transferring.
-                            # Uses _asyncio.to_thread so the blocking Twilio SDK call
-                            # never stalls the event loop. Failures are warned only.
+                            # Capture recording SID before launching parallel tasks.
                             _rec_sid = (self.call_handler.call_recording_sids.get(self.call_sid)
                                         if self.call_handler else None)
-                            if _rec_sid:
-                                try:
-                                    await _asyncio.to_thread(
-                                        lambda: self.twilio_client.calls(self.call_sid)
-                                                    .recordings(_rec_sid)
-                                                    .update(status="stopped")
-                                    )
-                                    logger.info(f"🛑 Recording {_rec_sid} stopped before transfer for call {self.call_sid}")
-                                    self.call_handler.call_recording_sids.pop(self.call_sid, None)
-                                except Exception as _stop_err:
-                                    logger.warning(f"Failed to stop recording before transfer for call {self.call_sid}: {_stop_err}")
 
-                            # Save transcript BEFORE transfer (WebSocket closes after).
-                            # Append the pre-transfer message that was spoken via TTSSpeakFrame
-                            # (bypasses LLM context, so must be injected manually here).
-                            if self.call_handler and hasattr(self.call_handler, '_save_call_transcript'):
-                                try:
-                                    llm_context = self.call_handler.call_contexts.get(self.call_sid)
-                                    extra = []
-                                    if self._pending_pre_transfer_message:
-                                        extra.append({
-                                            "role": "assistant",
-                                            "content": self._pending_pre_transfer_message,
-                                            "interrupted": False
-                                        })
-                                        self._pending_pre_transfer_message = None
-                                    await self.call_handler._save_call_transcript(
-                                        self.call_sid, llm_context,
-                                        extra_messages=extra if extra else None
-                                    )
-                                    logger.info(f"📝 Saved transcript before transfer for call {self.call_sid}")
-                                except Exception as e:
-                                    logger.error(f"Error saving transcript before transfer: {e}")
+                            # Stop recording and save transcript concurrently — they are
+                            # independent of each other.  Both must finish before the Twilio
+                            # REST call so the recording is stopped and the transcript is
+                            # persisted before the WebSocket closes.
+                            #
+                            # Recording stop: blocking Twilio SDK call, run in a thread.
+                            #   Failures are warned only — never blocks the transfer.
+                            # Transcript save: async DB write.
+                            #   The pre-transfer message (spoken via TTSSpeakFrame, which
+                            #   bypasses LLM context) is injected manually here.
+
+                            async def _stop_recording_task():
+                                if _rec_sid:
+                                    try:
+                                        await _asyncio.to_thread(
+                                            lambda: self.twilio_client.calls(self.call_sid)
+                                                        .recordings(_rec_sid)
+                                                        .update(status="stopped")
+                                        )
+                                        logger.info(f"🛑 Recording {_rec_sid} stopped before transfer for call {self.call_sid}")
+                                        self.call_handler.call_recording_sids.pop(self.call_sid, None)
+                                    except Exception as _stop_err:
+                                        logger.warning(f"Failed to stop recording before transfer for call {self.call_sid}: {_stop_err}")
+
+                            async def _save_transcript_task():
+                                if self.call_handler and hasattr(self.call_handler, '_save_call_transcript'):
+                                    try:
+                                        llm_context = self.call_handler.call_contexts.get(self.call_sid)
+                                        extra = []
+                                        if self._pending_pre_transfer_message:
+                                            extra.append({
+                                                "role": "assistant",
+                                                "content": self._pending_pre_transfer_message,
+                                                "interrupted": False
+                                            })
+                                            self._pending_pre_transfer_message = None
+                                        await self.call_handler._save_call_transcript(
+                                            self.call_sid, llm_context,
+                                            extra_messages=extra if extra else None
+                                        )
+                                        logger.info(f"📝 Saved transcript before transfer for call {self.call_sid}")
+                                    except Exception as e:
+                                        logger.error(f"Error saving transcript before transfer: {e}")
+
+                            await _asyncio.gather(
+                                _stop_recording_task(),
+                                _save_transcript_task(),
+                            )
 
                             # Build mode-specific TwiML.
                             # Cold REFER: <Stop><Stream> is intentionally omitted — Twilio closes
@@ -573,7 +587,7 @@ class FunctionMapper:
                                         call_logger.record_transfer(
                                             call_sid=_call_sid_cap,
                                             transfer_to=phone_number,
-                                            transfer_type="external"
+                                            transfer_type="warm"
                                         )
                                         _twilio_cap.calls(_call_sid_cap).update(twiml=transfer_twiml)
                                     return True
