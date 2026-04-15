@@ -127,6 +127,16 @@ async def startup_event():
     finally:
         db.close()
 
+    try:
+        from pipecat.audio.vad.silero import SileroVADAnalyzer
+        from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+        _warmup_vad = SileroVADAnalyzer()
+        _warmup_st = LocalSmartTurnAnalyzerV3()
+        del _warmup_vad, _warmup_st
+        print("✅ Silero VAD and SmartTurn models pre-warmed")
+    except Exception as _e:
+        print(f"⚠️  Model pre-warm failed (non-fatal): {_e}")
+
 
 @app.get("/api/health")
 async def health_check():
