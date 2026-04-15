@@ -633,16 +633,22 @@ def _backfill_silero_vad_config():
     db = SessionLocal()
     try:
         from botelier.models.assistant import Assistant
+        from sqlalchemy import or_, cast
+        from sqlalchemy.dialects.postgresql import JSONB
+
         candidates = (
             db.query(Assistant)
             .filter(Assistant.vad_provider == "silero")
+            .filter(
+                or_(
+                    Assistant.vad_config.is_(None),
+                    cast(Assistant.vad_config, JSONB) == cast("{}", JSONB),
+                )
+            )
             .all()
         )
         updated = []
         for asst in candidates:
-            cfg = asst.vad_config or {}
-            if cfg:
-                continue
             asst.vad_config = _SILERO_VAD_DEFAULTS.copy()
             updated.append(asst.name)
             logger.info(
