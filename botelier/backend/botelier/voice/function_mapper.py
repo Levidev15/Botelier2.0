@@ -22,6 +22,15 @@ from twilio.rest import Client as TwilioClient
 from botelier.models.tool import Tool, ToolType
 from botelier.flow_executor import FlowExecutor, parse_flow_config
 
+# Minimum seconds to wait from BotStoppedSpeakingFrame before sending the
+# <Stop><Stream> TwiML on warm transfers.  Twilio's PSTN jitter/playout
+# buffer holds 150–500 ms of audio in transit; the <Stop><Stream> verb
+# discards that buffer immediately.  700 ms ensures <Stop><Stream> arrives
+# at Twilio at T+770ms (700ms + ~70ms DB/REST transit), well beyond the
+# 600ms worst-case PSTN window and safely beyond any cellular PSTN path.
+# Cold transfers use <Refer> (no <Stop><Stream>) and are unaffected.
+WARM_TRANSFER_PSTN_DRAIN_SECS: float = 0.7
+
 
 class FunctionMapper:
     """
@@ -524,6 +533,31 @@ class FunctionMapper:
                                 # Warm Transfer (Twilio bridges both legs)
                                 # Twilio stays in the call and bridges the caller to the new number.
                                 # Status callbacks arrive at /transfer-status to track the second leg.
+                                #
+                                # PSTN drain delay — must run BEFORE <Stop><Stream> is sent.
+                                # BotStoppedSpeakingFrame fires when the last audio byte has been
+                                # written to the OS TCP socket, but Twilio's PSTN jitter/playout
+                                # buffer holds another 150–500 ms of audio in transit.
+                                # <Stop><Stream> discards that buffer immediately without draining.
+                                # Waiting here ensures the buffer is empty before we stop the stream.
+                                _elapsed_secs = _asyncio.get_event_loop().time() - _t0_pre_transfer
+                                _drain_remaining = WARM_TRANSFER_PSTN_DRAIN_SECS - _elapsed_secs
+                                if _drain_remaining > 0:
+                                    logger.debug(
+                                        f"⏳ PSTN drain: waiting {int(_drain_remaining * 1000)}ms "
+                                        f"(elapsed={int(_elapsed_secs * 1000)}ms, "
+                                        f"target={int(WARM_TRANSFER_PSTN_DRAIN_SECS * 1000)}ms) "
+                                        f"for call {self.call_sid}"
+                                    )
+                                    await _asyncio.sleep(_drain_remaining)
+                                else:
+                                    logger.debug(
+                                        f"⏳ PSTN drain: no wait needed "
+                                        f"(elapsed={int(_elapsed_secs * 1000)}ms >= "
+                                        f"target={int(WARM_TRANSFER_PSTN_DRAIN_SECS * 1000)}ms) "
+                                        f"for call {self.call_sid}"
+                                    )
+
                                 # <Stop><Stream> is required here so Twilio closes the media stream
                                 # before bridging the caller to the new leg via <Dial>.
                                 if self.stream_sid:
@@ -1104,6 +1138,11 @@ class FunctionMapper:
                         - No ORM object leaves the thread.
                         """
                         try:
+                            # T0 is captured immediately after BotStoppedSpeakingFrame fires (this
+                            # coroutine is scheduled as a task with effectively zero delay via
+                            # schedule_after_speech).  Used by the PSTN drain delay below.
+                            _flow_t0 = _asyncio_flow.get_event_loop().time()
+
                             # ── Step 1: Save transcript ──────────────────────────────────────────
                             # Must happen before any session opens — _save_call_transcript is async
                             # and opens/closes its own session internally.
@@ -1147,7 +1186,32 @@ class FunctionMapper:
                                 twiml_parts.append('</Response>')
                                 logger.info(f"🔄 Cold SIP REFER flow transfer to {target}")
                             else:
-                                # Warm transfer: close the stream before bridging via <Dial>
+                                # Warm transfer: close the stream before bridging via <Dial>.
+                                #
+                                # PSTN drain delay — same rationale as _execute_transfer.
+                                # Sequential steps above (transcript save + recording stop) take
+                                # ~20–357 ms.  The drain ensures <Stop><Stream> arrives at Twilio
+                                # at least WARM_TRANSFER_PSTN_DRAIN_SECS after BotStoppedSpeakingFrame
+                                # so Twilio's PSTN buffer (150–500 ms) has time to fully deliver
+                                # the pre-transfer audio before the stream is cut.
+                                _flow_elapsed = _asyncio_flow.get_event_loop().time() - _flow_t0
+                                _flow_drain = WARM_TRANSFER_PSTN_DRAIN_SECS - _flow_elapsed
+                                if _flow_drain > 0:
+                                    logger.debug(
+                                        f"⏳ PSTN drain: waiting {int(_flow_drain * 1000)}ms "
+                                        f"(elapsed={int(_flow_elapsed * 1000)}ms, "
+                                        f"target={int(WARM_TRANSFER_PSTN_DRAIN_SECS * 1000)}ms) "
+                                        f"for call {self.call_sid}"
+                                    )
+                                    await _asyncio_flow.sleep(_flow_drain)
+                                else:
+                                    logger.debug(
+                                        f"⏳ PSTN drain: no wait needed "
+                                        f"(elapsed={int(_flow_elapsed * 1000)}ms >= "
+                                        f"target={int(WARM_TRANSFER_PSTN_DRAIN_SECS * 1000)}ms) "
+                                        f"for call {self.call_sid}"
+                                    )
+
                                 if self.stream_sid:
                                     twiml_parts.append(f'<Stop><Stream name="{self.stream_sid}"/></Stop>')
                                 caller_id = self.to_number or os.environ.get("TWILIO_PHONE_NUMBER", "")
