@@ -16,6 +16,14 @@ import PostCallQATab from "@/components/forms/PostCallQATab";
 import { useAccountFeatures } from "@/lib/hooks/useAccountFeatures";
 import GreetingCacheButton from "@/components/forms/GreetingCacheButton";
 
+const SILERO_VAD_DEFAULTS = {
+  confidence: 0.7,
+  start_secs: 0.2,
+  stop_secs: 0.8,
+  min_volume: 0.6,
+  smart_turn_stop_secs: 1.0,
+};
+
 interface Assistant {
   id: string;
   account_id: string;
@@ -163,6 +171,9 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
       const response = await authFetch(`/api/assistants/${assistantId}`);
       if (!response.ok) throw new Error("Failed to fetch assistant");
       const data = await response.json();
+      if (data.vad_provider === "silero") {
+        data.vad_config = { ...SILERO_VAD_DEFAULTS, ...(data.vad_config || {}) };
+      }
       setAssistant(data);
       setFormData(data);
       if (data.mcp_enabled_tools) {
@@ -874,7 +885,13 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
               >
                 <select
                   value={formData.vad_provider || ""}
-                  onChange={(e) => handleFieldChange("vad_provider", e.target.value)}
+                  onChange={(e) => {
+                    const provider = e.target.value;
+                    handleFieldChange("vad_provider", provider);
+                    if (provider === "silero") {
+                      handleFieldChange("vad_config", { ...SILERO_VAD_DEFAULTS, ...(formData.vad_config || {}) });
+                    }
+                  }}
                   className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
                 >
                   <option value="">Select VAD provider...</option>
@@ -896,7 +913,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
                       min="0"
                       max="1"
                       step="0.1"
-                      value={formData.vad_config?.confidence ?? 0.5}
+                      value={formData.vad_config?.confidence ?? 0.7}
                       onChange={(e) => {
                         const newConfig = { ...formData.vad_config, confidence: parseFloat(e.target.value) };
                         handleFieldChange("vad_config", newConfig);
@@ -953,6 +970,24 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
                       value={formData.vad_config?.min_volume ?? 0.6}
                       onChange={(e) => {
                         const newConfig = { ...formData.vad_config, min_volume: parseFloat(e.target.value) };
+                        handleFieldChange("vad_config", newConfig);
+                      }}
+                      className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                    />
+                  </FormField>
+
+                  <FormField
+                    label="SmartTurn End-of-Turn Silence (seconds)"
+                    description="How long silence must persist after speech before SmartTurn concludes the user has finished their turn. Distinct from VAD Stop Delay — this drives the ML turn-completion model. Default: 1.0"
+                  >
+                    <input
+                      type="number"
+                      min="0.1"
+                      max="5"
+                      step="0.1"
+                      value={formData.vad_config?.smart_turn_stop_secs ?? 1.0}
+                      onChange={(e) => {
+                        const newConfig = { ...formData.vad_config, smart_turn_stop_secs: parseFloat(e.target.value) };
                         handleFieldChange("vad_config", newConfig);
                       }}
                       className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"

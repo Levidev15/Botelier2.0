@@ -1003,10 +1003,10 @@ class VoiceEngineFactory:
             from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
             vad_config = config.vad_config or {}
             vad_params = VADParams(
-                confidence=vad_config.get("confidence", 0.5),
-                start_secs=vad_config.get("start_secs", 0.0),
-                stop_secs=vad_config.get("stop_secs", 0.4),
-                min_volume=vad_config.get("min_volume", 0.0),
+                confidence=vad_config.get("confidence", 0.7),
+                start_secs=vad_config.get("start_secs", 0.2),
+                stop_secs=vad_config.get("stop_secs", 0.8),
+                min_volume=vad_config.get("min_volume", 0.6),
             )
             user_params = LLMUserAggregatorParams(
                 vad_analyzer=SileroVADAnalyzer(params=vad_params),
@@ -1015,7 +1015,7 @@ class VoiceEngineFactory:
                         TurnAnalyzerUserTurnStopStrategy(
                             turn_analyzer=LocalSmartTurnAnalyzerV3(
                                 params=SmartTurnParams(
-                                    stop_secs=vad_config.get("smart_turn_stop_secs", 0.8),
+                                    stop_secs=vad_config.get("smart_turn_stop_secs", 1.0),
                                 )
                             )
                         )
