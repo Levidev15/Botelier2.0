@@ -355,8 +355,10 @@ class CallHandler:
             # Without these, Pipecat's resampling chain is misconfigured: Deepgram TTS
             # defaults to 24 kHz linear16, causing 3× playback speed / corrupted audio.
             #
-            # VAD is wired by calling create_transport_params so that Silero/WebRTC/AIC
-            # VAD configured per-assistant is actually active in the transport.
+            # create_transport_params() sets vad_analyzer on the transport only for
+            # WebRTC/AIC providers.  Silero VAD + SmartTurn are integrated directly
+            # into LLMUserAggregatorParams inside create_pipeline() to avoid the
+            # race condition that caused the first utterance to be silently dropped.
             _vad_p = VoiceEngineFactory.create_transport_params(config)
             _ws_params_kwargs = dict(
                 audio_in_enabled=True,
@@ -374,10 +376,14 @@ class CallHandler:
                 websocket=websocket,
                 params=FastAPIWebsocketParams(**_ws_params_kwargs),
             )
-            logger.info(
-                f"🔊 Transport sample rates: in=8000Hz, out=8000Hz | "
-                f"VAD={'enabled (' + config.vad_provider + ')' if _vad_p.vad_analyzer else 'disabled'}"
+            # Silero VAD is wired via LLMUserAggregatorParams (no transport-level VAD),
+            # so check config directly for the log rather than _vad_p.vad_analyzer.
+            _vad_label = (
+                f"enabled ({config.vad_provider})"
+                if (config.enable_vad and config.vad_provider)
+                else "disabled"
             )
+            logger.info(f"🔊 Transport sample rates: in=8000Hz, out=8000Hz | VAD={_vad_label}")
             
             # 6. Create Pipecat pipeline with function calling support
             # Create interruption callback to track interrupted responses

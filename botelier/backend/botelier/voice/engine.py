@@ -21,7 +21,7 @@ from loguru import logger
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.task import PipelineTask, PipelineParams
 from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair, LLMUserAggregatorParams
 from pipecat.transcriptions.language import Language
 from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.frames.frames import (
@@ -37,7 +37,10 @@ from pipecat.frames.frames import (
     TranscriptionFrame,
 )
 from pipecat.processors.user_idle_processor import UserIdleProcessor
-from pipecat.processors.filters.stt_mute_filter import STTMuteFilter, STTMuteConfig, STTMuteStrategy
+from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy import MuteUntilFirstBotCompleteUserMuteStrategy
+from pipecat.turns.user_mute.function_call_user_mute_strategy import FunctionCallUserMuteStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
 
 from .agent import VoiceAgentConfig
 from ..config.providers import is_flux_model
@@ -964,21 +967,6 @@ class VoiceEngineFactory:
             timing_state=_timing_state,
         )
 
-        # Pipecat-native STT mute gate.
-        # MUTE_UNTIL_FIRST_BOT_COMPLETE — suppresses all VAD/transcription frames until
-        # Ava finishes her opening greeting, preventing speaker bleed-through from
-        # reaching Deepgram during the greeting.
-        # FUNCTION_CALL — re-mutes during active tool/function calls (e.g. transfers)
-        # so the caller cannot interrupt mid-transfer.
-        stt_mute_filter = STTMuteFilter(
-            config=STTMuteConfig(
-                strategies={
-                    STTMuteStrategy.MUTE_UNTIL_FIRST_BOT_COMPLETE,
-                    STTMuteStrategy.FUNCTION_CALL,
-                }
-            )
-        )
-
         messages = [
             {
                 "role": "system",
@@ -993,7 +981,54 @@ class VoiceEngineFactory:
         else:
             context = LLMContext(messages)
 
-        context_aggregator = LLMContextAggregatorPair(context)
+        # Build LLMUserAggregatorParams integrating VAD, SmartTurn end-of-turn
+        # detection, and mute strategies in one place.
+        #
+        # For the Silero VAD path this replaces the three deprecated Pipecat
+        # APIs (TransportParams.vad_analyzer, TransportParams.turn_analyzer,
+        # STTMuteFilter).  Combining them inside the aggregator eliminates the
+        # race condition where a VAD speech-stop event fires while STT is muted,
+        # leaving the first caller utterance orphaned with no end-of-turn signal.
+        #
+        # MuteUntilFirstBotCompleteUserMuteStrategy — suppresses user frames
+        #   until the opening greeting finishes (replaces MUTE_UNTIL_FIRST_BOT_COMPLETE).
+        # FunctionCallUserMuteStrategy — re-mutes during active tool/function
+        #   calls (e.g. transfers) so the caller cannot interrupt mid-transfer
+        #   (replaces FUNCTION_CALL).
+        user_params: LLMUserAggregatorParams | None = None
+        if config.enable_vad and config.vad_provider == "silero":
+            from pipecat.audio.vad.silero import SileroVADAnalyzer
+            from pipecat.audio.vad.vad_analyzer import VADParams
+            from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+            from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
+            vad_config = config.vad_config or {}
+            vad_params = VADParams(
+                confidence=vad_config.get("confidence", 0.5),
+                start_secs=vad_config.get("start_secs", 0.0),
+                stop_secs=vad_config.get("stop_secs", 0.4),
+                min_volume=vad_config.get("min_volume", 0.0),
+            )
+            user_params = LLMUserAggregatorParams(
+                vad_analyzer=SileroVADAnalyzer(params=vad_params),
+                user_turn_strategies=UserTurnStrategies(
+                    stop=[
+                        TurnAnalyzerUserTurnStopStrategy(
+                            turn_analyzer=LocalSmartTurnAnalyzerV3(
+                                params=SmartTurnParams(
+                                    stop_secs=vad_config.get("smart_turn_stop_secs", 0.8),
+                                )
+                            )
+                        )
+                    ]
+                ),
+                user_mute_strategies=[
+                    MuteUntilFirstBotCompleteUserMuteStrategy(),
+                    FunctionCallUserMuteStrategy(),
+                ],
+            )
+            logger.info(f"Silero VAD + SmartTurn wired into LLMUserAggregator: {vad_params}")
+
+        context_aggregator = LLMContextAggregatorPair(context, user_params=user_params)
 
         # Register function handlers with LLM
         if function_handlers:
@@ -1005,7 +1040,6 @@ class VoiceEngineFactory:
                 transport.input(),
                 inbound_audio_tracker,         # Stamps t_last_inbound for Twilio→STT latency measurement
                 stt,
-                stt_mute_filter,               # Mutes STT during greeting + function calls (Pipecat native)
                 user_turn_capture,             # Records per-turn user timestamps for transcript (pure observer)
                 first_speech_tracker,          # Detects caller's first utterance (non-blocking event log)
                 idle_timeout_tracker.processor, # Logs idle_timeout when caller goes silent too long
@@ -1048,23 +1082,9 @@ class VoiceEngineFactory:
             
             try:
                 if config.vad_provider == "silero":
-                    from pipecat.audio.vad.silero import SileroVADAnalyzer
-                    from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
-                    from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
-                    
-                    vad_params = VADParams(
-                        confidence=vad_config.get("confidence", 0.5),
-                        start_secs=vad_config.get("start_secs", 0.0),
-                        stop_secs=vad_config.get("stop_secs", 0.4),
-                        min_volume=vad_config.get("min_volume", 0.0)
-                    )
-                    params.vad_analyzer = SileroVADAnalyzer(params=vad_params)
-                    params.turn_analyzer = LocalSmartTurnAnalyzerV3(
-                        params=SmartTurnParams(
-                            stop_secs=vad_config.get("smart_turn_stop_secs", 0.8)
-                        )
-                    )
-                    logger.info(f"Silero VAD enabled with params: {vad_params}")
+                    # Silero VAD + SmartTurn are wired into LLMUserAggregatorParams
+                    # inside create_pipeline() — nothing to set on TransportParams.
+                    pass
                     
                 elif config.vad_provider == "webrtc":
                     from pipecat.transports.daily.transport import WebRTCVADAnalyzer
