@@ -906,7 +906,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
                 <div className="space-y-6">
                   <FormField
                     label="Confidence Threshold"
-                    description="Confidence level (0.0-1.0) to consider speech detected. Higher = more strict. Default: 0.5"
+                    description="Confidence level (0.0-1.0) to consider speech detected. Higher = more strict. Default: 0.7"
                   >
                     <input
                       type="number"

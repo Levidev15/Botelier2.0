@@ -601,11 +601,75 @@ def _sync_system_role_permissions():
         db.close()
 
 
+_SILERO_VAD_DEFAULTS = {
+    "confidence": 0.7,
+    "start_secs": 0.2,
+    "stop_secs": 0.8,
+    "min_volume": 0.6,
+    "smart_turn_stop_secs": 1.0,
+}
+
+
+def _backfill_silero_vad_config():
+    """
+    Idempotent data backfill: populate vad_config for Silero assistants that
+    have a null or empty JSON object stored.
+
+    WHY THIS EXISTS
+    The engine reads VAD parameters from ``assistant.vad_config`` and falls
+    back to hardcoded defaults when the key is absent.  Prior to this fix the
+    fallback values were wrong (start_secs=0.0, min_volume=0.0), causing any
+    background noise to immediately interrupt the bot.  Assistants created or
+    saved before the fix have ``vad_config = {}`` in the DB and therefore ran
+    with the broken defaults.
+
+    HOW IT WORKS
+    On every startup this function finds all silero assistants whose
+    vad_config is null or ``{}``, and writes the full set of canonical
+    defaults.  Rows that already have at least one key set are left untouched
+    (the frontend merge logic handles missing keys at runtime).  Idempotent —
+    safe to re-run.
+    """
+    db = SessionLocal()
+    try:
+        from botelier.models.assistant import Assistant
+        candidates = (
+            db.query(Assistant)
+            .filter(Assistant.vad_provider == "silero")
+            .all()
+        )
+        updated = []
+        for asst in candidates:
+            cfg = asst.vad_config or {}
+            if cfg:
+                continue
+            asst.vad_config = _SILERO_VAD_DEFAULTS.copy()
+            updated.append(asst.name)
+            logger.info(
+                f"VAD config backfill: set defaults for assistant '{asst.name}' ({asst.id})"
+            )
+
+        if updated:
+            db.commit()
+            logger.info(
+                f"VAD config backfill complete — updated {len(updated)} assistant(s): "
+                f"{', '.join(updated)}"
+            )
+        else:
+            logger.info("VAD config backfill — all Silero assistants already configured")
+
+    except Exception as e:
+        logger.error(f"VAD config backfill failed (non-fatal): {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def init_db():
     """
     Initialize the database at application startup.
 
-    Runs four idempotent steps in order:
+    Runs five idempotent steps in order:
 
     1. ``create_all`` — creates any tables that do not yet exist (SQLAlchemy
        inspects the engine and skips tables that are already present).
@@ -624,6 +688,10 @@ def init_db():
        ``botelier/auth/permissions.py``.  Ensures that adding a permission to
        the template is automatically reflected in production on the next
        deploy, without a manual SQL update.
+
+    5. ``_backfill_silero_vad_config`` — ensures all Silero assistants with a
+       null or empty vad_config get the canonical VAD parameter defaults so
+       the voice engine never falls back to misconfigured hardcoded values.
     """
     from botelier.models import tool  # noqa: F401
     from botelier.models import account  # noqa: F401
@@ -644,3 +712,4 @@ def init_db():
     _run_hotel_account_migration()
     _run_additive_migrations()
     _sync_system_role_permissions()
+    _backfill_silero_vad_config()
