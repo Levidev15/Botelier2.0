@@ -74,7 +74,7 @@ class Assistant(Base):
     # Note: Flux users should disable external VAD and use Flux's built-in endpointing
     vad_enabled = Column(Boolean, default=False)  # Enable transport-level VAD (Silero/WebRTC/AIC)
     vad_provider = Column(String(50), nullable=True)  # "silero", "webrtc", "aic", or null
-    vad_config = Column(JSONB, nullable=True, default=dict)  # VADParams: confidence, start_secs, stop_secs, min_volume
+    vad_config = Column(JSONB, nullable=True, default=dict)  # VADParams: confidence, start_secs, stop_secs, min_volume, smart_turn_stop_secs
     
     # Status
     is_active = Column(Boolean, default=True)
