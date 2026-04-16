@@ -68,7 +68,7 @@ def _fetch_call_log_retry(call_sid: str):
         _db.close()
 
 
-async def _prewarm_llm_cache(system_prompt: str, model: str, api_key: str, call_sid: str) -> None:
+async def _prewarm_llm_cache(system_prompt: str, model: str, api_key: str, call_sid: str, event_queue=None) -> None:
     """Fire a single low-cost OpenAI call to warm the server-side prompt cache.
 
     Runs as a background asyncio task concurrent with the greeting audio playback
@@ -79,7 +79,12 @@ async def _prewarm_llm_cache(system_prompt: str, model: str, api_key: str, call_
     This call is entirely outside the Pipecat pipeline — it never produces any
     audio and cannot interfere with the call.  Failures are logged as warnings
     and never propagate to the caller.
+
+    When ``event_queue`` is provided, emits ``llm_prewarm_completed`` on success
+    or ``llm_prewarm_failed`` on failure with a sanitized error_type/message.
     """
+    import time as _time
+    _t_start = _time.monotonic()
     try:
         import openai as _openai
         _client = _openai.AsyncOpenAI(api_key=api_key)
@@ -88,9 +93,30 @@ async def _prewarm_llm_cache(system_prompt: str, model: str, api_key: str, call_
             messages=[{"role": "system", "content": system_prompt}],
             max_tokens=1,
         )
-        logger.info(f"🔥 LLM prompt cache pre-warmed for call {call_sid} (model={model})")
+        _duration_ms = int((_time.monotonic() - _t_start) * 1000)
+        logger.info(f"🔥 LLM prompt cache pre-warmed for call {call_sid} (model={model}, {_duration_ms}ms)")
+        if event_queue is not None:
+            event_queue.log(
+                "llm_prewarm_completed",
+                event_source="pipecat",
+                severity="info",
+                details={"duration_ms": _duration_ms, "model": model},
+            )
     except Exception as _pw_err:
+        _duration_ms = int((_time.monotonic() - _t_start) * 1000)
         logger.warning(f"LLM pre-warm failed for call {call_sid} (non-fatal): {_pw_err}")
+        if event_queue is not None:
+            event_queue.log(
+                "llm_prewarm_failed",
+                event_source="pipecat",
+                severity="warning",
+                details={
+                    "duration_ms": _duration_ms,
+                    "model": model,
+                    "error_type": type(_pw_err).__name__,
+                    "error_message": str(_pw_err)[:200],
+                },
+            )
 
 
 class CallHandler:
@@ -439,7 +465,7 @@ class CallHandler:
                 })
                 logger.debug(f"🗣️  Captured user turn ({len(text)} chars) at T+{elapsed_s:.1f}s for call {call_sid}")
             
-            pipeline, task, llm, context_aggregator, llm_context, tts_completion_watcher, first_speech_tracker, greeting_completion_tracker, idle_timeout_tracker = VoiceEngineFactory.create_pipeline(
+            pipeline, task, llm, context_aggregator, llm_context, tts_completion_watcher, first_speech_tracker, greeting_completion_tracker, idle_timeout_tracker, user_turn_capture, tts_latency_tracker = VoiceEngineFactory.create_pipeline(
                 config=config,
                 api_keys=api_keys,
                 transport=transport,
@@ -457,8 +483,13 @@ class CallHandler:
                 self.call_mappers[call_sid].set_tts_completion_watcher(tts_completion_watcher)
             
             # 6.5 Register MCP tools if connection is configured (must happen AFTER pipeline creation)
+            # The event_queue is created below (section 7.5) — we capture timing and outcome
+            # in a local dict here and emit the event once the queue is available.
+            _mcp_event_payload = None  # Tuple[event_type, details] or None if MCP skipped
             logger.info(f"🔍 MCP registration check: mcp_connection_data={mcp_connection_data is not None}, mcp_enabled_tools={mcp_enabled_tools}, PIPECAT_MCP_AVAILABLE={PIPECAT_MCP_AVAILABLE}")
             if mcp_connection_data and mcp_enabled_tools and PIPECAT_MCP_AVAILABLE:
+                import time as _time_mcp
+                _mcp_t_start = _time_mcp.monotonic()
                 try:
                     # Build authentication headers based on auth_type
                     mcp_headers = self._build_mcp_headers(
@@ -480,6 +511,7 @@ class CallHandler:
                     all_tools_schema = await mcp_client.get_tools_schema()
                     
                     # Filter to only enabled tools for this assistant
+                    _tools_registered = 0
                     if all_tools_schema.standard_tools:
                         from pipecat.adapters.schemas.tools_schema import ToolsSchema
                         
@@ -491,6 +523,7 @@ class CallHandler:
                         if filtered_tools:
                             filtered_schema = ToolsSchema(standard_tools=filtered_tools)
                             await mcp_client.register_tools_schema(filtered_schema, llm)
+                            _tools_registered = len(filtered_tools)
                             logger.info(f"🔌 Registered {len(filtered_tools)} MCP tools with LLM for call {call_sid}: {[t.name for t in filtered_tools]}")
                         else:
                             logger.warning(f"No MCP tools matched enabled list: {mcp_enabled_tools}")
@@ -499,9 +532,29 @@ class CallHandler:
                     
                     # Store client for cleanup
                     self.call_mcp_clients[call_sid] = mcp_client
-                    
+
+                    _mcp_duration_ms = int((_time_mcp.monotonic() - _mcp_t_start) * 1000)
+                    _mcp_event_payload = (
+                        "mcp_registration_completed",
+                        "info",
+                        {
+                            "duration_ms": _mcp_duration_ms,
+                            "tools_registered": _tools_registered,
+                        },
+                    )
+
                 except Exception as e:
+                    _mcp_duration_ms = int((_time_mcp.monotonic() - _mcp_t_start) * 1000)
                     logger.error(f"Failed to register MCP tools: {e}")
+                    _mcp_event_payload = (
+                        "mcp_registration_failed",
+                        "error",
+                        {
+                            "duration_ms": _mcp_duration_ms,
+                            "error_type": type(e).__name__,
+                            "error_message": str(e)[:200],
+                        },
+                    )
             
             # 7. Update active call with task and context
             self.active_calls[call_sid] = task
@@ -628,6 +681,21 @@ class CallHandler:
                 greeting_completion_tracker.set_event_queue(event_queue)
                 # Wire event_queue to the IdleTimeoutTracker (fires on caller silence)
                 idle_timeout_tracker.set_event_queue(event_queue)
+                # Wire event_queue to UserTurnCapture (emits turn_finalized per user utterance)
+                user_turn_capture.set_event_queue(event_queue)
+                # Wire event_queue to TtsPipelineLatencyTracker (emits turn_latency per responded turn)
+                tts_latency_tracker.set_event_queue(event_queue)
+
+                # Emit deferred MCP registration event now that the queue is running.
+                # _mcp_event_payload is populated above when MCP ran; None means MCP was skipped.
+                if _mcp_event_payload is not None:
+                    _mcp_ev_type, _mcp_sev, _mcp_details = _mcp_event_payload
+                    event_queue.log(
+                        _mcp_ev_type,
+                        event_source="pipecat",
+                        severity=_mcp_sev,
+                        details=_mcp_details,
+                    )
 
                 # Wire a DB callback to GreetingCompletionTracker so ai_greeting_completed
                 # is set as soon as the greeting TTS finishes — reliably from our side,
@@ -717,6 +785,7 @@ class CallHandler:
                         model=config.llm_model,
                         api_key=_openai_key,
                         call_sid=call_sid,
+                        event_queue=self.call_event_queues.get(call_sid),
                     )
                 )
 

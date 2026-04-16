@@ -167,13 +167,25 @@ class UserTurnCapture(FrameProcessor):
     Calls ``on_user_turn(text, timestamp)`` for each non-empty transcription so
     that ``_extract_transcript`` can annotate user messages with the actual time
     they were finalized rather than the generic save-time stamp.
+
+    Also emits a ``turn_finalized`` CallEvent per finalized transcription when
+    an ``event_queue`` is wired (via ``set_event_queue``).  This is the true
+    per-turn denominator — fires whether or not the pipeline then successfully
+    responds.  Maintains a monotonic 1-based ``turn_index`` that is also written
+    into ``timing_state["turn_index"]`` so the matching ``turn_latency`` event
+    (emitted downstream by ``TtsPipelineLatencyTracker``) can reference it.
     """
 
-    def __init__(self, on_user_turn=None, call_start_mono: float = 0.0, timing_state: dict = None, **kwargs):
+    def __init__(self, on_user_turn=None, call_start_mono: float = 0.0, timing_state: dict = None, event_queue=None, **kwargs):
         super().__init__(**kwargs)
         self._on_user_turn = on_user_turn
         self._call_start_mono = call_start_mono
         self._timing_state = timing_state if timing_state is not None else {}
+        self._event_queue = event_queue
+        self._turn_index = 0
+
+    def set_event_queue(self, event_queue) -> None:
+        self._event_queue = event_queue
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -181,18 +193,32 @@ class UserTurnCapture(FrameProcessor):
         if isinstance(frame, TranscriptionFrame) and frame.text and frame.text.strip():
             _t_stt = time.monotonic()
             self._timing_state["t_stt"] = _t_stt
+            self._turn_index += 1
+            self._timing_state["turn_index"] = self._turn_index
             _elapsed_ms = (_t_stt - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
             _t_last_inbound = self._timing_state.get("t_last_inbound", 0.0)
             _inbound_to_stt_ms = (_t_stt - _t_last_inbound) * 1000 if _t_last_inbound else 0.0
+            _transcript = frame.text.strip()
             logger.debug(
                 f"⏱️ [T+{_elapsed_ms:.0f}ms] STT transcript finalized: "
-                f'"{frame.text.strip()[:60]}" | '
+                f'"{_transcript[:60]}" | '
                 f"inbound→STT: {_inbound_to_stt_ms:.0f}ms"
             )
+            if self._event_queue is not None:
+                self._event_queue.log(
+                    "turn_finalized",
+                    event_source="pipecat",
+                    severity="info",
+                    details={
+                        "turn_index": self._turn_index,
+                        "inbound_to_stt_ms": int(_inbound_to_stt_ms),
+                        "transcript_chars": len(_transcript),
+                    },
+                )
             if self._on_user_turn:
                 try:
                     from datetime import datetime as _dt
-                    self._on_user_turn(frame.text.strip(), _dt.utcnow())
+                    self._on_user_turn(_transcript, _dt.utcnow())
                 except Exception:
                     logger.exception("UserTurnCapture: error in on_user_turn callback")
 
@@ -556,20 +582,65 @@ class TtsPipelineLatencyTracker(FrameProcessor):
     between this processor and LLMResponseCapture / UserTurnCapture.
     """
 
-    def __init__(self, call_start_mono: float = 0.0, timing_state: dict = None, **kwargs):
+    def __init__(self, call_start_mono: float = 0.0, timing_state: dict = None, event_queue=None, **kwargs):
         super().__init__(**kwargs)
         self._call_start_mono = call_start_mono
         self._timing_state = timing_state if timing_state is not None else {}
+        self._event_queue = event_queue
         self._expecting_audio: bool = False
         self._t_first_audio: float = 0.0
+        self._turn_emitted: bool = False  # Guards against double-emission per turn
 
-    def _log_llm_end_to_tts(self, t_llm_end: float) -> None:
-        """Log LLM last token → TTS first audio delta once both timestamps are known."""
+    def set_event_queue(self, event_queue) -> None:
+        self._event_queue = event_queue
+
+    def _emit_turn_latency(self, t_llm_end: float) -> None:
+        """Log LLM→TTS delta and emit the ``turn_latency`` CallEvent.
+
+        Called exactly once per responded turn: whichever of LLMFullResponseEndFrame
+        / first AudioRawFrame arrives second triggers this (both timestamps are
+        required to compute the delta).  The ``_turn_emitted`` flag prevents a
+        second emission if both branches end up calling this within the same turn.
+        """
+        if self._turn_emitted:
+            return
+        self._turn_emitted = True
+
         _delta_ms = (self._t_first_audio - t_llm_end) * 1000
         _sign = "" if _delta_ms >= 0 else ""
         logger.debug(
             f"⏱️ LLM last token → TTS first audio: {_sign}{_delta_ms:.0f}ms "
             f"({'TTS led LLM end — streaming' if _delta_ms < 0 else 'TTS trailed LLM end'})"
+        )
+
+        if self._event_queue is None:
+            return
+
+        _t_stt = self._timing_state.get("t_stt", 0.0)
+        _t_llm_start = self._timing_state.get("t_llm_start", 0.0)
+        _t_last_inbound = self._timing_state.get("t_last_inbound", 0.0)
+        _turn_index = self._timing_state.get("turn_index", 0)
+
+        _inbound_to_stt_ms = int((_t_stt - _t_last_inbound) * 1000) if (_t_stt and _t_last_inbound) else 0
+        _stt_to_llm_start_ms = int((_t_llm_start - _t_stt) * 1000) if (_t_llm_start and _t_stt) else 0
+        _llm_generation_ms = int((t_llm_end - _t_llm_start) * 1000) if _t_llm_start else 0
+        _llm_to_tts_first_audio_ms = int(_delta_ms)
+        _turn_started_ms = int((_t_last_inbound - self._call_start_mono) * 1000) if (_t_last_inbound and self._call_start_mono) else 0
+        _turn_responded_ms = int((self._t_first_audio - self._call_start_mono) * 1000) if self._call_start_mono else 0
+
+        self._event_queue.log(
+            "turn_latency",
+            event_source="pipecat",
+            severity="info",
+            details={
+                "turn_index": _turn_index,
+                "inbound_to_stt_ms": _inbound_to_stt_ms,
+                "stt_to_llm_start_ms": _stt_to_llm_start_ms,
+                "llm_generation_ms": _llm_generation_ms,
+                "llm_to_tts_first_audio_ms": _llm_to_tts_first_audio_ms,
+                "turn_started_ms": _turn_started_ms,
+                "turn_responded_ms": _turn_responded_ms,
+            },
         )
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -578,6 +649,7 @@ class TtsPipelineLatencyTracker(FrameProcessor):
         if isinstance(frame, LLMFullResponseStartFrame):
             self._expecting_audio = True
             self._t_first_audio = 0.0
+            self._turn_emitted = False  # Reset per-turn emission guard
 
         elif self._expecting_audio and isinstance(frame, AudioRawFrame):
             self._expecting_audio = False
@@ -586,17 +658,17 @@ class TtsPipelineLatencyTracker(FrameProcessor):
             logger.debug(
                 f"⏱️ [T+{_elapsed_ms:.0f}ms] TTS first audio chunk dispatched to transport"
             )
-            # If LLM already ended (t_llm_end set), log the delta immediately.
-            # Otherwise it will be logged when LLMFullResponseEndFrame arrives below.
+            # If LLM already ended (t_llm_end set), emit immediately.
+            # Otherwise emission fires when LLMFullResponseEndFrame arrives below.
             _t_llm_end = self._timing_state.get("t_llm_end", 0.0)
             if _t_llm_end:
-                self._log_llm_end_to_tts(_t_llm_end)
+                self._emit_turn_latency(_t_llm_end)
 
         elif isinstance(frame, LLMFullResponseEndFrame) and self._t_first_audio:
             # LLM just finished; first audio already arrived (streaming overlap).
             _t_llm_end = self._timing_state.get("t_llm_end", 0.0)
             if _t_llm_end:
-                self._log_llm_end_to_tts(_t_llm_end)
+                self._emit_turn_latency(_t_llm_end)
 
         await self.push_frame(frame, direction)
 
@@ -899,14 +971,16 @@ class VoiceEngineFactory:
                 utterance.  Used to record per-turn timestamps for the call transcript.
 
         Returns:
-            9-tuple: (pipeline, task, llm, context_aggregator, context,
+            11-tuple: (pipeline, task, llm, context_aggregator, context,
                       tts_completion_watcher, first_speech_tracker,
-                      greeting_completion_tracker, idle_timeout_tracker).
+                      greeting_completion_tracker, idle_timeout_tracker,
+                      user_turn_capture, tts_latency_tracker).
             - context is returned separately for transcript extraction.
             - tts_completion_watcher can be linked to FunctionMapper.set_tts_completion_watcher()
               so transfer handlers can await TTS completion without time-based sleeps.
-            - first_speech_tracker / greeting_completion_tracker / idle_timeout_tracker
-              need event_queue injected via set_event_queue() after pipeline creation.
+            - first_speech_tracker / greeting_completion_tracker / idle_timeout_tracker /
+              user_turn_capture / tts_latency_tracker need event_queue injected via
+              set_event_queue() after pipeline creation.
         """
         from pipecat.adapters.schemas.tools_schema import ToolsSchema
 
@@ -1073,7 +1147,7 @@ class VoiceEngineFactory:
             ),
         )
 
-        return pipeline, task, llm, context_aggregator, context, tts_completion_watcher, first_speech_tracker, greeting_completion_tracker, idle_timeout_tracker
+        return pipeline, task, llm, context_aggregator, context, tts_completion_watcher, first_speech_tracker, greeting_completion_tracker, idle_timeout_tracker, user_turn_capture, tts_latency_tracker
     
     @staticmethod
     def create_transport_params(config: VoiceAgentConfig):
