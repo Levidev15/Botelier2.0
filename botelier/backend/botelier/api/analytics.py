@@ -39,20 +39,24 @@ _MAX_RANGE_DAYS = 365
 # ``partition_integrity_ok`` and the per-status breakdown.
 #
 # Bucket semantics:
-#   - ai_handled   : the AI actually greeted the caller. Includes rows in
-#                    any non-failure terminal/transitional status as long as
-#                    greeted=True, plus ``completed`` unconditionally (product
-#                    contract: completed is success). Per Task #96 sweeper,
-#                    ringing/in_progress w/ greeted=True is a mid-call row.
+#   - ai_handled   : the AI actually greeted the caller. Driven by the ground-
+#                    truth flag ai_greeting_completed=TRUE on any of
+#                    completed / ringing / in_progress / ended_early. Per Task
+#                    #96 sweeper, ringing/in_progress w/ greeted=True is a
+#                    mid-call row.
 #   - ended_early  : caller hung up before AI greeted (status=ended_early,
 #                    greeted=False). This is the "dropped before AI" bucket.
 #   - missed       : Twilio-side non-pickup outcomes (no_answer, busy,
 #                    canceled). Independent of greeted (greeted is False here
 #                    by construction).
 #   - failed       : infrastructure/provider failure (status=failed).
-#   - unresolved   : row is still non-terminal AND AI has not greeted — the
-#                    gap bucket that surfaces stuck or pending-finalization
-#                    calls. Includes ``initiated`` unconditionally.
+#   - unresolved   : gap bucket for (a) non-terminal rows still awaiting
+#                    finalization — initiated unconditionally, plus ringing /
+#                    in_progress / completed with greeted=FALSE (completed w/o
+#                    greeting is an upstream data-quality anomaly surfaced
+#                    here rather than inflated into ai_handled), and (b) any
+#                    unknown/future CallStatus value so the partition stays
+#                    MECE.
 # ----------------------------------------------------------------------------
 _PARTITION_BUCKETS = ("ai_handled", "ended_early", "missed", "failed", "unresolved")
 
@@ -70,17 +74,21 @@ def _classify_partition(status: str, ai_greeting_completed: bool) -> str:
         CallStatus.CANCELED.value,
     ):
         return "missed"
+    # Task #97 contract: ai_handled is driven by ground-truth AI engagement
+    # (ai_greeting_completed=TRUE). A row stamped completed WITHOUT the greeting
+    # flag is an anomaly (data-quality bug upstream of analytics) — it routes
+    # to `unresolved` so the gap is surfaced rather than silently inflated
+    # into ai_handled.
     if status == CallStatus.COMPLETED.value:
-        return "ai_handled"
+        return "ai_handled" if ai_greeting_completed else "unresolved"
     if status == CallStatus.ENDED_EARLY.value:
-        # Defensive: if the row somehow ended_early with greeted=True (forbidden
-        # by Task #96 correctness but possible on legacy rows), attribute to
-        # ai_handled rather than misclassify as an early drop.
+        # Defensive: (ended_early, greeted=TRUE) is forbidden by Task #96
+        # correctness but possible on legacy rows; attribute to ai_handled
+        # rather than misclassify as an early drop.
         return "ai_handled" if ai_greeting_completed else "ended_early"
     if status in (CallStatus.RINGING.value, CallStatus.IN_PROGRESS.value):
         return "ai_handled" if ai_greeting_completed else "unresolved"
-    # initiated, plus any unknown/future enum value → unresolved (surfaces it
-    # for explicit classification in a later revision).
+    # initiated (+ any unknown/future enum value) → unresolved.
     return "unresolved"
 
 
@@ -248,6 +256,10 @@ async def get_call_analytics(
             "missed_count": missed_count,
             "failed_count": failed_count,
             "unresolved_count": unresolved_count,
+            # Task #97: canonical rates are computed from the NEW partition
+            # counts so every card on the dashboard reconciles with the
+            # mutually-exclusive buckets. `ai_handled_rate_new` is kept as a
+            # transitional alias for callers that migrated early.
             "ai_handled_rate_new": round(ai_handled_count / total * 100, 1) if total else 0,
             "unresolved_rate": round(unresolved_count / total * 100, 1) if total else 0,
             "partition_integrity_ok": partition_integrity_ok,
@@ -258,8 +270,14 @@ async def get_call_analytics(
             "failed": failed,
             "transferred": transferred,
             "ended_early_calls": ended_early,
-            "ended_early_rate": round(ended_early / total * 100, 1) if total else 0,
-            "ai_handled_rate": round(ai_handled_legacy / total * 100, 1) if total else 0,
+            # Rates use the new partition bucket numerators (task contract:
+            # "Preserve the existing ended_early_rate and ai_handled_rate
+            # formulas but compute them from the new counts"). The card UI is
+            # now guaranteed to reconcile with the partition, and the legacy
+            # status-level numerators remain available via `ended_early_calls`
+            # and `ai_handled_calls`.
+            "ended_early_rate": round(ended_early_count / total * 100, 1) if total else 0,
+            "ai_handled_rate": round(ai_handled_count / total * 100, 1) if total else 0,
             "completion_rate": round(completed / total * 100, 1) if total else 0,
             "transfer_rate": round(transferred / total * 100, 1) if total else 0,
             "avg_duration_seconds": round(float(dur_row.avg), 1),
@@ -534,18 +552,16 @@ async def get_calls_drilldown(
             # Legacy token: matches status=ended_early regardless of greeted.
             query = query.filter(CallLog.status == CallStatus.ENDED_EARLY.value)
         elif token == "ai_handled":
-            # Task #97 partition bucket: greeted=True on any non-failure/non-missed
-            # terminal/transitional status, plus completed unconditionally.
+            # Task #97 partition bucket: greeted=TRUE on completed/ringing/
+            # in_progress/ended_early. Mirrors _classify_partition exactly.
             query = query.filter(
-                (CallLog.status == CallStatus.COMPLETED.value)
-                | (
-                    CallLog.status.in_([
-                        CallStatus.RINGING.value,
-                        CallStatus.IN_PROGRESS.value,
-                        CallStatus.ENDED_EARLY.value,
-                    ])
-                    & (CallLog.ai_greeting_completed == True)
-                )
+                CallLog.status.in_([
+                    CallStatus.COMPLETED.value,
+                    CallStatus.RINGING.value,
+                    CallStatus.IN_PROGRESS.value,
+                    CallStatus.ENDED_EARLY.value,
+                ]),
+                CallLog.ai_greeting_completed == True,
             )
         elif token == "ended_early_dropped":
             # Task #97 partition bucket: caller hung up before greeting.
