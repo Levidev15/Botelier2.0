@@ -605,8 +605,14 @@ class TtsPipelineLatencyTracker(FrameProcessor):
         if self._turn_emitted:
             return
         self._turn_emitted = True
+        _t_first_audio_local = self._t_first_audio
+        # Immediately clear per-turn state after capturing locally, so any stray
+        # frames arriving before the next LLMFullResponseStartFrame cannot
+        # re-trigger emission paths using stale values.
+        self._t_first_audio = 0.0
+        self._expecting_audio = False
 
-        _delta_ms = (self._t_first_audio - t_llm_end) * 1000
+        _delta_ms = (_t_first_audio_local - t_llm_end) * 1000
         _sign = "" if _delta_ms >= 0 else ""
         logger.debug(
             f"⏱️ LLM last token → TTS first audio: {_sign}{_delta_ms:.0f}ms "
@@ -626,7 +632,7 @@ class TtsPipelineLatencyTracker(FrameProcessor):
         _llm_generation_ms = int((t_llm_end - _t_llm_start) * 1000) if _t_llm_start else 0
         _llm_to_tts_first_audio_ms = int(_delta_ms)
         _turn_started_ms = int((_t_last_inbound - self._call_start_mono) * 1000) if (_t_last_inbound and self._call_start_mono) else 0
-        _turn_responded_ms = int((self._t_first_audio - self._call_start_mono) * 1000) if self._call_start_mono else 0
+        _turn_responded_ms = int((_t_first_audio_local - self._call_start_mono) * 1000) if self._call_start_mono else 0
 
         self._event_queue.log(
             "turn_latency",
