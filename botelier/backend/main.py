@@ -138,15 +138,29 @@ async def startup_event():
     except Exception as _e:
         print(f"⚠️  Model pre-warm failed (non-fatal): {_e}")
 
-    # Task #96: periodic stuck-call sweeper. Runs every 5 minutes and closes
-    # any CallLog left in initiated/ringing/in_progress state that has no
-    # active pipeline in-process. A finalization_forced CallEvent is emitted
-    # per closed row so the Task #97 analytics dashboard can measure leak
-    # rate by source. The background task is not cancelled explicitly on
-    # shutdown — Uvicorn's worker exit aborts it — because each tick is
-    # self-contained (fresh session per run, no long-lived transactions).
+    # Task #96: periodic stuck-call sweeper. Runs immediately at startup
+    # and every 5 minutes thereafter, closing any CallLog left in
+    # initiated/ringing/in_progress state that has no active pipeline
+    # in-process. A finalization_forced CallEvent is emitted per closed row
+    # so the Task #97 analytics dashboard can measure leak rate by source.
+    # The task is cancelled gracefully in the shutdown_event below.
     app.state._stuck_call_sweeper_task = asyncio.create_task(_stuck_call_sweeper_loop())
     print("✅ Stuck-call sweeper started (runs every 5 min)")
+
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Graceful shutdown: cancel the stuck-call sweeper task so Uvicorn
+    worker exit is clean and no asyncio.CancelledError stack trace is
+    logged."""
+    task = getattr(app.state, "_stuck_call_sweeper_task", None)
+    if task is not None and not task.done():
+        task.cancel()
+        try:
+            await task
+        except (asyncio.CancelledError, Exception):
+            pass
+        print("✅ Stuck-call sweeper cancelled on shutdown")
 
 
 async def _stuck_call_sweeper_loop():
