@@ -343,6 +343,7 @@ export default function CallAnalyticsPage() {
             value={o?.unresolved_count ?? 0}
             sub={`${o?.unresolved_rate ?? 0}% pending finalization`}
             color="text-yellow-400"
+            tooltip="Calls that are still in a non-terminal state (initiated / ringing / in-progress with no greeting yet) or otherwise awaiting finalization by the call sweeper. A persistent non-zero value points to a finalization lag, not an analytics bug."
             onClick={() => openDrilldown("unresolved", "Unresolved Calls")}
           />
         )}
