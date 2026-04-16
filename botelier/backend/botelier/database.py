@@ -880,9 +880,12 @@ def init_db():
        null or empty vad_config get the canonical VAD parameter defaults so
        the voice engine never falls back to misconfigured hardcoded values.
 
-    6. ``_backfill_stuck_initiated_calls`` — reclassifies CallLog rows that
-       were left frozen on status='initiated' by the historical
-       incoming_call_webhook bug. No-op once data is clean.
+    6. ``run_stuck_call_sweeper`` — unified safety-net that reclassifies any
+       CallLog rows left in a non-terminal status (initiated / ringing /
+       in_progress) with no active pipeline. Emits a ``finalization_forced``
+       CallEvent per closed row for leak-rate observability. Supersedes the
+       old one-shot ``_backfill_stuck_initiated_calls`` which is kept only
+       for backward compatibility in external scripts.
     """
     from botelier.models import tool  # noqa: F401
     from botelier.models import account  # noqa: F401
@@ -904,4 +907,10 @@ def init_db():
     _run_additive_migrations()
     _sync_system_role_permissions()
     _backfill_silero_vad_config()
-    _backfill_stuck_initiated_calls()
+    # Task #96: the unified stuck-call sweeper supersedes the legacy
+    # _backfill_stuck_initiated_calls. It covers initiated, ringing and
+    # in_progress (not just initiated) AND emits finalization_forced
+    # CallEvents so the Task #97 leak-rate dashboard observes every
+    # startup-driven reclassification. Pipeline state is empty at this
+    # point, so skip_call_sids=None is safe.
+    run_stuck_call_sweeper(skip_call_sids=None)

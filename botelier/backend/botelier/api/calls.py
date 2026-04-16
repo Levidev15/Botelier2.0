@@ -465,6 +465,24 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                 except Exception:
                     _pipeline_was_active = True  # conservative: assume active on error
 
+            # Task #96: webhook safety-net — if no pipeline is running in-process
+            # when a terminal Twilio status arrives, this webhook is the last
+            # path that can finalize the row. Run complete_call FIRST while the
+            # row is still non-terminal so complete_call performs the full
+            # reconciliation (terminal classification from ai_greeting_completed,
+            # leg duration rollup) and emits finalization_forced. update_status
+            # runs afterwards and is idempotent on already-terminal rows.
+            if call_status in _TERMINAL_TWILIO and not _pipeline_was_active:
+                try:
+                    call_logger.complete_call(
+                        call_sid=call_sid,
+                        forced_by="webhook_safety_net",
+                    )
+                except Exception as _sn_err:
+                    logger.warning(
+                        f"webhook_safety_net complete_call failed for {call_sid}: {_sn_err}"
+                    )
+
             call_logger.update_status(call_sid, call_status, duration_seconds)
             if call_status in _TERMINAL_TWILIO:
                 call_logger.update_leg_status(
@@ -481,24 +499,6 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                         _classify_log.status = CallStatus.ENDED_EARLY.value
                         _classify_log.ended_early = True
                         db.commit()
-
-                # Task #96: webhook safety-net — when the pipeline finally
-                # block will never run for this SID (pipeline never started,
-                # crashed, or already ended without cleanly finalizing), drive
-                # complete_call ourselves so the row gets transcript-agnostic
-                # finalization AND an observability trace. complete_call is
-                # idempotent (per-source) and safe to call even after
-                # update_status already stamped the row terminal.
-                if not _pipeline_was_active:
-                    try:
-                        call_logger.complete_call(
-                            call_sid=call_sid,
-                            forced_by="webhook_safety_net",
-                        )
-                    except Exception as _sn_err:
-                        logger.warning(
-                            f"webhook_safety_net complete_call failed for {call_sid}: {_sn_err}"
-                        )
 
             # Log call_answered and call_ended events.
             # Both paths use _event_exists() to dedup:

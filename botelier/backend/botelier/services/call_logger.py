@@ -454,16 +454,19 @@ class CallLogger:
                     is not None
                 )
                 if not has_call_ended:
+                    _call_ended_details: Dict[str, Any] = {
+                        "source": forced_by,
+                        "end_reason": "finalized_by_sweeper" if forced_by == "sweeper" else "finalized_by_safety_net",
+                        "ended_by": "system",
+                    }
+                    if forced_by == "sweeper" and sweeper_age_seconds is not None:
+                        _call_ended_details["sweeper_age_seconds"] = int(sweeper_age_seconds)
                     self._write_event_inline(
                         call_log_id=call_log.id,
                         event_type="call_ended",
                         event_source="app",
                         severity="warning",
-                        details={
-                            "source": forced_by,
-                            "end_reason": "finalized_by_sweeper" if forced_by == "sweeper" else "finalized_by_safety_net",
-                            "ended_by": "system",
-                        },
+                        details=_call_ended_details,
                         call_started_at=call_log.started_at,
                     )
 
