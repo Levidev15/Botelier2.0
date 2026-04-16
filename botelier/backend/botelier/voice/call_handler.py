@@ -733,11 +733,28 @@ class CallHandler:
             # iteration and exits, instead of running blind for 5 minutes
             # until Pipecat's internal idle timeout fires.
             if call_sid in self.pending_cancels:
-                self.pending_cancels.pop(call_sid, None)
+                pending_recorded_at = self.pending_cancels.pop(call_sid, None)
                 logger.info(
                     f"Honouring pending cancel for {call_sid} — connect_complete "
                     f"arrived before pipeline registration; tearing down immediately"
                 )
+                # Record the race firing so we can quantify how often it
+                # actually triggers post-fix (Task #94 observability).
+                if call_sid in self.call_event_queues:
+                    delta_ms = None
+                    if pending_recorded_at is not None:
+                        try:
+                            delta_ms = int(
+                                (datetime.utcnow() - pending_recorded_at).total_seconds() * 1000
+                            )
+                        except Exception:
+                            delta_ms = None
+                    self.call_event_queues[call_sid].log(
+                        "pipeline_registered_after_cancel",
+                        event_source="app",
+                        severity="warning",
+                        details={"cancel_to_register_ms": delta_ms},
+                    )
                 try:
                     await task.cancel()
                 except Exception as e:

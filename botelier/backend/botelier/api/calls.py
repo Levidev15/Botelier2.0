@@ -50,6 +50,67 @@ def _event_exists(db: Session, call_log_id, event_type: str) -> bool:
     )
 
 
+# Vocabulary for enrichment fields written into CallEvent.details (Task #94).
+# Keep this set small and stable; adding values later is fine, renaming or
+# removing them is breaking for any downstream consumer (dashboard timeline,
+# analytics) that filters on these values.
+#
+#   end_reason ∈ {
+#       "caller_hangup",            # Caller dropped the call (Twilio status=completed on parent)
+#       "bot_hangup_after_transfer",# Bot terminated the call after a successful transfer
+#       "transfer_completed",       # Call ended cleanly after a warm/cold transfer leg finished
+#       "twilio_no_answer",         # Twilio reported no-answer
+#       "twilio_busy",              # Twilio reported busy
+#       "twilio_failed",            # Twilio reported failed
+#       "twilio_canceled",          # Twilio reported canceled
+#       "idle_timeout",             # Pipecat user-idle timeout fired and we hung up
+#       "pipeline_error",           # Unhandled exception in the pipeline runner
+#       "connect_complete",         # <Connect> action URL hit (media stream ended) — usually caller hangup
+#   }
+#
+#   ended_by ∈ {
+#       "caller",   # The human caller initiated the hangup
+#       "bot",      # Our pipeline initiated the hangup (post-transfer, idle, etc.)
+#       "twilio",   # Twilio refused to complete the call (busy/failed/no-answer/canceled)
+#       "system",   # Internal error (pipeline_error, infrastructure failure)
+#   }
+#
+#   disposition (transfer_ended only) ∈ {
+#       "human_answered", "no_answer", "caller_hung_up",
+#       "human_hung_up", "failed",
+#   }
+
+
+def _classify_twilio_call_ended(call_status: str) -> tuple[str, str]:
+    """Map a Twilio terminal CallStatus on the parent leg to (end_reason, ended_by)."""
+    if call_status == "completed":
+        return "caller_hangup", "caller"
+    if call_status == "no-answer":
+        return "twilio_no_answer", "twilio"
+    if call_status == "busy":
+        return "twilio_busy", "twilio"
+    if call_status == "failed":
+        return "twilio_failed", "twilio"
+    if call_status == "canceled":
+        return "twilio_canceled", "twilio"
+    return "caller_hangup", "caller"
+
+
+def _classify_transfer_disposition(call_status: str, answered_by: str = None) -> str:
+    """Map a Twilio terminal CallStatus on the transfer (child) leg to a disposition."""
+    if call_status == "no-answer":
+        return "no_answer"
+    if call_status in ("busy", "failed"):
+        return "failed"
+    if call_status == "canceled":
+        return "caller_hung_up"
+    if call_status == "completed":
+        if answered_by and "machine" in answered_by.lower():
+            return "failed"
+        return "human_hung_up"
+    return "human_hung_up"
+
+
 def _write_event(
     db: Session,
     call_log_id,
@@ -141,6 +202,25 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
                         status=call_status,
                         duration_seconds=duration_seconds,
                     )
+                    # Emit a terminal-rejection event so the dashboard can show
+                    # WHY a call never made it to a pipeline (Twilio rejected
+                    # before our backend could spawn one).
+                    if not _event_exists(db, existing_log.id, "call_rejected_terminal"):
+                        end_reason, ended_by = _classify_twilio_call_ended(call_status)
+                        _write_event(
+                            db,
+                            call_log_id=existing_log.id,
+                            event_type="call_rejected_terminal",
+                            event_source="twilio",
+                            severity="warning",
+                            details={
+                                "CallStatus": call_status,
+                                "CallDuration": duration_raw,
+                                "end_reason": end_reason,
+                                "ended_by": ended_by,
+                            },
+                            call_started_at=existing_log.started_at,
+                        )
             except Exception as e:
                 # Never block the webhook response on bookkeeping errors.
                 logger.warning(
@@ -303,13 +383,21 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                         call_started_at=parent_log.started_at,
                     )
                 elif call_status in _TERMINAL:
+                    answered_by = str(form_data.get("AnsweredBy", "")) or None
                     _write_event(
                         db,
                         call_log_id=parent_log.id,
                         event_type="transfer_ended",
                         event_source="twilio",
                         severity="info",
-                        details={"ChildCallSid": call_sid, "To": to_number, "CallStatus": call_status, "CallDuration": call_duration},
+                        details={
+                            "ChildCallSid": call_sid,
+                            "To": to_number,
+                            "CallStatus": call_status,
+                            "CallDuration": call_duration,
+                            "AnsweredBy": answered_by,
+                            "disposition": _classify_transfer_disposition(call_status, answered_by),
+                        },
                         call_started_at=parent_log.started_at,
                     )
         else:
@@ -353,13 +441,24 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                         )
                 elif call_status in _TERMINAL:
                     if not _event_exists(db, call_log.id, "call_ended"):
+                        end_reason, ended_by = _classify_twilio_call_ended(call_status)
+                        # If this parent call previously had a transfer and is now
+                        # closing cleanly, the better description is "transfer_completed".
+                        if call_status == "completed" and call_log.has_transfer:
+                            end_reason = "transfer_completed"
+                            ended_by = "caller"
                         _write_event(
                             db,
                             call_log_id=call_log.id,
                             event_type="call_ended",
                             event_source="twilio",
                             severity="info" if call_status == "completed" else "warning",
-                            details={"CallStatus": call_status, "CallDuration": call_duration},
+                            details={
+                                "CallStatus": call_status,
+                                "CallDuration": call_duration,
+                                "end_reason": end_reason,
+                                "ended_by": ended_by,
+                            },
                             call_started_at=call_log.started_at,
                         )
         
@@ -443,7 +542,11 @@ async def connect_complete(request: Request, db: Session = Depends(get_db), back
                 event_type="call_ended",
                 event_source="pipecat",
                 severity="info",
-                details={"source": "connect_complete"},
+                details={
+                    "source": "connect_complete",
+                    "end_reason": "connect_complete",
+                    "ended_by": "caller",
+                },
                 call_started_at=call_log.started_at,
             )
 
@@ -518,13 +621,21 @@ async def transfer_status_callback(request: Request, db: Session = Depends(get_d
                             call_started_at=parent_log.started_at,
                         )
                     elif call_status in _TERMINAL:
+                        answered_by = str(form_data.get("AnsweredBy", "")) or None
                         _write_event(
                             db,
                             call_log_id=parent_log.id,
                             event_type="transfer_ended",
                             event_source="twilio",
                             severity="info",
-                            details={"ChildCallSid": call_sid, "To": to_number, "CallStatus": call_status, "CallDuration": call_duration},
+                            details={
+                                "ChildCallSid": call_sid,
+                                "To": to_number,
+                                "CallStatus": call_status,
+                                "CallDuration": call_duration,
+                                "AnsweredBy": answered_by,
+                                "disposition": _classify_transfer_disposition(call_status, answered_by),
+                            },
                             call_started_at=parent_log.started_at,
                         )
 
