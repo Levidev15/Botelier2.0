@@ -113,7 +113,7 @@ async def _prewarm_llm_cache(system_prompt: str, model: str, api_key: str, call_
                 details={
                     "duration_ms": _duration_ms,
                     "model": model,
-                    "error_type": type(_pw_err).__name__,
+                    "error_class": type(_pw_err).__name__,
                     "error_message": str(_pw_err)[:200],
                 },
             )
@@ -539,7 +539,7 @@ class CallHandler:
                         "info",
                         {
                             "duration_ms": _mcp_duration_ms,
-                            "tools_registered": _tools_registered,
+                            "tools_registered_count": _tools_registered,
                         },
                     )
 
@@ -551,7 +551,7 @@ class CallHandler:
                         "error",
                         {
                             "duration_ms": _mcp_duration_ms,
-                            "error_type": type(e).__name__,
+                            "error_class": type(e).__name__,
                             "error_message": str(e)[:200],
                         },
                     )
