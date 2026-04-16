@@ -117,9 +117,36 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
         # We must short-circuit here before spawning a WebSocket pipeline, otherwise
         # a completed/failed call would create a ghost Pipecat pipeline that idles for
         # 300 s before timing out.
-        _TERMINAL_STATUSES = {"completed", "failed", "busy", "no-answer"}
+        #
+        # IMPORTANT: if a CallLog row already exists for this SID (created by an
+        # earlier non-terminal POST), we MUST update its status to the terminal
+        # value here. Otherwise the row stays frozen on 'initiated' with
+        # ended_at=NULL forever — the dashboard then shows a perpetually-running
+        # ghost call. CallLogger.update_status() is idempotent and shared with
+        # call_status_callback, so a concurrent terminal callback for the same
+        # SID is safe.
+        _TERMINAL_STATUSES = {"completed", "failed", "busy", "no-answer", "canceled"}
         if call_status in _TERMINAL_STATUSES:
             logger.debug(f"incoming_call_webhook: skipping pipeline for terminal status '{call_status}' on {call_sid}")
+            try:
+                existing_log = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
+                if existing_log:
+                    duration_raw = form_data.get("CallDuration")
+                    try:
+                        duration_seconds = int(duration_raw) if duration_raw else None
+                    except (TypeError, ValueError):
+                        duration_seconds = None
+                    CallLogger(db).update_status(
+                        call_sid=call_sid,
+                        status=call_status,
+                        duration_seconds=duration_seconds,
+                    )
+            except Exception as e:
+                # Never block the webhook response on bookkeeping errors.
+                logger.warning(
+                    f"incoming_call_webhook: failed to update terminal status "
+                    f"'{call_status}' for {call_sid}: {e}"
+                )
             return Response(
                 content='<?xml version="1.0" encoding="UTF-8"?><Response/>',
                 media_type="application/xml",
