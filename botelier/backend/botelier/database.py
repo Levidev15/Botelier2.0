@@ -756,12 +756,18 @@ def run_stuck_call_sweeper(skip_call_sids: Optional[set] = None, age_minutes: in
 
             age_seconds = int((datetime.utcnow() - row.started_at).total_seconds()) if row.started_at else None
             try:
-                CallLogger(db).complete_call(
+                _ok = CallLogger(db).complete_call(
                     call_sid=row.call_sid,
                     forced_by="sweeper",
                     sweeper_age_seconds=age_seconds,
                 )
-                summary["finalized"] += 1
+                if _ok:
+                    summary["finalized"] += 1
+                else:
+                    summary["errors"] += 1
+                    logger.warning(
+                        f"Sweeper: complete_call returned False for {row.call_sid}"
+                    )
             except Exception as e:
                 summary["errors"] += 1
                 db.rollback()
