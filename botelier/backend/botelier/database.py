@@ -671,6 +671,83 @@ def _backfill_silero_vad_config():
         db.close()
 
 
+def _backfill_stuck_initiated_calls():
+    """
+    One-time-style data backfill: reclassify CallLog rows that are stuck on
+    status='initiated' with ended_at=NULL.
+
+    WHY THIS EXISTS
+    A bug in incoming_call_webhook (now fixed) returned an empty TwiML on
+    terminal-status webhook re-POSTs without updating the existing CallLog row.
+    The result is rows that stay on status='initiated', ended_at=NULL forever
+    and show up as perpetually-running ghost calls in the dashboard.
+
+    HOW IT WORKS
+    On every startup this function finds any CallLog rows where
+        status='initiated' AND ended_at IS NULL AND started_at < NOW() - 5 min
+    and updates them to a sane terminal state:
+        status='no_answer', ended_early=TRUE,
+        ended_at = started_at + 30s, duration_seconds = 0.
+    Status is the canonical underscore form (CallStatus.NO_ANSWER.value), which
+    is what the rest of the application reads/filters/renders.
+    The 5-minute guard ensures an in-progress call is never touched.
+    The leg update is tightly scoped to ONLY the rows updated by this run via a
+    CTE + RETURNING id, so pre-existing no_answer rows are never re-touched.
+    Idempotent — safe to re-run; no-op once data is clean.
+    """
+    with engine.connect() as conn:
+        try:
+            # CTE returns the IDs of rows we just backfilled, then the second
+            # statement updates legs strictly belonging to those IDs.
+            result = conn.execute(text(
+                """
+                WITH backfilled AS (
+                    UPDATE call_logs
+                       SET status = 'no_answer',
+                           ended_early = TRUE,
+                           ended_at = started_at + INTERVAL '30 seconds',
+                           duration_seconds = 0
+                     WHERE status = 'initiated'
+                       AND ended_at IS NULL
+                       AND started_at < NOW() - INTERVAL '5 minutes'
+                 RETURNING id, started_at
+                ),
+                leg_update AS (
+                    UPDATE call_legs cl
+                       SET status = 'no_answer',
+                           ended_at = b.started_at + INTERVAL '30 seconds',
+                           duration_seconds = 0
+                      FROM backfilled b
+                     WHERE cl.call_log_id = b.id
+                       AND cl.leg_type = 'ai_conversation'
+                       AND cl.ended_at IS NULL
+                 RETURNING cl.id
+                )
+                SELECT
+                    (SELECT COUNT(*) FROM backfilled) AS call_count,
+                    (SELECT COUNT(*) FROM leg_update) AS leg_count
+                """
+            ))
+            row = result.fetchone()
+            call_count = (row[0] if row else 0) or 0
+            leg_count = (row[1] if row else 0) or 0
+            conn.commit()
+            if call_count > 0:
+                logger.info(
+                    f"Stuck-initiated backfill: reclassified {call_count} call_log row(s) "
+                    f"and {leg_count} matching ai_conversation leg(s) "
+                    f"as no_answer/ended_early."
+                )
+            else:
+                logger.info("Stuck-initiated backfill — no orphan rows found")
+        except Exception as e:
+            logger.error(f"Stuck-initiated backfill failed (non-fatal): {e}")
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+
+
 def init_db():
     """
     Initialize the database at application startup.
@@ -698,6 +775,10 @@ def init_db():
     5. ``_backfill_silero_vad_config`` — ensures all Silero assistants with a
        null or empty vad_config get the canonical VAD parameter defaults so
        the voice engine never falls back to misconfigured hardcoded values.
+
+    6. ``_backfill_stuck_initiated_calls`` — reclassifies CallLog rows that
+       were left frozen on status='initiated' by the historical
+       incoming_call_webhook bug. No-op once data is clean.
     """
     from botelier.models import tool  # noqa: F401
     from botelier.models import account  # noqa: F401
@@ -719,3 +800,4 @@ def init_db():
     _run_additive_migrations()
     _sync_system_role_permissions()
     _backfill_silero_vad_config()
+    _backfill_stuck_initiated_calls()
