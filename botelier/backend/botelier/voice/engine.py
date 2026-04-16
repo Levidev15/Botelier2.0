@@ -280,7 +280,16 @@ class IdleTimeoutTracker:
                 severity="warning",
                 details={"retry_count": retry_count, "timeout_secs": processor._timeout},
             )
-        logger.info(f"idle_timeout logged (retry #{retry_count})")
+            # Boundary event: makes "the caller went silent" explicitly visible
+            # in the dashboard timeline alongside the existing idle_timeout
+            # observability event (Task #94).
+            self._event_queue.log(
+                "caller_silence_detected",
+                event_source="pipecat",
+                severity="info",
+                details={"retry_count": retry_count, "timeout_secs": processor._timeout},
+            )
+        logger.info(f"idle_timeout / caller_silence_detected logged (retry #{retry_count})")
         return False  # One notification per idle period; let pipeline decide to hang up elsewhere
 
 
