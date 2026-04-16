@@ -28,68 +28,83 @@ _DRILLDOWN_PAGE_LIMIT = 50
 _MAX_RANGE_DAYS = 365
 
 
-# ----------------------------------------------------------------------------
-# Task #97: partition classification.
-#
-# Maps a (CallLog.status, CallLog.ai_greeting_completed) pair to exactly one
-# bucket. The partition is mutually exclusive and exhaustive across every
-# member of CallStatus crossed with {True, False}, so sum(buckets) always
-# equals total_calls. If a new CallStatus member is added in the future and
-# not classified here, it falls into ``unresolved`` — surfaced by
-# ``partition_integrity_ok`` and the per-status breakdown.
-#
-# Bucket semantics:
-#   - ai_handled   : the AI actually greeted the caller. Driven by the ground-
-#                    truth flag ai_greeting_completed=TRUE on any of
-#                    completed / ringing / in_progress / ended_early. Per Task
-#                    #96 sweeper, ringing/in_progress w/ greeted=True is a
-#                    mid-call row.
-#   - ended_early  : caller hung up before AI greeted (status=ended_early,
-#                    greeted=False). This is the "dropped before AI" bucket.
-#   - missed       : Twilio-side non-pickup outcomes (no_answer, busy,
-#                    canceled). Independent of greeted (greeted is False here
-#                    by construction).
-#   - failed       : infrastructure/provider failure (status=failed).
-#   - unresolved   : gap bucket for (a) non-terminal rows still awaiting
-#                    finalization — initiated unconditionally, plus ringing /
-#                    in_progress / completed with greeted=FALSE (completed w/o
-#                    greeting is an upstream data-quality anomaly surfaced
-#                    here rather than inflated into ai_handled), and (b) any
-#                    unknown/future CallStatus value so the partition stays
-#                    MECE.
-# ----------------------------------------------------------------------------
+# Task #97 partition — MECE over (CallStatus × {True, False}).
+# Buckets: ai_handled (greeted=True on completed/ringing/in_progress/
+# ended_early), ended_early (ended_early + greeted=False), missed
+# (no_answer/busy/canceled), failed, unresolved (initiated, plus
+# ringing/in_progress/completed with greeted=False, plus any unknown/future
+# CallStatus). `_classify_partition` and `_bucket_predicate` share the same
+# contract so the overview and drilldown can never drift.
 _PARTITION_BUCKETS = ("ai_handled", "ended_early", "missed", "failed", "unresolved")
+
+_AI_HANDLED_STATUSES = (
+    CallStatus.COMPLETED.value,
+    CallStatus.RINGING.value,
+    CallStatus.IN_PROGRESS.value,
+    CallStatus.ENDED_EARLY.value,
+)
+_MISSED_STATUSES = (
+    CallStatus.NO_ANSWER.value,
+    CallStatus.BUSY.value,
+    CallStatus.CANCELED.value,
+)
 
 
 def _classify_partition(status: str, ai_greeting_completed: bool) -> str:
-    """Return the partition bucket name for a (status, greeted) pair.
-
-    Pure function — unit-testable without a DB.
-    """
+    """Pure classifier: returns the bucket for a (status, greeted) pair."""
     if status == CallStatus.FAILED.value:
         return "failed"
-    if status in (
-        CallStatus.NO_ANSWER.value,
-        CallStatus.BUSY.value,
-        CallStatus.CANCELED.value,
-    ):
+    if status in _MISSED_STATUSES:
         return "missed"
-    # Task #97 contract: ai_handled is driven by ground-truth AI engagement
-    # (ai_greeting_completed=TRUE). A row stamped completed WITHOUT the greeting
-    # flag is an anomaly (data-quality bug upstream of analytics) — it routes
-    # to `unresolved` so the gap is surfaced rather than silently inflated
-    # into ai_handled.
-    if status == CallStatus.COMPLETED.value:
-        return "ai_handled" if ai_greeting_completed else "unresolved"
     if status == CallStatus.ENDED_EARLY.value:
-        # Defensive: (ended_early, greeted=TRUE) is forbidden by Task #96
-        # correctness but possible on legacy rows; attribute to ai_handled
-        # rather than misclassify as an early drop.
+        # (ended_early, greeted=True) is forbidden by Task #96 correctness
+        # but possible on legacy rows — attribute to ai_handled defensively.
         return "ai_handled" if ai_greeting_completed else "ended_early"
-    if status in (CallStatus.RINGING.value, CallStatus.IN_PROGRESS.value):
+    if status in (
+        CallStatus.COMPLETED.value,
+        CallStatus.RINGING.value,
+        CallStatus.IN_PROGRESS.value,
+    ):
         return "ai_handled" if ai_greeting_completed else "unresolved"
-    # initiated (+ any unknown/future enum value) → unresolved.
+    # initiated + any unknown/future enum value → unresolved.
     return "unresolved"
+
+
+def _bucket_predicate(bucket: str):
+    """SQLAlchemy predicate for a partition bucket — mirrors `_classify_partition`.
+
+    Single source of truth shared by the drilldown endpoint so the partition
+    and its drill-through row set can never diverge.
+    """
+    known = [s.value for s in CallStatus]
+    if bucket == "failed":
+        return CallLog.status == CallStatus.FAILED.value
+    if bucket == "missed":
+        return CallLog.status.in_(_MISSED_STATUSES)
+    if bucket == "ai_handled":
+        return (
+            CallLog.status.in_(_AI_HANDLED_STATUSES)
+            & (CallLog.ai_greeting_completed == True)  # noqa: E712
+        )
+    if bucket == "ended_early":
+        return (
+            (CallLog.status == CallStatus.ENDED_EARLY.value)
+            & (CallLog.ai_greeting_completed == False)  # noqa: E712
+        )
+    if bucket == "unresolved":
+        return (
+            (CallLog.status == CallStatus.INITIATED.value)
+            | (
+                CallLog.status.in_([
+                    CallStatus.RINGING.value,
+                    CallStatus.IN_PROGRESS.value,
+                    CallStatus.COMPLETED.value,
+                ])
+                & (CallLog.ai_greeting_completed == False)  # noqa: E712
+            )
+            | (CallLog.status.notin_(known))
+        )
+    raise ValueError(f"Unknown partition bucket: {bucket}")
 
 
 def _resolve_date_range(
@@ -552,39 +567,11 @@ async def get_calls_drilldown(
             # Legacy token: matches status=ended_early regardless of greeted.
             query = query.filter(CallLog.status == CallStatus.ENDED_EARLY.value)
         elif token == "ai_handled":
-            # Task #97 partition bucket: greeted=TRUE on completed/ringing/
-            # in_progress/ended_early. Mirrors _classify_partition exactly.
-            query = query.filter(
-                CallLog.status.in_([
-                    CallStatus.COMPLETED.value,
-                    CallStatus.RINGING.value,
-                    CallStatus.IN_PROGRESS.value,
-                    CallStatus.ENDED_EARLY.value,
-                ]),
-                CallLog.ai_greeting_completed == True,
-            )
+            query = query.filter(_bucket_predicate("ai_handled"))
         elif token == "ended_early_dropped":
-            # Task #97 partition bucket: caller hung up before greeting.
-            query = query.filter(
-                CallLog.status == CallStatus.ENDED_EARLY.value,
-                CallLog.ai_greeting_completed == False,
-            )
+            query = query.filter(_bucket_predicate("ended_early"))
         elif token == "unresolved":
-            # Task #97 partition bucket: non-terminal without greeting, PLUS
-            # any unknown/future status value (mirrors _classify_partition's
-            # fall-through so the overview and drilldown always reconcile).
-            _known_statuses = [s.value for s in CallStatus]
-            query = query.filter(
-                (CallLog.status == CallStatus.INITIATED.value)
-                | (
-                    CallLog.status.in_([
-                        CallStatus.RINGING.value,
-                        CallStatus.IN_PROGRESS.value,
-                    ])
-                    & (CallLog.ai_greeting_completed == False)
-                )
-                | (CallLog.status.notin_(_known_statuses))
-            )
+            query = query.filter(_bucket_predicate("unresolved"))
         # "all" — no extra filter
 
         total = query.count()
