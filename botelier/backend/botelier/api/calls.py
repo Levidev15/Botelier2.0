@@ -131,17 +131,24 @@ def _classify_transfer_disposition(call_status: str, answered_by: str = None) ->
 
 
 def _derive_end_reason_from_events(
-    db: Session, call_log_id, has_transfer: bool = False
+    db: Session, call_log_id
 ) -> Optional[tuple[str, str]]:
     """
     Inspect already-recorded CallEvent rows to refine (end_reason, ended_by)
     when emitting a `call_ended` event.
 
-    Priority is fixed:
-      pipeline_error → idle_timeout → bot_hangup_after_transfer
+    Only returns an override when there is *explicit* evidence of an internal
+    teardown reason — pipeline_error or idle_timeout — both of which mean the
+    pipeline (not the caller and not Twilio) ended the call.
 
     Returns None when no override applies — callers should fall back to their
-    own default (Twilio-derived or `connect_complete`).
+    own default (Twilio-derived, transfer_completed, or `connect_complete`).
+
+    Note: `bot_hangup_after_transfer` is part of the documented vocabulary but
+    is intentionally NOT inferred from `has_transfer` alone; doing so would
+    mislabel ordinary completed transfers (where the caller hangs up after the
+    human leg ends) as bot-initiated. A future change can wire it from an
+    explicit pipeline-side event when one exists.
     """
     rows = (
         db.query(CallEvent.event_type)
@@ -153,8 +160,6 @@ def _derive_end_reason_from_events(
         return "pipeline_error", "system"
     if "idle_timeout" in types or "caller_silence_detected" in types:
         return "idle_timeout", "bot"
-    if has_transfer:
-        return "bot_hangup_after_transfer", "bot"
     return None
 
 
@@ -495,9 +500,7 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                         # bot_hangup_after_transfer) over the generic
                         # "caller_hangup" / "transfer_completed" defaults.
                         if call_status == "completed":
-                            derived = _derive_end_reason_from_events(
-                                db, call_log.id, has_transfer=call_log.has_transfer
-                            )
+                            derived = _derive_end_reason_from_events(db, call_log.id)
                             if derived:
                                 end_reason, ended_by = derived
                             elif call_log.has_transfer:
@@ -596,9 +599,7 @@ async def connect_complete(request: Request, db: Session = Depends(get_db), back
             # events show the pipeline ended for an internal reason
             # (pipeline_error, idle_timeout, bot_hangup_after_transfer).
             end_reason, ended_by = "connect_complete", "caller"
-            derived = _derive_end_reason_from_events(
-                db, call_log.id, has_transfer=call_log.has_transfer
-            )
+            derived = _derive_end_reason_from_events(db, call_log.id)
             if derived:
                 end_reason, ended_by = derived
             _write_event(
