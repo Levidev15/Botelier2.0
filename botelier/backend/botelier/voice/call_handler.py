@@ -126,6 +126,13 @@ class CallHandler:
         self.call_event_queues: Dict[str, CallEventQueue] = {}  # call_sid -> CallEventQueue
         self.call_recording_sids: Dict[str, str] = {}  # call_sid -> Twilio recording SID (set when recording starts)
         self.call_tasks: Dict[str, Any] = {}  # call_sid -> PipelineTask (cancelled by connect-complete when stream ends)
+        # SIDs for which connect_complete arrived BEFORE the pipeline finished
+        # constructing/registering. handle_call checks this set right after
+        # registering the task and tears it down immediately, instead of
+        # letting the pipeline run blind for 5 minutes until Pipecat's
+        # internal idle timeout fires. Only touched on the asyncio event
+        # loop, same as call_tasks — no locking needed.
+        self.pending_cancels: set = set()
     
     async def handle_call(
         self,
@@ -712,6 +719,22 @@ class CallHandler:
             # Pipecat handles all remaining WebSocket messages (media, dtmf, stop)
             runner = PipelineRunner()
             self.call_tasks[call_sid] = task
+            # Race fix: if connect_complete arrived BEFORE we got here (caller
+            # hung up faster than the pipeline could construct), a pending
+            # cancel intent is waiting in self.pending_cancels. Honour it
+            # immediately so the runner sees the CancelFrame on its first
+            # iteration and exits, instead of running blind for 5 minutes
+            # until Pipecat's internal idle timeout fires.
+            if call_sid in self.pending_cancels:
+                self.pending_cancels.discard(call_sid)
+                logger.info(
+                    f"Honouring pending cancel for {call_sid} — connect_complete "
+                    f"arrived before pipeline registration; tearing down immediately"
+                )
+                try:
+                    await task.cancel()
+                except Exception as e:
+                    logger.warning(f"Error applying pending cancel for {call_sid}: {e}")
             await runner.run(task)
             
             logger.info(f"✅ Call {call_sid} ended")
@@ -778,6 +801,9 @@ class CallHandler:
                 del self.call_recording_sids[call_sid]
             if call_sid in self.call_tasks:
                 del self.call_tasks[call_sid]
+            # Always discard a pending-cancel intent at end of life so the set
+            # never grows unboundedly under abnormal terminations.
+            self.pending_cancels.discard(call_sid)
 
     async def cancel_call_pipeline(self, call_sid: str) -> None:
         """
@@ -789,11 +815,36 @@ class CallHandler:
         runner.run(task) so the handle_call finally block runs immediately.
 
         Safe to call multiple times or when no pipeline is running — if
-        call_sid is not in call_tasks the method returns silently.
+        call_sid is not in call_tasks the method records a pending-cancel
+        intent so handle_call can honour it as soon as the pipeline finishes
+        registering. This avoids the fast-hangup race where connect_complete
+        arrives before the pipeline is in self.call_tasks and the pipeline
+        would otherwise run blind for ~5 minutes until Pipecat's idle timeout.
+        Idempotent against Twilio retry semantics — second call either finds
+        the cancel already executed (task gone) or already pending (set add
+        is a no-op).
         """
         task = self.call_tasks.get(call_sid)
         if task is None:
-            logger.debug(f"cancel_call_pipeline: no active pipeline for {call_sid} (already ended or never started)")
+            # Only record a pending cancel if handle_call is currently
+            # constructing the pipeline for this SID — i.e. it has registered
+            # in active_calls (line ~503) but not yet in call_tasks (line ~724).
+            # Without this gate, a delayed or retried connect_complete arriving
+            # AFTER the pipeline already tore down would permanently leak the
+            # SID into pending_cancels (no later finally would clean it up).
+            # active_calls is cleaned in handle_call's finally block, so this
+            # gate also guarantees pending_cancels never grows unboundedly.
+            if call_sid in self.active_calls:
+                self.pending_cancels.add(call_sid)
+                logger.debug(
+                    f"cancel_call_pipeline: pipeline for {call_sid} still constructing "
+                    f"— recording pending cancel"
+                )
+            else:
+                logger.debug(
+                    f"cancel_call_pipeline: no active pipeline for {call_sid} "
+                    f"(already ended or never started)"
+                )
             return
         logger.info(f"Cancelling pipeline for call {call_sid} via connect-complete signal")
         try:
