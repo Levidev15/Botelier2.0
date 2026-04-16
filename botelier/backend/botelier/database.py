@@ -5,6 +5,8 @@ Uses SQLAlchemy with PostgreSQL for multi-tenant data persistence.
 """
 
 import os
+from datetime import datetime, timedelta
+from typing import Optional
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
@@ -669,6 +671,108 @@ def _backfill_silero_vad_config():
         db.rollback()
     finally:
         db.close()
+
+
+def run_stuck_call_sweeper(skip_call_sids: Optional[set] = None, age_minutes: int = 10) -> dict:
+    """
+    Task #96: periodic safety-net that finalizes CallLog rows abandoned in any
+    non-terminal status (``initiated`` / ``ringing`` / ``in_progress``).
+
+    Runs at startup (``init_db``) with ``skip_call_sids=None`` (nothing is in
+    memory yet) and again every 5 minutes from the main app lifespan loop,
+    with the set of in-flight ``call_sid``s passed in so we never close a row
+    under a healthy pipeline.
+
+    Each reclassified row goes through ``CallLogger.complete_call`` with
+    ``forced_by="sweeper"`` so a ``finalization_forced`` CallEvent is emitted
+    for leak-rate observability (read by Task #97).
+
+    Guards:
+      * ``age_minutes`` (default 10 min): calls younger than this are always
+        skipped — covers real in-flight calls whose WebSocket started recently.
+      * ``skip_call_sids``: call_sids registered in ``CallHandler.active_calls``
+        / ``call_tasks``. Never finalized by the sweeper even if age exceeds
+        threshold.
+      * Transfer legs: rows with ``has_transfer=TRUE`` AND a transfer CallLeg
+        still in a non-terminal state are skipped — an external warm transfer
+        can legitimately outlive the AI pipeline.
+
+    Returns a summary dict with counts keyed by final status, suitable for
+    logging and future metrics.
+    """
+    from botelier.models.call_log import CallLog, CallLeg, CallStatus as _CS, LegType as _LT
+    from botelier.services.call_logger import CallLogger
+
+    _TRANSFER_LEG_TYPES = [
+        _LT.TRANSFER_EXTERNAL.value,
+        _LT.TRANSFER_SIP.value,
+        _LT.TRANSFER_INTERNAL.value,
+        _LT.TRANSFER_COLD.value,
+    ]
+
+    summary = {"scanned": 0, "finalized": 0, "skipped_active": 0, "skipped_transfer": 0, "errors": 0}
+    skip_set = set(skip_call_sids or ())
+
+    _NON_TERMINAL_LEG_STATUSES = (
+        _CS.INITIATED.value,
+        _CS.RINGING.value,
+        _CS.IN_PROGRESS.value,
+    )
+
+    db = SessionLocal()
+    try:
+        candidates = (
+            db.query(CallLog)
+            .filter(
+                CallLog.status.in_(_NON_TERMINAL_LEG_STATUSES),
+                CallLog.ended_at.is_(None),
+                CallLog.started_at < datetime.utcnow() - timedelta(minutes=age_minutes),
+            )
+            .all()
+        )
+        summary["scanned"] = len(candidates)
+
+        for row in candidates:
+            if row.call_sid in skip_set:
+                summary["skipped_active"] += 1
+                continue
+
+            if row.has_transfer:
+                transfer_active = (
+                    db.query(CallLeg.id)
+                    .filter(
+                        CallLeg.call_log_id == row.id,
+                        CallLeg.leg_type.in_(_TRANSFER_LEG_TYPES),
+                        CallLeg.status.in_(_NON_TERMINAL_LEG_STATUSES),
+                    )
+                    .first()
+                    is not None
+                )
+                if transfer_active:
+                    summary["skipped_transfer"] += 1
+                    continue
+
+            age_seconds = int((datetime.utcnow() - row.started_at).total_seconds()) if row.started_at else None
+            try:
+                CallLogger(db).complete_call(
+                    call_sid=row.call_sid,
+                    forced_by="sweeper",
+                    sweeper_age_seconds=age_seconds,
+                )
+                summary["finalized"] += 1
+            except Exception as e:
+                summary["errors"] += 1
+                db.rollback()
+                logger.warning(f"Sweeper: failed to finalize {row.call_sid}: {e}")
+    except Exception as e:
+        logger.error(f"run_stuck_call_sweeper failed: {e}")
+        summary["errors"] += 1
+    finally:
+        db.close()
+
+    if summary["scanned"] or summary["finalized"]:
+        logger.info(f"Stuck-call sweeper: {summary}")
+    return summary
 
 
 def _backfill_stuck_initiated_calls():

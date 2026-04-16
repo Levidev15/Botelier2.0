@@ -152,6 +152,11 @@ class CallHandler:
         self.call_event_queues: Dict[str, CallEventQueue] = {}  # call_sid -> CallEventQueue
         self.call_recording_sids: Dict[str, str] = {}  # call_sid -> Twilio recording SID (set when recording starts)
         self.call_tasks: Dict[str, Any] = {}  # call_sid -> PipelineTask (cancelled by connect-complete when stream ends)
+        # Task #96: track the asyncio.Task that runs mark_greeting_completed
+        # in a thread, keyed by call_sid. Finalization paths await this (with
+        # a 500 ms timeout) before calling complete_call so the late-firing
+        # greeting callback never overwrites a completed row's status.
+        self.greeting_mark_tasks: Dict[str, Any] = {}
         # SIDs for which connect_complete arrived BEFORE the pipeline finished
         # constructing/registering. handle_call checks this dict right after
         # registering the task and tears it down immediately, instead of
@@ -701,6 +706,7 @@ class CallHandler:
                 # is set as soon as the greeting TTS finishes — reliably from our side,
                 # independent of Twilio status webhook timing.
                 _greeting_call_sid = call_sid  # capture for closure
+                _handler = self  # capture for closure — track task handle per call
                 async def _on_greeting_completed():
                     def _sync_mark_greeting():
                         from ..services.call_logger import CallLogger as _CallLogger
@@ -710,8 +716,19 @@ class CallHandler:
                             _cl.mark_greeting_completed(_greeting_call_sid)
                         finally:
                             gdb.close()
+                    # Task #96: expose the underlying thread future as a task so
+                    # finalization paths (_save_call_transcript, defensive finally)
+                    # can wait up to 500 ms for this DB write to land before
+                    # they compute the terminal status. Prevents the race where
+                    # complete_call stamps ended_early and mark_greeting_completed
+                    # subsequently corrects it back to completed (or vice versa).
+                    _mark_task = asyncio.create_task(
+                        asyncio.to_thread(_sync_mark_greeting),
+                        name=f"mark_greeting_completed:{_greeting_call_sid}",
+                    )
+                    _handler.greeting_mark_tasks[_greeting_call_sid] = _mark_task
                     try:
-                        await asyncio.to_thread(_sync_mark_greeting)
+                        await _mark_task
                     except Exception as _ge:
                         logger.error(f"Failed to set ai_greeting_completed: {_ge}")
                 greeting_completion_tracker.set_greeting_callback(_on_greeting_completed)
@@ -871,6 +888,41 @@ class CallHandler:
                 except Exception as eq_err:
                     logger.warning(f"Error flushing event queue for call {call_sid}: {eq_err}")
                 del self.call_event_queues[call_sid]
+
+            # ── Task #96: defensive finalization ──────────────────────────────
+            # Last line of defence for bugs in the try/except blocks above.
+            # If the row is still in a non-terminal status at this point, the
+            # pipeline has fully shut down and *nothing else* is going to
+            # finalize it — drive complete_call(forced_by="finally_defensive")
+            # using a fresh short-lived session so we never leave a CallLog
+            # stuck on initiated/ringing/in_progress.
+            try:
+                await self._await_greeting_mark(call_sid, timeout=0.5)
+                def _sync_defensive_finalize():
+                    from ..models.call_log import CallLog as _CallLog, CallStatus as _CS
+                    _db = SessionLocal()
+                    try:
+                        row = _db.query(_CallLog).filter(_CallLog.call_sid == call_sid).first()
+                        if row is None:
+                            return
+                        if row.status not in (
+                            _CS.INITIATED.value,
+                            _CS.RINGING.value,
+                            _CS.IN_PROGRESS.value,
+                        ):
+                            return
+                        CallLogger(_db).complete_call(
+                            call_sid=call_sid,
+                            forced_by="finally_defensive",
+                        )
+                    finally:
+                        _db.close()
+                await asyncio.to_thread(_sync_defensive_finalize)
+            except Exception as _fin_err:
+                logger.warning(
+                    f"Defensive finalization failed for {call_sid}: {_fin_err}"
+                )
+
             # Cleanup call session state
             if call_sid in self.active_calls:
                 del self.active_calls[call_sid]
@@ -894,9 +946,49 @@ class CallHandler:
                 del self.call_recording_sids[call_sid]
             if call_sid in self.call_tasks:
                 del self.call_tasks[call_sid]
+            # Task #96: drop the greeting-mark task handle — the underlying
+            # DB write is either already committed or its exception was
+            # logged by _on_greeting_completed.
+            if call_sid in self.greeting_mark_tasks:
+                del self.greeting_mark_tasks[call_sid]
             # Always remove the pending-cancel intent at end of life so the
             # dict never grows unboundedly under abnormal terminations.
             self.pending_cancels.pop(call_sid, None)
+
+    def is_pipeline_active(self, call_sid: str) -> bool:
+        """
+        Task #96: True iff a pipeline for ``call_sid`` is still registered
+        in-process. Used by the stuck-call sweeper and the Twilio ``/status``
+        safety-net to avoid racing with a healthy finalization.
+        """
+        return call_sid in self.active_calls or call_sid in self.call_tasks
+
+    async def _await_greeting_mark(self, call_sid: str, timeout: float = 0.5) -> None:
+        """
+        Task #96: wait up to ``timeout`` seconds for a pending
+        mark_greeting_completed thread-task to finish before reading
+        ``ai_greeting_completed`` in a finalization path.
+
+        Safe to call when no task exists — returns immediately. Never raises;
+        a timeout or task exception is logged and swallowed so the caller can
+        still finalize the row. Non-cancelling on timeout: the underlying DB
+        write will still commit when it completes; its result is accepted on
+        the next webhook or sweeper tick via the existing race-correction
+        branch in ``mark_greeting_completed``.
+        """
+        task = self.greeting_mark_tasks.get(call_sid)
+        if task is None or task.done():
+            return
+        try:
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"_await_greeting_mark: greeting-mark task still pending after "
+                f"{timeout:.2f}s for {call_sid} — proceeding with finalization "
+                f"(race correction will reclassify on next read if needed)"
+            )
+        except Exception as e:
+            logger.warning(f"_await_greeting_mark: greeting-mark task failed for {call_sid}: {e}")
 
     async def cancel_call_pipeline(self, call_sid: str) -> None:
         """
@@ -1313,6 +1405,11 @@ You have access to the following Q&A knowledge base. Use this information to ans
             _cap_transcript = transcript if transcript else None
             _cap_duration   = duration_seconds
             _cap_tools      = tools_used
+
+            # Task #96: before computing the terminal status, give any in-flight
+            # mark_greeting_completed write a short window to land so the row's
+            # ai_greeting_completed flag reflects reality when complete_call reads it.
+            await self._await_greeting_mark(call_sid, timeout=0.5)
 
             # ── All DB work in a thread — session never touches the event loop ────
             def _sync_save():
