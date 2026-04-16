@@ -183,7 +183,7 @@ export default function DrilldownPanel({
       // today, so we approximate with the closest legacy slice — status=completed.
       // Users see a superset-free slice and can refine from there.
       params.set("status", "completed");
-    } else if (metric === "ended_early_dropped") {
+    } else if (metric === "ended_early") {
       // Task #97 partition: status=ended_early AND greeted=false. Call Logs
       // doesn't filter by greeted yet; approximate with status=ended_early.
       params.set("status", "ended_early");

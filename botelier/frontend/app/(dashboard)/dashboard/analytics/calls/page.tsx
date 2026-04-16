@@ -81,7 +81,6 @@ interface AnalyticsData {
     missed_count: number;
     failed_count: number;
     unresolved_count: number;
-    ai_handled_rate_new: number;
     unresolved_rate: number;
     partition_integrity_ok: boolean;
     partition_counts_by_status: Record<string, number>;
@@ -323,7 +322,7 @@ export default function CallAnalyticsPage() {
           <StatCard
             label="AI Handled"
             value={o?.ai_handled_count ?? 0}
-            sub={`${o?.ai_handled_rate_new ?? 0}% of total`}
+            sub={`${o?.ai_handled_rate ?? 0}% of total`}
             color="text-green-400"
             onClick={() => openDrilldown("ai_handled", "AI Handled Calls")}
           />
@@ -334,7 +333,7 @@ export default function CallAnalyticsPage() {
             value={o?.ended_early_count ?? 0}
             sub={`${o?.ended_early_rate ?? 0}% of total`}
             color="text-orange-400"
-            onClick={() => openDrilldown("ended_early_dropped", "Dropped Before AI")}
+            onClick={() => openDrilldown("ended_early", "Dropped Before AI")}
           />
         )}
         {isVisible("unresolved") && (
