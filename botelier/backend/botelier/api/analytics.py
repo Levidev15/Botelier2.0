@@ -28,20 +28,24 @@ _DRILLDOWN_PAGE_LIMIT = 50
 _MAX_RANGE_DAYS = 365
 
 
-# Task #97 partition. Buckets per spec:
+# Task #97 partition — mutually exclusive and exhaustive over every
+# (CallStatus × {True, False}) pair. Buckets per spec:
 #   ai_handled  : greeted=True AND status IN (completed, in_progress, ringing).
 #                 Defensive: (ended_early, greeted=True) also routes here
 #                 (edge case #4 — forbidden shape, absorb into ai_handled).
 #   ended_early : greeted=False AND status = ended_early.
 #   missed      : status IN (no_answer, busy, canceled).
 #   failed      : status = failed.
-#   unresolved  : greeted=False AND status IN (initiated, ringing, in_progress).
-# Any other (status, greeted) pair (notably (completed, greeted=False) or an
-# unknown future CallStatus value) is deliberately UNCLASSIFIED — it does not
-# enter any bucket, so partition_integrity_ok flips to False and a warning is
-# logged. Such rows are Task #96 data-quality bugs to fix upstream, not to
-# force into an analytics bucket. Classifier and predicate share this contract
-# so overview and drilldown can never drift.
+#   unresolved  : gap / catch-all bucket — the spec's canonical placement for
+#                 (a) greeted=False AND status IN (initiated, ringing,
+#                 in_progress), and (b) "any new enum member added in the
+#                 future, until explicitly classified" (spec scope #1). Also
+#                 absorbs the two anomalous shapes (completed, greeted=False)
+#                 and (initiated, greeted=True) so the partition stays MECE
+#                 and partition_integrity_ok is a pure reconciliation check
+#                 (sum(buckets) == total_calls), not an anomaly sentinel.
+# Classifier and predicate share this contract so overview and drilldown
+# can never drift.
 _PARTITION_BUCKETS = ("ai_handled", "ended_early", "missed", "failed", "unresolved")
 _MISSED_STATUSES = (
     CallStatus.NO_ANSWER.value,
@@ -53,15 +57,10 @@ _AI_GREETED_STATUSES = (
     CallStatus.IN_PROGRESS.value,
     CallStatus.RINGING.value,
 )
-_UNRESOLVED_STATUSES = (
-    CallStatus.INITIATED.value,
-    CallStatus.RINGING.value,
-    CallStatus.IN_PROGRESS.value,
-)
 
 
-def _classify_partition(status: str, ai_greeting_completed: bool) -> Optional[str]:
-    """Pure classifier. Returns None for unclassified (anomaly) rows."""
+def _classify_partition(status: str, ai_greeting_completed: bool) -> str:
+    """Pure classifier — returns exactly one bucket for every (status, greeted) pair."""
     if status == CallStatus.FAILED.value:
         return "failed"
     if status in _MISSED_STATUSES:
@@ -70,10 +69,11 @@ def _classify_partition(status: str, ai_greeting_completed: bool) -> Optional[st
         return "ai_handled" if ai_greeting_completed else "ended_early"
     if ai_greeting_completed and status in _AI_GREETED_STATUSES:
         return "ai_handled"
-    if (not ai_greeting_completed) and status in _UNRESOLVED_STATUSES:
-        return "unresolved"
-    # (completed, greeted=False) and any unknown status fall through.
-    return None
+    # Everything else → unresolved (spec scope #1 catch-all):
+    #   (initiated/ringing/in_progress, greeted=False) — gap bucket;
+    #   (initiated, greeted=True) + (completed, greeted=False) — anomalies;
+    #   any unknown/future CallStatus value — until explicitly classified.
+    return "unresolved"
 
 
 def _bucket_predicate(bucket: str):
@@ -93,10 +93,16 @@ def _bucket_predicate(bucket: str):
             & (CallLog.ai_greeting_completed == False)  # noqa: E712
         )
     if bucket == "unresolved":
-        return (
-            (CallLog.ai_greeting_completed == False)  # noqa: E712
-            & CallLog.status.in_(_UNRESOLVED_STATUSES)
+        # Complement of the other four buckets — everything not already
+        # claimed falls here. Expressed as a NOT-OR to mirror the classifier's
+        # catch-all semantics exactly (spec scope #1).
+        other = (
+            _bucket_predicate("failed")
+            | _bucket_predicate("missed")
+            | _bucket_predicate("ai_handled")
+            | _bucket_predicate("ended_early")
         )
+        return ~other
     raise ValueError(f"Unknown partition bucket: {bucket}")
 
 
@@ -149,9 +155,9 @@ async def get_call_analytics(
             return q
 
         # Task #97: one GROUP BY (status, ai_greeting_completed) replaces the
-        # six legacy COUNT queries. Rows the classifier cannot place (e.g.
-        # (completed, greeted=False) or a future CallStatus value) tally into
-        # `unclassified_count` and flip partition_integrity_ok to False.
+        # six legacy COUNT queries. `_classify_partition` is exhaustive, so
+        # `partition_integrity_ok` is a pure reconciliation check (should
+        # always be True under normal operation).
         partition_rows = (
             _base()
             .with_entities(
@@ -164,7 +170,6 @@ async def get_call_analytics(
         )
         buckets = {name: 0 for name in _PARTITION_BUCKETS}
         partition_counts_by_status: dict = {}
-        unclassified_count = 0
         total = 0
         completed = 0
         ended_early_status_total = 0  # rows with status=ended_early (any greeted)
@@ -174,11 +179,7 @@ async def get_call_analytics(
             partition_counts_by_status[r.status] = (
                 partition_counts_by_status.get(r.status, 0) + cnt
             )
-            bucket = _classify_partition(r.status, bool(r.ai_greeting_completed))
-            if bucket is None:
-                unclassified_count += cnt
-            else:
-                buckets[bucket] += cnt
+            buckets[_classify_partition(r.status, bool(r.ai_greeting_completed))] += cnt
             if r.status == CallStatus.COMPLETED.value:
                 completed += cnt
             elif r.status == CallStatus.ENDED_EARLY.value:
@@ -190,12 +191,12 @@ async def get_call_analytics(
         failed_count = buckets["failed"]
         unresolved_count = buckets["unresolved"]
         partition_sum = sum(buckets.values())
-        partition_integrity_ok = (partition_sum == total) and (unclassified_count == 0)
+        partition_integrity_ok = partition_sum == total
         if not partition_integrity_ok:
             logger.warning(
                 "Analytics partition integrity fail for account {}: "
-                "total={} sum={} unclassified={} buckets={} per_status={}",
-                account_id, total, partition_sum, unclassified_count, buckets,
+                "total={} sum={} buckets={} per_status={}",
+                account_id, total, partition_sum, buckets,
                 partition_counts_by_status,
             )
 
