@@ -25,6 +25,7 @@ const WIDGETS: WidgetDef[] = [
   { id: "total_calls", label: "Total Calls", defaultVisible: true },
   { id: "ai_handled", label: "AI Handled", defaultVisible: true },
   { id: "early_ended", label: "Dropped Before AI", defaultVisible: true },
+  { id: "unresolved", label: "Unresolved", defaultVisible: true },
   { id: "completion_rate", label: "Completion Rate", defaultVisible: true },
   { id: "transfer_rate", label: "Transfer Rate", defaultVisible: true },
   { id: "avg_duration", label: "Avg AI Duration", defaultVisible: true },
@@ -74,6 +75,17 @@ interface AnalyticsData {
   overview: {
     total_calls: number;
     completed: number;
+    // Task #97 partition (canonical):
+    ai_handled_count: number;
+    ended_early_count: number;
+    missed_count: number;
+    failed_count: number;
+    unresolved_count: number;
+    ai_handled_rate_new: number;
+    unresolved_rate: number;
+    partition_integrity_ok: boolean;
+    partition_counts_by_status: Record<string, number>;
+    // Legacy aliases (deprecated — kept this release):
     ai_handled_calls: number;
     ai_handled_rate: number;
     missed: number;
@@ -310,19 +322,28 @@ export default function CallAnalyticsPage() {
         {isVisible("ai_handled") && (
           <StatCard
             label="AI Handled"
-            value={o?.ai_handled_calls ?? 0}
-            sub={`${o?.ai_handled_rate ?? 0}% of total`}
+            value={o?.ai_handled_count ?? 0}
+            sub={`${o?.ai_handled_rate_new ?? 0}% of total`}
             color="text-green-400"
-            onClick={() => openDrilldown("completed", "AI Handled Calls")}
+            onClick={() => openDrilldown("ai_handled", "AI Handled Calls")}
           />
         )}
         {isVisible("early_ended") && (
           <StatCard
             label="Dropped Before AI"
-            value={o?.ended_early_calls ?? 0}
+            value={o?.ended_early_count ?? 0}
             sub={`${o?.ended_early_rate ?? 0}% of total`}
             color="text-orange-400"
-            onClick={() => openDrilldown("ended_early", "Dropped Before AI")}
+            onClick={() => openDrilldown("ended_early_dropped", "Dropped Before AI")}
+          />
+        )}
+        {isVisible("unresolved") && (
+          <StatCard
+            label="Unresolved"
+            value={o?.unresolved_count ?? 0}
+            sub={`${o?.unresolved_rate ?? 0}% pending finalization`}
+            color="text-yellow-400"
+            onClick={() => openDrilldown("unresolved", "Unresolved Calls")}
           />
         )}
         {isVisible("completion_rate") && (

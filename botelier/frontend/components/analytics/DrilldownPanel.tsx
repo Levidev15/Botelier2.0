@@ -177,6 +177,21 @@ export default function DrilldownPanel({
       params.set("has_transfer", "true");
     } else if (metric === "acw_completed") {
       params.set("acw_completed", "true");
+    } else if (metric === "ai_handled") {
+      // Task #97 partition: greeted=true on completed/ringing/in_progress/ended_early.
+      // Call Logs page doesn't support this compound predicate as a single filter
+      // today, so we approximate with the closest legacy slice — status=completed.
+      // Users see a superset-free slice and can refine from there.
+      params.set("status", "completed");
+    } else if (metric === "ended_early_dropped") {
+      // Task #97 partition: status=ended_early AND greeted=false. Call Logs
+      // doesn't filter by greeted yet; approximate with status=ended_early.
+      params.set("status", "ended_early");
+    } else if (metric === "unresolved") {
+      // Task #97 partition: status=initiated OR (ringing/in_progress AND
+      // greeted=false). Call Logs supports status=initiated as the closest
+      // single-status approximation; covers the dominant case in practice.
+      params.set("status", "initiated");
     } else if (metric.startsWith("status:")) {
       params.set("status", metric.slice(7));
     } else if (metric.startsWith("assistant:")) {
