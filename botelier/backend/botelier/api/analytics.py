@@ -28,63 +28,64 @@ _DRILLDOWN_PAGE_LIMIT = 50
 _MAX_RANGE_DAYS = 365
 
 
-# Task #97 partition — MECE over (CallStatus × {True, False}).
-# Buckets: ai_handled (greeted=True on completed/ringing/in_progress/
-# ended_early), ended_early (ended_early + greeted=False), missed
-# (no_answer/busy/canceled), failed, unresolved (initiated, plus
-# ringing/in_progress/completed with greeted=False, plus any unknown/future
-# CallStatus). `_classify_partition` and `_bucket_predicate` share the same
-# contract so the overview and drilldown can never drift.
+# Task #97 partition. Buckets per spec:
+#   ai_handled  : greeted=True AND status IN (completed, in_progress, ringing).
+#                 Defensive: (ended_early, greeted=True) also routes here
+#                 (edge case #4 — forbidden shape, absorb into ai_handled).
+#   ended_early : greeted=False AND status = ended_early.
+#   missed      : status IN (no_answer, busy, canceled).
+#   failed      : status = failed.
+#   unresolved  : greeted=False AND status IN (initiated, ringing, in_progress).
+# Any other (status, greeted) pair (notably (completed, greeted=False) or an
+# unknown future CallStatus value) is deliberately UNCLASSIFIED — it does not
+# enter any bucket, so partition_integrity_ok flips to False and a warning is
+# logged. Such rows are Task #96 data-quality bugs to fix upstream, not to
+# force into an analytics bucket. Classifier and predicate share this contract
+# so overview and drilldown can never drift.
 _PARTITION_BUCKETS = ("ai_handled", "ended_early", "missed", "failed", "unresolved")
-
-_AI_HANDLED_STATUSES = (
-    CallStatus.COMPLETED.value,
-    CallStatus.RINGING.value,
-    CallStatus.IN_PROGRESS.value,
-    CallStatus.ENDED_EARLY.value,
-)
 _MISSED_STATUSES = (
     CallStatus.NO_ANSWER.value,
     CallStatus.BUSY.value,
     CallStatus.CANCELED.value,
 )
+_AI_GREETED_STATUSES = (
+    CallStatus.COMPLETED.value,
+    CallStatus.IN_PROGRESS.value,
+    CallStatus.RINGING.value,
+)
+_UNRESOLVED_STATUSES = (
+    CallStatus.INITIATED.value,
+    CallStatus.RINGING.value,
+    CallStatus.IN_PROGRESS.value,
+)
 
 
-def _classify_partition(status: str, ai_greeting_completed: bool) -> str:
-    """Pure classifier: returns the bucket for a (status, greeted) pair."""
+def _classify_partition(status: str, ai_greeting_completed: bool) -> Optional[str]:
+    """Pure classifier. Returns None for unclassified (anomaly) rows."""
     if status == CallStatus.FAILED.value:
         return "failed"
     if status in _MISSED_STATUSES:
         return "missed"
     if status == CallStatus.ENDED_EARLY.value:
-        # (ended_early, greeted=True) is forbidden by Task #96 correctness
-        # but possible on legacy rows — attribute to ai_handled defensively.
         return "ai_handled" if ai_greeting_completed else "ended_early"
-    if status in (
-        CallStatus.COMPLETED.value,
-        CallStatus.RINGING.value,
-        CallStatus.IN_PROGRESS.value,
-    ):
-        return "ai_handled" if ai_greeting_completed else "unresolved"
-    # initiated + any unknown/future enum value → unresolved.
-    return "unresolved"
+    if ai_greeting_completed and status in _AI_GREETED_STATUSES:
+        return "ai_handled"
+    if (not ai_greeting_completed) and status in _UNRESOLVED_STATUSES:
+        return "unresolved"
+    # (completed, greeted=False) and any unknown status fall through.
+    return None
 
 
 def _bucket_predicate(bucket: str):
-    """SQLAlchemy predicate for a partition bucket — mirrors `_classify_partition`.
-
-    Single source of truth shared by the drilldown endpoint so the partition
-    and its drill-through row set can never diverge.
-    """
-    known = [s.value for s in CallStatus]
+    """SQLAlchemy predicate mirroring `_classify_partition` — single source of truth."""
     if bucket == "failed":
         return CallLog.status == CallStatus.FAILED.value
     if bucket == "missed":
         return CallLog.status.in_(_MISSED_STATUSES)
     if bucket == "ai_handled":
         return (
-            CallLog.status.in_(_AI_HANDLED_STATUSES)
-            & (CallLog.ai_greeting_completed == True)  # noqa: E712
+            (CallLog.ai_greeting_completed == True)  # noqa: E712
+            & CallLog.status.in_(_AI_GREETED_STATUSES + (CallStatus.ENDED_EARLY.value,))
         )
     if bucket == "ended_early":
         return (
@@ -93,16 +94,8 @@ def _bucket_predicate(bucket: str):
         )
     if bucket == "unresolved":
         return (
-            (CallLog.status == CallStatus.INITIATED.value)
-            | (
-                CallLog.status.in_([
-                    CallStatus.RINGING.value,
-                    CallStatus.IN_PROGRESS.value,
-                    CallStatus.COMPLETED.value,
-                ])
-                & (CallLog.ai_greeting_completed == False)  # noqa: E712
-            )
-            | (CallLog.status.notin_(known))
+            (CallLog.ai_greeting_completed == False)  # noqa: E712
+            & CallLog.status.in_(_UNRESOLVED_STATUSES)
         )
     raise ValueError(f"Unknown partition bucket: {bucket}")
 
@@ -156,11 +149,9 @@ async def get_call_analytics(
             return q
 
         # Task #97: one GROUP BY (status, ai_greeting_completed) replaces the
-        # six legacy COUNT queries and forms a mutually-exclusive, exhaustive
-        # partition. Every status value is classified into exactly one bucket
-        # by _classify_partition(); a new enum member appears in
-        # partition_counts_by_status and is routed to ``unresolved`` until
-        # explicitly classified.
+        # six legacy COUNT queries. Rows the classifier cannot place (e.g.
+        # (completed, greeted=False) or a future CallStatus value) tally into
+        # `unclassified_count` and flip partition_integrity_ok to False.
         partition_rows = (
             _base()
             .with_entities(
@@ -173,10 +164,9 @@ async def get_call_analytics(
         )
         buckets = {name: 0 for name in _PARTITION_BUCKETS}
         partition_counts_by_status: dict = {}
+        unclassified_count = 0
         total = 0
-        # Legacy slice counts derived from the same partition pass.
         completed = 0
-        missed_total = 0
         ended_early_status_total = 0  # rows with status=ended_early (any greeted)
         for r in partition_rows:
             cnt = int(r.cnt)
@@ -184,15 +174,13 @@ async def get_call_analytics(
             partition_counts_by_status[r.status] = (
                 partition_counts_by_status.get(r.status, 0) + cnt
             )
-            buckets[_classify_partition(r.status, bool(r.ai_greeting_completed))] += cnt
+            bucket = _classify_partition(r.status, bool(r.ai_greeting_completed))
+            if bucket is None:
+                unclassified_count += cnt
+            else:
+                buckets[bucket] += cnt
             if r.status == CallStatus.COMPLETED.value:
                 completed += cnt
-            elif r.status in (
-                CallStatus.NO_ANSWER.value,
-                CallStatus.BUSY.value,
-                CallStatus.CANCELED.value,
-            ):
-                missed_total += cnt
             elif r.status == CallStatus.ENDED_EARLY.value:
                 ended_early_status_total += cnt
 
@@ -202,18 +190,17 @@ async def get_call_analytics(
         failed_count = buckets["failed"]
         unresolved_count = buckets["unresolved"]
         partition_sum = sum(buckets.values())
-        partition_integrity_ok = partition_sum == total
+        partition_integrity_ok = (partition_sum == total) and (unclassified_count == 0)
         if not partition_integrity_ok:
             logger.warning(
-                f"Analytics partition mismatch for account {account_id}: "
-                f"total={total} partition_sum={partition_sum} buckets={buckets}"
+                "Analytics partition integrity fail for account {}: "
+                "total={} sum={} unclassified={} buckets={} per_status={}",
+                account_id, total, partition_sum, unclassified_count, buckets,
+                partition_counts_by_status,
             )
 
-        # Legacy (pre-#97) aliases. Kept for backward compatibility this
-        # release; see replit.md deprecation note. The legacy ``missed`` and
-        # ``failed`` semantics already match the new partition so they are the
-        # same integer. ``ai_handled`` legacy was aliased to completed; keep
-        # that alias intact to avoid silent dashboard regressions.
+        # Legacy (pre-#97) aliases. Kept for backward compat this release;
+        # see replit.md deprecation note.
         missed = missed_count
         failed = failed_count
         ended_early = ended_early_status_total
@@ -265,32 +252,23 @@ async def get_call_analytics(
         overview = {
             "total_calls": total,
             "completed": completed,
-            # --- Task #97 partition (new canonical keys) ----------------------
+            # --- Task #97 partition (new canonical keys) ---
             "ai_handled_count": ai_handled_count,
             "ended_early_count": ended_early_count,
             "missed_count": missed_count,
             "failed_count": failed_count,
             "unresolved_count": unresolved_count,
-            # Task #97: canonical rates are computed from the NEW partition
-            # counts so every card on the dashboard reconciles with the
-            # mutually-exclusive buckets. `ai_handled_rate_new` is kept as a
-            # transitional alias for callers that migrated early.
-            "ai_handled_rate_new": round(ai_handled_count / total * 100, 1) if total else 0,
             "unresolved_rate": round(unresolved_count / total * 100, 1) if total else 0,
             "partition_integrity_ok": partition_integrity_ok,
             "partition_counts_by_status": partition_counts_by_status,
-            # --- Legacy aliases (deprecated, preserved this release) ---------
+            # --- Legacy aliases (deprecated, preserved this release) ---
             "ai_handled_calls": ai_handled_legacy,
             "missed": missed,
             "failed": failed,
             "transferred": transferred,
             "ended_early_calls": ended_early,
-            # Rates use the new partition bucket numerators (task contract:
-            # "Preserve the existing ended_early_rate and ai_handled_rate
-            # formulas but compute them from the new counts"). The card UI is
-            # now guaranteed to reconcile with the partition, and the legacy
-            # status-level numerators remain available via `ended_early_calls`
-            # and `ai_handled_calls`.
+            # Per spec: preserve existing ai_handled_rate / ended_early_rate
+            # formulas but compute them from the new counts.
             "ended_early_rate": round(ended_early_count / total * 100, 1) if total else 0,
             "ai_handled_rate": round(ai_handled_count / total * 100, 1) if total else 0,
             "completion_rate": round(completed / total * 100, 1) if total else 0,
@@ -482,12 +460,12 @@ async def get_calls_drilldown(
     assistant_ids: Optional[List[UUID]] = Query(None, description="Filter to these assistants."),
     timezone: str = Query("UTC", description="IANA timezone name — used to match hour: filters to the same timezone as the chart."),
     metric: str = Query("all", description=(  # noqa: E501
-        "Metric token — one of: all | completed | missed | failed | transferred | "
-        "acw_completed | ended_early | ai_handled | ended_early_dropped | unresolved | "
-        "status:<val> | disposition:<uuid> | hour:<0-23> | "
-        "assistant:<uuid> | quality_range:<label> | resolution:<val>. "
-        "The ai_handled / ended_early_dropped / unresolved tokens mirror the "
-        "Task #97 partition buckets exposed by GET /api/analytics/calls."
+        "Metric token — one of: all | completed | transferred | acw_completed | "
+        "status:<val> | disposition:<uuid> | hour:<0-23> | assistant:<uuid> | "
+        "quality_range:<label> | resolution:<val> | "
+        "ai_handled | ended_early | missed | failed | unresolved. "
+        "The last five are the canonical Task #97 partition bucket tokens and "
+        "match the classifier used by GET /api/analytics/calls 1:1."
     )),
     page: int = Query(1, ge=1),
     limit: int = Query(_DRILLDOWN_PAGE_LIMIT, ge=1, le=100),
@@ -563,15 +541,9 @@ async def get_calls_drilldown(
         elif token.startswith("resolution:"):
             resolution_val = token[len("resolution:"):]
             query = query.filter(CallLog.acw_resolution == resolution_val)
-        elif token == "ended_early":
-            # Legacy token: matches status=ended_early regardless of greeted.
-            query = query.filter(CallLog.status == CallStatus.ENDED_EARLY.value)
-        elif token == "ai_handled":
-            query = query.filter(_bucket_predicate("ai_handled"))
-        elif token == "ended_early_dropped":
-            query = query.filter(_bucket_predicate("ended_early"))
-        elif token == "unresolved":
-            query = query.filter(_bucket_predicate("unresolved"))
+        elif token in ("ai_handled", "ended_early", "unresolved"):
+            # Canonical Task #97 partition bucket tokens.
+            query = query.filter(_bucket_predicate(token))
         # "all" — no extra filter
 
         total = query.count()
