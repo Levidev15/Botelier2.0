@@ -5,12 +5,19 @@ This service handles all call log updates to avoid code duplication
 across webhooks, WebSocket handlers, and other components.
 """
 
+import uuid
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from sqlalchemy.orm import Session
 from loguru import logger
 
 from ..models import CallLog, CallLeg, CallStatus, CallOutcome, LegType
+from ..models.call_event import CallEvent
+
+
+# Vocabulary for forced-finalization sources. Kept aligned with Task #96.
+# Any new source must be documented here so dashboards/analytics can surface it.
+_FORCED_BY_SOURCES = {"sweeper", "webhook_safety_net", "finally_defensive"}
 
 
 class CallLogger:
@@ -167,13 +174,53 @@ class CallLogger:
             self.db.rollback()
             return False
     
+    def _write_event_inline(
+        self,
+        call_log_id,
+        event_type: str,
+        event_source: str,
+        severity: str,
+        details: Dict[str, Any],
+        call_started_at: Optional[datetime],
+    ) -> None:
+        """
+        Direct, non-queued CallEvent insert using ``self.db``.
+
+        Safe to call from finalization paths where the per-call
+        ``CallEventQueue`` has already been flushed/stopped (sweeper,
+        webhook safety-net, defensive finally). Non-fatal on error —
+        observability is best-effort and must never block a disposition.
+        """
+        try:
+            now = datetime.utcnow()
+            offset_ms = None
+            if call_started_at:
+                offset_ms = int((now - call_started_at).total_seconds() * 1000)
+            evt = CallEvent(
+                id=uuid.uuid4(),
+                call_log_id=call_log_id,
+                event_type=event_type,
+                event_source=event_source,
+                severity=severity,
+                occurred_at=now,
+                offset_ms=offset_ms,
+                details=details,
+            )
+            self.db.add(evt)
+            # Intentionally not committing here; the caller batches the commit
+            # with the CallLog mutation.
+        except Exception as e:
+            logger.warning(f"Failed to enqueue inline CallEvent {event_type}: {e}")
+
     def complete_call(
         self,
         call_sid: str,
         transcript: Optional[List[Dict[str, Any]]] = None,
         outcome: Optional[str] = None,
         duration_seconds: Optional[int] = None,
-        tools_used: Optional[List[str]] = None
+        tools_used: Optional[List[str]] = None,
+        forced_by: Optional[str] = None,
+        sweeper_age_seconds: Optional[int] = None,
     ) -> bool:
         """
         Mark a call as completed and save transcript.
@@ -186,7 +233,15 @@ class CallLogger:
             transcript: List of conversation messages (role, content)
             outcome: Call outcome (booking_made, info_provided, transferred, etc.)
             duration_seconds: Total call duration
-            
+            forced_by: When set, this call originated from a safety-net path
+                (sweeper / webhook_safety_net / finally_defensive) rather than
+                the normal pipeline teardown. Triggers emission of a
+                ``finalization_forced`` CallEvent whose ``details.source``
+                carries the reason — used for leak-rate observability.
+            sweeper_age_seconds: Age of the stuck row when the sweeper picked it
+                up, in seconds. Included in the emitted event details. Ignored
+                unless ``forced_by == "sweeper"``.
+
         Returns:
             True if update was successful
         """
@@ -195,7 +250,56 @@ class CallLogger:
             if not call_log:
                 logger.warning(f"Call log not found for SID: {call_sid}")
                 return False
-            
+
+            prior_status = call_log.status
+            _terminal = {
+                CallStatus.COMPLETED.value,
+                CallStatus.ENDED_EARLY.value,
+                CallStatus.FAILED.value,
+                CallStatus.BUSY.value,
+                CallStatus.NO_ANSWER.value,
+                CallStatus.CANCELED.value,
+            }
+            # Idempotency for forced paths: if a safety-net path is invoked
+            # against a row that is already in a terminal state AND already
+            # has an ended_at, skip the body of complete_call entirely — but
+            # still emit one finalization_forced event per distinct source so
+            # the leak-rate dashboard captures "the webhook had to finalize"
+            # even when update_status already stamped the row terminal.
+            # Per-source dedup avoids duplicates from Twilio webhook retries.
+            if forced_by and prior_status in _terminal and call_log.ended_at is not None:
+                already_emitted = (
+                    self.db.query(CallEvent.id)
+                    .filter(
+                        CallEvent.call_log_id == call_log.id,
+                        CallEvent.event_type == "finalization_forced",
+                        CallEvent.details["source"].astext == forced_by,
+                    )
+                    .first()
+                    is not None
+                )
+                if not already_emitted:
+                    self._write_event_inline(
+                        call_log_id=call_log.id,
+                        event_type="finalization_forced",
+                        event_source="app",
+                        severity="warning",
+                        details={
+                            "source": forced_by,
+                            "prior_status": prior_status,
+                            "final_status": call_log.status,
+                            "ai_greeting_completed": bool(call_log.ai_greeting_completed),
+                            "idempotent_no_op": True,
+                        },
+                        call_started_at=call_log.started_at,
+                    )
+                    self.db.commit()
+                logger.debug(
+                    f"complete_call(forced_by={forced_by}) no-op for {call_sid}: "
+                    f"already terminal ({prior_status}) with ended_at set"
+                )
+                return True
+
             # Determine terminal status: completed if AI greeted, ended_early otherwise.
             # Only override if the call is not already in a terminal state.
             _non_terminal = {CallStatus.INITIATED.value, CallStatus.RINGING.value, CallStatus.IN_PROGRESS.value}
@@ -310,9 +414,64 @@ class CallLogger:
             total_leg_duration = sum(leg.duration_seconds or 0 for leg in warm_legs)
             if total_leg_duration > 0:
                 call_log.duration_seconds = total_leg_duration
-            
+
+            # Observability: when finalization was driven by a safety-net path
+            # (sweeper / webhook / defensive finally) rather than the normal
+            # pipeline teardown, emit a distinctive event so Task #97 and ops
+            # dashboards can measure the leak rate.
+            if forced_by:
+                if forced_by not in _FORCED_BY_SOURCES:
+                    logger.warning(
+                        f"complete_call: unknown forced_by value '{forced_by}' for {call_sid} "
+                        f"— event will still be written"
+                    )
+                details: Dict[str, Any] = {
+                    "source": forced_by,
+                    "prior_status": prior_status,
+                    "final_status": call_log.status,
+                    "ai_greeting_completed": bool(call_log.ai_greeting_completed),
+                }
+                if forced_by == "sweeper" and sweeper_age_seconds is not None:
+                    details["sweeper_age_seconds"] = int(sweeper_age_seconds)
+                self._write_event_inline(
+                    call_log_id=call_log.id,
+                    event_type="finalization_forced",
+                    event_source="app",
+                    severity="warning",
+                    details=details,
+                    call_started_at=call_log.started_at,
+                )
+                # Also emit a call_ended event if one has not already been
+                # written — so a sweeper-closed call still has a complete
+                # timeline for the event-log modal.
+                has_call_ended = (
+                    self.db.query(CallEvent.id)
+                    .filter(
+                        CallEvent.call_log_id == call_log.id,
+                        CallEvent.event_type == "call_ended",
+                    )
+                    .first()
+                    is not None
+                )
+                if not has_call_ended:
+                    self._write_event_inline(
+                        call_log_id=call_log.id,
+                        event_type="call_ended",
+                        event_source="app",
+                        severity="warning",
+                        details={
+                            "source": forced_by,
+                            "end_reason": "finalized_by_sweeper" if forced_by == "sweeper" else "finalized_by_safety_net",
+                            "ended_by": "system",
+                        },
+                        call_started_at=call_log.started_at,
+                    )
+
             self.db.commit()
-            logger.info(f"Completed call {call_sid} with outcome: {call_log.outcome}")
+            logger.info(
+                f"Completed call {call_sid} with outcome: {call_log.outcome}"
+                + (f" (forced_by={forced_by})" if forced_by else "")
+            )
             return True
             
         except Exception as e:

@@ -11,7 +11,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import os
 
-from botelier.database import init_db, SessionLocal
+import asyncio
+from botelier.database import init_db, SessionLocal, run_stuck_call_sweeper
 from botelier.api import tools_router
 from botelier.api.phone_numbers import router as phone_numbers_router
 from botelier.api.assistants import router as assistants_router
@@ -136,6 +137,48 @@ async def startup_event():
         print("✅ Silero VAD and SmartTurn models pre-warmed")
     except Exception as _e:
         print(f"⚠️  Model pre-warm failed (non-fatal): {_e}")
+
+    # Task #96: periodic stuck-call sweeper. Runs every 5 minutes and closes
+    # any CallLog left in initiated/ringing/in_progress state that has no
+    # active pipeline in-process. A finalization_forced CallEvent is emitted
+    # per closed row so the Task #97 analytics dashboard can measure leak
+    # rate by source. The background task is not cancelled explicitly on
+    # shutdown — Uvicorn's worker exit aborts it — because each tick is
+    # self-contained (fresh session per run, no long-lived transactions).
+    app.state._stuck_call_sweeper_task = asyncio.create_task(_stuck_call_sweeper_loop())
+    print("✅ Stuck-call sweeper started (runs every 5 min)")
+
+
+async def _stuck_call_sweeper_loop():
+    """Background task: run_stuck_call_sweeper immediately at startup and
+    every 5 minutes thereafter, with the set of currently-active call SIDs
+    pulled from the singleton CallHandler."""
+    _INTERVAL_SECONDS = 300  # 5 minutes
+    # Run the first tick immediately so any pre-existing stuck rows from a
+    # prior process crash are reclassified before the server has been up for
+    # 5 full minutes. Pipeline state is empty at this point, so skip_call_sids
+    # is empty — safe because no WebSocket has connected yet.
+    first_run = True
+    while True:
+        try:
+            if not first_run:
+                await asyncio.sleep(_INTERVAL_SECONDS)
+            first_run = False
+            try:
+                from botelier.api.websockets import call_handler
+                active = set(call_handler.active_calls.keys()) | set(call_handler.call_tasks.keys())
+            except Exception:
+                active = set()
+            try:
+                await asyncio.to_thread(run_stuck_call_sweeper, active)
+            except Exception as _sw_err:
+                # Never let a sweeper failure break the loop.
+                print(f"⚠️  Stuck-call sweeper tick failed: {_sw_err}")
+        except asyncio.CancelledError:
+            break
+        except Exception as _loop_err:
+            # Defensive: log & continue so the loop never silently dies.
+            print(f"⚠️  Stuck-call sweeper loop error: {_loop_err}")
 
 
 @app.get("/api/health")
