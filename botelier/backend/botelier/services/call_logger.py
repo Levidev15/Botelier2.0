@@ -262,40 +262,15 @@ class CallLogger:
             }
             # Idempotency for forced paths: if a safety-net path is invoked
             # against a row that is already in a terminal state AND already
-            # has an ended_at, skip the body of complete_call entirely — but
-            # still emit one finalization_forced event per distinct source so
-            # the leak-rate dashboard captures "the webhook had to finalize"
-            # even when update_status already stamped the row terminal.
-            # Per-source dedup avoids duplicates from Twilio webhook retries.
+            # has an ended_at, there is no work to do and NO finalization_forced
+            # event is emitted. The event signals *real* safety-net usage
+            # (i.e. this call path actually performed the terminal transition),
+            # so emitting on a no-op would inflate the leak-rate dashboard
+            # with healthy calls where a later Twilio retry raced a clean
+            # finalization. Silent no-op is the right semantics here.
             if forced_by and prior_status in _terminal and call_log.ended_at is not None:
-                already_emitted = (
-                    self.db.query(CallEvent.id)
-                    .filter(
-                        CallEvent.call_log_id == call_log.id,
-                        CallEvent.event_type == "finalization_forced",
-                        CallEvent.details["source"].astext == forced_by,
-                    )
-                    .first()
-                    is not None
-                )
-                if not already_emitted:
-                    self._write_event_inline(
-                        call_log_id=call_log.id,
-                        event_type="finalization_forced",
-                        event_source="app",
-                        severity="warning",
-                        details={
-                            "source": forced_by,
-                            "prior_status": prior_status,
-                            "final_status": call_log.status,
-                            "ai_greeting_completed": bool(call_log.ai_greeting_completed),
-                            "idempotent_no_op": True,
-                        },
-                        call_started_at=call_log.started_at,
-                    )
-                    self.db.commit()
                 logger.debug(
-                    f"complete_call(forced_by={forced_by}) no-op for {call_sid}: "
+                    f"complete_call(forced_by={forced_by}) silent no-op for {call_sid}: "
                     f"already terminal ({prior_status}) with ended_at set"
                 )
                 return True
