@@ -10,6 +10,7 @@ Also handles call status updates and creates call log records for analytics.
 import os
 import uuid
 from datetime import datetime
+from typing import Optional
 from fastapi import APIRouter, Request, Response, Depends, BackgroundTasks
 from sqlalchemy.orm import Session
 from loguru import logger
@@ -97,7 +98,18 @@ def _classify_twilio_call_ended(call_status: str) -> tuple[str, str]:
 
 
 def _classify_transfer_disposition(call_status: str, answered_by: str = None) -> str:
-    """Map a Twilio terminal CallStatus on the transfer (child) leg to a disposition."""
+    """
+    Map a Twilio terminal CallStatus + AnsweredBy on the transfer (child) leg
+    to a disposition value from the documented vocabulary.
+
+    A successfully connected leg that completes normally is reported as
+    ``human_answered`` — from a single terminal child-leg status we cannot
+    reliably tell whether the human or the caller hung up first, so the more
+    informative "the human picked up and the call ran to completion" value is
+    preferred.  ``human_hung_up`` is reserved for the rare case where Twilio's
+    AMD reports that the human-side audio cleanly stopped before the bridge
+    closed (``machine_end_*`` after a human-detected pickup).
+    """
     if call_status == "no-answer":
         return "no_answer"
     if call_status in ("busy", "failed"):
@@ -105,10 +117,45 @@ def _classify_transfer_disposition(call_status: str, answered_by: str = None) ->
     if call_status == "canceled":
         return "caller_hung_up"
     if call_status == "completed":
-        if answered_by and "machine" in answered_by.lower():
+        ab = (answered_by or "").lower()
+        if not ab:
+            # AMD disabled / not reported — assume human pickup succeeded.
+            return "human_answered"
+        if ab.startswith("machine_end"):
+            return "human_hung_up"
+        if "machine" in ab or ab in ("fax",):
             return "failed"
-        return "human_hung_up"
-    return "human_hung_up"
+        # human, human_residence, human_business, etc.
+        return "human_answered"
+    return "human_answered"
+
+
+def _derive_end_reason_from_events(
+    db: Session, call_log_id, has_transfer: bool = False
+) -> Optional[tuple[str, str]]:
+    """
+    Inspect already-recorded CallEvent rows to refine (end_reason, ended_by)
+    when emitting a `call_ended` event.
+
+    Priority is fixed:
+      pipeline_error → idle_timeout → bot_hangup_after_transfer
+
+    Returns None when no override applies — callers should fall back to their
+    own default (Twilio-derived or `connect_complete`).
+    """
+    rows = (
+        db.query(CallEvent.event_type)
+        .filter(CallEvent.call_log_id == call_log_id)
+        .all()
+    )
+    types = {r[0] for r in rows}
+    if "pipeline_error" in types:
+        return "pipeline_error", "system"
+    if "idle_timeout" in types or "caller_silence_detected" in types:
+        return "idle_timeout", "bot"
+    if has_transfer:
+        return "bot_hangup_after_transfer", "bot"
+    return None
 
 
 def _write_event(
@@ -442,11 +489,20 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                 elif call_status in _TERMINAL:
                     if not _event_exists(db, call_log.id, "call_ended"):
                         end_reason, ended_by = _classify_twilio_call_ended(call_status)
-                        # If this parent call previously had a transfer and is now
-                        # closing cleanly, the better description is "transfer_completed".
-                        if call_status == "completed" and call_log.has_transfer:
-                            end_reason = "transfer_completed"
-                            ended_by = "caller"
+                        # For non-terminal-failure completions, prefer a
+                        # vocabulary value that reflects what actually happened
+                        # inside the pipeline (pipeline_error, idle_timeout,
+                        # bot_hangup_after_transfer) over the generic
+                        # "caller_hangup" / "transfer_completed" defaults.
+                        if call_status == "completed":
+                            derived = _derive_end_reason_from_events(
+                                db, call_log.id, has_transfer=call_log.has_transfer
+                            )
+                            if derived:
+                                end_reason, ended_by = derived
+                            elif call_log.has_transfer:
+                                end_reason = "transfer_completed"
+                                ended_by = "caller"
                         _write_event(
                             db,
                             call_log_id=call_log.id,
@@ -536,6 +592,15 @@ async def connect_complete(request: Request, db: Session = Depends(get_db), back
         # Deduped so we never write a second event if Twilio's webhook arrived first.
         call_log = call_logger.get_call_log(call_sid)
         if call_log and not _event_exists(db, call_log.id, "call_ended"):
+            # Default = caller closed the media stream. Override when prior
+            # events show the pipeline ended for an internal reason
+            # (pipeline_error, idle_timeout, bot_hangup_after_transfer).
+            end_reason, ended_by = "connect_complete", "caller"
+            derived = _derive_end_reason_from_events(
+                db, call_log.id, has_transfer=call_log.has_transfer
+            )
+            if derived:
+                end_reason, ended_by = derived
             _write_event(
                 db,
                 call_log_id=call_log.id,
@@ -544,8 +609,8 @@ async def connect_complete(request: Request, db: Session = Depends(get_db), back
                 severity="info",
                 details={
                     "source": "connect_complete",
-                    "end_reason": "connect_complete",
-                    "ended_by": "caller",
+                    "end_reason": end_reason,
+                    "ended_by": ended_by,
                 },
                 call_started_at=call_log.started_at,
             )
