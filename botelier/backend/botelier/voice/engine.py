@@ -650,6 +650,12 @@ class TtsPipelineLatencyTracker(FrameProcessor):
             self._expecting_audio = True
             self._t_first_audio = 0.0
             self._turn_emitted = False  # Reset per-turn emission guard
+            # Per-turn isolation: clear the previous turn's LLM-end timestamp so
+            # the first-audio branch below cannot read a stale value if this
+            # turn's TTS audio begins before LLMFullResponseEndFrame arrives
+            # (common in streaming TTS).  LLMResponseCapture will refresh this
+            # key when it sees this turn's LLMFullResponseEndFrame.
+            self._timing_state.pop("t_llm_end", None)
 
         elif self._expecting_audio and isinstance(frame, AudioRawFrame):
             self._expecting_audio = False
