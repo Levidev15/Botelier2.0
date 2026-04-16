@@ -466,22 +466,29 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                     _pipeline_was_active = True  # conservative: assume active on error
 
             # Task #96: webhook safety-net — if no pipeline is running in-process
-            # when a terminal Twilio status arrives, this webhook is the last
-            # path that can finalize the row. Run complete_call FIRST while the
-            # row is still non-terminal so complete_call performs the full
-            # reconciliation (terminal classification from ai_greeting_completed,
-            # leg duration rollup) and emits finalization_forced. update_status
-            # runs afterwards and is idempotent on already-terminal rows.
+            # AND the local row is still non-terminal when a terminal Twilio
+            # status arrives, this webhook is the last path that can finalize
+            # the row. Gate on BOTH conditions so healthy calls (already
+            # finalized by the pipeline / connect-complete path) never get a
+            # spurious finalization_forced event.
+            _NON_TERMINAL_DB = {
+                CallStatus.INITIATED.value,
+                CallStatus.RINGING.value,
+                CallStatus.IN_PROGRESS.value,
+            }
             if call_status in _TERMINAL_TWILIO and not _pipeline_was_active:
-                try:
-                    call_logger.complete_call(
-                        call_sid=call_sid,
-                        forced_by="webhook_safety_net",
-                    )
-                except Exception as _sn_err:
-                    logger.warning(
-                        f"webhook_safety_net complete_call failed for {call_sid}: {_sn_err}"
-                    )
+                _pre_log = call_logger.get_call_log(call_sid)
+                _row_still_non_terminal = _pre_log is not None and _pre_log.status in _NON_TERMINAL_DB
+                if _row_still_non_terminal:
+                    try:
+                        call_logger.complete_call(
+                            call_sid=call_sid,
+                            forced_by="webhook_safety_net",
+                        )
+                    except Exception as _sn_err:
+                        logger.warning(
+                            f"webhook_safety_net complete_call failed for {call_sid}: {_sn_err}"
+                        )
 
             call_logger.update_status(call_sid, call_status, duration_seconds)
             if call_status in _TERMINAL_TWILIO:

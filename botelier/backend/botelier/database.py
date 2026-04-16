@@ -673,7 +673,7 @@ def _backfill_silero_vad_config():
         db.close()
 
 
-def run_stuck_call_sweeper(skip_call_sids: Optional[set] = None, age_minutes: int = 10) -> dict:
+def run_stuck_call_sweeper(skip_call_sids: Optional[set] = None, age_minutes: int = 30) -> dict:
     """
     Task #96: periodic safety-net that finalizes CallLog rows abandoned in any
     non-terminal status (``initiated`` / ``ringing`` / ``in_progress``).
@@ -688,8 +688,10 @@ def run_stuck_call_sweeper(skip_call_sids: Optional[set] = None, age_minutes: in
     for leak-rate observability (read by Task #97).
 
     Guards:
-      * ``age_minutes`` (default 10 min): calls younger than this are always
-        skipped — covers real in-flight calls whose WebSocket started recently.
+      * ``age_minutes`` (default 30 min): calls younger than this are always
+        skipped — a conservative upper bound that comfortably exceeds any
+        realistic AI conversation length and avoids finalizing a real
+        in-flight call if the in-memory liveness signal ever misses one.
       * ``skip_call_sids``: call_sids registered in ``CallHandler.active_calls``
         / ``call_tasks``. Never finalized by the sweeper even if age exceeds
         threshold.
