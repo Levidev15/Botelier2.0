@@ -374,6 +374,11 @@ END $$""",
     # NumericValueOutOfRange every 5 min, keeping those rows stuck forever.
     # The ALTER is wrapped in a DO block so it is a no-op once the column is
     # already BIGINT (idempotent across repeated startup runs).
+    #
+    # Migration approach note: this project does NOT use Alembic. All schema
+    # evolution lives in this _ADDITIVE_MIGRATIONS list (see header comment
+    # above) and runs on every backend startup. Adding an Alembic file here
+    # would be inconsistent with the rest of the codebase.
     """DO $$
 BEGIN
   IF EXISTS (
@@ -389,10 +394,18 @@ END $$""",
     # Task #115 — Fix 2: zero out fabricated durations left by the sweeper on
     # unanswered calls (answered_at IS NULL). Before this fix, complete_call()
     # computed leg duration as (datetime.utcnow() - leg.started_at), turning an
-    # overnight stuck call into an 800+ minute duration. The WHERE clause is
-    # intentionally conservative: only rows whose duration exceeds 7 200 s
-    # (2 hours) are touched — no real hotel AI call legitimately runs that long,
-    # and the filter ensures already-correct zero rows are never re-written.
+    # overnight stuck call into an 800+ minute duration.
+    #
+    # Scope decision (intentionally broader than the Apr-17 cohort):
+    #   The original investigation identified 9 inflated rows from the Apr-17
+    #   05:59 UTC sweeper run, but a timestamp-bounded WHERE would not catch
+    #   the same class of bug from earlier or future sweeper runs that may
+    #   have produced inflated durations on this same data shape (unanswered
+    #   call + non-trivial duration_seconds). We use a conservative duration
+    #   threshold (>7 200 s = 2 h) because no real hotel AI call legitimately
+    #   runs that long, and the answered_at IS NULL filter narrows the target
+    #   to exactly the failure mode the code fix prevents. This is idempotent:
+    #   after one successful run no rows match the predicate.
     """UPDATE call_logs
 SET duration_seconds = 0
 WHERE answered_at IS NULL
