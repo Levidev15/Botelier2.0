@@ -111,6 +111,17 @@ export default function DrilldownPanel({
   const [data, setData] = useState<DrilldownResponse | null>(null);
   const [loading, setLoading] = useState(false);
   const [page, setPage] = useState(1);
+  // Task #100 — when viewing the Unresolved bucket, operators can narrow to
+  // just the silent-caller sub-bucket (caller_spoke=FALSE on a greeted call).
+  // The toggle is reset whenever the parent metric changes.
+  const [silentOnly, setSilentOnly] = useState(false);
+  const supportsSilentToggle = metric === "unresolved";
+
+  // Effective metric token sent to the backend. `silent_caller` is a strict
+  // subset of `unresolved`, so toggling here keeps the drilldown contract
+  // honest (counts in this view always sum to a subset of the StatCard count).
+  const effectiveMetric =
+    supportsSilentToggle && silentOnly ? "silent_caller" : metric;
 
   const fetchData = useCallback(
     async (p: number) => {
@@ -119,7 +130,7 @@ export default function DrilldownPanel({
       try {
         const params = new URLSearchParams({
           account_id: accountId,
-          metric,
+          metric: effectiveMetric,
           date_from: dateRange.from.toISOString(),
           date_to: dateRange.to.toISOString(),
           timezone: timezone ?? "UTC",
@@ -136,8 +147,15 @@ export default function DrilldownPanel({
         setLoading(false);
       }
     },
-    [accountId, open, metric, dateRange, assistantIds, timezone, authFetch]
+    [accountId, open, metric, effectiveMetric, dateRange, assistantIds, timezone, authFetch]
   );
+
+  // Task #100 — reset the silent-only toggle whenever the parent metric changes
+  // (e.g. user closes Unresolved drilldown and opens AI Handled). The toggle
+  // is contextual and should never persist across different StatCards.
+  useEffect(() => {
+    setSilentOnly(false);
+  }, [metric]);
 
   // Track previous fetchData identity to distinguish query changes from page changes.
   // When fetchData changes (metric/dateRange/assistantIds changed), reset to page 1.
@@ -237,8 +255,15 @@ export default function DrilldownPanel({
       <div className="absolute right-0 top-0 h-full w-full max-w-5xl bg-[#141414] border-l border-gray-800 flex flex-col shadow-2xl">
         {/* Header */}
         <div className="flex items-center justify-between px-6 py-4 border-b border-gray-800 flex-shrink-0">
-          <div>
-            <h2 className="text-base font-semibold text-gray-100">{metricLabel}</h2>
+          <div className="flex-1 min-w-0">
+            <h2 className="text-base font-semibold text-gray-100">
+              {metricLabel}
+              {silentOnly && (
+                <span className="ml-2 px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide rounded bg-yellow-500/15 text-yellow-300 border border-yellow-500/30 align-middle">
+                  Silent only
+                </span>
+              )}
+            </h2>
             {data && (
               <p className="text-sm text-gray-500 mt-0.5">
                 {data.total} call{data.total !== 1 ? "s" : ""}
@@ -247,6 +272,20 @@ export default function DrilldownPanel({
                 {" – "}
                 {dateRange.to.toLocaleDateString("en-US", { month: "short", day: "numeric", year: "numeric" })}
               </p>
+            )}
+            {supportsSilentToggle && (
+              <label
+                className="mt-2 inline-flex items-center gap-2 text-xs text-gray-400 cursor-pointer select-none"
+                title="Show only calls where the AI greeted but the caller never spoke (silent line)"
+              >
+                <input
+                  type="checkbox"
+                  checked={silentOnly}
+                  onChange={(e) => setSilentOnly(e.target.checked)}
+                  className="h-3.5 w-3.5 rounded border-gray-600 bg-gray-800 text-yellow-400 focus:ring-yellow-500/40 focus:ring-offset-0"
+                />
+                Silent caller only
+              </label>
             )}
           </div>
           <button

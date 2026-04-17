@@ -137,15 +137,23 @@ def _bucket_predicate(bucket: str):
     raise ValueError(f"Unknown partition bucket: {bucket}")
 
 
-# Task #98 — sub-category predicates for the Unresolved StatCard tooltip
-# breakdown. Each predicate is evaluated against the same date+account window
-# as the overview query and is a strict subset of `_bucket_predicate("unresolved")`.
-def _unresolved_subbucket_predicates() -> dict:
-    silent_caller = (
+# Task #98 — predicate isolating the silent-caller sub-bucket of `unresolved`:
+# the AI greeted (or attempted ended_early after greeting) and the caller
+# never produced any audio. Used by the overview's `unresolved_breakdown`,
+# the `silent_caller` drilldown token (Task #100), and the silent-caller
+# top-contributor queries.
+def _silent_caller_predicate():
+    return (
         (CallLog.ai_greeting_completed == True)  # noqa: E712
         & CallLog.status.in_(_AI_GREETED_STATUSES + (CallStatus.ENDED_EARLY.value,))
         & _CALLER_SILENT
     )
+
+
+# Task #98 — sub-category predicates for the Unresolved StatCard tooltip
+# breakdown. Each predicate is evaluated against the same date+account window
+# as the overview query and is a strict subset of `_bucket_predicate("unresolved")`.
+def _unresolved_subbucket_predicates() -> dict:
     non_terminal_gap = (
         CallLog.status.in_(
             (CallStatus.INITIATED.value, CallStatus.RINGING.value, CallStatus.IN_PROGRESS.value)
@@ -153,7 +161,7 @@ def _unresolved_subbucket_predicates() -> dict:
         & (CallLog.ai_greeting_completed == False)  # noqa: E712
     )
     return {
-        "silent_caller": silent_caller,
+        "silent_caller": _silent_caller_predicate(),
         "non_terminal_gap": non_terminal_gap,
     }
 
@@ -434,14 +442,86 @@ async def get_call_analytics(
             arows = db.query(Assistant.id, Assistant.name).filter(Assistant.id.in_(asst_ids)).all()
             asst_names = {str(a.id): a.name for a in arows}
 
+        # Task #100 — silent-caller counts per assistant for the same window.
+        # Lets the by_assistant chart expose a "silent caller rate" in its
+        # tooltip, and feeds the silent_caller_breakdown.by_assistant top list.
+        silent_per_asst_rows = (
+            _base()
+            .filter(_silent_caller_predicate(), CallLog.assistant_id.isnot(None))
+            .with_entities(CallLog.assistant_id, func.count(CallLog.id).label("cnt"))
+            .group_by(CallLog.assistant_id)
+            .all()
+        )
+        silent_per_asst: dict = {
+            str(r.assistant_id): int(r.cnt) for r in silent_per_asst_rows
+        }
+        # Resolve assistant names for any silent-only assistants not already in
+        # the asst_names map (rare, but possible if no other call rows exist
+        # for that assistant in the window).
+        missing_silent_asst_ids = [
+            r.assistant_id for r in silent_per_asst_rows
+            if str(r.assistant_id) not in asst_names
+        ]
+        if missing_silent_asst_ids:
+            extra = db.query(Assistant.id, Assistant.name).filter(
+                Assistant.id.in_(missing_silent_asst_ids)
+            ).all()
+            for a in extra:
+                asst_names[str(a.id)] = a.name
+
         by_assistant = [
             {
                 "assistant_id": str(r.assistant_id),
                 "assistant_name": asst_names.get(str(r.assistant_id), "Unknown"),
                 "calls": r.cnt,
+                "silent_caller_count": silent_per_asst.get(str(r.assistant_id), 0),
             }
             for r in asst_rows
         ]
+
+        # Task #100 — top contributors to the silent-caller sub-bucket. Surfaced
+        # in the Unresolved StatCard tooltip so operators can see at a glance
+        # which assistants and which DIDs are responsible for silent-line drops.
+        silent_top_assistants = sorted(
+            silent_per_asst_rows, key=lambda r: int(r.cnt), reverse=True
+        )[:5]
+        silent_by_assistant = [
+            {
+                "assistant_id": str(r.assistant_id),
+                "assistant_name": asst_names.get(str(r.assistant_id), "Unknown"),
+                "count": int(r.cnt),
+            }
+            for r in silent_top_assistants
+        ]
+
+        silent_per_phone_rows = (
+            _base()
+            .filter(_silent_caller_predicate(), CallLog.phone_number_id.isnot(None))
+            .with_entities(CallLog.phone_number_id, func.count(CallLog.id).label("cnt"))
+            .group_by(CallLog.phone_number_id)
+            .order_by(desc("cnt"))
+            .limit(5)
+            .all()
+        )
+        silent_phone_ids = [r.phone_number_id for r in silent_per_phone_rows]
+        silent_phone_map: dict = {}
+        if silent_phone_ids:
+            prows = db.query(PhoneNumber.id, PhoneNumber.phone_number).filter(
+                PhoneNumber.id.in_(silent_phone_ids)
+            ).all()
+            silent_phone_map = {str(p.id): p.phone_number for p in prows}
+        silent_by_phone = [
+            {
+                "phone_number_id": str(r.phone_number_id),
+                "phone_number": silent_phone_map.get(str(r.phone_number_id), "Unknown"),
+                "count": int(r.cnt),
+            }
+            for r in silent_per_phone_rows
+        ]
+        overview["silent_caller_breakdown"] = {
+            "by_assistant": silent_by_assistant,
+            "by_phone": silent_by_phone,
+        }
 
         disp_rows = (
             _base()
@@ -555,9 +635,10 @@ async def get_calls_drilldown(
         "Metric token — one of: all | completed | transferred | acw_completed | "
         "status:<val> | disposition:<uuid> | hour:<0-23> | assistant:<uuid> | "
         "quality_range:<label> | resolution:<val> | "
-        "ai_handled | ended_early | missed | failed | unresolved. "
-        "The last five are the canonical Task #97 partition bucket tokens and "
-        "match the classifier used by GET /api/analytics/calls 1:1."
+        "ai_handled | ended_early | missed | failed | unresolved | silent_caller. "
+        "The Task #97 partition tokens (ai_handled..unresolved) match the "
+        "classifier used by GET /api/analytics/calls 1:1. silent_caller is the "
+        "Task #98 sub-bucket of unresolved (caller_spoke=FALSE on a greeted call)."
     )),
     page: int = Query(1, ge=1),
     limit: int = Query(_DRILLDOWN_PAGE_LIMIT, ge=1, le=100),
@@ -636,6 +717,11 @@ async def get_calls_drilldown(
         elif token in ("ai_handled", "ended_early", "unresolved"):
             # Canonical Task #97 partition bucket tokens.
             query = query.filter(_bucket_predicate(token))
+        elif token == "silent_caller":
+            # Task #100 — silent-caller sub-bucket of unresolved (greeted=True
+            # AND caller_spoke=FALSE on a greeted-eligible status). Used by
+            # the DrilldownPanel "silent caller only" toggle.
+            query = query.filter(_silent_caller_predicate())
         # "all" — no extra filter
 
         total = query.count()
