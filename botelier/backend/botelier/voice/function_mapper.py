@@ -10,6 +10,7 @@ import httpx
 from typing import Dict, Any, List, Callable, Optional, TYPE_CHECKING
 from loguru import logger
 from ..config.domain import get_public_base_url
+from ..logging_config import should_log_prompts as _should_log_prompts
 
 if TYPE_CHECKING:
     from .call_handler import CallHandler
@@ -534,7 +535,9 @@ class FunctionMapper:
                                 transfer_twiml = '\n'.join(twiml_parts)
 
                                 logger.info(f"🔄 Cold SIP REFER transfer for call {self.call_sid} to {phone_number} ({sip_uri})")
-                                logger.debug(f"Cold Transfer TwiML:\n{transfer_twiml}")
+                                # Full TwiML XML is gated behind LOG_PROMPTS to keep prod logs clean.
+                                if _should_log_prompts():
+                                    logger.debug(f"Cold Transfer TwiML:\n{transfer_twiml}")
                             else:
                                 # Warm Transfer (Twilio bridges both legs)
                                 # Twilio stays in the call and bridges the caller to the new number.
@@ -588,7 +591,9 @@ class FunctionMapper:
                                 transfer_twiml = '\n'.join(twiml_parts)
 
                                 logger.info(f"🔄 Warm transfer for call {self.call_sid} to {phone_number}")
-                                logger.debug(f"Warm Transfer TwiML:\n{transfer_twiml}")
+                                # Full TwiML XML is gated behind LOG_PROMPTS to keep prod logs clean.
+                                if _should_log_prompts():
+                                    logger.debug(f"Warm Transfer TwiML:\n{transfer_twiml}")
 
                             # All DB + Twilio REST work runs in a single worker thread.
                             # Session opens here — no await crosses this boundary.

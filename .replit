@@ -90,6 +90,11 @@ NEXTAUTH_SECRET = "l8K81CV1IxcdLFABbGPh0qvZCv0RdqLj8MOjKw+ud9s="
 [userenv.development]
 PUBLIC_BASE_URL = "https://7862d0f9-746c-4a00-bc3b-fe2d01757149-00-34304m7qlgqdq.riker.replit.dev"
 NEXTAUTH_URL = "https://7862d0f9-746c-4a00-bc3b-fe2d01757149-00-34304m7qlgqdq.riker.replit.dev"
+LOG_LEVEL = "DEBUG"
+
+[userenv.production]
+LOG_LEVEL = "INFO"
+LOG_PROMPTS = "false"
 
 [deployment]
 deploymentTarget = "vm"

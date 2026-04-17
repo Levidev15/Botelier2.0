@@ -11,6 +11,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import os
 
+# IMPORTANT: configure logging BEFORE any other botelier import so every
+# module's `from loguru import logger` inherits the centralised sinks.
+# See `botelier/logging_config.py` for the rationale (Task #105).
+from botelier.logging_config import configure_logging
+configure_logging()
+
 import asyncio
 from botelier.database import init_db, SessionLocal, run_stuck_call_sweeper
 from botelier.api import tools_router
