@@ -149,6 +149,22 @@ def _build_call_context(call_log: CallLog, db: Session) -> str:
 
 
 def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
+    # Task #98 — short-circuit when the caller never spoke. There is nothing
+    # for the LLM to score, classify, or summarize. Stamp acw_completed_at
+    # and acw_skip_reason so the UI can show a clean "No Caller Audio" badge
+    # instead of leaving the row dangling in a perpetual "ACW pending" state.
+    if call_log.caller_spoke is False:
+        logger.info(f"ACW skipped for call {call_log.id}: no_caller_audio")
+        try:
+            call_log.acw_skip_reason = "no_caller_audio"
+            if not call_log.acw_completed_at:
+                call_log.acw_completed_at = datetime.utcnow()
+            db.commit()
+        except Exception as _e:
+            logger.warning(f"Failed to stamp acw_skip_reason for {call_log.id}: {_e}")
+            db.rollback()
+        return {"skipped": True, "reason": "no_caller_audio"}
+
     if not call_log.transcript:
         logger.warning(f"ACW skipped for call {call_log.id}: no transcript")
         return {"skipped": True, "reason": "no_transcript"}

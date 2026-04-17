@@ -240,9 +240,19 @@ class FirstUserSpeechTracker(FrameProcessor):
         super().__init__(**kwargs)
         self._event_queue = event_queue
         self._logged = False
+        self._first_speech_callback = None  # Task #98 — async () -> None
 
     def set_event_queue(self, event_queue) -> None:
         self._event_queue = event_queue
+
+    def set_first_speech_callback(self, callback) -> None:
+        """
+        Task #98 — wire an async callback fired exactly once on the first
+        non-empty caller transcription. Used by call_handler.py to flip
+        ``call_logs.caller_spoke = TRUE`` so analytics can distinguish
+        silent calls from real conversations.
+        """
+        self._first_speech_callback = callback
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
@@ -262,6 +272,11 @@ class FirstUserSpeechTracker(FrameProcessor):
                     severity="info",
                     details={"transcript": frame.text.strip()[:200]},
                 )
+            if self._first_speech_callback is not None:
+                try:
+                    await self._first_speech_callback()
+                except Exception as _cb_err:
+                    logger.error(f"first_speech_callback error: {_cb_err}")
             logger.debug(f"user_first_speech logged: {frame.text.strip()[:50]}...")
 
         await self.push_frame(frame, direction)

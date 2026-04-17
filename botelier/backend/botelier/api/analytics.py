@@ -59,21 +59,48 @@ _AI_GREETED_STATUSES = (
 )
 
 
-def _classify_partition(status: str, ai_greeting_completed: bool) -> str:
-    """Pure classifier — returns exactly one bucket for every (status, greeted) pair."""
+def _classify_partition(
+    status: str,
+    ai_greeting_completed: bool,
+    caller_spoke: Optional[bool] = None,
+) -> str:
+    """
+    Pure classifier — returns exactly one bucket for every
+    (status, greeted, caller_spoke) triple.
+
+    Task #98: a row that *would* be ai_handled (greeted=TRUE on a non-terminal
+    or completed/ended_early status) is reclassified into ``unresolved`` if
+    ``caller_spoke is False`` — the AI greeted into a silent line and the
+    caller never produced any audio. ``caller_spoke is None`` (legacy rows
+    pre-dating this column) is treated as TRUE so historical metrics do not
+    silently shift.
+    """
     if status == CallStatus.FAILED.value:
         return "failed"
     if status in _MISSED_STATUSES:
         return "missed"
+    silent = caller_spoke is False  # explicit FALSE only (NULL → ignore)
     if status == CallStatus.ENDED_EARLY.value:
-        return "ai_handled" if ai_greeting_completed else "ended_early"
+        if ai_greeting_completed and not silent:
+            return "ai_handled"
+        # Either greeted=False (canonical ended_early) OR greeted=True but the
+        # caller never spoke (silent line) → fold into unresolved/ended_early.
+        if not ai_greeting_completed:
+            return "ended_early"
+        return "unresolved"  # greeted=True + silent caller
     if ai_greeting_completed and status in _AI_GREETED_STATUSES:
-        return "ai_handled"
+        return "unresolved" if silent else "ai_handled"
     # Everything else → unresolved (spec scope #1 catch-all):
     #   (initiated/ringing/in_progress, greeted=False) — gap bucket;
     #   (initiated, greeted=True) + (completed, greeted=False) — anomalies;
     #   any unknown/future CallStatus value — until explicitly classified.
     return "unresolved"
+
+
+# Task #98 — predicate for "definitely silent": caller_spoke IS FALSE.
+# NULL is intentionally treated as "assume spoke" (legacy rows).
+_CALLER_SILENT = CallLog.caller_spoke.is_(False)
+_CALLER_NOT_SILENT = ~CallLog.caller_spoke.is_(False)  # TRUE or NULL
 
 
 def _bucket_predicate(bucket: str):
@@ -83,9 +110,11 @@ def _bucket_predicate(bucket: str):
     if bucket == "missed":
         return CallLog.status.in_(_MISSED_STATUSES)
     if bucket == "ai_handled":
+        # Task #98 — exclude rows where the caller demonstrably never spoke.
         return (
             (CallLog.ai_greeting_completed == True)  # noqa: E712
             & CallLog.status.in_(_AI_GREETED_STATUSES + (CallStatus.ENDED_EARLY.value,))
+            & _CALLER_NOT_SILENT
         )
     if bucket == "ended_early":
         return (
@@ -95,7 +124,9 @@ def _bucket_predicate(bucket: str):
     if bucket == "unresolved":
         # Complement of the other four buckets — everything not already
         # claimed falls here. Expressed as a NOT-OR to mirror the classifier's
-        # catch-all semantics exactly (spec scope #1).
+        # catch-all semantics exactly (spec scope #1). Picks up both the
+        # legacy gap-row case and the new (greeted=True, caller_spoke=FALSE)
+        # silent-caller case rejected above.
         other = (
             _bucket_predicate("failed")
             | _bucket_predicate("missed")
@@ -104,6 +135,27 @@ def _bucket_predicate(bucket: str):
         )
         return ~other
     raise ValueError(f"Unknown partition bucket: {bucket}")
+
+
+# Task #98 — sub-category predicates for the Unresolved StatCard tooltip
+# breakdown. Each predicate is evaluated against the same date+account window
+# as the overview query and is a strict subset of `_bucket_predicate("unresolved")`.
+def _unresolved_subbucket_predicates() -> dict:
+    silent_caller = (
+        (CallLog.ai_greeting_completed == True)  # noqa: E712
+        & CallLog.status.in_(_AI_GREETED_STATUSES + (CallStatus.ENDED_EARLY.value,))
+        & _CALLER_SILENT
+    )
+    non_terminal_gap = (
+        CallLog.status.in_(
+            (CallStatus.INITIATED.value, CallStatus.RINGING.value, CallStatus.IN_PROGRESS.value)
+        )
+        & (CallLog.ai_greeting_completed == False)  # noqa: E712
+    )
+    return {
+        "silent_caller": silent_caller,
+        "non_terminal_gap": non_terminal_gap,
+    }
 
 
 def _resolve_date_range(
@@ -158,28 +210,59 @@ async def get_call_analytics(
         # six legacy COUNT queries. `_classify_partition` is exhaustive, so
         # `partition_integrity_ok` is a pure reconciliation check (should
         # always be True under normal operation).
+        # Task #98 — group by caller_spoke as well so the classifier can
+        # separate the silent-caller case (greeted=True, caller_spoke=False)
+        # from real AI-handled calls. NULL is preserved (legacy rows treated
+        # as "assume spoke").
         partition_rows = (
             _base()
             .with_entities(
                 CallLog.status,
                 CallLog.ai_greeting_completed,
+                CallLog.caller_spoke,
                 func.count(CallLog.id).label("cnt"),
             )
-            .group_by(CallLog.status, CallLog.ai_greeting_completed)
+            .group_by(CallLog.status, CallLog.ai_greeting_completed, CallLog.caller_spoke)
             .all()
         )
         buckets = {name: 0 for name in _PARTITION_BUCKETS}
         partition_counts_by_status: dict = {}
+        # Task #98 — sub-breakdown of the unresolved bucket for the StatCard
+        # tooltip. silent_caller = (greeted=True, spoke=False); the rest is
+        # the existing finalization-gap / anomaly content.
+        unresolved_breakdown = {"silent_caller": 0, "non_terminal_gap": 0, "other": 0}
         total = 0
         completed = 0
         ended_early_status_total = 0  # rows with status=ended_early (any greeted)
+        _non_terminal_statuses = (
+            CallStatus.INITIATED.value,
+            CallStatus.RINGING.value,
+            CallStatus.IN_PROGRESS.value,
+        )
         for r in partition_rows:
             cnt = int(r.cnt)
             total += cnt
             partition_counts_by_status[r.status] = (
                 partition_counts_by_status.get(r.status, 0) + cnt
             )
-            buckets[_classify_partition(r.status, bool(r.ai_greeting_completed))] += cnt
+            cs = r.caller_spoke  # Optional[bool]
+            bucket = _classify_partition(r.status, bool(r.ai_greeting_completed), cs)
+            buckets[bucket] += cnt
+            if bucket == "unresolved":
+                if (
+                    r.ai_greeting_completed
+                    and cs is False
+                    and r.status
+                    in _AI_GREETED_STATUSES + (CallStatus.ENDED_EARLY.value,)
+                ):
+                    unresolved_breakdown["silent_caller"] += cnt
+                elif (
+                    not r.ai_greeting_completed
+                    and r.status in _non_terminal_statuses
+                ):
+                    unresolved_breakdown["non_terminal_gap"] += cnt
+                else:
+                    unresolved_breakdown["other"] += cnt
             if r.status == CallStatus.COMPLETED.value:
                 completed += cnt
             elif r.status == CallStatus.ENDED_EARLY.value:
@@ -260,6 +343,10 @@ async def get_call_analytics(
             "failed_count": failed_count,
             "unresolved_count": unresolved_count,
             "unresolved_rate": round(unresolved_count / total * 100, 1) if total else 0,
+            # Task #98 — sub-breakdown of the unresolved bucket. Sums to
+            # unresolved_count. Surfaced in the StatCard tooltip so users
+            # can tell silent-caller drops apart from finalization-lag rows.
+            "unresolved_breakdown": unresolved_breakdown,
             "partition_integrity_ok": partition_integrity_ok,
             "partition_counts_by_status": partition_counts_by_status,
             # --- Legacy aliases (deprecated, preserved this release) ---

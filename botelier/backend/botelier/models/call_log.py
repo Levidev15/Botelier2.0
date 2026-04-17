@@ -109,6 +109,19 @@ class CallLog(Base):
     acw_resolution = Column(String, nullable=True)
     acw_quality_score = Column(Integer, nullable=True)
     acw_completed_at = Column(DateTime, nullable=True)
+    # Task #98: system-side reason ACW was skipped (e.g. "no_caller_audio").
+    # Distinct from acw_resolution which is the LLM-picked outcome.
+    acw_skip_reason = Column(String, nullable=True)
+
+    # Task #98 — tri-state caller engagement signal.
+    #   NULL  = unknown / legacy (pre-deploy row, never observed by Pipecat).
+    #   TRUE  = the caller produced at least one transcribed utterance.
+    #   FALSE = the call ended with the caller having said nothing.
+    # Used by analytics to keep the "AI Handled" bucket honest: a call where
+    # the AI greeted into a silent line is reclassified out of ai_handled
+    # into the unresolved catch-all. NULL is treated as "assume spoke" for
+    # partition purposes so historical rows do not silently shift buckets.
+    caller_spoke = Column(Boolean, nullable=True)
     
     tool_name = Column(String, nullable=True)
     
@@ -156,6 +169,8 @@ class CallLog(Base):
             "acw_resolution": self.acw_resolution,
             "acw_quality_score": self.acw_quality_score,
             "acw_completed_at": self.acw_completed_at.isoformat() + "Z" if self.acw_completed_at else None,
+            "acw_skip_reason": self.acw_skip_reason,
+            "caller_spoke": self.caller_spoke,
             "tool_name": self.tool_name,
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
             "updated_at": self.updated_at.isoformat() + "Z" if self.updated_at else None,
