@@ -33,8 +33,12 @@ from pipecat.frames.frames import (
     LLMFullResponseStartFrame,
     LLMTextFrame,
     MetricsFrame,
+    StartFrame,
     TextFrame,
+    TTSAudioRawFrame,
     TTSSpeakFrame,
+    TTSStartedFrame,
+    TTSStoppedFrame,
     TranscriptionFrame,
 )
 from pipecat.metrics.metrics import LLMUsageMetricsData
@@ -228,6 +232,112 @@ class UserTurnCapture(FrameProcessor):
                     logger.exception("UserTurnCapture: error in on_user_turn callback")
 
         await self.push_frame(frame, direction)
+
+
+class GreetingAudioInjector(FrameProcessor):
+    """
+    Pushes pre-rendered greeting PCM audio downstream as a TTSStartedFrame +
+    TTSAudioRawFrame chunks + TTSStoppedFrame sequence — but does so from a
+    point in the pipeline that is downstream of STT, so the cached audio is
+    never transcribed by the STT service.
+
+    Why this exists
+    ---------------
+    Previously the cached greeting was queued via ``PipelineTask.queue_frames``
+    which inserts at the *source* of the pipeline. The frames then flowed
+    through ``stt`` (which calls ``isinstance(frame, AudioRawFrame)`` and
+    forwards the bytes to Deepgram — confirmed against
+    pipecat 0.0.108 ``stt_service.py`` line 380, where ``TTSAudioRawFrame``
+    matches because it inherits from ``AudioRawFrame`` via
+    ``OutputAudioRawFrame``). Deepgram then transcribed the bot's own
+    greeting and emitted a ``TranscriptionFrame``, which our
+    ``FirstUserSpeechTracker`` recorded as ``user_first_speech``.
+
+    Wired into the pipeline between ``interruption_tracker`` and ``tts`` so
+    that ``tts`` still sees the frames as a pass-through (preserving the
+    ``_tts_audio_received`` bookkeeping that ``greeting_completion_tracker``
+    relies on) while every processor upstream of ``tts`` (including ``stt``)
+    is bypassed.
+
+    Lifecycle
+    ---------
+    ``set_pending_greeting(audio_bytes)`` is called BEFORE the pipeline runs.
+    The bytes are stashed. When the injector receives ``StartFrame`` (which
+    propagates first, before any other frame), it forwards StartFrame
+    downstream and then schedules a one-shot async task to push the cached
+    greeting frames downstream. Pushing inside ``process_frame`` cannot occur
+    before ``StartFrame`` because ``FrameProcessor._check_started`` would log
+    an error otherwise.
+    """
+
+    _CHUNK_SIZE = 320  # 20 ms @ 8 kHz linear16 PCM (8000 * 2 bytes/sample * 0.020 s)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._pending_audio: Optional[bytes] = None
+        self._injected = False
+
+    def set_pending_greeting(self, audio_bytes: bytes) -> None:
+        """Stash cached greeting bytes to be injected once the pipeline starts.
+
+        Safe to call before ``runner.run(task)``. If called more than once
+        before injection, only the most recent buffer is used. After the
+        one-shot injection has fired, further calls are ignored to prevent
+        re-greeting on long-lived pipelines.
+        """
+        if self._injected:
+            logger.debug("GreetingAudioInjector: ignoring pending audio — already injected")
+            return
+        self._pending_audio = audio_bytes
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        # Forward every frame unchanged — the injector is a pure observer
+        # for everything except its one-shot greeting injection.
+        await self.push_frame(frame, direction)
+
+        if (
+            isinstance(frame, StartFrame)
+            and not self._injected
+            and self._pending_audio
+        ):
+            self._injected = True
+            audio = self._pending_audio
+            self._pending_audio = None
+            # Fire-and-forget: chunked push runs concurrently with the
+            # rest of pipeline startup. push_frame calls are cheap (queue
+            # inserts) so this completes in milliseconds even for long
+            # greetings, but we don't want to block the StartFrame
+            # propagation through this processor.
+            asyncio.create_task(self._inject(audio))
+
+    async def _inject(self, audio: bytes) -> None:
+        """Push the cached greeting downstream as TTS lifecycle frames.
+
+        Mirrors the chunking and frame sequence the previous
+        ``task.queue_frames`` path used, so caller-side audio is byte-for-byte
+        identical and downstream lifecycle observers
+        (``greeting_completion_tracker``, ``tts_completion_watcher``,
+        ``MuteUntilFirstBotComplete``) behave exactly as before.
+        """
+        try:
+            await self.push_frame(TTSStartedFrame(), FrameDirection.DOWNSTREAM)
+            for i in range(0, len(audio), self._CHUNK_SIZE):
+                await self.push_frame(
+                    TTSAudioRawFrame(
+                        audio=audio[i : i + self._CHUNK_SIZE],
+                        sample_rate=8000,
+                        num_channels=1,
+                    ),
+                    FrameDirection.DOWNSTREAM,
+                )
+            await self.push_frame(TTSStoppedFrame(), FrameDirection.DOWNSTREAM)
+            logger.info(
+                f"🎙️ Greeting injected downstream of STT ({len(audio)} bytes, "
+                f"{(len(audio) // self._CHUNK_SIZE) + 1} chunks)"
+            )
+        except Exception as e:
+            logger.error(f"GreetingAudioInjector._inject failed: {e}")
 
 
 class FirstUserSpeechTracker(FrameProcessor):
@@ -1153,6 +1263,11 @@ class VoiceEngineFactory:
         # Track text frames/interruptions before TTS
         interruption_tracker = InterruptionTracker(on_interruption=on_interruption)
 
+        # Injects pre-rendered (cached) greeting PCM downstream of STT so the
+        # cached audio is never transcribed by Deepgram and surfaced as
+        # phantom user_first_speech / caller_spoke. See class docstring.
+        greeting_injector = GreetingAudioInjector()
+
         # Observe BotStoppedSpeakingFrame after TTS so transfer handlers can
         # await actual TTS completion rather than using fixed-duration sleeps.
         tts_completion_watcher = TtsCompletionWatcher()
@@ -1265,6 +1380,7 @@ class VoiceEngineFactory:
                 llm,
                 llm_response_capture,          # Captures complete LLM responses for transcript recovery
                 interruption_tracker,          # Observes text frames + InterruptionFrame before TTS
+                greeting_injector,             # One-shot cached-greeting push, downstream of STT
                 tts,
                 greeting_completion_tracker,   # Logs greeting_completed on first BotStoppedSpeakingFrame
                 tts_completion_watcher,        # Observes BotStoppedSpeakingFrame after TTS
@@ -1282,7 +1398,7 @@ class VoiceEngineFactory:
             ),
         )
 
-        return pipeline, task, llm, context_aggregator, context, tts_completion_watcher, first_speech_tracker, greeting_completion_tracker, idle_timeout_tracker, user_turn_capture, tts_latency_tracker
+        return pipeline, task, llm, context_aggregator, context, tts_completion_watcher, first_speech_tracker, greeting_completion_tracker, idle_timeout_tracker, user_turn_capture, tts_latency_tracker, greeting_injector
     
     @staticmethod
     def create_transport_params(config: VoiceAgentConfig):

@@ -19,9 +19,6 @@ from pipecat.transports.websocket.fastapi import FastAPIWebsocketTransport, Fast
 from pipecat.serializers.twilio import TwilioFrameSerializer
 from pipecat.frames.frames import (
     TTSSpeakFrame,
-    TTSStartedFrame,
-    TTSStoppedFrame,
-    TTSAudioRawFrame,
 )
 from pipecat.pipeline.runner import PipelineRunner
 
@@ -470,7 +467,7 @@ class CallHandler:
                 })
                 logger.debug(f"🗣️  Captured user turn ({len(text)} chars) at T+{elapsed_s:.1f}s for call {call_sid}")
             
-            pipeline, task, llm, context_aggregator, llm_context, tts_completion_watcher, first_speech_tracker, greeting_completion_tracker, idle_timeout_tracker, user_turn_capture, tts_latency_tracker = VoiceEngineFactory.create_pipeline(
+            pipeline, task, llm, context_aggregator, llm_context, tts_completion_watcher, first_speech_tracker, greeting_completion_tracker, idle_timeout_tracker, user_turn_capture, tts_latency_tracker, greeting_injector = VoiceEngineFactory.create_pipeline(
                 config=config,
                 api_keys=api_keys,
                 transport=transport,
@@ -772,6 +769,16 @@ class CallHandler:
                 )
             # Attempt to play cached PCM greeting to avoid a Deepgram TTS token.
             # Falls back to TTSSpeakFrame (normal TTS path) on any error.
+            #
+            # IMPORTANT: cached audio MUST NOT be queued via
+            # ``task.queue_frames`` — that primitive injects at the pipeline
+            # source, which means cached TTSAudioRawFrames flow through the
+            # STT processor and get transcribed by Deepgram (confirmed against
+            # pipecat 0.0.108 stt_service.py:380, where any AudioRawFrame
+            # subclass is handed to ``run_stt``). The result was 30+ phantom
+            # ``user_first_speech`` events with the bot's own greeting text.
+            # Instead we hand the bytes to ``GreetingAudioInjector`` which is
+            # wired into the pipeline downstream of STT.
             _greeting_played_from_cache = False
             if config.tts_provider.lower() == "deepgram" and api_keys.get("deepgram_api_key"):
                 try:
@@ -783,25 +790,12 @@ class CallHandler:
                         api_key=api_keys["deepgram_api_key"],
                         assistant_id=str(assistant.id),
                     )
-                    # Split into 320-byte frames (20 ms @ 8 kHz linear16 PCM).
-                    # TTSAudioRawFrame is required — the transport only processes
-                    # OutputAudioRawFrame subclasses, and uses TTSAudioRawFrame
-                    # to track bot-speaking state and set _tts_audio_received so
-                    # that TTSStoppedFrame correctly fires BotStoppedSpeakingFrame.
-                    _chunk_size = 320  # 8000 Hz * 2 bytes/sample * 0.020 s
-                    _frames = [TTSStartedFrame()]
-                    for _i in range(0, len(_audio), _chunk_size):
-                        _frames.append(
-                            TTSAudioRawFrame(
-                                audio=_audio[_i : _i + _chunk_size],
-                                sample_rate=8000,
-                                num_channels=1,
-                            )
-                        )
-                    _frames.append(TTSStoppedFrame())
-                    await task.queue_frames(_frames)
+                    greeting_injector.set_pending_greeting(_audio)
                     _greeting_played_from_cache = True
-                    logger.info("🎙️ Greeting played from cache (no Deepgram TTS token)")
+                    logger.info(
+                        "🎙️ Greeting queued from cache (no Deepgram TTS token; "
+                        "downstream of STT)"
+                    )
                 except Exception as _cache_err:
                     logger.warning(
                         f"Greeting cache failed, falling back to TTSSpeakFrame: {_cache_err}"
