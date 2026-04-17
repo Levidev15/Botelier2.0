@@ -678,12 +678,68 @@ def _backfill_silero_vad_config():
                 f"VAD config backfill: set defaults for assistant '{asst.name}' ({asst.id})"
             )
 
-        if updated:
+        # Task #107: normalize any Silero assistants whose explicit
+        # vad_config.stop_secs would collapse the post-VAD STT wait window
+        # in TurnAnalyzerUserTurnStopStrategy.  Pipecat's bundled
+        # DEEPGRAM_TTFS_P99 (~0.35 s) is calibrated against
+        # VAD_STOP_SECS=0.2; anything >= 0.35 s makes the wait timeout
+        # collapse to 0 s and triggers the recurring warnings.  We clamp
+        # to 0.2 s only when the operator has NOT provided a measured
+        # stt_config.ttfs_p99_latency override (in which case they
+        # intentionally accept the higher silence threshold and have
+        # widened the STT wait window themselves).
+        normalize_candidates = (
+            db.query(Assistant)
+            .filter(Assistant.vad_provider == "silero")
+            .filter(Assistant.vad_config.isnot(None))
+            .all()
+        )
+        normalized = []
+        for asst in normalize_candidates:
+            cfg = asst.vad_config or {}
+            stop_secs = cfg.get("stop_secs")
+            if stop_secs is None:
+                continue
+            try:
+                stop_secs_f = float(stop_secs)
+            except (TypeError, ValueError):
+                continue
+            stt_cfg = asst.stt_config or {}
+            has_ttfs_override = stt_cfg.get("ttfs_p99_latency") is not None
+            if stop_secs_f >= 0.35 and not has_ttfs_override:
+                new_cfg = dict(cfg)
+                new_cfg["stop_secs"] = 0.2
+                prev_notes = cfg.get("_notes", "")
+                normalize_note = (
+                    f"Task #107 backfill: stop_secs {stop_secs_f} -> 0.2 "
+                    f"(would collapse STT wait window against bundled "
+                    f"DEEPGRAM_TTFS_P99). Set stt_config.ttfs_p99_latency "
+                    f"above the new stop_secs to raise it again."
+                )
+                new_cfg["_notes"] = (
+                    f"{prev_notes} | {normalize_note}".strip(" |")
+                    if prev_notes
+                    else normalize_note
+                )
+                asst.vad_config = new_cfg
+                normalized.append(f"{asst.name} ({stop_secs_f}->0.2)")
+                logger.info(
+                    f"VAD config backfill: clamped stop_secs {stop_secs_f}->0.2 "
+                    f"for assistant '{asst.name}' ({asst.id})"
+                )
+
+        if updated or normalized:
             db.commit()
-            logger.info(
-                f"VAD config backfill complete — updated {len(updated)} assistant(s): "
-                f"{', '.join(updated)}"
-            )
+            if updated:
+                logger.info(
+                    f"VAD config backfill complete — defaulted {len(updated)} "
+                    f"assistant(s): {', '.join(updated)}"
+                )
+            if normalized:
+                logger.info(
+                    f"VAD config backfill complete — normalized stop_secs on "
+                    f"{len(normalized)} assistant(s): {', '.join(normalized)}"
+                )
         else:
             logger.info("VAD config backfill — all Silero assistants already configured")
 
