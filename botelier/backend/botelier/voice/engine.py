@@ -276,6 +276,7 @@ class GreetingAudioInjector(FrameProcessor):
         super().__init__(**kwargs)
         self._pending_audio: Optional[bytes] = None
         self._injected = False
+        self._start_received = False
 
     def set_pending_greeting(self, audio_bytes: bytes) -> None:
         """Stash cached greeting bytes to be injected once the pipeline starts.
@@ -290,26 +291,44 @@ class GreetingAudioInjector(FrameProcessor):
             return
         self._pending_audio = audio_bytes
 
+    async def inject(self, audio_bytes: bytes) -> None:
+        """Public API: inject cached greeting audio downstream.
+
+        If the pipeline hasn't yet emitted ``StartFrame`` through this
+        processor, the bytes are stashed and injected on StartFrame receipt
+        (matching ``set_pending_greeting`` semantics). If the processor has
+        already started, frames are pushed immediately. Either way, the
+        injection is one-shot — subsequent calls after the first injection
+        fires are ignored.
+        """
+        if self._injected:
+            logger.debug("GreetingAudioInjector.inject: already injected, ignoring")
+            return
+        if not self._start_received:
+            self._pending_audio = audio_bytes
+            return
+        self._injected = True
+        self._pending_audio = None
+        await self._inject(audio_bytes)
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         # Forward every frame unchanged — the injector is a pure observer
         # for everything except its one-shot greeting injection.
         await self.push_frame(frame, direction)
 
-        if (
-            isinstance(frame, StartFrame)
-            and not self._injected
-            and self._pending_audio
-        ):
-            self._injected = True
-            audio = self._pending_audio
-            self._pending_audio = None
-            # Fire-and-forget: chunked push runs concurrently with the
-            # rest of pipeline startup. push_frame calls are cheap (queue
-            # inserts) so this completes in milliseconds even for long
-            # greetings, but we don't want to block the StartFrame
-            # propagation through this processor.
-            asyncio.create_task(self._inject(audio))
+        if isinstance(frame, StartFrame):
+            self._start_received = True
+            if not self._injected and self._pending_audio:
+                self._injected = True
+                audio = self._pending_audio
+                self._pending_audio = None
+                # Fire-and-forget: chunked push runs concurrently with the
+                # rest of pipeline startup. push_frame calls are cheap (queue
+                # inserts) so this completes in milliseconds even for long
+                # greetings, but we don't want to block the StartFrame
+                # propagation through this processor.
+                asyncio.create_task(self._inject(audio))
 
     async def _inject(self, audio: bytes) -> None:
         """Push the cached greeting downstream as TTS lifecycle frames.
@@ -332,9 +351,10 @@ class GreetingAudioInjector(FrameProcessor):
                     FrameDirection.DOWNSTREAM,
                 )
             await self.push_frame(TTSStoppedFrame(), FrameDirection.DOWNSTREAM)
+            chunk_count = -(-len(audio) // self._CHUNK_SIZE)  # ceil division
             logger.info(
                 f"🎙️ Greeting injected downstream of STT ({len(audio)} bytes, "
-                f"{(len(audio) // self._CHUNK_SIZE) + 1} chunks)"
+                f"{chunk_count} chunks)"
             )
         except Exception as e:
             logger.error(f"GreetingAudioInjector._inject failed: {e}")

@@ -119,7 +119,9 @@ async def test_cached_greeting_bypasses_upstream_processors():
 @pytest.mark.asyncio
 async def test_injector_passes_unrelated_frames_through_unchanged():
     """Frames other than the one-shot greeting must flow through untouched in
-    both directions."""
+    both directions, and the injector must not fabricate any audio when
+    ``set_pending_greeting`` was never called.
+    """
     upstream = _RecordingProcessor("upstream")
     injector = GreetingAudioInjector()
     downstream = _RecordingProcessor("downstream")
@@ -143,6 +145,22 @@ async def test_injector_passes_unrelated_frames_through_unchanged():
     ), "Injector emitted TTSAudioRawFrame without set_pending_greeting"
     assert all(
         not isinstance(f, TTSAudioRawFrame) for f in upstream.received
+    )
+
+    # Sentinel pass-through: every frame the downstream observer received
+    # without an active greeting must be an *infrastructure* frame
+    # (StartFrame/EndFrame/etc.) — never a TTS lifecycle frame synthesized
+    # by the injector. If the injector ever spuriously emits
+    # TTSStartedFrame/TTSStoppedFrame in the no-greeting case, downstream
+    # bot-speaking bookkeeping would flip incorrectly.
+    spurious = [
+        type(f).__name__
+        for f in downstream.received
+        if isinstance(f, (TTSStartedFrame, TTSStoppedFrame, TTSAudioRawFrame))
+    ]
+    assert spurious == [], (
+        f"Injector emitted spurious TTS lifecycle frames with no pending "
+        f"greeting: {spurious}"
     )
 
 
