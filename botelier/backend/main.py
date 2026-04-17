@@ -158,96 +158,6 @@ async def startup_event():
     print("✅ Stuck-call sweeper started (runs every 5 min)")
 
 
-# Per-call shutdown finalization budget — keeps total deploy block bounded.
-_SHUTDOWN_PER_CALL_TIMEOUT = 2.0
-_SHUTDOWN_TOTAL_TIMEOUT = 10.0
-
-
-async def _finalize_active_calls_on_shutdown() -> None:
-    """Task #116 — graceful-shutdown finalizer.
-
-    On uvicorn restart (deploy / reload / SIGTERM), in-memory call state
-    dies and live WebSockets are torn down. Without this hook, any call
-    that was in-progress lingers in the DB as ``in_progress`` for up to
-    five minutes until the sweeper's next tick. This pollutes analytics
-    and the live-call panel on the dashboard.
-
-    For each active call SID we:
-
-    1. Run ``CallLogger.complete_call(forced_by="shutdown")`` so the row
-       reaches a terminal status with a ``finalization_forced`` event
-       (``details.source == "shutdown"``) — distinguishable from
-       sweeper-closed rows in the leak-rate dashboard.
-    2. Cancel the corresponding pipeline so no further frames are pushed
-       through a dead transport.
-
-    The whole hook is bounded by ``_SHUTDOWN_TOTAL_TIMEOUT`` so a slow DB
-    or a stuck pipeline cancellation cannot block deploys indefinitely.
-    """
-    try:
-        from botelier.api.websockets import call_handler
-    except Exception as e:
-        print(f"⚠️  shutdown finalizer: could not import call_handler: {e}")
-        return
-
-    active_sids = list(
-        set(call_handler.active_calls.keys())
-        | set(call_handler.call_tasks.keys())
-    )
-    if not active_sids:
-        return
-
-    print(f"🛑 Finalizing {len(active_sids)} active call(s) on shutdown")
-
-    async def _finalize_one(sid: str) -> None:
-        # 1. Row finalization (synchronous DB work via to_thread).
-        def _do_complete() -> None:
-            db = SessionLocal()
-            try:
-                from botelier.services.call_logger import CallLogger
-                CallLogger(db).complete_call(
-                    call_sid=sid, forced_by="shutdown"
-                )
-            finally:
-                db.close()
-
-        try:
-            await asyncio.wait_for(
-                asyncio.to_thread(_do_complete),
-                timeout=_SHUTDOWN_PER_CALL_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            print(f"⚠️  shutdown finalizer: complete_call timed out for {sid}")
-        except Exception as e:
-            print(f"⚠️  shutdown finalizer: complete_call failed for {sid}: {e}")
-
-        # 2. Cancel the pipeline so the runner unblocks promptly.
-        try:
-            await asyncio.wait_for(
-                call_handler.cancel_call_pipeline(sid),
-                timeout=_SHUTDOWN_PER_CALL_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            print(f"⚠️  shutdown finalizer: cancel_call_pipeline timed out for {sid}")
-        except Exception as e:
-            print(f"⚠️  shutdown finalizer: cancel_call_pipeline failed for {sid}: {e}")
-
-    try:
-        await asyncio.wait_for(
-            asyncio.gather(
-                *[_finalize_one(sid) for sid in active_sids],
-                return_exceptions=True,
-            ),
-            timeout=_SHUTDOWN_TOTAL_TIMEOUT,
-        )
-        print(f"✅ Shutdown finalizer completed for {len(active_sids)} call(s)")
-    except asyncio.TimeoutError:
-        print(
-            f"⚠️  Shutdown finalizer hit total timeout "
-            f"({_SHUTDOWN_TOTAL_TIMEOUT}s) — sweeper will pick up stragglers"
-        )
-
-
 @app.on_event("shutdown")
 async def shutdown_event():
     """Graceful shutdown: finalize active calls and cancel the stuck-call
@@ -256,8 +166,14 @@ async def shutdown_event():
     # Task #116 — finalize active calls FIRST so they get a "shutdown"
     # finalization_forced event before the sweeper would otherwise close
     # them on next process startup with the less-specific "sweeper" tag.
+    # The actual finalizer lives in `botelier.services.shutdown_finalizer`
+    # so it can be unit-tested without importing this module's heavy
+    # FastAPI/pipecat graph.
     try:
-        await _finalize_active_calls_on_shutdown()
+        from botelier.services.shutdown_finalizer import (
+            finalize_active_calls_on_shutdown,
+        )
+        await finalize_active_calls_on_shutdown(SessionLocal)
     except Exception as e:
         print(f"⚠️  shutdown finalizer raised: {e}")
 

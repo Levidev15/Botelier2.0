@@ -17,22 +17,17 @@ End-to-end regression tests for three production-resilience fixes:
 """
 
 import asyncio
-import sys
 import uuid
 from datetime import datetime, timedelta
-from pathlib import Path
-from unittest.mock import MagicMock, patch, AsyncMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 from loguru import logger
 from sqlalchemy.exc import IntegrityError
 
-# main.py lives at botelier/backend/main.py — add backend root to sys.path
-# so `import main` works from the tests directory.
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-
 from botelier.api.calls import incoming_call_webhook
 from botelier.services.call_logger import CallLogger, _FORCED_BY_SOURCES
+from botelier.services import shutdown_finalizer
 from botelier.models import CallLog, CallLeg, PhoneNumber, CallStatus, LegType
 from botelier.models.call_event import CallEvent
 from botelier.utils import log_task_exception
@@ -343,12 +338,10 @@ class TestShutdownFinalizer:
     @pytest.mark.asyncio
     async def test_finalizer_completes_active_call_with_shutdown_source(self):
         """End-to-end: stub call_handler.active_calls + cancel_call_pipeline,
-        run the real _finalize_active_calls_on_shutdown, verify the SID
+        run the real finalize_active_calls_on_shutdown, verify the SID
         gets a complete_call(forced_by='shutdown') with a finalization_forced
         event whose details.source == 'shutdown', and the pipeline cancel
         is awaited."""
-        import main as main_module
-
         target_sid = "CA-sd-active"
         call_log = _make_call_log()
         call_log.call_sid = target_sid
@@ -391,10 +384,12 @@ class TestShutdownFinalizer:
 
         # Inject the fake call_handler into the real
         # `botelier.api.websockets` module so the lazy import inside
-        # _finalize_active_calls_on_shutdown picks it up.
-        with patch("botelier.api.websockets.call_handler", fake_handler), \
-             patch("main.SessionLocal", side_effect=_make_db):
-            await main_module._finalize_active_calls_on_shutdown()
+        # finalize_active_calls_on_shutdown picks it up. SessionLocal is
+        # passed in as a parameter so we just hand it our factory.
+        with patch("botelier.api.websockets.call_handler", fake_handler):
+            await shutdown_finalizer.finalize_active_calls_on_shutdown(
+                session_factory=_make_db,
+            )
 
         # Pipeline must be cancelled.
         assert cancelled_sids == [target_sid], (
@@ -419,26 +414,25 @@ class TestShutdownFinalizer:
     @pytest.mark.asyncio
     async def test_finalizer_no_op_when_no_active_calls(self):
         """No active calls → finalizer must be a fast no-op (no DB hit)."""
-        import main as main_module
-
         fake_handler = MagicMock()
         fake_handler.active_calls = {}
         fake_handler.call_tasks = {}
+        fake_factory = MagicMock()
 
-        with patch("botelier.api.websockets.call_handler", fake_handler), \
-             patch("main.SessionLocal") as fake_session_local:
-            await main_module._finalize_active_calls_on_shutdown()
-            fake_session_local.assert_not_called()
+        with patch("botelier.api.websockets.call_handler", fake_handler):
+            await shutdown_finalizer.finalize_active_calls_on_shutdown(
+                session_factory=fake_factory,
+            )
+
+        fake_factory.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_finalizer_bounded_by_total_timeout(self, monkeypatch):
         """If a single call's complete_call hangs, the total finalizer
         wall-clock must stay below the total budget."""
-        import main as main_module
-
         # Tighten budgets so the test runs in <2s.
-        monkeypatch.setattr(main_module, "_SHUTDOWN_PER_CALL_TIMEOUT", 0.2)
-        monkeypatch.setattr(main_module, "_SHUTDOWN_TOTAL_TIMEOUT", 0.5)
+        monkeypatch.setattr(shutdown_finalizer, "SHUTDOWN_PER_CALL_TIMEOUT", 0.2)
+        monkeypatch.setattr(shutdown_finalizer, "SHUTDOWN_TOTAL_TIMEOUT", 0.5)
 
         fake_handler = MagicMock()
         fake_handler.active_calls = {"CA-hang": MagicMock()}
@@ -449,29 +443,33 @@ class TestShutdownFinalizer:
 
         fake_handler.cancel_call_pipeline = _never_cancel
 
-        # SessionLocal returns a session whose CallLogger.complete_call
-        # blocks via a slow query.
-        slow_db = MagicMock()
+        # session_factory returns a session whose CallLogger.complete_call
+        # blocks via a slow query inside the to_thread call.
+        def _make_slow_db():
+            slow_db = MagicMock()
 
-        def _query(model):
-            m = MagicMock()
-            # Block in the .first() lookup to simulate a stalled DB.
-            import time as _time
+            def _query(model):
+                m = MagicMock()
+                # Block in the .first() lookup to simulate a stalled DB.
+                import time as _time
 
-            def _slow_first():
-                _time.sleep(2.0)
-                return None
-            m.filter.return_value.first.side_effect = _slow_first
-            return m
+                def _slow_first():
+                    _time.sleep(2.0)
+                    return None
+                m.filter.return_value.first.side_effect = _slow_first
+                return m
 
-        slow_db.query.side_effect = _query
-        slow_db.close.return_value = None
+            slow_db.query.side_effect = _query
+            slow_db.close.return_value = None
+            return slow_db
 
-        start = asyncio.get_event_loop().time()
-        with patch("botelier.api.websockets.call_handler", fake_handler), \
-             patch("main.SessionLocal", return_value=slow_db):
-            await main_module._finalize_active_calls_on_shutdown()
-        elapsed = asyncio.get_event_loop().time() - start
+        loop = asyncio.get_event_loop()
+        start = loop.time()
+        with patch("botelier.api.websockets.call_handler", fake_handler):
+            await shutdown_finalizer.finalize_active_calls_on_shutdown(
+                session_factory=_make_slow_db,
+            )
+        elapsed = loop.time() - start
 
         # Coroutine-level bound: must return within total + small margin.
         # (The to_thread-bound query keeps running in its thread, but the
