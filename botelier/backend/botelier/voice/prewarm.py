@@ -144,6 +144,13 @@ class PreWarmCache:
         missing."""
         self._store.pop(call_sid, None)
 
+    def has(self, call_sid: str) -> bool:
+        """Return True iff a (possibly not-yet-ready) reservation exists for
+        ``call_sid``. Used by handle_call to distinguish a true cache-miss
+        (``no_prewarm_entry``) from a hit that timed out or errored
+        (``wait_timeout_or_error``) in telemetry."""
+        return call_sid in self._store
+
     def size(self) -> int:  # pragma: no cover — trivial accessor
         return len(self._store)
 
