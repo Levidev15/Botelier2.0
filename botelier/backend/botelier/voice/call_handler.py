@@ -790,6 +790,13 @@ class CallHandler:
                         api_key=api_keys["deepgram_api_key"],
                         assistant_id=str(assistant.id),
                     )
+                    # Treat empty/invalid payload as a cache miss so the
+                    # TTSSpeakFrame fallback below still plays a greeting
+                    # (and MuteUntilFirstBotComplete can release the mute).
+                    if not _audio or len(_audio) < 320:
+                        raise RuntimeError(
+                            f"cached greeting audio too small ({len(_audio) if _audio else 0} bytes)"
+                        )
                     greeting_injector.set_pending_greeting(_audio)
                     _greeting_played_from_cache = True
                     logger.info(
