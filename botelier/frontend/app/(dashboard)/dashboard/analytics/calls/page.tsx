@@ -83,8 +83,8 @@ interface AnalyticsData {
     unresolved_count: number;
     unresolved_rate: number;
     unresolved_breakdown?: {
-      silent_caller: number;
-      non_terminal_gap: number;
+      no_caller_audio: number;
+      dropped_pre_greeting: number;
       other: number;
     };
     partition_integrity_ok: boolean;
@@ -346,9 +346,9 @@ export default function CallAnalyticsPage() {
             label="Unresolved"
             value={o?.unresolved_count ?? 0}
             sub={
-              o?.unresolved_breakdown && o.unresolved_breakdown.silent_caller > 0
-                ? `${o.unresolved_breakdown.silent_caller} silent · ${
-                    (o.unresolved_breakdown.non_terminal_gap || 0) +
+              o?.unresolved_breakdown && o.unresolved_breakdown.no_caller_audio > 0
+                ? `${o.unresolved_breakdown.no_caller_audio} silent · ${
+                    (o.unresolved_breakdown.dropped_pre_greeting || 0) +
                     (o.unresolved_breakdown.other || 0)
                   } pending`
                 : `${o?.unresolved_rate ?? 0}% pending finalization`
@@ -356,14 +356,14 @@ export default function CallAnalyticsPage() {
             color="text-yellow-400"
             tooltip={
               "Catch-all bucket. Breakdown:\n" +
-              `• Silent caller (AI greeted, caller never spoke): ${
-                o?.unresolved_breakdown?.silent_caller ?? 0
+              `• No caller audio (AI greeted, caller never spoke): ${
+                o?.unresolved_breakdown?.no_caller_audio ?? 0
               }\n` +
-              `• Awaiting finalization (sweeper-pending rows): ${
-                o?.unresolved_breakdown?.non_terminal_gap ?? 0
+              `• Dropped before greeting (sweeper-pending rows): ${
+                o?.unresolved_breakdown?.dropped_pre_greeting ?? 0
               }\n` +
               `• Other anomalies: ${o?.unresolved_breakdown?.other ?? 0}\n\n` +
-              "Silent-caller rows replace what was previously mis-counted as AI Handled."
+              "No-caller-audio rows replace what was previously mis-counted as AI Handled."
             }
             onClick={() => openDrilldown("unresolved", "Unresolved Calls")}
           />
