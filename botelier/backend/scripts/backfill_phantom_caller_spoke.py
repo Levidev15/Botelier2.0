@@ -11,9 +11,17 @@ flowed through the STT processor and Deepgram transcribed them, emitting a
 ``user_first_speech`` and then flipped ``call_logs.caller_spoke = TRUE``.
 
 This script walks ``call_logs`` joined to ``call_events`` (event_type =
-'user_first_speech') and — for every row where the transcript is sufficiently
-similar to the assistant's ``first_message`` — sets ``caller_spoke = FALSE``.
-The event itself is retained for forensic comparison.
+'user_first_speech') and — for every row where (a) the transcript is
+sufficiently similar to the assistant's ``first_message`` AND (b) the call
+has ZERO ``turn_finalized`` events (i.e. the caller never produced a
+finalized user turn) — sets ``caller_spoke = FALSE``. The event itself is
+retained for forensic comparison.
+
+The ``turn_finalized`` guard is the safety net: real caller speech always
+emits at least one ``turn_finalized`` event via ``UserTurnCaptureProcessor``
+/ Pipecat's user-turn finalizer, even when the first phantom greeting
+transcript is also present. Guarding on its absence prevents us from
+clobbering ``caller_spoke`` on calls where the human really did speak.
 
 Similarity metric: longest-common-substring length divided by the length of
 the (shorter of the two) normalized strings. Threshold default 0.20 catches
@@ -43,6 +51,7 @@ from datetime import datetime, timedelta, timezone
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+from sqlalchemy import and_, exists
 from botelier.database import SessionLocal
 from botelier.models.assistant import Assistant
 from botelier.models.call_log import CallLog
@@ -103,6 +112,18 @@ def main():
     cutoff = datetime.now(tz=timezone.utc) - timedelta(days=args.days)
     db = SessionLocal()
     try:
+        # A correlated NOT EXISTS on turn_finalized is the guard that keeps
+        # us from clobbering caller_spoke on calls where the human actually
+        # produced a finalized user turn. Real speech always emits at least
+        # one turn_finalized event (engine.py:218), whereas phantom
+        # greeting transcription never does (no user turn exists to finalize).
+        _turn_finalized_subq = exists().where(
+            and_(
+                CallEvent.call_log_id == CallLog.id,
+                CallEvent.event_type == "turn_finalized",
+            )
+        )
+
         candidates = (
             db.query(CallLog, CallEvent, Assistant)
             .join(CallEvent, CallEvent.call_log_id == CallLog.id)
@@ -111,6 +132,7 @@ def main():
                 CallEvent.event_type == "user_first_speech",
                 CallLog.created_at >= cutoff,
                 CallLog.caller_spoke.is_(True),
+                ~_turn_finalized_subq,
             )
             .all()
         )
