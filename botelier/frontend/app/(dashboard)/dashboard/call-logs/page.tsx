@@ -61,10 +61,10 @@ export default function CallLogsPage() {
     const a = sp.get("assistant_id"); if (a) setAssistantFilter(a);
     const df = sp.get("date_from"); if (df) setDateFrom(df);
     const dt = sp.get("date_to"); if (dt) setDateTo(dt);
-    const ht = sp.get("has_transfer"); if (ht === "true") setHasTransferFilter(true);
+    const ht = sp.get("has_transfer"); if (ht === "true") setHasTransferFilter(true); else if (ht === "false") setHasTransferFilter(false);
     const did = sp.get("disposition_id"); if (did) setDispositionIdFilter(did);
     const ar = sp.get("acw_resolution"); if (ar) setAcwResolutionFilter(ar);
-    const acw = sp.get("acw_completed"); if (acw === "true") setAcwCompletedFilter(true);
+    const acw = sp.get("acw_completed"); if (acw === "true") setAcwCompletedFilter(true); else if (acw === "false") setAcwCompletedFilter(false);
     const qmin = sp.get("quality_min"); if (qmin) setQualityMin(Number(qmin));
     const qmax = sp.get("quality_max"); if (qmax) setQualityMax(Number(qmax));
     const hr = sp.get("hour"); if (hr !== null) setHourFilter(Number(hr));
@@ -148,6 +148,36 @@ export default function CallLogsPage() {
       fetchFilterOptions();
     }
   }, [contextLoading, accountId, fetchCallLogs, fetchFilterOptions]);
+
+  // Task #103 — Keep the URL query string in sync with the active filter
+  // state so removing a chip (or otherwise changing filters) updates the
+  // address bar. This makes the URL a faithful, shareable record of the
+  // current view and ensures back/forward navigation behaves naturally.
+  // Uses history.replaceState (no Next router push) so we don't trigger
+  // a route transition or remount the page on every filter tweak.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const sp = new URLSearchParams();
+    if (statusFilter) sp.set("status", statusFilter);
+    if (assistantFilter) sp.set("assistant_id", assistantFilter);
+    if (dateFrom) sp.set("date_from", dateFrom);
+    if (dateTo) sp.set("date_to", dateTo);
+    if (hasTransferFilter !== null) sp.set("has_transfer", String(hasTransferFilter));
+    if (dispositionIdFilter) sp.set("disposition_id", dispositionIdFilter);
+    if (acwResolutionFilter) sp.set("acw_resolution", acwResolutionFilter);
+    if (acwCompletedFilter !== null) sp.set("acw_completed", String(acwCompletedFilter));
+    if (qualityMin !== null) sp.set("quality_min", String(qualityMin));
+    if (qualityMax !== null) sp.set("quality_max", String(qualityMax));
+    if (hourFilter !== null) sp.set("hour", String(hourFilter));
+    if (bucketFilter) sp.set("bucket", bucketFilter);
+    const qs = sp.toString();
+    const next = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
+    if (next !== `${window.location.pathname}${window.location.search}`) {
+      window.history.replaceState(null, "", next);
+    }
+  }, [statusFilter, assistantFilter, dateFrom, dateTo, hasTransferFilter,
+      dispositionIdFilter, acwResolutionFilter, acwCompletedFilter,
+      qualityMin, qualityMax, hourFilter, bucketFilter]);
 
   const handleExport = async () => {
     if (!accountId) return;
@@ -312,6 +342,56 @@ export default function CallLogsPage() {
     acwCompletedFilter !== null || qualityMin !== null || qualityMax !== null || hourFilter !== null ||
     bucketFilter;
 
+  // Task #103 — Echo every URL-driven filter as a removable chip above the
+  // search bar so operators landing from an analytics drilldown immediately
+  // see what is constraining the view (date range, assistant, etc.) without
+  // opening the Filters panel. Bucket stays first since it ties the count
+  // back to the analytics partition exactly. Built here in the parent so
+  // the toolbar stays a thin presentational layer.
+  const formatChipDate = (iso: string) => {
+    const d = new Date(iso);
+    if (Number.isNaN(d.getTime())) return iso;
+    try {
+      return d.toLocaleDateString("en-US", { timeZone: timezone, month: "short", day: "numeric", year: "numeric" });
+    } catch {
+      return d.toLocaleDateString();
+    }
+  };
+  const assistantName = assistantFilter
+    ? filterOptions?.assistants.find(a => a.id === assistantFilter)?.name ?? assistantFilter
+    : "";
+  const dispositionName = dispositionIdFilter
+    ? filterOptions?.dispositions.find(d => d.id === dispositionIdFilter)?.name ?? dispositionIdFilter
+    : "";
+
+  const BUCKET_LABELS: Record<string, string> = {
+    ai_handled: "AI handled",
+    ended_early: "Ended early",
+    missed: "Missed",
+    failed: "Failed",
+    unresolved: "Unresolved",
+    silent_caller: "Silent caller",
+  };
+  const bucketLabel = (token: string) => {
+    if (BUCKET_LABELS[token]) return BUCKET_LABELS[token];
+    const cleaned = token.replace(/_/g, " ").trim();
+    return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+  };
+
+  const filterChips: Array<{ key: string; label: string; onClear: () => void }> = [];
+  if (bucketFilter) filterChips.push({ key: "bucket", label: `Bucket: ${bucketLabel(bucketFilter)}`, onClear: () => { setBucketFilter(""); setPage(1); } });
+  if (dateFrom) filterChips.push({ key: "date_from", label: `From: ${formatChipDate(dateFrom)}`, onClear: () => { setDateFrom(""); setPage(1); } });
+  if (dateTo) filterChips.push({ key: "date_to", label: `To: ${formatChipDate(dateTo)}`, onClear: () => { setDateTo(""); setPage(1); } });
+  if (assistantFilter) filterChips.push({ key: "assistant_id", label: `Assistant: ${assistantName}`, onClear: () => { setAssistantFilter(""); setPage(1); } });
+  if (statusFilter) filterChips.push({ key: "status", label: `Status: ${statusFilter}`, onClear: () => { setStatusFilter(""); setPage(1); } });
+  if (dispositionIdFilter) filterChips.push({ key: "disposition_id", label: `Disposition: ${dispositionName}`, onClear: () => { setDispositionIdFilter(""); setPage(1); } });
+  if (hasTransferFilter !== null) filterChips.push({ key: "has_transfer", label: `Has transfer: ${hasTransferFilter ? "Yes" : "No"}`, onClear: () => { setHasTransferFilter(null); setPage(1); } });
+  if (acwCompletedFilter !== null) filterChips.push({ key: "acw_completed", label: `ACW completed: ${acwCompletedFilter ? "Yes" : "No"}`, onClear: () => { setAcwCompletedFilter(null); setPage(1); } });
+  if (acwResolutionFilter) filterChips.push({ key: "acw_resolution", label: `Resolution: ${acwResolutionFilter}`, onClear: () => { setAcwResolutionFilter(""); setPage(1); } });
+  if (qualityMin !== null) filterChips.push({ key: "quality_min", label: `Quality ≥ ${qualityMin}`, onClear: () => { setQualityMin(null); setPage(1); } });
+  if (qualityMax !== null) filterChips.push({ key: "quality_max", label: `Quality ≤ ${qualityMax}`, onClear: () => { setQualityMax(null); setPage(1); } });
+  if (hourFilter !== null) filterChips.push({ key: "hour", label: `Hour: ${String(hourFilter).padStart(2, "0")}:00`, onClear: () => { setHourFilter(null); setPage(1); } });
+
   if (!permLoading && !hasAccess) {
     return <AccessDeniedPage message="You don't have permission to view call logs." />;
   }
@@ -352,8 +432,7 @@ export default function CallLogsPage() {
         timezone={timezone}
         onTimezoneChange={handleTimezoneChange}
         onClearFilters={clearFilters}
-        bucketFilter={bucketFilter}
-        onClearBucket={() => { setBucketFilter(""); setPage(1); }}
+        filterChips={filterChips}
       />
 
       <div className="flex-1 overflow-auto p-8">
