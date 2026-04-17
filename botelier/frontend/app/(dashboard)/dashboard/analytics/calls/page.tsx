@@ -87,6 +87,10 @@ interface AnalyticsData {
       dropped_pre_greeting: number;
       other: number;
     };
+    silent_caller_breakdown?: {
+      by_assistant: { assistant_id: string; assistant_name: string; count: number }[];
+      by_phone: { phone_number_id: string; phone_number: string; count: number }[];
+    };
     partition_integrity_ok: boolean;
     partition_counts_by_status: Record<string, number>;
     // Legacy aliases (deprecated — kept this release):
@@ -110,7 +114,7 @@ interface AnalyticsData {
   volume_by_day: { date: string; calls: number }[];
   calls_by_hour: { hour: number; calls: number }[];
   status_distribution: { status: string; count: number }[];
-  by_assistant: { assistant_id: string; assistant_name: string; calls: number }[];
+  by_assistant: { assistant_id: string; assistant_name: string; calls: number; silent_caller_count?: number }[];
   dispositions: { disposition_id: string; name: string; color: string | null; count: number }[];
   acw: {
     acw_completed: number;
@@ -144,6 +148,39 @@ const CustomTooltipContent = ({ active, payload, label }: CustomTooltipProps) =>
           {p.name}: {p.value}
         </p>
       ))}
+    </div>
+  );
+};
+
+// Task #100 — by-assistant chart tooltip with silent-caller rate so operators
+// can spot a single assistant misconfigured for silent-line drops at a glance.
+interface AssistantBarTooltipPayload {
+  payload?: {
+    assistant_name?: string;
+    calls?: number;
+    silent_caller_count?: number;
+  };
+}
+interface AssistantBarTooltipProps {
+  active?: boolean;
+  payload?: AssistantBarTooltipPayload[];
+}
+const AssistantBarTooltip = ({ active, payload }: AssistantBarTooltipProps) => {
+  if (!active || !payload?.length) return null;
+  const row = payload[0]?.payload;
+  if (!row) return null;
+  const calls = row.calls ?? 0;
+  const silent = row.silent_caller_count ?? 0;
+  const rate = calls > 0 ? ((silent / calls) * 100).toFixed(1) : "0.0";
+  return (
+    <div className="bg-[#252525] border border-gray-700 rounded-lg px-3 py-2 text-sm shadow-lg min-w-[200px]">
+      <p className="text-gray-200 font-medium mb-1">{row.assistant_name ?? "—"}</p>
+      <p className="text-green-400">Calls: {calls}</p>
+      {silent > 0 && (
+        <p className="text-yellow-400 mt-0.5" title="Silent-caller drops: AI greeted but caller never spoke">
+          Silent caller: {silent} ({rate}%)
+        </p>
+      )}
     </div>
   );
 };
@@ -354,17 +391,37 @@ export default function CallAnalyticsPage() {
                 : `${o?.unresolved_rate ?? 0}% pending finalization`
             }
             color="text-yellow-400"
-            tooltip={
-              "Catch-all bucket. Breakdown:\n" +
-              `• No caller audio (AI greeted, caller never spoke): ${
-                o?.unresolved_breakdown?.no_caller_audio ?? 0
-              }\n` +
-              `• Dropped before greeting (sweeper-pending rows): ${
-                o?.unresolved_breakdown?.dropped_pre_greeting ?? 0
-              }\n` +
-              `• Other anomalies: ${o?.unresolved_breakdown?.other ?? 0}\n\n` +
-              "No-caller-audio rows replace what was previously mis-counted as AI Handled."
-            }
+            tooltip={(() => {
+              const lines = [
+                "Catch-all bucket. Breakdown:",
+                `• No caller audio (AI greeted, caller never spoke): ${
+                  o?.unresolved_breakdown?.no_caller_audio ?? 0
+                }`,
+                `• Dropped before greeting (sweeper-pending rows): ${
+                  o?.unresolved_breakdown?.dropped_pre_greeting ?? 0
+                }`,
+                `• Other anomalies: ${o?.unresolved_breakdown?.other ?? 0}`,
+              ];
+              const topAsst = o?.silent_caller_breakdown?.by_assistant ?? [];
+              const topPhone = o?.silent_caller_breakdown?.by_phone ?? [];
+              if (topAsst.length > 0) {
+                lines.push("", "Silent-caller drops by assistant:");
+                topAsst.slice(0, 5).forEach((a) => {
+                  lines.push(`  • ${a.assistant_name}: ${a.count}`);
+                });
+              }
+              if (topPhone.length > 0) {
+                lines.push("", "Silent-caller drops by phone number:");
+                topPhone.slice(0, 5).forEach((p) => {
+                  lines.push(`  • ${p.phone_number}: ${p.count}`);
+                });
+              }
+              lines.push(
+                "",
+                "No-caller-audio rows replace what was previously mis-counted as AI Handled.",
+              );
+              return lines.join("\n");
+            })()}
             onClick={() => openDrilldown("unresolved", "Unresolved Calls")}
           />
         )}
@@ -573,7 +630,7 @@ export default function CallAnalyticsPage() {
                     tick={{ fill: "#9ca3af", fontSize: 12 }}
                     width={120}
                   />
-                  <Tooltip content={<CustomTooltipContent />} />
+                  <Tooltip content={<AssistantBarTooltip />} />
                   <Bar dataKey="calls" fill="#22c55e" radius={[0, 4, 4, 0]} cursor="pointer" />
                 </BarChart>
               </ResponsiveContainer>
