@@ -621,7 +621,13 @@ def _sync_system_role_permissions():
 _SILERO_VAD_DEFAULTS = {
     "confidence": 0.7,
     "start_secs": 0.2,
-    "stop_secs": 0.8,
+    # stop_secs=0.2 matches pipecat's recommended VAD_STOP_SECS default; the
+    # bundled STT TTFS p99 latency tables (used by TurnAnalyzerUserTurnStop
+    # Strategy to size the post-VAD wait window) are calibrated against this
+    # value.  SmartTurn V3 (smart_turn_stop_secs) handles the soft "is the
+    # caller really done?" decision, so a tighter VAD silence threshold does
+    # not cut off slow speakers.
+    "stop_secs": 0.2,
     "min_volume": 0.6,
     "smart_turn_stop_secs": 1.0,
 }
