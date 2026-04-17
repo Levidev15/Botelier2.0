@@ -32,10 +32,12 @@ from pipecat.frames.frames import (
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
+    MetricsFrame,
     TextFrame,
     TTSSpeakFrame,
     TranscriptionFrame,
 )
+from pipecat.metrics.metrics import LLMUsageMetricsData
 from pipecat.processors.user_idle_processor import UserIdleProcessor
 from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy import MuteUntilFirstBotCompleteUserMuteStrategy
 from pipecat.turns.user_mute.function_call_user_mute_strategy import FunctionCallUserMuteStrategy
@@ -652,19 +654,52 @@ class TtsPipelineLatencyTracker(FrameProcessor):
         _turn_started_ms = int((_t_last_inbound - self._call_start_mono) * 1000) if (_t_last_inbound and self._call_start_mono) else 0
         _turn_responded_ms = int((_t_first_audio_local - self._call_start_mono) * 1000) if self._call_start_mono else 0
 
+        # Task #106 — prompt-cache observability.
+        # OpenAI's prompt cache is automatic (>=1024-token prefix), but a stable
+        # cached prefix is the only way TTFB on tool-call turns drops below ~1 s
+        # when the system prompt is large (~5 k tokens incl. KB injection).
+        # Pipecat's BaseOpenAILLMService surfaces these counts via a MetricsFrame
+        # carrying LLMUsageMetricsData; we capture them on the same turn (see
+        # process_frame below) and stamp them onto turn_latency so an ops query
+        # can compute cache_hit_ratio = cached_tokens / prompt_tokens per turn.
+        # Pop after read so a later turn that fails to emit usage shows nulls
+        # rather than silently inheriting the previous turn's counters.
+        _prompt_tokens = self._timing_state.pop("prompt_tokens", None)
+        _cached_tokens = self._timing_state.pop("cached_tokens", None)
+        _completion_tokens = self._timing_state.pop("completion_tokens", None)
+
+        details = {
+            "turn_index": _turn_index,
+            "inbound_to_stt_ms": _inbound_to_stt_ms,
+            "stt_to_llm_start_ms": _stt_to_llm_start_ms,
+            "llm_generation_ms": _llm_generation_ms,
+            "llm_to_tts_first_audio_ms": _llm_to_tts_first_audio_ms,
+            "turn_started_ms": _turn_started_ms,
+            "turn_responded_ms": _turn_responded_ms,
+        }
+        if _prompt_tokens is not None:
+            details["prompt_tokens"] = int(_prompt_tokens)
+        if _cached_tokens is not None:
+            details["cached_tokens"] = int(_cached_tokens)
+        if _completion_tokens is not None:
+            details["completion_tokens"] = int(_completion_tokens)
+
+        # Single-line cache verdict at INFO so it shows in prod logs without a
+        # DB round-trip — the fastest way to confirm/reject the prompt-cache
+        # hypothesis on the next live call.
+        if _prompt_tokens:
+            _cache_pct = (int(_cached_tokens or 0) * 100) // int(_prompt_tokens)
+            logger.info(
+                f"⏱️ turn#{_turn_index} prompt={_prompt_tokens} cached={_cached_tokens or 0} "
+                f"({_cache_pct}%) completion={_completion_tokens or 0} "
+                f"llm_gen={_llm_generation_ms}ms"
+            )
+
         self._event_queue.log(
             "turn_latency",
             event_source="pipecat",
             severity="info",
-            details={
-                "turn_index": _turn_index,
-                "inbound_to_stt_ms": _inbound_to_stt_ms,
-                "stt_to_llm_start_ms": _stt_to_llm_start_ms,
-                "llm_generation_ms": _llm_generation_ms,
-                "llm_to_tts_first_audio_ms": _llm_to_tts_first_audio_ms,
-                "turn_started_ms": _turn_started_ms,
-                "turn_responded_ms": _turn_responded_ms,
-            },
+            details=details,
         )
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -680,6 +715,15 @@ class TtsPipelineLatencyTracker(FrameProcessor):
             # (common in streaming TTS).  LLMResponseCapture will refresh this
             # key when it sees this turn's LLMFullResponseEndFrame.
             self._timing_state.pop("t_llm_end", None)
+            # Task #106 — also clear cached usage counters at turn start.
+            # _emit_turn_latency pops them on a normal responded turn, but a
+            # silent turn (LLM produced usage yet pipeline never reached the
+            # audio branch) would otherwise leak last turn's counters into
+            # the next emitted turn_latency event. Clearing here guarantees
+            # per-turn isolation of prompt_tokens / cached_tokens.
+            self._timing_state.pop("prompt_tokens", None)
+            self._timing_state.pop("cached_tokens", None)
+            self._timing_state.pop("completion_tokens", None)
 
         elif self._expecting_audio and isinstance(frame, AudioRawFrame):
             self._expecting_audio = False
@@ -699,6 +743,28 @@ class TtsPipelineLatencyTracker(FrameProcessor):
             _t_llm_end = self._timing_state.get("t_llm_end", 0.0)
             if _t_llm_end:
                 self._emit_turn_latency(_t_llm_end)
+
+        elif isinstance(frame, MetricsFrame):
+            # Task #106 — capture per-turn LLM token usage so the next call to
+            # _emit_turn_latency can stamp prompt_tokens / cached_tokens /
+            # completion_tokens onto the turn_latency event. Pipecat's
+            # BaseOpenAILLMService pushes this MetricsFrame from the same
+            # streaming loop that emits LLM text, so it arrives before
+            # LLMFullResponseEndFrame in the pipeline order — meaning the
+            # values are present in _timing_state by the time emission fires
+            # via either branch above. Multiple MetricsData entries may be
+            # bundled (TTFB, processing, usage) — only LLMUsageMetricsData is
+            # relevant here.
+            for _data in (frame.data or []):
+                if isinstance(_data, LLMUsageMetricsData):
+                    _usage = _data.value
+                    self._timing_state["prompt_tokens"] = _usage.prompt_tokens
+                    self._timing_state["completion_tokens"] = _usage.completion_tokens
+                    # cache_read_input_tokens is None when the response did
+                    # not include prompt_tokens_details (e.g. very small
+                    # prompts under the 1024-token cache threshold). Coerce
+                    # to 0 so dashboards can treat absence as "no cache hit".
+                    self._timing_state["cached_tokens"] = _usage.cache_read_input_tokens or 0
 
         await self.push_frame(frame, direction)
 
