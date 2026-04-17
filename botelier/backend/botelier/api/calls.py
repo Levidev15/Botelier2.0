@@ -394,12 +394,16 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
         call_duration = form_data.get("CallDuration")
         parent_call_sid = str(form_data.get("ParentCallSid", "")) if form_data.get("ParentCallSid") else None
         to_number = str(form_data.get("To", "")) if form_data.get("To") else None
-        
-        logger.info(f"Call status update - SID: {call_sid}, Status: {call_status}, Duration: {call_duration}s")
-        
+
+        # Twilio sends frequent "stream status" callbacks to this same URL with
+        # no CallStatus field. Short-circuit BEFORE any INFO logging so those
+        # events don't pollute the call-status timeline with confusing
+        # "Status: None, Duration: Nones" lines (Task #105).
         if not call_status:
-            logger.debug("No CallStatus in callback, likely a stream status event")
+            logger.debug(f"Stream status event for {call_sid} (no CallStatus); ignored")
             return {"status": "received"}
+
+        logger.info(f"Call status update - SID: {call_sid}, Status: {call_status}, Duration: {call_duration}s")
         
         call_logger = CallLogger(db)
         duration_seconds = int(call_duration) if call_duration else None

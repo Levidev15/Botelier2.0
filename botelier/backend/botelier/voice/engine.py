@@ -119,7 +119,10 @@ class LLMResponseCapture(FrameProcessor):
             _elapsed_ms = (self._llm_turn_start_mono - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
             _t_stt = self._timing_state.get("t_stt", 0.0)
             _stt_to_llm_ms = (self._llm_turn_start_mono - _t_stt) * 1000 if _t_stt else 0.0
-            logger.debug(
+            # Per-turn latency observability (Task #95). INFO-level so it
+            # survives LOG_LEVEL=INFO in production — this is the data we use
+            # to diagnose the LLM TTFB and tool-call delays (Task #106).
+            logger.info(
                 f"⏱️ [T+{_elapsed_ms:.0f}ms] LLM first token received | "
                 f"STT→LLM: {_stt_to_llm_ms:.0f}ms"
             )
@@ -141,7 +144,7 @@ class LLMResponseCapture(FrameProcessor):
             self._timing_state["t_llm_end"] = _now_mono
             _elapsed_ms = (_now_mono - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
             _gen_ms = (_now_mono - self._llm_turn_start_mono) * 1000 if self._llm_turn_start_mono else 0.0
-            logger.debug(
+            logger.info(
                 f"⏱️ [T+{_elapsed_ms:.0f}ms] LLM response complete: "
                 f"{len(text)} chars, generation={_gen_ms:.0f}ms"
             )
@@ -199,7 +202,7 @@ class UserTurnCapture(FrameProcessor):
             _t_last_inbound = self._timing_state.get("t_last_inbound", 0.0)
             _inbound_to_stt_ms = (_t_stt - _t_last_inbound) * 1000 if _t_last_inbound else 0.0
             _transcript = frame.text.strip()
-            logger.debug(
+            logger.info(
                 f"⏱️ [T+{_elapsed_ms:.0f}ms] STT transcript finalized: "
                 f'"{_transcript[:60]}" | '
                 f"inbound→STT: {_inbound_to_stt_ms:.0f}ms"
@@ -629,7 +632,7 @@ class TtsPipelineLatencyTracker(FrameProcessor):
 
         _delta_ms = (_t_first_audio_local - t_llm_end) * 1000
         _sign = "" if _delta_ms >= 0 else ""
-        logger.debug(
+        logger.info(
             f"⏱️ LLM last token → TTS first audio: {_sign}{_delta_ms:.0f}ms "
             f"({'TTS led LLM end — streaming' if _delta_ms < 0 else 'TTS trailed LLM end'})"
         )
@@ -682,7 +685,7 @@ class TtsPipelineLatencyTracker(FrameProcessor):
             self._expecting_audio = False
             self._t_first_audio = time.monotonic()
             _elapsed_ms = (self._t_first_audio - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
-            logger.debug(
+            logger.info(
                 f"⏱️ [T+{_elapsed_ms:.0f}ms] TTS first audio chunk dispatched to transport"
             )
             # If LLM already ended (t_llm_end set), emit immediately.
