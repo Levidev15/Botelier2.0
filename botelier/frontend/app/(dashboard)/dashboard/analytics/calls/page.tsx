@@ -16,7 +16,7 @@ import DashboardWidget from "@/components/analytics/DashboardWidget";
 import DateRangePicker, { DateRange } from "@/components/analytics/DateRangePicker";
 import AssistantFilter from "@/components/analytics/AssistantFilter";
 import CustomizePanel from "@/components/analytics/CustomizePanel";
-import DrilldownPanel, { TranscriptCallLog } from "@/components/analytics/DrilldownPanel";
+import CallDrilldownModal, { TranscriptCallLog } from "@/components/analytics/CallDrilldownModal";
 import { useWidgetLayout, WidgetDef } from "@/components/analytics/useWidgetLayout";
 import TranscriptModal from "@/app/(dashboard)/dashboard/call-logs/components/TranscriptModal";
 import TimezonePicker, { loadTimezone, saveTimezone } from "@/components/analytics/TimezonePicker";
@@ -715,7 +715,7 @@ export default function CallAnalyticsPage() {
         onReset={resetDefaults}
       />
 
-      <DrilldownPanel
+      <CallDrilldownModal
         open={drilldown !== null}
         metric={drilldown?.metric ?? ""}
         metricLabel={drilldown?.label ?? ""}
