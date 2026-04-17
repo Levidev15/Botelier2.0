@@ -183,7 +183,16 @@ export default function DrilldownPanel({
     params.set("date_from", toDateParam(dateRange.from));
     params.set("date_to", toDateParam(dateRange.to));
 
-    if (metric === "all") {
+    // Task #100 — when the silent-only toggle is on, key off `effectiveMetric`
+    // so the deep-link reflects the active filter, not the parent StatCard.
+    // Call Logs has no caller_spoke filter today, so we fall back to the
+    // smallest honest superset (date + assistant) and skip the status filter
+    // rather than mislead the user with a non-equivalent status slice.
+    const target = effectiveMetric;
+
+    if (target === "silent_caller") {
+      // Intentionally no status filter — see comment above.
+    } else if (target === "all") {
       // no extra filter — all calls in date range
     } else if (metric === "completed") {
       params.set("status", "completed");
