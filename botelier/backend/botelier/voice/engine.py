@@ -944,6 +944,29 @@ class VoiceEngineFactory:
         if provider == "openai":
             from pipecat.services.openai.llm import OpenAILLMService
             from pipecat.services.openai.base_llm import BaseOpenAILLMService
+            # Task #106 — explicit cache routing.
+            #
+            # OpenAI's prompt cache is automatic for prompts ≥1024 tokens, but
+            # the cache is sharded per OpenAI worker. Without a stable
+            # `prompt_cache_key`, requests for the same assistant can land on
+            # different shards (especially across our own backend processes
+            # behind the load balancer), causing cache misses on the second
+            # turn of a call and on the first turn of every new call to the
+            # same hotel — exactly the pattern observed in the prod sample
+            # (text turn ~0.5 s, tool turn ~2.0 s).
+            #
+            # Pinning prompt_cache_key to the assistant ID keeps every call
+            # for one hotel on the same shard, so the large persona+guidelines
+            # prefix (now placed first by call_handler._create_agent_config)
+            # has the best possible chance of staying warm. The new
+            # turn_latency.cached_tokens telemetry will quantify the win.
+            #
+            # `extra` is merged into the chat.completions.create() kwargs by
+            # BaseOpenAILLMService.build_chat_completion_params (line 337) so
+            # this is the supported plumbing for non-default request fields.
+            extra: Dict[str, Any] = {}
+            if config.agent_id:
+                extra["prompt_cache_key"] = f"botelier-assistant-{config.agent_id}"
             if hasattr(OpenAILLMService, "Settings"):
                 return OpenAILLMService(
                     api_key=api_keys.get("openai_api_key"),
@@ -954,6 +977,7 @@ class VoiceEngineFactory:
                         frequency_penalty=config.llm_config.get("frequency_penalty", 0.0),
                         presence_penalty=config.llm_config.get("presence_penalty", 0.0),
                         top_p=config.llm_config.get("top_p", 1.0),
+                        extra=extra,
                     ),
                 )
             # Fallback for older Pipecat versions without Settings API
@@ -963,6 +987,7 @@ class VoiceEngineFactory:
                 frequency_penalty=config.llm_config.get("frequency_penalty", 0.0),
                 presence_penalty=config.llm_config.get("presence_penalty", 0.0),
                 top_p=config.llm_config.get("top_p", 1.0),
+                extra=extra,
             )
             return OpenAILLMService(
                 api_key=api_keys.get("openai_api_key"),
