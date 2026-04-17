@@ -16,10 +16,12 @@ similar to the assistant's ``first_message`` — sets ``caller_spoke = FALSE``.
 The event itself is retained for forensic comparison.
 
 Similarity metric: longest-common-substring length divided by the length of
-the (shorter of the two) normalized strings. Threshold default 0.35 catches
-the observed garbled transcripts ("Welcome to Ping Binder's rights…" vs.
-"Welcome to primm valley resorts…" shares "Welcome to " plus scattered
-fragments, similarity ≈ 0.40) while avoiding real caller utterances.
+the (shorter of the two) normalized strings. Threshold default 0.20 catches
+the observed garbled transcripts (e.g. "Welcome to Ping Binders rights how
+make I help you" vs. "Welcome to Primm Valley Resorts, how may I help you?"
+shares the contiguous "welcome to " prefix, similarity ≈ 0.24) while real
+caller utterances score ≈ 0.10 or below. Override with --threshold if your
+greeting starts with short common words like "Hi" or "Hello".
 
 Usage
 -----
@@ -43,7 +45,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from botelier.database import SessionLocal
 from botelier.models.assistant import Assistant
-from botelier.models.call import CallLog
+from botelier.models.call_log import CallLog
 from botelier.models.call_event import CallEvent
 from loguru import logger
 
@@ -93,8 +95,8 @@ def main():
     parser.add_argument(
         "--threshold",
         type=float,
-        default=0.35,
-        help="Similarity threshold (0..1). Lower catches more; default 0.35.",
+        default=0.20,
+        help="Similarity threshold (0..1). Lower catches more; default 0.20.",
     )
     args = parser.parse_args()
 
