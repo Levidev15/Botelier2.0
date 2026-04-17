@@ -1,6 +1,6 @@
 "use client";
 
-import { Download, Search, Filter, RefreshCw } from "lucide-react";
+import { Download, Search, Filter, RefreshCw, X } from "lucide-react";
 import CallLogsFilterPanel from "./CallLogsFilterPanel";
 import type { FilterOptions } from "../types";
 
@@ -38,6 +38,28 @@ interface CallLogsToolbarProps {
   timezone: string;
   onTimezoneChange: (tz: string) => void;
   onClearFilters: () => void;
+  bucketFilter?: string;
+  onClearBucket?: () => void;
+}
+
+// Task #102 — human labels for the partition-bucket chip shown when the
+// user arrives via the analytics drilldown's "View all in Call Logs" link.
+// Keeps the otherwise-invisible `?bucket=` filter discoverable. Unknown
+// future tokens (added in analytics first) get a sentence-cased fallback
+// so the chip still renders, future-proofing the UI without a code change.
+const BUCKET_LABELS: Record<string, string> = {
+  ai_handled: "AI handled",
+  ended_early: "Ended early",
+  missed: "Missed",
+  failed: "Failed",
+  unresolved: "Unresolved",
+  silent_caller: "Silent caller",
+};
+
+function bucketLabel(token: string): string {
+  if (BUCKET_LABELS[token]) return BUCKET_LABELS[token];
+  const cleaned = token.replace(/_/g, " ").trim();
+  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
 }
 
 export default function CallLogsToolbar({
@@ -74,6 +96,8 @@ export default function CallLogsToolbar({
   timezone,
   onTimezoneChange,
   onClearFilters,
+  bucketFilter,
+  onClearBucket,
 }: CallLogsToolbarProps) {
   return (
     <div className="border-b border-gray-800 bg-[#0a0a0a] sticky top-0 z-10">
@@ -104,6 +128,26 @@ export default function CallLogsToolbar({
         </div>
 
         <div className="mt-6 space-y-4">
+          {bucketFilter && (
+            <div className="flex items-center gap-2">
+              <span
+                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-blue-500/10 border border-blue-500/30 text-blue-300"
+                title="Bucket filter — matches the analytics drilldown exactly"
+              >
+                Bucket: {bucketLabel(bucketFilter)}
+                {onClearBucket && (
+                  <button
+                    onClick={onClearBucket}
+                    className="ml-1 -mr-0.5 p-0.5 rounded-full hover:bg-blue-500/20 transition"
+                    title="Clear bucket filter"
+                    aria-label="Clear bucket filter"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                )}
+              </span>
+            </div>
+          )}
           <div className="flex gap-3">
             <div className="flex-1 relative">
               <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-gray-500" />
