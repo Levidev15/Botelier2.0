@@ -345,6 +345,43 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
                 call_started_at=call_started_at,
             )
 
+        # Task #111 — spawn the pre-warm background task. It resolves the
+        # Assistant / Account / Tools / MCP bundle and pre-loads the greeting
+        # PCM concurrently with the Twilio round-trip that follows this webhook
+        # response (TwiML return → Twilio dials out → media WebSocket opens).
+        #
+        # Errors are swallowed inside prewarm_call_config; never block the
+        # webhook.  The entry is reserved synchronously so handle_call's
+        # pop_and_wait finds it even if the WebSocket open races the task
+        # scheduler.
+        if call_sid and call_log_id and phone_record and phone_record.assistant_id:
+            try:
+                import asyncio as _asyncio
+                from ..voice.prewarm import prewarm_call_config
+                _ch = _get_call_handler()
+                # Reserve synchronously *and* pass the returned entry directly
+                # to the background task so the producer and the consumer
+                # (handle_call → pop_and_wait) can never end up bound to
+                # different PreWarmEntry objects if the pop beats the task
+                # scheduler under load.
+                _reserved_entry = _ch.precomputed_configs.reserve(call_sid)
+                _deepgram_key = os.environ.get("DEEPGRAM_API_KEY")
+                _asyncio.create_task(
+                    prewarm_call_config(
+                        entry=_reserved_entry,
+                        to_number=to_number,
+                        deepgram_api_key=_deepgram_key,
+                    ),
+                    name=f"prewarm:{call_sid}",
+                )
+                logger.info(f"🔥 pre-warm task scheduled for {call_sid}")
+            except Exception as _pw_err:
+                # Silent fall-back: handle_call will take the cold path.
+                logger.warning(
+                    f"Failed to schedule pre-warm for {call_sid} "
+                    f"({type(_pw_err).__name__}): {_pw_err}"
+                )
+
         fallback_host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host")
         ws_url = get_websocket_url(path="/api/ws/call", fallback_host=fallback_host)
         

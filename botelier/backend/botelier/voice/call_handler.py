@@ -26,6 +26,7 @@ from .engine import VoiceEngineFactory
 from .greeting_cache import get_or_generate_greeting_audio
 from .agent import VoiceAgentConfig
 from .function_mapper import FunctionMapper
+from .prewarm import PreWarmCache, PreWarmBundle
 from ..models.assistant import Assistant
 from ..models.phone_number import PhoneNumber
 from ..database import SessionLocal
@@ -168,6 +169,12 @@ class CallHandler:
         # write. Twilio retries arrive within minutes; 5 minutes is a generous
         # upper bound that still keeps memory bounded.
         self._pending_cancel_ttl_secs = 300
+        # Task #111 — pre-warm cache. Populated by the /api/calls/incoming
+        # webhook, consumed at the top of handle_call. Bounded LRU+TTL so
+        # abandoned ringing calls never leak.
+        self.precomputed_configs: PreWarmCache = PreWarmCache(
+            max_size=256, ttl_secs=60.0
+        )
     
     async def handle_call(
         self,
@@ -198,7 +205,15 @@ class CallHandler:
         """
         try:
             logger.info(f"📞 Call {call_sid}: {to_number}")
-            
+
+            # Task #111 — total-time-in-handle_call measured against this
+            # monotonic mark. Stamped onto greeting_started.details as
+            # cold_path_latency_ms so the post-deploy SLO query can watch
+            # the full webhook-to-first-audio window (it is a strict upper
+            # bound on "time from WebSocket start to greeting queued", and
+            # the webhook itself is ~10–50 ms before that).
+            _handle_call_start_mono = time.monotonic()
+
             # 1. Look up which assistant is assigned to this phone number
             # Query database and close session immediately to avoid connection pool exhaustion
             hotel_twilio_sid = None
@@ -206,139 +221,225 @@ class CallHandler:
             call_log_id = None
             call_started_at = None
             should_record_call = False
-            
+
+            # Task #111 — try the pre-warm cache first. The /api/calls/incoming
+            # webhook starts a background pre-warm task that loads Assistant,
+            # Account, Tools, MCPConnection (+ handshake), and the greeting PCM
+            # bytes during the Twilio WebSocket round-trip (~300–1500 ms on avg).
+            # When the bundle is ready we skip the 4 DB queries and the MCP
+            # schema fetch entirely.  Any miss (expired, never pre-warmed,
+            # pre-warm error, timeout waiting for ready) silently falls through
+            # to the cold path below.
+            prewarm_bundle: Optional[PreWarmBundle] = None
+            _prewarm_wait_ms: Optional[int] = None
             try:
-                phone_record = db.query(PhoneNumber).filter(
-                    PhoneNumber.phone_number == to_number
-                ).first()
-                
-                if not phone_record or not phone_record.assistant_id:
-                    logger.warning(f"⚠️ No assistant assigned to phone number: {to_number}")
-                    db.close()
-                    await websocket.close(code=1008, reason="No assistant assigned")
-                    return
-                
-                # Fetch assistant configuration
-                assistant = db.query(Assistant).filter(
-                    Assistant.id == phone_record.assistant_id
-                ).first()
-                
-                if not assistant:
-                    logger.error(f"❌ Assistant not found: {phone_record.assistant_id}")
-                    db.close()
-                    return
-                
-                # Fetch call log for event queue and set answered_at.
-                # answered_at is normally set by the Twilio in-progress status
-                # callback, but that webhook is not reliably delivered in all
-                # environments.  Setting it here (when audio streaming begins)
-                # is the universal source of truth for when the call was answered.
-                from ..models.call_log import CallLog
-                call_log_record = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
-                if call_log_record is None:
-                    _call_log_found = False
-                    for _attempt in range(3):
-                        await asyncio.sleep(0.2)
-                        _result = await asyncio.to_thread(_fetch_call_log_retry, call_sid)
-                        if _result is not None:
-                            call_log_id, call_started_at = _result
-                            _call_log_found = True
-                            logger.info(
-                                f"call_log found on retry attempt {_attempt + 1} for {call_sid}"
-                            )
-                            break
-                    if not _call_log_found:
-                        logger.warning(
-                            f"call_log not found after 3 retries for {call_sid} — "
-                            f"recording and event queue will be skipped"
-                        )
-                if call_log_record and call_log_id is None:
-                    # Record was found by the INITIAL query (not a retry) —
-                    # update answered_at via the original session.
-                    call_log_id = call_log_record.id
-                    call_started_at = call_log_record.started_at
-                    if not call_log_record.answered_at:
-                        call_log_record.answered_at = datetime.utcnow()
-                        db.commit()
-                if call_log_id is not None:
+                _pw_wait_start = time.monotonic()
+                prewarm_bundle = await self.precomputed_configs.pop_and_wait(
+                    call_sid, timeout_secs=0.5
+                )
+                _prewarm_wait_ms = int((time.monotonic() - _pw_wait_start) * 1000)
+            except Exception as _pw_err:
+                logger.warning(
+                    f"pre-warm consumption raised for {call_sid}: {_pw_err}"
+                )
+                prewarm_bundle = None
+
+            try:
+                # Task #111 — fast path: all heavy reads already done by the
+                # pre-warm background task. Just resolve the call_log row
+                # (created by /api/calls/incoming) and skip straight to the
+                # pipeline construction below.
+                if prewarm_bundle is not None and prewarm_bundle.assistant is not None:
+                    assistant = prewarm_bundle.assistant
+                    config = prewarm_bundle.config
+                    tools = list(prewarm_bundle.tools)
+                    mcp_connection_data = prewarm_bundle.mcp_connection_data
+                    mcp_enabled_tools = list(prewarm_bundle.mcp_enabled_tools)
+                    hotel_twilio_sid = prewarm_bundle.hotel_twilio_sid
+                    hotel_twilio_token = prewarm_bundle.hotel_twilio_token
+                    should_record_call = prewarm_bundle.should_record_call
                     logger.info(
-                        f"call_log_id={call_log_id} resolved for {call_sid} — "
-                        f"event queue and recording will be active"
+                        f"🔥 pre-warm HIT for {call_sid} — "
+                        f"prewarm_wait_ms={_prewarm_wait_ms}, "
+                        f"prewarm_duration_ms={prewarm_bundle.prewarm_duration_ms}, "
+                        f"tools={len(tools)}, mcp={'yes' if mcp_connection_data else 'no'}, "
+                        f"greeting_pcm={'yes' if prewarm_bundle.greeting_pcm else 'no'}"
                     )
-                
-                logger.info(f"🤖 Assistant: '{assistant.name}' (ID: {assistant.id})")
-                
-                # Fetch account's Twilio sub-account credentials (for transfers)
-                from ..models.account import Account as _CallAccount
-                _call_acct = db.query(_CallAccount).filter(_CallAccount.id == assistant.account_id).first()
-                if _call_acct:
-                    hotel_twilio_sid = _call_acct.twilio_sub_account_sid
-                    hotel_twilio_token = _call_acct.twilio_sub_auth_token
                     if hotel_twilio_sid:
-                        logger.info(f"🏨 Using account sub-account: {hotel_twilio_sid[:10]}...")
-
-                    # Resolve whether this call should be recorded.
-                    # Done here (while DB is open) so we don't need the session later.
-                    from ..auth.features import get_account_features as _get_acct_features
-                    _acct_features = _get_acct_features(
-                        subscription_tier=getattr(_call_acct, "subscription_tier", None) or "free",
-                        feature_flags_override=(_call_acct.feature_flags or {}),
-                    )
-                    _acct_recording_allowed = _acct_features.get("call_recording", False)
-                    _asst_recording_enabled = bool(
-                        (assistant.call_settings or {}).get("call_recording_enabled", False)
-                    )
-                    should_record_call = _acct_recording_allowed and _asst_recording_enabled
-                    logger.debug(
-                        f"🎙️ Recording check — account_allowed={_acct_recording_allowed}, "
-                        f"assistant_enabled={_asst_recording_enabled}, should_record={should_record_call}"
-                    )
-
-                # Convert database model to VoiceAgentConfig
-                # _create_agent_config is async — it loads the knowledge base in
-                # a thread pool to avoid blocking the event loop.
-                config = await self._create_agent_config(assistant)
-                
-                # Fetch tools for function calling (if enabled) before closing session
-                tools = []
-                if config.enable_function_calling and assistant.tool_set_id:
-                    from ..models.tool import Tool
-                    tools = db.query(Tool).filter(
-                        Tool.tool_set_id == assistant.tool_set_id,
-                        Tool.is_active == "true"
-                    ).all()
-                    logger.info(f"Loaded {len(tools)} tools from tool_set {assistant.tool_set_id}")
-                elif config.enable_function_calling:
-                    logger.info(f"No tool set assigned to assistant {assistant.id}")
-                
-                # Fetch MCP connection data if assistant has one configured
-                mcp_connection_data = None
-                mcp_enabled_tools = []
-                logger.info(f"🔍 Checking MCP: assistant.mcp_connection_id = {assistant.mcp_connection_id}, PIPECAT_MCP_AVAILABLE = {PIPECAT_MCP_AVAILABLE}")
-                if assistant.mcp_connection_id:
-                    from ..models.mcp_connection import MCPConnection, MCPConnectionStatus
-                    mcp_conn = db.query(MCPConnection).filter(
-                        MCPConnection.id == assistant.mcp_connection_id,
-                        MCPConnection.is_active == True
+                        logger.info(
+                            f"🏨 Using account sub-account: {hotel_twilio_sid[:10]}..."
+                        )
+                    # Resolve call_log_id / call_started_at — we still need
+                    # the row that /api/calls/incoming created, for the
+                    # event queue and answered_at stamp.
+                    from ..models.call_log import CallLog
+                    call_log_record = db.query(CallLog).filter(
+                        CallLog.call_sid == call_sid
                     ).first()
-                    if mcp_conn and mcp_conn.status == MCPConnectionStatus.CONNECTED:
-                        credentials = None
-                        if mcp_conn.credentials_encrypted:
-                            try:
-                                credentials = mcp_conn.get_credentials()
-                            except Exception as cred_error:
-                                logger.warning(f"Failed to decrypt MCP credentials (may be stale): {cred_error}")
-                        
-                        mcp_connection_data = {
-                            "id": str(mcp_conn.id),
-                            "server_url": mcp_conn.server_url,
-                            "auth_type": mcp_conn.auth_type.value if mcp_conn.auth_type else "none",
-                            "credentials": credentials,
-                            "discovered_tools": mcp_conn.discovered_tools or [],
-                        }
-                        mcp_enabled_tools = assistant.mcp_enabled_tools or []
-                        logger.info(f"Loaded MCP connection {mcp_conn.name} with {len(mcp_enabled_tools)} enabled tools")
-                
+                    if call_log_record is None:
+                        _call_log_found = False
+                        for _attempt in range(3):
+                            await asyncio.sleep(0.2)
+                            _result = await asyncio.to_thread(
+                                _fetch_call_log_retry, call_sid
+                            )
+                            if _result is not None:
+                                call_log_id, call_started_at = _result
+                                _call_log_found = True
+                                logger.info(
+                                    f"call_log found on retry attempt "
+                                    f"{_attempt + 1} for {call_sid}"
+                                )
+                                break
+                        if not _call_log_found:
+                            logger.warning(
+                                f"call_log not found after 3 retries for "
+                                f"{call_sid} — recording and event queue skipped"
+                            )
+                    else:
+                        call_log_id = call_log_record.id
+                        call_started_at = call_log_record.started_at
+                        if not call_log_record.answered_at:
+                            call_log_record.answered_at = datetime.utcnow()
+                            db.commit()
+                    if call_log_id is not None:
+                        logger.info(
+                            f"call_log_id={call_log_id} resolved for {call_sid}"
+                        )
+                else:
+                    # Cold path — pre-warm miss / error / never pre-warmed.
+                    # Run the original sequence of DB queries + MCP handshake.
+                    phone_record = db.query(PhoneNumber).filter(
+                        PhoneNumber.phone_number == to_number
+                    ).first()
+
+                    if not phone_record or not phone_record.assistant_id:
+                        logger.warning(f"⚠️ No assistant assigned to phone number: {to_number}")
+                        db.close()
+                        await websocket.close(code=1008, reason="No assistant assigned")
+                        return
+
+                    # Fetch assistant configuration
+                    assistant = db.query(Assistant).filter(
+                        Assistant.id == phone_record.assistant_id
+                    ).first()
+
+                    if not assistant:
+                        logger.error(f"❌ Assistant not found: {phone_record.assistant_id}")
+                        db.close()
+                        return
+
+                    # Fetch call log for event queue and set answered_at.
+                    # answered_at is normally set by the Twilio in-progress status
+                    # callback, but that webhook is not reliably delivered in all
+                    # environments.  Setting it here (when audio streaming begins)
+                    # is the universal source of truth for when the call was answered.
+                    from ..models.call_log import CallLog
+                    call_log_record = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
+                    if call_log_record is None:
+                        _call_log_found = False
+                        for _attempt in range(3):
+                            await asyncio.sleep(0.2)
+                            _result = await asyncio.to_thread(_fetch_call_log_retry, call_sid)
+                            if _result is not None:
+                                call_log_id, call_started_at = _result
+                                _call_log_found = True
+                                logger.info(
+                                    f"call_log found on retry attempt {_attempt + 1} for {call_sid}"
+                                )
+                                break
+                        if not _call_log_found:
+                            logger.warning(
+                                f"call_log not found after 3 retries for {call_sid} — "
+                                f"recording and event queue will be skipped"
+                            )
+                    if call_log_record and call_log_id is None:
+                        # Record was found by the INITIAL query (not a retry) —
+                        # update answered_at via the original session.
+                        call_log_id = call_log_record.id
+                        call_started_at = call_log_record.started_at
+                        if not call_log_record.answered_at:
+                            call_log_record.answered_at = datetime.utcnow()
+                            db.commit()
+                    if call_log_id is not None:
+                        logger.info(
+                            f"call_log_id={call_log_id} resolved for {call_sid} — "
+                            f"event queue and recording will be active"
+                        )
+
+                    logger.info(f"🤖 Assistant: '{assistant.name}' (ID: {assistant.id})")
+
+                    # Fetch account's Twilio sub-account credentials (for transfers)
+                    from ..models.account import Account as _CallAccount
+                    _call_acct = db.query(_CallAccount).filter(_CallAccount.id == assistant.account_id).first()
+                    if _call_acct:
+                        hotel_twilio_sid = _call_acct.twilio_sub_account_sid
+                        hotel_twilio_token = _call_acct.twilio_sub_auth_token
+                        if hotel_twilio_sid:
+                            logger.info(f"🏨 Using account sub-account: {hotel_twilio_sid[:10]}...")
+
+                        # Resolve whether this call should be recorded.
+                        # Done here (while DB is open) so we don't need the session later.
+                        from ..auth.features import get_account_features as _get_acct_features
+                        _acct_features = _get_acct_features(
+                            subscription_tier=getattr(_call_acct, "subscription_tier", None) or "free",
+                            feature_flags_override=(_call_acct.feature_flags or {}),
+                        )
+                        _acct_recording_allowed = _acct_features.get("call_recording", False)
+                        _asst_recording_enabled = bool(
+                            (assistant.call_settings or {}).get("call_recording_enabled", False)
+                        )
+                        should_record_call = _acct_recording_allowed and _asst_recording_enabled
+                        logger.debug(
+                            f"🎙️ Recording check — account_allowed={_acct_recording_allowed}, "
+                            f"assistant_enabled={_asst_recording_enabled}, should_record={should_record_call}"
+                        )
+
+                    # Convert database model to VoiceAgentConfig
+                    # _create_agent_config is async — it loads the knowledge base in
+                    # a thread pool to avoid blocking the event loop.
+                    config = await self._create_agent_config(assistant)
+
+                    # Fetch tools for function calling (if enabled) before closing session
+                    tools = []
+                    if config.enable_function_calling and assistant.tool_set_id:
+                        from ..models.tool import Tool
+                        tools = db.query(Tool).filter(
+                            Tool.tool_set_id == assistant.tool_set_id,
+                            Tool.is_active == "true"
+                        ).all()
+                        logger.info(f"Loaded {len(tools)} tools from tool_set {assistant.tool_set_id}")
+                    elif config.enable_function_calling:
+                        logger.info(f"No tool set assigned to assistant {assistant.id}")
+
+                    # Fetch MCP connection data if assistant has one configured
+                    mcp_connection_data = None
+                    mcp_enabled_tools = []
+                    logger.info(f"🔍 Checking MCP: assistant.mcp_connection_id = {assistant.mcp_connection_id}, PIPECAT_MCP_AVAILABLE = {PIPECAT_MCP_AVAILABLE}")
+                    if assistant.mcp_connection_id:
+                        from ..models.mcp_connection import MCPConnection, MCPConnectionStatus
+                        mcp_conn = db.query(MCPConnection).filter(
+                            MCPConnection.id == assistant.mcp_connection_id,
+                            MCPConnection.is_active == True
+                        ).first()
+                        if mcp_conn and mcp_conn.status == MCPConnectionStatus.CONNECTED:
+                            credentials = None
+                            if mcp_conn.credentials_encrypted:
+                                try:
+                                    credentials = mcp_conn.get_credentials()
+                                except Exception as cred_error:
+                                    logger.warning(f"Failed to decrypt MCP credentials (may be stale): {cred_error}")
+
+                            mcp_connection_data = {
+                                "id": str(mcp_conn.id),
+                                "server_url": mcp_conn.server_url,
+                                "auth_type": mcp_conn.auth_type.value if mcp_conn.auth_type else "none",
+                                "credentials": credentials,
+                                "discovered_tools": mcp_conn.discovered_tools or [],
+                            }
+                            mcp_enabled_tools = assistant.mcp_enabled_tools or []
+                            logger.info(f"Loaded MCP connection {mcp_conn.name} with {len(mcp_enabled_tools)} enabled tools")
+
             finally:
                 # CRITICAL: Close database session immediately after fetching data
                 # WebSocket connections are long-lived - keeping sessions open exhausts the connection pool
@@ -640,7 +741,11 @@ class CallHandler:
                     finally:
                         _db.close()
 
-                await asyncio.to_thread(_write_call_answered)
+                # Task #111 — fire-and-forget.  The status-callback handler
+                # dedups via _event_exists() and already retries on missing
+                # rows (Task #93 pattern), so awaiting the commit here just
+                # blocks the greeting for ~20–80 ms without functional gain.
+                asyncio.create_task(asyncio.to_thread(_write_call_answered))
 
                 # Fire in-call recording as a non-blocking background task.
                 # This replaces the phone-number-level VoiceRecord approach; no
@@ -760,12 +865,56 @@ class CallHandler:
                         logger.error(f"Failed to set caller_spoke: {_se}")
                 first_speech_tracker.set_first_speech_callback(_on_first_user_speech)
 
+            # Task #111 — emit prewarm hit/miss telemetry BEFORE greeting_started
+            # so the events appear in timeline order.
+            if call_sid in self.call_event_queues:
+                if prewarm_bundle is not None and prewarm_bundle.assistant is not None:
+                    self.call_event_queues[call_sid].log(
+                        "cold_path_prewarm_hit",
+                        event_source="app",
+                        severity="info",
+                        details={
+                            "prewarm_wait_ms": _prewarm_wait_ms,
+                            "prewarm_duration_ms": prewarm_bundle.prewarm_duration_ms,
+                            "greeting_preloaded": bool(prewarm_bundle.greeting_pcm),
+                            "tools_count": len(tools),
+                            "mcp_configured": mcp_connection_data is not None,
+                        },
+                    )
+                else:
+                    self.call_event_queues[call_sid].log(
+                        "cold_path_fallback",
+                        event_source="app",
+                        severity="info",
+                        details={
+                            "prewarm_wait_ms": _prewarm_wait_ms,
+                            "reason": (
+                                "wait_timeout_or_error"
+                                if _prewarm_wait_ms is not None
+                                else "no_prewarm_entry"
+                            ),
+                        },
+                    )
+
             # 8. Queue greeting message
+            # Task #111 — cold_path_latency_ms is the wall-clock from handle_call
+            # entry to greeting queue. Strict upper bound on "WebSocket start →
+            # first audio" and the primary SLO metric for Task #111.
+            _cold_path_latency_ms = int(
+                (time.monotonic() - _handle_call_start_mono) * 1000
+            )
             if call_sid in self.call_event_queues:
                 self.call_event_queues[call_sid].log(
                     "greeting_started",
                     event_source="pipecat",
                     severity="info",
+                    details={
+                        "cold_path_latency_ms": _cold_path_latency_ms,
+                        "prewarm_hit": (
+                            prewarm_bundle is not None
+                            and prewarm_bundle.assistant is not None
+                        ),
+                    },
                 )
             # Attempt to play cached PCM greeting to avoid a Deepgram TTS token.
             # Falls back to TTSSpeakFrame (normal TTS path) on any error.
@@ -782,14 +931,29 @@ class CallHandler:
             _greeting_played_from_cache = False
             if config.tts_provider.lower() == "deepgram" and api_keys.get("deepgram_api_key"):
                 try:
-                    _voice = config.tts_voice_id or "aura-2-helena-en"
-                    _tts_cfg = {"voice": _voice}
-                    _audio = await get_or_generate_greeting_audio(
-                        greeting_text=config.greeting_message,
-                        tts_config=_tts_cfg,
-                        api_key=api_keys["deepgram_api_key"],
-                        assistant_id=str(assistant.id),
-                    )
+                    # Task #111 — prefer the pre-warmed bytes when the
+                    # pre-warm task already fetched them. Fall back to an
+                    # inline fetch on bundle miss or greeting pre-fetch
+                    # failure.
+                    _audio = None
+                    if (
+                        prewarm_bundle is not None
+                        and prewarm_bundle.greeting_pcm is not None
+                    ):
+                        _audio = prewarm_bundle.greeting_pcm
+                        logger.info(
+                            f"🎙️ Greeting PCM sourced from pre-warm "
+                            f"({len(_audio)} bytes) — skipping inline fetch"
+                        )
+                    else:
+                        _voice = config.tts_voice_id or "aura-2-helena-en"
+                        _tts_cfg = {"voice": _voice}
+                        _audio = await get_or_generate_greeting_audio(
+                            greeting_text=config.greeting_message,
+                            tts_config=_tts_cfg,
+                            api_key=api_keys["deepgram_api_key"],
+                            assistant_id=str(assistant.id),
+                        )
                     # Treat empty/invalid payload as a cache miss so the
                     # TTSSpeakFrame fallback below still plays a greeting
                     # (and MuteUntilFirstBotComplete can release the mute).
@@ -946,6 +1110,11 @@ class CallHandler:
                 )
 
             # Cleanup call session state
+            # Task #111 — always evict pre-warm entry (success or error path).
+            try:
+                self.precomputed_configs.discard(call_sid)
+            except Exception:
+                pass
             if call_sid in self.active_calls:
                 del self.active_calls[call_sid]
             if call_sid in self.call_mappers:
