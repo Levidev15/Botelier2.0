@@ -782,6 +782,13 @@ async def get_calls_drilldown(
                 "acw_quality_score": log.acw_quality_score,
                 "acw_resolution": log.acw_resolution,
                 "ended_early": log.ended_early,
+                # Task #101 — surface recording metadata so the drilldown modal
+                # can render an inline lazy `<audio>` player. recording_url is
+                # the Twilio media URL; the frontend MUST stream through the
+                # authenticated proxy at GET /api/calls/{id}/recording rather
+                # than embed this URL directly.
+                "recording_url": log.recording_url,
+                "recording_sid": log.recording_sid,
             })
 
         return {
