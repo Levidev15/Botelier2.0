@@ -107,7 +107,12 @@ def configure_logging():
     if _configured:
         return
 
-    log_level = (os.environ.get("LOG_LEVEL") or "INFO").upper()
+    # Default level depends on the environment when LOG_LEVEL is unset:
+    # production → INFO (quiet, only operationally meaningful lines),
+    # development → DEBUG (full per-turn timing, verbose Botelier logs).
+    # Replit sets REPLIT_DEPLOYMENT=1 inside the deployed container.
+    _is_prod = os.environ.get("REPLIT_DEPLOYMENT") == "1"
+    log_level = (os.environ.get("LOG_LEVEL") or ("INFO" if _is_prod else "DEBUG")).upper()
     log_prompts = should_log_prompts()
 
     # Drop loguru's default stderr sink so we don't double-log every record.
