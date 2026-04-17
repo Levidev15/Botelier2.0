@@ -26,7 +26,9 @@ SHUTDOWN_PER_CALL_TIMEOUT = 2.0
 SHUTDOWN_TOTAL_TIMEOUT = 10.0
 
 
-async def finalize_active_calls_on_shutdown(session_factory) -> None:
+async def finalize_active_calls_on_shutdown(
+    session_factory, call_handler=None
+) -> None:
     """Finalize every in-flight call before the worker exits.
 
     On uvicorn restart (deploy / reload / SIGTERM), in-memory call state
@@ -52,12 +54,19 @@ async def finalize_active_calls_on_shutdown(session_factory) -> None:
             ``Session`` (typically ``SessionLocal``). Passed in rather
             than imported so tests can inject mocks without touching
             ``database.py`` globals.
+        call_handler: Optional ``CallHandler`` instance. When ``None``,
+            it is lazily imported from ``botelier.api.websockets`` —
+            this keeps the production call site (main.py) terse while
+            allowing tests to inject a stub without touching the
+            websockets module at all.
     """
-    try:
-        from botelier.api.websockets import call_handler
-    except Exception as e:
-        print(f"⚠️  shutdown finalizer: could not import call_handler: {e}")
-        return
+    if call_handler is None:
+        try:
+            from botelier.api.websockets import call_handler as _call_handler
+            call_handler = _call_handler
+        except Exception as e:
+            print(f"⚠️  shutdown finalizer: could not import call_handler: {e}")
+            return
 
     active_sids = list(
         set(call_handler.active_calls.keys())

@@ -382,14 +382,15 @@ class TestShutdownFinalizer:
 
         fake_handler.cancel_call_pipeline = _fake_cancel
 
-        # Inject the fake call_handler into the real
-        # `botelier.api.websockets` module so the lazy import inside
-        # finalize_active_calls_on_shutdown picks it up. SessionLocal is
-        # passed in as a parameter so we just hand it our factory.
-        with patch("botelier.api.websockets.call_handler", fake_handler):
-            await shutdown_finalizer.finalize_active_calls_on_shutdown(
-                session_factory=_make_db,
-            )
+        # Pure dependency injection — no monkeypatching of imports
+        # needed. The finalizer accepts both the session factory and the
+        # call_handler as explicit arguments precisely so this test runs
+        # in any environment, including ones where the websockets module
+        # is unimportable due to missing pipecat.
+        await shutdown_finalizer.finalize_active_calls_on_shutdown(
+            session_factory=_make_db,
+            call_handler=fake_handler,
+        )
 
         # Pipeline must be cancelled.
         assert cancelled_sids == [target_sid], (
@@ -419,10 +420,10 @@ class TestShutdownFinalizer:
         fake_handler.call_tasks = {}
         fake_factory = MagicMock()
 
-        with patch("botelier.api.websockets.call_handler", fake_handler):
-            await shutdown_finalizer.finalize_active_calls_on_shutdown(
-                session_factory=fake_factory,
-            )
+        await shutdown_finalizer.finalize_active_calls_on_shutdown(
+            session_factory=fake_factory,
+            call_handler=fake_handler,
+        )
 
         fake_factory.assert_not_called()
 
@@ -465,10 +466,10 @@ class TestShutdownFinalizer:
 
         loop = asyncio.get_event_loop()
         start = loop.time()
-        with patch("botelier.api.websockets.call_handler", fake_handler):
-            await shutdown_finalizer.finalize_active_calls_on_shutdown(
-                session_factory=_make_slow_db,
-            )
+        await shutdown_finalizer.finalize_active_calls_on_shutdown(
+            session_factory=_make_slow_db,
+            call_handler=fake_handler,
+        )
         elapsed = loop.time() - start
 
         # Coroutine-level bound: must return within total + small margin.
