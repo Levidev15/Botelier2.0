@@ -1123,18 +1123,33 @@ class CallHandler:
             logger.info(f"No knowledge base assigned to assistant {assistant.id}")
         
         if kb_content:
+            # Task #106 — order matters for OpenAI prompt caching.
+            #
+            # OpenAI's prompt cache hits on the longest STABLE prefix from the
+            # start of the messages array. The persona (`base_prompt`) and the
+            # static RESPONSE GUIDELINES below are byte-stable across every
+            # call to the same assistant. KB content is also stable for the
+            # 5-minute in-process TTL window (knowledge_handler._kb_cache),
+            # but it is the only segment that can change mid-day when an
+            # operator edits the KB. By placing the volatile KB block LAST,
+            # the much larger persona+guidelines prefix stays cacheable even
+            # when a KB edit invalidates the trailing tokens — protecting
+            # cached_tokens / prompt_tokens ratio on every subsequent turn.
+            #
+            # The new turn_latency.cached_tokens telemetry lets us measure
+            # the effect of this ordering on the next deploy without guessing.
             enhanced_prompt = f"""{base_prompt}
-
-## KNOWLEDGE BASE
-You have access to the following Q&A knowledge base. Use this information to answer guest questions directly and confidently. Do NOT transfer the call or say you don't have information if the answer is in this knowledge base.
-
-{kb_content}
 
 ## RESPONSE GUIDELINES
 - Answer questions from the knowledge base naturally and conversationally
 - Keep responses concise (under 50 words) since this is a phone call
 - Only transfer to a human if: (1) the caller explicitly requests to speak with someone, OR (2) the question requires information NOT in the knowledge base AND the caller needs urgent assistance
-- For general questions covered by the knowledge base, answer directly without offering to transfer"""
+- For general questions covered by the knowledge base, answer directly without offering to transfer
+
+## KNOWLEDGE BASE
+You have access to the following Q&A knowledge base. Use this information to answer guest questions directly and confidently. Do NOT transfer the call or say you don't have information if the answer is in this knowledge base.
+
+{kb_content}"""
             logger.info(f"📚 Injected KB ({len(kb_content)} chars) into system prompt for assistant {assistant.id}")
         else:
             enhanced_prompt = base_prompt
