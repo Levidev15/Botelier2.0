@@ -550,16 +550,36 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
 
             # Log call_answered and call_ended events.
             # Both paths use _event_exists() to dedup:
-            # - call_answered: pipeline writes it synchronously (with an immediate
-            #   DB commit) at WebSocket stream connect; by the time Twilio's
-            #   in-progress callback arrives the row is always visible.
-            # - call_ended: connect-complete commits synchronously before Twilio's
-            #   terminal status callback is delivered (seconds later).
+            # - call_answered: the pipeline writes the canonical row
+            #   (event_source="pipecat", details includes stream_sid) but as
+            #   of Task #111 that commit is *deferred* off the greeting hot
+            #   path via asyncio.create_task. If Twilio's in-progress callback
+            #   arrives before the deferred commit lands, we briefly poll for
+            #   the pipeline-written row and only fall back to a Twilio-shaped
+            #   row if still absent (Task #93 pattern). This preserves the
+            #   canonical event shape & ordering observed by downstream
+            #   consumers.
+            # - call_ended: connect-complete commits synchronously before
+            #   Twilio's terminal status callback is delivered (seconds later).
             call_log = call_logger.get_call_log(call_sid)
             if call_log:
                 _TERMINAL = {"completed", "busy", "failed", "no-answer", "canceled"}
                 if call_status == "in-progress":
-                    if not _event_exists(db, call_log.id, "call_answered"):
+                    # Task #111 — bounded wait for the deferred pipecat write
+                    # (up to ~250 ms). The deferred _write_call_answered path
+                    # typically commits within 20–80 ms of the WebSocket
+                    # start event, so this nearly always sees the canonical
+                    # row on the first or second poll.
+                    _found_pipecat_row = False
+                    for _attempt in range(5):
+                        if _event_exists(db, call_log.id, "call_answered"):
+                            _found_pipecat_row = True
+                            break
+                        await asyncio.sleep(0.05)
+                        # Invalidate session cache so the next query re-reads
+                        # from the DB (another connection may have committed).
+                        db.expire_all()
+                    if not _found_pipecat_row:
                         _write_event(
                             db,
                             call_log_id=call_log.id,
