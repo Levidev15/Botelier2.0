@@ -228,9 +228,13 @@ async def get_call_analytics(
         buckets = {name: 0 for name in _PARTITION_BUCKETS}
         partition_counts_by_status: dict = {}
         # Task #98 — sub-breakdown of the unresolved bucket for the StatCard
-        # tooltip. silent_caller = (greeted=True, spoke=False); the rest is
-        # the existing finalization-gap / anomaly content.
-        unresolved_breakdown = {"silent_caller": 0, "non_terminal_gap": 0, "other": 0}
+        # tooltip. Field names match the contract used elsewhere
+        # (acw_skip_reason) and the spec wording:
+        #   no_caller_audio     = (greeted=True, caller_spoke=False)
+        #   dropped_pre_greeting = (status in {initiated,ringing,in_progress},
+        #                           ai_greeting_completed=False) — finalization-lag
+        #   other               = remaining anomalies (catch-all)
+        unresolved_breakdown = {"no_caller_audio": 0, "dropped_pre_greeting": 0, "other": 0}
         total = 0
         completed = 0
         ended_early_status_total = 0  # rows with status=ended_early (any greeted)
@@ -255,12 +259,12 @@ async def get_call_analytics(
                     and r.status
                     in _AI_GREETED_STATUSES + (CallStatus.ENDED_EARLY.value,)
                 ):
-                    unresolved_breakdown["silent_caller"] += cnt
+                    unresolved_breakdown["no_caller_audio"] += cnt
                 elif (
                     not r.ai_greeting_completed
                     and r.status in _non_terminal_statuses
                 ):
-                    unresolved_breakdown["non_terminal_gap"] += cnt
+                    unresolved_breakdown["dropped_pre_greeting"] += cnt
                 else:
                     unresolved_breakdown["other"] += cnt
             if r.status == CallStatus.COMPLETED.value:
