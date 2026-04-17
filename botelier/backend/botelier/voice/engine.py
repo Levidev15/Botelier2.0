@@ -908,8 +908,18 @@ class VoiceEngineFactory:
                 class _BotelierDeepgramSTTService(BotelierDeepgramSTTService, DeepgramSTTService):
                     pass
 
-                # Standard Deepgram using the Settings API (pipecat 0.0.105+)
-                return _BotelierDeepgramSTTService(
+                # Standard Deepgram using the Settings API (pipecat 0.0.105+).
+                #
+                # ttfs_p99_latency:
+                #   Pipecat's TurnAnalyzerUserTurnStopStrategy uses this value
+                #   to size the STT wait window after VAD declares end-of-turn
+                #   (`max(0, ttfs_p99 - vad.stop_secs)`).  Pipecat's bundled
+                #   DEEPGRAM_TTFS_P99 (~0.35 s) is measured against
+                #   `stop_secs=0.2` and assumes a clean network path; on
+                #   telephony + endpointing=500 ms it is too tight and the
+                #   timeout collapses to 0 s.  Per-assistant operators can
+                #   override via stt_config.ttfs_p99_latency.
+                deepgram_kwargs = dict(
                     api_key=api_keys.get("deepgram_api_key"),
                     settings=DeepgramSTTService.Settings(
                         model=model,
@@ -921,6 +931,10 @@ class VoiceEngineFactory:
                         endpointing=config.stt_config.get("endpointing", 500),
                     ),
                 )
+                ttfs_override = config.stt_config.get("ttfs_p99_latency")
+                if ttfs_override is not None:
+                    deepgram_kwargs["ttfs_p99_latency"] = float(ttfs_override)
+                return _BotelierDeepgramSTTService(**deepgram_kwargs)
         elif provider == "openai_whisper":
             from pipecat.services.openai.stt import OpenAISTTService
             return OpenAISTTService(
@@ -1209,7 +1223,7 @@ class VoiceEngineFactory:
             vad_params = VADParams(
                 confidence=vad_config.get("confidence", 0.7),
                 start_secs=vad_config.get("start_secs", 0.2),
-                stop_secs=vad_config.get("stop_secs", 0.8),
+                stop_secs=vad_config.get("stop_secs", 0.2),
                 min_volume=vad_config.get("min_volume", 0.6),
             )
             user_params = LLMUserAggregatorParams(
