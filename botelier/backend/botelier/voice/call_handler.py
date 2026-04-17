@@ -231,13 +231,18 @@ class CallHandler:
             # pre-warm error, timeout waiting for ready) silently falls through
             # to the cold path below.
             prewarm_bundle: Optional[PreWarmBundle] = None
-            _prewarm_wait_ms: Optional[int] = None
+            _prewarm_to_use_ms: Optional[int] = None
+            # Snapshot reservation membership BEFORE pop so we can distinguish
+            # a true cache miss (no reservation was ever placed — e.g. phone
+            # not mapped to an assistant at webhook time) from a reserved
+            # entry that timed out or errored during pre-warm.
+            _had_reservation = self.precomputed_configs.has(call_sid)
             try:
                 _pw_wait_start = time.monotonic()
                 prewarm_bundle = await self.precomputed_configs.pop_and_wait(
                     call_sid, timeout_secs=0.5
                 )
-                _prewarm_wait_ms = int((time.monotonic() - _pw_wait_start) * 1000)
+                _prewarm_to_use_ms = int((time.monotonic() - _pw_wait_start) * 1000)
             except Exception as _pw_err:
                 logger.warning(
                     f"pre-warm consumption raised for {call_sid}: {_pw_err}"
@@ -260,7 +265,7 @@ class CallHandler:
                     should_record_call = prewarm_bundle.should_record_call
                     logger.info(
                         f"🔥 pre-warm HIT for {call_sid} — "
-                        f"prewarm_wait_ms={_prewarm_wait_ms}, "
+                        f"prewarm_to_use_ms={_prewarm_to_use_ms}, "
                         f"prewarm_duration_ms={prewarm_bundle.prewarm_duration_ms}, "
                         f"tools={len(tools)}, mcp={'yes' if mcp_connection_data else 'no'}, "
                         f"greeting_pcm={'yes' if prewarm_bundle.greeting_pcm else 'no'}"
@@ -874,7 +879,7 @@ class CallHandler:
                         event_source="app",
                         severity="info",
                         details={
-                            "prewarm_wait_ms": _prewarm_wait_ms,
+                            "prewarm_to_use_ms": _prewarm_to_use_ms,
                             "prewarm_duration_ms": prewarm_bundle.prewarm_duration_ms,
                             "greeting_preloaded": bool(prewarm_bundle.greeting_pcm),
                             "tools_count": len(tools),
@@ -887,10 +892,15 @@ class CallHandler:
                         event_source="app",
                         severity="info",
                         details={
-                            "prewarm_wait_ms": _prewarm_wait_ms,
+                            "prewarm_to_use_ms": _prewarm_to_use_ms,
+                            # `_had_reservation` captures whether the webhook
+                            # ever placed a reservation; that cleanly
+                            # distinguishes a true cache miss (no reservation
+                            # — e.g. unmapped number) from a pre-warm that
+                            # was attempted but timed out or errored.
                             "reason": (
                                 "wait_timeout_or_error"
-                                if _prewarm_wait_ms is not None
+                                if _had_reservation
                                 else "no_prewarm_entry"
                             ),
                         },
