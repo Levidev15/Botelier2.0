@@ -17,7 +17,7 @@ from ..models.call_event import CallEvent
 
 # Vocabulary for forced-finalization sources. Kept aligned with Task #96.
 # Any new source must be documented here so dashboards/analytics can surface it.
-_FORCED_BY_SOURCES = {"sweeper", "webhook_safety_net", "finally_defensive"}
+_FORCED_BY_SOURCES = {"sweeper", "webhook_safety_net", "finally_defensive", "shutdown"}
 
 # PostgreSQL INTEGER (int4) max — used to guard offset_ms before the BIGINT
 # migration has run on older deployments still carrying the narrow column.
