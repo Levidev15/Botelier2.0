@@ -9,7 +9,7 @@ root-cause diagnosis. Events are written in two ways:
 
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Integer, Index, ForeignKey
+from sqlalchemy import Column, String, DateTime, BigInteger, Index, ForeignKey
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from botelier.database import Base
 
@@ -44,7 +44,7 @@ class CallEvent(Base):
     severity = Column(String, nullable=False, default="info")
 
     occurred_at = Column(DateTime, nullable=False, default=datetime.utcnow)
-    offset_ms = Column(Integer, nullable=True)
+    offset_ms = Column(BigInteger, nullable=True)
 
     details = Column(JSONB, nullable=True)
 

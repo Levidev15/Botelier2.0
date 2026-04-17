@@ -367,6 +367,37 @@ BEGIN
     END IF;
   END IF;
 END $$""",
+
+    # Task #115 — Fix 1: widen call_events.offset_ms from int4 to int8 (BIGINT).
+    # Calls stuck for >24.8 days produce offset_ms values that exceed int4 max
+    # (2 147 483 647 ms). The stuck-call sweeper then fails with
+    # NumericValueOutOfRange every 5 min, keeping those rows stuck forever.
+    # The ALTER is wrapped in a DO block so it is a no-op once the column is
+    # already BIGINT (idempotent across repeated startup runs).
+    """DO $$
+BEGIN
+  IF EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'call_events'
+      AND column_name = 'offset_ms'
+      AND data_type = 'integer'
+  ) THEN
+    ALTER TABLE call_events ALTER COLUMN offset_ms TYPE BIGINT;
+  END IF;
+END $$""",
+
+    # Task #115 — Fix 2: zero out fabricated durations left by the sweeper on
+    # unanswered calls (answered_at IS NULL). Before this fix, complete_call()
+    # computed leg duration as (datetime.utcnow() - leg.started_at), turning an
+    # overnight stuck call into an 800+ minute duration. The WHERE clause is
+    # intentionally conservative: only rows whose duration exceeds 7 200 s
+    # (2 hours) are touched — no real hotel AI call legitimately runs that long,
+    # and the filter ensures already-correct zero rows are never re-written.
+    """UPDATE call_logs
+SET duration_seconds = 0
+WHERE answered_at IS NULL
+  AND duration_seconds > 7200
+  AND status IN ('completed', 'ended_early')""",
 ]
 
 

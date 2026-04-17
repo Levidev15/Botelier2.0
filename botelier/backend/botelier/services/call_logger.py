@@ -19,6 +19,10 @@ from ..models.call_event import CallEvent
 # Any new source must be documented here so dashboards/analytics can surface it.
 _FORCED_BY_SOURCES = {"sweeper", "webhook_safety_net", "finally_defensive"}
 
+# PostgreSQL INTEGER (int4) max — used to guard offset_ms before the BIGINT
+# migration has run on older deployments still carrying the narrow column.
+_INT4_MAX = 2_147_483_647
+
 
 class CallLogger:
     """
@@ -223,7 +227,11 @@ class CallLogger:
             now = datetime.utcnow()
             offset_ms = None
             if call_started_at:
-                offset_ms = int((now - call_started_at).total_seconds() * 1000)
+                raw_ms = int((now - call_started_at).total_seconds() * 1000)
+                # Belt-and-suspenders guard: cap at int4 max so finalization of
+                # very old stuck calls cannot overflow deployments that have not
+                # yet applied the BIGINT migration for this column.
+                offset_ms = min(raw_ms, _INT4_MAX)
             evt = CallEvent(
                 id=uuid.uuid4(),
                 call_log_id=call_log_id,
@@ -371,6 +379,12 @@ class CallLogger:
                 call_log.tool_name = ", ".join(tools_used)
                 logger.info(f"Saved tools used for call {call_sid}: {call_log.tool_name}")
             
+            # When the sweeper closes a call that never answered, the real call
+            # duration is unknown — we must not fabricate it as (now - started_at).
+            # All other paths (normal pipeline teardown, webhook safety-net, or
+            # sweeper on a call that DID answer) compute duration as normal.
+            _skip_sweeper_duration = forced_by == "sweeper" and not call_log.answered_at
+
             if duration_seconds is not None:
                 call_log.duration_seconds = duration_seconds
             elif call_log.answered_at and call_log.ended_at:
@@ -379,7 +393,7 @@ class CallLogger:
                 call_log.duration_seconds = max(0, int(
                     (call_log.ended_at - call_log.answered_at).total_seconds()
                 ))
-            elif call_log.started_at and call_log.ended_at:
+            elif call_log.started_at and call_log.ended_at and not _skip_sweeper_duration:
                 call_log.duration_seconds = int((call_log.ended_at - call_log.started_at).total_seconds())
             
             # Update all legs when call ends
@@ -411,17 +425,21 @@ class CallLogger:
                 # an end time and an accurate duration.
                 elif not leg.ended_at:
                     leg.ended_at = call_log.ended_at or datetime.utcnow()
-                    if leg.leg_type == LegType.AI_CONVERSATION.value:
-                        # Use answered_at as the anchor — matches media stream billing
-                        # and is consistent with update_status(). answered_at is always
-                        # set after Task #40; fall back to started_at for safety.
-                        anchor = call_log.answered_at or leg.started_at
-                        if anchor:
-                            leg.duration_seconds = max(0, int(
-                                (leg.ended_at - anchor).total_seconds()
-                            ))
-                    elif leg.started_at:
-                        leg.duration_seconds = int((leg.ended_at - leg.started_at).total_seconds())
+                    # When the sweeper closes an unanswered call, the real duration is
+                    # unknown — do not fabricate it as (now - started_at). Leave
+                    # leg.duration_seconds at its existing value (typically 0).
+                    if not _skip_sweeper_duration:
+                        if leg.leg_type == LegType.AI_CONVERSATION.value:
+                            # Use answered_at as the anchor — matches media stream billing
+                            # and is consistent with update_status(). answered_at is always
+                            # set after Task #40; fall back to started_at for safety.
+                            anchor = call_log.answered_at or leg.started_at
+                            if anchor:
+                                leg.duration_seconds = max(0, int(
+                                    (leg.ended_at - anchor).total_seconds()
+                                ))
+                        elif leg.started_at:
+                            leg.duration_seconds = int((leg.ended_at - leg.started_at).total_seconds())
             
             # Calculate total duration by summing all leg durations.
             # Cold transfer legs are excluded (duration unknown — Twilio exited the bridge).
