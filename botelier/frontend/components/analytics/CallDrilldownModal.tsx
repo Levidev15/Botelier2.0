@@ -217,6 +217,8 @@ export default function CallDrilldownModal({
   const [page, setPage] = useState(1);
   const [silentOnly, setSilentOnly] = useState(false);
   const [editingRecord, setEditingRecord] = useState<DrilldownRecord | null>(null);
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const closeBtnRef = useRef<HTMLButtonElement>(null);
 
   const supportsSilentToggle = metric === "unresolved";
   const canEditLogs = isPlatformAdmin || can("call_logs", "edit");
@@ -269,20 +271,76 @@ export default function CallDrilldownModal({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [fetchData, page]);
 
-  // ESC + scroll lock while open.
+  // ESC + scroll lock + focus trap while open. We:
+  //   1. Save the element that was focused before the modal opened so we can
+  //      restore focus when it closes (avoids the "lost focus" jump).
+  //   2. Move initial focus to the close button so keyboard users land
+  //      inside the dialog.
+  //   3. Trap Tab / Shift+Tab so focus cycles through the dialog's own
+  //      focusable elements only — required for accessible modals.
+  //   4. Lock body scroll behind the backdrop.
+  // The trap intentionally lets focus pass through to a nested EditCallLogModal
+  // because that child modal mounts as a sibling overlay and grabs its own
+  // focus when opened.
   useEffect(() => {
     if (!open) return;
+
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const focusableSelector =
+      'a[href], button:not([disabled]), input:not([disabled]):not([type="hidden"]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+    // Defer initial focus by one tick so dialogRef is mounted.
+    const focusTimer = window.setTimeout(() => {
+      closeBtnRef.current?.focus();
+    }, 0);
+
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
+      if (e.key === "Escape") {
+        onClose();
+        return;
+      }
+      if (e.key !== "Tab") return;
+
+      // If a nested modal (EditCallLogModal) is open, defer to it — don't
+      // trap inside the parent dialog.
+      if (editingRecord) return;
+
+      const root = dialogRef.current;
+      if (!root) return;
+      const focusables = Array.from(
+        root.querySelectorAll<HTMLElement>(focusableSelector)
+      ).filter((el) => el.offsetParent !== null);
+      if (focusables.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement as HTMLElement | null;
+      if (e.shiftKey) {
+        if (active === first || !root.contains(active)) {
+          e.preventDefault();
+          last.focus();
+        }
+      } else {
+        if (active === last) {
+          e.preventDefault();
+          first.focus();
+        }
+      }
     };
+
     document.addEventListener("keydown", onKey);
     const prevOverflow = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     return () => {
+      window.clearTimeout(focusTimer);
       document.removeEventListener("keydown", onKey);
       document.body.style.overflow = prevOverflow;
+      // Restore focus to whatever opened the modal.
+      previouslyFocused?.focus?.();
     };
-  }, [open, onClose]);
+  }, [open, onClose, editingRecord]);
 
   function buildCallLogsTarget(): string {
     const params = new URLSearchParams();
@@ -374,6 +432,7 @@ export default function CallDrilldownModal({
       />
 
       <div
+        ref={dialogRef}
         role="dialog"
         aria-modal="true"
         aria-label={metricLabel}
@@ -415,6 +474,7 @@ export default function CallDrilldownModal({
             )}
           </div>
           <button
+            ref={closeBtnRef}
             onClick={onClose}
             className="p-2 rounded-lg text-gray-500 hover:text-gray-200 hover:bg-gray-800 transition-colors"
             aria-label="Close"
