@@ -358,12 +358,19 @@ async def _build_bundle(
     bundle.hotel_twilio_token = reads["hotel_token"]
     bundle.should_record_call = reads["should_record"]
 
-    # Build VoiceAgentConfig from the detached assistant.  Imported lazily to
-    # avoid a circular import: call_handler -> prewarm -> call_handler.
-    from .call_handler import CallHandler as _CH
+    # Build VoiceAgentConfig from the detached assistant. Reuse the process-
+    # wide CallHandler singleton rather than instantiating a fresh one per
+    # pre-warm — _create_agent_config is an instance method today, but none
+    # of its logic depends on per-call handler state, so routing through the
+    # singleton avoids constructing a throwaway handler on every incoming
+    # call. Imported lazily to avoid a circular import
+    # (call_handler -> prewarm -> call_handler).
+    from ..api.calls import _get_call_handler as _get_singleton_handler
 
     try:
-        bundle.config = await _CH()._create_agent_config(bundle.assistant)
+        bundle.config = await _get_singleton_handler()._create_agent_config(
+            bundle.assistant
+        )
     except Exception as _cfg_err:
         # Config build failure is fatal for the pre-warm — without it the
         # consumer cannot proceed.  Record and let handle_call fall back.
