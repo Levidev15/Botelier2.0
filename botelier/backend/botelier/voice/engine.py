@@ -328,7 +328,13 @@ class GreetingAudioInjector(FrameProcessor):
                 # inserts) so this completes in milliseconds even for long
                 # greetings, but we don't want to block the StartFrame
                 # propagation through this processor.
-                asyncio.create_task(self._inject(audio))
+                # Task #116 — attach exception logger so any failure raised
+                # outside _inject's internal try/except (e.g. scheduler
+                # error during reload) surfaces in the logs instead of
+                # being swallowed by garbage collection of the task object.
+                from ..utils import log_task_exception as _log_task_exception
+                _inject_task = asyncio.create_task(self._inject(audio))
+                _inject_task.add_done_callback(_log_task_exception)
 
     async def _inject(self, audio: bytes) -> None:
         """Push the cached greeting downstream as TTS lifecycle frames.

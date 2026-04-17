@@ -13,6 +13,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Request, Response, Depends, BackgroundTasks
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 from loguru import logger
 
@@ -311,10 +312,9 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
                     started_at=now,
                 )
                 db.add(call_log)
-                db.flush()
-                
+
                 initial_leg = CallLeg(
-                    call_log_id=call_log.id,
+                    call_log_id=None,
                     leg_number=1,
                     leg_type=LegType.AI_CONVERSATION.value,
                     call_sid=call_sid,
@@ -323,12 +323,48 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
                     status=CallStatus.INITIATED.value,
                     started_at=now,
                 )
-                db.add(initial_leg)
-                
-                db.commit()
-                logger.info(f"Created call log for {call_sid}")
-                call_log_id = call_log.id
-                call_started_at = now
+
+                # Task #116 — webhook idempotency. Twilio retries the
+                # incoming-call webhook on >15 s timeout, and two parallel
+                # retries hitting two uvicorn workers can race past the
+                # check-then-insert above. The unique constraint on
+                # call_logs.call_sid prevents duplicate rows at the DB
+                # level, but unless we catch IntegrityError here the second
+                # worker raises 500 and Twilio sees a transient failure —
+                # adding ring-time latency the caller hears as silence.
+                # On collision, roll back, re-fetch the row the other
+                # worker committed, and continue with that.
+                try:
+                    db.flush()
+                    initial_leg.call_log_id = call_log.id
+                    db.add(initial_leg)
+                    db.commit()
+                    logger.info(f"Created call log for {call_sid}")
+                    call_log_id = call_log.id
+                    call_started_at = now
+                except IntegrityError:
+                    db.rollback()
+                    logger.info(
+                        f"incoming_call_webhook: concurrent insert race for "
+                        f"{call_sid} — re-fetching existing row (Twilio retry)"
+                    )
+                    existing_log = (
+                        db.query(CallLog)
+                        .filter(CallLog.call_sid == call_sid)
+                        .first()
+                    )
+                    if existing_log:
+                        call_log_id = existing_log.id
+                        call_started_at = existing_log.started_at
+                    else:
+                        # Extremely unlikely: IntegrityError raised but no
+                        # row visible afterwards. Log and continue with a
+                        # null call_log_id — TwiML still returns and the
+                        # pipeline path will handle the missing-row case.
+                        logger.warning(
+                            f"incoming_call_webhook: IntegrityError for "
+                            f"{call_sid} but no row found on re-query"
+                        )
             else:
                 call_log_id = existing_log.id
                 call_started_at = existing_log.started_at
@@ -367,7 +403,8 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
                 # scheduler under load.
                 _reserved_entry = _ch.precomputed_configs.reserve(call_sid)
                 _deepgram_key = os.environ.get("DEEPGRAM_API_KEY")
-                _asyncio.create_task(
+                from ..utils import log_task_exception
+                _pw_task = _asyncio.create_task(
                     prewarm_call_config(
                         entry=_reserved_entry,
                         to_number=to_number,
@@ -375,6 +412,10 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
                     ),
                     name=f"prewarm:{call_sid}",
                 )
+                # Task #116 — surface tracebacks raised outside the
+                # internal try/except in prewarm_call_config (e.g. import
+                # errors during reload, scheduler failures).
+                _pw_task.add_done_callback(log_task_exception)
                 logger.info(f"🔥 pre-warm task scheduled for {call_sid}")
             except Exception as _pw_err:
                 # Silent fall-back: handle_call will take the cold path.
