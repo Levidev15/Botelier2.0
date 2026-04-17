@@ -4,6 +4,12 @@ import { Download, Search, Filter, RefreshCw, X } from "lucide-react";
 import CallLogsFilterPanel from "./CallLogsFilterPanel";
 import type { FilterOptions } from "../types";
 
+export interface FilterChip {
+  key: string;
+  label: string;
+  onClear: () => void;
+}
+
 interface CallLogsToolbarProps {
   canExport: boolean;
   onRefresh: () => void;
@@ -38,28 +44,7 @@ interface CallLogsToolbarProps {
   timezone: string;
   onTimezoneChange: (tz: string) => void;
   onClearFilters: () => void;
-  bucketFilter?: string;
-  onClearBucket?: () => void;
-}
-
-// Task #102 — human labels for the partition-bucket chip shown when the
-// user arrives via the analytics drilldown's "View all in Call Logs" link.
-// Keeps the otherwise-invisible `?bucket=` filter discoverable. Unknown
-// future tokens (added in analytics first) get a sentence-cased fallback
-// so the chip still renders, future-proofing the UI without a code change.
-const BUCKET_LABELS: Record<string, string> = {
-  ai_handled: "AI handled",
-  ended_early: "Ended early",
-  missed: "Missed",
-  failed: "Failed",
-  unresolved: "Unresolved",
-  silent_caller: "Silent caller",
-};
-
-function bucketLabel(token: string): string {
-  if (BUCKET_LABELS[token]) return BUCKET_LABELS[token];
-  const cleaned = token.replace(/_/g, " ").trim();
-  return cleaned.charAt(0).toUpperCase() + cleaned.slice(1);
+  filterChips?: FilterChip[];
 }
 
 export default function CallLogsToolbar({
@@ -96,8 +81,7 @@ export default function CallLogsToolbar({
   timezone,
   onTimezoneChange,
   onClearFilters,
-  bucketFilter,
-  onClearBucket,
+  filterChips,
 }: CallLogsToolbarProps) {
   return (
     <div className="border-b border-gray-800 bg-[#0a0a0a] sticky top-0 z-10">
@@ -128,24 +112,31 @@ export default function CallLogsToolbar({
         </div>
 
         <div className="mt-6 space-y-4">
-          {bucketFilter && (
-            <div className="flex items-center gap-2">
-              <span
-                className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-blue-500/10 border border-blue-500/30 text-blue-300"
-                title="Bucket filter — matches the analytics drilldown exactly"
-              >
-                Bucket: {bucketLabel(bucketFilter)}
-                {onClearBucket && (
+          {filterChips && filterChips.length > 0 && (
+            <div className="flex flex-wrap items-center gap-2">
+              {filterChips.map((chip) => (
+                <span
+                  key={chip.key}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${
+                    chip.key === "bucket"
+                      ? "bg-blue-500/10 border-blue-500/30 text-blue-300"
+                      : "bg-[#141414] border-gray-700 text-gray-200"
+                  }`}
+                  title={chip.key === "bucket" ? "Bucket filter — matches the analytics drilldown exactly" : chip.label}
+                >
+                  {chip.label}
                   <button
-                    onClick={onClearBucket}
-                    className="ml-1 -mr-0.5 p-0.5 rounded-full hover:bg-blue-500/20 transition"
-                    title="Clear bucket filter"
-                    aria-label="Clear bucket filter"
+                    onClick={chip.onClear}
+                    className={`ml-1 -mr-0.5 p-0.5 rounded-full transition ${
+                      chip.key === "bucket" ? "hover:bg-blue-500/20" : "hover:bg-gray-700"
+                    }`}
+                    title={`Clear ${chip.label}`}
+                    aria-label={`Clear ${chip.label}`}
                   >
                     <X className="h-3 w-3" />
                   </button>
-                )}
-              </span>
+                </span>
+              ))}
             </div>
           )}
           <div className="flex gap-3">
