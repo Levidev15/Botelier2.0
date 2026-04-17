@@ -24,12 +24,25 @@ from botelier.models.resolution_option import AssistantResolutionOption
 from botelier.models.user import User
 from botelier.auth.middleware import get_current_user, check_account_permission
 from botelier.models.role import AccountMembership
+from botelier.api.analytics import (
+    _bucket_predicate,
+    _silent_caller_predicate,
+    _PARTITION_BUCKETS,
+)
 
 
 router = APIRouter(prefix="/api/call-logs", tags=["Call Logs"])
 
 
 _MISSED_STATUSES = ("no_answer", "busy", "canceled")
+
+# Task #102 — bucket tokens accepted by GET /api/call-logs?bucket=...
+# Derived from the analytics module's `_PARTITION_BUCKETS` tuple plus the
+# `silent_caller` sub-bucket so adding a new MECE bucket in analytics
+# automatically extends the Call Logs filter contract — no second list to
+# keep in sync. Reuses the canonical predicates from analytics; never
+# re-implements the SQL.
+_BUCKET_TOKENS = tuple(_PARTITION_BUCKETS) + ("silent_caller",)
 
 
 def _can_view_transcripts(user: User, account_id: str, db: Session) -> bool:
@@ -62,6 +75,11 @@ async def get_call_logs(
     quality_min: Optional[int] = Query(None, ge=0, le=100, description="Minimum ACW quality score"),
     quality_max: Optional[int] = Query(None, ge=0, le=100, description="Maximum ACW quality score"),
     hour: Optional[int] = Query(None, ge=0, le=23, description="Hour of day (0-23) in UTC to filter by"),
+    bucket: Optional[str] = Query(None, description=(
+        "Task #97 partition bucket — one of: ai_handled, ended_early, missed, "
+        "failed, unresolved, silent_caller. Maps 1:1 to the analytics "
+        "partition predicates so the row set exactly matches the drilldown."
+    )),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(50, ge=1, le=100, description="Items per page"),
     db: Session = Depends(get_db),
@@ -110,6 +128,18 @@ async def get_call_logs(
 
         if hour is not None:
             query = query.filter(func.extract("hour", CallLog.started_at) == hour)
+
+        if bucket:
+            tok = bucket.strip()
+            if tok not in _BUCKET_TOKENS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid bucket {tok!r}. Must be one of {_BUCKET_TOKENS}.",
+                )
+            if tok == "silent_caller":
+                query = query.filter(_silent_caller_predicate())
+            else:
+                query = query.filter(_bucket_predicate(tok))
         
         if search:
             search_pattern = f"%{search}%"
@@ -166,7 +196,11 @@ async def get_call_logs(
             "limit": limit,
             "pages": (total + limit - 1) // limit,
         }
-        
+
+    except HTTPException:
+        # Preserve intentional 4xx responses (e.g. invalid bucket token)
+        # so clients see the validation error instead of a generic 500.
+        raise
     except Exception as e:
         logger.exception(f"Error fetching call logs: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch call logs")

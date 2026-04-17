@@ -349,26 +349,30 @@ export default function CallDrilldownModal({
 
     const target = effectiveMetric;
 
-    if (target === "silent_caller") {
-      // No status filter — Call Logs has no caller_spoke filter today.
-    } else if (target === "all") {
+    // Task #102 — non-bucket metric tokens we know how to translate into
+    // explicit Call Logs filters. Anything *not* in this set and not a
+    // prefixed token (status:, assistant:, etc.) is forwarded as a
+    // `bucket=<token>` parameter; Call Logs resolves it via the same
+    // `_bucket_predicate` / `_silent_caller_predicate` used by analytics,
+    // guaranteeing the row count matches the drilldown total exactly.
+    //
+    // This generic fallthrough is the future-proof path: when analytics
+    // adds a new MECE bucket, the modal forwards the new token unchanged
+    // and the backend (which derives accepted bucket tokens from the
+    // analytics partition tuple) accepts it without any frontend change.
+    const KNOWN_PREFIXES = [
+      "status:", "assistant:", "disposition:", "hour:", "quality_range:", "resolution:",
+    ];
+    const isPrefixed = KNOWN_PREFIXES.some((p) => metric.startsWith(p));
+
+    if (target === "all") {
       // no extra filter
     } else if (metric === "completed") {
       params.set("status", "completed");
-    } else if (metric === "failed") {
-      params.set("status", "failed");
-    } else if (metric === "missed") {
-      params.set("status", "missed");
     } else if (metric === "transferred") {
       params.set("has_transfer", "true");
     } else if (metric === "acw_completed") {
       params.set("acw_completed", "true");
-    } else if (metric === "ai_handled") {
-      params.set("status", "completed");
-    } else if (metric === "ended_early") {
-      params.set("status", "ended_early");
-    } else if (metric === "unresolved") {
-      params.set("status", "initiated");
     } else if (metric.startsWith("status:")) {
       params.set("status", metric.slice(7));
     } else if (metric.startsWith("assistant:")) {
@@ -384,6 +388,14 @@ export default function CallDrilldownModal({
         params.set("quality_min", parts[0]);
         params.set("quality_max", parts[1]);
       }
+    } else if (metric.startsWith("resolution:")) {
+      params.set("acw_resolution", metric.slice("resolution:".length));
+    } else if (!isPrefixed) {
+      // Future-proof: any bare token (e.g. ai_handled, ended_early,
+      // unresolved, silent_caller, or a yet-unknown MECE bucket) goes
+      // through the bucket= path. effectiveMetric handles the silent
+      // toggle on the unresolved drilldown (silent_caller).
+      params.set("bucket", target);
     }
 
     if (assistantIds.length === 1 && !params.has("assistant_id")) {

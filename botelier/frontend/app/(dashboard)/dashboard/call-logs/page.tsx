@@ -48,6 +48,11 @@ export default function CallLogsPage() {
   const [qualityMin, setQualityMin] = useState<number | null>(null);
   const [qualityMax, setQualityMax] = useState<number | null>(null);
   const [hourFilter, setHourFilter] = useState<number | null>(null);
+  // Task #102 — partition bucket forwarded from the analytics drilldown's
+  // "View all in Call Logs" link. Maps 1:1 to the analytics partition
+  // predicate via `?bucket=` on /api/call-logs, guaranteeing the count
+  // matches the drilldown exactly.
+  const [bucketFilter, setBucketFilter] = useState<string>("");
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -63,7 +68,8 @@ export default function CallLogsPage() {
     const qmin = sp.get("quality_min"); if (qmin) setQualityMin(Number(qmin));
     const qmax = sp.get("quality_max"); if (qmax) setQualityMax(Number(qmax));
     const hr = sp.get("hour"); if (hr !== null) setHourFilter(Number(hr));
-    if (s || a || df || dt || ht || did || ar || acw || qmin || qmax || hr !== null) setShowFilters(true);
+    const bk = sp.get("bucket"); if (bk) setBucketFilter(bk);
+    if (s || a || df || dt || ht || did || ar || acw || qmin || qmax || hr !== null || bk) setShowFilters(true);
   }, []);
 
   const [timezone, setTimezone] = useState<string>("UTC");
@@ -96,6 +102,7 @@ export default function CallLogsPage() {
       if (qualityMin !== null) params.append("quality_min", String(qualityMin));
       if (qualityMax !== null) params.append("quality_max", String(qualityMax));
       if (hourFilter !== null) params.append("hour", String(hourFilter));
+      if (bucketFilter) params.append("bucket", bucketFilter);
 
       const response = await authFetch(`/api/call-logs?${params}`);
       if (!response.ok) throw new Error("Failed to fetch call logs");
@@ -111,7 +118,7 @@ export default function CallLogsPage() {
       setLoading(false);
     }
   }, [accountId, page, search, statusFilter, assistantFilter, dateFrom, dateTo,
-      hasTransferFilter, dispositionIdFilter, acwResolutionFilter, acwCompletedFilter, qualityMin, qualityMax, hourFilter]);
+      hasTransferFilter, dispositionIdFilter, acwResolutionFilter, acwCompletedFilter, qualityMin, qualityMax, hourFilter, bucketFilter]);
 
   const fetchFilterOptions = useCallback(async () => {
     if (!accountId) return;
@@ -293,6 +300,7 @@ export default function CallLogsPage() {
     setQualityMin(null);
     setQualityMax(null);
     setHourFilter(null);
+    setBucketFilter("");
     setDateFrom("");
     setDateTo("");
     setPage(1);
@@ -301,7 +309,8 @@ export default function CallLogsPage() {
   const hasActiveFilters =
     search || statusFilter || assistantFilter || dateFrom || dateTo ||
     hasTransferFilter !== null || dispositionIdFilter || acwResolutionFilter ||
-    acwCompletedFilter !== null || qualityMin !== null || qualityMax !== null || hourFilter !== null;
+    acwCompletedFilter !== null || qualityMin !== null || qualityMax !== null || hourFilter !== null ||
+    bucketFilter;
 
   if (!permLoading && !hasAccess) {
     return <AccessDeniedPage message="You don't have permission to view call logs." />;
@@ -343,6 +352,8 @@ export default function CallLogsPage() {
         timezone={timezone}
         onTimezoneChange={handleTimezoneChange}
         onClearFilters={clearFilters}
+        bucketFilter={bucketFilter}
+        onClearBucket={() => { setBucketFilter(""); setPage(1); }}
       />
 
       <div className="flex-1 overflow-auto p-8">
