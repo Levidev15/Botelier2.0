@@ -69,6 +69,34 @@ class CallLogger:
             self.db.rollback()
             return False
 
+    def mark_caller_spoke(self, call_sid: str) -> bool:
+        """
+        Task #98 — set caller_spoke=True on first observed user utterance.
+
+        Called from Pipecat's FirstUserSpeechTracker the first time a
+        UserStartedSpeakingFrame (or transcription) is seen for the call.
+        Idempotent: a second invocation is a no-op.
+
+        Distinct from `ai_greeting_completed` which only proves the AI spoke;
+        this proves the *caller* spoke, which is what guards the AI Handled
+        bucket against silent-line greet-and-hangup mis-classification.
+        """
+        try:
+            call_log = self.get_call_log(call_sid)
+            if not call_log:
+                logger.warning(f"mark_caller_spoke: call log not found for {call_sid}")
+                return False
+            if call_log.caller_spoke is True:
+                return True  # idempotent
+            call_log.caller_spoke = True
+            self.db.commit()
+            logger.info(f"caller_spoke=True for {call_sid}")
+            return True
+        except Exception as e:
+            logger.exception(f"Error marking caller_spoke: {e}")
+            self.db.rollback()
+            return False
+
     def update_status(
         self,
         call_sid: str,
@@ -288,7 +316,19 @@ class CallLogger:
                 # Reclassify: Twilio said completed but greeting never played.
                 call_log.status = CallStatus.ENDED_EARLY.value
                 call_log.ended_early = True
-            
+
+            # Task #98 — forward-only silent-caller stamp.
+            # If Pipecat's FirstUserSpeechTracker never fired mark_caller_spoke()
+            # by the time the call reaches its terminal state, the caller
+            # produced no audio — record FALSE so analytics can route the row
+            # into the unresolved bucket. This branch only executes for calls
+            # processed by post-deploy code, so legacy rows (which were stamped
+            # by older complete_call() before this column existed) remain NULL
+            # and continue to count as ai_handled — preserving historical
+            # metrics without a backfill.
+            if call_log.caller_spoke is None:
+                call_log.caller_spoke = False
+
             if not call_log.ended_at:
                 call_log.ended_at = datetime.utcnow()
             

@@ -742,6 +742,27 @@ class CallHandler:
                     lambda: websocket.client_state.name == "CONNECTED"
                 )
 
+                # Task #98 — wire a DB callback to FirstUserSpeechTracker so
+                # call_logs.caller_spoke flips to TRUE the moment the first
+                # caller transcription arrives. Mirrors the greeting callback
+                # pattern above. Used by the analytics partition to keep silent
+                # calls out of the AI Handled bucket.
+                _speech_call_sid = call_sid  # capture for closure
+                async def _on_first_user_speech():
+                    def _sync_mark_caller_spoke():
+                        from ..services.call_logger import CallLogger as _CallLogger
+                        sdb = SessionLocal()
+                        try:
+                            _cl = _CallLogger(sdb)
+                            _cl.mark_caller_spoke(_speech_call_sid)
+                        finally:
+                            sdb.close()
+                    try:
+                        await asyncio.to_thread(_sync_mark_caller_spoke)
+                    except Exception as _se:
+                        logger.error(f"Failed to set caller_spoke: {_se}")
+                first_speech_tracker.set_first_speech_callback(_on_first_user_speech)
+
             # 8. Queue greeting message
             if call_sid in self.call_event_queues:
                 self.call_event_queues[call_sid].log(

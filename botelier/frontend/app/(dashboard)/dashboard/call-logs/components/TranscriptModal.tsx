@@ -39,6 +39,8 @@ interface CallLog {
   assistant_name: string | null;
   phone_number_display: string | null;
   ai_summary: string | null;
+  acw_skip_reason?: string | null;
+  caller_spoke?: boolean | null;
   disposition_name: string | null;
   disposition_color: string | null;
   tool_name: string | null;
@@ -181,6 +183,18 @@ export default function TranscriptModal({ log, onClose, onLogUpdated, onViewEven
         </div>
 
         <div className="flex-1 overflow-y-auto px-5 py-4">
+          {(log.acw_skip_reason === "no_caller_audio" || log.caller_spoke === false) && (
+            <div className="mb-4 p-3 bg-yellow-900/15 border border-yellow-700/40 rounded-lg flex items-start gap-2">
+              <span className="px-2 py-0.5 text-xs rounded-full border border-yellow-500/40 bg-yellow-500/10 text-yellow-300 font-medium whitespace-nowrap">
+                No Caller Audio
+              </span>
+              <p className="text-xs text-yellow-200/90 leading-snug">
+                The AI greeted the caller but no audio was received from the caller&apos;s side
+                before the call ended. Post-call analysis was skipped automatically; this row
+                is counted under <span className="font-medium">Unresolved</span>, not AI Handled.
+              </p>
+            </div>
+          )}
           {(log.ai_summary || log.disposition_name || log.acw_resolution || (log.acw_quality_score != null)) && (
             <div className="mb-6 p-4 bg-gradient-to-r from-purple-900/20 to-blue-900/20 border border-purple-800/30 rounded-lg">
               <div className="flex items-center gap-2 mb-3">

@@ -106,6 +106,21 @@ _ADDITIVE_MIGRATIONS = [
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS acw_quality_score INTEGER",
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS acw_completed_at TIMESTAMP",
 
+    # Task #98 — Silent caller detection.
+    # caller_spoke is intentionally tri-state (NULL/TRUE/FALSE):
+    #   NULL  = legacy row that pre-dates this column (before this migration ran).
+    #   TRUE  = Pipecat observed at least one caller utterance.
+    #   FALSE = call ended without any caller utterance (set forward-only by
+    #           CallLogger.complete_call() so historical rows stay NULL).
+    # Analytics treats `caller_spoke IS NOT FALSE` (TRUE or NULL) as eligible
+    # for ai_handled — this preserves historical AI-handled counts while
+    # routing newly-detected silent calls into the unresolved bucket.
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS caller_spoke BOOLEAN",
+    # acw_skip_reason records why the post-call QA was skipped by the system
+    # (e.g. "no_caller_audio") — distinct from acw_resolution which is the
+    # LLM-picked outcome string.
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS acw_skip_reason VARCHAR",
+
     # Friendly reference IDs — short 8-char uppercase identifiers for support/search
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS reference_id VARCHAR(8)",
     # Backfill: derive from each row's own UUID (removes dashes, takes first 8 chars, uppercases)

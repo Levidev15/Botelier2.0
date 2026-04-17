@@ -199,7 +199,14 @@ export default function CallLogRow({
           </div>
         </td>
         <td className="px-4 py-3">
-          {log.disposition_name ? (
+          {log.acw_skip_reason === "no_caller_audio" || log.caller_spoke === false ? (
+            <span
+              className="px-2 py-0.5 text-xs rounded-full border bg-yellow-500/10 border-yellow-500/40 text-yellow-300"
+              title="The AI greeted the caller but no audio was received from the caller. Counted as Unresolved, not AI Handled."
+            >
+              No Caller Audio
+            </span>
+          ) : log.disposition_name ? (
             <span
               className="px-2 py-0.5 text-xs rounded-full border"
               style={{

@@ -82,6 +82,11 @@ interface AnalyticsData {
     failed_count: number;
     unresolved_count: number;
     unresolved_rate: number;
+    unresolved_breakdown?: {
+      silent_caller: number;
+      non_terminal_gap: number;
+      other: number;
+    };
     partition_integrity_ok: boolean;
     partition_counts_by_status: Record<string, number>;
     // Legacy aliases (deprecated — kept this release):
@@ -340,9 +345,26 @@ export default function CallAnalyticsPage() {
           <StatCard
             label="Unresolved"
             value={o?.unresolved_count ?? 0}
-            sub={`${o?.unresolved_rate ?? 0}% pending finalization`}
+            sub={
+              o?.unresolved_breakdown && o.unresolved_breakdown.silent_caller > 0
+                ? `${o.unresolved_breakdown.silent_caller} silent · ${
+                    (o.unresolved_breakdown.non_terminal_gap || 0) +
+                    (o.unresolved_breakdown.other || 0)
+                  } pending`
+                : `${o?.unresolved_rate ?? 0}% pending finalization`
+            }
             color="text-yellow-400"
-            tooltip="Calls that are still in a non-terminal state (initiated / ringing / in-progress with no greeting yet) or otherwise awaiting finalization by the call sweeper. A persistent non-zero value points to a finalization lag, not an analytics bug."
+            tooltip={
+              "Catch-all bucket. Breakdown:\n" +
+              `• Silent caller (AI greeted, caller never spoke): ${
+                o?.unresolved_breakdown?.silent_caller ?? 0
+              }\n` +
+              `• Awaiting finalization (sweeper-pending rows): ${
+                o?.unresolved_breakdown?.non_terminal_gap ?? 0
+              }\n` +
+              `• Other anomalies: ${o?.unresolved_breakdown?.other ?? 0}\n\n` +
+              "Silent-caller rows replace what was previously mis-counted as AI Handled."
+            }
             onClick={() => openDrilldown("unresolved", "Unresolved Calls")}
           />
         )}
