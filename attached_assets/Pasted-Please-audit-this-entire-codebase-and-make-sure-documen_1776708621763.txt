@@ -1,0 +1,55 @@
+Please audit this entire codebase and make sure documentation is complete and consistent.
+
+Tasks:
+1. Find every major directory and subdirectory that should have its own README.md.
+2. Create any missing README.md files.
+3. Update existing README.md files so they are accurate and follow the same structure.
+4. Create a root-level CLAUDE.md file for AI assistants working in this repo.
+5. If a file already exists, improve it instead of replacing useful content.
+6. Do not invent features that are not in the code. Base everything on the actual codebase.
+
+README requirements:
+- Each important folder should have a README.md if it contains meaningful code, configs, scripts, or domain logic.
+- Each README should explain:
+  - purpose of the folder
+  - main files/modules
+  - how it connects to the rest of the system
+  - important patterns/conventions
+  - setup or usage notes if relevant
+  - known gotchas or side effects
+- Use concise, clean markdown with headings and bullet points.
+- Prefer accurate summaries over long explanations.
+
+Root README requirements:
+- Explain overall architecture
+- Include project structure
+- Explain how major areas fit together
+- Add local development / run instructions if discoverable
+- Add deployment notes if discoverable
+- Add links to subfolder READMEs
+
+CLAUDE.md requirements:
+- Describe how an AI coding assistant should work in this repository
+- Include:
+  - project overview
+  - architecture summary
+  - coding conventions
+  - naming conventions
+  - where API routes live
+  - where business logic lives
+  - where models/schemas live
+  - how telephony/voice flow works
+  - where Twilio integration lives
+  - how to safely make changes
+  - what files to check before editing related code
+  - testing/verification steps if discoverable
+  - documentation maintenance rules
+- Make it practical and repo-specific, not generic
+
+Extra instructions:
+- First give me a plan listing:
+  - which README.md files already exist
+  - which README.md files are missing but should be added
+  - what sections CLAUDE.md will contain
+- Then make the changes.
+- After changes, give me a summary of every file created or updated.

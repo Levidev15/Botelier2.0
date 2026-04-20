@@ -1,0 +1,175 @@
+Implement ticket #121 exactly as written.
+
+You are working in a mono-repo where the repo root is the upstream Pipecat project, and the Botelier app lives entirely under /botelier.
+
+Hard constraints:
+- DO NOT touch any upstream Pipecat files at the repo root.
+- Off-limits files/paths include:
+  - /README.md
+  - /CHANGELOG.md
+  - /CONTRIBUTING.md
+  - /SECURITY.md
+  - /COMMUNITY_INTEGRATIONS.md
+  - /LICENSE
+  - /pyproject.toml
+  - /requirements.txt
+  - /src/
+  - /tests/   (repo-root tests only)
+  - /docs/
+  - /examples/
+  - /scripts/ (repo-root scripts only)
+  - /pipecat.png
+- Only document:
+  - /botelier/**
+  - and one new top-level file: /CLAUDE.md
+- Ground every claim in real files that actually exist.
+- Do not invent features, commands, workflows, or integrations.
+- Every README must follow the exact same 6-section template, in this order:
+  1. Purpose
+  2. Main files
+  3. How it connects
+  4. Conventions
+  5. Setup
+  6. Gotchas
+
+Execution requirements:
+1. First inspect the tree and existing docs.
+2. Then print a plan before editing anything.
+3. In the plan, list:
+   - files that already exist and will be updated
+   - missing README.md files that will be created
+   - the 12 sections you will include in /CLAUDE.md
+   - any assumptions that need to be verified from real files
+4. Then make the changes.
+5. After editing, run a consistency pass:
+   - check that every README uses the same section order and heading style
+   - verify internal markdown links resolve
+   - verify commands match actual workflows/configs
+6. Finally print a summary of every file created or updated.
+
+Ticket scope
+
+T001: Update botelier/README.md and create package-level READMEs
+- Refactor /botelier/README.md into the standard 6-section template.
+- Preserve still-accurate content.
+- Add links to all subfolder READMEs created below.
+- Create:
+  - /botelier/backend/README.md
+  - /botelier/backend/botelier/README.md
+  - /botelier/frontend/README.md
+  - /botelier/test_mcp_server/README.md
+- Acceptance requirements:
+  - each file follows the template
+  - run/dev instructions must match configured workflows:
+    - backend: uvicorn main:app --port 3001 --reload
+    - frontend: npm run dev on 3002
+    - MCP server: python server.py
+  - do not invent commands
+
+T002: Backend area READMEs
+Create READMEs for:
+- /botelier/backend/botelier/api/
+- /botelier/backend/botelier/api/sms_pkg/
+- /botelier/backend/botelier/voice/
+- /botelier/backend/botelier/voice/flows/
+- /botelier/backend/botelier/services/
+- /botelier/backend/botelier/models/
+- /botelier/backend/botelier/schemas/
+- /botelier/backend/botelier/auth/
+- /botelier/backend/botelier/integrations/
+- /botelier/backend/botelier/config/
+- /botelier/backend/botelier/scripts/
+- /botelier/backend/scripts/
+- /botelier/backend/tests/
+
+Rules for backend docs:
+- Cross-check every referenced file via the real directory contents.
+- Describe how each area connects to neighboring areas.
+- Only include gotchas that are real and supported by code or existing notes.
+- Explicitly capture these if they are confirmed in the codebase:
+  - call_events.offset_ms is int32
+  - sweeper writes can fail on calls older than about 24.85 days
+  - LOG_PROMPTS=off in prod hides LLM responses
+  - transcript is extracted from LLMContext.get_messages() rather than Pipecat TranscriptProcessor
+- If any of those are not supported by the code, do not state them as facts.
+
+T003: Frontend area READMEs
+Create READMEs for:
+- /botelier/frontend/app/
+- /botelier/frontend/components/
+- /botelier/frontend/components/flow-editor/
+- /botelier/frontend/components/flow-simulator/
+- /botelier/frontend/components/analytics/
+- /botelier/frontend/components/forms/
+- /botelier/frontend/lib/
+- /botelier/frontend/contexts/
+
+Rules for frontend docs:
+- Document the real App Router route-group structure if present:
+  - (auth)
+  - (public)
+  - (dashboard)
+  - (admin)
+  - (standalone)
+- Document the custom server.js if present.
+- Document the node/inspector pairing convention in flow-editor if present in the code.
+- Document the analytics widget customization pattern if present in the code.
+- Capture this gotcha if supported by the repo/history/config:
+  - stale .next/ cache after dependency upgrades can cause SSR/vendor chunk issues; recommend removing .next/ after npm install
+- Do not mention any frontend convention unless you verified it in real files.
+
+T004: Root /CLAUDE.md
+Create /CLAUDE.md at the repo root, not inside /botelier.
+
+It must use this 12-section outline:
+1. Repo layout warning
+2. Project overview
+3. Architecture summary
+4. Where things live
+5. Backend map
+6. Frontend map
+7. Voice flow
+8. Twilio integration
+9. Coding conventions
+10. Naming conventions
+11. Safe-change checklist
+12. Testing, Replit workflows, and documentation maintenance
+
+Requirements for CLAUDE.md:
+- Clearly warn that the repo root mostly belongs to upstream Pipecat and those files are off-limits.
+- State that /replit.md is the source of project memory if that file exists.
+- Link to all newly created Botelier READMEs.
+- Make it practical for contributors and AI assistants.
+- A new contributor should be able to find any major code area within two clicks.
+
+T005: Final consistency pass
+After all edits:
+- re-read every new or updated README
+- normalize heading names and order
+- verify all relative links
+- print a final summary of every created/updated file
+
+Editing guidance
+- Prefer concise markdown.
+- Use bullets where useful.
+- Under “Main files”, name actual files/directories only.
+- Under “Setup”, only include commands that are confirmed by package.json, replit config, scripts, Makefile equivalents, or existing instructions.
+- Under “Gotchas”, keep entries short and concrete.
+- If a folder has little code, still document it briefly rather than padding with guesses.
+- If a directory in scope does not exist, say so in the plan and do not create a fake README for a fake path.
+
+Before editing, inspect at least:
+- /botelier
+- /botelier/backend
+- /botelier/backend/botelier
+- /botelier/frontend
+- /botelier/test_mcp_server
+- /replit.md if present
+- package/workflow/config files that define run commands
+
+Output format:
+- First: PLAN
+- Then: IMPLEMENTATION SUMMARY
+- Then: FINAL FILE LIST
+
+Do the work now.
