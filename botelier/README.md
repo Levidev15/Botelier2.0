@@ -1,135 +1,62 @@
-# Botelier - Hotel Voice AI Platform
+# Botelier
 
-**Multi-tenant SaaS platform for hotel voice AI agents**
+Multi-tenant SaaS that gives hotels an AI voice assistant. Guests call a Twilio number; a real-time pipeline (Deepgram STT → OpenAI LLM → TTS) handles the conversation, runs tools (MCP / HTTP integrations / knowledge-base lookups), and writes a full call log and analytics record. Hotels configure everything through a Next.js dashboard.
 
-## Architecture Overview
+## Purpose
 
-Botelier is structured as a clean, professional SaaS application that uses modern voice AI infrastructure under the hood. The codebase is organized to ensure:
+Self-contained Botelier app. Lives inside this repo's `botelier/` directory; the rest of the repo is the upstream Pipecat framework (off-limits — see [`/CLAUDE.md`](../CLAUDE.md)).
 
-- **95% Botelier-branded code** - Developers work with Botelier interfaces
-- **Voice AI framework as dependency** - Hidden implementation detail
-- **Clean separation of concerns** - SaaS logic separate from voice engine
-- **Easy maintenance** - Clear boundaries for future updates
-
-## Project Structure
+## Main files
 
 ```
 botelier/
-├── frontend/              # Next.js hotel dashboard
-│   ├── app/              # Next.js 14 App Router
-│   ├── components/       # React components
-│   └── lib/              # Utilities and hooks
-│
-├── backend/              # FastAPI Python server
-│   └── botelier/         # Main application package
-│       ├── api/          # REST API endpoints
-│       ├── models/       # Database models
-│       ├── voice/        # Voice AI engine (Pipecat wrapper)
-│       ├── auth/         # Authentication
-│       ├── integrations/ # Hotel system integrations
-│       └── config/       # Configuration
-│
-└── database/             # Database migrations & schemas
+├── backend/             FastAPI service (Python) — REST + WebSocket + voice pipeline
+│   ├── main.py          App entry, startup hooks, 5-min stuck-call sweeper loop
+│   ├── botelier/        Main Python package (api/, voice/, services/, models/, …)
+│   ├── scripts/         Backend-local backfills
+│   └── tests/           pytest suite for Botelier-only code
+├── frontend/            Next.js 14 dashboard (TS, App Router)
+│   ├── server.js        Custom Next server: HTTP proxy + raw-TCP WS relay
+│   ├── app/             Route groups: (auth), (public), (dashboard), (admin), (standalone)
+│   ├── components/      flow-editor, flow-simulator, analytics, forms, ui, …
+│   ├── lib/             auth, hooks, theme, flow-utils, notifications
+│   └── contexts/
+├── test_mcp_server/     Dev-only sample MCP server
+└── README.md            (this file)
 ```
 
-## Voice Engine Architecture
+## How it connects
 
-### Hotel-Facing API (What developers see)
+- **Frontend → Backend.** `frontend/server.js` proxies HTTP `/api/*` and raw-TCP-relays `/api/ws/*` to the FastAPI service.
+- **Backend → Twilio.** Inbound calls hit `/api/calls/incoming`; Twilio opens a media stream WS to `/api/ws/twilio/{call_sid}`.
+- **Backend → Pipecat.** `voice/engine.py` assembles Silero VAD + Deepgram + OpenAI + TTS into a Pipecat pipeline; `voice/call_handler.py` orchestrates per-call.
+- **Backend → DB.** SQLAlchemy → Neon Postgres. Lifecycle writes go through `services/call_logger.py`; `database.run_stuck_call_sweeper` is the safety net.
+- **Backend → MCP.** `services/mcp_client.py` connects to remote MCP servers configured per account; `test_mcp_server/` is a dev sample.
 
-```python
-from botelier.voice import VoiceAgent, VoiceAgentConfig
+See [`/CLAUDE.md`](../CLAUDE.md) for the full architecture and the safe-change checklist.
 
-# Clean, Botelier-branded interface
-agent = VoiceAgent(VoiceAgentConfig(
-    agent_id="concierge-1",
-    hotel_id="hotel-123",
-    name="Concierge Agent",
-    stt_provider="deepgram",
-    llm_provider="openai",
-    llm_model="gpt-4o-mini",
-    tts_provider="cartesia",
-    system_prompt="You are a hotel concierge...",
-))
-```
+## Conventions
 
-### Implementation Layer (Hidden from developers)
+- One Python package (`backend/botelier/`) — never split into siblings.
+- Routes are file-per-resource under `backend/botelier/api/`.
+- ORM under `backend/botelier/models/`, Pydantic under `backend/botelier/schemas/`, business logic under `backend/botelier/services/`.
+- Frontend pages under route groups in `frontend/app/(group)/...`; route groups don't appear in URLs.
+- AI provider catalog (STT / LLM / TTS) lives in `backend/botelier/config/providers.py`; adding a provider is enum + factory only.
 
-The `botelier/backend/botelier/voice/` module wraps Pipecat as an implementation detail:
+## Setup
 
-- `agent.py` - Clean VoiceAgent interface (what hotels use)
-- `engine.py` - Pipecat integration (internal implementation)
-- `orchestrator.py` - Multi-agent session management
-- `session.py` - Call session tracking
+Replit workflows defined in `.replit`:
 
-## Configuration System
+| Workflow | Command |
+|---|---|
+| `botelier-backend` | `cd botelier/backend && python -m uvicorn main:app --host 0.0.0.0 --port 3001 --reload` |
+| `botelier-dashboard` | `cd botelier/frontend && npm run dev` |
+| `test-mcp-server` | `cd botelier/test_mcp_server && python server.py` |
 
-All AI provider configurations are defined in `botelier/backend/botelier/config/providers.py`:
+Backend listens on `:3001`. Frontend `server.js` binds to `$PORT` (default `5000`) and proxies `/api/*` to `BACKEND_URL` (default `http://localhost:3001`).
 
-### Supported Providers
+## Gotchas
 
-**STT (Speech-to-Text):**
-- Deepgram, OpenAI Whisper, AssemblyAI, Azure, Google, Groq, AWS Transcribe, and more
-
-**LLM (Language Models):**
-- OpenAI, Anthropic Claude, Google Gemini, Azure OpenAI, AWS Bedrock, Groq, Mistral, and more
-
-**TTS (Text-to-Speech):**
-- Cartesia, ElevenLabs, OpenAI, Azure, Google, AWS Polly, Deepgram, PlayHT, and more
-
-Each provider includes:
-- Display name and description
-- Available models and voices
-- Supported languages
-- Feature capabilities (VAD, function calling, emotions, etc.)
-
-## Benefits of This Architecture
-
-### 1. **Clean Separation**
-- SaaS business logic stays in `botelier/`
-- Voice AI framework stays in `src/pipecat/`
-- Clear boundaries, no mixing
-
-### 2. **Maintainability**
-- Update Pipecat framework without touching hotel-facing code
-- Hotels upgrade by updating dependency, not rewriting code
-- Bug fixes in one place
-
-### 3. **Developer Experience**
-- Developers see "Botelier" brand throughout
-- Simple, consistent API
-- No framework internals exposed
-
-### 4. **Future-Proof**
-- Can swap underlying implementations if needed
-- Business logic independent of voice engine
-- Easy to add new providers
-
-## Development Workflow
-
-### Adding a New AI Provider
-
-1. Add provider enum to `config/providers.py`
-2. Add provider config with models/voices
-3. Implement factory method in `voice/engine.py`
-4. Provider automatically available in dashboard
-
-### Updating Pipecat Framework
-
-```bash
-# Update dependency
-pip install --upgrade pipecat-ai
-
-# No other changes needed - wrapper isolates changes
-```
-
-## Next Steps
-
-1. **Database Schema** - Multi-tenant PostgreSQL with RLS
-2. **FastAPI Backend** - REST API for agent management
-3. **Next.js Frontend** - Hotel dashboard for configuration
-4. **Authentication** - NextAuth.js with RBAC
-5. **Deployment** - Production-ready setup
-
-## License
-
-Proprietary - Botelier Platform
+- The repo root is upstream Pipecat — do not edit `/README.md`, `/src/`, `/tests/`, `/docs/`, `/examples/`, `/scripts/`, `/pyproject.toml`, or `/CHANGELOG.md`. See [`/CLAUDE.md §1`](../CLAUDE.md).
+- Keep `replit.md` in sync after architectural changes.
+- Per-folder READMEs live alongside each area listed under **Main files** above (e.g. [`backend/`](backend/README.md), [`backend/botelier/`](backend/botelier/README.md), [`api/`](backend/botelier/api/README.md), [`voice/`](backend/botelier/voice/README.md), [`services/`](backend/botelier/services/README.md), [`models/`](backend/botelier/models/README.md), [`auth/`](backend/botelier/auth/README.md), [`integrations/`](backend/botelier/integrations/README.md), [`config/`](backend/botelier/config/README.md), [`schemas/`](backend/botelier/schemas/README.md), [`frontend/`](frontend/README.md), [`app/`](frontend/app/README.md), [`components/`](frontend/components/README.md), [`flow-editor/`](frontend/components/flow-editor/README.md), [`analytics/`](frontend/components/analytics/README.md), [`lib/`](frontend/lib/README.md), [`backend/tests/`](backend/tests/README.md), [`test_mcp_server/`](test_mcp_server/README.md)).
