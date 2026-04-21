@@ -28,6 +28,22 @@ _connect_args = {}
 if "sslmode=require" in DATABASE_URL or "sslmode=verify" in DATABASE_URL:
     _connect_args["sslmode"] = "require"
 
+# Task #122 — explicit pool sizing for dev/prod parity.
+#
+# Concurrency model per call (worst case):
+#   1 short-lived session in the /api/calls/incoming webhook
+#   1 short-lived session in the prewarm background task (runs in
+#     asyncio.to_thread → checks out a connection on a worker thread)
+#   1 short-lived session in handle_call when the WebSocket opens
+#   plus dashboard/API traffic on other coroutines
+#
+# So at peak we expect ~3 concurrent connections per in-flight call.
+# Defaults of pool_size=10 + max_overflow=20 = 30 concurrent connections
+# headroom support a sustained ~10 concurrent calls per pod with margin
+# for analytics queries — well below Neon's default 100-conn ceiling for
+# a single pod, and below SQLAlchemy's default total of 15 (5+10) which
+# is too tight once prewarm doubles the per-call session count.
+# All three knobs are env-overridable for horizontal scaling.
 _pool_size = int(os.environ.get("DB_POOL_SIZE", "10"))
 _max_overflow = int(os.environ.get("DB_MAX_OVERFLOW", "20"))
 _pool_timeout = float(os.environ.get("DB_POOL_TIMEOUT", "10"))

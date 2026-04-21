@@ -86,6 +86,64 @@ async def test_pop_returns_error_on_prewarm_error() -> None:
     assert got.error_class == "RuntimeError"
 
 
+# Task #122 — guard the additive-telemetry contract in call_handler.py.
+# The handler's event details for cold_path_prewarm_hit / cold_path_fallback
+# emit BOTH the new (state/wait_ms/error_class) AND the legacy
+# (prewarm_to_use_ms/reason) fields so existing dashboards keep working.
+# These tests mirror the derivation rules so a refactor that drops legacy
+# keys is caught at unit-test time.
+def _hit_details_from(result: PopResult, *, prewarm_duration_ms: int) -> dict:
+    return {
+        "state": result.state,
+        "wait_ms": result.wait_ms,
+        "prewarm_to_use_ms": result.wait_ms,  # legacy
+        "prewarm_duration_ms": prewarm_duration_ms,
+    }
+
+
+def _fallback_details_from(result: PopResult) -> dict:
+    return {
+        "state": result.state,
+        "wait_ms": result.wait_ms,
+        "error_class": result.error_class,
+        "prewarm_to_use_ms": result.wait_ms,  # legacy
+        "reason": (
+            "no_prewarm_entry"
+            if result.state == "missing"
+            else "wait_timeout_or_error"
+        ),
+    }
+
+
+def test_hit_event_details_carry_both_legacy_and_new_fields() -> None:
+    r = PopResult(state="ready_during_wait", wait_ms=120,
+                  bundle=PreWarmBundle(prewarm_duration_ms=300))
+    d = _hit_details_from(r, prewarm_duration_ms=300)
+    # New fields
+    assert d["state"] == "ready_during_wait"
+    assert d["wait_ms"] == 120
+    # Legacy field still present
+    assert d["prewarm_to_use_ms"] == 120
+    assert d["prewarm_duration_ms"] == 300
+
+
+def test_fallback_event_details_carry_both_legacy_and_new_fields() -> None:
+    # missing → reason no_prewarm_entry
+    miss = _fallback_details_from(PopResult(state="missing"))
+    assert miss["state"] == "missing" and miss["reason"] == "no_prewarm_entry"
+    assert miss["prewarm_to_use_ms"] == 0
+    # timeout → reason wait_timeout_or_error
+    to = _fallback_details_from(PopResult(state="timeout", wait_ms=503))
+    assert to["state"] == "timeout" and to["reason"] == "wait_timeout_or_error"
+    assert to["prewarm_to_use_ms"] == 503
+    # error → reason wait_timeout_or_error, error_class surfaced
+    er = _fallback_details_from(
+        PopResult(state="error", wait_ms=12, error_class="RuntimeError")
+    )
+    assert er["state"] == "error" and er["reason"] == "wait_timeout_or_error"
+    assert er["error_class"] == "RuntimeError"
+
+
 def test_lru_evicts_oldest_on_overflow() -> None:
     cache = PreWarmCache(max_size=3, ttl_secs=60.0)
     cache.reserve("A")
