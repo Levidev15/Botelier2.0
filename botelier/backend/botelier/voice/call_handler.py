@@ -231,23 +231,33 @@ class CallHandler:
             # pre-warm error, timeout waiting for ready) silently falls through
             # to the cold path below.
             prewarm_bundle: Optional[PreWarmBundle] = None
-            _prewarm_to_use_ms: Optional[int] = None
-            # Snapshot reservation membership BEFORE pop so we can distinguish
-            # a true cache miss (no reservation was ever placed — e.g. phone
-            # not mapped to an assistant at webhook time) from a reserved
-            # entry that timed out or errored during pre-warm.
-            _had_reservation = self.precomputed_configs.has(call_sid)
+            _prewarm_state: str = "missing"
+            _prewarm_wait_ms: int = 0
+            _prewarm_error_class: Optional[str] = None
+            # Task #122 — pop_and_wait now returns a PopResult that
+            # distinguishes ready-before-wait (zero-cost cache hit), 
+            # ready-during-wait (we blocked for ``wait_ms``), timeout, 
+            # error, and missing.  This is the primary diagnostic for 
+            # dev/prod parity: if prod shows mostly ``ready_during_wait``
+            # with high wait_ms, the prewarm is finishing AFTER the 
+            # WebSocket opens — which means we're paying the WS-handshake
+            # latency on top of the prewarm latency rather than overlapping
+            # them as designed.
             try:
-                _pw_wait_start = time.monotonic()
-                prewarm_bundle = await self.precomputed_configs.pop_and_wait(
+                _pw_result = await self.precomputed_configs.pop_and_wait(
                     call_sid, timeout_secs=0.5
                 )
-                _prewarm_to_use_ms = int((time.monotonic() - _pw_wait_start) * 1000)
+                _prewarm_state = _pw_result.state
+                _prewarm_wait_ms = _pw_result.wait_ms
+                _prewarm_error_class = _pw_result.error_class
+                prewarm_bundle = _pw_result.bundle
             except Exception as _pw_err:
                 logger.warning(
                     f"pre-warm consumption raised for {call_sid}: {_pw_err}"
                 )
                 prewarm_bundle = None
+                _prewarm_state = "error"
+                _prewarm_error_class = type(_pw_err).__name__
 
             try:
                 # Task #111 — fast path: all heavy reads already done by the
@@ -265,7 +275,7 @@ class CallHandler:
                     should_record_call = prewarm_bundle.should_record_call
                     logger.info(
                         f"🔥 pre-warm HIT for {call_sid} — "
-                        f"prewarm_to_use_ms={_prewarm_to_use_ms}, "
+                        f"state={_prewarm_state}, wait_ms={_prewarm_wait_ms}, "
                         f"prewarm_duration_ms={prewarm_bundle.prewarm_duration_ms}, "
                         f"tools={len(tools)}, mcp={'yes' if mcp_connection_data else 'no'}, "
                         f"greeting_pcm={'yes' if prewarm_bundle.greeting_pcm else 'no'}"
@@ -879,7 +889,12 @@ class CallHandler:
                         event_source="app",
                         severity="info",
                         details={
-                            "prewarm_to_use_ms": _prewarm_to_use_ms,
+                            # Task #122 — split telemetry: `state` is one of
+                            # ready_before_wait | ready_during_wait so the
+                            # post-deploy SLO query can compute "% hits that
+                            # cost zero wait" vs "% hits that ate the budget".
+                            "state": _prewarm_state,
+                            "wait_ms": _prewarm_wait_ms,
                             "prewarm_duration_ms": prewarm_bundle.prewarm_duration_ms,
                             "greeting_preloaded": bool(prewarm_bundle.greeting_pcm),
                             "tools_count": len(tools),
@@ -892,17 +907,13 @@ class CallHandler:
                         event_source="app",
                         severity="info",
                         details={
-                            "prewarm_to_use_ms": _prewarm_to_use_ms,
-                            # `_had_reservation` captures whether the webhook
-                            # ever placed a reservation; that cleanly
-                            # distinguishes a true cache miss (no reservation
-                            # — e.g. unmapped number) from a pre-warm that
-                            # was attempted but timed out or errored.
-                            "reason": (
-                                "wait_timeout_or_error"
-                                if _had_reservation
-                                else "no_prewarm_entry"
-                            ),
+                            # Task #122 — `state` distinguishes:
+                            #   timeout  — reservation existed, exceeded budget
+                            #   error    — pre-warm task recorded an error
+                            #   missing  — no reservation was ever placed
+                            "state": _prewarm_state,
+                            "wait_ms": _prewarm_wait_ms,
+                            "error_class": _prewarm_error_class,
                         },
                     )
 

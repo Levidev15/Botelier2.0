@@ -28,10 +28,17 @@ _connect_args = {}
 if "sslmode=require" in DATABASE_URL or "sslmode=verify" in DATABASE_URL:
     _connect_args["sslmode"] = "require"
 
+_pool_size = int(os.environ.get("DB_POOL_SIZE", "10"))
+_max_overflow = int(os.environ.get("DB_MAX_OVERFLOW", "20"))
+_pool_timeout = float(os.environ.get("DB_POOL_TIMEOUT", "10"))
+
 engine = create_engine(
     DATABASE_URL,
-    pool_pre_ping=True,   # Verify connections before using
-    pool_recycle=300,     # Recycle connections after 5 minutes
+    pool_pre_ping=True,
+    pool_recycle=300,
+    pool_size=_pool_size,
+    max_overflow=_max_overflow,
+    pool_timeout=_pool_timeout,
     connect_args=_connect_args,
 )
 
