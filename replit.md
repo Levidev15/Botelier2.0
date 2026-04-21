@@ -1,7 +1,7 @@
 # Botelier - Multichannel AI SaaS Platform
 
 ## Overview
-Botelier is a **multi-tenant, multichannel AI platform** that gives businesses a single configurable AI agent that can answer the phone (Voice, live today), reply to texts (SMS, live today), and chat on the web (roadmap). The original target vertical is **hotels**, but the data model and abstractions are deliberately generic (`Account`, not `Hotel`) so the same platform serves any service-heavy industry — hospitality, healthcare front-desk, real estate, professional services, etc. **Scale and concurrency are first-class constraints**: every architectural decision must assume many simultaneous calls and SMS conversations per account, across many accounts, without one tenant degrading another. Key capabilities include a visual flow editor, robust versioning, pluggable AI providers (STT, LLM, TTS), Twilio sub-account isolation per tenant, and granular role-based access control.
+Botelier is a **multi-tenant, multichannel AI platform** giving businesses one configurable AI agent that handles voice calls and SMS today (web chat on the roadmap), originally built for hotels but kept deliberately generic (`Account`, not `Hotel`) so the same platform serves any service-heavy industry. **Scale and concurrency are first-class constraints** — every decision assumes many simultaneous calls and SMS conversations per account, across many accounts, with strict per-tenant isolation. Capabilities include a visual flow editor, versioned flows, pluggable STT/LLM/TTS providers, Twilio sub-account isolation, and granular RBAC.
 
 ## User Preferences
 - **Branding:** All customer-facing code should be branded as "Botelier"
