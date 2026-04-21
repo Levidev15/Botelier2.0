@@ -106,6 +106,18 @@ async def websocket_call_endpoint(
             await websocket.close(code=1008, reason="Unknown call")
             return
 
+        # Tightness invariant: the (CallSid, To) pair the WS claims must
+        # match the (CallSid, To) pair recorded by the validated /incoming.
+        # Stops an attacker who knows a real CallSid from re-pointing the
+        # stream at a different tenant's `to_number`.
+        if call_log.to_number and call_log.to_number != to_number:
+            logger.warning(
+                f"❌ Rejecting /api/ws/call: to_number mismatch for call_sid={call_sid} "
+                f"(claimed={to_number} expected={call_log.to_number})"
+            )
+            await websocket.close(code=1008, reason="Call binding mismatch")
+            return
+
         # Resolve the per-account auth token used as the HMAC secret.
         # When no secret is configured anywhere (local dev), the verifier
         # returns (True, "skipped_no_secret"). The CallLog binding above
