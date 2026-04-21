@@ -33,16 +33,38 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 
 
+# Task #122 — hard cap on greeting PCM kept in-memory on the bundle.
+# 8 kHz mono linear16 = 16 KB/s, so 1 MiB ≈ 64 s of audio — well above any
+# realistic greeting length. Anything larger is almost certainly a Deepgram
+# response we don't want to ship over the WebSocket and is dropped with a
+# log so the consumer falls back to the inline greeting path.
+MAX_GREETING_PCM_BYTES = 1_048_576
+
+
+@dataclass
+class AssistantSnapshot:
+    """Plain-Python projection of the columns the consumer reads after the
+    pre-warm session has been closed. Replaces the detached ORM object on
+    :class:`PreWarmBundle` so the hot path never touches SQLAlchemy state
+    that may have expired (Task #122)."""
+
+    id: str
+    account_id: str
+    name: str
+    description: Optional[str] = None
+
+
 @dataclass
 class PreWarmBundle:
     """
-    Result of a successful pre-warm. Every field is either a pure Python
-    value or an SQLAlchemy ORM object that has been ``expunge``'d from its
-    originating session so the consumer can read attributes without
-    triggering lazy loads against a closed session.
+    Result of a successful pre-warm. All fields are pure Python values —
+    no SQLAlchemy ORM objects cross the session boundary (Task #122).
     """
 
-    assistant: Any = None
+    # `assistant` used to be a detached ORM row; it is now an
+    # :class:`AssistantSnapshot` carrying only the scalar columns the hot
+    # path actually reads (id, account_id, name, description).
+    assistant: Optional[AssistantSnapshot] = None
     config: Any = None  # VoiceAgentConfig built from the assistant
     tools: List[Any] = field(default_factory=list)
     mcp_connection_data: Optional[Dict[str, Any]] = None
@@ -53,6 +75,27 @@ class PreWarmBundle:
     greeting_pcm: Optional[bytes] = None
     greeting_error: Optional[str] = None  # populated if greeting pre-fetch failed
     prewarm_duration_ms: Optional[int] = None
+
+
+@dataclass
+class PopResult:
+    """Outcome of :meth:`PreWarmCache.pop_and_wait` — exposes the bundle
+    plus telemetry so the consumer can distinguish (Task #122):
+
+    * ``ready_before_wait`` — pre-warm finished before the WebSocket opened
+      (cache served zero-cost; ideal case)
+    * ``ready_during_wait`` — entry was reserved but still in flight; we
+      blocked for ``wait_ms`` until ready
+    * ``timeout``           — exceeded the wait budget; consumer falls back
+    * ``error``             — pre-warm task recorded an error
+    * ``missing``           — no reservation was ever placed (true cache
+      miss; e.g. unmapped phone number at webhook time)
+    """
+
+    state: str
+    bundle: Optional[PreWarmBundle] = None
+    wait_ms: int = 0
+    error_class: Optional[str] = None
 
 
 @dataclass
@@ -112,32 +155,58 @@ class PreWarmCache:
 
     async def pop_and_wait(
         self, call_sid: str, timeout_secs: float = 0.5
-    ) -> Optional[PreWarmBundle]:
-        """Remove the entry for ``call_sid`` and return its bundle, waiting up
-        to ``timeout_secs`` for an in-flight pre-warm to complete.
+    ) -> PopResult:
+        """Remove the entry for ``call_sid`` and return a :class:`PopResult`
+        describing whether it was already ready, became ready while we
+        waited, timed out, errored, or was never reserved.
 
-        Returns ``None`` if the entry does not exist, the wait times out, or
-        the pre-warm recorded an error.  The entry is always removed from the
-        cache before returning (success or failure)."""
+        The entry is always removed from the cache before returning
+        (success or failure). Telemetry on this result powers the
+        dev/prod parity diagnostics for Task #122."""
         self._purge_expired()
         entry = self._store.pop(call_sid, None)
         if entry is None:
-            return None
+            return PopResult(state="missing")
+
+        # Classify ready-before-wait vs ready-during-wait WITHOUT racing the
+        # producer: if ``ready`` is already set we never enter wait_for.
+        if entry.ready.is_set():
+            if entry.error is not None:
+                logger.warning(
+                    f"pre-warm error for call_sid={call_sid}: "
+                    f"{type(entry.error).__name__}: {entry.error}"
+                )
+                return PopResult(
+                    state="error",
+                    error_class=type(entry.error).__name__,
+                )
+            return PopResult(state="ready_before_wait", bundle=entry.bundle)
+
+        _t = time.monotonic()
         try:
             await asyncio.wait_for(entry.ready.wait(), timeout=timeout_secs)
         except asyncio.TimeoutError:
+            wait_ms = int((time.monotonic() - _t) * 1000)
             logger.warning(
-                f"pre-warm wait timed out after {int(timeout_secs * 1000)} ms "
+                f"pre-warm wait timed out after {wait_ms} ms "
                 f"for call_sid={call_sid} — using cold path"
             )
-            return None
+            return PopResult(state="timeout", wait_ms=wait_ms)
+
+        wait_ms = int((time.monotonic() - _t) * 1000)
         if entry.error is not None:
             logger.warning(
                 f"pre-warm error for call_sid={call_sid}: "
                 f"{type(entry.error).__name__}: {entry.error}"
             )
-            return None
-        return entry.bundle
+            return PopResult(
+                state="error",
+                wait_ms=wait_ms,
+                error_class=type(entry.error).__name__,
+            )
+        return PopResult(
+            state="ready_during_wait", bundle=entry.bundle, wait_ms=wait_ms
+        )
 
     def discard(self, call_sid: str) -> None:
         """Remove an entry if still present (e.g. on call end).  No-op if
@@ -334,12 +403,26 @@ async def _build_bundle(
                 )
                 should_record = _acct_recording_allowed and _asst_recording_enabled
 
-            # Detach everything from the session so the consumer can read
-            # attributes after close() without lazy loads / DetachedInstance.
+            # Project the assistant ORM into a plain :class:`AssistantSnapshot`
+            # so the hot path never reads attributes off a detached SQLAlchemy
+            # instance. The full ORM object is still returned alongside it,
+            # used ONLY by ``_create_agent_config`` below (which is invoked
+            # before this function returns and therefore still inside the
+            # producer's coroutine, never on the consumer's hot path).
+            snapshot = AssistantSnapshot(
+                id=str(assistant.id),
+                account_id=str(assistant.account_id),
+                name=assistant.name,
+                description=getattr(assistant, "description", None),
+            )
+            # Detach everything from the session so the build-time
+            # ``_create_agent_config`` read can still touch attributes
+            # without triggering lazy loads / DetachedInstance errors.
             _db.expunge_all()
             return {
                 "skip_reason": None,
-                "assistant": assistant,
+                "assistant_orm": assistant,
+                "assistant_snapshot": snapshot,
                 "tools": tools,
                 "mcp_conn_data": mcp_conn_data,
                 "mcp_enabled": mcp_enabled,
@@ -357,7 +440,7 @@ async def _build_bundle(
         )
         return bundle  # empty bundle — consumer will fall back to cold path
 
-    bundle.assistant = reads["assistant"]
+    bundle.assistant = reads["assistant_snapshot"]
     bundle.tools = reads["tools"]
     bundle.mcp_connection_data = reads["mcp_conn_data"]
     bundle.mcp_enabled_tools = reads["mcp_enabled"]
@@ -365,18 +448,25 @@ async def _build_bundle(
     bundle.hotel_twilio_token = reads["hotel_token"]
     bundle.should_record_call = reads["should_record"]
 
-    # Build VoiceAgentConfig from the detached assistant. Reuse the process-
-    # wide CallHandler singleton rather than instantiating a fresh one per
-    # pre-warm — _create_agent_config is an instance method today, but none
-    # of its logic depends on per-call handler state, so routing through the
-    # singleton avoids constructing a throwaway handler on every incoming
-    # call. Imported lazily to avoid a circular import
+    # Build VoiceAgentConfig from the detached ORM assistant. Reuse the
+    # process-wide CallHandler singleton rather than instantiating a fresh
+    # one per pre-warm — _create_agent_config is an instance method today,
+    # but none of its logic depends on per-call handler state, so routing
+    # through the singleton avoids constructing a throwaway handler on every
+    # incoming call. Imported lazily to avoid a circular import
     # (call_handler -> prewarm -> call_handler).
+    #
+    # IMPORTANT: ``_create_agent_config`` reads ~20 columns off the ORM row.
+    # We pass the detached ORM (``assistant_orm``) here — it is local to the
+    # producer task and never escapes onto the bundle. The hot-path consumer
+    # only ever sees ``bundle.assistant`` which is the plain
+    # ``AssistantSnapshot`` populated above.
     from ..api.calls import _get_call_handler as _get_singleton_handler
 
+    _assistant_orm = reads["assistant_orm"]
     try:
         bundle.config = await _get_singleton_handler()._create_agent_config(
-            bundle.assistant
+            _assistant_orm
         )
     except Exception as _cfg_err:
         # Config build failure is fatal for the pre-warm — without it the
@@ -394,12 +484,25 @@ async def _build_bundle(
     ):
         try:
             _voice = bundle.config.tts_voice_id or "aura-2-helena-en"
-            bundle.greeting_pcm = await get_or_generate_greeting_audio(
+            _pcm = await get_or_generate_greeting_audio(
                 greeting_text=bundle.config.greeting_message,
                 tts_config={"voice": _voice},
                 api_key=deepgram_api_key,
                 assistant_id=str(bundle.assistant.id),
             )
+            # Task #122 — refuse to ship oversized payloads through the
+            # bundle (consumer falls back to its inline greeting path).
+            if _pcm is not None and len(_pcm) > MAX_GREETING_PCM_BYTES:
+                logger.warning(
+                    f"pre-warm greeting PCM exceeded cap "
+                    f"({len(_pcm)} > {MAX_GREETING_PCM_BYTES} bytes) — "
+                    f"discarding for assistant={bundle.assistant.id}"
+                )
+                bundle.greeting_error = (
+                    f"oversize_greeting_pcm:{len(_pcm)}"
+                )
+            else:
+                bundle.greeting_pcm = _pcm
         except Exception as _g_err:
             bundle.greeting_error = f"{type(_g_err).__name__}: {_g_err}"
             logger.warning(
