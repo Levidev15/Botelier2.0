@@ -186,9 +186,11 @@ def _write_event(
     """
     try:
         now = datetime.utcnow()
-        offset_ms = None
-        if call_started_at:
-            offset_ms = int((now - call_started_at).total_seconds() * 1000)
+        # Task #123 — single source of truth for offset_ms across all three
+        # CallEvent writers (this webhook writer, CallEventQueue, and the
+        # inline finalization writer in services/call_logger.py).
+        from ..services._event_offset import compute_offset_ms
+        offset_ms = compute_offset_ms(now, call_started_at)
 
         event = CallEvent(
             id=uuid.uuid4(),

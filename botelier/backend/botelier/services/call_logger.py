@@ -19,8 +19,12 @@ from ..models.call_event import CallEvent
 # Any new source must be documented here so dashboards/analytics can surface it.
 _FORCED_BY_SOURCES = {"sweeper", "webhook_safety_net", "finally_defensive", "shutdown"}
 
-# PostgreSQL INTEGER (int4) max — used to guard offset_ms before the BIGINT
-# migration has run on older deployments still carrying the narrow column.
+# Task #123 — the int4 clamp that lived here is gone. The
+# call_events.offset_ms column is BIGINT (verified by the startup invariant
+# in database._assert_call_events_offset_ms_bigint), so writers compute the
+# true offset via services._event_offset.compute_offset_ms with no clamp.
+# Kept as an alias so older imports do not break during deploy; remove on
+# the next minor cleanup pass.
 _INT4_MAX = 2_147_483_647
 
 
@@ -224,14 +228,11 @@ class CallLogger:
         observability is best-effort and must never block a disposition.
         """
         try:
+            # Task #123 — single offset_ms helper (no more int4 clamp; the
+            # column is BIGINT and the startup invariant proves it).
+            from ._event_offset import compute_offset_ms
             now = datetime.utcnow()
-            offset_ms = None
-            if call_started_at:
-                raw_ms = int((now - call_started_at).total_seconds() * 1000)
-                # Belt-and-suspenders guard: cap at int4 max so finalization of
-                # very old stuck calls cannot overflow deployments that have not
-                # yet applied the BIGINT migration for this column.
-                offset_ms = min(raw_ms, _INT4_MAX)
+            offset_ms = compute_offset_ms(now, call_started_at)
             evt = CallEvent(
                 id=uuid.uuid4(),
                 call_log_id=call_log_id,
@@ -247,6 +248,66 @@ class CallLogger:
             # with the CallLog mutation.
         except Exception as e:
             logger.warning(f"Failed to enqueue inline CallEvent {event_type}: {e}")
+
+    @staticmethod
+    def _write_event_isolated(
+        call_log_id,
+        event_type: str,
+        event_source: str,
+        severity: str,
+        details: Dict[str, Any],
+        call_started_at: Optional[datetime],
+    ) -> None:
+        """Task #123 — write a CallEvent in a fresh short-lived session.
+
+        Used by ``complete_call`` for finalization-observability events
+        (``finalization_forced``, ``call_ended``) so a failure on the event
+        INSERT cannot roll back the surrounding CallLog status/ended_at
+        mutation. The docstring on ``_write_event_inline`` claimed
+        observability is "best-effort and must never block a disposition" —
+        this is the implementation that actually honors that contract.
+
+        Never raises; on error the event is logged and dropped, leaving the
+        terminal-state mutation that already committed in place.
+        """
+        from ._event_offset import compute_offset_ms
+
+        now = datetime.utcnow()
+        offset_ms = compute_offset_ms(now, call_started_at)
+
+        db = None
+        try:
+            # Import + SessionLocal() inside the try so a connection-acquisition
+            # failure (pool exhaustion, DB unreachable) is swallowed too —
+            # observability-helper guarantees never-raises end-to-end.
+            from ..database import SessionLocal
+            db = SessionLocal()
+            evt = CallEvent(
+                id=uuid.uuid4(),
+                call_log_id=call_log_id,
+                event_type=event_type,
+                event_source=event_source,
+                severity=severity,
+                occurred_at=now,
+                offset_ms=offset_ms,
+                details=details,
+            )
+            db.add(evt)
+            db.commit()
+        except Exception as e:
+            try:
+                db.rollback()
+            except Exception:
+                pass
+            logger.warning(
+                f"_write_event_isolated: failed to write {event_type} for "
+                f"call_log {call_log_id} (non-fatal): {e}"
+            )
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
 
     def complete_call(
         self,
@@ -448,10 +509,21 @@ class CallLogger:
             if total_leg_duration > 0:
                 call_log.duration_seconds = total_leg_duration
 
-            # Observability: when finalization was driven by a safety-net path
-            # (sweeper / webhook / defensive finally) rather than the normal
-            # pipeline teardown, emit a distinctive event so Task #97 and ops
-            # dashboards can measure the leak rate.
+            # Task #123 — observability events for safety-net finalizations.
+            #
+            # Previously these were appended to ``self.db`` and committed in
+            # the same transaction as the CallLog status/ended_at mutation.
+            # If the event INSERT failed at commit time (FK race, schema drift,
+            # constraint violation) the entire transaction rolled back and the
+            # CallLog row stayed stuck in its pre-finalize state — exactly the
+            # bug the sweeper exists to prevent.
+            #
+            # We now collect the event payloads, commit the terminal-state
+            # mutation FIRST, and then write the events through a fresh
+            # short-lived session via _write_event_isolated. That helper
+            # never raises; an event-write failure now logs a warning and
+            # leaves the disposition committed.
+            forced_event_payloads: list[Dict[str, Any]] = []
             if forced_by:
                 if forced_by not in _FORCED_BY_SOURCES:
                     logger.warning(
@@ -466,14 +538,11 @@ class CallLogger:
                 }
                 if forced_by == "sweeper" and sweeper_age_seconds is not None:
                     details["sweeper_age_seconds"] = int(sweeper_age_seconds)
-                self._write_event_inline(
-                    call_log_id=call_log.id,
-                    event_type="finalization_forced",
-                    event_source="app",
-                    severity="warning",
-                    details=details,
-                    call_started_at=call_log.started_at,
-                )
+                forced_event_payloads.append({
+                    "event_type": "finalization_forced",
+                    "severity": "warning",
+                    "details": details,
+                })
                 # Also emit a call_ended event if one has not already been
                 # written — so a sweeper-closed call still has a complete
                 # timeline for the event-log modal.
@@ -494,16 +563,40 @@ class CallLogger:
                     }
                     if forced_by == "sweeper" and sweeper_age_seconds is not None:
                         _call_ended_details["sweeper_age_seconds"] = int(sweeper_age_seconds)
-                    self._write_event_inline(
-                        call_log_id=call_log.id,
-                        event_type="call_ended",
-                        event_source="app",
-                        severity="warning",
-                        details=_call_ended_details,
-                        call_started_at=call_log.started_at,
-                    )
+                    forced_event_payloads.append({
+                        "event_type": "call_ended",
+                        "severity": "warning",
+                        "details": _call_ended_details,
+                    })
+
+            # Capture the values needed by the post-commit event writes
+            # before commit() expires the ORM attributes on call_log.
+            _call_log_id = call_log.id
+            _call_started_at = call_log.started_at
 
             self.db.commit()
+
+            # Post-commit, isolated, never-raises event writes (Task #123).
+            # Belt-and-suspenders: even though _write_event_isolated has its
+            # own try/except, wrap the loop so a regression there cannot
+            # propagate up and convert a successful disposition into a False
+            # return value.
+            for payload in forced_event_payloads:
+                try:
+                    self._write_event_isolated(
+                        call_log_id=_call_log_id,
+                        event_type=payload["event_type"],
+                        event_source="app",
+                        severity=payload["severity"],
+                        details=payload["details"],
+                        call_started_at=_call_started_at,
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"complete_call: post-commit event '{payload['event_type']}' "
+                        f"emission failed (non-fatal, disposition already committed): {e}"
+                    )
+
             logger.info(
                 f"Completed call {call_sid} with outcome: {call_log.outcome}"
                 + (f" (forced_by={forced_by})" if forced_by else "")

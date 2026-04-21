@@ -33,4 +33,4 @@ No standalone setup.
 ## Gotchas
 
 - Drilldown timestamps in the transcript come from the capture layer, not the save layer (`services/call_logger.py` deliberately preserves caller-provided timestamps). If they look wrong, fix at the source — overwriting them in the modal would mask real bugs.
-- The timeline depends on `CallEvent.offset_ms`. The column is `bigint`, but writers go through `call_logger` which clamps to `_INT4_MAX` (~24.85 days) — long-stuck calls will display a saturated offset, not the true value.
+- The timeline depends on `CallEvent.offset_ms`. The column is `bigint` (Task #123 enforces this at startup via `database._assert_call_events_offset_ms_bigint`) and writers compute the true value via `services/_event_offset.compute_offset_ms`. No clamping — long-stuck calls display the real elapsed time.

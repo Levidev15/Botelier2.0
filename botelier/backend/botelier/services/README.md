@@ -37,6 +37,7 @@ Imported as `botelier.services.*`. Not standalone.
 
 ## Gotchas
 
-- **`offset_ms` is clamped to `_INT4_MAX` before insert** (`call_logger.py:22, 228-234`). The DB column is `bigint`, but the clamp remains as a compatibility guard for historical writers. Any change to the clamp must be audited against every direct writer of `CallEvent`.
-- **Don't bypass `call_logger`.** All `CallLog` / `CallEvent` writes should go through it so observability events (`finalization_forced`, `call_ended`) are emitted consistently and the `offset_ms` clamp is applied.
+- **`offset_ms` is computed via the single helper `_event_offset.compute_offset_ms`** (Task #123). The DB column is `bigint` and the startup invariant `database._assert_call_events_offset_ms_bigint` refuses to start the app on type drift, so no clamping is needed. All three writers (`api/calls._write_event`, `services/call_event_queue.log`, `services/call_logger._write_event_inline`) call the helper. Adding a new direct `CallEvent` writer? Use the helper — never recompute the offset inline.
+- **Finalization observability is committed in a separate transaction** (Task #123). `complete_call` first commits the CallLog status/ended_at mutation, then writes `finalization_forced` / `call_ended` events through `_write_event_isolated` (fresh `SessionLocal()`, never raises). An event-write failure logs a warning and leaves the disposition committed — honoring the "observability never blocks a disposition" contract that the docstring on `_write_event_inline` advertises.
+- **Don't bypass `call_logger`.** All `CallLog` / `CallEvent` writes should go through it so observability events (`finalization_forced`, `call_ended`) are emitted consistently and the `offset_ms` helper is applied.
 - `call_event_queue` is async — don't assume a write is durable until the queue flushes.

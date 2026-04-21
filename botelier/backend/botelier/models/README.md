@@ -42,6 +42,6 @@ Auto-imported via `botelier.models.*`. Tables are created by `init_db()` if miss
 
 ## Gotchas
 
-- **`CallEvent.offset_ms` is `BigInteger`** (`models/call_event.py:47`; prod column type `bigint`). Historically it was `INTEGER` (int32, ~24.85-day overflow window), and `services/call_logger.py:228-234` still clamps writes to `_INT4_MAX` as a belt-and-suspenders guard. Don't remove the clamp without auditing every other writer.
+- **`CallEvent.offset_ms` is `BigInteger`** (`models/call_event.py:47`; prod column type `bigint`). Historically it was `INTEGER` (int32, ~24.85-day overflow window). Task #123 enforces the BIGINT invariant at startup (`database._assert_call_events_offset_ms_bigint`) and routes all writers through `services/_event_offset.compute_offset_ms` — no clamping. The fresh `CREATE TABLE` (in `database._ADDITIVE_MIGRATIONS`) declares BIGINT directly so a clean deploy never depends on a follow-up ALTER.
 - `CallLog.duration_seconds` is `INTEGER` — the seconds ceiling (~68 years) is not at risk in practice.
 - Adding a column requires a matching entry in `prod_migration.sql` for production; `init_db()` only creates new tables, not new columns.

@@ -169,6 +169,11 @@ _ADDITIVE_MIGRATIONS = [
     # The table itself is created by Base.metadata.create_all, but we ensure the
     # indexes exist here so they are present even on pre-existing deployments that
     # ran create_all before this model was added.
+    # Task #123 — offset_ms is BIGINT from the first CREATE TABLE so a fresh
+    # deploy never depends on the follow-up Task #115 ALTER (which can fail
+    # silently and leave int4 in place, dropping writes for calls older than
+    # ~24.85 days). The startup invariant
+    # _assert_call_events_offset_ms_bigint() verifies this hard.
     """
     CREATE TABLE IF NOT EXISTS call_events (
         id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -177,7 +182,7 @@ _ADDITIVE_MIGRATIONS = [
         event_source VARCHAR NOT NULL DEFAULT 'app',
         severity VARCHAR NOT NULL DEFAULT 'info',
         occurred_at TIMESTAMP NOT NULL DEFAULT NOW(),
-        offset_ms INTEGER,
+        offset_ms BIGINT,
         details JSONB
     )
     """,
@@ -1004,6 +1009,54 @@ def _backfill_stuck_initiated_calls():
                 pass
 
 
+def _assert_call_events_offset_ms_bigint() -> None:
+    """Task #123 — fail loudly if ``call_events.offset_ms`` is not BIGINT.
+
+    The fresh CREATE TABLE now declares BIGINT and the Task #115 ALTER widens
+    legacy deployments. Both are idempotent SQL; both can fail silently inside
+    the additive-migrations runner if a lock or permission issue strikes.
+    A silent int4 schema means writes for calls older than ~24.85 days will
+    raise NumericValueOutOfRange — which on the sweeper path silently rolls
+    back the entire finalization transaction every 5 min forever.
+
+    Verifying the column type at startup converts that latent failure mode
+    into a loud one. Refuses to start the app on mismatch — a degraded mode
+    is worse than a crash here, since the sweeper is the only thing that
+    rescues stuck calls and it would be silently broken.
+    """
+    try:
+        with engine.connect() as conn:
+            row = conn.execute(text(
+                "SELECT data_type FROM information_schema.columns "
+                "WHERE table_name='call_events' AND column_name='offset_ms'"
+            )).first()
+    except Exception as e:
+        # Don't mask DB-connectivity errors here; init_db will surface them.
+        logger.error(
+            f"call_events.offset_ms invariant check failed to query schema: {e}"
+        )
+        raise
+
+    if row is None:
+        # Table missing entirely — create_all + additive migrations should
+        # have created it earlier in init_db; reaching here is a bug.
+        raise RuntimeError(
+            "call_events.offset_ms invariant: column not found "
+            "(call_events table missing after migrations)"
+        )
+
+    data_type = row[0]
+    if data_type != "bigint":
+        raise RuntimeError(
+            f"call_events.offset_ms invariant FAILED: data_type='{data_type}', "
+            f"expected 'bigint'. Writes for calls older than ~24.85 days will "
+            f"overflow int4 and silently roll back finalization. Refusing to "
+            f"start. Run: ALTER TABLE call_events ALTER COLUMN offset_ms TYPE BIGINT"
+        )
+
+    logger.debug("call_events.offset_ms invariant ✓ (bigint)")
+
+
 def init_db():
     """
     Initialize the database at application startup.
@@ -1057,6 +1110,10 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     _run_hotel_account_migration()
     _run_additive_migrations()
+    # Task #123 — verify the schema invariant the additive migrations are
+    # supposed to guarantee, AFTER they have had a chance to run. Failing
+    # here is intentional: a silent int4 schema breaks the sweeper forever.
+    _assert_call_events_offset_ms_bigint()
     _sync_system_role_permissions()
     _backfill_silero_vad_config()
     # Task #96: the unified stuck-call sweeper supersedes the legacy
