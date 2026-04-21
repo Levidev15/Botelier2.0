@@ -24,6 +24,11 @@ from botelier.models.role import AccountMembership
 security = HTTPBearer(auto_error=False)
 
 NEXTAUTH_SECRET = os.environ.get("NEXTAUTH_SECRET", "")
+if not NEXTAUTH_SECRET:
+    raise RuntimeError(
+        "NEXTAUTH_SECRET environment variable is not set. "
+        "Authentication cannot function without a configured secret."
+    )
 
 
 def derive_encryption_key(secret: str) -> bytes:
@@ -54,17 +59,9 @@ def decode_jwt_token(token: str) -> Optional[dict]:
     2. NextAuth signed (JWS) tokens
     3. NextAuth encrypted (JWE) tokens
     
-    Tries all known secrets so tokens issued before/after secret rotation still work.
+    Only tokens signed with the configured NEXTAUTH_SECRET are accepted.
     """
-    # Build list of secrets to try (current env secret + fallback default)
-    secrets_to_try = []
-    if NEXTAUTH_SECRET:
-        secrets_to_try.append(NEXTAUTH_SECRET)
-    fallback = "botelier-secret-key"
-    if fallback not in secrets_to_try:
-        secrets_to_try.append(fallback)
-
-    for secret in secrets_to_try:
+    for secret in [NEXTAUTH_SECRET]:
         try:
             payload = jwt.decode(
                 token,
@@ -77,14 +74,13 @@ def decode_jwt_token(token: str) -> Optional[dict]:
             continue
 
     # Try JWE decryption with current secret
-    if NEXTAUTH_SECRET:
-        try:
-            from jose import jwe
-            key = derive_encryption_key(NEXTAUTH_SECRET)
-            decrypted = jwe.decrypt(token, key)
-            return json.loads(decrypted)
-        except Exception:
-            pass
+    try:
+        from jose import jwe
+        key = derive_encryption_key(NEXTAUTH_SECRET)
+        decrypted = jwe.decrypt(token, key)
+        return json.loads(decrypted)
+    except Exception:
+        pass
 
     return None
 
@@ -141,32 +137,20 @@ async def get_current_user_optional(
     user = db.query(User).filter(User.replit_id == sub).first()
     
     if not user:
-        email = payload.get("email")
-        if email:
-            user = db.query(User).filter(User.email == email).first()
-        
-        if not user:
-            from botelier.models.user import AuthProvider
-            user = User(
-                replit_id=sub,
-                email=payload.get("email") or f"{sub}@replit.user",
-                first_name=payload.get("first_name") or payload.get("name", "").split()[0] if payload.get("name") else None,
-                last_name=payload.get("last_name") or " ".join(payload.get("name", "").split()[1:]) if payload.get("name") else None,
-                profile_image_url=payload.get("picture") or payload.get("image"),
-                auth_provider=AuthProvider.REPLIT,
-                user_type=UserType.ACCOUNT_USER,
-                last_login_at=datetime.utcnow(),
-            )
-            db.add(user)
-            db.commit()
-            db.refresh(user)
-        else:
-            if not user.replit_id:
-                user.replit_id = sub
-            user.last_login_at = datetime.utcnow()
-            if payload.get("picture") or payload.get("image"):
-                user.profile_image_url = payload.get("picture") or payload.get("image")
-            db.commit()
+        from botelier.models.user import AuthProvider
+        user = User(
+            replit_id=sub,
+            email=payload.get("email") or f"{sub}@replit.user",
+            first_name=payload.get("first_name") or payload.get("name", "").split()[0] if payload.get("name") else None,
+            last_name=payload.get("last_name") or " ".join(payload.get("name", "").split()[1:]) if payload.get("name") else None,
+            profile_image_url=payload.get("picture") or payload.get("image"),
+            auth_provider=AuthProvider.REPLIT,
+            user_type=UserType.ACCOUNT_USER,
+            last_login_at=datetime.utcnow(),
+        )
+        db.add(user)
+        db.commit()
+        db.refresh(user)
     else:
         user.last_login_at = datetime.utcnow()
         if payload.get("email") and user.email != payload.get("email"):

@@ -19,7 +19,12 @@ from botelier.models.invitation import AccountInvitation, InvitationStatus
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-JWT_SECRET = os.environ.get("NEXTAUTH_SECRET", "botelier-secret-key")
+JWT_SECRET = os.environ.get("NEXTAUTH_SECRET", "")
+if not JWT_SECRET:
+    raise RuntimeError(
+        "NEXTAUTH_SECRET environment variable is not set. "
+        "Email/password authentication cannot function without a configured secret."
+    )
 JWT_ALGORITHM = "HS256"
 JWT_EXPIRATION_HOURS = 24 * 7
 
