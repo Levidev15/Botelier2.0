@@ -3,6 +3,8 @@ import json
 import base64
 import time
 import uuid
+import ipaddress
+import socket
 import httpx
 from datetime import datetime, timedelta
 from typing import Any, Optional
@@ -13,6 +15,25 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from botelier.models.integration import AccountIntegration, IntegrationType, IntegrationStatus, IntegrationCallLog
+
+_ORACLE_ALLOWED_SUFFIXES = (".oraclecloud.com", ".oracle.com")
+
+
+def _validate_opera_gateway_url(gateway_url: str) -> None:
+    """Raise ValueError if gateway_url is not a valid Oracle Cloud hostname."""
+    if not gateway_url:
+        raise ValueError("gateway_url is required")
+    try:
+        parsed = urlparse(gateway_url)
+    except Exception:
+        raise ValueError("Invalid gateway_url")
+    if parsed.scheme != "https":
+        raise ValueError("gateway_url must use HTTPS")
+    hostname = (parsed.hostname or "").lower()
+    if not any(hostname.endswith(suffix) for suffix in _ORACLE_ALLOWED_SUFFIXES):
+        raise ValueError(
+            "gateway_url must be an Oracle Cloud hostname (*.oraclecloud.com or *.oracle.com)"
+        )
 
 
 _SECRETS_PLACEHOLDER_RE = re.compile(r"\{\{secrets\.[^}]+\}\}")
@@ -419,7 +440,13 @@ class IntegrationClient:
                 db.close()
 
     async def _refresh_oauth_token(self, integration: AccountIntegration, credentials: dict, auth_config: dict) -> bool:
-        gateway_url = credentials.get("gateway_url", "").rstrip("/")
+        raw_gateway = credentials.get("gateway_url", "")
+        try:
+            _validate_opera_gateway_url(raw_gateway)
+        except ValueError as exc:
+            logger.error(f"Invalid gateway_url for token refresh: {exc}")
+            return False
+        gateway_url = raw_gateway.rstrip("/")
         client_id = credentials.get("client_id")
         client_secret = credentials.get("client_secret")
         app_key = credentials.get("app_key")
@@ -504,7 +531,9 @@ class IntegrationClient:
         if auth_type == "basic_or_jwt":
             base_url = auth_config.get("base_url", "").rstrip("/")
         else:
-            base_url = credentials.get("gateway_url", "").rstrip("/")
+            raw_gateway = credentials.get("gateway_url", "")
+            _validate_opera_gateway_url(raw_gateway)
+            base_url = raw_gateway.rstrip("/")
         
         path = config.path
         if config.endpoint_id:

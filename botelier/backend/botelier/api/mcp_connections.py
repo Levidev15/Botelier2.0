@@ -22,6 +22,9 @@ Endpoints:
 
 from datetime import datetime
 from typing import Optional, List, Dict, Any
+from urllib.parse import urlparse
+import ipaddress
+import socket
 from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
@@ -35,9 +38,46 @@ from botelier.models.mcp_connection import (
     MCPTransportType,
 )
 from botelier.services.mcp_client import test_mcp_connection
+from botelier.auth.middleware import get_current_user
 
 
 router = APIRouter(prefix="/api/mcp-connections", tags=["mcp-connections"])
+
+_BLOCKED_HOSTS = {
+    "localhost", "127.0.0.1", "0.0.0.0", "::1",
+    "metadata.google.internal", "169.254.169.254",
+}
+
+
+def _assert_account_access(current_user, account_id: str) -> None:
+    if getattr(current_user, "user_type", None) == "platform_admin":
+        return
+    memberships = getattr(current_user, "account_memberships", None) or []
+    allowed = {str(getattr(m, "account_id", "")) for m in memberships if getattr(m, "is_active", False)}
+    if account_id not in allowed:
+        raise HTTPException(
+            status_code=403,
+            detail="You do not have access to this account",
+        )
+
+
+def _validate_mcp_server_url(url: str) -> None:
+    parsed = urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="Only HTTP/HTTPS server URLs are allowed")
+    hostname = parsed.hostname or ""
+    if not hostname:
+        raise HTTPException(status_code=400, detail="Invalid server URL: missing hostname")
+    if hostname in _BLOCKED_HOSTS:
+        raise HTTPException(status_code=400, detail="Requests to internal addresses are not allowed")
+    try:
+        resolved = socket.getaddrinfo(hostname, None)
+        for _, _, _, _, sockaddr in resolved:
+            ip = ipaddress.ip_address(sockaddr[0])
+            if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+                raise HTTPException(status_code=400, detail="Requests to internal/private addresses are not allowed")
+    except socket.gaierror:
+        raise HTTPException(status_code=400, detail="Unable to resolve MCP server hostname")
 
 
 class MCPCredentials(BaseModel):
@@ -105,9 +145,12 @@ def _validate_auth_type(value: str) -> MCPAuthType:
 @router.post("", status_code=201)
 async def create_mcp_connection(
     data: MCPConnectionCreate,
+    current_user=Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Create a new MCP connection."""
+    _assert_account_access(current_user, data.account_id)
+    _validate_mcp_server_url(data.server_url)
     transport_type = _validate_transport_type(data.transport_type)
     auth_type = _validate_auth_type(data.auth_type)
     
@@ -138,9 +181,11 @@ async def create_mcp_connection(
 async def list_mcp_connections(
     account_id: str,
     include_tools: bool = False,
+    current_user=Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """List all MCP connections for an account."""
+    _assert_account_access(current_user, account_id)
     connections = db.query(MCPConnection).filter(
         MCPConnection.account_id == account_id
     ).order_by(MCPConnection.created_at.desc()).all()
@@ -151,6 +196,7 @@ async def list_mcp_connections(
 @router.get("/{connection_id}")
 async def get_mcp_connection(
     connection_id: str,
+    current_user=Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Get a specific MCP connection by ID."""
@@ -161,6 +207,8 @@ async def get_mcp_connection(
     if not connection:
         raise HTTPException(status_code=404, detail="MCP connection not found")
     
+    _assert_account_access(current_user, str(connection.account_id))
+    
     return connection.to_dict(include_tools=True)
 
 
@@ -168,6 +216,7 @@ async def get_mcp_connection(
 async def update_mcp_connection(
     connection_id: str,
     data: MCPConnectionUpdate,
+    current_user=Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Update an existing MCP connection."""
@@ -178,6 +227,8 @@ async def update_mcp_connection(
     if not connection:
         raise HTTPException(status_code=404, detail="MCP connection not found")
     
+    _assert_account_access(current_user, str(connection.account_id))
+    
     if data.name is not None:
         connection.name = data.name
     if data.description is not None:
@@ -185,6 +236,7 @@ async def update_mcp_connection(
     if data.transport_type is not None:
         connection.transport_type = _validate_transport_type(data.transport_type)
     if data.server_url is not None:
+        _validate_mcp_server_url(data.server_url)
         connection.server_url = data.server_url
         connection.status = MCPConnectionStatus.DISCONNECTED
         connection.discovered_tools = []
@@ -208,6 +260,7 @@ async def update_mcp_connection(
 @router.delete("/{connection_id}")
 async def delete_mcp_connection(
     connection_id: str,
+    current_user=Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Delete an MCP connection."""
@@ -217,6 +270,8 @@ async def delete_mcp_connection(
     
     if not connection:
         raise HTTPException(status_code=404, detail="MCP connection not found")
+    
+    _assert_account_access(current_user, str(connection.account_id))
     
     db.delete(connection)
     db.commit()
@@ -229,6 +284,7 @@ async def delete_mcp_connection(
 @router.post("/{connection_id}/test")
 async def test_existing_connection(
     connection_id: str,
+    current_user=Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Test an existing MCP connection and update its status."""
@@ -238,6 +294,9 @@ async def test_existing_connection(
     
     if not connection:
         raise HTTPException(status_code=404, detail="MCP connection not found")
+    
+    _assert_account_access(current_user, str(connection.account_id))
+    _validate_mcp_server_url(connection.server_url)
     
     connection.status = MCPConnectionStatus.CONNECTING
     db.commit()
@@ -287,6 +346,7 @@ async def test_existing_connection(
 @router.post("/{connection_id}/discover-tools")
 async def discover_tools(
     connection_id: str,
+    current_user=Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
     """Discover available tools from an MCP server."""
@@ -296,6 +356,9 @@ async def discover_tools(
     
     if not connection:
         raise HTTPException(status_code=404, detail="MCP connection not found")
+    
+    _assert_account_access(current_user, str(connection.account_id))
+    _validate_mcp_server_url(connection.server_url)
     
     try:
         credentials = connection.get_credentials()
@@ -343,8 +406,10 @@ async def discover_tools(
 @router.post("/test")
 async def test_connection_without_saving(
     data: MCPConnectionTestRequest,
+    current_user=Depends(get_current_user),
 ):
     """Test an MCP connection without saving it."""
+    _validate_mcp_server_url(data.server_url)
     try:
         credentials = data.credentials.model_dump(exclude_none=True) if data.credentials else {}
         

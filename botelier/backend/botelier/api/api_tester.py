@@ -1,32 +1,27 @@
-from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+import time
 from typing import Optional, Dict, Any
 from urllib.parse import urlparse
-import ipaddress
-import socket
+
 import httpx
-import time
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
+
+from botelier.auth.middleware import get_current_user
+from botelier.services.ssrf_safe_transport import SSRFSafeTransport, _BLOCKED_LITERAL_HOSTS
 
 router = APIRouter(prefix="/api/api-tester", tags=["api-tester"])
 
-BLOCKED_HOSTS = {"localhost", "127.0.0.1", "0.0.0.0", "::1", "metadata.google.internal", "169.254.169.254"}
-
 
 def _validate_url(url: str) -> None:
+    """Fast pre-flight check: scheme and literal-host blocklist."""
     parsed = urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise HTTPException(status_code=400, detail="Only HTTP/HTTPS URLs are allowed")
     hostname = parsed.hostname or ""
-    if hostname in BLOCKED_HOSTS:
+    if not hostname:
+        raise HTTPException(status_code=400, detail="Missing hostname in URL")
+    if hostname in _BLOCKED_LITERAL_HOSTS:
         raise HTTPException(status_code=400, detail="Requests to internal addresses are not allowed")
-    try:
-        resolved = socket.getaddrinfo(hostname, None)
-        for _, _, _, _, sockaddr in resolved:
-            ip = ipaddress.ip_address(sockaddr[0])
-            if ip.is_private or ip.is_loopback or ip.is_link_local:
-                raise HTTPException(status_code=400, detail="Requests to internal/private addresses are not allowed")
-    except socket.gaierror:
-        pass
 
 
 class ApiTestRequest(BaseModel):
@@ -46,14 +41,20 @@ class ApiTestResponse(BaseModel):
 
 
 @router.post("/test", response_model=ApiTestResponse)
-async def test_api_request(request: ApiTestRequest):
+async def test_api_request(
+    request: ApiTestRequest,
+    current_user=Depends(get_current_user),
+):
     _validate_url(request.url)
     start_time = time.time()
-    
+
     try:
         req_headers = request.headers or {}
-        
-        async with httpx.AsyncClient(timeout=request.timeout or 30) as client:
+
+        async with httpx.AsyncClient(
+            transport=SSRFSafeTransport(),
+            timeout=request.timeout or 30,
+        ) as client:
             if request.method.upper() == "GET":
                 response = await client.get(request.url, headers=req_headers)
             elif request.method.upper() == "POST":
@@ -80,24 +81,25 @@ async def test_api_request(request: ApiTestRequest):
                 else:
                     response = await client.patch(request.url, headers=req_headers)
             else:
-                raise HTTPException(status_code=400, detail=f"Unsupported method: {request.method}")
+                raise HTTPException(
+                    status_code=400, detail=f"Unsupported method: {request.method}"
+                )
 
         elapsed_ms = (time.time() - start_time) * 1000
-        
         resp_headers = dict(response.headers)
-        
+
         try:
             body = response.json()
         except Exception:
             body = response.text
-        
+
         return ApiTestResponse(
             status_code=response.status_code,
             headers=resp_headers,
             body=body,
             elapsed_ms=round(elapsed_ms, 2),
         )
-    
+
     except httpx.TimeoutException:
         elapsed_ms = (time.time() - start_time) * 1000
         return ApiTestResponse(
