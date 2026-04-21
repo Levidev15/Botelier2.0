@@ -766,6 +766,9 @@ export default function CallAnalyticsPage() {
         </section>
 
         {/* ── Technical breakdown (collapsed by default) ───────────────── */}
+        {/* View toggle gates the entire panel so the menu's "Status
+            Breakdown (technical)" entry actually controls something. */}
+        {isVisible("status_chart") && (
         <details className="bg-[#1a1a1a] border border-gray-800 rounded-xl group">
           <summary className="cursor-pointer px-5 py-3 text-sm font-medium text-gray-300 flex items-center justify-between select-none">
             <span>Technical breakdown</span>

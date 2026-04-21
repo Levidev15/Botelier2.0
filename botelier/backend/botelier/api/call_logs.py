@@ -292,6 +292,16 @@ async def export_call_logs(
     external consumer keeps working. New columns appended on the right:
     Reference ID, Bucket (MECE), Greeted, Caller Spoke, Disposition,
     ACW Resolution, ACW Quality Score, ACW Skip Reason.
+
+    Note on the `tz` parameter: accepted today only for forward
+    compatibility with the dashboard, which already passes the active
+    user timezone. The current CSV emits `Date/Time` in raw UTC ISO and
+    `tz` does NOT yet shift date boundaries or row timestamps. A future
+    task (see follow-up #131) will add a `Date/Time (Local)` column and
+    apply `tz` to the `date_from` / `date_to` boundary interpretation;
+    until then, callers should treat `tz` as a no-op on the detailed
+    export. The Summary export (`/api/analytics/calls/export-summary`)
+    already honors `tz` for per-day grouping.
     """
     check_account_permission(user, str(account_id), "call_logs.export", db)
     try:

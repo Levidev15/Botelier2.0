@@ -52,7 +52,12 @@ export default function PartitionBar({ buckets, total, onSegmentClick }: Partiti
           >
             {visibleBuckets.map((b) => {
               const pct = (b.count / safeTotal) * 100;
-              const showInline = pct >= 8;
+              // Inline label rules — show count+% on wide enough segments
+              // so the bar tells the story without a tooltip; show count
+              // only on medium segments; suppress on slivers to avoid
+              // cramped truncation. Tooltip always carries the full label.
+              const showCountAndPct = pct >= 14;
+              const showCountOnly = pct >= 6 && pct < 14;
               return (
                 <button
                   key={b.key}
@@ -62,7 +67,12 @@ export default function PartitionBar({ buckets, total, onSegmentClick }: Partiti
                   className="h-full flex items-center justify-center text-xs font-medium text-black/80 hover:brightness-110 transition-all border-r border-black/20 last:border-r-0"
                   title={`${b.label}: ${b.count.toLocaleString()} (${pct.toFixed(1)}%)`}
                 >
-                  {showInline && (
+                  {showCountAndPct && (
+                    <span className="truncate px-1">
+                      {b.count.toLocaleString()} · {pct.toFixed(0)}%
+                    </span>
+                  )}
+                  {showCountOnly && (
                     <span className="truncate px-1">
                       {b.count.toLocaleString()}
                     </span>
