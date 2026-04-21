@@ -18,6 +18,8 @@ from mcp import ClientSession
 from mcp.client.sse import sse_client
 from mcp.types import Tool as MCPTool
 
+from botelier.services.ssrf_safe_transport import make_ssrf_safe_mcp_client_factory
+
 
 class MCPClientError(Exception):
     """Base exception for MCP client errors."""
@@ -108,6 +110,7 @@ class MCPClient:
                 url=self.server_url,
                 headers=headers,
                 timeout=timeout,
+                httpx_client_factory=make_ssrf_safe_mcp_client_factory(),
             )
             
             streams = await self._context_manager.__aenter__()

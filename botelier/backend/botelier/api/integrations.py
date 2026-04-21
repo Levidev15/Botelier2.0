@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta
 from typing import Optional, List
 from uuid import UUID
+from urllib.parse import urlparse
 import base64
 import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -15,6 +16,32 @@ from botelier.auth.middleware import get_current_user
 
 
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
+
+_ORACLE_ALLOWED_SUFFIXES = (".oraclecloud.com", ".oracle.com")
+
+
+def _validate_opera_gateway_url(gateway_url: str) -> None:
+    """Reject any gateway_url that does not point to an Oracle-controlled host.
+
+    Only https:// URLs whose hostname ends with a known Oracle domain suffix
+    are accepted.  This prevents SSRF via attacker-controlled gateway_url
+    values that could redirect outbound OAuth / API calls to internal hosts
+    or attacker-controlled servers.
+    """
+    if not gateway_url:
+        raise HTTPException(status_code=400, detail="gateway_url is required")
+    try:
+        parsed = urlparse(gateway_url)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid gateway_url")
+    if parsed.scheme != "https":
+        raise HTTPException(status_code=400, detail="gateway_url must use HTTPS")
+    hostname = (parsed.hostname or "").lower()
+    if not any(hostname.endswith(suffix) for suffix in _ORACLE_ALLOWED_SUFFIXES):
+        raise HTTPException(
+            status_code=400,
+            detail="gateway_url must be an Oracle Cloud hostname (*.oraclecloud.com or *.oracle.com)",
+        )
 
 
 def _assert_account_access(current_user, account_id: str) -> None:
@@ -329,6 +356,10 @@ async def connect_integration(
     
     if not integration_type:
         raise HTTPException(status_code=404, detail="Integration type not found")
+
+    if integration_type.auth_type == "oauth2_client_credentials":
+        gateway_url = request.credentials.get("gateway_url", "")
+        _validate_opera_gateway_url(gateway_url)
     
     user_id = getattr(current_user, "id", None)
     
@@ -637,6 +668,11 @@ async def obtain_oauth_token(integration_type: IntegrationType, credentials: dic
     
     if not all([gateway_url, client_id, client_secret, enterprise_id, app_key]):
         return {"success": False, "error": "Missing required credentials"}
+
+    try:
+        _validate_opera_gateway_url(gateway_url)
+    except HTTPException as exc:
+        return {"success": False, "error": exc.detail}
     
     token_url = f"{gateway_url}{auth_config.get('token_endpoint_path', '/oauth/v1/tokens')}"
     
@@ -837,6 +873,11 @@ async def refresh_oauth_token(integration_type: IntegrationType, integration: Ac
     client_id = credentials.get("client_id")
     client_secret = credentials.get("client_secret")
     app_key = credentials.get("app_key")
+
+    try:
+        _validate_opera_gateway_url(gateway_url)
+    except HTTPException as exc:
+        return {"success": False, "error": exc.detail}
     
     token_url = f"{gateway_url}{auth_config.get('token_endpoint_path', '/oauth/v1/tokens')}"
     
@@ -934,6 +975,11 @@ async def test_api_connection(integration_type: IntegrationType, integration: Ac
     
     if not all([gateway_url, hotel_id, app_key, access_token]):
         return {"success": False, "message": "Missing required credentials or token"}
+
+    try:
+        _validate_opera_gateway_url(gateway_url)
+    except HTTPException as exc:
+        return {"success": False, "message": exc.detail}
     
     test_url = f"{gateway_url}/fof/v1/hotels/{hotel_id}/roomTypes"
     
