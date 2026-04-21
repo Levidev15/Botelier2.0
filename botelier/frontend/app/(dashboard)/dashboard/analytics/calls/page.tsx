@@ -293,20 +293,68 @@ export default function CallAnalyticsPage() {
     return p;
   }, [accountId, dateRange, assistantIds, timezone]);
 
+  // Auth in this app is JWT-in-localStorage sent as `Authorization: Bearer
+  // <token>`. A `window.open(...)` would issue a top-level GET that cannot
+  // attach custom headers, so the backend (HTTPBearer) would reject it as
+  // "Not authenticated". Instead we fetch via `authFetch` (which injects
+  // the bearer token + admin-session headers), get a Blob, and trigger a
+  // download via a temporary anchor + object URL. This is also how a future
+  // CORS / cookie-less deployment will keep working unchanged.
+  const downloadCsv = useCallback(
+    async (url: string, filename: string) => {
+      try {
+        const r = await authFetch(url);
+        if (!r.ok) {
+          let msg = `Export failed (${r.status})`;
+          try {
+            const body = await r.json();
+            if (body?.detail) msg = `${msg}: ${body.detail}`;
+          } catch {
+            /* non-JSON error body — keep generic message */
+          }
+          alert(msg);
+          return;
+        }
+        const blob = await r.blob();
+        const objectUrl = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = objectUrl;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        // Defer revoke so Safari has time to start the download.
+        setTimeout(() => URL.revokeObjectURL(objectUrl), 1000);
+      } catch (err) {
+        console.error("CSV export error:", err);
+        alert("Export failed — please try again.");
+      }
+    },
+    [authFetch],
+  );
+
   const handleExportDetailed = useCallback(() => {
     const p = buildExportParams();
     if (!p) return;
     setExportMenuOpen(false);
+    const ts = new Date().toISOString().slice(0, 10);
     // Detailed CSV — one row per call with the new MECE Bucket column.
-    window.open(`/api/call-logs/export?${p}`, "_blank");
-  }, [buildExportParams]);
+    void downloadCsv(
+      `/api/call-logs/export?${p}`,
+      `call-logs-detailed-${ts}.csv`,
+    );
+  }, [buildExportParams, downloadCsv]);
 
   const handleExportSummary = useCallback(() => {
     const p = buildExportParams();
     if (!p) return;
     setExportMenuOpen(false);
-    window.open(`/api/analytics/calls/export-summary?${p}`, "_blank");
-  }, [buildExportParams]);
+    const ts = new Date().toISOString().slice(0, 10);
+    void downloadCsv(
+      `/api/analytics/calls/export-summary?${p}`,
+      `call-analytics-summary-${ts}.csv`,
+    );
+  }, [buildExportParams, downloadCsv]);
 
   const handleExportReport = useCallback(() => {
     if (!accountId) return;
