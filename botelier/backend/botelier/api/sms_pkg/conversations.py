@@ -36,7 +36,7 @@ from botelier.models.user import User
 from botelier.services.sms_service import SMSService
 from botelier.services.notification_broadcaster import broadcaster
 
-from ._auth import assert_sms_account_access, require_sms_query_account
+from ._auth import assert_sms_account_access
 
 router = APIRouter(prefix="/api/sms", tags=["SMS"])
 
