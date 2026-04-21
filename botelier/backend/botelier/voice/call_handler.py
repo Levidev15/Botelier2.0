@@ -889,12 +889,17 @@ class CallHandler:
                         event_source="app",
                         severity="info",
                         details={
-                            # Task #122 — split telemetry: `state` is one of
+                            # Task #122 — split telemetry. `state` is one of
                             # ready_before_wait | ready_during_wait so the
                             # post-deploy SLO query can compute "% hits that
                             # cost zero wait" vs "% hits that ate the budget".
+                            # `wait_ms` is the precise wait duration.
                             "state": _prewarm_state,
                             "wait_ms": _prewarm_wait_ms,
+                            # Legacy field kept for back-compat with existing
+                            # dashboards / SQL — equals 0 when ready_before_wait,
+                            # equals wait_ms otherwise. Removed in a later task.
+                            "prewarm_to_use_ms": _prewarm_wait_ms,
                             "prewarm_duration_ms": prewarm_bundle.prewarm_duration_ms,
                             "greeting_preloaded": bool(prewarm_bundle.greeting_pcm),
                             "tools_count": len(tools),
@@ -914,6 +919,16 @@ class CallHandler:
                             "state": _prewarm_state,
                             "wait_ms": _prewarm_wait_ms,
                             "error_class": _prewarm_error_class,
+                            # Legacy fields kept for back-compat with existing
+                            # dashboards. `reason` is derived from `state`:
+                            #   missing                     -> no_prewarm_entry
+                            #   timeout / error / others    -> wait_timeout_or_error
+                            "prewarm_to_use_ms": _prewarm_wait_ms,
+                            "reason": (
+                                "no_prewarm_entry"
+                                if _prewarm_state == "missing"
+                                else "wait_timeout_or_error"
+                            ),
                         },
                     )
 
