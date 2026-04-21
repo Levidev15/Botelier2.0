@@ -1,7 +1,7 @@
 "use client";
 
-import { useEffect, useState, useMemo, useCallback } from "react";
-import { SlidersHorizontal, Loader2, FileDown } from "lucide-react";
+import { useEffect, useState, useMemo, useCallback, useRef } from "react";
+import { SlidersHorizontal, Loader2, FileDown, ChevronDown, AlertTriangle } from "lucide-react";
 import {
   ResponsiveContainer,
   LineChart, Line,
@@ -20,24 +20,20 @@ import CallDrilldownModal, { TranscriptCallLog } from "@/components/analytics/Ca
 import { useWidgetLayout, WidgetDef } from "@/components/analytics/useWidgetLayout";
 import TranscriptModal from "@/app/(dashboard)/dashboard/call-logs/components/TranscriptModal";
 import TimezonePicker, { loadTimezone, saveTimezone } from "@/components/analytics/TimezonePicker";
+import PartitionBar, { PartitionBarBucket } from "@/components/analytics/PartitionBar";
+import BucketPill, { BucketPillSubSegment } from "@/components/analytics/BucketPill";
 
+// Task #129 — chart-only widgets (the 5 partition pills + Quality &
+// Operations stat row are now structural, never togglable, because they
+// are the page's spine and the only way to reconcile to total_calls).
 const WIDGETS: WidgetDef[] = [
-  { id: "total_calls", label: "Total Calls", defaultVisible: true },
-  { id: "ai_handled", label: "AI Handled", defaultVisible: true },
-  { id: "early_ended", label: "Dropped Before AI", defaultVisible: true },
-  { id: "unresolved", label: "Unresolved", defaultVisible: true },
-  { id: "completion_rate", label: "Completion Rate", defaultVisible: true },
-  { id: "transfer_rate", label: "Transfer Rate", defaultVisible: true },
-  { id: "avg_duration", label: "Avg AI Duration", defaultVisible: true },
-  { id: "outbound_duration", label: "Avg Outbound Duration", defaultVisible: true },
-  { id: "avg_quality", label: "Avg Quality Score", defaultVisible: true },
   { id: "volume_chart", label: "Call Volume Over Time", defaultVisible: true },
   { id: "hour_chart", label: "Calls by Hour of Day", defaultVisible: true },
-  { id: "status_chart", label: "Status Breakdown", defaultVisible: true },
   { id: "disposition_chart", label: "Disposition Breakdown", defaultVisible: true },
   { id: "assistant_chart", label: "Calls by Assistant", defaultVisible: true },
   { id: "acw_resolution", label: "ACW Resolution Status", defaultVisible: true },
   { id: "acw_score_dist", label: "Quality Score Distribution", defaultVisible: true },
+  { id: "status_chart", label: "Status Breakdown (technical)", defaultVisible: false },
 ];
 
 const CHART_COLORS = ["#3b82f6", "#8b5cf6", "#22c55e", "#f59e0b", "#ef4444", "#06b6d4", "#ec4899", "#84cc16"];
@@ -52,6 +48,18 @@ const STATUS_COLORS: Record<string, string> = {
   initiated: "#8b5cf6",
   ringing: "#06b6d4",
 };
+
+// Task #129 — single source of truth for the 5 MECE bucket presentation.
+// Order is intentional (the partition bar reads left→right as positive→negative
+// outcome). Colors mirror the spec's emotional mapping so the bar tells the
+// at-a-glance story without needing to read labels.
+const BUCKET_DISPLAY: { key: string; label: string; color: string }[] = [
+  { key: "ai_handled",  label: "AI Handled",        color: "#22c55e" }, // green
+  { key: "ended_early", label: "Dropped Before AI", color: "#f97316" }, // orange
+  { key: "missed",      label: "Missed",            color: "#f59e0b" }, // amber
+  { key: "failed",      label: "Failed",            color: "#ef4444" }, // red
+  { key: "unresolved",  label: "Unresolved",        color: "#eab308" }, // yellow
+];
 
 function fmtDuration(s: number) {
   if (s < 60) return `${Math.round(s)}s`;
@@ -152,8 +160,6 @@ const CustomTooltipContent = ({ active, payload, label }: CustomTooltipProps) =>
   );
 };
 
-// Task #100 — by-assistant chart tooltip with silent-caller rate so operators
-// can spot a single assistant misconfigured for silent-line drops at a glance.
 interface AssistantBarTooltipPayload {
   payload?: {
     assistant_name?: string;
@@ -196,8 +202,10 @@ export default function CallAnalyticsPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [customizeOpen, setCustomizeOpen] = useState(false);
+  const [exportMenuOpen, setExportMenuOpen] = useState(false);
   const [timezone, setTimezone] = useState<string>("UTC");
   const { visibility, toggle, resetDefaults, isVisible } = useWidgetLayout("call_analytics", WIDGETS);
+  const exportMenuRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setTimezone(loadTimezone());
@@ -234,6 +242,18 @@ export default function CallAnalyticsPage() {
       .finally(() => setLoading(false));
   }, [accountId, dateRange, assistantIds, timezone, retryKey]);
 
+  // Close export menu on outside click.
+  useEffect(() => {
+    if (!exportMenuOpen) return;
+    const onDocClick = (e: MouseEvent) => {
+      if (exportMenuRef.current && !exportMenuRef.current.contains(e.target as Node)) {
+        setExportMenuOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", onDocClick);
+    return () => document.removeEventListener("mousedown", onDocClick);
+  }, [exportMenuOpen]);
+
   const volumeData = useMemo(() => {
     if (!data) return [];
     return data.volume_by_day.map((d) => ({
@@ -257,8 +277,40 @@ export default function CallAnalyticsPage() {
     setDrilldown({ metric, label });
   }, []);
 
+  // Task #129 — three export modes share filters + timezone so the row set
+  // and aggregates always match what's currently on screen. The Detailed
+  // CSV row count under "Bucket = X" reconciles to the X pill's count by
+  // construction (same `_bucket_predicate` on the backend).
+  const buildExportParams = useCallback(() => {
+    if (!accountId) return null;
+    const p = new URLSearchParams({
+      account_id: accountId,
+      date_from: dateRange.from.toISOString(),
+      date_to: dateRange.to.toISOString(),
+      tz: timezone,
+    });
+    assistantIds.forEach((id) => p.append("assistant_ids", id));
+    return p;
+  }, [accountId, dateRange, assistantIds, timezone]);
+
+  const handleExportDetailed = useCallback(() => {
+    const p = buildExportParams();
+    if (!p) return;
+    setExportMenuOpen(false);
+    // Detailed CSV — one row per call with the new MECE Bucket column.
+    window.open(`/api/call-logs/export?${p}`, "_blank");
+  }, [buildExportParams]);
+
+  const handleExportSummary = useCallback(() => {
+    const p = buildExportParams();
+    if (!p) return;
+    setExportMenuOpen(false);
+    window.open(`/api/analytics/calls/export-summary?${p}`, "_blank");
+  }, [buildExportParams]);
+
   const handleExportReport = useCallback(() => {
     if (!accountId) return;
+    setExportMenuOpen(false);
     const p = new URLSearchParams({
       account_id: accountId,
       date_from: dateRange.from.toISOString(),
@@ -310,220 +362,421 @@ export default function CallAnalyticsPage() {
   }
 
   const o = data?.overview;
+  const total = o?.total_calls ?? 0;
+
+  // Task #129 — compose the partition buckets in the canonical display
+  // order. Reads exclusively from the `*_count` keys so the bar, the pills,
+  // and the drilldown modal share one vocabulary.
+  const partitionBuckets: PartitionBarBucket[] = BUCKET_DISPLAY.map((b) => ({
+    key: b.key,
+    label: b.label,
+    color: b.color,
+    count:
+      b.key === "ai_handled"  ? (o?.ai_handled_count  ?? 0) :
+      b.key === "ended_early" ? (o?.ended_early_count ?? 0) :
+      b.key === "missed"      ? (o?.missed_count      ?? 0) :
+      b.key === "failed"      ? (o?.failed_count      ?? 0) :
+      /* unresolved */          (o?.unresolved_count  ?? 0),
+  }));
+
+  // Sub-breakdown for the Unresolved pill — promoted out of the tooltip so
+  // the most-asked question (silent caller vs sweeper-pending) is visible
+  // without hovering. Kept separate from `partitionBuckets` because these
+  // are sub-types, NOT a sixth bucket.
+  const unresolvedSubs: BucketPillSubSegment[] = (() => {
+    const ub = o?.unresolved_breakdown;
+    if (!ub) return [];
+    return [
+      { key: "no_caller_audio",     label: "Silent caller",       color: "#fde047", count: ub.no_caller_audio ?? 0 },
+      { key: "dropped_pre_greeting", label: "Pending finalization", color: "#facc15", count: ub.dropped_pre_greeting ?? 0 },
+      { key: "other",               label: "Other anomalies",     color: "#a16207", count: ub.other ?? 0 },
+    ];
+  })();
 
   return (
-    <div className="p-6 max-w-[1400px] mx-auto">
-      <div className="flex items-center justify-between mb-6 flex-wrap gap-3">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-100">Call Analytics</h1>
-          <p className="text-sm text-gray-400 mt-1">
-            {o?.total_calls ?? 0} calls
-          </p>
+    <div className="flex flex-col lg:flex-row gap-6 p-6 max-w-[1500px] mx-auto">
+      {/* ── Left rail: filters ────────────────────────────────────────── */}
+      <aside className="lg:w-60 lg:flex-shrink-0 lg:sticky lg:top-6 lg:self-start space-y-4">
+        <div className="bg-[#1a1a1a] border border-gray-800 rounded-xl p-4 space-y-4">
+          <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wide">Filters</h3>
+          <div className="space-y-3">
+            <div>
+              <label className="block text-[11px] text-gray-500 mb-1.5">Date range</label>
+              <DateRangePicker value={dateRange} onChange={setDateRange} />
+            </div>
+            <div>
+              <label className="block text-[11px] text-gray-500 mb-1.5">Timezone</label>
+              <TimezonePicker
+                value={timezone}
+                onChange={(tz) => { setTimezone(tz); saveTimezone(tz); }}
+              />
+            </div>
+            <div>
+              <label className="block text-[11px] text-gray-500 mb-1.5">Assistant</label>
+              <AssistantFilter selected={assistantIds} onChange={setAssistantIds} />
+            </div>
+          </div>
         </div>
-        <div className="flex items-center gap-3 flex-wrap">
-          <AssistantFilter selected={assistantIds} onChange={setAssistantIds} />
-          <DateRangePicker value={dateRange} onChange={setDateRange} />
-          <TimezonePicker
-            value={timezone}
-            onChange={(tz) => { setTimezone(tz); saveTimezone(tz); }}
-          />
-          <button
-            onClick={handleExportReport}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-[#1a1a1a] border border-gray-700 rounded-lg text-gray-300 hover:text-gray-100 hover:border-gray-600 transition-colors"
-            title="Open a print-ready visual report in a new tab"
-          >
-            <FileDown className="h-4 w-4" />
-            Export Report
-          </button>
-          <button
-            onClick={() => setCustomizeOpen(true)}
-            className="flex items-center gap-2 px-3 py-1.5 text-sm bg-[#1a1a1a] border border-gray-700 rounded-lg text-gray-300 hover:text-gray-100 hover:border-gray-600 transition-colors"
-          >
-            <SlidersHorizontal className="h-4 w-4" />
-            Customize
-          </button>
-        </div>
-      </div>
+      </aside>
 
-      {loading && (
-        <div className="flex items-center gap-2 text-sm text-gray-500 mb-4">
-          <Loader2 className="h-4 w-4 animate-spin" /> Refreshing…
+      {/* ── Main column ───────────────────────────────────────────────── */}
+      <main className="flex-1 min-w-0 space-y-6">
+        {/* Header */}
+        <div className="flex items-center justify-between flex-wrap gap-3">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-100">Call Analytics</h1>
+            <p className="text-sm text-gray-400 mt-1">
+              {total.toLocaleString()} calls in window
+              {o && !o.partition_integrity_ok && (
+                <span className="ml-2 inline-flex items-center gap-1 text-amber-400">
+                  <AlertTriangle className="h-3.5 w-3.5" />
+                  partition mismatch — contact support
+                </span>
+              )}
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              onClick={() => setCustomizeOpen(true)}
+              className="flex items-center gap-2 px-3 py-1.5 text-sm bg-[#1a1a1a] border border-gray-700 rounded-lg text-gray-300 hover:text-gray-100 hover:border-gray-600 transition-colors"
+              title="Show / hide chart widgets"
+            >
+              <SlidersHorizontal className="h-4 w-4" />
+              View
+            </button>
+            <div ref={exportMenuRef} className="relative">
+              <button
+                onClick={() => setExportMenuOpen((v) => !v)}
+                className="flex items-center gap-2 px-3 py-1.5 text-sm bg-[#1a1a1a] border border-gray-700 rounded-lg text-gray-300 hover:text-gray-100 hover:border-gray-600 transition-colors"
+              >
+                <FileDown className="h-4 w-4" />
+                Export
+                <ChevronDown className="h-3.5 w-3.5" />
+              </button>
+              {exportMenuOpen && (
+                <div className="absolute right-0 mt-1 w-64 bg-[#1a1a1a] border border-gray-700 rounded-lg shadow-xl z-30 overflow-hidden">
+                  <button
+                    onClick={handleExportDetailed}
+                    className="w-full text-left px-4 py-2.5 hover:bg-gray-800 transition-colors"
+                  >
+                    <div className="text-sm text-gray-100">Detailed CSV</div>
+                    <div className="text-[11px] text-gray-500">One row per call · MECE Bucket column</div>
+                  </button>
+                  <button
+                    onClick={handleExportSummary}
+                    className="w-full text-left px-4 py-2.5 hover:bg-gray-800 transition-colors border-t border-gray-800"
+                  >
+                    <div className="text-sm text-gray-100">Summary CSV</div>
+                    <div className="text-[11px] text-gray-500">Per-day-per-bucket + per-assistant-per-bucket</div>
+                  </button>
+                  <button
+                    onClick={handleExportReport}
+                    className="w-full text-left px-4 py-2.5 hover:bg-gray-800 transition-colors border-t border-gray-800"
+                  >
+                    <div className="text-sm text-gray-100">Visual report</div>
+                    <div className="text-[11px] text-gray-500">Print-ready, opens in new tab</div>
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
         </div>
-      )}
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6 gap-4 mb-6">
-        {isVisible("total_calls") && (
-          <StatCard
-            label="Total Calls"
-            value={o?.total_calls ?? 0}
-            sub={`${o?.completed ?? 0} completed`}
-            onClick={() => openDrilldown("all", "All Calls")}
-          />
+        {loading && (
+          <div className="flex items-center gap-2 text-sm text-gray-500">
+            <Loader2 className="h-4 w-4 animate-spin" /> Refreshing…
+          </div>
         )}
-        {isVisible("ai_handled") && (
-          <StatCard
-            label="AI Handled"
-            value={o?.ai_handled_count ?? 0}
-            sub={`${o?.ai_handled_rate ?? 0}% of total`}
-            color="text-green-400"
-            onClick={() => openDrilldown("ai_handled", "AI Handled Calls")}
-          />
-        )}
-        {isVisible("early_ended") && (
-          <StatCard
-            label="Dropped Before AI"
-            value={o?.ended_early_count ?? 0}
-            sub={`${o?.ended_early_rate ?? 0}% of total`}
-            color="text-orange-400"
-            onClick={() => openDrilldown("ended_early", "Dropped Before AI")}
-          />
-        )}
-        {isVisible("unresolved") && (
-          <StatCard
-            label="Unresolved"
-            value={o?.unresolved_count ?? 0}
-            sub={
-              o?.unresolved_breakdown && o.unresolved_breakdown.no_caller_audio > 0
-                ? `${o.unresolved_breakdown.no_caller_audio} silent · ${
-                    (o.unresolved_breakdown.dropped_pre_greeting || 0) +
-                    (o.unresolved_breakdown.other || 0)
-                  } pending`
-                : `${o?.unresolved_rate ?? 0}% pending finalization`
-            }
-            color="text-yellow-400"
-            tooltip={(() => {
-              const lines = [
-                "Catch-all bucket. Breakdown:",
-                `• No caller audio (AI greeted, caller never spoke): ${
-                  o?.unresolved_breakdown?.no_caller_audio ?? 0
-                }`,
-                `• Dropped before greeting (sweeper-pending rows): ${
-                  o?.unresolved_breakdown?.dropped_pre_greeting ?? 0
-                }`,
-                `• Other anomalies: ${o?.unresolved_breakdown?.other ?? 0}`,
-              ];
-              const topAsst = o?.silent_caller_breakdown?.by_assistant ?? [];
-              const topPhone = o?.silent_caller_breakdown?.by_phone ?? [];
-              if (topAsst.length > 0) {
-                lines.push("", "Silent-caller drops by assistant:");
-                topAsst.slice(0, 5).forEach((a) => {
-                  lines.push(`  • ${a.assistant_name}: ${a.count}`);
-                });
+
+        {/* ── Partition spine ──────────────────────────────────────────── */}
+        <PartitionBar
+          buckets={partitionBuckets}
+          total={total}
+          onSegmentClick={(k, label) => openDrilldown(k, label)}
+        />
+
+        {/* ── 5 bucket pills (the spine, never togglable) ──────────────── */}
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-5 gap-3">
+          {partitionBuckets.map((b) => (
+            <BucketPill
+              key={b.key}
+              bucketKey={b.key}
+              label={b.label}
+              count={b.count}
+              total={total}
+              color={b.color}
+              onClick={(key, label) => openDrilldown(key, label)}
+              subSegments={b.key === "unresolved" ? unresolvedSubs : undefined}
+              tooltip={
+                b.key === "unresolved"
+                  ? "Catch-all bucket. Silent caller = AI greeted but caller never spoke. Pending finalization = sweeper still working. Other = anomalies."
+                  : undefined
               }
-              if (topPhone.length > 0) {
-                lines.push("", "Silent-caller drops by phone number:");
-                topPhone.slice(0, 5).forEach((p) => {
-                  lines.push(`  • ${p.phone_number}: ${p.count}`);
-                });
-              }
-              lines.push(
-                "",
-                "No-caller-audio rows replace what was previously mis-counted as AI Handled.",
+            />
+          ))}
+        </div>
+
+        {/* ── Quality & Operations row ─────────────────────────────────── */}
+        <section>
+          <h2 className="text-sm font-semibold text-gray-300 mb-3 uppercase tracking-wide">
+            Quality &amp; Operations
+          </h2>
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+            {(() => {
+              // Task #129 — express Transfer Rate as transfers / AI-handled
+              // (the meaningful denominator: a transfer can only happen on a
+              // call the AI handled). Computed client-side from existing
+              // partition keys; the API still returns the legacy
+              // transfers / total_calls under `transfer_rate` for any
+              // external consumer that depends on it.
+              const transferred = o?.transferred ?? 0;
+              const aiHandled = o?.ai_handled_count ?? 0;
+              const rateOfAi = aiHandled > 0
+                ? ((transferred / aiHandled) * 100).toFixed(1)
+                : "0.0";
+              return (
+                <StatCard
+                  label="Transfer Rate"
+                  value={`${rateOfAi}%`}
+                  sub={`${transferred} transferred · of ${aiHandled} AI Handled`}
+                  color="text-blue-400"
+                  onClick={() => openDrilldown("transferred", "Transferred Calls")}
+                  tooltip={
+                    "Denominator = AI Handled (a transfer can only happen on a call the AI greeted). " +
+                    "Transferred calls are a subset of AI Handled — not a separate partition bucket. " +
+                    `Legacy transfers/total_calls = ${o?.transfer_rate ?? 0}% (still emitted by the API).`
+                  }
+                />
               );
-              return lines.join("\n");
             })()}
-            onClick={() => openDrilldown("unresolved", "Unresolved Calls")}
-          />
-        )}
-        {isVisible("completion_rate") && (
-          <StatCard
-            label="Completion Rate"
-            value={`${o?.completion_rate ?? 0}%`}
-            sub={`${o?.missed ?? 0} missed`}
-            color="text-green-400"
-            onClick={() => openDrilldown("completed", "Completed Calls")}
-          />
-        )}
-        {isVisible("transfer_rate") && (
-          <StatCard
-            label="Transfer Rate"
-            value={`${o?.transfer_rate ?? 0}%`}
-            sub={`${o?.transferred ?? 0} transferred`}
-            color="text-blue-400"
-            onClick={() => openDrilldown("transferred", "Transferred Calls")}
-          />
-        )}
-        {isVisible("avg_duration") && (
-          <StatCard
-            label="Avg AI Duration"
-            value={fmtDuration(o?.avg_ai_duration_seconds ?? 0)}
-            sub={`${fmtDuration(o?.total_ai_duration_seconds ?? 0)} total`}
-            onClick={() => openDrilldown("all", "All Calls")}
-          />
-        )}
-        {isVisible("outbound_duration") && (
-          <StatCard
-            label="Avg Outbound Duration"
-            value={fmtDuration(o?.avg_outbound_duration_seconds ?? 0)}
-            sub={`${fmtDuration(o?.total_outbound_duration_seconds ?? 0)} total`}
-            color="text-amber-400"
-            onClick={() => openDrilldown("transferred", "Transferred Calls")}
-          />
-        )}
-        {isVisible("avg_quality") && (
-          <StatCard
-            label="Avg Quality Score"
-            value={data?.acw.avg_quality_score ?? "—"}
-            sub={
-              data?.acw.avg_quality_score != null
-                ? `${data.acw.min_quality_score}–${data.acw.max_quality_score} range`
-                : "No ACW data"
-            }
-            color="text-purple-400"
-            onClick={() => openDrilldown("acw_completed", "Calls with Post Call QA")}
-          />
-        )}
-      </div>
+            <StatCard
+              label="Avg AI Duration"
+              value={fmtDuration(o?.avg_ai_duration_seconds ?? 0)}
+              sub={`${fmtDuration(o?.total_ai_duration_seconds ?? 0)} total`}
+              onClick={() => openDrilldown("ai_handled", "AI Handled Calls")}
+            />
+            <StatCard
+              label="Avg Outbound Duration"
+              value={fmtDuration(o?.avg_outbound_duration_seconds ?? 0)}
+              sub={`${o?.outbound_calls_count ?? 0} outbound legs`}
+              color="text-amber-400"
+              onClick={() => openDrilldown("transferred", "Transferred Calls")}
+            />
+            <StatCard
+              label="Avg Quality Score"
+              value={data?.acw.avg_quality_score ?? "—"}
+              sub={
+                data?.acw.avg_quality_score != null
+                  ? `${data.acw.min_quality_score}–${data.acw.max_quality_score} range`
+                  : "No ACW data"
+              }
+              color="text-purple-400"
+              onClick={() => openDrilldown("acw_completed", "Calls with Post Call QA")}
+            />
+          </div>
+        </section>
 
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        {isVisible("volume_chart") && (
-          <DashboardWidget title="Call Volume Over Time" span={2}>
-            {volumeData.length > 0 ? (
-              <ResponsiveContainer width="100%" height={260}>
-                <LineChart data={volumeData}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-                  <XAxis dataKey="date" tick={{ fill: "#9ca3af", fontSize: 12 }} />
-                  <YAxis tick={{ fill: "#9ca3af", fontSize: 12 }} allowDecimals={false} />
-                  <Tooltip content={<CustomTooltipContent />} />
-                  <Line type="monotone" dataKey="calls" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3, fill: "#3b82f6" }} />
-                </LineChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="text-gray-500 text-sm py-12 text-center">No data for this period</p>
+        {/* ── Outcomes & activity ──────────────────────────────────────── */}
+        <section>
+          <h2 className="text-sm font-semibold text-gray-300 mb-3 uppercase tracking-wide">
+            Outcomes &amp; Activity
+          </h2>
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            {/* Disposition is now the primary "what happened" lens (promoted). */}
+            {isVisible("disposition_chart") && (
+              <DashboardWidget title="Disposition Breakdown" span={2}>
+                {data && data.dispositions.length > 0 ? (
+                  <div className="space-y-2">
+                    {data.dispositions.map((d) => {
+                      const denom = data.dispositions.reduce((a, b) => a + b.count, 0);
+                      const pct = denom > 0 ? (d.count / denom) * 100 : 0;
+                      return (
+                        <button
+                          key={d.disposition_id}
+                          onClick={() => openDrilldown(`disposition:${d.disposition_id}`, `Disposition: ${d.name}`)}
+                          className="w-full text-left hover:bg-gray-800/50 rounded-lg px-1 py-0.5 transition-colors"
+                        >
+                          <div className="flex items-center justify-between text-sm mb-1">
+                            <div className="flex items-center gap-2">
+                              <span
+                                className="w-2.5 h-2.5 rounded-full"
+                                style={{ backgroundColor: d.color || "#6b7280" }}
+                              />
+                              <span className="text-gray-300">{d.name}</span>
+                            </div>
+                            <span className="text-gray-400">{d.count} ({pct.toFixed(1)}%)</span>
+                          </div>
+                          <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                            <div
+                              className="h-full rounded-full"
+                              style={{ width: `${pct}%`, backgroundColor: d.color || "#6b7280" }}
+                            />
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-gray-500 text-sm py-8 text-center">No dispositions recorded</p>
+                )}
+              </DashboardWidget>
             )}
-          </DashboardWidget>
-        )}
 
-        {isVisible("hour_chart") && (
-          <DashboardWidget title="Calls by Hour of Day" span={2}>
-            {hourData.some((h) => h.calls > 0) ? (
-              <ResponsiveContainer width="100%" height={260}>
-                <BarChart
-                  data={hourData}
-                  onClick={(e: any) => {
-                    if (e?.activePayload?.[0]?.payload) {
-                      const hr = e.activePayload[0].payload.hour;
-                      openDrilldown(`hour:${hr}`, `Calls at ${hr}:00`);
-                    }
-                  }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-                  <XAxis dataKey="label" tick={{ fill: "#9ca3af", fontSize: 10 }} interval={2} />
-                  <YAxis tick={{ fill: "#9ca3af", fontSize: 12 }} allowDecimals={false} />
-                  <Tooltip content={<CustomTooltipContent />} />
-                  <Bar dataKey="calls" fill="#8b5cf6" radius={[4, 4, 0, 0]} cursor="pointer" />
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="text-gray-500 text-sm py-12 text-center">No data for this period</p>
+            {isVisible("volume_chart") && (
+              <DashboardWidget title="Call Volume Over Time" span={2}>
+                {volumeData.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={260}>
+                    <LineChart data={volumeData}>
+                      <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                      <XAxis dataKey="date" tick={{ fill: "#9ca3af", fontSize: 12 }} />
+                      <YAxis tick={{ fill: "#9ca3af", fontSize: 12 }} allowDecimals={false} />
+                      <Tooltip content={<CustomTooltipContent />} />
+                      <Line type="monotone" dataKey="calls" stroke="#3b82f6" strokeWidth={2} dot={{ r: 3, fill: "#3b82f6" }} />
+                    </LineChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <p className="text-gray-500 text-sm py-12 text-center">No data for this period</p>
+                )}
+              </DashboardWidget>
             )}
-          </DashboardWidget>
-        )}
 
-        {isVisible("status_chart") && (
-          <DashboardWidget title="Status Breakdown">
+            {isVisible("hour_chart") && (
+              <DashboardWidget title="Calls by Hour of Day" span={2}>
+                {hourData.some((h) => h.calls > 0) ? (
+                  <ResponsiveContainer width="100%" height={260}>
+                    <BarChart
+                      data={hourData}
+                      onClick={(e: any) => {
+                        if (e?.activePayload?.[0]?.payload) {
+                          const hr = e.activePayload[0].payload.hour;
+                          openDrilldown(`hour:${hr}`, `Calls at ${hr}:00`);
+                        }
+                      }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                      <XAxis dataKey="label" tick={{ fill: "#9ca3af", fontSize: 10 }} interval={2} />
+                      <YAxis tick={{ fill: "#9ca3af", fontSize: 12 }} allowDecimals={false} />
+                      <Tooltip content={<CustomTooltipContent />} />
+                      <Bar dataKey="calls" fill="#8b5cf6" radius={[4, 4, 0, 0]} cursor="pointer" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <p className="text-gray-500 text-sm py-12 text-center">No data for this period</p>
+                )}
+              </DashboardWidget>
+            )}
+
+            {isVisible("assistant_chart") && (
+              <DashboardWidget title="Calls by Assistant" span={2}>
+                {data && data.by_assistant.length > 0 ? (
+                  <ResponsiveContainer width="100%" height={Math.max(180, data.by_assistant.length * 40)}>
+                    <BarChart
+                      data={data.by_assistant}
+                      layout="vertical"
+                      onClick={(e: any) => {
+                        if (e?.activePayload?.[0]?.payload) {
+                          const row = e.activePayload[0].payload;
+                          openDrilldown(`assistant:${row.assistant_id}`, `Assistant: ${row.assistant_name}`);
+                        }
+                      }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                      <XAxis type="number" tick={{ fill: "#9ca3af", fontSize: 12 }} allowDecimals={false} />
+                      <YAxis
+                        type="category"
+                        dataKey="assistant_name"
+                        tick={{ fill: "#9ca3af", fontSize: 12 }}
+                        width={120}
+                      />
+                      <Tooltip content={<AssistantBarTooltip />} />
+                      <Bar dataKey="calls" fill="#22c55e" radius={[0, 4, 4, 0]} cursor="pointer" />
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <p className="text-gray-500 text-sm py-8 text-center">No data</p>
+                )}
+              </DashboardWidget>
+            )}
+
+            {isVisible("acw_resolution") && (
+              <DashboardWidget title="ACW Resolution Status">
+                {data && data.acw.resolution_distribution.length > 0 ? (
+                  <div className="space-y-2">
+                    {data.acw.resolution_distribution.map((d, i) => {
+                      const denom = data.acw.resolution_distribution.reduce((a, b) => a + b.count, 0);
+                      const pct = denom > 0 ? (d.count / denom) * 100 : 0;
+                      return (
+                        <button
+                          key={d.resolution}
+                          onClick={() => openDrilldown(`resolution:${d.resolution}`, `Resolution: ${d.resolution}`)}
+                          className="w-full text-left hover:bg-gray-800/50 rounded-lg px-1 py-0.5 transition-colors"
+                        >
+                          <div className="flex items-center justify-between text-sm mb-1">
+                            <span className="text-gray-300">{d.resolution}</span>
+                            <span className="text-gray-400">
+                              {d.count} ({Math.round(pct)}%)
+                            </span>
+                          </div>
+                          <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
+                            <div
+                              className="h-full rounded-full"
+                              style={{ width: `${pct}%`, backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }}
+                            />
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <p className="text-gray-500 text-sm py-8 text-center">No ACW data</p>
+                )}
+              </DashboardWidget>
+            )}
+
+            {isVisible("acw_score_dist") && (
+              <DashboardWidget title="Quality Score Distribution">
+                {data && data.acw.score_distribution.length > 0 && data.acw.score_distribution.some((d) => d.count > 0) ? (
+                  <ResponsiveContainer width="100%" height={200}>
+                    <BarChart
+                      data={data.acw.score_distribution}
+                      onClick={(e: any) => {
+                        if (e?.activePayload?.[0]?.payload) {
+                          const row = e.activePayload[0].payload;
+                          openDrilldown(`quality_range:${row.range}`, `Quality Score ${row.range}`);
+                        }
+                      }}
+                    >
+                      <CartesianGrid strokeDasharray="3 3" stroke="#333" />
+                      <XAxis dataKey="range" tick={{ fill: "#9ca3af", fontSize: 12 }} />
+                      <YAxis tick={{ fill: "#9ca3af", fontSize: 12 }} allowDecimals={false} />
+                      <Tooltip content={<CustomTooltipContent />} />
+                      <Bar dataKey="count" radius={[4, 4, 0, 0]} cursor="pointer">
+                        {data.acw.score_distribution.map((_, i) => (
+                          <Cell key={i} fill={["#ef4444", "#f59e0b", "#eab308", "#22c55e", "#10b981"][i]} />
+                        ))}
+                      </Bar>
+                    </BarChart>
+                  </ResponsiveContainer>
+                ) : (
+                  <p className="text-gray-500 text-sm py-8 text-center">No quality scores recorded</p>
+                )}
+              </DashboardWidget>
+            )}
+          </div>
+        </section>
+
+        {/* ── Technical breakdown (collapsed by default) ───────────────── */}
+        <details className="bg-[#1a1a1a] border border-gray-800 rounded-xl group">
+          <summary className="cursor-pointer px-5 py-3 text-sm font-medium text-gray-300 flex items-center justify-between select-none">
+            <span>Technical breakdown</span>
+            <span className="text-[11px] text-gray-500 group-open:hidden">
+              raw Twilio status — for ops & debugging
+            </span>
+            <ChevronDown className="h-4 w-4 text-gray-500 group-open:rotate-180 transition-transform" />
+          </summary>
+          <div className="px-5 pb-5 pt-1">
             {data && data.status_distribution.length > 0 ? (
-              <div className="flex items-center gap-6">
+              <div className="flex items-center gap-6 flex-wrap">
                 <ResponsiveContainer width={140} height={140}>
                   <PieChart>
                     <Pie
@@ -544,7 +797,12 @@ export default function CallAnalyticsPage() {
                     <Tooltip content={<CustomTooltipContent />} />
                   </PieChart>
                 </ResponsiveContainer>
-                <div className="flex-1 space-y-1.5">
+                <div className="flex-1 min-w-[200px] space-y-1.5">
+                  <p className="text-[11px] text-gray-500 mb-2">
+                    Raw Twilio status enum. The MECE buckets above derive from these plus
+                    <code className="text-gray-400 mx-1">ai_greeting_completed</code>and
+                    <code className="text-gray-400 mx-1">caller_spoke</code>— use this only when debugging.
+                  </p>
                   {data.status_distribution.map((d, i) => (
                     <button
                       key={d.status}
@@ -564,147 +822,11 @@ export default function CallAnalyticsPage() {
                 </div>
               </div>
             ) : (
-              <p className="text-gray-500 text-sm py-8 text-center">No data</p>
+              <p className="text-gray-500 text-sm py-4 text-center">No status data</p>
             )}
-          </DashboardWidget>
-        )}
-
-        {isVisible("disposition_chart") && (
-          <DashboardWidget title="Disposition Breakdown">
-            {data && data.dispositions.length > 0 ? (
-              <div className="space-y-2">
-                {data.dispositions.map((d) => {
-                  const total = data.dispositions.reduce((a, b) => a + b.count, 0);
-                  const pct = total > 0 ? (d.count / total) * 100 : 0;
-                  return (
-                    <button
-                      key={d.disposition_id}
-                      onClick={() => openDrilldown(`disposition:${d.disposition_id}`, `Disposition: ${d.name}`)}
-                      className="w-full text-left hover:bg-gray-800/50 rounded-lg px-1 py-0.5 transition-colors"
-                    >
-                      <div className="flex items-center justify-between text-sm mb-1">
-                        <div className="flex items-center gap-2">
-                          <span
-                            className="w-2.5 h-2.5 rounded-full"
-                            style={{ backgroundColor: d.color || "#6b7280" }}
-                          />
-                          <span className="text-gray-300">{d.name}</span>
-                        </div>
-                        <span className="text-gray-400">{d.count}</span>
-                      </div>
-                      <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                        <div
-                          className="h-full rounded-full"
-                          style={{ width: `${pct}%`, backgroundColor: d.color || "#6b7280" }}
-                        />
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            ) : (
-              <p className="text-gray-500 text-sm py-8 text-center">No dispositions recorded</p>
-            )}
-          </DashboardWidget>
-        )}
-
-        {isVisible("assistant_chart") && (
-          <DashboardWidget title="Calls by Assistant" span={2}>
-            {data && data.by_assistant.length > 0 ? (
-              <ResponsiveContainer width="100%" height={Math.max(180, data.by_assistant.length * 40)}>
-                <BarChart
-                  data={data.by_assistant}
-                  layout="vertical"
-                  onClick={(e: any) => {
-                    if (e?.activePayload?.[0]?.payload) {
-                      const row = e.activePayload[0].payload;
-                      openDrilldown(`assistant:${row.assistant_id}`, `Assistant: ${row.assistant_name}`);
-                    }
-                  }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-                  <XAxis type="number" tick={{ fill: "#9ca3af", fontSize: 12 }} allowDecimals={false} />
-                  <YAxis
-                    type="category"
-                    dataKey="assistant_name"
-                    tick={{ fill: "#9ca3af", fontSize: 12 }}
-                    width={120}
-                  />
-                  <Tooltip content={<AssistantBarTooltip />} />
-                  <Bar dataKey="calls" fill="#22c55e" radius={[0, 4, 4, 0]} cursor="pointer" />
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="text-gray-500 text-sm py-8 text-center">No data</p>
-            )}
-          </DashboardWidget>
-        )}
-
-        {isVisible("acw_resolution") && (
-          <DashboardWidget title="ACW Resolution Status">
-            {data && data.acw.resolution_distribution.length > 0 ? (
-              <div className="space-y-2">
-                {data.acw.resolution_distribution.map((d, i) => {
-                  const total = data.acw.resolution_distribution.reduce((a, b) => a + b.count, 0);
-                  const pct = total > 0 ? (d.count / total) * 100 : 0;
-                  return (
-                    <button
-                      key={d.resolution}
-                      onClick={() => openDrilldown(`resolution:${d.resolution}`, `Resolution: ${d.resolution}`)}
-                      className="w-full text-left hover:bg-gray-800/50 rounded-lg px-1 py-0.5 transition-colors"
-                    >
-                      <div className="flex items-center justify-between text-sm mb-1">
-                        <span className="text-gray-300">{d.resolution}</span>
-                        <span className="text-gray-400">
-                          {d.count} ({Math.round(pct)}%)
-                        </span>
-                      </div>
-                      <div className="w-full h-1.5 bg-gray-800 rounded-full overflow-hidden">
-                        <div
-                          className="h-full rounded-full"
-                          style={{ width: `${pct}%`, backgroundColor: CHART_COLORS[i % CHART_COLORS.length] }}
-                        />
-                      </div>
-                    </button>
-                  );
-                })}
-              </div>
-            ) : (
-              <p className="text-gray-500 text-sm py-8 text-center">No ACW data</p>
-            )}
-          </DashboardWidget>
-        )}
-
-        {isVisible("acw_score_dist") && (
-          <DashboardWidget title="Quality Score Distribution">
-            {data && data.acw.score_distribution.length > 0 && data.acw.score_distribution.some((d) => d.count > 0) ? (
-              <ResponsiveContainer width="100%" height={200}>
-                <BarChart
-                  data={data.acw.score_distribution}
-                  onClick={(e: any) => {
-                    if (e?.activePayload?.[0]?.payload) {
-                      const row = e.activePayload[0].payload;
-                      openDrilldown(`quality_range:${row.range}`, `Quality Score ${row.range}`);
-                    }
-                  }}
-                >
-                  <CartesianGrid strokeDasharray="3 3" stroke="#333" />
-                  <XAxis dataKey="range" tick={{ fill: "#9ca3af", fontSize: 12 }} />
-                  <YAxis tick={{ fill: "#9ca3af", fontSize: 12 }} allowDecimals={false} />
-                  <Tooltip content={<CustomTooltipContent />} />
-                  <Bar dataKey="count" radius={[4, 4, 0, 0]} cursor="pointer">
-                    {data.acw.score_distribution.map((_, i) => (
-                      <Cell key={i} fill={["#ef4444", "#f59e0b", "#eab308", "#22c55e", "#10b981"][i]} />
-                    ))}
-                  </Bar>
-                </BarChart>
-              </ResponsiveContainer>
-            ) : (
-              <p className="text-gray-500 text-sm py-8 text-center">No quality scores recorded</p>
-            )}
-          </DashboardWidget>
-        )}
-      </div>
+          </div>
+        </details>
+      </main>
 
       <CustomizePanel
         open={customizeOpen}

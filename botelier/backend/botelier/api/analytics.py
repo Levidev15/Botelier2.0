@@ -5,12 +5,15 @@ GET /api/analytics/calls            — All call metrics in one response.
 GET /api/analytics/calls/drilldown  — Paginated call records for a given metric slice.
 """
 
+import csv
+import io
 from datetime import datetime, timedelta
 from typing import Optional, List
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi.responses import StreamingResponse
 from loguru import logger
 from sqlalchemy import desc, func, case
 from sqlalchemy.orm import Session, joinedload
@@ -805,3 +808,156 @@ async def get_calls_drilldown(
     except Exception as e:
         logger.exception(f"Error fetching drilldown: {e}")
         raise HTTPException(status_code=500, detail="Failed to fetch drilldown data")
+
+
+# ---------------------------------------------------------------------------
+# Task #129 — aggregated CSV export. Mirrors the on-screen aggregates so the
+# user can drop them straight into a spreadsheet without re-aggregating from
+# the Detailed CSV. Two sections in one CSV (separated by a blank line):
+#   1. per-day-per-bucket  — one row per (local_date, bucket)
+#   2. per-assistant-per-bucket — one row per (assistant_name, bucket)
+# Rows include both absolute count and % of the day-or-assistant total so
+# the file is pivot-table-ready.
+# ---------------------------------------------------------------------------
+@router.get("/calls/export-summary")
+async def export_calls_summary(
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
+    date_from: Optional[datetime] = Query(None),
+    date_to: Optional[datetime] = Query(None),
+    assistant_ids: Optional[List[UUID]] = Query(None, description="Filter to these assistants."),
+    tz: str = Query(
+        "UTC",
+        description="IANA timezone name. Day buckets are computed in this zone so the CSV matches the dashboard.",
+    ),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    check_account_permission(user, str(account_id), "call_logs.export", db)
+    try:
+        ZoneInfo(tz)
+    except (ZoneInfoNotFoundError, KeyError):
+        raise HTTPException(status_code=400, detail=f"Invalid timezone: {tz!r}")
+    try:
+        since, until = _resolve_date_range(date_from, date_to)
+
+        base = db.query(CallLog).filter(
+            CallLog.account_id == account_id,
+            CallLog.started_at >= since,
+            CallLog.started_at <= until,
+        )
+        if assistant_ids:
+            base = base.filter(CallLog.assistant_id.in_(assistant_ids))
+
+        # Local-date column reused from the main analytics endpoint — same
+        # two-step UTC-anchor form so it's portable across DB session tz.
+        local_ts = func.timezone(tz, func.timezone("UTC", CallLog.started_at))
+        day_label = func.date_trunc("day", local_ts).label("day")
+
+        # One GROUP BY trip covers both sections. We classify in Python via
+        # `_classify_partition` so the bucket vocabulary stays in lock-step
+        # with the main analytics endpoint and the Detailed CSV.
+        rows = (
+            base.with_entities(
+                day_label,
+                CallLog.assistant_id,
+                CallLog.status,
+                CallLog.ai_greeting_completed,
+                CallLog.caller_spoke,
+                func.count(CallLog.id).label("cnt"),
+            )
+            .group_by(day_label, CallLog.assistant_id, CallLog.status,
+                      CallLog.ai_greeting_completed, CallLog.caller_spoke)
+            .all()
+        )
+
+        per_day: dict = {}        # date_str -> bucket -> count
+        per_assistant: dict = {}  # asst_id  -> bucket -> count
+        day_totals: dict = {}     # date_str -> total
+        asst_totals: dict = {}    # asst_id  -> total
+        asst_id_set = set()
+        for r in rows:
+            cnt = int(r.cnt)
+            bucket = _classify_partition(
+                r.status, bool(r.ai_greeting_completed), r.caller_spoke
+            )
+            d_str = r.day.date().isoformat() if r.day else "unknown"
+            per_day.setdefault(d_str, {b: 0 for b in _PARTITION_BUCKETS})[bucket] += cnt
+            day_totals[d_str] = day_totals.get(d_str, 0) + cnt
+
+            asst_key = str(r.assistant_id) if r.assistant_id else "(no assistant)"
+            per_assistant.setdefault(asst_key, {b: 0 for b in _PARTITION_BUCKETS})[bucket] += cnt
+            asst_totals[asst_key] = asst_totals.get(asst_key, 0) + cnt
+            if r.assistant_id:
+                asst_id_set.add(r.assistant_id)
+
+        asst_names: dict = {"(no assistant)": "(no assistant)"}
+        if asst_id_set:
+            # Strict tenant scoping — even though every CallLog row was
+            # already filtered by account_id (so an FK-consistent assistant
+            # row necessarily belongs to this account), we re-assert
+            # account_id here so the contract does not depend on FK
+            # consistency. Defense in depth, matches the pattern used by
+            # /api/call-logs/export.
+            for a in db.query(Assistant.id, Assistant.name).filter(
+                Assistant.id.in_(asst_id_set),
+                Assistant.account_id == account_id,
+            ).all():
+                asst_names[str(a.id)] = a.name
+
+        output = io.StringIO()
+        writer = csv.writer(output)
+
+        # Header row identifies file shape so spreadsheet pivot users know
+        # what they're looking at without opening a separate doc.
+        writer.writerow(["# Botelier Call Analytics — Summary export"])
+        writer.writerow([f"# Window: {since.isoformat()}Z → {until.isoformat()}Z"])
+        writer.writerow([f"# Timezone (for day grouping): {tz}"])
+        writer.writerow([])
+
+        writer.writerow(["section", "key", "label", "bucket", "count", "percent_of_total"])
+
+        for day_str in sorted(per_day.keys()):
+            buckets = per_day[day_str]
+            d_total = day_totals[day_str] or 1
+            for b in _PARTITION_BUCKETS:
+                cnt = buckets.get(b, 0)
+                writer.writerow([
+                    "per_day",
+                    day_str,
+                    day_str,
+                    b,
+                    cnt,
+                    round(cnt / d_total * 100, 2),
+                ])
+
+        writer.writerow([])  # blank separator line between sections
+
+        # Order assistants by total volume desc — most informative first.
+        for asst_key, _tot in sorted(asst_totals.items(), key=lambda kv: kv[1], reverse=True):
+            buckets = per_assistant[asst_key]
+            a_total = asst_totals[asst_key] or 1
+            label = asst_names.get(asst_key, "Unknown")
+            for b in _PARTITION_BUCKETS:
+                cnt = buckets.get(b, 0)
+                writer.writerow([
+                    "per_assistant",
+                    asst_key,
+                    label,
+                    b,
+                    cnt,
+                    round(cnt / a_total * 100, 2),
+                ])
+
+        output.seek(0)
+        filename = f"call_analytics_summary_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
+        return StreamingResponse(
+            iter([output.getvalue()]),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Error exporting call analytics summary: {e}")
+        raise HTTPException(status_code=500, detail="Failed to export call analytics summary")
