@@ -44,7 +44,6 @@ export default function SetVariableNodePanel({ data, nodeId }: Props) {
         >
           <option value="static">Static Value</option>
           <option value="template">Template (with variables)</option>
-          <option value="expression">Expression</option>
         </select>
       </div>
 
@@ -55,23 +54,13 @@ export default function SetVariableNodePanel({ data, nodeId }: Props) {
             <span className="text-xs text-violet-400 ml-2">Use {"{{variable}}"}</span>
           )}
         </label>
-        {setVariable.valueType === "expression" ? (
-          <textarea
-            value={setVariable.value || ""}
-            onChange={(e) => updateSetVariable({ value: e.target.value })}
-            rows={2}
-            className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm font-mono focus:border-violet-500 focus:outline-none resize-none"
-            placeholder="guest_count * 2"
-          />
-        ) : (
-          <input
+        <input
             type="text"
             value={setVariable.value || ""}
             onChange={(e) => updateSetVariable({ value: e.target.value })}
             className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-violet-500 focus:outline-none"
             placeholder={setVariable.valueType === "template" ? "Hello, {{guest_name}}!" : "confirmed"}
           />
-        )}
       </div>
 
       {setVariable.valueType === "template" && variables.length > 0 && (

@@ -18,6 +18,8 @@ from openai import OpenAI
 
 from ..database import get_db
 from ..models.tool import Tool
+from ..models.user import User
+from ..auth.middleware import get_current_user, check_account_permission
 from ..flow_executor import FlowExecutor, parse_flow_config
 
 
@@ -39,9 +41,10 @@ class SimulationSession:
 class SimulationState:
     """Tracks state for a simulation session."""
     
-    def __init__(self, tool_id: str, executor: FlowExecutor, tool_name: str = ""):
+    def __init__(self, tool_id: str, executor: FlowExecutor, tool_name: str = "", account_id: Optional[str] = None):
         self.tool_id = tool_id
         self.tool_name = tool_name
+        self.account_id = account_id
         self.executor = executor
         self.messages: list[dict] = []
         self.llm_messages: list[dict] = []
@@ -129,7 +132,8 @@ class TestAPIResponse(BaseModel):
 @router.post("/start", response_model=StartSimulationResponse)
 async def start_simulation(
     request: StartSimulationRequest,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
 ):
     """
     Start a new flow simulation session.
@@ -140,6 +144,9 @@ async def start_simulation(
     tool = db.query(Tool).filter(Tool.id == request.tool_id).first()
     if not tool:
         raise HTTPException(status_code=404, detail="Tool not found")
+    
+    if tool.account_id:
+        check_account_permission(user, str(tool.account_id), "tools.view", db)
     
     if tool.tool_type.value != "FLOW":
         raise HTTPException(status_code=400, detail="Tool is not a flow type")
@@ -157,7 +164,12 @@ async def start_simulation(
         raise HTTPException(status_code=400, detail=f"Invalid flow configuration: {str(e)}")
     
     session_id = str(uuid.uuid4())
-    state = SimulationState(tool_id=request.tool_id, executor=executor, tool_name=tool.name)
+    state = SimulationState(
+        tool_id=request.tool_id,
+        executor=executor,
+        tool_name=tool.name,
+        account_id=str(tool.account_id) if tool.account_id else None,
+    )
     
     initial_messages = executor.get_initial_messages()
     greeting = " ".join(initial_messages)
@@ -191,16 +203,18 @@ async def start_simulation(
 
 
 @router.post("/message", response_model=SimulateMessageResponse)
-async def simulate_message(request: SimulateMessageRequest):
+async def simulate_message(
+    request: SimulateMessageRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
     """
     Process a message in the simulation using LLM with function calling.
     
     If function_call is provided, execute that function directly (manual mode).
     Otherwise, send the message to the LLM and let it decide what to do.
     """
-    state = SimulationSession.sessions.get(request.session_id)
-    if not state:
-        raise HTTPException(status_code=404, detail="Session not found")
+    state = _get_session_and_check_access(request.session_id, user, db)
     
     if state.is_ended:
         raise HTTPException(status_code=400, detail="Simulation has ended")
@@ -384,21 +398,36 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
         }
 
 
-@router.delete("/session/{session_id}")
-async def end_simulation(session_id: str):
-    """End and cleanup a simulation session."""
-    if session_id in SimulationSession.sessions:
-        del SimulationSession.sessions[session_id]
-        return {"status": "ended"}
-    raise HTTPException(status_code=404, detail="Session not found")
-
-
-@router.get("/session/{session_id}/state")
-async def get_simulation_state(session_id: str):
-    """Get current state of a simulation session."""
+def _get_session_and_check_access(session_id: str, user: User, db: Session) -> "SimulationState":
+    """Retrieve a simulation session and verify the caller has view access to its account."""
     state = SimulationSession.sessions.get(session_id)
     if not state:
         raise HTTPException(status_code=404, detail="Session not found")
+    if state.account_id:
+        check_account_permission(user, state.account_id, "tools.view", db)
+    return state
+
+
+@router.delete("/session/{session_id}")
+async def end_simulation(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """End and cleanup a simulation session."""
+    _get_session_and_check_access(session_id, user, db)
+    del SimulationSession.sessions[session_id]
+    return {"status": "ended"}
+
+
+@router.get("/session/{session_id}/state")
+async def get_simulation_state(
+    session_id: str,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Get current state of a simulation session."""
+    state = _get_session_and_check_access(session_id, user, db)
     
     return {
         "state": state.get_state_snapshot(),
@@ -408,7 +437,7 @@ async def get_simulation_state(session_id: str):
 
 
 @router.post("/test-api", response_model=TestAPIResponse)
-async def test_api_endpoint(request: TestAPIRequest):
+async def test_api_endpoint(request: TestAPIRequest, user: User = Depends(get_current_user)):
     """
     Test an API endpoint with variable substitution.
     

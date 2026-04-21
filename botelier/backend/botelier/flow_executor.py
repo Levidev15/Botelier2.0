@@ -1978,11 +1978,6 @@ You are executing a structured conversation flow. Follow these guidelines:
         
         if value_type == "template":
             final_value = substitute_variables(value, self.state.collected_slots)
-        elif value_type == "expression":
-            try:
-                final_value = eval(value, {"__builtins__": {}}, self.state.collected_slots)
-            except:
-                final_value = value
         else:
             final_value = value
         

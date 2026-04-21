@@ -26,6 +26,18 @@ from botelier.schemas.tool_schemas import (
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
 
+def _flow_config_has_expression_nodes(config: dict) -> bool:
+    """Return True if any set_variable node uses the disallowed expression valueType."""
+    nodes = config.get("nodes", [])
+    for node in nodes:
+        if node.get("type") == "set_variable":
+            node_data = node.get("data", {})
+            set_var = node_data.get("setVariable", node_data.get("set_variable", {}))
+            if set_var.get("valueType") == "expression" or set_var.get("value_type") == "expression":
+                return True
+    return False
+
+
 def _scope_query_by_account(query, db, tool_set_id: str = None, account_id: str = None):
     """Apply multi-tenant scoping to a tool query.
     
@@ -219,6 +231,12 @@ def update_tool(
     if tool_data.description is not None:
         tool.description = tool_data.description
     if tool_data.config is not None:
+        if tool.tool_type == DBToolType.FLOW and isinstance(tool_data.config, dict):
+            if _flow_config_has_expression_nodes(tool_data.config):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Flow configuration contains disallowed expression nodes"
+                )
         tool.config = tool_data.config
     if tool_data.is_active is not None:
         tool.is_active = "true" if tool_data.is_active else "false"
