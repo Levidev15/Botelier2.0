@@ -152,6 +152,11 @@ def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str]]:
             transfer = node_data.get("transfer", {})
             if not transfer.get("phoneNumber"):
                 errors.append(f"Transfer node '{node_name}' has no phone number")
+        
+        elif node_type == "set_variable":
+            set_var = node_data.get("setVariable", node_data.get("set_variable", {}))
+            if set_var.get("valueType") == "expression" or set_var.get("value_type") == "expression":
+                errors.append(f"Set Variable node '{node_name}' uses the expression type, which is not permitted")
     
     return len(errors) == 0, errors
 
@@ -274,6 +279,15 @@ def save_flow_draft(
     
     flow_config = draft_data.get("flow_config", {})
     description = draft_data.get("description")
+    
+    if flow_config:
+        _, draft_errors = validate_flow_config(flow_config)
+        expression_errors = [e for e in draft_errors if "expression type" in e]
+        if expression_errors:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={"message": "Flow configuration contains disallowed content", "errors": expression_errors}
+            )
     
     next_version = (tool.published_version_number or 0) + 1
     
