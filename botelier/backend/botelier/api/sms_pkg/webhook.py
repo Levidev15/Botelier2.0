@@ -8,7 +8,7 @@ SMS Webhook endpoints.
 
 import os
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse
 from loguru import logger
 from sqlalchemy import desc
@@ -16,10 +16,14 @@ from sqlalchemy.orm import Session
 
 from sse_starlette.sse import EventSourceResponse
 
+from botelier.auth.middleware import decode_jwt_token, is_valid_uuid
 from botelier.database import get_db
 from botelier.models.sms_conversation import SMSConversation, SMSMessage, MessageStatus
+from botelier.models.user import User
 from botelier.services.sms_service import SMSService
 from botelier.services.notification_broadcaster import broadcaster
+
+from ._auth import assert_sms_account_access
 
 router = APIRouter(prefix="/api/sms", tags=["SMS"])
 
@@ -247,13 +251,26 @@ async def sms_status_callback(
 
 @router.get("/stream")
 async def sms_event_stream(
-    account_id: str,
+    account_id: str = Query(...),
+    token: str = Query(
+        ...,
+        description=(
+            "JWT bearer token, passed as a query param because the browser "
+            "EventSource API cannot set custom headers."
+        ),
+    ),
+    db: Session = Depends(get_db),
 ):
     """
     Server-Sent Events stream for real-time SMS notifications.
 
     Each browser tab opens one persistent connection. The server pushes
     events when messages arrive — no polling needed.
+
+    Auth (Task #137 V1): EventSource cannot send an Authorization header,
+    so the JWT is supplied as a `?token=` query parameter. We decode it
+    with the same NEXTAUTH_SECRET as `Authorization: Bearer`, resolve the
+    user, and assert account membership before opening the stream.
 
     Event types:
         new_message       — inbound customer SMS
@@ -262,6 +279,29 @@ async def sms_event_stream(
         handler_changed   — agent took over or returned to AI
         keepalive         — every 15s to keep proxies alive
     """
+    payload = decode_jwt_token(token)
+    if not payload:
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+    sub = payload.get("sub")
+    if not sub:
+        raise HTTPException(status_code=401, detail="Token missing subject")
+
+    if is_valid_uuid(sub):
+        user = db.query(User).filter(User.id == sub).first()
+    else:
+        user = db.query(User).filter(User.replit_id == sub).first()
+
+    if not user:
+        raise HTTPException(status_code=401, detail="Unknown user")
+    # The query-token path skips the standard get_current_user dep, so
+    # mirror its is_active gate explicitly here — a deactivated user
+    # otherwise keeps streaming events until the JWT expires.
+    if not getattr(user, "is_active", True):
+        raise HTTPException(status_code=401, detail="User is deactivated")
+
+    assert_sms_account_access(user, account_id, db)
+
     return EventSourceResponse(
         broadcaster.event_generator(account_id=account_id),
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},

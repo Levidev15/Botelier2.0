@@ -138,7 +138,7 @@ export function playTone(soundType: string): void {
 
 export function useSMSData() {
   const { accountId, loading: contextLoading } = useAccountContext();
-  const { user } = useAuthToken();
+  const { user, authFetch } = useAuthToken();
 
   // --- Conversation list state ---
   const [conversations, setConversations]     = useState<Conversation[]>([]);
@@ -217,7 +217,7 @@ export function useSMSData() {
   const sendPresenceHeartbeat = useCallback(async (convId: string) => {
     if (!accountId || !user?.id) return;
     try {
-      await fetch(`/api/sms/conversations/${convId}/presence`, {
+      await authFetch(`/api/sms/conversations/${convId}/presence`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -232,7 +232,7 @@ export function useSMSData() {
   const clearPresence = useCallback(async (convId: string) => {
     if (!accountId || !user?.id) return;
     try {
-      await fetch(`/api/sms/conversations/${convId}/presence`, {
+      await authFetch(`/api/sms/conversations/${convId}/presence`, {
         method: "DELETE",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ account_id: accountId, agent_id: user.id }),
@@ -276,7 +276,7 @@ export function useSMSData() {
       if (statusFilter)          params.set("status", statusFilter);
       if (assistantFilter)       params.set("assistant_id", assistantFilter);
       if (needsAttentionFilter)  params.set("needs_attention", "true");
-      const res = await fetch(`/api/sms/conversations?${params}`);
+      const res = await authFetch(`/api/sms/conversations?${params}`);
       const data = await res.json();
       setConversations(data.conversations || []);
     } catch (err) {
@@ -290,12 +290,12 @@ export function useSMSData() {
     if (!accountId) return;
     try {
       setLoadingConv(true);
-      const res = await fetch(`/api/sms/conversations/${id}?account_id=${accountId}`);
+      const res = await authFetch(`/api/sms/conversations/${id}?account_id=${accountId}`);
       const data = await res.json();
       setSelectedConv(data);
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
       startPresenceHeartbeat(id);
-      fetch(`/api/sms/conversations/${id}/read`, {
+      authFetch(`/api/sms/conversations/${id}/read`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ account_id: accountId }),
@@ -320,7 +320,7 @@ export function useSMSData() {
   const fetchSingleConversationIntoList = useCallback(async (id: string) => {
     if (!accountId) return;
     try {
-      const res = await fetch(`/api/sms/conversations/${id}?account_id=${accountId}`);
+      const res = await authFetch(`/api/sms/conversations/${id}?account_id=${accountId}`);
       if (!res.ok) return;
       const conv: Conversation = await res.json();
 
@@ -361,7 +361,7 @@ export function useSMSData() {
   const fetchAssistants = useCallback(async () => {
     if (!accountId) return;
     try {
-      const res = await fetch(`/api/assistants?account_id=${accountId}&is_active=true`);
+      const res = await authFetch(`/api/assistants?account_id=${accountId}&is_active=true`);
       const data = await res.json();
       setAssistants(data.assistants || []);
     } catch {}
@@ -370,7 +370,7 @@ export function useSMSData() {
   const fetchTemplates = useCallback(async () => {
     if (!accountId) return;
     try {
-      const res = await fetch(`/api/sms/templates?account_id=${accountId}`);
+      const res = await authFetch(`/api/sms/templates?account_id=${accountId}`);
       setTemplates(await res.json());
     } catch {}
   }, [accountId]);
@@ -378,7 +378,7 @@ export function useSMSData() {
   const fetchNotifSettings = useCallback(async () => {
     if (!accountId) return;
     try {
-      const res = await fetch(`/api/sms/settings/notifications?account_id=${accountId}`);
+      const res = await authFetch(`/api/sms/settings/notifications?account_id=${accountId}`);
       setNotifSettings(await res.json());
     } catch {}
   }, [accountId]);
@@ -390,7 +390,15 @@ export function useSMSData() {
   useEffect(() => {
     if (!accountId) return;
 
-    const es = new EventSource(`/api/sms/stream?account_id=${accountId}`);
+    // EventSource cannot send Authorization headers, so the JWT is
+    // passed as a `?token=` query param. Backend validates it the same
+    // way as `Authorization: Bearer` and verifies account membership.
+    const sseToken =
+      (typeof window !== "undefined" && window.localStorage.getItem("botelier_token")) || "";
+    if (!sseToken) return;
+    const es = new EventSource(
+      `/api/sms/stream?account_id=${accountId}&token=${encodeURIComponent(sseToken)}`
+    );
     eventSourceRef.current = es;
 
     const handleNewMessage = (event: MessageEvent) => {
@@ -568,7 +576,7 @@ export function useSMSData() {
     if (!selectedConv || !accountId) return;
     setGeneratingSummary(true);
     try {
-      const res = await fetch(`/api/sms/conversations/${selectedConv.id}/generate-summary`, {
+      const res = await authFetch(`/api/sms/conversations/${selectedConv.id}/generate-summary`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ account_id: accountId }),
@@ -588,7 +596,7 @@ export function useSMSData() {
   const handleCloseConversation = async () => {
     if (!selectedConv || !accountId) return;
     try {
-      const res = await fetch(`/api/sms/conversations/${selectedConv.id}/close`, {
+      const res = await authFetch(`/api/sms/conversations/${selectedConv.id}/close`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ account_id: accountId }),
@@ -620,7 +628,7 @@ export function useSMSData() {
         const formData = new FormData();
         formData.append("file", file);
         formData.append("account_id", accountId);
-        const res = await fetch("/api/sms/upload", { method: "POST", body: formData });
+        const res = await authFetch("/api/sms/upload", { method: "POST", body: formData });
         const data = await res.json();
         if (!res.ok) {
           notify.error(data.detail || `Failed to upload ${file.name}`);
@@ -640,7 +648,7 @@ export function useSMSData() {
     if (!selectedConv || !accountId || handoffLoading) return;
     setHandoffLoading(true);
     try {
-      const res = await fetch(`/api/sms/conversations/${selectedConv.id}/take-over`, {
+      const res = await authFetch(`/api/sms/conversations/${selectedConv.id}/take-over`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ account_id: accountId }),
@@ -665,7 +673,7 @@ export function useSMSData() {
     if (!selectedConv || !accountId || handoffLoading) return;
     setHandoffLoading(true);
     try {
-      const res = await fetch(`/api/sms/conversations/${selectedConv.id}/return-to-ai`, {
+      const res = await authFetch(`/api/sms/conversations/${selectedConv.id}/return-to-ai`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ account_id: accountId }),
@@ -693,7 +701,7 @@ export function useSMSData() {
     try {
       const body: Record<string, any> = { account_id: accountId, message: replyText.trim() };
       if (attachedFiles.length > 0) body.media_urls = attachedFiles.map(f => f.url);
-      const res = await fetch(`/api/sms/conversations/${selectedConv.id}/reply`, {
+      const res = await authFetch(`/api/sms/conversations/${selectedConv.id}/reply`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -729,7 +737,7 @@ export function useSMSData() {
   const handleSaveTemplate = async () => {
     if (!accountId || !newTemplate.name.trim() || !newTemplate.content.trim()) return;
     try {
-      const res = await fetch("/api/sms/templates", {
+      const res = await authFetch("/api/sms/templates", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -753,7 +761,7 @@ export function useSMSData() {
   const handleUpdateTemplate = async (template: SMSTemplate) => {
     if (!accountId) return;
     try {
-      const res = await fetch(`/api/sms/templates/${template.id}`, {
+      const res = await authFetch(`/api/sms/templates/${template.id}`, {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
@@ -777,7 +785,7 @@ export function useSMSData() {
   const handleDeleteTemplate = async (id: string) => {
     if (!accountId) return;
     try {
-      await fetch(`/api/sms/templates/${id}?account_id=${accountId}`, { method: "DELETE" });
+      await authFetch(`/api/sms/templates/${id}?account_id=${accountId}`, { method: "DELETE" });
       fetchTemplates();
       notify.success("Template deleted");
     } catch {
@@ -789,7 +797,7 @@ export function useSMSData() {
     if (!accountId) return;
     setSavingSettings(true);
     try {
-      await fetch("/api/sms/settings/notifications", {
+      await authFetch("/api/sms/settings/notifications", {
         method: "PUT",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ account_id: accountId, ...notifSettings }),

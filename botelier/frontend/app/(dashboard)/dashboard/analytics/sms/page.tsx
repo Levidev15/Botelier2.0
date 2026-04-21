@@ -10,6 +10,7 @@ import {
   XAxis, YAxis, CartesianGrid, Tooltip,
 } from "recharts";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 import StatCard from "@/components/analytics/StatCard";
 import DashboardWidget from "@/components/analytics/DashboardWidget";
 import DateRangePicker, { DateRange } from "@/components/analytics/DateRangePicker";
@@ -104,6 +105,7 @@ const CustomTooltipContent = ({ active, payload, label }: CustomTooltipProps) =>
 
 export default function SMSAnalyticsPage() {
   const { accountId } = useAccountContext();
+  const { authFetch } = useAuthToken();
   const [dateRange, setDateRange] = useState<DateRange>(defaultDateRange);
   const [assistantIds, setAssistantIds] = useState<string[]>([]);
   const [retryKey, setRetryKey] = useState(0);
@@ -123,7 +125,7 @@ export default function SMSAnalyticsPage() {
       date_to: dateRange.to.toISOString(),
     });
     assistantIds.forEach((id) => params.append("assistant_ids", id));
-    fetch(`/api/sms/stats?${params}`)
+    authFetch(`/api/sms/stats?${params}`)
       .then((r) => {
         if (!r.ok) throw new Error(`Failed to load analytics (${r.status})`);
         return r.json();

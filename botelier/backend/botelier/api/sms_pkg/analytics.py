@@ -19,8 +19,12 @@ from loguru import logger
 from sqlalchemy import desc, func
 from sqlalchemy.orm import Session
 
+from botelier.auth.middleware import get_current_user
 from botelier.database import get_db
 from botelier.models.sms_conversation import SMSConversation, SMSMessage, ConversationStatus
+from botelier.models.user import User
+
+from ._auth import assert_sms_account_access
 
 router = APIRouter(prefix="/api/sms", tags=["SMS"])
 
@@ -28,9 +32,11 @@ router = APIRouter(prefix="/api/sms", tags=["SMS"])
 @router.get("/pending-handoffs")
 async def get_pending_handoffs(
     account_id: str = Query(..., description="Account ID for multi-tenant isolation"),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Return count of active conversations waiting for a human agent."""
+    assert_sms_account_access(user, account_id, db)
     count = db.query(func.count(SMSConversation.id)).filter(
         SMSConversation.account_id == UUID(account_id),
         SMSConversation.needs_attention == True,
@@ -42,9 +48,11 @@ async def get_pending_handoffs(
 @router.get("/unread-count")
 async def get_unread_count(
     account_id: str = Query(...),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """Count of active conversations with messages newer than last_read_at."""
+    assert_sms_account_access(user, account_id, db)
     count = db.query(func.count(SMSConversation.id)).filter(
         SMSConversation.account_id == UUID(account_id),
         SMSConversation.status == ConversationStatus.ACTIVE.value,
@@ -63,6 +71,7 @@ async def get_sms_stats(
     date_to: Optional[datetime] = Query(None, description="End of reporting window (ISO 8601)"),
     assistant_ids: Optional[List[UUID]] = Query(None, description="Filter to these assistants (repeat param for multiple)."),
     botelier_number: Optional[str] = Query(None, description="Limit stats to one phone number"),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
@@ -71,6 +80,7 @@ async def get_sms_stats(
     All figures are scoped to account_id. Optional filters narrow the window
     by date range, assistant, or account phone number.
     """
+    assert_sms_account_access(user, str(account_id), db)
     try:
         from botelier.models.assistant import Assistant
         from botelier.models.disposition import AssistantDisposition
@@ -343,6 +353,7 @@ async def export_sms_conversations(
     botelier_number: Optional[str] = Query(None),
     date_from: Optional[datetime] = Query(None),
     date_to: Optional[datetime] = Query(None),
+    user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
     """
@@ -354,6 +365,7 @@ async def export_sms_conversations(
       response_time_seconds, ai_responses, agent_responses, tools_used,
       disposition, ai_summary, assistant_id
     """
+    assert_sms_account_access(user, str(account_id), db)
     try:
         query = db.query(SMSConversation).filter(SMSConversation.account_id == account_id)
 
