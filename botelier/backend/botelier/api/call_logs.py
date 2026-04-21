@@ -28,6 +28,7 @@ from botelier.api.analytics import (
     _bucket_predicate,
     _silent_caller_predicate,
     _PARTITION_BUCKETS,
+    _classify_partition,
 )
 
 
@@ -253,40 +254,118 @@ async def export_call_logs(
     account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     status: Optional[str] = Query(None),
     assistant_id: Optional[UUID] = Query(None),
+    # Task #129 — accept the same multi-assistant filter shape as the
+    # analytics endpoint so the dashboard's "Detailed CSV" export honors
+    # the on-screen Assistant filter without losing rows.
+    assistant_ids: Optional[List[UUID]] = Query(
+        None, description="Filter to these assistants (repeat param for multiple)."
+    ),
     date_from: Optional[datetime] = Query(None),
     date_to: Optional[datetime] = Query(None),
+    bucket: Optional[str] = Query(
+        None,
+        description=(
+            "Task #129 — partition bucket filter: ai_handled | ended_early | "
+            "missed | failed | unresolved | silent_caller. Maps 1:1 to the "
+            "analytics partition predicates so the row count matches the "
+            "dashboard pill exactly."
+        ),
+    ),
+    disposition_id: Optional[UUID] = Query(None, description="Filter by disposition UUID."),
+    caller_spoke: Optional[bool] = Query(
+        None,
+        description=(
+            "Filter on caller_spoke. true = caller produced audio; false = "
+            "silent caller; omit = no filter (NULL legacy rows included)."
+        ),
+    ),
+    tz: Optional[str] = Query(  # noqa: A002 — short query name kept to match dashboard
+        None,
+        description="IANA timezone name. Reserved for future per-row local timestamp column; not used today.",
+    ),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """Export call logs as CSV file."""
+    """Export call logs as CSV file.
+
+    Task #129 — additive: existing columns and order are preserved so any
+    external consumer keeps working. New columns appended on the right:
+    Reference ID, Bucket (MECE), Greeted, Caller Spoke, Disposition,
+    ACW Resolution, ACW Quality Score, ACW Skip Reason.
+    """
     check_account_permission(user, str(account_id), "call_logs.export", db)
     try:
         query = db.query(CallLog).filter(CallLog.account_id == account_id)
-        
+
         if status:
             query = query.filter(CallLog.status == status)
         if assistant_id:
             query = query.filter(CallLog.assistant_id == assistant_id)
+        if assistant_ids:
+            query = query.filter(CallLog.assistant_id.in_(assistant_ids))
         if date_from:
             query = query.filter(CallLog.started_at >= date_from)
         if date_to:
             query = query.filter(CallLog.started_at <= date_to)
-        
-        call_logs = query.options(joinedload(CallLog.legs)).order_by(desc(CallLog.started_at)).all()
-        
-        assistant_ids = list(set([log.assistant_id for log in call_logs if log.assistant_id]))
-        assistants = {}
-        if assistant_ids:
+
+        # Task #129 — bucket filter shares the canonical predicate with the
+        # analytics endpoint so the CSV row count under "Bucket = X"
+        # reconciles to the dashboard pill count for X by construction.
+        if bucket:
+            tok = bucket.strip()
+            if tok not in _BUCKET_TOKENS:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"Invalid bucket {tok!r}. Must be one of {_BUCKET_TOKENS}.",
+                )
+            if tok == "silent_caller":
+                query = query.filter(_silent_caller_predicate())
+            else:
+                query = query.filter(_bucket_predicate(tok))
+
+        if disposition_id:
+            query = query.filter(CallLog.disposition_id == disposition_id)
+
+        if caller_spoke is not None:
+            # Explicit TRUE / FALSE filter. NULL (legacy rows) is excluded
+            # by both branches — matches PostgreSQL's three-valued logic
+            # and the analytics module's silent-caller treatment.
+            query = query.filter(CallLog.caller_spoke.is_(caller_spoke))
+
+        call_logs = (
+            query.options(
+                joinedload(CallLog.legs),
+                joinedload(CallLog.disposition),
+            )
+            .order_by(desc(CallLog.started_at))
+            .all()
+        )
+
+        asst_id_set = {log.assistant_id for log in call_logs if log.assistant_id}
+        assistants: dict = {}
+        if asst_id_set:
             records = db.query(Assistant).filter(
-                Assistant.id.in_(assistant_ids),
-                Assistant.account_id == account_id
+                Assistant.id.in_(asst_id_set),
+                Assistant.account_id == account_id,
             ).all()
             assistants = {str(a.id): a.name for a in records}
-        
+
+        # Task #129 — bulk-load disposition names rather than re-querying per
+        # row. joinedload above also covers this; the explicit map keeps the
+        # CSV write loop allocation-free.
+        disp_id_set = {log.disposition_id for log in call_logs if log.disposition_id}
+        disp_map: dict = {}
+        if disp_id_set:
+            drows = db.query(AssistantDisposition.id, AssistantDisposition.name).filter(
+                AssistantDisposition.id.in_(disp_id_set)
+            ).all()
+            disp_map = {str(d.id): d.name for d in drows}
+
         output = io.StringIO()
         writer = csv.writer(output)
-        
+
         writer.writerow([
+            # Original 12 columns — order preserved (additive contract).
             "Date/Time",
             "Total Duration (seconds)",
             "AI Duration (seconds)",
@@ -299,8 +378,17 @@ async def export_call_logs(
             "Has Transfer",
             "Transfer Mode",
             "Leg Count",
+            # Task #129 — new columns appended on the right.
+            "Reference ID",
+            "Bucket (MECE)",
+            "Greeted",
+            "Caller Spoke",
+            "Disposition",
+            "ACW Resolution",
+            "ACW Quality Score",
+            "ACW Skip Reason",
         ])
-        
+
         for log in call_logs:
             legs = log.legs or []
             leg_count = len(legs)
@@ -312,7 +400,22 @@ async def export_call_logs(
                 leg.duration_seconds or 0 for leg in legs
                 if leg.leg_type in ("transfer_external", "transfer_sip", "transfer_internal", "transfer_cold")
             )
-            
+
+            # Task #129 — derive Bucket via the analytics classifier so the
+            # CSV's bucket vocabulary matches the dashboard exactly. Pure
+            # function call; no extra DB hit.
+            bucket_label = _classify_partition(
+                log.status or "",
+                bool(log.ai_greeting_completed),
+                log.caller_spoke,
+            )
+            # Render NULL caller_spoke as empty string rather than "None" so
+            # spreadsheet pivots treat it as missing instead of a third value.
+            caller_spoke_cell = (
+                "" if log.caller_spoke is None
+                else ("Yes" if log.caller_spoke else "No")
+            )
+
             writer.writerow([
                 log.started_at.isoformat() if log.started_at else "",
                 log.duration_seconds or 0,
@@ -326,18 +429,30 @@ async def export_call_logs(
                 "Yes" if log.has_transfer else "No",
                 log.transfer_mode or "",
                 leg_count,
+                # New (additive) columns:
+                log.reference_id or "",
+                bucket_label,
+                "Yes" if log.ai_greeting_completed else "No",
+                caller_spoke_cell,
+                disp_map.get(str(log.disposition_id), "") if log.disposition_id else "",
+                log.acw_resolution or "",
+                "" if log.acw_quality_score is None else log.acw_quality_score,
+                log.acw_skip_reason or "",
             ])
-        
+
         output.seek(0)
-        
+
         filename = f"call_logs_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
-        
+
         return StreamingResponse(
             iter([output.getvalue()]),
             media_type="text/csv",
             headers={"Content-Disposition": f"attachment; filename={filename}"}
         )
-        
+
+    except HTTPException:
+        # Preserve intentional 4xx responses (invalid bucket token).
+        raise
     except Exception as e:
         logger.exception(f"Error exporting call logs: {e}")
         raise HTTPException(status_code=500, detail="Failed to export call logs")
