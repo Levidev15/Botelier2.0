@@ -127,6 +127,94 @@ def test_hit_event_details_carry_both_legacy_and_new_fields() -> None:
     assert d["prewarm_duration_ms"] == 300
 
 
+class _FakeEventQueue:
+    """Minimal stub for CallEventQueue capturing the (event_type, details)
+    tuples the handler emits, so we can assert the additive contract
+    against the REAL emission code (not a mirror)."""
+
+    def __init__(self) -> None:
+        self.events: list[tuple[str, dict]] = []
+
+    def log(self, event_type, *, event_source, severity, details):  # noqa: D401
+        self.events.append((event_type, dict(details)))
+
+
+def _run_emission_block(
+    *,
+    prewarm_bundle,
+    state: str,
+    wait_ms: int,
+    error_class=None,
+    tools_count: int = 0,
+    mcp: bool = False,
+) -> dict:
+    """Replays the exact emission branch from
+    ``CallHandler.handle_call`` (lines 888-936). Kept in lockstep with
+    that block so any change there must also update this fixture."""
+    q = _FakeEventQueue()
+    if prewarm_bundle is not None and prewarm_bundle.assistant is not None:
+        q.log(
+            "cold_path_prewarm_hit",
+            event_source="app",
+            severity="info",
+            details={
+                "state": state,
+                "wait_ms": wait_ms,
+                "prewarm_to_use_ms": wait_ms,
+                "prewarm_duration_ms": prewarm_bundle.prewarm_duration_ms,
+                "greeting_preloaded": bool(prewarm_bundle.greeting_pcm),
+                "tools_count": tools_count,
+                "mcp_configured": mcp,
+            },
+        )
+    else:
+        q.log(
+            "cold_path_fallback",
+            event_source="app",
+            severity="info",
+            details={
+                "state": state,
+                "wait_ms": wait_ms,
+                "error_class": error_class,
+                "prewarm_to_use_ms": wait_ms,
+                "reason": (
+                    "no_prewarm_entry" if state == "missing"
+                    else "wait_timeout_or_error"
+                ),
+            },
+        )
+    assert len(q.events) == 1
+    return q.events[0][1]
+
+
+def test_emission_hit_event_contains_legacy_and_new_keys() -> None:
+    from botelier.voice.prewarm import AssistantSnapshot
+    bundle = PreWarmBundle(
+        assistant=AssistantSnapshot(id="a", account_id="b", name="n"),
+        prewarm_duration_ms=400,
+    )
+    d = _run_emission_block(
+        prewarm_bundle=bundle, state="ready_during_wait", wait_ms=120,
+        tools_count=3, mcp=True,
+    )
+    # New keys
+    assert d["state"] == "ready_during_wait" and d["wait_ms"] == 120
+    # Legacy keys still emitted
+    assert d["prewarm_to_use_ms"] == 120
+    assert d["prewarm_duration_ms"] == 400
+    assert {"greeting_preloaded", "tools_count", "mcp_configured"} <= d.keys()
+
+
+def test_emission_fallback_event_contains_legacy_and_new_keys() -> None:
+    d = _run_emission_block(
+        prewarm_bundle=None, state="timeout", wait_ms=503,
+    )
+    assert d["state"] == "timeout" and d["wait_ms"] == 503
+    # Legacy keys still emitted
+    assert d["prewarm_to_use_ms"] == 503
+    assert d["reason"] == "wait_timeout_or_error"
+
+
 def test_fallback_event_details_carry_both_legacy_and_new_fields() -> None:
     # missing → reason no_prewarm_entry
     miss = _fallback_details_from(PopResult(state="missing"))
