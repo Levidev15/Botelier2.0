@@ -48,5 +48,5 @@ Imported as `botelier.*` from `main.py`. Not directly runnable.
 
 ## Gotchas
 
-- `database.py:run_stuck_call_sweeper` writes a `finalization_forced` and `call_ended` `CallEvent` per closed row. Both events store `offset_ms` (`bigint` column, but writes are clamped to `_INT4_MAX` in `services/call_logger.py:228-234`).
+- `database.py:run_stuck_call_sweeper` writes a `finalization_forced` and `call_ended` `CallEvent` per closed row. Both events store `offset_ms` (`bigint` column). Task #123: writes use the single `services/_event_offset.py:compute_offset_ms` helper — no clamping. The startup invariant `database._assert_call_events_offset_ms_bigint` refuses to start the app if the column type drifts back to int4. Task #123 also decoupled these event writes from the `complete_call` transaction (post-commit, fresh session via `_write_event_isolated`), so an event INSERT failure cannot roll back the disposition.
 - `seeds/` is invoked unconditionally on every backend startup; new seed functions must be idempotent.

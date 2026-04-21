@@ -88,7 +88,12 @@ class CallEventQueue:
             )
             return
         now = datetime.utcnow()
-        offset_ms = int((now - self.call_started_at).total_seconds() * 1000)
+        # Task #123 — single source of truth for offset_ms across all
+        # CallEvent writers. self.call_started_at defaults to utcnow() in
+        # __init__ so it is never None here, but compute_offset_ms is the
+        # canonical helper everywhere.
+        from ._event_offset import compute_offset_ms
+        offset_ms = compute_offset_ms(now, self.call_started_at)
         event = {
             "call_log_id": self.call_log_id,
             "event_type": event_type,

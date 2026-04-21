@@ -160,7 +160,7 @@ Before editing any of these areas, read the listed companions first:
 
 | Area | Companions to read first |
 |---|---|
-| Call lifecycle / sweeper / call_logger | `services/call_logger.py` (incl. `_INT4_MAX` clamp at lines 22, 228-234), `database.py` (`run_stuck_call_sweeper`), `services/shutdown_finalizer.py`, `models/call_log.py`, `models/call_event.py` |
+| Call lifecycle / sweeper / call_logger | `services/call_logger.py` (Task #123: post-commit isolated event writes via `_write_event_isolated`), `services/_event_offset.py` (single offset_ms helper), `database.py` (`run_stuck_call_sweeper`, `_assert_call_events_offset_ms_bigint` startup invariant), `services/shutdown_finalizer.py`, `models/call_log.py`, `models/call_event.py` |
 | Voice pipeline | `voice/engine.py`, `voice/call_handler.py`, `voice/prewarm.py`, `main.py` (model pre-warm) |
 | Tool execution | `voice/function_mapper.py`, `services/mcp_client.py`, `services/integration_client.py` |
 | Flow editor | `components/flow-editor/store.ts`, `FlowEditor.tsx`, the `nodes/` + `inspectors/` pair you're touching |
