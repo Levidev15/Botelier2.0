@@ -55,6 +55,24 @@ class AssistantSnapshot:
 
 
 @dataclass
+class ToolSnapshot:
+    """Plain-Python projection of the Tool ORM columns consumed on the hot
+    path (Task #122). Mirrors the ``Tool`` attribute surface used by
+    :class:`FunctionMapper` and ``_build_function_schemas_and_handlers``:
+    ``name``, ``description``, ``tool_type``, ``config``.
+
+    ``tool_type`` is the original Python enum value — enums are immutable
+    and session-independent, so they survive ``expunge_all`` cleanly.
+    ``config`` is captured as a shallow copy of the JSON-backed dict to
+    decouple from SQLAlchemy's mutable-tracking proxy."""
+
+    name: str
+    description: Optional[str]
+    tool_type: Any
+    config: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
 class PreWarmBundle:
     """
     Result of a successful pre-warm. All fields are pure Python values —
@@ -341,9 +359,9 @@ async def _build_bundle(
                 .first()
             )
 
-            tools: List[Any] = []
+            tools: List[ToolSnapshot] = []
             if assistant.tool_set_id:
-                tools = (
+                _tool_rows = (
                     _db.query(Tool)
                     .filter(
                         Tool.tool_set_id == assistant.tool_set_id,
@@ -351,6 +369,15 @@ async def _build_bundle(
                     )
                     .all()
                 )
+                tools = [
+                    ToolSnapshot(
+                        name=_t.name,
+                        description=_t.description,
+                        tool_type=_t.tool_type,
+                        config=dict(_t.config or {}),
+                    )
+                    for _t in _tool_rows
+                ]
 
             mcp_conn_data: Optional[Dict[str, Any]] = None
             mcp_enabled: List[str] = []
