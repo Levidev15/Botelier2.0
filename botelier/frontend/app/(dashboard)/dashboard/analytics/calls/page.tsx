@@ -829,6 +829,7 @@ export default function CallAnalyticsPage() {
             )}
           </div>
         </details>
+        )}
       </main>
 
       <CustomizePanel
