@@ -25,6 +25,11 @@ from ..models.user import User
 from ..services.call_logger import CallLogger
 from ..services.acw_service import run_acw_background
 from ..auth.middleware import get_current_user, check_account_permission
+from ._twilio_auth import (
+    get_call_auth_token,
+    mint_stream_token,
+    validate_twilio_signature,
+)
 
 
 router = APIRouter(prefix="/api/calls", tags=["Calls"])
@@ -230,6 +235,21 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
         to_number = form_data.get("To")
         call_status = form_data.get("CallStatus", "")
 
+        # --- Twilio signature validation (Task #138) ---
+        # Reject forged /incoming POSTs before any DB writes, pre-warm
+        # scheduling, or TwiML emission. Skip-when-no-token preserves
+        # local dev parity (matches sms_pkg/webhook.py behaviour).
+        auth_token = get_call_auth_token(db, to_number=to_number, call_sid=call_sid)
+        is_valid, validated_url = validate_twilio_signature(
+            request, dict(form_data), "/api/calls/incoming", auth_token
+        )
+        if not is_valid:
+            logger.warning(
+                f"Invalid Twilio signature on /api/calls/incoming for CallSid={call_sid} "
+                f"To={to_number} (validated against: {validated_url})"
+            )
+            return Response(status_code=403, content="Forbidden")
+
         # Twilio sends status-callback POSTs to this same URL for terminal call states.
         # We must short-circuit here before spawning a WebSocket pipeline, otherwise
         # a completed/failed call would create a ghost Pipecat pipeline that idles for
@@ -433,13 +453,26 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
         status_callback_url = f"{base_url}/api/calls/status"
         
         logger.info(f"Directing call to WebSocket: {ws_url}")
-        
+
+        # Mint a short-lived HMAC token bound to (CallSid, To) and embed
+        # it in the TwiML <Stream> parameters. The /api/ws/call endpoint
+        # verifies this token on the first 'start' frame so attackers who
+        # cannot forge a signed /incoming request also cannot drive the
+        # media WebSocket directly. (Task #138.)
+        stream_token, stream_token_exp = mint_stream_token(
+            call_sid=str(call_sid or ""),
+            to_number=str(to_number or ""),
+            account_token=auth_token,
+        )
+
         twiml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Connect action="{base_url}/api/calls/connect-complete">
         <Stream url="{ws_url}" statusCallback="{status_callback_url}" statusCallbackMethod="POST">
             <Parameter name="to" value="{to_number}" />
             <Parameter name="from" value="{from_number}" />
+            <Parameter name="streamToken" value="{stream_token}" />
+            <Parameter name="streamTokenExp" value="{stream_token_exp}" />
         </Stream>
     </Connect>
 </Response>"""
@@ -475,6 +508,25 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
         call_duration = form_data.get("CallDuration")
         parent_call_sid = str(form_data.get("ParentCallSid", "")) if form_data.get("ParentCallSid") else None
         to_number = str(form_data.get("To", "")) if form_data.get("To") else None
+
+        # --- Twilio signature validation (Task #138) ---
+        # Reject forged status callbacks before they can mutate CallLog
+        # state, write transfer events, or invoke complete_call().
+        auth_token = get_call_auth_token(
+            db,
+            to_number=to_number,
+            call_sid=call_sid,
+            parent_call_sid=parent_call_sid,
+        )
+        is_valid, validated_url = validate_twilio_signature(
+            request, dict(form_data), "/api/calls/status", auth_token
+        )
+        if not is_valid:
+            logger.warning(
+                f"Invalid Twilio signature on /api/calls/status for CallSid={call_sid} "
+                f"(validated against: {validated_url})"
+            )
+            return Response(status_code=403, content="Forbidden")
 
         # Twilio sends frequent "stream status" callbacks to this same URL with
         # no CallStatus field. Short-circuit BEFORE any INFO logging so those
@@ -698,7 +750,21 @@ async def connect_complete(request: Request, db: Session = Depends(get_db), back
     try:
         form_data = await request.form()
         call_sid = str(form_data.get("CallSid", ""))
-        
+
+        # --- Twilio signature validation (Task #138) ---
+        # Reject forged connect-complete callbacks before they cancel
+        # pipelines, save transcripts, finalize transfers, or enqueue ACW.
+        auth_token = get_call_auth_token(db, call_sid=call_sid)
+        is_valid, validated_url = validate_twilio_signature(
+            request, dict(form_data), "/api/calls/connect-complete", auth_token
+        )
+        if not is_valid:
+            logger.warning(
+                f"Invalid Twilio signature on /api/calls/connect-complete for CallSid={call_sid} "
+                f"(validated against: {validated_url})"
+            )
+            return Response(status_code=403, content="Forbidden")
+
         logger.info(f"Connect complete - SID: {call_sid}")
         
         call_handler = _get_call_handler()
@@ -795,7 +861,26 @@ async def transfer_status_callback(request: Request, db: Session = Depends(get_d
         call_duration = form_data.get("CallDuration")
         parent_call_sid = str(form_data.get("ParentCallSid", "")) if form_data.get("ParentCallSid") else None
         to_number = str(form_data.get("To", "")) if form_data.get("To") else None
-        
+
+        # --- Twilio signature validation (Task #138) ---
+        # Reject forged transfer-status callbacks before they create
+        # transfer legs, write events, or enqueue ACW for the parent call.
+        auth_token = get_call_auth_token(
+            db,
+            to_number=to_number,
+            call_sid=call_sid,
+            parent_call_sid=parent_call_sid,
+        )
+        is_valid, validated_url = validate_twilio_signature(
+            request, dict(form_data), "/api/calls/transfer-status", auth_token
+        )
+        if not is_valid:
+            logger.warning(
+                f"Invalid Twilio signature on /api/calls/transfer-status for CallSid={call_sid} "
+                f"Parent={parent_call_sid} (validated against: {validated_url})"
+            )
+            return Response(status_code=403, content="Forbidden")
+
         logger.info(f"Transfer status update - SID: {call_sid}, Parent: {parent_call_sid}, To: {to_number}, Status: {call_status}")
         
         if call_status:
@@ -861,31 +946,10 @@ async def transfer_status_callback(request: Request, db: Session = Depends(get_d
 def _validate_recording_webhook_signature(
     request: Request, form_data: dict, auth_token: str
 ) -> tuple[bool, str]:
-    """
-    Validate the X-Twilio-Signature on the recording-status callback.
-
-    Skips validation (returns True) when no auth_token is available,
-    matching the pattern used in the SMS webhook.
-    """
-    from ..config.domain import get_public_base_url
-
-    fallback_host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host", "")
-    base = get_public_base_url(fallback_host=fallback_host)
-    url = f"{base}/api/calls/recording-status"
-
-    if not auth_token:
-        logger.debug("Twilio signature validation skipped for recording-status — no auth token")
-        return True, url
-
-    try:
-        from twilio.request_validator import RequestValidator
-
-        signature = request.headers.get("X-Twilio-Signature", "")
-        is_valid = RequestValidator(auth_token).validate(url, form_data, signature)
-        return is_valid, url
-    except Exception as exc:
-        logger.warning(f"Twilio signature validation error on recording-status: {exc}")
-        return False, url
+    """Backwards-compatible wrapper around the shared validator."""
+    return validate_twilio_signature(
+        request, form_data, "/api/calls/recording-status", auth_token
+    )
 
 
 @router.post("/recording-status")

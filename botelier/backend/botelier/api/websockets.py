@@ -12,7 +12,9 @@ from sqlalchemy.orm import Session
 from loguru import logger
 
 from ..database import get_db
+from ..models import CallLog
 from ..voice.call_handler import CallHandler
+from ._twilio_auth import get_call_auth_token, verify_stream_token
 
 
 router = APIRouter(prefix="/api/ws", tags=["WebSocket"])
@@ -80,7 +82,52 @@ async def websocket_call_endpoint(
             logger.error(f"❌ Missing 'to' in customParameters. Start data: {start_data}")
             await websocket.close(code=1008, reason="Missing phone number")
             return
-        
+
+        # --- Stream authenticity (Task #138) ---
+        # Twilio Media Streams cannot carry an X-Twilio-Signature header
+        # on the WebSocket upgrade. Instead, /api/calls/incoming mints a
+        # short-lived HMAC token bound to (CallSid, To) and embeds it in
+        # TwiML <Parameter> tags. Verify it here BEFORE we hand the
+        # connection to CallHandler so a forged 'start' frame cannot
+        # drive the assistant pipeline, tools, or transfers.
+        custom_params = start_data.get("customParameters", {}) or {}
+        stream_token = str(custom_params.get("streamToken", "") or "")
+        stream_token_exp = custom_params.get("streamTokenExp", "")
+
+        # Bind the WebSocket to a CallLog row that was created by a
+        # signature-validated /api/calls/incoming. If no such row exists,
+        # the supplied call_sid was never blessed by Twilio — refuse.
+        call_log = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
+        if call_log is None:
+            logger.warning(
+                f"❌ Rejecting /api/ws/call: no CallLog for call_sid={call_sid} "
+                f"(forged start frame or unblessed CallSid)"
+            )
+            await websocket.close(code=1008, reason="Unknown call")
+            return
+
+        # Resolve the per-account auth token used as the HMAC secret.
+        # When no secret is configured anywhere (local dev), the verifier
+        # returns (True, "skipped_no_secret"). The CallLog binding above
+        # is still enforced, so dev parity is preserved.
+        account_token = get_call_auth_token(
+            db, to_number=to_number, call_sid=call_sid
+        )
+        token_ok, token_reason = verify_stream_token(
+            call_sid=call_sid,
+            to_number=to_number,
+            token=stream_token,
+            exp=stream_token_exp,
+            account_token=account_token,
+        )
+        if not token_ok:
+            logger.warning(
+                f"❌ Rejecting /api/ws/call: stream token {token_reason} "
+                f"for call_sid={call_sid} to={to_number}"
+            )
+            await websocket.close(code=1008, reason="Invalid stream token")
+            return
+
         logger.info(f"🔌 Handling call for phone: {to_number}")
         
         # Step 3-5: Delegate to CallHandler

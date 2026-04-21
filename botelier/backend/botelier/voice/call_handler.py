@@ -364,10 +364,25 @@ class CallHandler:
                                 )
                                 break
                         if not _call_log_found:
+                            # Task #138 — defence-in-depth. The /api/ws/call
+                            # layer already requires a CallLog to bind the
+                            # WebSocket to a signature-validated /incoming
+                            # request, so we should never reach this branch
+                            # in production. If we do (race, partial DB
+                            # rollback, or a future regression in the WS
+                            # auth path), refuse to spawn the assistant /
+                            # tools / MCP / pipeline rather than process an
+                            # unbound call.
                             logger.warning(
                                 f"call_log not found after 3 retries for {call_sid} — "
-                                f"recording and event queue will be skipped"
+                                f"refusing cold-path pipeline (Task #138)"
                             )
+                            db.close()
+                            try:
+                                await websocket.close(code=1008, reason="Unknown call")
+                            except Exception:
+                                pass
+                            return
                     if call_log_record and call_log_id is None:
                         # Record was found by the INITIAL query (not a retry) —
                         # update answered_at via the original session.
