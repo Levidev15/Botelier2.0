@@ -19,9 +19,13 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
-from botelier.services.call_logger import CallLogger, _INT4_MAX
+from botelier.services.call_logger import CallLogger
 from botelier.models import CallLog, CallLeg, CallStatus, CallOutcome, LegType
 from botelier.models.call_event import CallEvent
+
+# Task #123 — kept locally for legibility in the bigint-not-clamped assertion;
+# the production constant has been removed from call_logger.py.
+_INT4_MAX = 2_147_483_647
 
 
 def _make_call_log(answered_at=None, days_ago=0, hours_ago=0):

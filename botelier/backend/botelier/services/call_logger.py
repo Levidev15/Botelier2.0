@@ -23,9 +23,8 @@ _FORCED_BY_SOURCES = {"sweeper", "webhook_safety_net", "finally_defensive", "shu
 # call_events.offset_ms column is BIGINT (verified by the startup invariant
 # in database._assert_call_events_offset_ms_bigint), so writers compute the
 # true offset via services._event_offset.compute_offset_ms with no clamp.
-# Kept as an alias so older imports do not break during deploy; remove on
-# the next minor cleanup pass.
-_INT4_MAX = 2_147_483_647
+# The legacy _INT4_MAX constant has been removed; nothing in the codebase
+# imports it any more.
 
 
 class CallLogger:

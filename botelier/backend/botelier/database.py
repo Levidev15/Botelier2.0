@@ -1040,19 +1040,23 @@ def _assert_call_events_offset_ms_bigint() -> None:
     if row is None:
         # Table missing entirely — create_all + additive migrations should
         # have created it earlier in init_db; reaching here is a bug.
-        raise RuntimeError(
+        msg = (
             "call_events.offset_ms invariant: column not found "
             "(call_events table missing after migrations)"
         )
+        logger.error(msg)
+        raise RuntimeError(msg)
 
     data_type = row[0]
     if data_type != "bigint":
-        raise RuntimeError(
+        msg = (
             f"call_events.offset_ms invariant FAILED: data_type='{data_type}', "
             f"expected 'bigint'. Writes for calls older than ~24.85 days will "
             f"overflow int4 and silently roll back finalization. Refusing to "
             f"start. Run: ALTER TABLE call_events ALTER COLUMN offset_ms TYPE BIGINT"
         )
+        logger.error(msg)
+        raise RuntimeError(msg)
 
     logger.debug("call_events.offset_ms invariant ✓ (bigint)")
 
