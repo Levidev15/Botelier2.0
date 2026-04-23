@@ -30,7 +30,7 @@ router = APIRouter(prefix="/api/sms", tags=["SMS"])
 _EMPTY_TWIML = '<?xml version="1.0" encoding="UTF-8"?><Response></Response>'
 
 
-def _build_webhook_url(request: Request) -> str:
+def _build_webhook_url(request: Request, path: str = "/api/sms/webhook") -> str:
     """
     Reconstruct the canonical public URL that Twilio signed against.
 
@@ -45,21 +45,22 @@ def _build_webhook_url(request: Request) -> str:
     from botelier.config.domain import get_public_base_url
     fallback_host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host", "")
     base = get_public_base_url(fallback_host=fallback_host)
-    return f"{base}/api/sms/webhook"
+    return f"{base}{path}"
 
 
-def _validate_twilio_signature(request: Request, form_data: dict, auth_token: str) -> tuple[bool, str]:
+def _validate_twilio_signature(request: Request, form_data: dict, auth_token: str, path: str = "/api/sms/webhook") -> tuple[bool, str]:
     """
     Validate Twilio's X-Twilio-Signature header.
 
     Returns (is_valid, url_used) — the URL is included so callers can log it on failure.
-    Skips validation (returns True) when no auth_token is available.
+    Fails closed (returns False) when no auth_token is available — a missing
+    secret is a configuration error, not a bypass.
     """
-    url = _build_webhook_url(request)
+    url = _build_webhook_url(request, path)
 
     if not auth_token:
-        logger.debug(f"Twilio signature validation skipped — no auth token configured")
-        return True, url
+        logger.warning(f"Twilio signature validation failed — no auth token configured ({path})")
+        return False, url
 
     try:
         from twilio.request_validator import RequestValidator
@@ -220,12 +221,26 @@ async def sms_status_callback(
 ):
     """
     Twilio SMS delivery status callback.
+    Validates the X-Twilio-Signature header before processing.
     Updates message delivery status (sent, delivered, failed).
     """
     try:
         form_data = await request.form()
         message_sid    = form_data.get("MessageSid", "")
         message_status = form_data.get("MessageStatus", "")
+        to_number      = form_data.get("To", "")
+
+        auth_token = await _get_auth_token_for_number(to_number, db)
+        is_valid, validated_url = _validate_twilio_signature(
+            request, dict(form_data), auth_token, path="/api/sms/status"
+        )
+        if not is_valid:
+            logger.warning(
+                f"Invalid Twilio signature for status callback "
+                f"(MessageSid={message_sid}, validated against: {validated_url})"
+            )
+            from fastapi.responses import Response
+            return Response(status_code=403, content="Forbidden")
 
         if message_sid and message_status:
             msg = db.query(SMSMessage).filter(
