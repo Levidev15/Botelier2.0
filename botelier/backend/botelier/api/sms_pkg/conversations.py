@@ -36,7 +36,7 @@ from botelier.models.user import User
 from botelier.services.sms_service import SMSService
 from botelier.services.notification_broadcaster import broadcaster
 
-from ._auth import assert_sms_account_access
+from ._auth import assert_sms_account_access, assert_sms_permission
 
 router = APIRouter(prefix="/api/sms", tags=["SMS"])
 
@@ -187,7 +187,7 @@ async def take_over_conversation(
     db: Session = Depends(get_db),
 ):
     """Agent manually takes over a conversation — AI goes silent."""
-    assert_sms_account_access(user, request.account_id, db)
+    assert_sms_permission(user, request.account_id, "messages.manage_conversations", db)
     try:
         conversation = db.query(SMSConversation).filter(
             SMSConversation.id == conversation_id,
@@ -230,7 +230,7 @@ async def return_to_ai(
     db: Session = Depends(get_db),
 ):
     """Return a conversation to AI handling."""
-    assert_sms_account_access(user, request.account_id, db)
+    assert_sms_permission(user, request.account_id, "messages.manage_conversations", db)
     try:
         conversation = db.query(SMSConversation).filter(
             SMSConversation.id == conversation_id,
@@ -277,7 +277,7 @@ async def close_conversation(
     db: Session = Depends(get_db),
 ):
     """Close an SMS conversation."""
-    assert_sms_account_access(user, request.account_id, db)
+    assert_sms_permission(user, request.account_id, "messages.manage_conversations", db)
     try:
         conversation = db.query(SMSConversation).filter(
             SMSConversation.id == conversation_id,
@@ -311,7 +311,7 @@ async def mark_conversation_read(
     db: Session = Depends(get_db),
 ):
     """Mark a conversation as read (updates last_read_at timestamp)."""
-    assert_sms_account_access(user, request.account_id, db)
+    assert_sms_permission(user, request.account_id, "messages.manage_conversations", db)
     try:
         conversation = db.query(SMSConversation).filter(
             SMSConversation.id == conversation_id,
@@ -345,7 +345,7 @@ async def set_agent_presence(
     db: Session = Depends(get_db),
 ):
     """Set the active agent presence on a conversation (heartbeat every 15s)."""
-    assert_sms_account_access(user, request.account_id, db)
+    assert_sms_permission(user, request.account_id, "messages.manage_conversations", db)
     try:
         conversation = db.query(SMSConversation).filter(
             SMSConversation.id == conversation_id,
@@ -380,7 +380,7 @@ async def clear_agent_presence(
     db: Session = Depends(get_db),
 ):
     """Clear the active agent presence from a conversation."""
-    assert_sms_account_access(user, request.account_id, db)
+    assert_sms_permission(user, request.account_id, "messages.manage_conversations", db)
     try:
         conversation = db.query(SMSConversation).filter(
             SMSConversation.id == conversation_id,
@@ -417,7 +417,7 @@ async def agent_reply(
     db: Session = Depends(get_db),
 ):
     """Send a manual reply from a human agent in an SMS conversation."""
-    assert_sms_account_access(user, request.account_id, db)
+    assert_sms_permission(user, request.account_id, "messages.reply", db)
     try:
         conversation = db.query(SMSConversation).filter(
             SMSConversation.id == conversation_id,
@@ -512,7 +512,7 @@ async def generate_sms_summary(
     db: Session = Depends(get_db),
 ):
     """Generate an AI summary of an SMS conversation."""
-    assert_sms_account_access(user, request.account_id, db)
+    assert_sms_permission(user, request.account_id, "messages.manage_conversations", db)
     try:
         conversation = db.query(SMSConversation).filter(
             SMSConversation.id == conversation_id,

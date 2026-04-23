@@ -4,9 +4,14 @@ import { useSMSData } from "./hooks/useSMSData";
 import { ConversationList } from "./components/ConversationList";
 import { MessageThread } from "./components/MessageThread";
 import { SMSSettingsPanel } from "./components/SMSSettingsPanel";
+import { usePagePermission, AccessDeniedPage } from "@/components/ui/PermissionGate";
 
 export default function MessagesPage() {
+  const { hasAccess, loading: permLoading } = usePagePermission("messages", "view");
   const data = useSMSData();
+
+  if (permLoading) return null;
+  if (!hasAccess) return <AccessDeniedPage />;
 
   return (
     <div className="flex h-full bg-[#0a0a0a]">
