@@ -12,7 +12,7 @@ from loguru import logger
 
 from botelier.database import get_db
 from botelier.models.integration import IntegrationType, AccountIntegration, IntegrationStatus, IntegrationCallLog
-from botelier.auth.middleware import get_current_user
+from botelier.auth.middleware import get_current_user, check_account_permission
 
 
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
@@ -44,23 +44,31 @@ def _validate_opera_gateway_url(gateway_url: str) -> None:
         )
 
 
-def _assert_account_access(current_user, account_id: str) -> None:
+def _assert_account_access(
+    current_user,
+    account_id: str,
+    db: Session,
+    permission: str = "integrations.view",
+) -> None:
     """
-    Raise 403 if the authenticated user does not have an active membership
-    for the requested account_id.  Platform admins bypass this check.
+    Authorize the caller for an account-scoped integrations endpoint
+    (Task #144).
 
-    Call this at the top of every endpoint that takes {account_id} as a path
-    parameter so users cannot read or modify another account's data.
+    Delegates to ``check_account_permission`` so role-based gating is
+    uniform with the rest of the codebase: the user must have an active
+    membership in ``account_id`` AND the membership's resolved permissions
+    must grant ``permission``.  Platform admins bypass both checks.
+
+    The default ``permission`` is ``integrations.view``, granted to the
+    ``account_admin``, ``staff`` and ``viewer`` system roles.  Privileged
+    routes that mutate third-party connections, exercise outbound API
+    traffic, or expose detailed integration call-log error bodies must
+    pass ``permission="integrations.manage"``, granted only to
+    ``account_admin`` by default.
+
+    Raises ``HTTPException(403)`` on failure.
     """
-    if getattr(current_user, "user_type", None) == "platform_admin":
-        return
-    memberships = getattr(current_user, "account_memberships", None) or []
-    allowed = {str(getattr(m, "account_id", "")) for m in memberships if getattr(m, "is_active", False)}
-    if account_id not in allowed:
-        raise HTTPException(
-            status_code=403,
-            detail="You do not have access to this account",
-        )
+    check_account_permission(current_user, account_id, permission, db)
 
 
 class IntegrationTypeResponse(BaseModel):
@@ -255,7 +263,7 @@ async def list_account_integrations(
     current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    _assert_account_access(current_user, account_id)
+    _assert_account_access(current_user, account_id, db)
     integrations = db.query(AccountIntegration).filter(
         AccountIntegration.account_id == account_id
     ).all()
@@ -283,7 +291,7 @@ async def list_connected_integrations(
     current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    _assert_account_access(current_user, account_id)
+    _assert_account_access(current_user, account_id, db)
     integrations = db.query(AccountIntegration).filter(
         AccountIntegration.account_id == account_id,
         AccountIntegration.status == IntegrationStatus.CONNECTED
@@ -313,7 +321,7 @@ async def get_integration_endpoints(
     current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    _assert_account_access(current_user, account_id)
+    _assert_account_access(current_user, account_id, db)
     integration = db.query(AccountIntegration).filter(
         AccountIntegration.id == integration_id,
         AccountIntegration.account_id == account_id
@@ -349,7 +357,7 @@ async def connect_integration(
     current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    _assert_account_access(current_user, account_id)
+    _assert_account_access(current_user, account_id, db, permission="integrations.manage")
     integration_type = db.query(IntegrationType).filter(
         IntegrationType.id == request.integration_type_id
     ).first()
@@ -470,7 +478,7 @@ async def test_integration_connection(
     current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    _assert_account_access(current_user, account_id)
+    _assert_account_access(current_user, account_id, db, permission="integrations.manage")
     integration = db.query(AccountIntegration).filter(
         AccountIntegration.id == integration_id,
         AccountIntegration.account_id == account_id
@@ -522,7 +530,7 @@ async def disconnect_integration(
     current_user = Depends(get_current_user),
     db: Session = Depends(get_db)
 ):
-    _assert_account_access(current_user, account_id)
+    _assert_account_access(current_user, account_id, db, permission="integrations.manage")
     integration = db.query(AccountIntegration).filter(
         AccountIntegration.id == integration_id,
         AccountIntegration.account_id == account_id
@@ -567,7 +575,11 @@ async def get_integration_call_logs(
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    _assert_account_access(current_user, account_id)
+    # Detailed call-log payloads include outbound URLs, request/response
+    # bodies and upstream error messages — gate behind integrations.manage
+    # so read-only users (viewer / staff) cannot harvest secrets that
+    # leaked into a 4xx/5xx response body. (Task #144)
+    _assert_account_access(current_user, account_id, db, permission="integrations.manage")
     integration = db.query(AccountIntegration).filter(
         AccountIntegration.id == integration_id,
         AccountIntegration.account_id == account_id
@@ -612,7 +624,7 @@ async def get_integration_call_stats(
     db: Session = Depends(get_db),
 ):
     """Return quick health stats for an integration: total calls, success count, last called_at."""
-    _assert_account_access(current_user, account_id)
+    _assert_account_access(current_user, account_id, db)
     integration = db.query(AccountIntegration).filter(
         AccountIntegration.id == integration_id,
         AccountIntegration.account_id == account_id

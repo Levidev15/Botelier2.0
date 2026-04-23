@@ -56,6 +56,7 @@ interface IntegrationCardProps {
   connections: AccountIntegration[];
   integrationStats: Record<string, IntegrationStats>;
   testing: string | null;
+  canManage: boolean;
   handleConnect: (type: IntegrationType) => void;
   handleTestConnection: (conn: AccountIntegration) => void;
   handleDisconnect: (conn: AccountIntegration) => void;
@@ -66,6 +67,7 @@ export default function IntegrationCard({
   connections,
   integrationStats,
   testing,
+  canManage,
   handleConnect,
   handleTestConnection,
   handleDisconnect,
@@ -104,13 +106,15 @@ export default function IntegrationCard({
           </div>
         </div>
 
-        <button
-          onClick={() => handleConnect(type)}
-          className="inline-flex items-center px-4 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition"
-        >
-          <Plus className="h-4 w-4 mr-1" />
-          Add Connection
-        </button>
+        {canManage && (
+          <button
+            onClick={() => handleConnect(type)}
+            className="inline-flex items-center px-4 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition"
+          >
+            <Plus className="h-4 w-4 mr-1" />
+            Add Connection
+          </button>
+        )}
       </div>
 
       {connections.length > 0 && (
@@ -160,27 +164,29 @@ export default function IntegrationCard({
                   )}
                 </div>
               </div>
-              <div className="flex items-center gap-2">
-                <button
-                  onClick={() => handleTestConnection(conn)}
-                  disabled={testing === conn.id}
-                  className="px-2.5 py-1 text-sm text-gray-300 bg-gray-800 hover:bg-gray-700 rounded-lg transition disabled:opacity-50"
-                  title="Test connection"
-                >
-                  {testing === conn.id ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <RefreshCw className="h-3.5 w-3.5" />
-                  )}
-                </button>
-                <button
-                  onClick={() => handleDisconnect(conn)}
-                  className="px-2.5 py-1 text-sm text-red-400 hover:text-red-300 bg-gray-800 hover:bg-gray-700 rounded-lg transition"
-                  title="Remove connection"
-                >
-                  <Trash2 className="h-3.5 w-3.5" />
-                </button>
-              </div>
+              {canManage && (
+                <div className="flex items-center gap-2">
+                  <button
+                    onClick={() => handleTestConnection(conn)}
+                    disabled={testing === conn.id}
+                    className="px-2.5 py-1 text-sm text-gray-300 bg-gray-800 hover:bg-gray-700 rounded-lg transition disabled:opacity-50"
+                    title="Test connection"
+                  >
+                    {testing === conn.id ? (
+                      <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                    ) : (
+                      <RefreshCw className="h-3.5 w-3.5" />
+                    )}
+                  </button>
+                  <button
+                    onClick={() => handleDisconnect(conn)}
+                    className="px-2.5 py-1 text-sm text-red-400 hover:text-red-300 bg-gray-800 hover:bg-gray-700 rounded-lg transition"
+                    title="Remove connection"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                </div>
+              )}
             </div>
           ))}
         </div>

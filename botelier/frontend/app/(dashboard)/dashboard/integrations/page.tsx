@@ -3,8 +3,9 @@
 import { useState, useEffect } from "react";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
+import { usePermissions } from "@/lib/auth/usePermissions";
 import { confirmAction } from "@/lib/notifications";
-import { Check, AlertCircle, X, Loader2, Plug } from "lucide-react";
+import { Check, AlertCircle, X, Loader2, Plug, Lock } from "lucide-react";
 import type { AccountSecret, IntegrationType, AccountIntegration, MCPConnection, IntegrationStats } from "./types";
 import IntegrationCard from "./components/IntegrationCard";
 import SecretModal from "./components/SecretModal";
@@ -16,6 +17,12 @@ import SecretsSection from "./components/SecretsSection";
 export default function IntegrationsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
   const { authFetch, loading: authLoading, isAuthenticated } = useAuthToken();
+  const { can: canPerm, loading: permsLoading } = usePermissions();
+  // Backend gate: routes guarded by integrations.manage in
+  // botelier/backend/botelier/api/integrations.py — UI mirrors that
+  // contract so read-only roles (staff / viewer) see no buttons that
+  // would 403 on click. (Task #144)
+  const canManage = canPerm("integrations", "manage");
   const [integrationTypes, setIntegrationTypes] = useState<IntegrationType[]>([]);
   const [accountIntegrations, setAccountIntegrations] = useState<AccountIntegration[]>([]);
   const [loading, setLoading] = useState(true);
@@ -265,7 +272,7 @@ export default function IntegrationsPage() {
     }
   };
 
-  if (loading || contextLoading || authLoading) {
+  if (loading || contextLoading || authLoading || permsLoading) {
     return (
       <div className="p-8 flex items-center justify-center">
         <Loader2 className="h-8 w-8 animate-spin text-gray-400" />
@@ -303,6 +310,18 @@ export default function IntegrationsPage() {
         </p>
       </div>
 
+      {!canManage && (
+        <div className="mb-6 flex items-start gap-3 px-4 py-3 rounded-lg border border-gray-800 bg-[#141414] text-sm text-gray-300">
+          <Lock className="h-4 w-4 mt-0.5 text-gray-500 flex-shrink-0" />
+          <div>
+            <p className="font-medium">Read-only access</p>
+            <p className="text-gray-400 mt-0.5">
+              Your role can view integration status but cannot connect, test, or disconnect integrations. Ask an account admin if you need to make changes.
+            </p>
+          </div>
+        </div>
+      )}
+
       <div className="space-y-4">
         {integrationTypes.map((type) => (
           <IntegrationCard
@@ -311,6 +330,7 @@ export default function IntegrationsPage() {
             connections={getIntegrationConnections(type.id)}
             integrationStats={integrationStats}
             testing={testing}
+            canManage={canManage}
             handleConnect={handleConnect}
             handleTestConnection={handleTestConnection}
             handleDisconnect={handleDisconnect}
