@@ -79,7 +79,17 @@ async def websocket_call_endpoint(
             return
         
         if not to_number:
-            logger.error(f"❌ Missing 'to' in customParameters. Start data: {start_data}")
+            # Scrub the short-lived stream token before logging — even
+            # though it expires in 5 minutes, treat it as a bearer
+            # secret and never write it to logs (Task #138).
+            _safe_start = dict(start_data)
+            _safe_params = dict(_safe_start.get("customParameters", {}) or {})
+            if "streamToken" in _safe_params:
+                _safe_params["streamToken"] = "[REDACTED]"
+            if "streamTokenExp" in _safe_params:
+                _safe_params["streamTokenExp"] = "[REDACTED]"
+            _safe_start["customParameters"] = _safe_params
+            logger.error(f"❌ Missing 'to' in customParameters. Start data: {_safe_start}")
             await websocket.close(code=1008, reason="Missing phone number")
             return
 
