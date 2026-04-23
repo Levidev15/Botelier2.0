@@ -66,8 +66,13 @@ def _assert_account_access(
     pass ``permission="integrations.manage"``, granted only to
     ``account_admin`` by default.
 
-    Raises ``HTTPException(403)`` on failure.
+    Raises ``HTTPException(400)`` on a malformed ``account_id`` and
+    ``HTTPException(403)`` on permission failure.
     """
+    try:
+        UUID(str(account_id))
+    except (ValueError, TypeError):
+        raise HTTPException(status_code=400, detail="Invalid account_id")
     check_account_permission(current_user, account_id, permission, db)
 
 
