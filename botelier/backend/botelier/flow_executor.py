@@ -17,6 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Optional, Callable, Awaitable
 from dataclasses import dataclass, field
 from enum import Enum
+from botelier.services.ssrf_safe_transport import SSRFSafeTransport
 
 
 class NodeType(str, Enum):
@@ -1581,7 +1582,7 @@ You are executing a structured conversation flow. Follow these guidelines:
 
         while attempt <= retry_count:
             try:
-                async with httpx.AsyncClient(timeout=timeout) as client:
+                async with httpx.AsyncClient(transport=SSRFSafeTransport(), timeout=timeout) as client:
                     method = api_config.get("method", "GET").upper()
 
                     raw_headers = api_config.get("headers", {})

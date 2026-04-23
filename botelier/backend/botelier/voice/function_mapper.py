@@ -11,6 +11,7 @@ from typing import Dict, Any, List, Callable, Optional, TYPE_CHECKING
 from loguru import logger
 from ..config.domain import get_public_base_url
 from ..logging_config import should_log_prompts as _should_log_prompts
+from ..services.ssrf_safe_transport import SSRFSafeTransport
 
 if TYPE_CHECKING:
     from .call_handler import CallHandler
@@ -849,7 +850,7 @@ class FunctionMapper:
             elif body:
                 request_body = body
             
-            async with httpx.AsyncClient(timeout=request_timeout) as client:
+            async with httpx.AsyncClient(transport=SSRFSafeTransport(), timeout=request_timeout) as client:
                 try:
                     if method == "GET":
                         response = await client.get(formatted_url, headers=formatted_headers)
