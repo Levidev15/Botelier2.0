@@ -8,7 +8,7 @@ The core security goal is strict tenant isolation by `account_id` across calls, 
 
 ## Assets
 
-- **User accounts and sessions** — email/password accounts, JWTs, support-session tokens, and admin impersonation context. Compromise enables takeover of tenant and admin workflows.
+- **User accounts and sessions** — email/password accounts, JWTs, support-session tokens, and admin impersonation context. Compromise enables takeover of tenant and admin workflows. The dashboard currently keeps bearer and support-session context in browser storage, so same-origin XSS has direct session-theft impact.
 - **Tenant business data** — SMS conversations, phone numbers, call logs, analytics, assistant configs, knowledge bases, templates, and notification settings. This data is customer-facing, often sensitive, and must remain isolated per account.
 - **Customer communications and attachments** — call transcripts, recordings, SMS/MMS content, uploaded files, and phone numbers. Exposure leaks personal data and business communications.
 - **Provider and integration secrets** — Twilio sub-account credentials, AI provider keys, integration credentials, MCP credentials, database URLs, and encryption keys. Compromise enables spoofing, outbound abuse, and cross-system access.
@@ -17,7 +17,7 @@ The core security goal is strict tenant isolation by `account_id` across calls, 
 
 ## Trust Boundaries
 
-- **Browser ↔ FastAPI API** — all dashboard and auth traffic crosses this boundary. The client is untrusted; every account/role check must be enforced server-side.
+- **Browser ↔ FastAPI API** — all dashboard and auth traffic crosses this boundary. The client is untrusted; every account/role check must be enforced server-side. Frontend rendering surfaces such as the flow schema viewer must treat tenant-controlled strings as hostile because any same-origin script execution can read stored bearer/support-session tokens.
 - **Public internet ↔ webhook/media endpoints** — Twilio-facing call, SMS, simulation, and WebSocket routes are reachable without JWTs in several places and therefore require strict origin/authenticity validation.
 - **FastAPI ↔ PostgreSQL** — the backend has broad authority over all tenant records. Broken auth or unsafe query scoping at the API layer directly exposes cross-tenant data.
 - **FastAPI ↔ third-party services** — the backend makes authenticated outbound requests to Twilio, AI providers, hotel/PMS APIs, and MCP servers. User-controlled destinations or credential mishandling create SSRF and secret-exposure risk.
@@ -28,7 +28,7 @@ The core security goal is strict tenant isolation by `account_id` across calls, 
 ## Scan Anchors
 
 - **Production entry points:** `botelier/backend/main.py`, `botelier/backend/botelier/api/`, `botelier/frontend/app/`, `botelier/frontend/lib/auth/`.
-- **Highest-risk areas:** `auth/middleware.py`, `api/sms_pkg/`, `api/calls.py`, `api/websockets.py`, `api/api_tester.py`, `api/mcp_connections.py`, `api/integrations.py`, `services/integration_client.py`, `services/mcp_client.py`, `api/simulation.py`, `flow_executor.py`, upload/static file handling in `main.py` and `api/sms_pkg/settings.py`.
+- **Highest-risk areas:** `auth/middleware.py`, `api/sms_pkg/`, `api/calls.py`, `api/websockets.py`, `api/api_tester.py`, `api/mcp_connections.py`, `api/integrations.py`, `services/integration_client.py`, `services/mcp_client.py`, `api/simulation.py`, `flow_executor.py`, `frontend/components/flow-editor/`, and upload/static file handling in `main.py` and `api/sms_pkg/settings.py`.
 - **Public surfaces:** `/api/auth/*`, `/api/calls/*`, `/api/ws/call`, `/api/sms/webhook`, `/api/sms/upload`, `/api/api-tester/test`, `/api/mcp-connections*`, `/api/simulate/*`, invitation endpoints, `/uploads/*`.
 - **Authenticated/admin surfaces:** most dashboard CRUD APIs, `/api/admin/*`, `/api/integrations*`, account/team management, feature/admin support flows.
 - **Usually dev-only / lower priority:** `.agents/`, `.local/skills/`, tests, docs, and scaffolding unless a production path proves otherwise.
@@ -37,7 +37,7 @@ The core security goal is strict tenant isolation by `account_id` across calls, 
 
 ### Spoofing
 
-Botelier relies on JWTs for dashboard access and Twilio signatures for public messaging/call callbacks. The system must reject forged or weakly-signed tokens, must not accept fallback secrets in production, and must verify the authenticity of every public Twilio-triggered HTTP or WebSocket entry point before trusting caller identity, phone numbers, or call metadata.
+Botelier relies on JWTs for dashboard access and Twilio signatures for public messaging/call callbacks. The system must reject forged or weakly-signed tokens, must not accept fallback secrets in production, and must verify the authenticity of every public Twilio-triggered HTTP or WebSocket entry point before trusting caller identity, phone numbers, or call metadata. Missing Twilio secrets on a production number are themselves a security condition and must fail closed rather than downgrading webhook/media verification to allow-all behavior.
 
 ### Tampering
 
