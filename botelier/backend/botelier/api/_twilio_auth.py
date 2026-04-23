@@ -17,10 +17,9 @@ Two concerns live here:
    endpoint then verifies that token on the first `start` frame before
    any pipeline work begins.
 
-When `TWILIO_AUTH_TOKEN` is unset (local dev), HMAC checks are skipped
-to preserve dev parity, exactly as the SMS webhook does.  CallLog
-binding is still enforced, so a forged `start` frame with a fabricated
-`callSid` is rejected even in dev.
+Both checks fail closed: if no auth token or stream-token secret is
+configured the request is rejected rather than allowed through.  A
+production deployment must have the required secrets set.
 """
 
 from __future__ import annotations
@@ -68,14 +67,14 @@ def validate_twilio_signature(
     Returns `(is_valid, validated_url)`.  The URL is included so callers
     can log it on failure to diagnose proxy / host mismatches.
 
-    When `auth_token` is empty, validation is skipped (returns True) —
-    matches `sms_pkg/webhook.py` so local dev works without the secret.
+    When `auth_token` is empty, validation fails closed (returns False) —
+    a missing secret is treated as a configuration error, not a bypass.
     """
     url = _build_webhook_url(request, path)
 
     if not auth_token:
-        logger.debug(f"Twilio signature validation skipped — no auth token configured ({path})")
-        return True, url
+        logger.warning(f"Twilio signature validation failed — no auth token configured ({path})")
+        return False, url
 
     try:
         from twilio.request_validator import RequestValidator
@@ -186,10 +185,9 @@ def mint_stream_token(
 ) -> tuple[str, int]:
     """Mint a stream-binding token.
 
-    Returns `(token, exp_unix)`.  When no secret is available (dev with
-    no env token configured), returns `("", 0)` — the WebSocket layer
-    treats an empty token as "skip HMAC, still require CallLog binding"
-    so dev parity is preserved.
+    Returns `(token, exp_unix)`.  When no secret is available, returns
+    `("", 0)` — `verify_stream_token()` will reject any token (including
+    empty) when no secret is configured, so the WebSocket will be closed.
     """
     secret = _stream_token_secret(account_token)
     if not secret:
@@ -217,14 +215,14 @@ def verify_stream_token(
     for logging on rejection.
 
     Behaviour:
-      * No secret configured → skipped (caller still enforces CallLog
-        binding).  Mirrors HTTP signature skip-when-no-token.
+      * No secret configured → fail closed (returns False).  A missing
+        secret is a configuration error; the WebSocket is rejected.
       * Missing token / exp when a secret IS configured → reject.
       * Expired or tampered → reject.
     """
     secret = _stream_token_secret(account_token)
     if not secret:
-        return True, "skipped_no_secret"
+        return False, "no_secret_configured"
 
     if not token or exp in (None, "", 0):
         return False, "missing"
