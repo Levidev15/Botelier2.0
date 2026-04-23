@@ -21,6 +21,7 @@ from ..models.tool import Tool
 from ..models.user import User
 from ..auth.middleware import get_current_user, check_account_permission
 from ..flow_executor import FlowExecutor, parse_flow_config
+from ..services.ssrf_safe_transport import SSRFSafeTransport, _BLOCKED_LITERAL_HOSTS
 
 
 router = APIRouter(prefix="/api/simulate", tags=["Simulation"])
@@ -446,6 +447,7 @@ async def test_api_endpoint(request: TestAPIRequest, user: User = Depends(get_cu
     """
     import httpx
     import re
+    from urllib.parse import urlparse
     
     def substitute_variables(text: str, variables: dict) -> str:
         def replacer(match):
@@ -459,8 +461,17 @@ async def test_api_endpoint(request: TestAPIRequest, user: User = Depends(get_cu
     if request.body:
         resolved_body = substitute_variables(request.body, variables)
     
+    parsed = urlparse(resolved_url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="Only HTTP/HTTPS URLs are allowed")
+    hostname = parsed.hostname or ""
+    if not hostname:
+        raise HTTPException(status_code=400, detail="Missing hostname in URL")
+    if hostname in _BLOCKED_LITERAL_HOSTS:
+        raise HTTPException(status_code=400, detail="Requests to internal addresses are not allowed")
+    
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(transport=SSRFSafeTransport(), timeout=30.0) as client:
             response = await client.request(
                 method=request.method.upper(),
                 url=resolved_url,
