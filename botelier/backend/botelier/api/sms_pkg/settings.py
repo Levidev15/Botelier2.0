@@ -26,7 +26,7 @@ from botelier.database import get_db
 from botelier.models.sms_template import SMSTemplate, SMSNotificationSettings
 from botelier.models.user import User
 
-from ._auth import assert_sms_account_access
+from ._auth import assert_sms_account_access, assert_sms_permission
 
 router = APIRouter(prefix="/api/sms", tags=["SMS"])
 
@@ -102,7 +102,7 @@ async def create_template(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    assert_sms_account_access(user, request.account_id, db)
+    assert_sms_permission(user, request.account_id, "messages.manage_settings", db)
     template = SMSTemplate(
         account_id=UUID(request.account_id),
         name=request.name,
@@ -123,7 +123,7 @@ async def update_template(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    assert_sms_account_access(user, request.account_id, db)
+    assert_sms_permission(user, request.account_id, "messages.manage_settings", db)
     template = db.query(SMSTemplate).filter(
         SMSTemplate.id == template_id,
         SMSTemplate.account_id == UUID(request.account_id),
@@ -147,7 +147,7 @@ async def delete_template(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    assert_sms_account_access(user, account_id, db)
+    assert_sms_permission(user, account_id, "messages.manage_settings", db)
     template = db.query(SMSTemplate).filter(
         SMSTemplate.id == template_id,
         SMSTemplate.account_id == UUID(account_id),
@@ -188,7 +188,7 @@ async def update_notification_settings(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    assert_sms_account_access(user, request.account_id, db)
+    assert_sms_permission(user, request.account_id, "messages.manage_settings", db)
     settings = db.query(SMSNotificationSettings).filter(
         SMSNotificationSettings.account_id == UUID(request.account_id),
     ).first()
@@ -233,7 +233,7 @@ async def upload_file(
         extension to write to disk. This blocks stored-XSS via .html /
         .svg / .js uploads served from /uploads/*.
     """
-    assert_sms_account_access(user, account_id, db)
+    assert_sms_permission(user, account_id, "messages.reply", db)
 
     ext = ALLOWED_UPLOAD_EXT_BY_CONTENT_TYPE.get((file.content_type or "").lower())
     if not ext:

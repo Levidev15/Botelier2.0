@@ -92,6 +92,12 @@ PERMISSIONS = {
         "view": "View integration connections and status",
         "manage": "Connect, test, disconnect, and inspect call logs of external integrations",
     },
+    "messages": {
+        "view": "View SMS conversations and messages",
+        "reply": "Send SMS replies and upload MMS attachments",
+        "manage_conversations": "Take over, return to AI, and close SMS conversations",
+        "manage_settings": "Create, edit, and delete SMS templates and notification settings",
+    },
 }
 
 
@@ -110,6 +116,7 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
             "team": {"view": True, "invite": True, "manage_roles": True, "remove": True},
             "settings": {"view": True, "edit": True, "billing": True, "api_keys": True},
             "integrations": {"view": True, "manage": True},
+            "messages": {"view": True, "reply": True, "manage_conversations": True, "manage_settings": True},
         },
     },
     "staff": {
@@ -126,6 +133,7 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
             "team": {"view": True, "invite": False, "manage_roles": False, "remove": False},
             "settings": {"view": True, "edit": False, "billing": False, "api_keys": False},
             "integrations": {"view": True, "manage": False},
+            "messages": {"view": True, "reply": True, "manage_conversations": True, "manage_settings": False},
         },
     },
     "viewer": {
@@ -142,6 +150,7 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
             "team": {"view": True, "invite": False, "manage_roles": False, "remove": False},
             "settings": {"view": True, "edit": False, "billing": False, "api_keys": False},
             "integrations": {"view": True, "manage": False},
+            "messages": {"view": True, "reply": False, "manage_conversations": False, "manage_settings": False},
         },
     },
 }
