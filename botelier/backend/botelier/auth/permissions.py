@@ -88,6 +88,10 @@ PERMISSIONS = {
         "billing": "Manage billing and subscription",
         "api_keys": "Manage API keys",
     },
+    "integrations": {
+        "view": "View integration connections and status",
+        "manage": "Connect, test, disconnect, and inspect call logs of external integrations",
+    },
 }
 
 
@@ -105,6 +109,7 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
             "flows": {"view": True, "edit": True, "publish": True, "revert": True},
             "team": {"view": True, "invite": True, "manage_roles": True, "remove": True},
             "settings": {"view": True, "edit": True, "billing": True, "api_keys": True},
+            "integrations": {"view": True, "manage": True},
         },
     },
     "staff": {
@@ -120,6 +125,7 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
             "flows": {"view": True, "edit": True, "publish": False, "revert": False},
             "team": {"view": True, "invite": False, "manage_roles": False, "remove": False},
             "settings": {"view": True, "edit": False, "billing": False, "api_keys": False},
+            "integrations": {"view": True, "manage": False},
         },
     },
     "viewer": {
@@ -135,6 +141,7 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
             "flows": {"view": True, "edit": False, "publish": False, "revert": False},
             "team": {"view": True, "invite": False, "manage_roles": False, "remove": False},
             "settings": {"view": True, "edit": False, "billing": False, "api_keys": False},
+            "integrations": {"view": True, "manage": False},
         },
     },
 }
