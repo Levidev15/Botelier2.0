@@ -8,12 +8,21 @@ interface FlowSchemaPanelProps {
   onClose: () => void;
 }
 
+function escapeHtml(str: string): string {
+  return str
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 function syntaxHighlight(json: string): string {
-  return json.replace(
-    /("(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\"])*"(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
+  return escapeHtml(json).replace(
+    /(&quot;(\\u[a-zA-Z0-9]{4}|\\[^u]|[^\\&])*&quot;(\s*:)?|\b(true|false|null)\b|-?\d+(?:\.\d*)?(?:[eE][+\-]?\d+)?)/g,
     (match) => {
       let cls = "text-yellow-400";
-      if (/^"/.test(match)) {
+      if (/^&quot;/.test(match)) {
         if (/:$/.test(match)) {
           cls = "text-blue-400";
         } else {
