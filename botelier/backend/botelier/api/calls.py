@@ -1108,23 +1108,33 @@ async def get_call_recording(
 
 
 @router.get("/{call_id}/events")
-async def get_call_events(call_id: str, request: Request, db: Session = Depends(get_db)):
+async def get_call_events(
+    call_id: str,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
     """
     Return the event timeline for a specific call.
+
+    Requires authentication. The authenticated user must belong to the account
+    that owns the call (call_logs.view permission). Platform admins bypass
+    the ownership check.
 
     Events are ordered chronologically by occurred_at.
 
     Response items include:
         event_type, event_source, severity, offset_ms, occurred_at, details
     """
+    from fastapi import HTTPException
     from ..models.call_event import CallEvent as CallEventModel
 
-    try:
-        call_log = db.query(CallLog).filter(CallLog.id == call_id).first()
-        if not call_log:
-            from fastapi import HTTPException
-            raise HTTPException(status_code=404, detail="Call not found")
+    call_log = db.query(CallLog).filter(CallLog.id == call_id).first()
+    if not call_log:
+        raise HTTPException(status_code=404, detail="Call not found")
 
+    check_account_permission(user, str(call_log.account_id), "call_logs.view", db)
+
+    try:
         events = (
             db.query(CallEventModel)
             .filter(CallEventModel.call_log_id == call_log.id)
@@ -1134,7 +1144,8 @@ async def get_call_events(call_id: str, request: Request, db: Session = Depends(
 
         return [e.to_dict() for e in events]
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.exception(f"Error fetching events for call {call_id}: {e}")
-        from fastapi import HTTPException
         raise HTTPException(status_code=500, detail="Internal server error")
