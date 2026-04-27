@@ -1,0 +1,14 @@
+Integrations Authorization
+Read-only users can still connect, test, and disconnect the account’s external integrations. This lets a low-privilege team member break live integrations or replace them with different credentials even though their role is not supposed to manage account settings.
+
+The integrations API uses _assert_account_access() as its authorization boundary (botelier/backend/botelier/api/integrations.py:47-64). That helper only checks whether the authenticated user has any active membership in the target account. It does not call check_account_permission(), inspect the membership role, or require any settings-specific capability.
+
+As a result, any tenant member can invoke privileged integration-management routes, including:
+
+POST /api/integrations/account/{account_id}/connect (integrations.py:345-463) to store new credentials and establish a new external connection
+POST /api/integrations/account/{account_id}/integration/{integration_id}/test (integrations.py:466-515) to exercise the existing connection and trigger token refresh / outbound API traffic
+DELETE /api/integrations/account/{account_id}/integration/{integration_id} (integrations.py:518-546) to wipe stored credentials and disconnect the integration
+GET /api/integrations/account/{account_id}/integration/{integration_id}/call-logs (integrations.py:562-604) to read internal endpoint names and recent error details for that integration
+This conflicts with the application's documented RBAC model. botelier/backend/botelier/auth/permissions.py:85-89,125-138 gives viewers settings.view but denies settings.edit, settings.billing, and settings.api_keys; however, there is no integrations.* permission family at all. Because the backend never maps integration management onto a permission, a viewer or other minimally privileged member can still perform account-level configuration changes that should be restricted to administrators.
+
+The dashboard does not provide a compensating gate. Frontend permission types omit any integrations permission (frontend/lib/auth/types.ts:25-77), and the integrations page loads and exposes connection-management actions without a page-level permission check (frontend/app/(dashboard)/dashboard/integrations/page.tsx:16-218). In a realistic deployment, this means a tenant admin can invite a user as a read-only viewer yet that user can still disconnect the PMS/CRM integration, attach new credentials, or repeatedly test production connections, causing unauthorized changes and service disruption.
