@@ -44,8 +44,10 @@ backend/
 Run via the `botelier-backend` workflow:
 
 ```
-cd botelier/backend && python -m uvicorn main:app --host 0.0.0.0 --port 3001 --reload
+cd botelier/backend && python -m uvicorn main:app --host 0.0.0.0 --port 3001
 ```
+
+> **Do not add `--reload` to this command.** Uvicorn's `--reload` flag starts a WatchFiles monitoring process that kills the server — and every open WebSocket connection — whenever any file in `botelier/backend/` changes (including auto-generated `__pycache__` writes). Active voice calls run over long-lived WebSockets, so a reload mid-call terminates the call immediately. After making code changes, restart the workflow manually.
 
 Required env: `DATABASE_URL`. Optional: `LOG_PROMPTS=on` enables verbose payload dumps for debugging (default off in prod).
 
