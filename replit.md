@@ -30,6 +30,10 @@ The UI/UX includes a Sonner-based toast notification system, a unified 4-tab lay
 
 **Light / Dark Mode Toggle:** A `ThemeProvider` context (`lib/theme/ThemeContext.tsx`) manages theme state, persists to `localStorage` under the key `botelier_theme`, and applies a `data-theme="dark"` or `data-theme="light"` attribute to `<html>`. Comprehensive CSS overrides in `globals.css` remap all hardcoded dark Tailwind classes (`bg-[#0a0a0a]`, `border-gray-800`, etc.) when `data-theme="light"` is set. Both the dashboard sidebar and admin sidebar footers include a Sun/Moon icon toggle button. The login/invite pages are unaffected. `suppressHydrationWarning` is set on `<html>` to handle server-side `data-theme="dark"` default cleanly.
 
+### Voice Pipeline — Runtime Constraints
+
+**No `--reload` on the backend workflow.** The `botelier-backend` workflow runs uvicorn without `--reload`. Uvicorn's reload mode starts a WatchFiles process that monitors `botelier/backend/` and kills the server process on any file change — including auto-generated `__pycache__` writes. Voice calls run over long-lived WebSockets; a reload mid-call terminates the WebSocket and drops the call instantly. After any code change, restart the workflow manually. The production `start.sh` has never had `--reload` and remains clean.
+
 ### Technical Implementations & Feature Specifications
 The core of the system is a `VoiceAgent` interface wrapping Pipecat, configurable for STT, LLM, and TTS providers. Call handling is managed via Twilio Media Streams, with a FastAPI backend and a `CallHandler` orchestrating the Pipecat pipeline. A robust tools system (Function Calling) is implemented with PostgreSQL and multi-tenant FastAPI endpoints. Phone number management is integrated with Twilio, supporting sub-accounts and number lifecycle.
 
