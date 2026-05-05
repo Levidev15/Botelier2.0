@@ -689,6 +689,8 @@ _SILERO_VAD_DEFAULTS = {
     "min_volume": 0.4,
     "smart_turn_stop_secs": 0.5,
 }
+# Optional guard in vad_config for rolling out min_volume tuning changes.
+_SILERO_MIN_VOLUME_TUNING_FLAG = "enable_min_volume_tuning_v2"
 
 
 def _backfill_silero_vad_config():
@@ -752,7 +754,8 @@ def _backfill_silero_vad_config():
             .filter(Assistant.vad_config.isnot(None))
             .all()
         )
-        normalized = []
+        normalized_stop_secs = []
+        normalized_min_volume = []
         for asst in normalize_candidates:
             cfg = asst.vad_config or {}
             stop_secs = cfg.get("stop_secs")
@@ -778,23 +781,61 @@ def _backfill_silero_vad_config():
                     f"{prev_notes} | {normalize_note}".strip(" |") if prev_notes else normalize_note
                 )
                 asst.vad_config = new_cfg
-                normalized.append(f"{asst.name} ({stop_secs_f}->0.2)")
+                normalized_stop_secs.append(f"{asst.name} ({stop_secs_f}->0.2)")
                 logger.info(
                     f"VAD config backfill: clamped stop_secs {stop_secs_f}->0.2 "
                     f"for assistant '{asst.name}' ({asst.id})"
                 )
 
-        if updated or normalized:
+        # Optional guarded normalization for legacy min_volume defaults.
+        # Only runs when the assistant has explicitly opted into the new
+        # tuning behavior via _SILERO_MIN_VOLUME_TUNING_FLAG.
+        for asst in normalize_candidates:
+            cfg = asst.vad_config or {}
+            if not cfg.get(_SILERO_MIN_VOLUME_TUNING_FLAG, False):
+                continue
+
+            min_volume = cfg.get("min_volume")
+            if min_volume is None:
+                continue
+            try:
+                min_volume_f = float(min_volume)
+            except (TypeError, ValueError):
+                continue
+
+            # 0.6 is treated as a legacy default-like value that can be safely
+            # normalized for opted-in assistants. Any other value is preserved.
+            if min_volume_f != 0.6:
+                continue
+
+            new_cfg = dict(cfg)
+            new_cfg["min_volume"] = _SILERO_VAD_DEFAULTS["min_volume"]
+            asst.vad_config = new_cfg
+            normalized_min_volume.append(
+                f"{asst.name} ({min_volume_f}->{_SILERO_VAD_DEFAULTS['min_volume']})"
+            )
+            logger.info(
+                "VAD config backfill: normalized legacy min_volume "
+                f"{min_volume_f}->{_SILERO_VAD_DEFAULTS['min_volume']} for assistant "
+                f"'{asst.name}' ({asst.id})"
+            )
+
+        if updated or normalized_stop_secs or normalized_min_volume:
             db.commit()
             if updated:
                 logger.info(
                     f"VAD config backfill complete — defaulted {len(updated)} "
                     f"assistant(s): {', '.join(updated)}"
                 )
-            if normalized:
+            if normalized_stop_secs:
                 logger.info(
                     f"VAD config backfill complete — normalized stop_secs on "
-                    f"{len(normalized)} assistant(s): {', '.join(normalized)}"
+                    f"{len(normalized_stop_secs)} assistant(s): {', '.join(normalized_stop_secs)}"
+                )
+            if normalized_min_volume:
+                logger.info(
+                    "VAD config backfill complete — normalized legacy min_volume on "
+                    f"{len(normalized_min_volume)} assistant(s): {', '.join(normalized_min_volume)}"
                 )
         else:
             logger.info("VAD config backfill — all Silero assistants already configured")
