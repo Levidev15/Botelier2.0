@@ -652,6 +652,7 @@ class CallHandler:
                 idle_timeout_tracker,
                 user_turn_capture,
                 tts_latency_tracker,
+                vad_suspicion_tracker,
                 greeting_injector,
             ) = VoiceEngineFactory.create_pipeline(
                 config=config,
@@ -896,6 +897,8 @@ class CallHandler:
                 user_turn_capture.set_event_queue(event_queue)
                 # Wire event_queue to TtsPipelineLatencyTracker (emits turn_latency per responded turn)
                 tts_latency_tracker.set_event_queue(event_queue)
+                # Wire event_queue to VadSuspicionTracker (emits VAD quality suspicion events)
+                vad_suspicion_tracker.set_event_queue(event_queue)
 
                 # Emit deferred MCP registration event now that the queue is running.
                 # _mcp_event_payload is populated above when MCP ran; None means MCP was skipped.

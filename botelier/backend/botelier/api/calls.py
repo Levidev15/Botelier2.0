@@ -12,7 +12,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request, Response
 from loguru import logger
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -1119,6 +1119,7 @@ async def get_call_recording(
 @router.get("/{call_id}/events")
 async def get_call_events(
     call_id: str,
+    event_types: Optional[list[str]] = Query(default=None),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -1144,12 +1145,11 @@ async def get_call_events(
     check_account_permission(user, str(call_log.account_id), "call_logs.view", db)
 
     try:
-        events = (
-            db.query(CallEventModel)
-            .filter(CallEventModel.call_log_id == call_log.id)
-            .order_by(CallEventModel.occurred_at)
-            .all()
-        )
+        _query = db.query(CallEventModel).filter(CallEventModel.call_log_id == call_log.id)
+        if event_types:
+            _query = _query.filter(CallEventModel.event_type.in_(event_types))
+
+        events = _query.order_by(CallEventModel.occurred_at).all()
 
         return [e.to_dict() for e in events]
 
