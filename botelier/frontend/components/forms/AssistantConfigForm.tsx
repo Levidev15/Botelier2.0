@@ -21,7 +21,7 @@ const SILERO_VAD_DEFAULTS = {
   start_secs: 0.2,
   stop_secs: 0.8,
   min_volume: 0.6,
-  smart_turn_stop_secs: 1.0,
+  smart_turn_stop_secs: 0.5,
 };
 
 interface Assistant {
@@ -978,14 +978,14 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
 
                   <FormField
                     label="SmartTurn End-of-Turn Silence (seconds)"
-                    description="How long silence must persist after speech before SmartTurn concludes the user has finished their turn. Distinct from VAD Stop Delay — this drives the ML turn-completion model. Default: 1.0"
+                    description="How long silence must persist after speech before SmartTurn concludes the user has finished their turn. Distinct from VAD Stop Delay — this drives the ML turn-completion model. Default: 0.5"
                   >
                     <input
                       type="number"
                       min="0.1"
                       max="5"
                       step="0.1"
-                      value={formData.vad_config?.smart_turn_stop_secs ?? 1.0}
+                      value={formData.vad_config?.smart_turn_stop_secs ?? 0.5}
                       onChange={(e) => {
                         const newConfig = { ...formData.vad_config, smart_turn_stop_secs: parseFloat(e.target.value) };
                         handleFieldChange("vad_config", newConfig);

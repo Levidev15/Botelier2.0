@@ -43,3 +43,17 @@ Loaded as part of `main.py` startup. Pipecat's heavy models (Silero VAD, SmartTu
 - Turn fragmentation is driven by `LLMUserAggregatorParams` in `engine.py` plus `LocalSmartTurnAnalyzerV3(stop_secs=...)` and Silero VAD `stop_secs`. Tune carefully — lowering finalizes faster (snappier) but breaks long sentences mid-thought.
 - Greeting is injected as TTSAudioRawFrames; before Task #110 these were transcribed by Deepgram and counted as "user speech", flipping `caller_spoke = TRUE` on calls where the human never spoke. The `FirstUserSpeechTracker` now guards against this.
 - Prewarm cache miss is silent — code falls back to the cold path and emits a `cold_path_fallback` event. Watch for an elevated rate of these.
+
+
+## SmartTurn tuning by call type
+
+Use `vad_config.smart_turn_stop_secs` to balance responsiveness vs. turn completeness:
+
+- **Hotel concierge / transactional calls (recommended baseline: `0.5s`)**
+  - Best for short requests (room service, checkout time, directions).
+  - Feels snappier and lowers perceived lag between caller pauses and AI responses.
+- **Long-form information capture (start at `0.8s` to `1.2s`)**
+  - Better for reservation details, policy explanations, incident reports, or any scenario where callers speak in longer clauses with brief pauses.
+  - Reduces premature turn finalization and transcript fragmentation.
+
+Practical rule: decrease in 0.1s steps for speed; increase in 0.1–0.2s steps when you observe cut-offs or fragmented user turns. Keep Silero `stop_secs` and STT latency assumptions aligned when tuning aggressively.
