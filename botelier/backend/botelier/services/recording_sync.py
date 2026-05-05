@@ -1,5 +1,4 @@
-"""
-Recording Sync Service.
+"""Recording Sync Service.
 
 Provides utilities for managing Twilio call recording.
 
@@ -21,16 +20,14 @@ import os as _os
 from typing import Optional
 
 import requests as _requests
-
 from sqlalchemy.orm import Session
 
-from botelier.models.phone_number import PhoneNumber
-from botelier.models.account import Account
-from botelier.models.assistant import Assistant
-from botelier.integrations.twilio.phone_numbers import PhoneNumberManager
 from botelier.auth.features import get_account_features
 from botelier.config.domain import get_public_base_url
-
+from botelier.integrations.twilio.phone_numbers import PhoneNumberManager
+from botelier.models.account import Account
+from botelier.models.assistant import Assistant
+from botelier.models.phone_number import PhoneNumber
 
 _log = logging.getLogger(__name__)
 
@@ -41,8 +38,7 @@ async def start_in_call_recording(
     account_sub_token: Optional[str],
     base_url: str,
 ) -> Optional[str]:
-    """
-    Start recording an in-progress Twilio call via the Recordings REST API.
+    """Start recording an in-progress Twilio call via the Recordings REST API.
 
     Uses ``POST /2010-04-01/Accounts/{AccountSid}/Calls/{CallSid}/Recordings.json``
     (Twilio docs option 6).  This approach requires no phone-number-level
@@ -75,8 +71,7 @@ async def start_in_call_recording(
         return None
 
     url = (
-        f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}"
-        f"/Calls/{call_sid}/Recordings.json"
+        f"https://api.twilio.com/2010-04-01/Accounts/{account_sid}/Calls/{call_sid}/Recordings.json"
     )
     data = {
         "RecordingChannels": "dual",
@@ -93,13 +88,16 @@ async def start_in_call_recording(
             recording_sid = response.json().get("sid")
             _log.info(
                 "✅ Started in-call recording for %s (SID %s)",
-                call_sid, recording_sid,
+                call_sid,
+                recording_sid,
             )
             return recording_sid
         else:
             _log.warning(
                 "Failed to start in-call recording for %s: HTTP %s — %s",
-                call_sid, response.status_code, response.text[:300],
+                call_sid,
+                response.status_code,
+                response.text[:300],
             )
             return None
     except Exception as exc:
@@ -112,8 +110,7 @@ def sync_phone_number_recording(
     account: Account,
     db: Session,
 ) -> None:
-    """
-    Sync Twilio phone-number-level call recording config for *phone_number*.
+    """Sync Twilio phone-number-level call recording config for *phone_number*.
 
     NOTE: This function is superseded by ``start_in_call_recording`` which fires
     at call-answer time and requires no phone-number pre-configuration.  It is
@@ -136,9 +133,7 @@ def sync_phone_number_recording(
     Silently logs warnings on failure so that transient Twilio errors never
     prevent the primary DB operation from succeeding.
     """
-    has_sub_creds = bool(
-        account.twilio_sub_account_sid and account.twilio_sub_auth_token
-    )
+    has_sub_creds = bool(account.twilio_sub_account_sid and account.twilio_sub_auth_token)
     has_main_creds = bool(
         _os.environ.get("TWILIO_ACCOUNT_SID") and _os.environ.get("TWILIO_AUTH_TOKEN")
     )
@@ -159,9 +154,9 @@ def sync_phone_number_recording(
 
         assistant_recording_enabled = False
         if account_recording_allowed and phone_number.assistant_id:
-            assistant = db.query(Assistant).filter(
-                Assistant.id == phone_number.assistant_id
-            ).first()
+            assistant = (
+                db.query(Assistant).filter(Assistant.id == phone_number.assistant_id).first()
+            )
             if assistant:
                 assistant_recording_enabled = bool(
                     (assistant.call_settings or {}).get("call_recording_enabled", False)

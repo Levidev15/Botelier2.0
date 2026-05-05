@@ -1,13 +1,12 @@
-"""
-Oracle Opera Cloud OHIP Integration Seed Data.
+"""Oracle Opera Cloud OHIP Integration Seed Data.
 
 This seeds the IntegrationType for Oracle Opera Cloud with proper OHIP API
 configuration including OAuth settings and pre-built endpoint templates.
 """
 
 import json
-from botelier.models.integration import IntegrationType
 
+from botelier.models.integration import IntegrationType
 
 OPERA_CLOUD_INTEGRATION = {
     "slug": "opera-cloud",
@@ -17,18 +16,14 @@ OPERA_CLOUD_INTEGRATION = {
     "provider": "oracle",
     "auth_type": "oauth2_client_credentials",
     "documentation_url": "https://docs.oracle.com/en/industries/hospitality/integration-platform/ohipu/",
-    
     "auth_config": {
         "token_endpoint_path": "/oauth/v1/tokens",
         "grant_type": "password",
         "scope": "oraclecloud",
         "token_header": "Authorization",
         "token_prefix": "Bearer",
-        "additional_headers": {
-            "x-app-key": "{{app_key}}"
-        }
+        "additional_headers": {"x-app-key": "{{app_key}}"},
     },
-    
     "required_fields": [
         {
             "key": "gateway_url",
@@ -36,7 +31,7 @@ OPERA_CLOUD_INTEGRATION = {
             "type": "url",
             "placeholder": "https://your-environment.hospitality.oraclecloud.com",
             "description": "Your OHIP gateway URL from the Developer Portal Environments tab",
-            "required": True
+            "required": True,
         },
         {
             "key": "app_key",
@@ -44,7 +39,7 @@ OPERA_CLOUD_INTEGRATION = {
             "type": "password",
             "placeholder": "Your x-app-key",
             "description": "Application key from registering your app in the Developer Portal",
-            "required": True
+            "required": True,
         },
         {
             "key": "client_id",
@@ -52,7 +47,7 @@ OPERA_CLOUD_INTEGRATION = {
             "type": "text",
             "placeholder": "Your OAuth Client ID",
             "description": "OAuth Client ID from the Developer Portal",
-            "required": True
+            "required": True,
         },
         {
             "key": "client_secret",
@@ -60,7 +55,7 @@ OPERA_CLOUD_INTEGRATION = {
             "type": "password",
             "placeholder": "Your OAuth Client Secret",
             "description": "OAuth Client Secret from the Developer Portal",
-            "required": True
+            "required": True,
         },
         {
             "key": "enterprise_id",
@@ -68,7 +63,7 @@ OPERA_CLOUD_INTEGRATION = {
             "type": "text",
             "placeholder": "Your Enterprise ID",
             "description": "Your Oracle Hospitality Enterprise ID",
-            "required": True
+            "required": True,
         },
         {
             "key": "hotel_id",
@@ -76,10 +71,9 @@ OPERA_CLOUD_INTEGRATION = {
             "type": "text",
             "placeholder": "SAND01 or your property code",
             "description": "The property/hotel ID in OPERA Cloud (e.g., SAND01 for sandbox)",
-            "required": True
-        }
+            "required": True,
+        },
     ],
-    
     "endpoints": [
         {
             "id": "get_reservation",
@@ -92,7 +86,12 @@ OPERA_CLOUD_INTEGRATION = {
                 {"key": "confirmationNumbers", "value": "{{confirmation_number}}", "required": True}
             ],
             "variables": [
-                {"key": "confirmation_number", "type": "text", "label": "Confirmation Number", "description": "The reservation confirmation number"}
+                {
+                    "key": "confirmation_number",
+                    "type": "text",
+                    "label": "Confirmation Number",
+                    "description": "The reservation confirmation number",
+                }
             ],
             "response_mapping": {
                 "reservation_id": "$.reservations.reservation[0].reservationIdList[0].id",
@@ -100,8 +99,8 @@ OPERA_CLOUD_INTEGRATION = {
                 "arrival_date": "$.reservations.reservation[0].arrivalDate",
                 "departure_date": "$.reservations.reservation[0].departureDate",
                 "room_type": "$.reservations.reservation[0].roomType",
-                "status": "$.reservations.reservation[0].reservationStatus"
-            }
+                "status": "$.reservations.reservation[0].reservationStatus",
+            },
         },
         {
             "id": "search_reservations",
@@ -114,18 +113,38 @@ OPERA_CLOUD_INTEGRATION = {
                 {"key": "givenName", "value": "{{guest_first_name}}", "required": False},
                 {"key": "surname", "value": "{{guest_last_name}}", "required": False},
                 {"key": "arrivalStartDate", "value": "{{arrival_date}}", "required": False},
-                {"key": "arrivalEndDate", "value": "{{arrival_end_date}}", "required": False}
+                {"key": "arrivalEndDate", "value": "{{arrival_end_date}}", "required": False},
             ],
             "variables": [
-                {"key": "guest_first_name", "type": "text", "label": "Guest First Name", "description": "Guest's first name"},
-                {"key": "guest_last_name", "type": "text", "label": "Guest Last Name", "description": "Guest's last name"},
-                {"key": "arrival_date", "type": "date", "label": "Arrival Date", "description": "Start of arrival date range (YYYY-MM-DD)"},
-                {"key": "arrival_end_date", "type": "date", "label": "Arrival End Date", "description": "End of arrival date range (YYYY-MM-DD)"}
+                {
+                    "key": "guest_first_name",
+                    "type": "text",
+                    "label": "Guest First Name",
+                    "description": "Guest's first name",
+                },
+                {
+                    "key": "guest_last_name",
+                    "type": "text",
+                    "label": "Guest Last Name",
+                    "description": "Guest's last name",
+                },
+                {
+                    "key": "arrival_date",
+                    "type": "date",
+                    "label": "Arrival Date",
+                    "description": "Start of arrival date range (YYYY-MM-DD)",
+                },
+                {
+                    "key": "arrival_end_date",
+                    "type": "date",
+                    "label": "Arrival End Date",
+                    "description": "End of arrival date range (YYYY-MM-DD)",
+                },
             ],
             "response_mapping": {
                 "reservations": "$.reservations.reservation",
-                "count": "$.reservations.count"
-            }
+                "count": "$.reservations.count",
+            },
         },
         {
             "id": "create_reservation",
@@ -136,52 +155,74 @@ OPERA_CLOUD_INTEGRATION = {
             "path": "/rsv/v1/hotels/{{hotel_id}}/reservations",
             "body_template": {
                 "reservations": {
-                    "reservation": [{
-                        "hotelId": "{{hotel_id}}",
-                        "reservationGuests": {
-                            "profileInfo": [{
-                                "profile": {
-                                    "profileType": "Guest",
-                                    "customer": {
-                                        "personName": [{
-                                            "givenName": "{{guest_first_name}}",
-                                            "surname": "{{guest_last_name}}"
-                                        }]
+                    "reservation": [
+                        {
+                            "hotelId": "{{hotel_id}}",
+                            "reservationGuests": {
+                                "profileInfo": [
+                                    {
+                                        "profile": {
+                                            "profileType": "Guest",
+                                            "customer": {
+                                                "personName": [
+                                                    {
+                                                        "givenName": "{{guest_first_name}}",
+                                                        "surname": "{{guest_last_name}}",
+                                                    }
+                                                ]
+                                            },
+                                        }
                                     }
-                                }
-                            }]
-                        },
-                        "roomStay": {
-                            "arrivalDate": "{{arrival_date}}",
-                            "departureDate": "{{departure_date}}",
-                            "roomTypes": [{
-                                "roomTypeCode": "{{room_type}}"
-                            }],
-                            "ratePlanCodes": [{
-                                "ratePlanCode": "{{rate_code}}"
-                            }],
-                            "guestCounts": {
-                                "adults": "{{adult_count}}",
-                                "children": "{{child_count}}"
-                            }
+                                ]
+                            },
+                            "roomStay": {
+                                "arrivalDate": "{{arrival_date}}",
+                                "departureDate": "{{departure_date}}",
+                                "roomTypes": [{"roomTypeCode": "{{room_type}}"}],
+                                "ratePlanCodes": [{"ratePlanCode": "{{rate_code}}"}],
+                                "guestCounts": {
+                                    "adults": "{{adult_count}}",
+                                    "children": "{{child_count}}",
+                                },
+                            },
                         }
-                    }]
+                    ]
                 }
             },
             "variables": [
-                {"key": "guest_first_name", "type": "text", "label": "Guest First Name", "required": True},
-                {"key": "guest_last_name", "type": "text", "label": "Guest Last Name", "required": True},
+                {
+                    "key": "guest_first_name",
+                    "type": "text",
+                    "label": "Guest First Name",
+                    "required": True,
+                },
+                {
+                    "key": "guest_last_name",
+                    "type": "text",
+                    "label": "Guest Last Name",
+                    "required": True,
+                },
                 {"key": "arrival_date", "type": "date", "label": "Arrival Date", "required": True},
-                {"key": "departure_date", "type": "date", "label": "Departure Date", "required": True},
+                {
+                    "key": "departure_date",
+                    "type": "date",
+                    "label": "Departure Date",
+                    "required": True,
+                },
                 {"key": "room_type", "type": "text", "label": "Room Type Code", "required": True},
                 {"key": "rate_code", "type": "text", "label": "Rate Plan Code", "required": True},
                 {"key": "adult_count", "type": "number", "label": "Number of Adults", "default": 1},
-                {"key": "child_count", "type": "number", "label": "Number of Children", "default": 0}
+                {
+                    "key": "child_count",
+                    "type": "number",
+                    "label": "Number of Children",
+                    "default": 0,
+                },
             ],
             "response_mapping": {
                 "confirmation_number": "$.links[0].href",
-                "reservation_id": "$.reservationId.id"
-            }
+                "reservation_id": "$.reservationId.id",
+            },
         },
         {
             "id": "get_guest_profile",
@@ -191,15 +232,21 @@ OPERA_CLOUD_INTEGRATION = {
             "method": "GET",
             "path": "/crm/v1/hotels/{{hotel_id}}/profiles/{{profile_id}}",
             "variables": [
-                {"key": "profile_id", "type": "text", "label": "Profile ID", "description": "The guest profile ID", "required": True}
+                {
+                    "key": "profile_id",
+                    "type": "text",
+                    "label": "Profile ID",
+                    "description": "The guest profile ID",
+                    "required": True,
+                }
             ],
             "response_mapping": {
                 "profile_id": "$.profileDetails.profileId.id",
                 "first_name": "$.profileDetails.customer.personName[0].givenName",
                 "last_name": "$.profileDetails.customer.personName[0].surname",
                 "email": "$.profileDetails.emails[0].email",
-                "phone": "$.profileDetails.phones[0].phoneNumber"
-            }
+                "phone": "$.profileDetails.phones[0].phoneNumber",
+            },
         },
         {
             "id": "search_profiles",
@@ -212,18 +259,15 @@ OPERA_CLOUD_INTEGRATION = {
                 {"key": "givenName", "value": "{{first_name}}", "required": False},
                 {"key": "surname", "value": "{{last_name}}", "required": False},
                 {"key": "email", "value": "{{email}}", "required": False},
-                {"key": "phoneNumber", "value": "{{phone}}", "required": False}
+                {"key": "phoneNumber", "value": "{{phone}}", "required": False},
             ],
             "variables": [
                 {"key": "first_name", "type": "text", "label": "First Name"},
                 {"key": "last_name", "type": "text", "label": "Last Name"},
                 {"key": "email", "type": "text", "label": "Email Address"},
-                {"key": "phone", "type": "text", "label": "Phone Number"}
+                {"key": "phone", "type": "text", "label": "Phone Number"},
             ],
-            "response_mapping": {
-                "profiles": "$.profiles.profileInfo",
-                "count": "$.profiles.count"
-            }
+            "response_mapping": {"profiles": "$.profiles.profileInfo", "count": "$.profiles.count"},
         },
         {
             "id": "check_availability",
@@ -237,19 +281,19 @@ OPERA_CLOUD_INTEGRATION = {
                 {"key": "roomStayEndDate", "value": "{{end_date}}", "required": True},
                 {"key": "adults", "value": "{{adults}}", "required": True},
                 {"key": "children", "value": "{{children}}", "required": False},
-                {"key": "roomType", "value": "{{room_type}}", "required": False}
+                {"key": "roomType", "value": "{{room_type}}", "required": False},
             ],
             "variables": [
                 {"key": "start_date", "type": "date", "label": "Check-in Date", "required": True},
                 {"key": "end_date", "type": "date", "label": "Check-out Date", "required": True},
                 {"key": "adults", "type": "number", "label": "Number of Adults", "default": 1},
                 {"key": "children", "type": "number", "label": "Number of Children", "default": 0},
-                {"key": "room_type", "type": "text", "label": "Room Type (optional)"}
+                {"key": "room_type", "type": "text", "label": "Room Type (optional)"},
             ],
             "response_mapping": {
                 "available_rooms": "$.hotelAvailability.roomTypes",
-                "rates": "$.hotelAvailability.ratePlans"
-            }
+                "rates": "$.hotelAvailability.ratePlans",
+            },
         },
         {
             "id": "get_room_types",
@@ -259,9 +303,7 @@ OPERA_CLOUD_INTEGRATION = {
             "method": "GET",
             "path": "/fof/v1/hotels/{{hotel_id}}/roomTypes",
             "variables": [],
-            "response_mapping": {
-                "room_types": "$.roomTypes.roomType"
-            }
+            "response_mapping": {"room_types": "$.roomTypes.roomType"},
         },
         {
             "id": "get_rate_plans",
@@ -271,9 +313,7 @@ OPERA_CLOUD_INTEGRATION = {
             "method": "GET",
             "path": "/rtp/v1/hotels/{{hotel_id}}/ratePlans",
             "variables": [],
-            "response_mapping": {
-                "rate_plans": "$.ratePlans.ratePlanInfo"
-            }
+            "response_mapping": {"rate_plans": "$.ratePlans.ratePlanInfo"},
         },
         {
             "id": "get_in_house_guests",
@@ -282,14 +322,12 @@ OPERA_CLOUD_INTEGRATION = {
             "description": "Get list of currently checked-in guests",
             "method": "GET",
             "path": "/fof/v1/hotels/{{hotel_id}}/reservations",
-            "query_params": [
-                {"key": "reservationStatuses", "value": "INHOUSE", "required": True}
-            ],
+            "query_params": [{"key": "reservationStatuses", "value": "INHOUSE", "required": True}],
             "variables": [],
             "response_mapping": {
                 "guests": "$.reservationsDetails.reservationInfo",
-                "count": "$.reservationsDetails.count"
-            }
+                "count": "$.reservationsDetails.count",
+            },
         },
         {
             "id": "get_arrivals",
@@ -300,28 +338,27 @@ OPERA_CLOUD_INTEGRATION = {
             "path": "/fof/v1/hotels/{{hotel_id}}/reservations",
             "query_params": [
                 {"key": "reservationStatuses", "value": "RESERVED", "required": True},
-                {"key": "arrivalDate", "value": "{{date}}", "required": True}
+                {"key": "arrivalDate", "value": "{{date}}", "required": True},
             ],
             "variables": [
                 {"key": "date", "type": "date", "label": "Arrival Date", "default": "today"}
             ],
             "response_mapping": {
                 "arrivals": "$.reservationsDetails.reservationInfo",
-                "count": "$.reservationsDetails.count"
-            }
-        }
-    ]
+                "count": "$.reservationsDetails.count",
+            },
+        },
+    ],
 }
 
 
 def seed_opera_integration(db_session):
-    """
-    Create or update the Oracle Opera Cloud integration type.
-    
+    """Create or update the Oracle Opera Cloud integration type.
+
     Call this during database initialization or via admin command.
     """
     existing = db_session.query(IntegrationType).filter_by(slug="opera-cloud").first()
-    
+
     if existing:
         existing.name = OPERA_CLOUD_INTEGRATION["name"]
         existing.description = OPERA_CLOUD_INTEGRATION["description"]
@@ -344,12 +381,12 @@ def seed_opera_integration(db_session):
             provider=OPERA_CLOUD_INTEGRATION["provider"],
             auth_type=OPERA_CLOUD_INTEGRATION["auth_type"],
             documentation_url=OPERA_CLOUD_INTEGRATION["documentation_url"],
-            is_enabled=True
+            is_enabled=True,
         )
         integration.set_auth_config(OPERA_CLOUD_INTEGRATION["auth_config"])
         integration.set_required_fields(OPERA_CLOUD_INTEGRATION["required_fields"])
         integration.set_endpoints(OPERA_CLOUD_INTEGRATION["endpoints"])
-        
+
         db_session.add(integration)
         db_session.commit()
         print(f"Created Opera Cloud integration type: {integration.id}")

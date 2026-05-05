@@ -1,5 +1,4 @@
-"""
-SMS Service - Handles AI-powered SMS conversations.
+"""SMS Service - Handles AI-powered SMS conversations.
 
 This service processes incoming SMS messages by:
 1. Finding or creating a conversation thread
@@ -13,13 +12,14 @@ Reuses the same knowledge base, system prompt, and tools
 as the voice assistant — just without STT/TTS.
 """
 
-import os
 import json
+import os
 import re
-import httpx
 from datetime import datetime, timedelta
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 from uuid import UUID
+
+import httpx
 from loguru import logger
 from openai import OpenAI
 from sqlalchemy.orm import Session
@@ -27,16 +27,20 @@ from twilio.rest import Client as TwilioClient
 
 from botelier.database import SessionLocal
 from botelier.models.assistant import Assistant
-from botelier.models.phone_number import PhoneNumber
 from botelier.models.knowledge_entry import KnowledgeEntry
+from botelier.models.phone_number import PhoneNumber
+from botelier.models.sms_conversation import (
+    ConversationStatus,
+    HandlerMode,
+    MessageDirection,
+    MessageSender,
+    MessageStatus,
+    SMSConversation,
+    SMSMessage,
+)
 from botelier.models.tool import Tool, ToolType
 from botelier.models.tool_set import ToolSet
-from botelier.models.sms_conversation import (
-    SMSConversation, SMSMessage,
-    ConversationStatus, HandlerMode, MessageDirection, MessageSender, MessageStatus
-)
 from botelier.voice.knowledge_handler import load_knowledge_for_prompt
-
 
 OPT_OUT_KEYWORDS = {"stop", "cancel", "unsubscribe", "end", "quit"}
 OPT_IN_KEYWORDS = {"start", "yes", "unstop"}
@@ -94,8 +98,7 @@ class SMSService:
         twilio_sid: Optional[str] = None,
         media_urls: Optional[List[str]] = None,
     ) -> tuple[Optional[str], Optional[str], bool]:
-        """
-        Process an incoming SMS and generate an AI response.
+        """Process an incoming SMS and generate an AI response.
 
         Returns:
             (ai_response, conversation_id, handoff_triggered)
@@ -103,14 +106,20 @@ class SMSService:
             conversation_id — str UUID of the conversation (for SSE broadcast)
             handoff_triggered — True if the AI signalled [HANDOFF] this turn
         """
-        phone_number = self.db.query(PhoneNumber).filter(
-            PhoneNumber.phone_number == to_number,
-            PhoneNumber.sms_enabled == True,
-            PhoneNumber.is_active == True,
-        ).first()
+        phone_number = (
+            self.db.query(PhoneNumber)
+            .filter(
+                PhoneNumber.phone_number == to_number,
+                PhoneNumber.sms_enabled == True,
+                PhoneNumber.is_active == True,
+            )
+            .first()
+        )
 
         if not phone_number:
-            logger.warning(f"SMS received on number {to_number} but no SMS-enabled phone number found")
+            logger.warning(
+                f"SMS received on number {to_number} but no SMS-enabled phone number found"
+            )
             return None, None, False
 
         sms_assistant_id = phone_number.sms_assistant_id or phone_number.assistant_id
@@ -118,10 +127,14 @@ class SMSService:
             logger.warning(f"No assistant assigned for SMS on {to_number}")
             return None, None, False
 
-        assistant = self.db.query(Assistant).filter(
-            Assistant.id == sms_assistant_id,
-            Assistant.is_active == True,
-        ).first()
+        assistant = (
+            self.db.query(Assistant)
+            .filter(
+                Assistant.id == sms_assistant_id,
+                Assistant.is_active == True,
+            )
+            .first()
+        )
 
         if not assistant:
             logger.warning(f"Assistant {sms_assistant_id} not found or inactive")
@@ -160,7 +173,7 @@ class SMSService:
             sender=MessageSender.CUSTOMER.value,
             content=body,
             media_urls=media_urls,
-            session_boundary=getattr(self, '_is_new_session', False),
+            session_boundary=getattr(self, "_is_new_session", False),
             twilio_sid=twilio_sid,
             status=MessageStatus.RECEIVED.value,
         )
@@ -185,7 +198,7 @@ class SMSService:
         # Detect handoff signal from the AI
         handoff_triggered = False
         if ai_response.startswith(HANDOFF_PREFIX):
-            ai_response = ai_response[len(HANDOFF_PREFIX):].strip()
+            ai_response = ai_response[len(HANDOFF_PREFIX) :].strip()
             conversation.handler_mode = "human"
             conversation.needs_attention = True
             handoff_triggered = True
@@ -193,7 +206,7 @@ class SMSService:
 
         max_length = sms_config.get("max_response_length", DEFAULT_MAX_RESPONSE_LENGTH)
         if max_length and len(ai_response) > max_length:
-            ai_response = ai_response[:max_length - 3] + "..."
+            ai_response = ai_response[: max_length - 3] + "..."
 
         twilio_sid_out = self._send_twilio_sms(
             to_number, from_number, ai_response, phone_number.account_id
@@ -232,14 +245,18 @@ class SMSService:
         return ai_response, conv_id, handoff_triggered
 
     def _handle_opt_out(
-        self, from_number: str, to_number: str,
-        phone_number: PhoneNumber, twilio_sid: Optional[str]
+        self, from_number: str, to_number: str, phone_number: PhoneNumber, twilio_sid: Optional[str]
     ) -> str:
-        conversation = self.db.query(SMSConversation).filter(
-            SMSConversation.customer_number == from_number,
-            SMSConversation.botelier_number == to_number,
-            SMSConversation.account_id == phone_number.account_id,
-        ).order_by(SMSConversation.last_message_at.desc()).first()
+        conversation = (
+            self.db.query(SMSConversation)
+            .filter(
+                SMSConversation.customer_number == from_number,
+                SMSConversation.botelier_number == to_number,
+                SMSConversation.account_id == phone_number.account_id,
+            )
+            .order_by(SMSConversation.last_message_at.desc())
+            .first()
+        )
 
         if conversation:
             conversation.status = ConversationStatus.OPTED_OUT.value
@@ -273,15 +290,19 @@ class SMSService:
         return "You have been unsubscribed and will no longer receive messages. Reply START to re-subscribe."
 
     def _handle_opt_in(
-        self, from_number: str, to_number: str,
-        phone_number: PhoneNumber, twilio_sid: Optional[str]
+        self, from_number: str, to_number: str, phone_number: PhoneNumber, twilio_sid: Optional[str]
     ) -> str:
-        conversation = self.db.query(SMSConversation).filter(
-            SMSConversation.customer_number == from_number,
-            SMSConversation.botelier_number == to_number,
-            SMSConversation.account_id == phone_number.account_id,
-            SMSConversation.status == ConversationStatus.OPTED_OUT.value,
-        ).order_by(SMSConversation.last_message_at.desc()).first()
+        conversation = (
+            self.db.query(SMSConversation)
+            .filter(
+                SMSConversation.customer_number == from_number,
+                SMSConversation.botelier_number == to_number,
+                SMSConversation.account_id == phone_number.account_id,
+                SMSConversation.status == ConversationStatus.OPTED_OUT.value,
+            )
+            .order_by(SMSConversation.last_message_at.desc())
+            .first()
+        )
 
         if conversation:
             conversation.status = ConversationStatus.ACTIVE.value
@@ -299,19 +320,23 @@ class SMSService:
         assistant: Assistant,
         sms_config: Dict[str, Any],
     ) -> SMSConversation:
-        """
-        Find or create a unified conversation thread.
+        """Find or create a unified conversation thread.
 
         All messages from the same customer to the same Botelier number
         are grouped into one thread. Session boundaries are tracked on
         individual messages rather than splitting into separate conversations.
         """
-        conversation = self.db.query(SMSConversation).filter(
-            SMSConversation.customer_number == from_number,
-            SMSConversation.botelier_number == to_number,
-            SMSConversation.account_id == phone_number.account_id,
-            SMSConversation.status != ConversationStatus.OPTED_OUT.value,
-        ).order_by(SMSConversation.last_message_at.desc()).first()
+        conversation = (
+            self.db.query(SMSConversation)
+            .filter(
+                SMSConversation.customer_number == from_number,
+                SMSConversation.botelier_number == to_number,
+                SMSConversation.account_id == phone_number.account_id,
+                SMSConversation.status != ConversationStatus.OPTED_OUT.value,
+            )
+            .order_by(SMSConversation.last_message_at.desc())
+            .first()
+        )
 
         if conversation:
             if conversation.status == ConversationStatus.CLOSED.value:
@@ -345,7 +370,9 @@ class SMSService:
         self, conversation: SMSConversation, sms_config: Dict[str, Any]
     ) -> bool:
         """Check if enough time has elapsed to mark a session boundary."""
-        session_timeout_hours = sms_config.get("session_timeout_hours", DEFAULT_SESSION_TIMEOUT_HOURS)
+        session_timeout_hours = sms_config.get(
+            "session_timeout_hours", DEFAULT_SESSION_TIMEOUT_HOURS
+        )
         cutoff = datetime.utcnow() - timedelta(hours=session_timeout_hours)
 
         if conversation.last_message_at and conversation.last_message_at < cutoff:
@@ -359,8 +386,7 @@ class SMSService:
         conversation: SMSConversation,
         current_message: str,
     ) -> tuple:
-        """
-        Generate an AI response using the assistant's config.
+        """Generate an AI response using the assistant's config.
 
         Returns (response_text, tools_called_list)
         """
@@ -408,11 +434,15 @@ class SMSService:
 
                     result = self._execute_tool(assistant, fn_name, fn_args)
 
-                    messages.append({
-                        "role": "tool",
-                        "tool_call_id": tc.id,
-                        "content": json.dumps(result) if isinstance(result, dict) else str(result),
-                    })
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tc.id,
+                            "content": json.dumps(result)
+                            if isinstance(result, dict)
+                            else str(result),
+                        }
+                    )
 
                 response = _openai_client.chat.completions.create(**kwargs)
                 choice = response.choices[0]
@@ -467,9 +497,15 @@ class SMSService:
     ) -> List[Dict[str, str]]:
         max_messages = sms_config.get("max_history_messages", DEFAULT_MAX_HISTORY_MESSAGES)
 
-        recent_messages = self.db.query(SMSMessage).filter(
-            SMSMessage.conversation_id == conversation.id,
-        ).order_by(SMSMessage.created_at.desc()).limit(max_messages).all()
+        recent_messages = (
+            self.db.query(SMSMessage)
+            .filter(
+                SMSMessage.conversation_id == conversation.id,
+            )
+            .order_by(SMSMessage.created_at.desc())
+            .limit(max_messages)
+            .all()
+        )
 
         recent_messages.reverse()
 
@@ -486,10 +522,14 @@ class SMSService:
         if not assistant.tool_set_id:
             return None
 
-        tools = self.db.query(Tool).filter(
-            Tool.tool_set_id == assistant.tool_set_id,
-            Tool.is_active == "true",
-        ).all()
+        tools = (
+            self.db.query(Tool)
+            .filter(
+                Tool.tool_set_id == assistant.tool_set_id,
+                Tool.is_active == "true",
+            )
+            .all()
+        )
 
         if not tools:
             return None
@@ -534,14 +574,16 @@ class SMSService:
             },
         }
 
-    def _execute_tool(
-        self, assistant: Assistant, fn_name: str, fn_args: Dict[str, Any]
-    ) -> Any:
-        tool = self.db.query(Tool).filter(
-            Tool.tool_set_id == assistant.tool_set_id,
-            Tool.name == fn_name,
-            Tool.is_active == "true",
-        ).first()
+    def _execute_tool(self, assistant: Assistant, fn_name: str, fn_args: Dict[str, Any]) -> Any:
+        tool = (
+            self.db.query(Tool)
+            .filter(
+                Tool.tool_set_id == assistant.tool_set_id,
+                Tool.name == fn_name,
+                Tool.is_active == "true",
+            )
+            .first()
+        )
 
         if not tool:
             return {"error": f"Tool '{fn_name}' not found", "status": "failed"}
@@ -563,7 +605,8 @@ class SMSService:
             def replacer(match):
                 key = match.group(1).strip()
                 return str(values.get(key, match.group(0)))
-            result = re.sub(r'\{\{(\w+)\}\}', replacer, template)
+
+            result = re.sub(r"\{\{(\w+)\}\}", replacer, template)
             try:
                 result = result.format(**values)
             except (KeyError, ValueError, IndexError):
@@ -612,7 +655,9 @@ class SMSService:
             logger.error(f"API request tool error: {e}")
             return {"error": "API request failed", "status": "failed"}
 
-    def _apply_response_mapping(self, data: Any, response_mapping: Dict[str, str]) -> Dict[str, Any]:
+    def _apply_response_mapping(
+        self, data: Any, response_mapping: Dict[str, str]
+    ) -> Dict[str, Any]:
         result = {}
         for variable_name, json_path in response_mapping.items():
             try:
@@ -631,11 +676,16 @@ class SMSService:
         return result
 
     def _send_twilio_sms(
-        self, from_number: str, to_number: str, body: str, account_id,
+        self,
+        from_number: str,
+        to_number: str,
+        body: str,
+        account_id,
         media_urls: Optional[List[str]] = None,
     ) -> Optional[str]:
         try:
             from botelier.models.account import Account
+
             account = self.db.query(Account).filter(Account.id == account_id).first()
             if not account:
                 logger.error(f"Account {account_id} not found for SMS sending")
@@ -655,6 +705,7 @@ class SMSService:
             client = TwilioClient(account_sid, auth_token)
 
             from botelier.config.domain import get_public_base_url
+
             status_callback = f"{get_public_base_url()}/api/sms/status"
 
             kwargs: Dict[str, Any] = {

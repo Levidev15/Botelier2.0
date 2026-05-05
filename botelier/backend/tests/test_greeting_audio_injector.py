@@ -1,5 +1,4 @@
-"""
-Regression test for GreetingAudioInjector (Task #110).
+"""Regression test for GreetingAudioInjector (Task #110).
 
 Verifies that the cached greeting bytes pushed via the injector are NEVER
 seen by a processor placed UPSTREAM of the injector (i.e., where the STT
@@ -17,11 +16,12 @@ import asyncio
 from typing import List
 
 import pytest
+from botelier.voice.engine import GreetingAudioInjector
 
 from pipecat.frames.frames import (
-    Frame,
     AudioRawFrame,
     EndFrame,
+    Frame,
     TTSAudioRawFrame,
     TTSStartedFrame,
     TTSStoppedFrame,
@@ -30,8 +30,6 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineTask
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-
-from botelier.voice.engine import GreetingAudioInjector
 
 
 class _RecordingProcessor(FrameProcessor):
@@ -107,8 +105,7 @@ async def test_cached_greeting_bypasses_upstream_processors():
     ]
     expected_chunks = (len(fake_audio) + 319) // 320
     assert len(audio_between) == expected_chunks, (
-        f"Expected {expected_chunks} TTSAudioRawFrame chunks downstream, "
-        f"got {len(audio_between)}"
+        f"Expected {expected_chunks} TTSAudioRawFrame chunks downstream, got {len(audio_between)}"
     )
 
     # Recombined audio must equal the input bytes — chunking is lossless.
@@ -140,12 +137,10 @@ async def test_injector_passes_unrelated_frames_through_unchanged():
     await runner.run(task)
 
     # No greeting was set → no TTSAudioRawFrame must appear anywhere.
-    assert all(
-        not isinstance(f, TTSAudioRawFrame) for f in downstream.received
-    ), "Injector emitted TTSAudioRawFrame without set_pending_greeting"
-    assert all(
-        not isinstance(f, TTSAudioRawFrame) for f in upstream.received
+    assert all(not isinstance(f, TTSAudioRawFrame) for f in downstream.received), (
+        "Injector emitted TTSAudioRawFrame without set_pending_greeting"
     )
+    assert all(not isinstance(f, TTSAudioRawFrame) for f in upstream.received)
 
     # Sentinel pass-through: every frame the downstream observer received
     # without an active greeting must be an *infrastructure* frame
@@ -159,15 +154,15 @@ async def test_injector_passes_unrelated_frames_through_unchanged():
         if isinstance(f, (TTSStartedFrame, TTSStoppedFrame, TTSAudioRawFrame))
     ]
     assert spurious == [], (
-        f"Injector emitted spurious TTS lifecycle frames with no pending "
-        f"greeting: {spurious}"
+        f"Injector emitted spurious TTS lifecycle frames with no pending greeting: {spurious}"
     )
 
 
 @pytest.mark.asyncio
 async def test_set_pending_greeting_is_idempotent_after_inject():
     """Calling set_pending_greeting after the one-shot has fired must be a
-    no-op (no re-greeting on long-lived pipelines)."""
+    no-op (no re-greeting on long-lived pipelines).
+    """
     upstream = _RecordingProcessor("upstream")
     injector = GreetingAudioInjector()
     downstream = _RecordingProcessor("downstream")

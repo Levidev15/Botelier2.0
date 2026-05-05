@@ -1,5 +1,4 @@
-"""
-Greeting audio cache for Botelier voice assistants.
+"""Greeting audio cache for Botelier voice assistants.
 
 Generates TTS audio via the Deepgram REST API and persists it locally as raw
 PCM bytes (linear16, 8 kHz, mono) so subsequent calls replay the cached file
@@ -39,17 +38,14 @@ def _get_cache_dir() -> str:
     if _CACHE_DIR is None:
         # __file__ → botelier/backend/botelier/voice/greeting_cache.py
         # dirname x3 → botelier/backend/
-        base = os.path.dirname(
-            os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-        )
+        base = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
         _CACHE_DIR = os.path.join(base, "uploads", "greeting_cache")
         os.makedirs(_CACHE_DIR, exist_ok=True)
     return _CACHE_DIR
 
 
 def _cache_key(greeting_text: str, tts_config: dict) -> str:
-    """
-    Deterministic cache key from greeting text and TTS configuration.
+    """Deterministic cache key from greeting text and TTS configuration.
 
     Incorporates ``model``, ``voice``, fixed ``"8000"`` sample-rate, and fixed
     ``"linear16"`` encoding.  The cache always stores 8 kHz linear16 PCM
@@ -95,8 +91,7 @@ def get_cache_status(
     tts_config: dict,
     assistant_id: Optional[str] = None,
 ) -> dict:
-    """
-    Return the cache status for the given greeting + TTS configuration.
+    """Return the cache status for the given greeting + TTS configuration.
 
     Returns a dict:
       cached            : bool      – current text+voice is cached
@@ -122,9 +117,7 @@ def get_cache_status(
             old_path = _cache_path(last_key)
             if os.path.exists(old_path):
                 outdated = True
-                cached_at = datetime.fromtimestamp(
-                    os.path.getmtime(old_path), tz=timezone.utc
-                )
+                cached_at = datetime.fromtimestamp(os.path.getmtime(old_path), tz=timezone.utc)
 
     return {
         "cached": current_cached,
@@ -141,8 +134,7 @@ async def get_or_generate_greeting_audio(
     api_key: str,
     assistant_id: Optional[str] = None,
 ) -> bytes:
-    """
-    Return raw linear16 PCM audio bytes (8 kHz, mono) for *greeting_text*.
+    """Return raw linear16 PCM audio bytes (8 kHz, mono) for *greeting_text*.
 
     Cache hit  → reads and returns the cached .pcm file (no API call).
     Cache miss → calls the Deepgram TTS REST API (linear16, 8 kHz), writes the
@@ -199,9 +191,9 @@ async def get_or_generate_greeting_audio(
     # Atomic write offloaded to thread — open/write/os.replace are blocking syscalls.
     # _write_sidecar is also a file write; kept inside the same thread call.
     _write_path = path
-    _write_pcm  = pcm_bytes
-    _write_key  = key
-    _write_aid  = assistant_id
+    _write_pcm = pcm_bytes
+    _write_key = key
+    _write_aid = assistant_id
 
     def _write_cache():
         tmp = _write_path + ".tmp"
@@ -213,7 +205,5 @@ async def get_or_generate_greeting_audio(
 
     await asyncio.to_thread(_write_cache)
 
-    logger.info(
-        f"🎙️ Greeting PCM cached — {len(pcm_bytes)} bytes (key={key[:8]}…)"
-    )
+    logger.info(f"🎙️ Greeting PCM cached — {len(pcm_bytes)} bytes (key={key[:8]}…)")
     return pcm_bytes

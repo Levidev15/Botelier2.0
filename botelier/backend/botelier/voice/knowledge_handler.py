@@ -1,5 +1,4 @@
-"""
-Knowledge Base Handler - Load and format hotel knowledge bases for voice AI.
+"""Knowledge Base Handler - Load and format hotel knowledge bases for voice AI.
 
 This module provides:
 1. load_knowledge_for_prompt() - Synchronously loads KB content for system prompt injection
@@ -10,15 +9,15 @@ which leverages prompt caching and eliminates tool-call latency.
 """
 
 import os
-import time
 import threading
+import time
 from datetime import date
-from typing import Dict, Any, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
+
 from loguru import logger
 from openai import AsyncOpenAI
 
 from pipecat.services.llm_service import FunctionCallParams
-
 
 RAG_MODEL = "gpt-4o-mini"
 RAG_MAX_TOKENS = 100
@@ -53,28 +52,29 @@ def _kb_cache_set(knowledge_base_id: str, content: str) -> None:
 
 
 def load_knowledge_for_prompt(knowledge_base_id: str) -> str:
-    """
-    Load knowledge base content for system prompt injection.
-    
+    """Load knowledge base content for system prompt injection.
+
     This is the primary method for KB integration - content is injected directly
     into the LLM's system prompt at call start, enabling:
     - Prompt caching (KB content cached after first turn)
     - No tool-call latency (LLM has context immediately)
     - Consistent behavior (LLM always has KB available)
-    
+
     Results are cached in-process for 5 minutes (TTL).  Subsequent calls for
     the same knowledge_base_id within the TTL window return immediately without
     any DB round-trip, eliminating the 5–7 s greeting latency on warm calls.
-    
+
     Args:
         knowledge_base_id: Knowledge base UUID
-        
+
     Returns:
         Formatted KB content ready for system prompt injection.
         Returns empty string if no entries found or knowledge_base_id is invalid.
     """
     if not knowledge_base_id or not knowledge_base_id.strip():
-        logger.warning("load_knowledge_for_prompt called without knowledge_base_id - returning empty KB")
+        logger.warning(
+            "load_knowledge_for_prompt called without knowledge_base_id - returning empty KB"
+        )
         return ""
 
     cached = _kb_cache_get(knowledge_base_id)
@@ -84,173 +84,196 @@ def load_knowledge_for_prompt(knowledge_base_id: str) -> str:
             f"({len(cached)} chars) — skipping DB query"
         )
         return cached
-    
+
     from botelier.database import SessionLocal
     from botelier.models.knowledge_entry import KnowledgeEntry
-    
+
     db = SessionLocal()
-    
+
     try:
         today = date.today()
-        entries = db.query(KnowledgeEntry).filter(
-            KnowledgeEntry.knowledge_base_id == knowledge_base_id,
-            (KnowledgeEntry.expiration_date.is_(None)) | 
-            (KnowledgeEntry.expiration_date >= today)
-        ).all()
-        
+        entries = (
+            db.query(KnowledgeEntry)
+            .filter(
+                KnowledgeEntry.knowledge_base_id == knowledge_base_id,
+                (KnowledgeEntry.expiration_date.is_(None))
+                | (KnowledgeEntry.expiration_date >= today),
+            )
+            .all()
+        )
+
         if not entries:
             logger.info(f"No KB entries found for knowledge_base {knowledge_base_id}")
             _kb_cache_set(knowledge_base_id, "")
             return ""
-        
+
         qa_blocks = []
         for entry in entries:
             category_tag = f"[{entry.category}] " if entry.category else ""
             qa_block = f"{category_tag}Q: {entry.question}\nA: {entry.answer}"
             qa_blocks.append(qa_block)
-        
+
         content = "\n\n".join(qa_blocks)
-        
+
         if len(content) > MAX_KNOWLEDGE_CHARS:
             logger.warning(f"KB too large ({len(content)} chars), truncating")
             content = content[:MAX_KNOWLEDGE_CHARS] + "\n\n[... truncated]"
-        
+
         logger.info(
             f"KB cache MISS — loaded {len(entries)} KB entries "
             f"({len(content)} chars) from DB for knowledge_base {knowledge_base_id}"
         )
         _kb_cache_set(knowledge_base_id, content)
         return content
-        
+
     finally:
         db.close()
 
 
 async def query_hotel_knowledge(params: FunctionCallParams) -> None:
-    """
-    Query the account's knowledge base to answer guest questions.
-    
+    """Query the account's knowledge base to answer guest questions.
+
     This function is called by Pipecat when the voice LLM needs to
     look up information from the knowledge base.
-    
+
     Args:
         params: FunctionCallParams containing:
             - arguments["question"]: The guest's question
             - arguments["account_id"]: Account UUID
             - result_callback: Async function to return the answer
-    
+
     Returns:
         None (result returned via params.result_callback)
     """
     question = params.arguments.get("question", "")
     account_id = params.arguments.get("account_id", "")
-    
+
     if not question:
         logger.warning("Knowledge base query called without question")
-        await params.result_callback({"answer": "I didn't catch your question. Could you please repeat that?"})
+        await params.result_callback(
+            {"answer": "I didn't catch your question. Could you please repeat that?"}
+        )
         return
-    
+
     if not account_id:
         logger.warning("Knowledge base query called without account_id")
-        await params.result_callback({"answer": "I'm sorry, I don't have access to the information right now."})
+        await params.result_callback(
+            {"answer": "I'm sorry, I don't have access to the information right now."}
+        )
         return
-    
+
     logger.info(f"Querying knowledge base for account {account_id}: {question}")
-    
+
     try:
         knowledge_content = await load_hotel_knowledge(account_id)
-        
+
         if not knowledge_content:
             logger.warning(f"No knowledge base content found for account {account_id}")
-            await params.result_callback({"answer": "I don't have that information available. Let me connect you with our front desk."})
+            await params.result_callback(
+                {
+                    "answer": "I don't have that information available. Let me connect you with our front desk."
+                }
+            )
             return
-        
+
         answer = await query_with_rag(knowledge_content, question)
-        
+
         logger.info(f"Knowledge base answered: {answer[:100]}...")
         await params.result_callback({"answer": answer})
-        
+
     except Exception as e:
         logger.error(f"Error querying knowledge base: {e}")
-        await params.result_callback({"answer": "I'm having trouble accessing that information. Please ask the front desk for assistance."})
+        await params.result_callback(
+            {
+                "answer": "I'm having trouble accessing that information. Please ask the front desk for assistance."
+            }
+        )
 
 
 async def load_hotel_knowledge(account_id: str) -> str:
-    """
-    Load all active (non-expired) Q&A entries for an account.
-    
+    """Load all active (non-expired) Q&A entries for an account.
+
     DEPRECATED: Use load_knowledge_for_prompt() instead for system prompt injection.
     This async version is kept for backward compatibility with tool-based RAG.
-    
+
     Args:
         account_id: Account UUID
-    
+
     Returns:
         Formatted Q&A entries ready for RAG context
     """
     from botelier.database import SessionLocal
     from botelier.models.knowledge_entry import KnowledgeEntry
-    
+
     db = SessionLocal()
-    
+
     try:
         # Load only non-expired entries for this account
         today = date.today()
-        entries = db.query(KnowledgeEntry).filter(
-            KnowledgeEntry.account_id == account_id,
-            (KnowledgeEntry.expiration_date.is_(None)) | 
-            (KnowledgeEntry.expiration_date >= today)
-        ).all()
-        
+        entries = (
+            db.query(KnowledgeEntry)
+            .filter(
+                KnowledgeEntry.account_id == account_id,
+                (KnowledgeEntry.expiration_date.is_(None))
+                | (KnowledgeEntry.expiration_date >= today),
+            )
+            .all()
+        )
+
         if not entries:
             return ""
-        
+
         # Format as Q&A pairs with optional categories
         qa_blocks = []
         for entry in entries:
             category_tag = f"[{entry.category}] " if entry.category else ""
             qa_block = f"{category_tag}Q: {entry.question}\nA: {entry.answer}"
             qa_blocks.append(qa_block)
-        
+
         combined_content = "\n\n".join(qa_blocks)
-        
+
         # Apply safety limit
         if len(combined_content) > MAX_KNOWLEDGE_CHARS:
-            logger.warning(f"Knowledge base too large ({len(combined_content)} chars), truncating to {MAX_KNOWLEDGE_CHARS}")
-            combined_content = combined_content[:MAX_KNOWLEDGE_CHARS] + "\n\n[... content truncated for length]"
-        
-        logger.info(f"Loaded {len(entries)} active Q&A entries ({len(combined_content)} chars) for account {account_id}")
-        
+            logger.warning(
+                f"Knowledge base too large ({len(combined_content)} chars), truncating to {MAX_KNOWLEDGE_CHARS}"
+            )
+            combined_content = (
+                combined_content[:MAX_KNOWLEDGE_CHARS] + "\n\n[... content truncated for length]"
+            )
+
+        logger.info(
+            f"Loaded {len(entries)} active Q&A entries ({len(combined_content)} chars) for account {account_id}"
+        )
+
         return combined_content
-        
+
     finally:
         db.close()
 
 
 async def query_with_rag(knowledge_content: str, question: str) -> str:
-    """
-    Query the knowledge base using OpenAI for RAG.
-    
+    """Query the knowledge base using OpenAI for RAG.
+
     This uses a separate OpenAI call (not the voice LLM) to:
     1. Inject the Q&A knowledge base into the context
     2. Ask the question
     3. Return a concise answer (optimized for TTS)
-    
+
     Args:
         knowledge_content: Formatted Q&A entries
         question: Guest's question
-    
+
     Returns:
         Concise answer (max 100 words for voice)
     """
     api_key = os.environ.get("OPENAI_API_KEY")
-    
+
     if not api_key:
         logger.error("OPENAI_API_KEY not set for RAG queries")
         raise ValueError("OpenAI API key not configured")
-    
+
     client = AsyncOpenAI(api_key=api_key)
-    
+
     rag_prompt = f"""
 You are a helpful hotel assistant answering guest questions based on the hotel's FAQ knowledge base.
 
@@ -269,18 +292,16 @@ You are a helpful hotel assistant answering guest questions based on the hotel's
 **Guest Question:**
 {question}
 """
-    
+
     response = await client.chat.completions.create(
         model=RAG_MODEL,
-        messages=[
-            {"role": "user", "content": rag_prompt}
-        ],
+        messages=[{"role": "user", "content": rag_prompt}],
         temperature=0.1,
         max_tokens=RAG_MAX_TOKENS,
     )
-    
+
     answer = response.choices[0].message.content
     if answer is None:
         return "I don't have that information available."
-    
+
     return answer.strip()

@@ -1,50 +1,56 @@
-"""
-Botelier Backend API Server
+"""Botelier Backend API Server
 
 FastAPI application for managing hotel voice AI assistants.
 Provides REST endpoints for tools, integrations, and voice agent configuration.
 """
 
-from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
 import os
+from contextlib import asynccontextmanager
 
 # IMPORTANT: configure logging BEFORE any other botelier import so every
 # module's `from loguru import logger` inherits the centralised sinks.
 # See `botelier/logging_config.py` for the rationale (Task #105).
 from botelier.logging_config import configure_logging
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+
 configure_logging()
 
 import asyncio
-from botelier.database import init_db, SessionLocal, run_stuck_call_sweeper
+
 from botelier.api import tools_router
-from botelier.api.phone_numbers import router as phone_numbers_router
-from botelier.api.assistants import router as assistants_router
-from botelier.api.knowledge_bases import router as knowledge_bases_router, legacy_router as entries_legacy_router
-from botelier.api.providers import router as providers_router
-from botelier.api.calls import router as calls_router
-from botelier.api.call_logs import router as call_logs_router
-from botelier.api.websockets import router as websockets_router
-from botelier.api.flow_templates import router as flow_templates_router
-from botelier.api.simulation import router as simulation_router
-from botelier.api.flow_versions import router as flow_versions_router
-from botelier.api.admin import router as admin_router
-from botelier.api.invitations import router as invitations_router
-from botelier.api.auth import router as auth_router
-from botelier.api.dispositions import router as dispositions_router
-from botelier.api.resolution_options import router as resolution_options_router
-from botelier.api.integrations import router as integrations_router
-from botelier.api.secrets import router as secrets_router
-from botelier.api.tool_sets import router as tool_sets_router
-from botelier.api.mcp_connections import router as mcp_connections_router
-from botelier.api.api_tester import router as api_tester_router
-from botelier.api.sms_pkg import router as sms_router
-from botelier.api.sms_compliance import router as sms_compliance_router
-from botelier.api.analytics import router as analytics_router
-from botelier.api.team import router as team_router
 from botelier.api.account import router as account_router
+from botelier.api.admin import router as admin_router
+from botelier.api.analytics import router as analytics_router
+from botelier.api.api_tester import router as api_tester_router
+from botelier.api.assistants import router as assistants_router
+from botelier.api.auth import router as auth_router
+from botelier.api.call_logs import router as call_logs_router
+from botelier.api.calls import router as calls_router
+from botelier.api.dispositions import router as dispositions_router
+from botelier.api.flow_templates import router as flow_templates_router
+from botelier.api.flow_versions import router as flow_versions_router
+from botelier.api.integrations import router as integrations_router
+from botelier.api.invitations import router as invitations_router
+from botelier.api.knowledge_bases import (
+    legacy_router as entries_legacy_router,
+)
+from botelier.api.knowledge_bases import (
+    router as knowledge_bases_router,
+)
+from botelier.api.mcp_connections import router as mcp_connections_router
+from botelier.api.phone_numbers import router as phone_numbers_router
+from botelier.api.providers import router as providers_router
+from botelier.api.resolution_options import router as resolution_options_router
+from botelier.api.secrets import router as secrets_router
+from botelier.api.simulation import router as simulation_router
+from botelier.api.sms_compliance import router as sms_compliance_router
+from botelier.api.sms_pkg import router as sms_router
+from botelier.api.team import router as team_router
+from botelier.api.tool_sets import router as tool_sets_router
+from botelier.api.websockets import router as websockets_router
+from botelier.database import SessionLocal, init_db, run_stuck_call_sweeper
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -67,7 +73,9 @@ app.add_middleware(
 # Register API routers
 app.include_router(admin_router)  # Platform admin endpoints
 app.include_router(tools_router)
-app.include_router(flow_versions_router)  # Flow versioning endpoints (before tools for route priority)
+app.include_router(
+    flow_versions_router
+)  # Flow versioning endpoints (before tools for route priority)
 app.include_router(phone_numbers_router)
 app.include_router(assistants_router)
 app.include_router(knowledge_bases_router)
@@ -106,6 +114,7 @@ async def startup_event():
     print("✅ Database initialized")
 
     from botelier.seeds import seed_all_integrations
+
     db = SessionLocal()
     try:
         seed_all_integrations(db)
@@ -115,14 +124,12 @@ async def startup_event():
         # that cause permanent HTTP 400 errors and infinite retry loops.
         # nova-3-phonecall and flux-general-en are not accepted by Deepgram's API.
         from sqlalchemy import text as _text
+
         _invalid_models = ("nova-3-phonecall", "flux-general-en")
         _fallback = "nova-3-general"
         for _bad in _invalid_models:
             result = db.execute(
-                _text(
-                    "UPDATE assistants SET stt_model = :good "
-                    "WHERE stt_model = :bad"
-                ),
+                _text("UPDATE assistants SET stt_model = :good WHERE stt_model = :bad"),
                 {"good": _fallback, "bad": _bad},
             )
             if result.rowcount:
@@ -135,8 +142,9 @@ async def startup_event():
         db.close()
 
     try:
-        from pipecat.audio.vad.silero import SileroVADAnalyzer
         from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+        from pipecat.audio.vad.silero import SileroVADAnalyzer
+
         _warmup_vad = SileroVADAnalyzer()
         _warmup_st = LocalSmartTurnAnalyzerV3()
         del _warmup_vad, _warmup_st
@@ -151,6 +159,7 @@ async def startup_event():
     # so the Task #97 analytics dashboard can measure leak rate by source.
     # The task is cancelled gracefully in the shutdown_event below.
     from botelier.utils import log_task_exception
+
     app.state._stuck_call_sweeper_task = asyncio.create_task(_stuck_call_sweeper_loop())
     # Task #116 — surface tracebacks raised outside the loop's internal
     # try/except (e.g. import errors during reload, scheduler failures).
@@ -162,7 +171,8 @@ async def startup_event():
 async def shutdown_event():
     """Graceful shutdown: finalize active calls and cancel the stuck-call
     sweeper task so Uvicorn worker exit is clean and no
-    asyncio.CancelledError stack trace is logged."""
+    asyncio.CancelledError stack trace is logged.
+    """
     # Task #116 — finalize active calls FIRST so they get a "shutdown"
     # finalization_forced event before the sweeper would otherwise close
     # them on next process startup with the less-specific "sweeper" tag.
@@ -173,6 +183,7 @@ async def shutdown_event():
         from botelier.services.shutdown_finalizer import (
             finalize_active_calls_on_shutdown,
         )
+
         await finalize_active_calls_on_shutdown(SessionLocal)
     except Exception as e:
         print(f"⚠️  shutdown finalizer raised: {e}")
@@ -190,7 +201,8 @@ async def shutdown_event():
 async def _stuck_call_sweeper_loop():
     """Background task: run_stuck_call_sweeper immediately at startup and
     every 5 minutes thereafter, with the set of currently-active call SIDs
-    pulled from the singleton CallHandler."""
+    pulled from the singleton CallHandler.
+    """
     _INTERVAL_SECONDS = 300  # 5 minutes
     # Run the first tick immediately so any pre-existing stuck rows from a
     # prior process crash are reclassified before the server has been up for
@@ -204,6 +216,7 @@ async def _stuck_call_sweeper_loop():
             first_run = False
             try:
                 from botelier.api.websockets import call_handler
+
                 active = set(call_handler.active_calls.keys()) | set(call_handler.call_tasks.keys())
             except Exception:
                 active = set()
@@ -222,28 +235,16 @@ async def _stuck_call_sweeper_loop():
 @app.get("/api/health")
 async def health_check():
     """Health check endpoint."""
-    return {
-        "status": "healthy",
-        "service": "botelier-backend",
-        "version": "0.1.0"
-    }
+    return {"status": "healthy", "service": "botelier-backend", "version": "0.1.0"}
 
 
 @app.get("/")
 async def root():
     """Root endpoint with API information."""
-    return {
-        "message": "Botelier Backend API",
-        "docs": "/api/docs",
-        "health": "/api/health"
-    }
+    return {"message": "Botelier Backend API", "docs": "/api/docs", "health": "/api/health"}
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(
-        "main:app",
-        host="0.0.0.0",
-        port=8000,
-        reload=True
-    )
+
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)

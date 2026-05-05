@@ -1,13 +1,16 @@
-import os
 import logging
-from typing import Optional, Dict, Any, List
+import os
+from typing import Any, Dict, List, Optional
+
 from sqlalchemy.orm import Session
-from twilio.rest import Client as TwilioClient
 from twilio.base.exceptions import TwilioRestException
+from twilio.rest import Client as TwilioClient
 
 from botelier.models.sms_compliance import (
-    SMSComplianceBrand, SMSComplianceCampaign,
-    BrandStatus, CampaignStatus,
+    BrandStatus,
+    CampaignStatus,
+    SMSComplianceBrand,
+    SMSComplianceCampaign,
 )
 
 logger = logging.getLogger(__name__)
@@ -17,7 +20,6 @@ A2P_PROFILE_POLICY_SID = "RNdfbf35ca999fd90a213969e87815bfcf"
 
 
 class SMSComplianceService:
-
     def __init__(self, db: Session):
         self.db = db
         self._master_client = None
@@ -117,15 +119,19 @@ class SMSComplianceService:
         brand.twilio_auth_rep_sid = auth_rep.sid
         logger.info(f"Created auth rep: {auth_rep.sid}")
 
-        client.trusthub.v1.customer_profiles(profile.sid) \
-            .customer_profiles_entity_assignments.create(object_sid=business_info.sid)
-        client.trusthub.v1.customer_profiles(profile.sid) \
-            .customer_profiles_entity_assignments.create(object_sid=address.sid)
-        client.trusthub.v1.customer_profiles(profile.sid) \
-            .customer_profiles_entity_assignments.create(object_sid=auth_rep.sid)
+        client.trusthub.v1.customer_profiles(
+            profile.sid
+        ).customer_profiles_entity_assignments.create(object_sid=business_info.sid)
+        client.trusthub.v1.customer_profiles(
+            profile.sid
+        ).customer_profiles_entity_assignments.create(object_sid=address.sid)
+        client.trusthub.v1.customer_profiles(
+            profile.sid
+        ).customer_profiles_entity_assignments.create(object_sid=auth_rep.sid)
 
-        client.trusthub.v1.customer_profiles(profile.sid) \
-            .customer_profiles_evaluations.create(policy_sid=CUSTOMER_PROFILE_POLICY_SID)
+        client.trusthub.v1.customer_profiles(profile.sid).customer_profiles_evaluations.create(
+            policy_sid=CUSTOMER_PROFILE_POLICY_SID
+        )
         logger.info(f"Customer profile {profile.sid} submitted for evaluation")
 
         self.db.commit()
@@ -158,14 +164,17 @@ class SMSComplianceService:
         )
         logger.info(f"Created A2P end user: {a2p_info.sid}")
 
-        client.trusthub.v1.trust_products(trust_product.sid) \
-            .trust_products_entity_assignments.create(object_sid=a2p_info.sid)
+        client.trusthub.v1.trust_products(
+            trust_product.sid
+        ).trust_products_entity_assignments.create(object_sid=a2p_info.sid)
         if brand.twilio_customer_profile_sid:
-            client.trusthub.v1.trust_products(trust_product.sid) \
-                .trust_products_entity_assignments.create(object_sid=brand.twilio_customer_profile_sid)
+            client.trusthub.v1.trust_products(
+                trust_product.sid
+            ).trust_products_entity_assignments.create(object_sid=brand.twilio_customer_profile_sid)
 
-        client.trusthub.v1.trust_products(trust_product.sid) \
-            .trust_products_evaluations.create(policy_sid=A2P_PROFILE_POLICY_SID)
+        client.trusthub.v1.trust_products(trust_product.sid).trust_products_evaluations.create(
+            policy_sid=A2P_PROFILE_POLICY_SID
+        )
         logger.info(f"A2P profile {trust_product.sid} submitted for evaluation")
 
         self.db.commit()
@@ -205,9 +214,9 @@ class SMSComplianceService:
                 "SUSPENDED": BrandStatus.SUSPENDED,
             }
             brand.status = status_map.get(brand_reg.status, BrandStatus.PENDING)
-            brand.failure_reason = getattr(brand_reg, 'failure_reason', None)
+            brand.failure_reason = getattr(brand_reg, "failure_reason", None)
 
-            if hasattr(brand_reg, 'brand_score'):
+            if hasattr(brand_reg, "brand_score"):
                 brand.trust_score = str(brand_reg.brand_score)
 
             self.db.commit()
@@ -221,9 +230,11 @@ class SMSComplianceService:
 
     def submit_campaign(self, campaign: SMSComplianceCampaign) -> SMSComplianceCampaign:
         try:
-            brand = self.db.query(SMSComplianceBrand).filter(
-                SMSComplianceBrand.id == campaign.brand_id
-            ).first()
+            brand = (
+                self.db.query(SMSComplianceBrand)
+                .filter(SMSComplianceBrand.id == campaign.brand_id)
+                .first()
+            )
 
             if not brand or brand.status != BrandStatus.APPROVED:
                 raise ValueError("Brand must be approved before creating campaigns")
@@ -276,21 +287,30 @@ class SMSComplianceService:
         params: Dict[str, Any] = {
             "brand_registration_sid": brand.twilio_brand_sid,
             "description": campaign.description or campaign.friendly_name,
-            "message_flow": campaign.message_flow or "Customers opt in by texting our business number. They can opt out by texting STOP.",
+            "message_flow": campaign.message_flow
+            or "Customers opt in by texting our business number. They can opt out by texting STOP.",
             "message_samples": samples,
-            "us_app_to_person_usecase": campaign.use_case.value if campaign.use_case else "CUSTOMER_CARE",
+            "us_app_to_person_usecase": campaign.use_case.value
+            if campaign.use_case
+            else "CUSTOMER_CARE",
             "has_embedded_links": campaign.has_embedded_links or False,
             "has_embedded_phone": campaign.has_embedded_phone or False,
-            "opt_in_message": campaign.opt_in_message or "You have opted in to receive messages. Reply STOP to unsubscribe.",
-            "opt_out_message": campaign.opt_out_message or "You have been unsubscribed. Reply START to re-subscribe.",
+            "opt_in_message": campaign.opt_in_message
+            or "You have opted in to receive messages. Reply STOP to unsubscribe.",
+            "opt_out_message": campaign.opt_out_message
+            or "You have been unsubscribed. Reply START to re-subscribe.",
             "opt_in_keywords": (campaign.opt_in_keywords or "YES,START").split(","),
-            "opt_out_keywords": (campaign.opt_out_keywords or "STOP,END,CANCEL,UNSUBSCRIBE,QUIT").split(","),
-            "help_message": campaign.help_message or "Reply HELP for assistance or STOP to unsubscribe.",
+            "opt_out_keywords": (
+                campaign.opt_out_keywords or "STOP,END,CANCEL,UNSUBSCRIBE,QUIT"
+            ).split(","),
+            "help_message": campaign.help_message
+            or "Reply HELP for assistance or STOP to unsubscribe.",
             "help_keywords": (campaign.help_keywords or "HELP,INFO").split(","),
         }
 
-        us_a2p = client.messaging.v1.services(campaign.twilio_messaging_service_sid) \
-            .us_app_to_person.create(**params)
+        us_a2p = client.messaging.v1.services(
+            campaign.twilio_messaging_service_sid
+        ).us_app_to_person.create(**params)
         campaign.twilio_campaign_sid = us_a2p.sid
         logger.info(f"Created campaign: {us_a2p.sid}")
 
@@ -303,8 +323,11 @@ class SMSComplianceService:
 
         try:
             client = self.master_client
-            us_a2p = client.messaging.v1.services(campaign.twilio_messaging_service_sid) \
-                .us_app_to_person(campaign.twilio_campaign_sid).fetch()
+            us_a2p = (
+                client.messaging.v1.services(campaign.twilio_messaging_service_sid)
+                .us_app_to_person(campaign.twilio_campaign_sid)
+                .fetch()
+            )
 
             campaign.twilio_status_raw = us_a2p.campaign_status
             status_map = {
@@ -315,7 +338,7 @@ class SMSComplianceService:
                 "SUSPENDED": CampaignStatus.SUSPENDED,
             }
             campaign.status = status_map.get(us_a2p.campaign_status, CampaignStatus.PENDING)
-            campaign.failure_reason = getattr(us_a2p, 'failure_reason', None)
+            campaign.failure_reason = getattr(us_a2p, "failure_reason", None)
 
             self.db.commit()
             self.db.refresh(campaign)
@@ -332,8 +355,9 @@ class SMSComplianceService:
 
         try:
             client = self.master_client
-            client.messaging.v1.services(campaign.twilio_messaging_service_sid) \
-                .phone_numbers.create(phone_number_sid=phone_number_sid)
+            client.messaging.v1.services(
+                campaign.twilio_messaging_service_sid
+            ).phone_numbers.create(phone_number_sid=phone_number_sid)
 
             current = campaign.assigned_phone_numbers or []
             if phone_number_sid not in current:
@@ -354,8 +378,9 @@ class SMSComplianceService:
 
         try:
             client = self.master_client
-            client.messaging.v1.services(campaign.twilio_messaging_service_sid) \
-                .phone_numbers(phone_number_sid).delete()
+            client.messaging.v1.services(campaign.twilio_messaging_service_sid).phone_numbers(
+                phone_number_sid
+            ).delete()
 
             current = campaign.assigned_phone_numbers or []
             if phone_number_sid in current:

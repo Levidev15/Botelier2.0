@@ -1,5 +1,4 @@
-"""
-API routes for Botelier backend.
+"""API routes for Botelier backend.
 
 All API routers should be imported and registered here.
 """

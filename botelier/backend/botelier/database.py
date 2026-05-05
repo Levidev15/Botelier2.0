@@ -1,5 +1,4 @@
-"""
-Database configuration for Botelier backend.
+"""Database configuration for Botelier backend.
 
 Uses SQLAlchemy with PostgreSQL for multi-tenant data persistence.
 """
@@ -7,10 +6,11 @@ Uses SQLAlchemy with PostgreSQL for multi-tenant data persistence.
 import os
 from datetime import datetime, timedelta
 from typing import Optional
+
+from loguru import logger
 from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from loguru import logger
 
 # Get database URL from environment
 DATABASE_URL = os.environ.get("DATABASE_URL")
@@ -66,9 +66,8 @@ Base = declarative_base()
 
 
 def get_db():
-    """
-    Dependency for FastAPI routes to get database session.
-    
+    """Dependency for FastAPI routes to get database session.
+
     Usage:
         @app.get("/tools")
         def get_tools(db: Session = Depends(get_db)):
@@ -105,30 +104,23 @@ _ADDITIVE_MIGRATIONS = [
     "ALTER TABLE sms_conversations ADD COLUMN IF NOT EXISTS handler_mode VARCHAR(10) NOT NULL DEFAULT 'ai'",
     # sms_conversations — first_response_at (first outbound message timestamp for response-time analytics)
     "ALTER TABLE sms_conversations ADD COLUMN IF NOT EXISTS first_response_at TIMESTAMP",
-
     # sms_conversations — needs_attention (true when AI handed off but no agent has replied yet)
     "ALTER TABLE sms_conversations ADD COLUMN IF NOT EXISTS needs_attention BOOLEAN NOT NULL DEFAULT FALSE",
-
     # call_logs — transfer_mode ('warm' or 'cold') — null means no transfer or legacy warm
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS transfer_mode VARCHAR",
-
     # Indexes (CREATE INDEX IF NOT EXISTS is idempotent)
     "CREATE INDEX IF NOT EXISTS ix_sms_conv_account_started_at ON sms_conversations(account_id, started_at DESC)",
-
     # --- Pricing columns (deferred — uncomment when ready to capture Twilio costs) ---
     # "ALTER TABLE sms_messages ADD COLUMN IF NOT EXISTS price NUMERIC(10,4)",
     # "ALTER TABLE sms_messages ADD COLUMN IF NOT EXISTS price_unit VARCHAR(3)",
-
     # Fix disposition FK to allow deletion of dispositions used by call logs
     """ALTER TABLE call_logs DROP CONSTRAINT IF EXISTS call_logs_disposition_id_fkey""",
     """ALTER TABLE call_logs ADD CONSTRAINT call_logs_disposition_id_fkey FOREIGN KEY (disposition_id) REFERENCES assistant_dispositions(id) ON DELETE SET NULL""",
-
     # Post Call QA / After-Call Work columns
     "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS acw_config JSONB DEFAULT '{}'",
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS acw_resolution VARCHAR",
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS acw_quality_score INTEGER",
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS acw_completed_at TIMESTAMP",
-
     # Task #98 — Silent caller detection.
     # caller_spoke is intentionally tri-state (NULL/TRUE/FALSE):
     #   NULL  = legacy row that pre-dates this column (before this migration ran).
@@ -143,7 +135,6 @@ _ADDITIVE_MIGRATIONS = [
     # (e.g. "no_caller_audio") — distinct from acw_resolution which is the
     # LLM-picked outcome string.
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS acw_skip_reason VARCHAR",
-
     # Friendly reference IDs — short 8-char uppercase identifiers for support/search
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS reference_id VARCHAR(8)",
     # Backfill: derive from each row's own UUID (removes dashes, takes first 8 chars, uppercases)
@@ -153,18 +144,15 @@ _ADDITIVE_MIGRATIONS = [
     # Drop old composite index if it exists (replaced below with a global unique index)
     "DROP INDEX IF EXISTS ix_call_logs_hotel_ref",
     "CREATE UNIQUE INDEX IF NOT EXISTS ix_call_logs_ref ON call_logs(reference_id)",
-
     "ALTER TABLE sms_conversations ADD COLUMN IF NOT EXISTS reference_id VARCHAR(8)",
     "UPDATE sms_conversations SET reference_id = UPPER(SUBSTRING(REPLACE(id::text, '-', ''), 1, 8)) WHERE reference_id IS NULL",
     # Enforce NOT NULL after backfill guarantees all rows are populated
     "ALTER TABLE sms_conversations ALTER COLUMN reference_id SET NOT NULL",
     "DROP INDEX IF EXISTS ix_sms_conv_hotel_ref",
     "CREATE UNIQUE INDEX IF NOT EXISTS ix_sms_conv_ref ON sms_conversations(reference_id)",
-
     # Allow email-registered users (invited members) to have no replit_id.
     # The SQLAlchemy model has nullable=True but the original DB column was NOT NULL.
     "ALTER TABLE users ALTER COLUMN replit_id DROP NOT NULL",
-
     # call_events — event timeline table for every call.
     # The table itself is created by Base.metadata.create_all, but we ensure the
     # indexes exist here so they are present even on pre-existing deployments that
@@ -188,7 +176,6 @@ _ADDITIVE_MIGRATIONS = [
     """,
     "CREATE INDEX IF NOT EXISTS ix_call_events_call_log_id ON call_events(call_log_id)",
     "CREATE INDEX IF NOT EXISTS ix_call_events_call_log_occurred ON call_events(call_log_id, occurred_at)",
-
     # account_secrets — encrypted per-account key/value credential store
     """
     CREATE TABLE IF NOT EXISTS account_secrets (
@@ -204,7 +191,6 @@ _ADDITIVE_MIGRATIONS = [
     )
     """,
     "CREATE INDEX IF NOT EXISTS ix_account_secrets_account_id ON account_secrets(account_id)",
-
     # integration_call_logs — fire-and-forget audit trail for every integration API call
     """
     CREATE TABLE IF NOT EXISTS integration_call_logs (
@@ -224,31 +210,25 @@ _ADDITIVE_MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS ix_integration_call_logs_account_id ON integration_call_logs(account_id)",
     "CREATE INDEX IF NOT EXISTS ix_integration_call_logs_integration_id ON integration_call_logs(integration_id)",
     "CREATE INDEX IF NOT EXISTS ix_integration_call_logs_called_at ON integration_call_logs(account_id, called_at DESC)",
-
     # ended_early — boolean flag, true when a call ends before the AI greeting finishes.
     # Set in real-time by the pipeline (GreetingCompletionTracker) via ai_greeting_completed.
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS ended_early BOOLEAN NOT NULL DEFAULT FALSE",
     # call_settings — per-assistant call control thresholds (max duration, no-response timeout)
     "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS call_settings JSONB NOT NULL DEFAULT '{}'",
-
     # ai_greeting_completed — true when the AI's greeting TTS finished playing during the call.
     # Set directly from the pipeline so it is reliable regardless of Twilio webhook timing.
     # Source of truth for classifying calls as completed vs ended_early going forward.
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS ai_greeting_completed BOOLEAN NOT NULL DEFAULT FALSE",
-
     # REPAIR A — Restore calls wrongly classified as ended_early by the old duration-threshold
     # backfill migration. Scoped to calls before pipeline deployment (2026-04-02 17:00 UTC) so
     # future pipeline-classified ended_early calls are never affected. Safe no-op after first run.
     "UPDATE call_logs SET status = 'completed', ended_early = FALSE WHERE status = 'ended_early' AND ai_greeting_completed = FALSE AND started_at < '2026-04-02 17:00:00'",
-
     # REPAIR B — Restore any calls with confirmed greeting (ai_greeting_completed=TRUE) that were
     # somehow left as ended_early. Pipeline is the source of truth. No-op once data is clean.
     "UPDATE call_logs SET status = 'completed', ended_early = FALSE WHERE ai_greeting_completed = TRUE AND status = 'ended_early'",
-
     # feature_flags — per-account feature override dict for subscription tier gating.
     # Effective entitlements = tier defaults (from FEATURE_CATALOG) merged with this dict.
     "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS feature_flags JSONB NOT NULL DEFAULT '{}'",
-
     # ── hotel_id → account_id unification ────────────────────────────────────
     # Architecture note: the legacy `hotels` table was a 1:1 alias for `accounts`.
     # Every hotels.id IS an accounts.id (same UUID). No data backfill is required;
@@ -395,7 +375,6 @@ BEGIN
     END IF;
   END IF;
 END $$""",
-
     # Task #115 — Fix 1: widen call_events.offset_ms from int4 to int8 (BIGINT).
     # Calls stuck for >24.8 days produce offset_ms values that exceed int4 max
     # (2 147 483 647 ms). The stuck-call sweeper then fails with
@@ -418,7 +397,6 @@ BEGIN
     ALTER TABLE call_events ALTER COLUMN offset_ms TYPE BIGINT;
   END IF;
 END $$""",
-
     # Task #115 — Fix 2: zero out fabricated durations left by the sweeper on
     # unanswered calls (answered_at IS NULL). Before this fix, complete_call()
     # computed leg duration as (datetime.utcnow() - leg.started_at), turning an
@@ -443,8 +421,7 @@ WHERE answered_at IS NULL
 
 
 def _run_hotel_account_migration():
-    """
-    Pre-cutover hotel → account data integrity step (fail-fast).
+    """Pre-cutover hotel → account data integrity step (fail-fast).
 
     Architecture: The legacy `hotels` table was a 1:1 alias for `accounts`.
     Every hotels.id is (or was) an accounts.id — hotels were always created
@@ -460,10 +437,12 @@ def _run_hotel_account_migration():
     """
     with engine.connect() as conn:
         # Step 1: Check if hotels table still exists.
-        result = conn.execute(text(
-            "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
-            "WHERE table_name = 'hotels')"
-        ))
+        result = conn.execute(
+            text(
+                "SELECT EXISTS (SELECT 1 FROM information_schema.tables "
+                "WHERE table_name = 'hotels')"
+            )
+        )
         hotels_exists = result.scalar()
         if not hotels_exists:
             logger.info("Hotel→account migration: hotels table already dropped — skipping.")
@@ -476,16 +455,20 @@ def _run_hotel_account_migration():
         # hotels are rare edge cases. We copy all shared columns to preserve
         # data (Twilio credentials, phone, metadata, etc.) and apply sensible
         # defaults only for accounts columns that hotels never had.
-        hotels_cols_res = conn.execute(text(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'hotels' ORDER BY ordinal_position"
-        ))
+        hotels_cols_res = conn.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'hotels' ORDER BY ordinal_position"
+            )
+        )
         hotels_cols = {r[0] for r in hotels_cols_res}
 
-        accounts_cols_res = conn.execute(text(
-            "SELECT column_name FROM information_schema.columns "
-            "WHERE table_name = 'accounts' ORDER BY ordinal_position"
-        ))
+        accounts_cols_res = conn.execute(
+            text(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name = 'accounts' ORDER BY ordinal_position"
+            )
+        )
         accounts_cols = {r[0] for r in accounts_cols_res}
 
         # Shared columns are copied directly; accounts-only required fields
@@ -551,10 +534,12 @@ def _run_hotel_account_migration():
             # Determine the actual column name (may be hotel_id or account_id).
             col: str | None = None
             for candidate in ("hotel_id", "account_id"):
-                exists = conn.execute(text(
-                    "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
-                    f"WHERE table_name = '{table}' AND column_name = '{candidate}')"
-                )).scalar()
+                exists = conn.execute(
+                    text(
+                        "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+                        f"WHERE table_name = '{table}' AND column_name = '{candidate}')"
+                    )
+                ).scalar()
                 if exists:
                     col = candidate
                     break
@@ -563,11 +548,13 @@ def _run_hotel_account_migration():
                     f"Hotel→account migration: no hotel_id/account_id column in {table} — skipping."
                 )
                 continue
-            count = conn.execute(text(
-                f"SELECT COUNT(*) FROM {table} t "
-                f"WHERE t.{col} IS NOT NULL "
-                f"AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = t.{col})"
-            )).scalar()
+            count = conn.execute(
+                text(
+                    f"SELECT COUNT(*) FROM {table} t "
+                    f"WHERE t.{col} IS NOT NULL "
+                    f"AND NOT EXISTS (SELECT 1 FROM accounts a WHERE a.id = t.{col})"
+                )
+            ).scalar()
             if count > 0:
                 logger.error(
                     f"Hotel→account migration: INTEGRITY FAILURE — "
@@ -575,9 +562,7 @@ def _run_hotel_account_migration():
                 )
                 orphan_found = True
             else:
-                logger.debug(
-                    f"Hotel→account migration: {table}.{col} ✓ (no orphans)"
-                )
+                logger.debug(f"Hotel→account migration: {table}.{col} ✓ (no orphans)")
 
         if orphan_found:
             raise RuntimeError(
@@ -626,9 +611,9 @@ def _run_additive_migrations():
 # (tables, columns, indexes), not for seeded application data.
 # ---------------------------------------------------------------------------
 
+
 def _sync_system_role_permissions():
-    """
-    Idempotent data sync: align all system role permission rows with DEFAULT_ROLES.
+    """Idempotent data sync: align all system role permission rows with DEFAULT_ROLES.
 
     Called during application startup (after schema migrations).  Updates any
     system role whose stored permissions JSON does not exactly match the
@@ -643,8 +628,8 @@ def _sync_system_role_permissions():
       or any role rows that were missed here.
     """
     # Deferred imports to avoid circular dependencies at module load time.
-    from botelier.models.role import Role
     from botelier.auth.permissions import DEFAULT_ROLES
+    from botelier.models.role import Role
 
     db = SessionLocal()
     try:
@@ -667,8 +652,7 @@ def _sync_system_role_permissions():
             # Log immediately per role so each update is visible in the audit trail
             # even if a subsequent commit fails.
             logger.info(
-                f"Syncing system role permissions: {role.slug} "
-                f"(account_id={role.account_id})"
+                f"Syncing system role permissions: {role.slug} (account_id={role.account_id})"
             )
 
         # All role updates are committed in a single transaction for atomicity.
@@ -706,8 +690,7 @@ _SILERO_VAD_DEFAULTS = {
 
 
 def _backfill_silero_vad_config():
-    """
-    Idempotent data backfill: populate vad_config for Silero assistants that
+    """Idempotent data backfill: populate vad_config for Silero assistants that
     have a null or empty JSON object stored.
 
     WHY THIS EXISTS
@@ -727,9 +710,10 @@ def _backfill_silero_vad_config():
     """
     db = SessionLocal()
     try:
-        from botelier.models.assistant import Assistant
-        from sqlalchemy import or_, cast
+        from sqlalchemy import cast, or_
         from sqlalchemy.dialects.postgresql import JSONB
+
+        from botelier.models.assistant import Assistant
 
         candidates = (
             db.query(Assistant)
@@ -789,9 +773,7 @@ def _backfill_silero_vad_config():
                     f"above the new stop_secs to raise it again."
                 )
                 new_cfg["_notes"] = (
-                    f"{prev_notes} | {normalize_note}".strip(" |")
-                    if prev_notes
-                    else normalize_note
+                    f"{prev_notes} | {normalize_note}".strip(" |") if prev_notes else normalize_note
                 )
                 asst.vad_config = new_cfg
                 normalized.append(f"{asst.name} ({stop_secs_f}->0.2)")
@@ -823,8 +805,7 @@ def _backfill_silero_vad_config():
 
 
 def run_stuck_call_sweeper(skip_call_sids: Optional[set] = None, age_minutes: int = 30) -> dict:
-    """
-    Task #96: periodic safety-net that finalizes CallLog rows abandoned in any
+    """Task #96: periodic safety-net that finalizes CallLog rows abandoned in any
     non-terminal status (``initiated`` / ``ringing`` / ``in_progress``).
 
     Runs at startup (``init_db``) with ``skip_call_sids=None`` (nothing is in
@@ -851,7 +832,9 @@ def run_stuck_call_sweeper(skip_call_sids: Optional[set] = None, age_minutes: in
     Returns a summary dict with counts keyed by final status, suitable for
     logging and future metrics.
     """
-    from botelier.models.call_log import CallLog, CallLeg, CallStatus as _CS, LegType as _LT
+    from botelier.models.call_log import CallLeg, CallLog
+    from botelier.models.call_log import CallStatus as _CS
+    from botelier.models.call_log import LegType as _LT
     from botelier.services.call_logger import CallLogger
 
     _TRANSFER_LEG_TYPES = [
@@ -861,7 +844,13 @@ def run_stuck_call_sweeper(skip_call_sids: Optional[set] = None, age_minutes: in
         _LT.TRANSFER_COLD.value,
     ]
 
-    summary = {"scanned": 0, "finalized": 0, "skipped_active": 0, "skipped_transfer": 0, "errors": 0}
+    summary = {
+        "scanned": 0,
+        "finalized": 0,
+        "skipped_active": 0,
+        "skipped_transfer": 0,
+        "errors": 0,
+    }
     skip_set = set(skip_call_sids or ())
 
     _NON_TERMINAL_LEG_STATUSES = (
@@ -903,7 +892,11 @@ def run_stuck_call_sweeper(skip_call_sids: Optional[set] = None, age_minutes: in
                     summary["skipped_transfer"] += 1
                     continue
 
-            age_seconds = int((datetime.utcnow() - row.started_at).total_seconds()) if row.started_at else None
+            age_seconds = (
+                int((datetime.utcnow() - row.started_at).total_seconds())
+                if row.started_at
+                else None
+            )
             try:
                 _ok = CallLogger(db).complete_call(
                     call_sid=row.call_sid,
@@ -914,9 +907,7 @@ def run_stuck_call_sweeper(skip_call_sids: Optional[set] = None, age_minutes: in
                     summary["finalized"] += 1
                 else:
                     summary["errors"] += 1
-                    logger.warning(
-                        f"Sweeper: complete_call returned False for {row.call_sid}"
-                    )
+                    logger.warning(f"Sweeper: complete_call returned False for {row.call_sid}")
             except Exception as e:
                 summary["errors"] += 1
                 db.rollback()
@@ -933,8 +924,7 @@ def run_stuck_call_sweeper(skip_call_sids: Optional[set] = None, age_minutes: in
 
 
 def _backfill_stuck_initiated_calls():
-    """
-    One-time-style data backfill: reclassify CallLog rows that are stuck on
+    """One-time-style data backfill: reclassify CallLog rows that are stuck on
     status='initiated' with ended_at=NULL.
 
     WHY THIS EXISTS
@@ -960,8 +950,9 @@ def _backfill_stuck_initiated_calls():
         try:
             # CTE returns the IDs of rows we just backfilled, then the second
             # statement updates legs strictly belonging to those IDs.
-            result = conn.execute(text(
-                """
+            result = conn.execute(
+                text(
+                    """
                 WITH backfilled AS (
                     UPDATE call_logs
                        SET status = 'no_answer',
@@ -988,7 +979,8 @@ def _backfill_stuck_initiated_calls():
                     (SELECT COUNT(*) FROM backfilled) AS call_count,
                     (SELECT COUNT(*) FROM leg_update) AS leg_count
                 """
-            ))
+                )
+            )
             row = result.fetchone()
             call_count = (row[0] if row else 0) or 0
             leg_count = (row[1] if row else 0) or 0
@@ -1026,15 +1018,15 @@ def _assert_call_events_offset_ms_bigint() -> None:
     """
     try:
         with engine.connect() as conn:
-            row = conn.execute(text(
-                "SELECT data_type FROM information_schema.columns "
-                "WHERE table_name='call_events' AND column_name='offset_ms'"
-            )).first()
+            row = conn.execute(
+                text(
+                    "SELECT data_type FROM information_schema.columns "
+                    "WHERE table_name='call_events' AND column_name='offset_ms'"
+                )
+            ).first()
     except Exception as e:
         # Don't mask DB-connectivity errors here; init_db will surface them.
-        logger.error(
-            f"call_events.offset_ms invariant check failed to query schema: {e}"
-        )
+        logger.error(f"call_events.offset_ms invariant check failed to query schema: {e}")
         raise
 
     if row is None:
@@ -1062,8 +1054,7 @@ def _assert_call_events_offset_ms_bigint() -> None:
 
 
 def init_db():
-    """
-    Initialize the database at application startup.
+    """Initialize the database at application startup.
 
     Runs five idempotent steps in order:
 
@@ -1096,20 +1087,22 @@ def init_db():
        old one-shot ``_backfill_stuck_initiated_calls`` which is kept only
        for backward compatibility in external scripts.
     """
-    from botelier.models import tool  # noqa: F401
-    from botelier.models import account  # noqa: F401
-    from botelier.models import user  # noqa: F401
-    from botelier.models import role  # noqa: F401
-    from botelier.models import invitation  # noqa: F401
-    from botelier.models import phone_number  # noqa: F401
-    from botelier.models import assistant  # noqa: F401
-    from botelier.models import knowledge_entry  # noqa: F401
-    from botelier.models import flow_version  # noqa: F401
-    from botelier.models import call_log  # noqa: F401
-    from botelier.models import resolution_option  # noqa: F401
-    from botelier.models import integration  # noqa: F401
-    from botelier.models import mcp_connection  # noqa: F401
-    from botelier.models import call_event  # noqa: F401
+    from botelier.models import (
+        account,  # noqa: F401
+        assistant,  # noqa: F401
+        call_event,  # noqa: F401
+        call_log,  # noqa: F401
+        flow_version,  # noqa: F401
+        integration,  # noqa: F401
+        invitation,  # noqa: F401
+        knowledge_entry,  # noqa: F401
+        mcp_connection,  # noqa: F401
+        phone_number,  # noqa: F401
+        resolution_option,  # noqa: F401
+        role,  # noqa: F401
+        tool,  # noqa: F401
+        user,  # noqa: F401
+    )
 
     Base.metadata.create_all(bind=engine)
     _run_hotel_account_migration()

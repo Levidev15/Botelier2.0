@@ -1,5 +1,4 @@
-"""
-Account Team Management API Endpoints.
+"""Account Team Management API Endpoints.
 
 Provides endpoints for account admins to manage team members,
 invitations, and custom roles for their account.
@@ -8,19 +7,18 @@ All endpoints require appropriate team.* permissions.
 
 import re
 from datetime import datetime
-from typing import Optional, List
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
-from botelier.database import get_db
-from botelier.models.user import User
-from botelier.models.role import Role, AccountMembership
-from botelier.models.invitation import AccountInvitation, InvitationStatus
 from botelier.auth.middleware import AccountContext, get_account_context
-
+from botelier.database import get_db
+from botelier.models.invitation import AccountInvitation, InvitationStatus
+from botelier.models.role import AccountMembership, Role
+from botelier.models.user import User
 
 router = APIRouter(prefix="/api/accounts/{account_id}/team", tags=["Team"])
 
@@ -389,9 +387,7 @@ async def revoke_invitation(
         raise HTTPException(status_code=404, detail="Invitation not found")
 
     if invitation.status != InvitationStatus.PENDING:
-        raise HTTPException(
-            status_code=400, detail="Only pending invitations can be revoked"
-        )
+        raise HTTPException(status_code=400, detail="Only pending invitations can be revoked")
 
     invitation.revoke()
     db.commit()
@@ -446,11 +442,7 @@ async def create_role(
 
     slug = _generate_role_slug(data.name)
 
-    existing = (
-        db.query(Role)
-        .filter(Role.account_id == ctx.account.id, Role.slug == slug)
-        .first()
-    )
+    existing = db.query(Role).filter(Role.account_id == ctx.account.id, Role.slug == slug).first()
 
     if existing:
         counter = 1
@@ -491,11 +483,7 @@ async def update_role(
     """Update a custom role's name, description, or permissions."""
     ctx.require_permission("team.manage_roles")
 
-    role = (
-        db.query(Role)
-        .filter(Role.id == role_id, Role.account_id == ctx.account.id)
-        .first()
-    )
+    role = db.query(Role).filter(Role.id == role_id, Role.account_id == ctx.account.id).first()
 
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
@@ -535,11 +523,7 @@ async def delete_role(
     """Delete a custom role. Fails if members are still assigned to it."""
     ctx.require_permission("team.manage_roles")
 
-    role = (
-        db.query(Role)
-        .filter(Role.id == role_id, Role.account_id == ctx.account.id)
-        .first()
-    )
+    role = db.query(Role).filter(Role.id == role_id, Role.account_id == ctx.account.id).first()
 
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")

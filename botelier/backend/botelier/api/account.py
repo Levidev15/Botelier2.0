@@ -1,5 +1,4 @@
-"""
-Account-Level Client API Endpoints.
+"""Account-Level Client API Endpoints.
 
 Authenticated endpoints for account members (not platform-admin-only).
 These are scoped to a single account and require the caller to be
@@ -9,13 +8,12 @@ an active member or a platform admin.
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
+from botelier.auth.features import get_account_features
+from botelier.auth.middleware import get_current_user
 from botelier.database import get_db
 from botelier.models.account import Account
 from botelier.models.role import AccountMembership
 from botelier.models.user import User
-from botelier.auth.middleware import get_current_user
-from botelier.auth.features import get_account_features
-
 
 router = APIRouter(prefix="/api/account", tags=["Account"])
 
@@ -26,8 +24,7 @@ async def get_account_features_client(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    Return the resolved feature map for an account.
+    """Return the resolved feature map for an account.
 
     Platform admins may query any account.  Regular users must be an active
     member of the requested account.
@@ -39,11 +36,15 @@ async def get_account_features_client(
         raise HTTPException(status_code=404, detail="Account not found")
 
     if not user.is_platform_admin:
-        membership = db.query(AccountMembership).filter(
-            AccountMembership.user_id == user.id,
-            AccountMembership.account_id == account_id,
-            AccountMembership.is_active == True,
-        ).first()
+        membership = (
+            db.query(AccountMembership)
+            .filter(
+                AccountMembership.user_id == user.id,
+                AccountMembership.account_id == account_id,
+                AccountMembership.is_active == True,
+            )
+            .first()
+        )
         if not membership:
             raise HTTPException(
                 status_code=403,

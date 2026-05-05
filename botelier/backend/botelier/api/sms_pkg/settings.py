@@ -1,13 +1,12 @@
-"""
-SMS Settings endpoints.
+"""SMS Settings endpoints.
 
-  GET    /api/sms/templates              — List templates
-  POST   /api/sms/templates              — Create template
-  PUT    /api/sms/templates/{id}         — Update template
-  DELETE /api/sms/templates/{id}         — Delete template
-  GET    /api/sms/settings/notifications — Get notification settings
-  PUT    /api/sms/settings/notifications — Save notification settings
-  POST   /api/sms/upload                 — Upload file attachment (MMS)
+GET    /api/sms/templates              — List templates
+POST   /api/sms/templates              — Create template
+PUT    /api/sms/templates/{id}         — Update template
+DELETE /api/sms/templates/{id}         — Delete template
+GET    /api/sms/settings/notifications — Get notification settings
+PUT    /api/sms/settings/notifications — Save notification settings
+POST   /api/sms/upload                 — Upload file attachment (MMS)
 """
 
 import os
@@ -16,14 +15,14 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, Request, UploadFile, File
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
+from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from loguru import logger
 
 from botelier.auth.middleware import get_current_user
 from botelier.database import get_db
-from botelier.models.sms_template import SMSTemplate, SMSNotificationSettings
+from botelier.models.sms_template import SMSNotificationSettings, SMSTemplate
 from botelier.models.user import User
 
 from ._auth import assert_sms_account_access, assert_sms_permission
@@ -36,18 +35,17 @@ router = APIRouter(prefix="/api/sms", tags=["SMS"])
 # .html / .js / .svg files into a publicly-served directory and turn the
 # upload endpoint into a stored-XSS vector. (Task #137 V2)
 ALLOWED_UPLOAD_EXT_BY_CONTENT_TYPE = {
-    "image/jpeg":      "jpg",
-    "image/jpg":       "jpg",  # tolerate the non-standard alias some clients send
-    "image/png":       "png",
-    "image/gif":       "gif",
-    "image/webp":      "webp",
+    "image/jpeg": "jpg",
+    "image/jpg": "jpg",  # tolerate the non-standard alias some clients send
+    "image/png": "png",
+    "image/gif": "gif",
+    "image/webp": "webp",
     "application/pdf": "pdf",
 }
 
 
 def _sniff_matches_content_type(payload: bytes, content_type: str) -> bool:
-    """
-    Defense-in-depth: verify the file's leading bytes are consistent with
+    """Defense-in-depth: verify the file's leading bytes are consistent with
     the declared content_type. content_type is client-supplied and cannot
     be trusted on its own; this catches a caller that uploads HTML/SVG/JS
     with a forged `Content-Type: image/png` header.
@@ -82,9 +80,14 @@ async def list_templates(
     db: Session = Depends(get_db),
 ):
     assert_sms_account_access(user, account_id, db)
-    templates = db.query(SMSTemplate).filter(
-        SMSTemplate.account_id == UUID(account_id),
-    ).order_by(SMSTemplate.category, SMSTemplate.name).all()
+    templates = (
+        db.query(SMSTemplate)
+        .filter(
+            SMSTemplate.account_id == UUID(account_id),
+        )
+        .order_by(SMSTemplate.category, SMSTemplate.name)
+        .all()
+    )
     return [t.to_dict() for t in templates]
 
 
@@ -124,17 +127,21 @@ async def update_template(
     db: Session = Depends(get_db),
 ):
     assert_sms_permission(user, request.account_id, "messages.manage_settings", db)
-    template = db.query(SMSTemplate).filter(
-        SMSTemplate.id == template_id,
-        SMSTemplate.account_id == UUID(request.account_id),
-    ).first()
+    template = (
+        db.query(SMSTemplate)
+        .filter(
+            SMSTemplate.id == template_id,
+            SMSTemplate.account_id == UUID(request.account_id),
+        )
+        .first()
+    )
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
 
-    template.name       = request.name
-    template.content    = request.content
-    template.category   = request.category
-    template.is_active  = request.is_active
+    template.name = request.name
+    template.content = request.content
+    template.category = request.category
+    template.is_active = request.is_active
     template.updated_at = datetime.utcnow()
     db.commit()
     return template.to_dict()
@@ -148,10 +155,14 @@ async def delete_template(
     db: Session = Depends(get_db),
 ):
     assert_sms_permission(user, account_id, "messages.manage_settings", db)
-    template = db.query(SMSTemplate).filter(
-        SMSTemplate.id == template_id,
-        SMSTemplate.account_id == UUID(account_id),
-    ).first()
+    template = (
+        db.query(SMSTemplate)
+        .filter(
+            SMSTemplate.id == template_id,
+            SMSTemplate.account_id == UUID(account_id),
+        )
+        .first()
+    )
     if not template:
         raise HTTPException(status_code=404, detail="Template not found")
     db.delete(template)
@@ -166,11 +177,20 @@ async def get_notification_settings(
     db: Session = Depends(get_db),
 ):
     assert_sms_account_access(user, account_id, db)
-    settings = db.query(SMSNotificationSettings).filter(
-        SMSNotificationSettings.account_id == UUID(account_id),
-    ).first()
+    settings = (
+        db.query(SMSNotificationSettings)
+        .filter(
+            SMSNotificationSettings.account_id == UUID(account_id),
+        )
+        .first()
+    )
     if not settings:
-        return {"sound_enabled": True, "visual_enabled": True, "threshold": 1, "sound_type": "chime"}
+        return {
+            "sound_enabled": True,
+            "visual_enabled": True,
+            "threshold": 1,
+            "sound_type": "chime",
+        }
     return settings.to_dict()
 
 
@@ -189,9 +209,13 @@ async def update_notification_settings(
     db: Session = Depends(get_db),
 ):
     assert_sms_permission(user, request.account_id, "messages.manage_settings", db)
-    settings = db.query(SMSNotificationSettings).filter(
-        SMSNotificationSettings.account_id == UUID(request.account_id),
-    ).first()
+    settings = (
+        db.query(SMSNotificationSettings)
+        .filter(
+            SMSNotificationSettings.account_id == UUID(request.account_id),
+        )
+        .first()
+    )
 
     if not settings:
         settings = SMSNotificationSettings(
@@ -203,11 +227,11 @@ async def update_notification_settings(
         )
         db.add(settings)
     else:
-        settings.sound_enabled  = request.sound_enabled
+        settings.sound_enabled = request.sound_enabled
         settings.visual_enabled = request.visual_enabled
-        settings.threshold      = str(request.threshold)
-        settings.sound_type     = request.sound_type
-        settings.updated_at     = datetime.utcnow()
+        settings.threshold = str(request.threshold)
+        settings.sound_type = request.sound_type
+        settings.updated_at = datetime.utcnow()
 
     db.commit()
     db.refresh(settings)
@@ -222,8 +246,7 @@ async def upload_file(
     db: Session = Depends(get_db),
     request: Request = None,
 ):
-    """
-    Upload a file attachment for MMS sending (images + PDF, max 5 MB).
+    """Upload a file attachment for MMS sending (images + PDF, max 5 MB).
 
     Security (Task #137 V2):
       • Authenticated — JWT required.
@@ -261,7 +284,7 @@ async def upload_file(
 
     os.makedirs(UPLOAD_DIR, exist_ok=True)
     unique_name = f"{uuid_mod.uuid4().hex}.{ext}"
-    file_path   = os.path.join(UPLOAD_DIR, unique_name)
+    file_path = os.path.join(UPLOAD_DIR, unique_name)
 
     with open(file_path, "wb") as f:
         f.write(contents)
@@ -271,7 +294,9 @@ async def upload_file(
         base_url = f"https://{replit_domain}"
     elif request:
         forwarded_host = request.headers.get("x-forwarded-host", "")
-        base_url = f"https://{forwarded_host}" if forwarded_host else str(request.base_url).rstrip("/")
+        base_url = (
+            f"https://{forwarded_host}" if forwarded_host else str(request.base_url).rstrip("/")
+        )
     else:
         base_url = "http://localhost:3001"
 

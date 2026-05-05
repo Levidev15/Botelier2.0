@@ -1,21 +1,20 @@
-"""
-Authentication API endpoints for email/password authentication.
-"""
+"""Authentication API endpoints for email/password authentication."""
 
-from datetime import datetime, timedelta
-from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, EmailStr, Field
-from sqlalchemy.orm import Session
-import bcrypt
-from jose import jwt, JWTError, ExpiredSignatureError
 import os
 import uuid
+from datetime import datetime, timedelta
+from typing import Optional
+
+import bcrypt
+from fastapi import APIRouter, Depends, HTTPException, status
+from jose import ExpiredSignatureError, JWTError, jwt
+from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy.orm import Session
 
 from botelier.database import get_db
-from botelier.models.user import User, UserType, AuthProvider
-from botelier.models.role import AccountMembership
 from botelier.models.invitation import AccountInvitation, InvitationStatus
+from botelier.models.role import AccountMembership
+from botelier.models.user import AuthProvider, User, UserType
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -81,36 +80,36 @@ class RegisterResponse(BaseModel):
 async def login(request: LoginRequest, db: Session = Depends(get_db)):
     """Authenticate user with email and password."""
     user = db.query(User).filter(User.email == request.email).first()
-    
+
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
-    
+
     if not user.password_hash:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="This account uses a different sign-in method",
         )
-    
+
     if not verify_password(request.password, user.password_hash):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid email or password",
         )
-    
+
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="Account is deactivated",
         )
-    
+
     user.last_login_at = datetime.utcnow()
     db.commit()
-    
+
     token = create_jwt_token(user)
-    
+
     return LoginResponse(
         access_token=token,
         user={
@@ -129,45 +128,47 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
 async def register(request: RegisterRequest, db: Session = Depends(get_db)):
     """Register a new user with email and password."""
     existing_user = db.query(User).filter(User.email == request.email).first()
-    
+
     if existing_user:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="An account with this email already exists",
         )
-    
+
     invitation = None
     redirect_url = "/dashboard"
-    
+
     if request.invitation_token:
-        invitation = db.query(AccountInvitation).filter(
-            AccountInvitation.token == request.invitation_token
-        ).first()
-        
+        invitation = (
+            db.query(AccountInvitation)
+            .filter(AccountInvitation.token == request.invitation_token)
+            .first()
+        )
+
         if not invitation:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Invalid invitation token",
             )
-        
+
         if invitation.status != InvitationStatus.PENDING:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail=f"This invitation has already been {invitation.status.value}",
             )
-        
+
         if invitation.is_expired:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="This invitation has expired",
             )
-        
+
         if invitation.invitee_email.lower() != request.email.lower():
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Email does not match the invitation",
             )
-    
+
     user = User(
         id=uuid.uuid4(),
         email=request.email.lower(),
@@ -181,7 +182,7 @@ async def register(request: RegisterRequest, db: Session = Depends(get_db)):
     )
     db.add(user)
     db.flush()
-    
+
     if invitation:
         membership = AccountMembership(
             user_id=user.id,
@@ -190,17 +191,17 @@ async def register(request: RegisterRequest, db: Session = Depends(get_db)):
             is_active=True,
         )
         db.add(membership)
-        
+
         invitation.status = InvitationStatus.ACCEPTED
         invitation.accepted_at = datetime.utcnow()
         invitation.accepted_by_user_id = user.id
-        
+
         redirect_url = f"/accounts/{invitation.account_id}"
-    
+
     db.commit()
-    
+
     token = create_jwt_token(user)
-    
+
     return RegisterResponse(
         access_token=token,
         user={
@@ -228,22 +229,19 @@ class VerifyInvitationResponse(BaseModel):
 @router.get("/verify-invitation/{token}", response_model=VerifyInvitationResponse)
 async def verify_invitation(token: str, db: Session = Depends(get_db)):
     """Verify an invitation token and return invitation details."""
-    invitation = db.query(AccountInvitation).filter(
-        AccountInvitation.token == token
-    ).first()
-    
+    invitation = db.query(AccountInvitation).filter(AccountInvitation.token == token).first()
+
     if not invitation:
         return VerifyInvitationResponse(valid=False, error="Invalid invitation token")
-    
+
     if invitation.status != InvitationStatus.PENDING:
         return VerifyInvitationResponse(
-            valid=False, 
-            error=f"This invitation has been {invitation.status.value}"
+            valid=False, error=f"This invitation has been {invitation.status.value}"
         )
-    
+
     if invitation.is_expired:
         return VerifyInvitationResponse(valid=False, error="This invitation has expired")
-    
+
     return VerifyInvitationResponse(
         valid=True,
         email=invitation.invitee_email,
@@ -268,15 +266,15 @@ async def validate_token(request: ValidateTokenRequest, db: Session = Depends(ge
     try:
         payload = jwt.decode(request.token, JWT_SECRET, algorithms=[JWT_ALGORITHM])
         user_id = payload.get("sub")
-        
+
         if not user_id:
             return ValidateTokenResponse(valid=False)
-        
+
         user = db.query(User).filter(User.id == user_id).first()
-        
+
         if not user or not user.is_active:
             return ValidateTokenResponse(valid=False)
-        
+
         return ValidateTokenResponse(
             valid=True,
             user={

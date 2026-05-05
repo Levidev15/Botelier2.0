@@ -1,25 +1,24 @@
-"""
-Authentication Middleware for FastAPI.
+"""Authentication Middleware for FastAPI.
 
 Validates JWT tokens from NextAuth and provides current user context.
 """
 
-import os
-import json
 import base64
 import hashlib
-from typing import Optional, Annotated
+import json
+import os
 from datetime import datetime
+from typing import Annotated, Optional
 
-from fastapi import Depends, HTTPException, status, Header, Request
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends, Header, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
 from sqlalchemy.orm import Session
-from jose import jwt, JWTError
 
 from botelier.database import get_db
-from botelier.models.user import User, UserType, SupportSession
 from botelier.models.account import Account
 from botelier.models.role import AccountMembership
+from botelier.models.user import SupportSession, User, UserType
 
 security = HTTPBearer(auto_error=False)
 
@@ -35,40 +34,30 @@ def derive_encryption_key(secret: str) -> bytes:
     """Derive encryption key matching NextAuth's key derivation."""
     salt = b"NextAuth.js Generated Encryption Key"
     info = b""
-    
+
+    from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives import hashes
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
-    from cryptography.hazmat.backends import default_backend
-    
+
     hkdf = HKDF(
-        algorithm=hashes.SHA256(),
-        length=32,
-        salt=salt,
-        info=info,
-        backend=default_backend()
+        algorithm=hashes.SHA256(), length=32, salt=salt, info=info, backend=default_backend()
     )
     return hkdf.derive(secret.encode())
 
 
 def decode_jwt_token(token: str) -> Optional[dict]:
-    """
-    Decode a JWT token.
-    
+    """Decode a JWT token.
+
     Supports:
     1. Plain HS256 tokens (from email/password auth)
     2. NextAuth signed (JWS) tokens
     3. NextAuth encrypted (JWE) tokens
-    
+
     Only tokens signed with the configured NEXTAUTH_SECRET are accepted.
     """
     for secret in [NEXTAUTH_SECRET]:
         try:
-            payload = jwt.decode(
-                token,
-                secret,
-                algorithms=["HS256"],
-                options={"verify_aud": False}
-            )
+            payload = jwt.decode(token, secret, algorithms=["HS256"], options={"verify_aud": False})
             return payload
         except JWTError:
             continue
@@ -76,6 +65,7 @@ def decode_jwt_token(token: str) -> Optional[dict]:
     # Try JWE decryption with current secret
     try:
         from jose import jwe
+
         key = derive_encryption_key(NEXTAUTH_SECRET)
         decrypted = jwe.decrypt(token, key)
         return json.loads(decrypted)
@@ -94,6 +84,7 @@ def is_valid_uuid(val: str) -> bool:
     """Check if a string is a valid UUID."""
     try:
         import uuid
+
         uuid.UUID(str(val))
         return True
     except (ValueError, AttributeError):
@@ -105,44 +96,48 @@ async def get_current_user_optional(
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db),
 ) -> Optional[User]:
-    """
-    Get current user from JWT token (optional - returns None if not authenticated).
-    
+    """Get current user from JWT token (optional - returns None if not authenticated).
+
     Supports both:
     - Email/password JWT tokens (sub = user UUID)
     - NextAuth tokens (sub = Replit ID)
     """
     if not credentials:
         return None
-    
+
     token = credentials.credentials
     payload = decode_nextauth_token(token)
-    
+
     if not payload:
         return None
-    
+
     sub = payload.get("sub")
     if not sub:
         return None
-    
+
     if is_valid_uuid(sub):
         user = db.query(User).filter(User.id == sub).first()
-        
+
         if user:
             user.last_login_at = datetime.utcnow()
             db.commit()
-        
+
         return user
-    
+
     user = db.query(User).filter(User.replit_id == sub).first()
-    
+
     if not user:
         from botelier.models.user import AuthProvider
+
         user = User(
             replit_id=sub,
             email=payload.get("email") or f"{sub}@replit.user",
-            first_name=payload.get("first_name") or payload.get("name", "").split()[0] if payload.get("name") else None,
-            last_name=payload.get("last_name") or " ".join(payload.get("name", "").split()[1:]) if payload.get("name") else None,
+            first_name=payload.get("first_name") or payload.get("name", "").split()[0]
+            if payload.get("name")
+            else None,
+            last_name=payload.get("last_name") or " ".join(payload.get("name", "").split()[1:])
+            if payload.get("name")
+            else None,
             profile_image_url=payload.get("picture") or payload.get("image"),
             auth_provider=AuthProvider.REPLIT,
             user_type=UserType.ACCOUNT_USER,
@@ -158,38 +153,34 @@ async def get_current_user_optional(
         if payload.get("picture") or payload.get("image"):
             user.profile_image_url = payload.get("picture") or payload.get("image")
         db.commit()
-    
+
     return user
 
 
 async def get_current_user(
     user: Optional[User] = Depends(get_current_user_optional),
 ) -> User:
-    """
-    Get current user from JWT token (required - raises 401 if not authenticated).
-    """
+    """Get current user from JWT token (required - raises 401 if not authenticated)."""
     if not user:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Not authenticated",
             headers={"WWW-Authenticate": "Bearer"},
         )
-    
+
     if not user.is_active:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail="User account is disabled",
         )
-    
+
     return user
 
 
 async def get_platform_admin(
     user: User = Depends(get_current_user),
 ) -> User:
-    """
-    Get current user and verify they are a platform admin.
-    """
+    """Get current user and verify they are a platform admin."""
     if user.user_type != UserType.PLATFORM_ADMIN:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
@@ -203,26 +194,32 @@ def validate_support_session(
     account_id: str,
     db: Session,
 ) -> Optional[SupportSession]:
-    """
-    Validate a support session token.
-    
+    """Validate a support session token.
+
     Returns the SupportSession if valid, None otherwise.
     """
-    support_session = db.query(SupportSession).filter(
-        SupportSession.session_token == session_token,
-        SupportSession.account_id == account_id,
-        SupportSession.is_active == True,
-    ).first()
-    
+    support_session = (
+        db.query(SupportSession)
+        .filter(
+            SupportSession.session_token == session_token,
+            SupportSession.account_id == account_id,
+            SupportSession.is_active == True,
+        )
+        .first()
+    )
+
     if support_session and support_session.is_valid:
-        print(f"[AUDIT] Support session used: admin_id={support_session.admin_id}, account_id={account_id}")
+        print(
+            f"[AUDIT] Support session used: admin_id={support_session.admin_id}, account_id={account_id}"
+        )
         return support_session
-    
+
     return None
 
 
 class AccountContext:
     """Context object containing user and their account membership."""
+
     def __init__(
         self,
         user: User,
@@ -232,17 +229,17 @@ class AccountContext:
         self.user = user
         self.account = account
         self.membership = membership
-    
+
     def has_permission(self, permission: str) -> bool:
         """Check if user has a specific permission in this account."""
         if self.user.is_platform_admin:
             return True
-        
+
         if self.membership:
             return self.membership.has_permission(permission)
-        
+
         return False
-    
+
     def require_permission(self, permission: str):
         """Raise 403 if user doesn't have the permission."""
         if not self.has_permission(permission):
@@ -253,9 +250,8 @@ class AccountContext:
 
 
 def get_account_context(account_id_param: str = "account_id"):
-    """
-    Factory function to create account context dependency.
-    
+    """Factory function to create account context dependency.
+
     Usage:
         @router.get("/accounts/{account_id}/assistants")
         async def list_assistants(
@@ -264,44 +260,49 @@ def get_account_context(account_id_param: str = "account_id"):
             ctx.require_permission("assistants.view")
             ...
     """
+
     async def _get_account_context(
         request: Request,
         user: User = Depends(get_current_user),
         db: Session = Depends(get_db),
     ) -> AccountContext:
         account_id = request.path_params.get(account_id_param)
-        
+
         if not account_id:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="Account ID is required",
             )
-        
+
         account = db.query(Account).filter(Account.id == account_id).first()
-        
+
         if not account:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
                 detail="Account not found",
             )
-        
+
         if user.is_platform_admin:
             return AccountContext(user=user, account=account)
-        
-        membership = db.query(AccountMembership).filter(
-            AccountMembership.user_id == user.id,
-            AccountMembership.account_id == account.id,
-            AccountMembership.is_active == True,
-        ).first()
-        
+
+        membership = (
+            db.query(AccountMembership)
+            .filter(
+                AccountMembership.user_id == user.id,
+                AccountMembership.account_id == account.id,
+                AccountMembership.is_active == True,
+            )
+            .first()
+        )
+
         if not membership:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You don't have access to this account",
             )
-        
+
         return AccountContext(user=user, account=account, membership=membership)
-    
+
     return _get_account_context
 
 
@@ -310,26 +311,25 @@ async def get_account_from_support_session(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Optional[Account]:
-    """
-    Get account from support session headers if present.
-    
+    """Get account from support session headers if present.
+
     Checks X-Support-Session and X-Account-Id headers.
     Returns the account if the support session is valid, None otherwise.
     """
     session_token = request.headers.get("X-Support-Session")
     account_id = request.headers.get("X-Account-Id")
-    
+
     if not session_token or not account_id:
         return None
-    
+
     if not user.is_platform_admin:
         return None
-    
+
     support_session = validate_support_session(session_token, account_id, db)
-    
+
     if not support_session:
         return None
-    
+
     account = db.query(Account).filter(Account.id == account_id).first()
     return account
 
@@ -340,19 +340,22 @@ def check_account_permission(
     permission: str,
     db: Session,
 ) -> None:
-    """
-    Verify the user has the given permission for the specified account.
+    """Verify the user has the given permission for the specified account.
     Platform admins bypass all checks.
     Raises HTTP 403 if access is denied.
     """
     if user.is_platform_admin:
         return
 
-    membership = db.query(AccountMembership).filter(
-        AccountMembership.user_id == user.id,
-        AccountMembership.account_id == account_id,
-        AccountMembership.is_active == True,
-    ).first()
+    membership = (
+        db.query(AccountMembership)
+        .filter(
+            AccountMembership.user_id == user.id,
+            AccountMembership.account_id == account_id,
+            AccountMembership.is_active == True,
+        )
+        .first()
+    )
 
     if not membership:
         raise HTTPException(
@@ -368,8 +371,7 @@ def check_account_permission(
 
 
 def get_hotel_context(permission: str):
-    """
-    Reusable FastAPI dependency factory for query-param scoped account endpoints.
+    """Reusable FastAPI dependency factory for query-param scoped account endpoints.
 
     Accepts ``account_id`` from the query string (``hotel_id`` is accepted as a
     deprecated alias for backward compatibility), validates the UUID, loads the
@@ -386,13 +388,17 @@ def get_hotel_context(permission: str):
             account_id = str(ctx.account.id)
             ...
     """
-    from uuid import UUID as _UUID
-    from fastapi import Query as _Query
     from typing import Optional as _Optional
+    from uuid import UUID as _UUID
+
+    from fastapi import Query as _Query
 
     async def _dependency(
         account_id: _Optional[str] = _Query(None, description="Account UUID"),
-        hotel_id: _Optional[str] = _Query(None, description="Deprecated: use account_id instead. Will be removed in a future release."),
+        hotel_id: _Optional[str] = _Query(
+            None,
+            description="Deprecated: use account_id instead. Will be removed in a future release.",
+        ),
         user: User = Depends(get_current_user),
         db: Session = Depends(get_db),
     ) -> AccountContext:
@@ -420,11 +426,15 @@ def get_hotel_context(permission: str):
         if user.is_platform_admin:
             return AccountContext(user=user, account=account)
 
-        membership = db.query(AccountMembership).filter(
-            AccountMembership.user_id == user.id,
-            AccountMembership.account_id == account.id,
-            AccountMembership.is_active == True,
-        ).first()
+        membership = (
+            db.query(AccountMembership)
+            .filter(
+                AccountMembership.user_id == user.id,
+                AccountMembership.account_id == account.id,
+                AccountMembership.is_active == True,
+            )
+            .first()
+        )
 
         if not membership:
             raise HTTPException(
@@ -448,27 +458,23 @@ async def get_current_account_id(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ) -> Optional[str]:
-    """
-    Get the current account ID from support session headers or user's default account.
-    
+    """Get the current account ID from support session headers or user's default account.
+
     Priority:
     1. Support session headers (X-Support-Session + X-Account-Id)
     2. User's first account membership
     """
     session_token = request.headers.get("X-Support-Session")
     account_id = request.headers.get("X-Account-Id")
-    
+
     if session_token and account_id and user.is_platform_admin:
         support_session = validate_support_session(session_token, account_id, db)
         if support_session:
             return account_id
-    
+
     if user.account_memberships:
-        first_membership = next(
-            (m for m in user.account_memberships if m.is_active),
-            None
-        )
+        first_membership = next((m for m in user.account_memberships if m.is_active), None)
         if first_membership:
             return str(first_membership.account_id)
-    
+
     return None

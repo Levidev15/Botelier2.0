@@ -1,5 +1,4 @@
-"""
-Tests for Task #116 — call lifecycle hardening.
+"""Tests for Task #116 — call lifecycle hardening.
 
 End-to-end regression tests for three production-resilience fixes:
 
@@ -22,15 +21,14 @@ from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
+from botelier.api.calls import incoming_call_webhook
+from botelier.models import CallLeg, CallLog, CallStatus, LegType, PhoneNumber
+from botelier.models.call_event import CallEvent
+from botelier.services import shutdown_finalizer
+from botelier.services.call_logger import _FORCED_BY_SOURCES, CallLogger
+from botelier.utils import log_task_exception
 from loguru import logger
 from sqlalchemy.exc import IntegrityError
-
-from botelier.api.calls import incoming_call_webhook
-from botelier.services.call_logger import CallLogger, _FORCED_BY_SOURCES
-from botelier.services import shutdown_finalizer
-from botelier.models import CallLog, CallLeg, PhoneNumber, CallStatus, LegType
-from botelier.models.call_event import CallEvent
-from botelier.utils import log_task_exception
 
 
 # ---------------------------------------------------------------------------
@@ -38,7 +36,8 @@ from botelier.utils import log_task_exception
 # ---------------------------------------------------------------------------
 class _FakeRequest:
     """Minimal starlette-Request stand-in. The webhook only calls
-    ``await request.form()``, so that's the only surface we need."""
+    ``await request.form()``, so that's the only surface we need.
+    """
 
     def __init__(self, form: dict):
         self._form = form
@@ -87,7 +86,8 @@ def _make_winner_session(phone_record, call_sid: str):
 
 def _make_loser_session(phone_record, call_sid: str, winner_log: CallLog):
     """Session that 'loses' the race — pre-insert lookup says None, then
-    commit raises IntegrityError, then re-fetch returns the winner's row."""
+    commit raises IntegrityError, then re-fetch returns the winner's row.
+    """
     db = MagicMock()
     state = {"called": 0}
 
@@ -129,7 +129,8 @@ class TestWebhookIdempotency:
     async def test_concurrent_retries_both_return_200_twiml(self):
         """Two parallel webhook invocations for the same CallSid must
         both return 200 TwiML — the loser catches IntegrityError, rolls
-        back, and re-fetches the winner's row."""
+        back, and re-fetches the winner's row.
+        """
         call_sid = "CAtest-race-concurrent"
         phone_record = _make_phone_record()
 
@@ -162,11 +163,17 @@ class TestWebhookIdempotency:
         for r in (req_a, req_b):
             r.headers = {}
 
-        # Race them in the same event loop.
-        resp_a, resp_b = await asyncio.gather(
-            incoming_call_webhook(req_a, winner_db),
-            incoming_call_webhook(req_b, loser_db),
-        )
+        # Task #138 added real Twilio signature validation to /incoming.
+        # Bypass it here — this test exercises DB idempotency, not auth.
+        with patch(
+            "botelier.api.calls.validate_twilio_signature",
+            return_value=(True, "http://test"),
+        ):
+            # Race them in the same event loop.
+            resp_a, resp_b = await asyncio.gather(
+                incoming_call_webhook(req_a, winner_db),
+                incoming_call_webhook(req_b, loser_db),
+            )
 
         # Both must succeed — no 500, no IntegrityError escaping.
         assert resp_a.status_code == 200
@@ -190,8 +197,7 @@ class TestWebhookIdempotency:
         """Schema-level guard the webhook fix relies on must stay in place."""
         col = CallLog.__table__.c.call_sid
         assert col.unique is True, (
-            "call_logs.call_sid lost its unique constraint — webhook "
-            "idempotency depends on it"
+            "call_logs.call_sid lost its unique constraint — webhook idempotency depends on it"
         )
         assert col.nullable is False
 
@@ -203,18 +209,22 @@ class TestBackgroundTaskLogging:
     @pytest.mark.asyncio
     async def test_unhandled_exception_emits_error_log_with_traceback(self):
         """The done-callback must produce an ``error``-level loguru
-        record carrying the task name, exception class, and a traceback."""
+        record carrying the task name, exception class, and a traceback.
+        """
         captured: list[dict] = []
 
         sink_id = logger.add(
-            lambda msg: captured.append({
-                "level": msg.record["level"].name,
-                "message": msg.record["message"],
-                "exception": msg.record["exception"],
-            }),
+            lambda msg: captured.append(
+                {
+                    "level": msg.record["level"].name,
+                    "message": msg.record["message"],
+                    "exception": msg.record["exception"],
+                }
+            ),
             level="DEBUG",
         )
         try:
+
             async def _boom():
                 raise RuntimeError("kaboom-from-prewarm")
 
@@ -239,8 +249,7 @@ class TestBackgroundTaskLogging:
         # loguru attaches the traceback under record["exception"] when
         # logger.opt(exception=...).error() is used.
         assert rec["exception"] is not None, (
-            "log_task_exception should attach the exception/traceback "
-            "to the loguru record"
+            "log_task_exception should attach the exception/traceback to the loguru record"
         )
 
     @pytest.mark.asyncio
@@ -248,13 +257,16 @@ class TestBackgroundTaskLogging:
         """No ERROR log on success — would be noisy on every call."""
         captured: list[dict] = []
         sink_id = logger.add(
-            lambda msg: captured.append({
-                "level": msg.record["level"].name,
-                "message": msg.record["message"],
-            }),
+            lambda msg: captured.append(
+                {
+                    "level": msg.record["level"].name,
+                    "message": msg.record["message"],
+                }
+            ),
             level="DEBUG",
         )
         try:
+
             async def _ok():
                 return 42
 
@@ -272,13 +284,16 @@ class TestBackgroundTaskLogging:
         """Cooperative cancellation must not surface as an ERROR."""
         captured: list[dict] = []
         sink_id = logger.add(
-            lambda msg: captured.append({
-                "level": msg.record["level"].name,
-                "message": msg.record["message"],
-            }),
+            lambda msg: captured.append(
+                {
+                    "level": msg.record["level"].name,
+                    "message": msg.record["message"],
+                }
+            ),
             level="DEBUG",
         )
         try:
+
             async def _slow():
                 await asyncio.sleep(10)
 
@@ -341,7 +356,8 @@ class TestShutdownFinalizer:
         run the real finalize_active_calls_on_shutdown, verify the SID
         gets a complete_call(forced_by='shutdown') with a finalization_forced
         event whose details.source == 'shutdown', and the pipeline cancel
-        is awaited."""
+        is awaited.
+        """
         target_sid = "CA-sd-active"
         call_log = _make_call_log()
         call_log.call_sid = target_sid
@@ -387,10 +403,33 @@ class TestShutdownFinalizer:
         # call_handler as explicit arguments precisely so this test runs
         # in any environment, including ones where the websockets module
         # is unimportable due to missing pipecat.
-        await shutdown_finalizer.finalize_active_calls_on_shutdown(
-            session_factory=_make_db,
-            call_handler=fake_handler,
-        )
+        #
+        # Task #123 introduced _write_event_isolated which opens its own
+        # SessionLocal() to write finalization_forced / call_ended events
+        # in a fresh DB session — bypassing the mock above.  Patch it to
+        # redirect those writes into captured_events so assertions work.
+        def _fake_write_event_isolated(
+            call_log_id,
+            event_type,
+            event_source,
+            severity,
+            details,
+            call_started_at,
+        ):
+            captured_events.append(
+                CallEvent(
+                    id=uuid.uuid4(),
+                    call_log_id=call_log_id,
+                    event_type=event_type,
+                    details=details,
+                )
+            )
+
+        with patch.object(CallLogger, "_write_event_isolated", staticmethod(_fake_write_event_isolated)):
+            await shutdown_finalizer.finalize_active_calls_on_shutdown(
+                session_factory=_make_db,
+                call_handler=fake_handler,
+            )
 
         # Pipeline must be cancelled.
         assert cancelled_sids == [target_sid], (
@@ -404,8 +443,7 @@ class TestShutdownFinalizer:
             f"{len(forced)}: {[(e.event_type, e.details) for e in captured_events]}"
         )
         assert forced[0].details.get("source") == "shutdown", (
-            f"finalization_forced must carry source='shutdown', got "
-            f"{forced[0].details}"
+            f"finalization_forced must carry source='shutdown', got {forced[0].details}"
         )
 
         # The CallLog row must reach a terminal state.
@@ -430,7 +468,8 @@ class TestShutdownFinalizer:
     @pytest.mark.asyncio
     async def test_finalizer_bounded_by_total_timeout(self, monkeypatch):
         """If a single call's complete_call hangs, the total finalizer
-        wall-clock must stay below the total budget."""
+        wall-clock must stay below the total budget.
+        """
         # Tighten budgets so the test runs in <2s.
         monkeypatch.setattr(shutdown_finalizer, "SHUTDOWN_PER_CALL_TIMEOUT", 0.2)
         monkeypatch.setattr(shutdown_finalizer, "SHUTDOWN_TOTAL_TIMEOUT", 0.5)
@@ -457,6 +496,7 @@ class TestShutdownFinalizer:
                 def _slow_first():
                     _time.sleep(2.0)
                     return None
+
                 m.filter.return_value.first.side_effect = _slow_first
                 return m
 
@@ -475,6 +515,4 @@ class TestShutdownFinalizer:
         # Coroutine-level bound: must return within total + small margin.
         # (The to_thread-bound query keeps running in its thread, but the
         # awaiter must unblock by the total timeout.)
-        assert elapsed < 1.5, (
-            f"shutdown finalizer overran its total timeout: {elapsed:.2f}s"
-        )
+        assert elapsed < 1.5, f"shutdown finalizer overran its total timeout: {elapsed:.2f}s"

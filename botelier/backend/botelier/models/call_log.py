@@ -1,5 +1,4 @@
-"""
-CallLog and CallLeg Models - Track call history and transfer legs.
+"""CallLog and CallLeg Models - Track call history and transfer legs.
 
 Multi-tenant isolation: All queries MUST filter by account_id to prevent data leakage.
 
@@ -10,14 +9,17 @@ CallLeg represents individual segments of a call (AI conversation, transfers, et
 import uuid
 from datetime import datetime
 from enum import Enum
-from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey, Integer, Text, Index, event
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text, event
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
+
 from botelier.database import Base
 
 
 class CallStatus(str, Enum):
     """Status of a call."""
+
     INITIATED = "initiated"
     RINGING = "ringing"
     IN_PROGRESS = "in_progress"
@@ -31,6 +33,7 @@ class CallStatus(str, Enum):
 
 class CallOutcome(str, Enum):
     """What happened during the call."""
+
     BOOKING_MADE = "booking_made"
     INFO_PROVIDED = "info_provided"
     TRANSFERRED = "transferred"
@@ -42,6 +45,7 @@ class CallOutcome(str, Enum):
 
 class LegType(str, Enum):
     """Type of call leg."""
+
     AI_CONVERSATION = "ai_conversation"
     TRANSFER_EXTERNAL = "transfer_external"
     TRANSFER_SIP = "transfer_sip"
@@ -50,62 +54,66 @@ class LegType(str, Enum):
 
 
 class CallLog(Base):
-    """
-    CallLog model for tracking call history.
-    
+    """CallLog model for tracking call history.
+
     SECURITY: Always filter by account_id to prevent cross-tenant data access.
-    
+
     Each call log represents an incoming call and includes:
     - Call metadata (duration, timestamps, status)
     - Transcript of the conversation
     - Reference to phone number and assistant used
     - Recording URL if available
     """
+
     __tablename__ = "call_logs"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    
+
     account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=False, index=True)
-    
+
     reference_id = Column(String(8), nullable=True)
 
     call_sid = Column(String, unique=True, nullable=False)
-    
+
     phone_number_id = Column(UUID(as_uuid=True), ForeignKey("phone_numbers.id"), nullable=True)
-    
+
     assistant_id = Column(UUID(as_uuid=True), ForeignKey("assistants.id"), nullable=True)
-    
+
     caller_number = Column(String, nullable=True)
-    
+
     to_number = Column(String, nullable=True)
-    
+
     status = Column(String, default=CallStatus.INITIATED.value)
     outcome = Column(String, default=CallOutcome.UNKNOWN.value)
-    
+
     started_at = Column(DateTime, nullable=True)
     answered_at = Column(DateTime, nullable=True)
     ended_at = Column(DateTime, nullable=True)
-    
+
     duration_seconds = Column(Integer, default=0)
 
     ended_early = Column(Boolean, default=False, nullable=False)
 
     ai_greeting_completed = Column(Boolean, default=False, nullable=False)
-    
+
     transcript = Column(JSONB, nullable=True)
-    
+
     recording_url = Column(String, nullable=True)
     recording_sid = Column(String, nullable=True)
-    
+
     has_transfer = Column(Boolean, default=False)
     transfer_mode = Column(String, nullable=True)
-    
+
     flow_id = Column(UUID(as_uuid=True), nullable=True)
     flow_name = Column(String, nullable=True)
-    
-    disposition_id = Column(UUID(as_uuid=True), ForeignKey("assistant_dispositions.id", ondelete="SET NULL"), nullable=True)
+
+    disposition_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("assistant_dispositions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     ai_summary = Column(Text, nullable=True)
-    
+
     acw_resolution = Column(String, nullable=True)
     acw_quality_score = Column(Integer, nullable=True)
     acw_completed_at = Column(DateTime, nullable=True)
@@ -122,23 +130,28 @@ class CallLog(Base):
     # into the unresolved catch-all. NULL is treated as "assume spoke" for
     # partition purposes so historical rows do not silently shift buckets.
     caller_spoke = Column(Boolean, nullable=True)
-    
+
     tool_name = Column(String, nullable=True)
-    
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
-    
-    legs = relationship("CallLeg", back_populates="call_log", cascade="all, delete-orphan", order_by="CallLeg.leg_number")
-    disposition = relationship("AssistantDisposition", foreign_keys=[disposition_id])
-    
-    __table_args__ = (
-        Index('ix_call_logs_account_started', 'account_id', 'started_at'),
-        Index('ix_call_logs_account_status', 'account_id', 'status'),
+
+    legs = relationship(
+        "CallLeg",
+        back_populates="call_log",
+        cascade="all, delete-orphan",
+        order_by="CallLeg.leg_number",
     )
-    
+    disposition = relationship("AssistantDisposition", foreign_keys=[disposition_id])
+
+    __table_args__ = (
+        Index("ix_call_logs_account_started", "account_id", "started_at"),
+        Index("ix_call_logs_account_status", "account_id", "status"),
+    )
+
     def __repr__(self):
         return f"<CallLog {self.call_sid} ({self.status})>"
-    
+
     def to_dict(self, include_legs=False, include_transcript=False):
         """Convert to dictionary for API responses."""
         result = {
@@ -168,20 +181,22 @@ class CallLog(Base):
             "ai_summary": self.ai_summary,
             "acw_resolution": self.acw_resolution,
             "acw_quality_score": self.acw_quality_score,
-            "acw_completed_at": self.acw_completed_at.isoformat() + "Z" if self.acw_completed_at else None,
+            "acw_completed_at": self.acw_completed_at.isoformat() + "Z"
+            if self.acw_completed_at
+            else None,
             "acw_skip_reason": self.acw_skip_reason,
             "caller_spoke": self.caller_spoke,
             "tool_name": self.tool_name,
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
             "updated_at": self.updated_at.isoformat() + "Z" if self.updated_at else None,
         }
-        
+
         if include_transcript:
             result["transcript"] = self.transcript
-        
+
         if include_legs and self.legs:
             result["legs"] = [leg.to_dict() for leg in self.legs]
-        
+
         return result
 
 
@@ -199,49 +214,52 @@ def _init_call_log_reference_id(target, args, kwargs):
 
 
 class CallLeg(Base):
-    """
-    CallLeg model for tracking individual segments of a call.
-    
+    """CallLeg model for tracking individual segments of a call.
+
     When a call is transferred, each segment becomes a separate leg:
     - Leg 1: AI conversation (initial handling)
     - Leg 2: Transfer to external number or SIP
     - Leg 3: Further transfers if any
-    
+
     This allows tracking billing for external transfers where
     costs continue until both parties hang up.
     """
+
     __tablename__ = "call_legs"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    
-    call_log_id = Column(UUID(as_uuid=True), ForeignKey("call_logs.id", ondelete="CASCADE"), nullable=False, index=True)
-    
+
+    call_log_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_logs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
     leg_number = Column(Integer, nullable=False)
-    
+
     leg_type = Column(String, nullable=False)
-    
+
     call_sid = Column(String, nullable=True)
-    
+
     participant = Column(String, nullable=True)
     participant_name = Column(String, nullable=True)
-    
+
     status = Column(String, default=CallStatus.INITIATED.value)
-    
+
     started_at = Column(DateTime, nullable=True)
     ended_at = Column(DateTime, nullable=True)
     duration_seconds = Column(Integer, default=0)
-    
+
     created_at = Column(DateTime, default=datetime.utcnow)
-    
+
     call_log = relationship("CallLog", back_populates="legs")
-    
-    __table_args__ = (
-        Index('ix_call_legs_call_log', 'call_log_id', 'leg_number'),
-    )
-    
+
+    __table_args__ = (Index("ix_call_legs_call_log", "call_log_id", "leg_number"),)
+
     def __repr__(self):
         return f"<CallLeg {self.leg_number} ({self.leg_type})>"
-    
+
     def to_dict(self):
         """Convert to dictionary for API responses."""
         return {

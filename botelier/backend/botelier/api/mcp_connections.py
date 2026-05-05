@@ -1,5 +1,4 @@
-"""
-MCP Connections API - CRUD operations for MCP server connections.
+"""MCP Connections API - CRUD operations for MCP server connections.
 
 MCP (Model Context Protocol) connections allow accounts to connect to external
 MCP servers that provide dynamic tools for their voice assistants.
@@ -20,32 +19,36 @@ Endpoints:
 - POST /api/mcp-connections/test - Test connection without saving
 """
 
-from datetime import datetime
-from typing import Optional, List, Dict, Any
-from urllib.parse import urlparse
 import ipaddress
 import socket
-from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from loguru import logger
 
+from botelier.auth.middleware import get_current_user
 from botelier.database import get_db
 from botelier.models.mcp_connection import (
+    MCPAuthType,
     MCPConnection,
     MCPConnectionStatus,
-    MCPAuthType,
     MCPTransportType,
 )
 from botelier.services.mcp_client import test_mcp_connection
-from botelier.auth.middleware import get_current_user
-
 
 router = APIRouter(prefix="/api/mcp-connections", tags=["mcp-connections"])
 
 _BLOCKED_HOSTS = {
-    "localhost", "127.0.0.1", "0.0.0.0", "::1",
-    "metadata.google.internal", "169.254.169.254",
+    "localhost",
+    "127.0.0.1",
+    "0.0.0.0",
+    "::1",
+    "metadata.google.internal",
+    "169.254.169.254",
 }
 
 
@@ -53,7 +56,9 @@ def _assert_account_access(current_user, account_id: str) -> None:
     if getattr(current_user, "user_type", None) == "platform_admin":
         return
     memberships = getattr(current_user, "account_memberships", None) or []
-    allowed = {str(getattr(m, "account_id", "")) for m in memberships if getattr(m, "is_active", False)}
+    allowed = {
+        str(getattr(m, "account_id", "")) for m in memberships if getattr(m, "is_active", False)
+    }
     if account_id not in allowed:
         raise HTTPException(
             status_code=403,
@@ -69,19 +74,24 @@ def _validate_mcp_server_url(url: str) -> None:
     if not hostname:
         raise HTTPException(status_code=400, detail="Invalid server URL: missing hostname")
     if hostname in _BLOCKED_HOSTS:
-        raise HTTPException(status_code=400, detail="Requests to internal addresses are not allowed")
+        raise HTTPException(
+            status_code=400, detail="Requests to internal addresses are not allowed"
+        )
     try:
         resolved = socket.getaddrinfo(hostname, None)
         for _, _, _, _, sockaddr in resolved:
             ip = ipaddress.ip_address(sockaddr[0])
             if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
-                raise HTTPException(status_code=400, detail="Requests to internal/private addresses are not allowed")
+                raise HTTPException(
+                    status_code=400, detail="Requests to internal/private addresses are not allowed"
+                )
     except socket.gaierror:
         raise HTTPException(status_code=400, detail="Unable to resolve MCP server hostname")
 
 
 class MCPCredentials(BaseModel):
     """Credentials for MCP server authentication."""
+
     api_key: Optional[str] = None
     header_name: Optional[str] = "X-API-Key"
     token: Optional[str] = None
@@ -91,6 +101,7 @@ class MCPCredentials(BaseModel):
 
 class MCPConnectionCreate(BaseModel):
     """Request model for creating an MCP connection."""
+
     account_id: str
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
@@ -103,6 +114,7 @@ class MCPConnectionCreate(BaseModel):
 
 class MCPConnectionUpdate(BaseModel):
     """Request model for updating an MCP connection."""
+
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
     transport_type: Optional[str] = None
@@ -115,6 +127,7 @@ class MCPConnectionUpdate(BaseModel):
 
 class MCPConnectionTestRequest(BaseModel):
     """Request model for testing an MCP connection without saving."""
+
     server_url: str = Field(..., min_length=1)
     auth_type: str = "none"
     credentials: Optional[MCPCredentials] = None
@@ -127,7 +140,7 @@ def _validate_transport_type(value: str) -> MCPTransportType:
     except ValueError:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid transport_type. Must be one of: {[t.value for t in MCPTransportType]}"
+            detail=f"Invalid transport_type. Must be one of: {[t.value for t in MCPTransportType]}",
         )
 
 
@@ -138,22 +151,20 @@ def _validate_auth_type(value: str) -> MCPAuthType:
     except ValueError:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid auth_type. Must be one of: {[a.value for a in MCPAuthType]}"
+            detail=f"Invalid auth_type. Must be one of: {[a.value for a in MCPAuthType]}",
         )
 
 
 @router.post("", status_code=201)
 async def create_mcp_connection(
-    data: MCPConnectionCreate,
-    current_user=Depends(get_current_user),
-    db: Session = Depends(get_db)
+    data: MCPConnectionCreate, current_user=Depends(get_current_user), db: Session = Depends(get_db)
 ):
     """Create a new MCP connection."""
     _assert_account_access(current_user, data.account_id)
     _validate_mcp_server_url(data.server_url)
     transport_type = _validate_transport_type(data.transport_type)
     auth_type = _validate_auth_type(data.auth_type)
-    
+
     connection = MCPConnection(
         account_id=data.account_id,
         name=data.name,
@@ -164,16 +175,16 @@ async def create_mcp_connection(
         status=MCPConnectionStatus.DISCONNECTED,
         connection_config=data.connection_config or {},
     )
-    
+
     if data.credentials:
         connection.set_credentials(data.credentials.model_dump(exclude_none=True))
-    
+
     db.add(connection)
     db.commit()
     db.refresh(connection)
-    
+
     logger.info(f"Created MCP connection: {connection.name} (ID: {connection.id})")
-    
+
     return connection.to_dict()
 
 
@@ -182,33 +193,32 @@ async def list_mcp_connections(
     account_id: str,
     include_tools: bool = False,
     current_user=Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """List all MCP connections for an account."""
     _assert_account_access(current_user, account_id)
-    connections = db.query(MCPConnection).filter(
-        MCPConnection.account_id == account_id
-    ).order_by(MCPConnection.created_at.desc()).all()
-    
+    connections = (
+        db.query(MCPConnection)
+        .filter(MCPConnection.account_id == account_id)
+        .order_by(MCPConnection.created_at.desc())
+        .all()
+    )
+
     return [c.to_dict(include_tools=include_tools) for c in connections]
 
 
 @router.get("/{connection_id}")
 async def get_mcp_connection(
-    connection_id: str,
-    current_user=Depends(get_current_user),
-    db: Session = Depends(get_db)
+    connection_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)
 ):
     """Get a specific MCP connection by ID."""
-    connection = db.query(MCPConnection).filter(
-        MCPConnection.id == connection_id
-    ).first()
-    
+    connection = db.query(MCPConnection).filter(MCPConnection.id == connection_id).first()
+
     if not connection:
         raise HTTPException(status_code=404, detail="MCP connection not found")
-    
+
     _assert_account_access(current_user, str(connection.account_id))
-    
+
     return connection.to_dict(include_tools=True)
 
 
@@ -217,18 +227,16 @@ async def update_mcp_connection(
     connection_id: str,
     data: MCPConnectionUpdate,
     current_user=Depends(get_current_user),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Update an existing MCP connection."""
-    connection = db.query(MCPConnection).filter(
-        MCPConnection.id == connection_id
-    ).first()
-    
+    connection = db.query(MCPConnection).filter(MCPConnection.id == connection_id).first()
+
     if not connection:
         raise HTTPException(status_code=404, detail="MCP connection not found")
-    
+
     _assert_account_access(current_user, str(connection.account_id))
-    
+
     if data.name is not None:
         connection.name = data.name
     if data.description is not None:
@@ -248,59 +256,51 @@ async def update_mcp_connection(
         connection.connection_config = data.connection_config
     if data.credentials is not None:
         connection.set_credentials(data.credentials.model_dump(exclude_none=True))
-    
+
     db.commit()
     db.refresh(connection)
-    
+
     logger.info(f"Updated MCP connection: {connection.name}")
-    
+
     return connection.to_dict()
 
 
 @router.delete("/{connection_id}")
 async def delete_mcp_connection(
-    connection_id: str,
-    current_user=Depends(get_current_user),
-    db: Session = Depends(get_db)
+    connection_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)
 ):
     """Delete an MCP connection."""
-    connection = db.query(MCPConnection).filter(
-        MCPConnection.id == connection_id
-    ).first()
-    
+    connection = db.query(MCPConnection).filter(MCPConnection.id == connection_id).first()
+
     if not connection:
         raise HTTPException(status_code=404, detail="MCP connection not found")
-    
+
     _assert_account_access(current_user, str(connection.account_id))
-    
+
     db.delete(connection)
     db.commit()
-    
+
     logger.info(f"Deleted MCP connection: {connection.name}")
-    
+
     return {"status": "deleted", "id": connection_id}
 
 
 @router.post("/{connection_id}/test")
 async def test_existing_connection(
-    connection_id: str,
-    current_user=Depends(get_current_user),
-    db: Session = Depends(get_db)
+    connection_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)
 ):
     """Test an existing MCP connection and update its status."""
-    connection = db.query(MCPConnection).filter(
-        MCPConnection.id == connection_id
-    ).first()
-    
+    connection = db.query(MCPConnection).filter(MCPConnection.id == connection_id).first()
+
     if not connection:
         raise HTTPException(status_code=404, detail="MCP connection not found")
-    
+
     _assert_account_access(current_user, str(connection.account_id))
     _validate_mcp_server_url(connection.server_url)
-    
+
     connection.status = MCPConnectionStatus.CONNECTING
     db.commit()
-    
+
     try:
         credentials = connection.get_credentials()
         success, error, tools = await test_mcp_connection(
@@ -309,7 +309,7 @@ async def test_existing_connection(
             credentials=credentials,
             timeout=15.0,
         )
-        
+
         if success:
             connection.status = MCPConnectionStatus.CONNECTED
             connection.discovered_tools = tools
@@ -318,22 +318,22 @@ async def test_existing_connection(
         else:
             connection.status = MCPConnectionStatus.ERROR
             connection.last_error = error
-        
+
         db.commit()
         db.refresh(connection)
-        
+
         return {
             "success": success,
             "error": error,
             "tools": tools if success else [],
             "connection": connection.to_dict(include_tools=True),
         }
-        
+
     except Exception as e:
         connection.status = MCPConnectionStatus.ERROR
         connection.last_error = str(e)
         db.commit()
-        
+
         logger.error(f"Failed to test MCP connection {connection_id}: {e}")
         return {
             "success": False,
@@ -345,21 +345,17 @@ async def test_existing_connection(
 
 @router.post("/{connection_id}/discover-tools")
 async def discover_tools(
-    connection_id: str,
-    current_user=Depends(get_current_user),
-    db: Session = Depends(get_db)
+    connection_id: str, current_user=Depends(get_current_user), db: Session = Depends(get_db)
 ):
     """Discover available tools from an MCP server."""
-    connection = db.query(MCPConnection).filter(
-        MCPConnection.id == connection_id
-    ).first()
-    
+    connection = db.query(MCPConnection).filter(MCPConnection.id == connection_id).first()
+
     if not connection:
         raise HTTPException(status_code=404, detail="MCP connection not found")
-    
+
     _assert_account_access(current_user, str(connection.account_id))
     _validate_mcp_server_url(connection.server_url)
-    
+
     try:
         credentials = connection.get_credentials()
         success, error, tools = await test_mcp_connection(
@@ -368,14 +364,14 @@ async def discover_tools(
             credentials=credentials,
             timeout=15.0,
         )
-        
+
         if success:
             connection.discovered_tools = tools
             connection.status = MCPConnectionStatus.CONNECTED
             connection.last_connected_at = datetime.utcnow()
             connection.last_error = None
             db.commit()
-            
+
             return {
                 "success": True,
                 "tools": tools,
@@ -385,14 +381,14 @@ async def discover_tools(
             connection.status = MCPConnectionStatus.ERROR
             connection.last_error = error
             db.commit()
-            
+
             return {
                 "success": False,
                 "error": error,
                 "tools": [],
                 "count": 0,
             }
-            
+
     except Exception as e:
         logger.error(f"Failed to discover tools for {connection_id}: {e}")
         return {
@@ -412,21 +408,21 @@ async def test_connection_without_saving(
     _validate_mcp_server_url(data.server_url)
     try:
         credentials = data.credentials.model_dump(exclude_none=True) if data.credentials else {}
-        
+
         success, error, tools = await test_mcp_connection(
             server_url=data.server_url,
             auth_type=data.auth_type,
             credentials=credentials,
             timeout=15.0,
         )
-        
+
         return {
             "success": success,
             "error": error,
             "tools": tools if success else [],
             "count": len(tools) if success else 0,
         }
-        
+
     except Exception as e:
         logger.error(f"Failed to test MCP connection: {e}")
         return {

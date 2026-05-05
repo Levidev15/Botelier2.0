@@ -1,16 +1,16 @@
+from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from loguru import logger
 
+from ..auth.middleware import check_account_permission, get_current_user
 from ..database import get_db
-from ..models import AssistantResolutionOption, Assistant
+from ..models import Assistant, AssistantResolutionOption
 from ..models.user import User
-from ..auth.middleware import get_current_user, check_account_permission
-
 
 router = APIRouter(prefix="/api/assistants", tags=["Resolution Options"])
 
@@ -37,17 +37,21 @@ async def list_resolution_options(
     user: User = Depends(get_current_user),
 ):
     check_account_permission(user, str(account_id), "assistants.edit", db)
-    assistant = db.query(Assistant).filter(
-        Assistant.id == assistant_id,
-        Assistant.account_id == account_id
-    ).first()
+    assistant = (
+        db.query(Assistant)
+        .filter(Assistant.id == assistant_id, Assistant.account_id == account_id)
+        .first()
+    )
 
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
 
-    options = db.query(AssistantResolutionOption).filter(
-        AssistantResolutionOption.assistant_id == assistant_id
-    ).order_by(AssistantResolutionOption.display_order, AssistantResolutionOption.created_at).all()
+    options = (
+        db.query(AssistantResolutionOption)
+        .filter(AssistantResolutionOption.assistant_id == assistant_id)
+        .order_by(AssistantResolutionOption.display_order, AssistantResolutionOption.created_at)
+        .all()
+    )
 
     return [o.to_dict() for o in options]
 
@@ -61,17 +65,20 @@ async def create_resolution_option(
     user: User = Depends(get_current_user),
 ):
     check_account_permission(user, str(account_id), "assistants.edit", db)
-    assistant = db.query(Assistant).filter(
-        Assistant.id == assistant_id,
-        Assistant.account_id == account_id
-    ).first()
+    assistant = (
+        db.query(Assistant)
+        .filter(Assistant.id == assistant_id, Assistant.account_id == account_id)
+        .first()
+    )
 
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
 
-    max_order = db.query(AssistantResolutionOption).filter(
-        AssistantResolutionOption.assistant_id == assistant_id
-    ).count()
+    max_order = (
+        db.query(AssistantResolutionOption)
+        .filter(AssistantResolutionOption.assistant_id == assistant_id)
+        .count()
+    )
 
     option = AssistantResolutionOption(
         assistant_id=assistant_id,
@@ -99,18 +106,23 @@ async def update_resolution_option(
     user: User = Depends(get_current_user),
 ):
     check_account_permission(user, str(account_id), "assistants.edit", db)
-    assistant = db.query(Assistant).filter(
-        Assistant.id == assistant_id,
-        Assistant.account_id == account_id
-    ).first()
+    assistant = (
+        db.query(Assistant)
+        .filter(Assistant.id == assistant_id, Assistant.account_id == account_id)
+        .first()
+    )
 
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
 
-    option = db.query(AssistantResolutionOption).filter(
-        AssistantResolutionOption.id == option_id,
-        AssistantResolutionOption.assistant_id == assistant_id
-    ).first()
+    option = (
+        db.query(AssistantResolutionOption)
+        .filter(
+            AssistantResolutionOption.id == option_id,
+            AssistantResolutionOption.assistant_id == assistant_id,
+        )
+        .first()
+    )
 
     if not option:
         raise HTTPException(status_code=404, detail="Resolution option not found")
@@ -127,7 +139,9 @@ async def update_resolution_option(
     return option.to_dict()
 
 
-@router.delete("/{assistant_id}/resolution-options/{option_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{assistant_id}/resolution-options/{option_id}", status_code=status.HTTP_204_NO_CONTENT
+)
 async def delete_resolution_option(
     assistant_id: UUID,
     option_id: UUID,
@@ -136,18 +150,23 @@ async def delete_resolution_option(
     user: User = Depends(get_current_user),
 ):
     check_account_permission(user, str(account_id), "assistants.edit", db)
-    assistant = db.query(Assistant).filter(
-        Assistant.id == assistant_id,
-        Assistant.account_id == account_id
-    ).first()
+    assistant = (
+        db.query(Assistant)
+        .filter(Assistant.id == assistant_id, Assistant.account_id == account_id)
+        .first()
+    )
 
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
 
-    option = db.query(AssistantResolutionOption).filter(
-        AssistantResolutionOption.id == option_id,
-        AssistantResolutionOption.assistant_id == assistant_id
-    ).first()
+    option = (
+        db.query(AssistantResolutionOption)
+        .filter(
+            AssistantResolutionOption.id == option_id,
+            AssistantResolutionOption.assistant_id == assistant_id,
+        )
+        .first()
+    )
 
     if not option:
         raise HTTPException(status_code=404, detail="Resolution option not found")

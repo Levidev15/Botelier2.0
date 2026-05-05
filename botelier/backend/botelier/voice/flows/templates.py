@@ -1,5 +1,4 @@
-"""
-Flow Templates - Pre-built conversation flows for hotels.
+"""Flow Templates - Pre-built conversation flows for hotels.
 
 These templates provide starting points that hotels can customize
 in the visual editor:
@@ -11,12 +10,13 @@ in the visual editor:
 """
 
 from typing import Any, Dict
+
 from botelier.voice.flows.engine import FlowNodeBuilder
 
 
 class FlowTemplates:
     """Pre-built flow templates for hotels."""
-    
+
     @staticmethod
     def get_template(template_name: str) -> Dict[str, Any]:
         """Get a flow template by name."""
@@ -27,7 +27,7 @@ class FlowTemplates:
             "concierge_flow": FlowTemplates.concierge_flow(),
         }
         return templates.get(template_name, FlowTemplates.faq_bot())
-    
+
     @staticmethod
     def list_templates() -> list:
         """List available template metadata."""
@@ -37,36 +37,35 @@ class FlowTemplates:
                 "name": "FAQ Bot",
                 "description": "Answers guest questions using knowledge base",
                 "complexity": "simple",
-                "nodes_count": 2
+                "nodes_count": 2,
             },
             {
                 "id": "booking_flow",
                 "name": "Booking Flow",
                 "description": "Guided room reservation with availability check",
                 "complexity": "medium",
-                "nodes_count": 5
+                "nodes_count": 5,
             },
             {
                 "id": "transfer_flow",
                 "name": "Transfer Flow",
                 "description": "Smart call routing to hotel departments",
                 "complexity": "simple",
-                "nodes_count": 3
+                "nodes_count": 3,
             },
             {
                 "id": "concierge_flow",
                 "name": "Concierge Flow",
                 "description": "Full-service guest assistance with multiple capabilities",
                 "complexity": "complex",
-                "nodes_count": 7
-            }
+                "nodes_count": 7,
+            },
         ]
-    
+
     @staticmethod
     def faq_bot() -> Dict[str, Any]:
-        """
-        Simple FAQ bot that answers questions using knowledge base.
-        
+        """Simple FAQ bot that answers questions using knowledge base.
+
         Flow:
         greeting → (query_knowledge) → greeting (loops)
                  → (end_call) → end
@@ -77,57 +76,52 @@ class FlowTemplates:
                 "You are a helpful hotel assistant. Answer guest questions "
                 "accurately and concisely using the hotel's knowledge base."
             )
-            .with_task_message(
-                "Greet the caller warmly and ask how you can help them today."
-            )
+            .with_task_message("Greet the caller warmly and ask how you can help them today.")
             .with_function(
                 name="query_hotel_knowledge",
                 description="Search the hotel knowledge base to answer guest questions",
                 parameters={
                     "type": "object",
                     "properties": {
-                        "question": {
-                            "type": "string",
-                            "description": "The guest's question"
-                        }
+                        "question": {"type": "string", "description": "The guest's question"}
                     },
-                    "required": ["question"]
+                    "required": ["question"],
                 },
-                transition_to="greeting"
+                transition_to="greeting",
             )
             .with_function(
                 name="end_call",
                 description="End the call when the guest is finished or says goodbye",
-                transition_to="end"
+                transition_to="end",
             )
             .build()
         )
-        
+
         end = (
             FlowNodeBuilder("end", "End Call")
-            .with_task_message(
-                "Thank the guest and wish them a pleasant stay."
-            )
+            .with_task_message("Thank the guest and wish them a pleasant stay.")
             .as_end_node()
             .build()
         )
-        
+
         return {
             "initial_node": "greeting",
             "nodes": [
-                {"id": "greeting", "type": "initial", "data": greeting, "position": {"x": 100, "y": 100}},
-                {"id": "end", "type": "end", "data": end, "position": {"x": 100, "y": 300}}
+                {
+                    "id": "greeting",
+                    "type": "initial",
+                    "data": greeting,
+                    "position": {"x": 100, "y": 100},
+                },
+                {"id": "end", "type": "end", "data": end, "position": {"x": 100, "y": 300}},
             ],
-            "edges": [
-                {"id": "e1", "source": "greeting", "target": "end"}
-            ]
+            "edges": [{"id": "e1", "source": "greeting", "target": "end"}],
         }
-    
+
     @staticmethod
     def booking_flow() -> Dict[str, Any]:
-        """
-        Multi-step room booking flow.
-        
+        """Multi-step room booking flow.
+
         Flow:
         greeting → collect_dates → collect_room_type → check_availability → confirm → end
         """
@@ -137,39 +131,29 @@ class FlowTemplates:
                 "You are a hotel reservation specialist. Help guests book rooms "
                 "by collecting their preferences step by step."
             )
-            .with_task_message(
-                "Greet the caller and ask if they would like to make a reservation."
-            )
+            .with_task_message("Greet the caller and ask if they would like to make a reservation.")
             .with_function(
                 name="start_booking",
                 description="Guest wants to make a room reservation",
-                transition_to="collect_dates"
+                transition_to="collect_dates",
             )
             .with_function(
                 name="query_hotel_knowledge",
                 description="Answer general questions about the hotel",
                 parameters={
                     "type": "object",
-                    "properties": {
-                        "question": {"type": "string", "description": "The question"}
-                    },
-                    "required": ["question"]
+                    "properties": {"question": {"type": "string", "description": "The question"}},
+                    "required": ["question"],
                 },
-                transition_to="greeting"
+                transition_to="greeting",
             )
-            .with_function(
-                name="end_call",
-                description="End the call",
-                transition_to="end"
-            )
+            .with_function(name="end_call", description="End the call", transition_to="end")
             .build()
         )
-        
+
         collect_dates = (
             FlowNodeBuilder("collect_dates", "Collect Dates")
-            .with_task_message(
-                "Ask the guest for their check-in and check-out dates."
-            )
+            .with_task_message("Ask the guest for their check-in and check-out dates.")
             .with_function(
                 name="save_dates",
                 description="Guest has provided check-in and check-out dates",
@@ -177,15 +161,15 @@ class FlowTemplates:
                     "type": "object",
                     "properties": {
                         "check_in": {"type": "string", "description": "Check-in date"},
-                        "check_out": {"type": "string", "description": "Check-out date"}
+                        "check_out": {"type": "string", "description": "Check-out date"},
                     },
-                    "required": ["check_in", "check_out"]
+                    "required": ["check_in", "check_out"],
                 },
-                transition_to="collect_room_type"
+                transition_to="collect_room_type",
             )
             .build()
         )
-        
+
         collect_room_type = (
             FlowNodeBuilder("collect_room_type", "Collect Room Type")
             .with_task_message(
@@ -199,15 +183,15 @@ class FlowTemplates:
                     "type": "object",
                     "properties": {
                         "room_type": {"type": "string", "description": "Room type preference"},
-                        "num_guests": {"type": "integer", "description": "Number of guests"}
+                        "num_guests": {"type": "integer", "description": "Number of guests"},
                     },
-                    "required": ["room_type", "num_guests"]
+                    "required": ["room_type", "num_guests"],
                 },
-                transition_to="check_availability"
+                transition_to="check_availability",
             )
             .build()
         )
-        
+
         check_availability = (
             FlowNodeBuilder("check_availability", "Check Availability")
             .with_task_message(
@@ -217,21 +201,17 @@ class FlowTemplates:
             .with_function(
                 name="check_room_availability",
                 description="Check if rooms are available for the requested dates",
-                parameters={
-                    "type": "object",
-                    "properties": {},
-                    "required": []
-                },
-                transition_to="confirm"
+                parameters={"type": "object", "properties": {}, "required": []},
+                transition_to="confirm",
             )
             .with_function(
                 name="modify_dates",
                 description="Guest wants to change their dates",
-                transition_to="collect_dates"
+                transition_to="collect_dates",
             )
             .build()
         )
-        
+
         confirm = (
             FlowNodeBuilder("confirm", "Confirm Booking")
             .with_task_message(
@@ -246,20 +226,20 @@ class FlowTemplates:
                     "properties": {
                         "guest_name": {"type": "string", "description": "Guest name"},
                         "phone": {"type": "string", "description": "Contact phone"},
-                        "email": {"type": "string", "description": "Email (optional)"}
+                        "email": {"type": "string", "description": "Email (optional)"},
                     },
-                    "required": ["guest_name", "phone"]
+                    "required": ["guest_name", "phone"],
                 },
-                transition_to="end"
+                transition_to="end",
             )
             .with_function(
                 name="cancel_booking",
                 description="Guest decides not to book",
-                transition_to="greeting"
+                transition_to="greeting",
             )
             .build()
         )
-        
+
         end = (
             FlowNodeBuilder("end", "Booking Complete")
             .with_task_message(
@@ -269,16 +249,41 @@ class FlowTemplates:
             .as_end_node()
             .build()
         )
-        
+
         return {
             "initial_node": "greeting",
             "nodes": [
-                {"id": "greeting", "type": "initial", "data": greeting, "position": {"x": 250, "y": 50}},
-                {"id": "collect_dates", "type": "node", "data": collect_dates, "position": {"x": 250, "y": 200}},
-                {"id": "collect_room_type", "type": "node", "data": collect_room_type, "position": {"x": 250, "y": 350}},
-                {"id": "check_availability", "type": "node", "data": check_availability, "position": {"x": 250, "y": 500}},
-                {"id": "confirm", "type": "node", "data": confirm, "position": {"x": 250, "y": 650}},
-                {"id": "end", "type": "end", "data": end, "position": {"x": 250, "y": 800}}
+                {
+                    "id": "greeting",
+                    "type": "initial",
+                    "data": greeting,
+                    "position": {"x": 250, "y": 50},
+                },
+                {
+                    "id": "collect_dates",
+                    "type": "node",
+                    "data": collect_dates,
+                    "position": {"x": 250, "y": 200},
+                },
+                {
+                    "id": "collect_room_type",
+                    "type": "node",
+                    "data": collect_room_type,
+                    "position": {"x": 250, "y": 350},
+                },
+                {
+                    "id": "check_availability",
+                    "type": "node",
+                    "data": check_availability,
+                    "position": {"x": 250, "y": 500},
+                },
+                {
+                    "id": "confirm",
+                    "type": "node",
+                    "data": confirm,
+                    "position": {"x": 250, "y": 650},
+                },
+                {"id": "end", "type": "end", "data": end, "position": {"x": 250, "y": 800}},
             ],
             "edges": [
                 {"id": "e1", "source": "greeting", "target": "collect_dates"},
@@ -287,15 +292,14 @@ class FlowTemplates:
                 {"id": "e4", "source": "check_availability", "target": "confirm"},
                 {"id": "e5", "source": "confirm", "target": "end"},
                 {"id": "e6", "source": "check_availability", "target": "collect_dates"},
-                {"id": "e7", "source": "confirm", "target": "greeting"}
-            ]
+                {"id": "e7", "source": "confirm", "target": "greeting"},
+            ],
         }
-    
+
     @staticmethod
     def transfer_flow() -> Dict[str, Any]:
-        """
-        Call routing flow that transfers to appropriate departments.
-        
+        """Call routing flow that transfers to appropriate departments.
+
         Flow:
         greeting → (identify_department) → transfer → end
         """
@@ -305,81 +309,80 @@ class FlowTemplates:
                 "You are a hotel operator. Help callers reach the right department "
                 "or person. Be efficient but friendly."
             )
-            .with_task_message(
-                "Greet the caller and ask how you can direct their call."
-            )
+            .with_task_message("Greet the caller and ask how you can direct their call.")
             .with_function(
                 name="transfer_to_front_desk",
                 description="Transfer to front desk for check-in, check-out, room issues",
-                transition_to="transfer"
+                transition_to="transfer",
             )
             .with_function(
                 name="transfer_to_concierge",
                 description="Transfer to concierge for reservations, recommendations",
-                transition_to="transfer"
+                transition_to="transfer",
             )
             .with_function(
                 name="transfer_to_housekeeping",
                 description="Transfer to housekeeping for room cleaning, amenities",
-                transition_to="transfer"
+                transition_to="transfer",
             )
             .with_function(
                 name="transfer_to_room_service",
                 description="Transfer to room service for food orders",
-                transition_to="transfer"
+                transition_to="transfer",
             )
             .with_function(
                 name="query_hotel_knowledge",
                 description="Answer simple questions without transfer",
                 parameters={
                     "type": "object",
-                    "properties": {
-                        "question": {"type": "string"}
-                    },
-                    "required": ["question"]
+                    "properties": {"question": {"type": "string"}},
+                    "required": ["question"],
                 },
-                transition_to="greeting"
+                transition_to="greeting",
             )
             .build()
         )
-        
+
         transfer = (
             FlowNodeBuilder("transfer", "Transferring")
             .with_task_message(
                 "Confirm the transfer and let the caller know you're connecting them."
             )
             .with_function(
-                name="complete_transfer",
-                description="Transfer is complete",
-                transition_to="end"
+                name="complete_transfer", description="Transfer is complete", transition_to="end"
             )
             .build()
         )
-        
-        end = (
-            FlowNodeBuilder("end", "Call Complete")
-            .as_end_node()
-            .build()
-        )
-        
+
+        end = FlowNodeBuilder("end", "Call Complete").as_end_node().build()
+
         return {
             "initial_node": "greeting",
             "nodes": [
-                {"id": "greeting", "type": "initial", "data": greeting, "position": {"x": 250, "y": 100}},
-                {"id": "transfer", "type": "node", "data": transfer, "position": {"x": 250, "y": 300}},
-                {"id": "end", "type": "end", "data": end, "position": {"x": 250, "y": 500}}
+                {
+                    "id": "greeting",
+                    "type": "initial",
+                    "data": greeting,
+                    "position": {"x": 250, "y": 100},
+                },
+                {
+                    "id": "transfer",
+                    "type": "node",
+                    "data": transfer,
+                    "position": {"x": 250, "y": 300},
+                },
+                {"id": "end", "type": "end", "data": end, "position": {"x": 250, "y": 500}},
             ],
             "edges": [
                 {"id": "e1", "source": "greeting", "target": "transfer"},
-                {"id": "e2", "source": "transfer", "target": "end"}
-            ]
+                {"id": "e2", "source": "transfer", "target": "end"},
+            ],
         }
-    
+
     @staticmethod
     def concierge_flow() -> Dict[str, Any]:
-        """
-        Full-service concierge with multiple capabilities.
-        
+        """Full-service concierge with multiple capabilities.
+
         Flow:
         greeting → [booking | inquiry | transfer | dining | activities] → follow_up → end
         """
@@ -389,47 +392,40 @@ class FlowTemplates:
                 "You are a luxury hotel concierge. Provide exceptional service "
                 "with a warm, professional tone. Anticipate guest needs."
             )
-            .with_task_message(
-                "Welcome the caller warmly. Ask how you may assist them today."
-            )
+            .with_task_message("Welcome the caller warmly. Ask how you may assist them today.")
             .with_function(
                 name="handle_booking_request",
                 description="Guest wants to make a reservation",
-                transition_to="booking"
+                transition_to="booking",
             )
             .with_function(
                 name="handle_inquiry",
                 description="Guest has questions about the hotel",
-                transition_to="inquiry"
+                transition_to="inquiry",
             )
             .with_function(
                 name="handle_transfer",
                 description="Guest needs to speak with a specific department",
-                transition_to="transfer"
+                transition_to="transfer",
             )
             .with_function(
                 name="handle_dining",
                 description="Guest wants dining recommendations or reservations",
-                transition_to="dining"
+                transition_to="dining",
             )
             .with_function(
                 name="handle_activities",
                 description="Guest wants activity or tour recommendations",
-                transition_to="activities"
+                transition_to="activities",
             )
-            .with_function(
-                name="end_call",
-                description="End the call",
-                transition_to="end"
-            )
+            .with_function(name="end_call", description="End the call", transition_to="end")
             .build()
         )
-        
+
         booking = (
             FlowNodeBuilder("booking", "Room Booking")
             .with_task_message(
-                "Assist with room reservations. Collect dates, preferences, "
-                "and guest information."
+                "Assist with room reservations. Collect dates, preferences, and guest information."
             )
             .with_function(
                 name="create_booking",
@@ -440,60 +436,50 @@ class FlowTemplates:
                         "check_in": {"type": "string"},
                         "check_out": {"type": "string"},
                         "room_type": {"type": "string"},
-                        "guest_name": {"type": "string"}
+                        "guest_name": {"type": "string"},
                     },
-                    "required": ["check_in", "check_out", "guest_name"]
+                    "required": ["check_in", "check_out", "guest_name"],
                 },
-                transition_to="follow_up"
+                transition_to="follow_up",
             )
             .build()
         )
-        
+
         inquiry = (
             FlowNodeBuilder("inquiry", "Guest Inquiry")
-            .with_task_message(
-                "Answer guest questions using the knowledge base."
-            )
+            .with_task_message("Answer guest questions using the knowledge base.")
             .with_function(
                 name="query_hotel_knowledge",
                 description="Search knowledge base",
                 parameters={
                     "type": "object",
-                    "properties": {
-                        "question": {"type": "string"}
-                    },
-                    "required": ["question"]
+                    "properties": {"question": {"type": "string"}},
+                    "required": ["question"],
                 },
-                transition_to="follow_up"
+                transition_to="follow_up",
             )
             .build()
         )
-        
+
         transfer = (
             FlowNodeBuilder("transfer", "Call Transfer")
-            .with_task_message(
-                "Transfer the call to the appropriate department."
-            )
+            .with_task_message("Transfer the call to the appropriate department.")
             .with_function(
                 name="execute_transfer",
                 description="Complete the transfer",
                 parameters={
                     "type": "object",
-                    "properties": {
-                        "department": {"type": "string"}
-                    },
-                    "required": ["department"]
+                    "properties": {"department": {"type": "string"}},
+                    "required": ["department"],
                 },
-                transition_to="end"
+                transition_to="end",
             )
             .build()
         )
-        
+
         dining = (
             FlowNodeBuilder("dining", "Dining Services")
-            .with_task_message(
-                "Help with restaurant recommendations and reservations."
-            )
+            .with_task_message("Help with restaurant recommendations and reservations.")
             .with_function(
                 name="make_dining_reservation",
                 description="Book a restaurant table",
@@ -502,20 +488,18 @@ class FlowTemplates:
                     "properties": {
                         "restaurant": {"type": "string"},
                         "date_time": {"type": "string"},
-                        "party_size": {"type": "integer"}
+                        "party_size": {"type": "integer"},
                     },
-                    "required": ["restaurant", "party_size"]
+                    "required": ["restaurant", "party_size"],
                 },
-                transition_to="follow_up"
+                transition_to="follow_up",
             )
             .build()
         )
-        
+
         activities = (
             FlowNodeBuilder("activities", "Activities & Tours")
-            .with_task_message(
-                "Recommend and book local activities, tours, and experiences."
-            )
+            .with_task_message("Recommend and book local activities, tours, and experiences.")
             .with_function(
                 name="book_activity",
                 description="Book an activity or tour",
@@ -524,53 +508,75 @@ class FlowTemplates:
                     "properties": {
                         "activity": {"type": "string"},
                         "date": {"type": "string"},
-                        "num_guests": {"type": "integer"}
+                        "num_guests": {"type": "integer"},
                     },
-                    "required": ["activity", "num_guests"]
+                    "required": ["activity", "num_guests"],
                 },
-                transition_to="follow_up"
+                transition_to="follow_up",
             )
             .build()
         )
-        
+
         follow_up = (
             FlowNodeBuilder("follow_up", "Follow Up")
-            .with_task_message(
-                "Ask if there's anything else you can help with."
-            )
+            .with_task_message("Ask if there's anything else you can help with.")
             .with_function(
                 name="continue_assistance",
                 description="Guest needs more help",
-                transition_to="greeting"
+                transition_to="greeting",
             )
-            .with_function(
-                name="end_call",
-                description="Guest is satisfied",
-                transition_to="end"
-            )
+            .with_function(name="end_call", description="Guest is satisfied", transition_to="end")
             .build()
         )
-        
+
         end = (
             FlowNodeBuilder("end", "End Call")
-            .with_task_message(
-                "Thank the guest and wish them a wonderful stay."
-            )
+            .with_task_message("Thank the guest and wish them a wonderful stay.")
             .as_end_node()
             .build()
         )
-        
+
         return {
             "initial_node": "greeting",
             "nodes": [
-                {"id": "greeting", "type": "initial", "data": greeting, "position": {"x": 400, "y": 50}},
-                {"id": "booking", "type": "node", "data": booking, "position": {"x": 100, "y": 250}},
-                {"id": "inquiry", "type": "node", "data": inquiry, "position": {"x": 250, "y": 250}},
-                {"id": "transfer", "type": "node", "data": transfer, "position": {"x": 400, "y": 250}},
+                {
+                    "id": "greeting",
+                    "type": "initial",
+                    "data": greeting,
+                    "position": {"x": 400, "y": 50},
+                },
+                {
+                    "id": "booking",
+                    "type": "node",
+                    "data": booking,
+                    "position": {"x": 100, "y": 250},
+                },
+                {
+                    "id": "inquiry",
+                    "type": "node",
+                    "data": inquiry,
+                    "position": {"x": 250, "y": 250},
+                },
+                {
+                    "id": "transfer",
+                    "type": "node",
+                    "data": transfer,
+                    "position": {"x": 400, "y": 250},
+                },
                 {"id": "dining", "type": "node", "data": dining, "position": {"x": 550, "y": 250}},
-                {"id": "activities", "type": "node", "data": activities, "position": {"x": 700, "y": 250}},
-                {"id": "follow_up", "type": "node", "data": follow_up, "position": {"x": 400, "y": 450}},
-                {"id": "end", "type": "end", "data": end, "position": {"x": 400, "y": 650}}
+                {
+                    "id": "activities",
+                    "type": "node",
+                    "data": activities,
+                    "position": {"x": 700, "y": 250},
+                },
+                {
+                    "id": "follow_up",
+                    "type": "node",
+                    "data": follow_up,
+                    "position": {"x": 400, "y": 450},
+                },
+                {"id": "end", "type": "end", "data": end, "position": {"x": 400, "y": 650}},
             ],
             "edges": [
                 {"id": "e1", "source": "greeting", "target": "booking"},
@@ -585,6 +591,6 @@ class FlowTemplates:
                 {"id": "e10", "source": "activities", "target": "follow_up"},
                 {"id": "e11", "source": "follow_up", "target": "greeting"},
                 {"id": "e12", "source": "follow_up", "target": "end"},
-                {"id": "e13", "source": "greeting", "target": "end"}
-            ]
+                {"id": "e13", "source": "greeting", "target": "end"},
+            ],
         }

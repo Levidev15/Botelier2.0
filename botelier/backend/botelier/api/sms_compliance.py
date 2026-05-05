@@ -1,18 +1,22 @@
-from typing import Optional, List
+from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
-from loguru import logger
 
 from botelier.database import get_db
-from botelier.models.sms_compliance import (
-    SMSComplianceBrand, SMSComplianceCampaign,
-    BrandStatus, CampaignStatus, BrandType, CampaignUseCase,
-)
 from botelier.models.account import Account
 from botelier.models.phone_number import PhoneNumber
+from botelier.models.sms_compliance import (
+    BrandStatus,
+    BrandType,
+    CampaignStatus,
+    CampaignUseCase,
+    SMSComplianceBrand,
+    SMSComplianceCampaign,
+)
 from botelier.services.sms_compliance_service import SMSComplianceService
 
 router = APIRouter(prefix="/api/sms-compliance", tags=["SMS Compliance"])
@@ -109,17 +113,18 @@ async def list_brands(
     account_id: str = Query(..., description="Account ID"),
     db: Session = Depends(get_db),
 ):
-    brands = db.query(SMSComplianceBrand).filter(
-        SMSComplianceBrand.account_id == account_id
-    ).order_by(SMSComplianceBrand.created_at.desc()).all()
+    brands = (
+        db.query(SMSComplianceBrand)
+        .filter(SMSComplianceBrand.account_id == account_id)
+        .order_by(SMSComplianceBrand.created_at.desc())
+        .all()
+    )
     return [b.to_dict() for b in brands]
 
 
 @router.get("/brands/{brand_id}")
 async def get_brand(brand_id: str, db: Session = Depends(get_db)):
-    brand = db.query(SMSComplianceBrand).filter(
-        SMSComplianceBrand.id == brand_id
-    ).first()
+    brand = db.query(SMSComplianceBrand).filter(SMSComplianceBrand.id == brand_id).first()
     if not brand:
         raise HTTPException(status_code=404, detail="Brand not found")
     return brand.to_dict()
@@ -131,14 +136,18 @@ async def create_brand(request: BrandCreateRequest, db: Session = Depends(get_db
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
 
-    existing = db.query(SMSComplianceBrand).filter(
-        SMSComplianceBrand.account_id == request.account_id,
-        SMSComplianceBrand.status.notin_([BrandStatus.FAILED])
-    ).first()
+    existing = (
+        db.query(SMSComplianceBrand)
+        .filter(
+            SMSComplianceBrand.account_id == request.account_id,
+            SMSComplianceBrand.status.notin_([BrandStatus.FAILED]),
+        )
+        .first()
+    )
     if existing:
         raise HTTPException(
             status_code=400,
-            detail="Account already has an active brand registration. Delete or use the existing one."
+            detail="Account already has an active brand registration. Delete or use the existing one.",
         )
 
     brand_type_map = {
@@ -181,16 +190,13 @@ async def create_brand(request: BrandCreateRequest, db: Session = Depends(get_db
 
 @router.put("/brands/{brand_id}")
 async def update_brand(brand_id: str, request: BrandUpdateRequest, db: Session = Depends(get_db)):
-    brand = db.query(SMSComplianceBrand).filter(
-        SMSComplianceBrand.id == brand_id
-    ).first()
+    brand = db.query(SMSComplianceBrand).filter(SMSComplianceBrand.id == brand_id).first()
     if not brand:
         raise HTTPException(status_code=404, detail="Brand not found")
 
     if brand.status not in [BrandStatus.DRAFT, BrandStatus.FAILED]:
         raise HTTPException(
-            status_code=400,
-            detail="Can only edit brands in draft or failed status"
+            status_code=400, detail="Can only edit brands in draft or failed status"
         )
 
     update_data = request.dict(exclude_unset=True)
@@ -205,16 +211,13 @@ async def update_brand(brand_id: str, request: BrandUpdateRequest, db: Session =
 
 @router.post("/brands/{brand_id}/submit")
 async def submit_brand(brand_id: str, db: Session = Depends(get_db)):
-    brand = db.query(SMSComplianceBrand).filter(
-        SMSComplianceBrand.id == brand_id
-    ).first()
+    brand = db.query(SMSComplianceBrand).filter(SMSComplianceBrand.id == brand_id).first()
     if not brand:
         raise HTTPException(status_code=404, detail="Brand not found")
 
     if brand.status not in [BrandStatus.DRAFT, BrandStatus.FAILED]:
         raise HTTPException(
-            status_code=400,
-            detail=f"Brand is in {brand.status.value} status, cannot submit"
+            status_code=400, detail=f"Brand is in {brand.status.value} status, cannot submit"
         )
 
     base_required = ["business_name", "rep_first_name", "rep_last_name", "rep_email", "rep_phone"]
@@ -227,8 +230,7 @@ async def submit_brand(brand_id: str, db: Session = Depends(get_db)):
     missing = [f for f in required_fields if not getattr(brand, f)]
     if missing:
         raise HTTPException(
-            status_code=400,
-            detail=f"Missing required fields: {', '.join(missing)}"
+            status_code=400, detail=f"Missing required fields: {', '.join(missing)}"
         )
 
     try:
@@ -241,9 +243,7 @@ async def submit_brand(brand_id: str, db: Session = Depends(get_db)):
 
 @router.post("/brands/{brand_id}/refresh")
 async def refresh_brand(brand_id: str, db: Session = Depends(get_db)):
-    brand = db.query(SMSComplianceBrand).filter(
-        SMSComplianceBrand.id == brand_id
-    ).first()
+    brand = db.query(SMSComplianceBrand).filter(SMSComplianceBrand.id == brand_id).first()
     if not brand:
         raise HTTPException(status_code=404, detail="Brand not found")
 
@@ -257,19 +257,17 @@ async def refresh_brand(brand_id: str, db: Session = Depends(get_db)):
 
 @router.delete("/brands/{brand_id}")
 async def delete_brand(brand_id: str, db: Session = Depends(get_db)):
-    brand = db.query(SMSComplianceBrand).filter(
-        SMSComplianceBrand.id == brand_id
-    ).first()
+    brand = db.query(SMSComplianceBrand).filter(SMSComplianceBrand.id == brand_id).first()
     if not brand:
         raise HTTPException(status_code=404, detail="Brand not found")
 
-    campaigns = db.query(SMSComplianceCampaign).filter(
-        SMSComplianceCampaign.brand_id == brand_id
-    ).count()
+    campaigns = (
+        db.query(SMSComplianceCampaign).filter(SMSComplianceCampaign.brand_id == brand_id).count()
+    )
     if campaigns > 0:
         raise HTTPException(
             status_code=400,
-            detail="Cannot delete brand with existing campaigns. Delete campaigns first."
+            detail="Cannot delete brand with existing campaigns. Delete campaigns first.",
         )
 
     db.delete(brand)
@@ -295,9 +293,9 @@ async def list_campaigns(
 
 @router.get("/campaigns/{campaign_id}")
 async def get_campaign(campaign_id: str, db: Session = Depends(get_db)):
-    campaign = db.query(SMSComplianceCampaign).filter(
-        SMSComplianceCampaign.id == campaign_id
-    ).first()
+    campaign = (
+        db.query(SMSComplianceCampaign).filter(SMSComplianceCampaign.id == campaign_id).first()
+    )
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
     return campaign.to_dict()
@@ -305,16 +303,15 @@ async def get_campaign(campaign_id: str, db: Session = Depends(get_db)):
 
 @router.post("/campaigns")
 async def create_campaign(request: CampaignCreateRequest, db: Session = Depends(get_db)):
-    brand = db.query(SMSComplianceBrand).filter(
-        SMSComplianceBrand.id == request.brand_id
-    ).first()
+    brand = db.query(SMSComplianceBrand).filter(SMSComplianceBrand.id == request.brand_id).first()
     if not brand:
         raise HTTPException(status_code=404, detail="Brand not found")
 
     if brand.status != BrandStatus.APPROVED:
         raise HTTPException(
             status_code=400,
-            detail="Brand must be approved before creating campaigns. Current status: " + brand.status.value
+            detail="Brand must be approved before creating campaigns. Current status: "
+            + brand.status.value,
         )
 
     account = db.query(Account).filter(Account.id == request.account_id).first()
@@ -349,17 +346,18 @@ async def create_campaign(request: CampaignCreateRequest, db: Session = Depends(
 
 
 @router.put("/campaigns/{campaign_id}")
-async def update_campaign(campaign_id: str, request: CampaignUpdateRequest, db: Session = Depends(get_db)):
-    campaign = db.query(SMSComplianceCampaign).filter(
-        SMSComplianceCampaign.id == campaign_id
-    ).first()
+async def update_campaign(
+    campaign_id: str, request: CampaignUpdateRequest, db: Session = Depends(get_db)
+):
+    campaign = (
+        db.query(SMSComplianceCampaign).filter(SMSComplianceCampaign.id == campaign_id).first()
+    )
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     if campaign.status not in [CampaignStatus.DRAFT, CampaignStatus.FAILED]:
         raise HTTPException(
-            status_code=400,
-            detail="Can only edit campaigns in draft or failed status"
+            status_code=400, detail="Can only edit campaigns in draft or failed status"
         )
 
     update_data = request.dict(exclude_unset=True)
@@ -377,23 +375,19 @@ async def update_campaign(campaign_id: str, request: CampaignUpdateRequest, db: 
 
 @router.post("/campaigns/{campaign_id}/submit")
 async def submit_campaign(campaign_id: str, db: Session = Depends(get_db)):
-    campaign = db.query(SMSComplianceCampaign).filter(
-        SMSComplianceCampaign.id == campaign_id
-    ).first()
+    campaign = (
+        db.query(SMSComplianceCampaign).filter(SMSComplianceCampaign.id == campaign_id).first()
+    )
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
     if campaign.status not in [CampaignStatus.DRAFT, CampaignStatus.FAILED]:
         raise HTTPException(
-            status_code=400,
-            detail=f"Campaign is in {campaign.status.value} status, cannot submit"
+            status_code=400, detail=f"Campaign is in {campaign.status.value} status, cannot submit"
         )
 
     if not campaign.message_samples or len(campaign.message_samples) < 1:
-        raise HTTPException(
-            status_code=400,
-            detail="At least one message sample is required"
-        )
+        raise HTTPException(status_code=400, detail="At least one message sample is required")
 
     try:
         service = SMSComplianceService(db)
@@ -407,9 +401,9 @@ async def submit_campaign(campaign_id: str, db: Session = Depends(get_db)):
 
 @router.post("/campaigns/{campaign_id}/refresh")
 async def refresh_campaign(campaign_id: str, db: Session = Depends(get_db)):
-    campaign = db.query(SMSComplianceCampaign).filter(
-        SMSComplianceCampaign.id == campaign_id
-    ).first()
+    campaign = (
+        db.query(SMSComplianceCampaign).filter(SMSComplianceCampaign.id == campaign_id).first()
+    )
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
@@ -423,9 +417,9 @@ async def refresh_campaign(campaign_id: str, db: Session = Depends(get_db)):
 
 @router.delete("/campaigns/{campaign_id}")
 async def delete_campaign(campaign_id: str, db: Session = Depends(get_db)):
-    campaign = db.query(SMSComplianceCampaign).filter(
-        SMSComplianceCampaign.id == campaign_id
-    ).first()
+    campaign = (
+        db.query(SMSComplianceCampaign).filter(SMSComplianceCampaign.id == campaign_id).first()
+    )
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
@@ -440,20 +434,23 @@ async def assign_phone_number_to_campaign(
     request: PhoneNumberAssignRequest,
     db: Session = Depends(get_db),
 ):
-    campaign = db.query(SMSComplianceCampaign).filter(
-        SMSComplianceCampaign.id == campaign_id
-    ).first()
+    campaign = (
+        db.query(SMSComplianceCampaign).filter(SMSComplianceCampaign.id == campaign_id).first()
+    )
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
-    phone = db.query(PhoneNumber).filter(
-        PhoneNumber.twilio_sid == request.phone_number_sid,
-        PhoneNumber.account_id == campaign.account_id,
-    ).first()
+    phone = (
+        db.query(PhoneNumber)
+        .filter(
+            PhoneNumber.twilio_sid == request.phone_number_sid,
+            PhoneNumber.account_id == campaign.account_id,
+        )
+        .first()
+    )
     if not phone:
         raise HTTPException(
-            status_code=404,
-            detail="Phone number not found or doesn't belong to this account"
+            status_code=404, detail="Phone number not found or doesn't belong to this account"
         )
 
     try:
@@ -472,9 +469,9 @@ async def remove_phone_number_from_campaign(
     phone_number_sid: str,
     db: Session = Depends(get_db),
 ):
-    campaign = db.query(SMSComplianceCampaign).filter(
-        SMSComplianceCampaign.id == campaign_id
-    ).first()
+    campaign = (
+        db.query(SMSComplianceCampaign).filter(SMSComplianceCampaign.id == campaign_id).first()
+    )
     if not campaign:
         raise HTTPException(status_code=404, detail="Campaign not found")
 
@@ -491,8 +488,12 @@ async def get_account_phone_numbers(
     account_id: str,
     db: Session = Depends(get_db),
 ):
-    numbers = db.query(PhoneNumber).filter(
-        PhoneNumber.account_id == account_id,
-        PhoneNumber.is_active == True,
-    ).all()
+    numbers = (
+        db.query(PhoneNumber)
+        .filter(
+            PhoneNumber.account_id == account_id,
+            PhoneNumber.is_active == True,
+        )
+        .all()
+    )
     return [n.to_dict() for n in numbers]
