@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024–2025, Daily
+# Copyright (c) 2024-2026, Daily
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 #
@@ -12,8 +12,8 @@ tasks that manage the lifecycle and execution of frame processing pipelines.
 
 import asyncio
 from abc import abstractmethod
+from collections.abc import AsyncIterable, Iterable
 from dataclasses import dataclass
-from typing import AsyncIterable, Iterable
 
 from pipecat.frames.frames import Frame
 from pipecat.utils.base_object import BaseObject

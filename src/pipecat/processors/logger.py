@@ -1,12 +1,10 @@
 #
-# Copyright (c) 2024–2025, Daily
+# Copyright (c) 2024-2026, Daily
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
 """Frame logging utilities for debugging and monitoring frame flow in Pipecat pipelines."""
-
-from typing import Optional, Tuple, Type
 
 from loguru import logger
 
@@ -33,8 +31,8 @@ class FrameLogger(FrameProcessor):
     def __init__(
         self,
         prefix="Frame",
-        color: Optional[str] = None,
-        ignored_frame_types: Tuple[Type[Frame], ...] = (
+        color: str | None = None,
+        ignored_frame_types: tuple[type[Frame], ...] = (
             BotSpeakingFrame,
             UserSpeakingFrame,
             InputAudioRawFrame,

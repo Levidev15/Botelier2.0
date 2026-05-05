@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024–2025, Daily
+# Copyright (c) 2024-2026, Daily
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 #
@@ -12,8 +12,7 @@ the main pipeline execution.
 """
 
 import asyncio
-import inspect
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from attr import dataclass
 
@@ -39,6 +38,12 @@ class Proxy:
     observer: BaseObserver
 
 
+class _PipelineStartedSignal:
+    """Internal sentinel queued to observers when the pipeline has started."""
+
+    pass
+
+
 class TaskObserver(BaseObserver):
     """Proxy observer that manages multiple observers without blocking the pipeline.
 
@@ -56,7 +61,7 @@ class TaskObserver(BaseObserver):
     def __init__(
         self,
         *,
-        observers: Optional[List[BaseObserver]] = None,
+        observers: list[BaseObserver] | None = None,
         task_manager: BaseTaskManager,
         **kwargs,
     ):
@@ -70,7 +75,7 @@ class TaskObserver(BaseObserver):
         super().__init__(**kwargs)
         self._observers = observers or []
         self._task_manager = task_manager
-        self._proxies: Optional[Dict[BaseObserver, Proxy]] = (
+        self._proxies: dict[BaseObserver, Proxy] | None = (
             None  # Becomes a dict after start() is called
         )
 
@@ -126,8 +131,12 @@ class TaskObserver(BaseObserver):
         if not self._proxies:
             return
 
-        for proxy in self._proxies:
-            await proxy.cleanup()
+        for observer in self._proxies:
+            await observer.cleanup()
+
+    async def on_pipeline_started(self):
+        """Forward pipeline started signal to all managed observers."""
+        await self._send_to_proxy(_PipelineStartedSignal())
 
     async def on_process_frame(self, data: FrameProcessed):
         """Queue frame data for all managed observers.
@@ -155,7 +164,7 @@ class TaskObserver(BaseObserver):
         proxy = Proxy(queue=queue, task=task, observer=observer)
         return proxy
 
-    def _create_proxies(self, observers: List[BaseObserver]) -> Dict[BaseObserver, Proxy]:
+    def _create_proxies(self, observers: list[BaseObserver]) -> dict[BaseObserver, Proxy]:
         """Create proxies for all observers."""
         proxies = {}
         for observer in observers:
@@ -164,35 +173,20 @@ class TaskObserver(BaseObserver):
         return proxies
 
     async def _send_to_proxy(self, data: Any):
+        if not self._proxies:
+            return
         for proxy in self._proxies.values():
             await proxy.queue.put(data)
 
     async def _proxy_task_handler(self, queue: asyncio.Queue, observer: BaseObserver):
         """Handle frame processing for a single observer."""
-        on_push_frame_deprecated = False
-        signature = inspect.signature(observer.on_push_frame)
-        if len(signature.parameters) > 1:
-            import warnings
-
-            with warnings.catch_warnings():
-                warnings.simplefilter("always")
-                warnings.warn(
-                    "Observer `on_push_frame(source, destination, frame, direction, timestamp)` is deprecated, us `on_push_frame(data: FramePushed)` instead.",
-                    DeprecationWarning,
-                )
-
-            on_push_frame_deprecated = True
-
         while True:
             data = await queue.get()
 
-            if isinstance(data, FramePushed):
-                if on_push_frame_deprecated:
-                    await observer.on_push_frame(
-                        data.source, data.destination, data.frame, data.direction, data.timestamp
-                    )
-                else:
-                    await observer.on_push_frame(data)
+            if isinstance(data, _PipelineStartedSignal):
+                await observer.on_pipeline_started()
+            elif isinstance(data, FramePushed):
+                await observer.on_push_frame(data)
             elif isinstance(data, FrameProcessed):
                 await observer.on_process_frame(data)
 

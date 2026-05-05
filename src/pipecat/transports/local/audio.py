@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024–2025, Daily
+# Copyright (c) 2024-2026, Daily
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 #
@@ -12,7 +12,6 @@ audio input and output through the system's default audio devices.
 
 import asyncio
 from concurrent.futures import ThreadPoolExecutor
-from typing import Optional
 
 from loguru import logger
 
@@ -40,8 +39,8 @@ class LocalAudioTransportParams(TransportParams):
         output_device_index: PyAudio device index for audio output. If None, uses default.
     """
 
-    input_device_index: Optional[int] = None
-    output_device_index: Optional[int] = None
+    input_device_index: int | None = None
+    output_device_index: int | None = None
 
 
 class LocalAudioInputTransport(BaseInputTransport):
@@ -206,8 +205,8 @@ class LocalAudioTransport(BaseTransport):
         self._params = params
         self._pyaudio = pyaudio.PyAudio()
 
-        self._input: Optional[LocalAudioInputTransport] = None
-        self._output: Optional[LocalAudioOutputTransport] = None
+        self._input: LocalAudioInputTransport | None = None
+        self._output: LocalAudioOutputTransport | None = None
 
     #
     # BaseTransport
