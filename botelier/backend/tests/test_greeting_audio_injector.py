@@ -189,3 +189,69 @@ async def test_set_pending_greeting_is_idempotent_after_inject():
     )
     # Confirms it kept the FIRST audio (\x00\x01) and ignored the re-set (\xff\xff).
     assert audio_chunks[0].audio == b"\x00\x01" * 160
+
+
+@pytest.mark.asyncio
+async def test_large_greeting_payload_preserves_order_and_payload():
+    """Large payloads must maintain strict TTS frame order and full payload integrity."""
+    upstream = _RecordingProcessor("upstream")
+    injector = GreetingAudioInjector(inject_yield_every_chunks=5)
+    downstream = _RecordingProcessor("downstream")
+
+    pipeline = Pipeline([upstream, injector, downstream])
+
+    fake_audio = b"\x10\x20" * 16000  # 32,000 bytes => 100 chunks
+    injector.set_pending_greeting(fake_audio)
+
+    task = PipelineTask(pipeline)
+    runner = PipelineRunner()
+
+    async def _stopper():
+        await asyncio.sleep(0.7)
+        await task.queue_frames([EndFrame()])
+
+    asyncio.create_task(_stopper())
+    await runner.run(task)
+
+    segment = [
+        f
+        for f in downstream.received
+        if isinstance(f, (TTSStartedFrame, TTSAudioRawFrame, TTSStoppedFrame))
+    ]
+    assert isinstance(segment[0], TTSStartedFrame)
+    assert isinstance(segment[-1], TTSStoppedFrame)
+    assert all(isinstance(f, TTSAudioRawFrame) for f in segment[1:-1])
+
+    audio_chunks = [f for f in segment if isinstance(f, TTSAudioRawFrame)]
+    assert len(audio_chunks) == 100
+    assert b"".join(f.audio for f in audio_chunks) == fake_audio
+
+
+@pytest.mark.asyncio
+async def test_inject_pacing_can_be_disabled_and_keeps_frame_order():
+    """Disabling cooperative pacing should still preserve lifecycle ordering."""
+    injector = GreetingAudioInjector(inject_yield_every_chunks=None)
+    downstream = _RecordingProcessor("downstream")
+    pipeline = Pipeline([injector, downstream])
+
+    fake_audio = b"\x01\x02" * 1600  # 3200 bytes => 10 chunks
+    injector.set_pending_greeting(fake_audio)
+
+    task = PipelineTask(pipeline)
+    runner = PipelineRunner()
+
+    async def _stopper():
+        await asyncio.sleep(0.4)
+        await task.queue_frames([EndFrame()])
+
+    asyncio.create_task(_stopper())
+    await runner.run(task)
+
+    segment = [
+        f
+        for f in downstream.received
+        if isinstance(f, (TTSStartedFrame, TTSAudioRawFrame, TTSStoppedFrame))
+    ]
+    assert isinstance(segment[0], TTSStartedFrame)
+    assert isinstance(segment[-1], TTSStoppedFrame)
+    assert all(isinstance(f, TTSAudioRawFrame) for f in segment[1:-1])
