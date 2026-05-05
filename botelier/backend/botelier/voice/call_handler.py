@@ -148,33 +148,33 @@ class CallHandler:
     def __init__(self):
         """Initialize call handler."""
         self.active_calls = {}
-        self.call_mappers: Dict[str, FunctionMapper] = {}
-        self.call_contexts: Dict[str, Any] = {}
-        self.call_start_times: Dict[str, datetime] = {}
-        self.interrupted_responses: Dict[
+        self.call_mappers: dict[str, FunctionMapper] = {}
+        self.call_contexts: dict[str, Any] = {}
+        self.call_start_times: dict[str, datetime] = {}
+        self.interrupted_responses: dict[
             str, set
         ] = {}  # call_sid -> set of interrupted message contents
-        self.pending_responses: Dict[
-            str, List[dict]
+        self.pending_responses: dict[
+            str, list[dict]
         ] = {}  # call_sid -> list of {text, timestamp} per LLM turn (ALL turns, for timestamp lookup + incomplete recovery)
-        self.user_turn_timestamps: Dict[
-            str, List[dict]
+        self.user_turn_timestamps: dict[
+            str, list[dict]
         ] = {}  # call_sid -> list of {text, timestamp} per user utterance
-        self.call_mcp_clients: Dict[
+        self.call_mcp_clients: dict[
             str, PipecatMCPClient
         ] = {}  # call_sid -> Pipecat MCPClient for MCP tool execution
-        self.call_event_queues: Dict[str, CallEventQueue] = {}  # call_sid -> CallEventQueue
-        self.call_recording_sids: Dict[
+        self.call_event_queues: dict[str, CallEventQueue] = {}  # call_sid -> CallEventQueue
+        self.call_recording_sids: dict[
             str, str
         ] = {}  # call_sid -> Twilio recording SID (set when recording starts)
-        self.call_tasks: Dict[
+        self.call_tasks: dict[
             str, Any
         ] = {}  # call_sid -> PipelineTask (cancelled by connect-complete when stream ends)
         # Task #96: track the asyncio.Task that runs mark_greeting_completed
         # in a thread, keyed by call_sid. Finalization paths await this (with
         # a 500 ms timeout) before calling complete_call so the late-firing
         # greeting callback never overwrites a completed row's status.
-        self.greeting_mark_tasks: Dict[str, Any] = {}
+        self.greeting_mark_tasks: dict[str, Any] = {}
         # SIDs for which connect_complete arrived BEFORE the pipeline finished
         # constructing/registering. handle_call checks this dict right after
         # registering the task and tears it down immediately, instead of
@@ -184,7 +184,7 @@ class CallHandler:
         # delayed/retried connect_complete arrives long after pipeline
         # teardown (no later finally would otherwise clean it up).
         # Only touched on the asyncio event loop — no locking needed.
-        self.pending_cancels: Dict[str, datetime] = {}
+        self.pending_cancels: dict[str, datetime] = {}
         # Purge pending_cancels entries older than this many seconds on every
         # write. Twilio retries arrive within minutes; 5 minutes is a generous
         # upper bound that still keeps memory bounded.
@@ -247,10 +247,10 @@ class CallHandler:
             # schema fetch entirely.  Any miss (expired, never pre-warmed,
             # pre-warm error, timeout waiting for ready) silently falls through
             # to the cold path below.
-            prewarm_bundle: Optional[PreWarmBundle] = None
+            prewarm_bundle: PreWarmBundle | None = None
             _prewarm_state: str = "missing"
             _prewarm_wait_ms: int = 0
-            _prewarm_error_class: Optional[str] = None
+            _prewarm_error_class: str | None = None
             # Task #122 — pop_and_wait now returns a PopResult that
             # distinguishes ready-before-wait (zero-cost cache hit),
             # ready-during-wait (we blocked for ``wait_ms``), timeout,
@@ -936,10 +936,12 @@ class CallHandler:
                         name=f"mark_greeting_completed:{_greeting_call_sid}",
                     )
                     _handler.greeting_mark_tasks[_greeting_call_sid] = _mark_task
-                    try:
-                        await _mark_task
-                    except Exception as _ge:
-                        logger.error(f"Failed to set ai_greeting_completed: {_ge}")
+                    from ..utils import log_task_exception as _log_task_exception
+
+                    _mark_task.add_done_callback(_log_task_exception)
+                    # Do not await here — GreetingCompletionTracker now invokes
+                    # this callback via create_task so push_frame is never blocked.
+                    # Finalization paths explicitly await this tracked task (500 ms cap).
 
                 greeting_completion_tracker.set_greeting_callback(_on_greeting_completed)
 
@@ -970,10 +972,14 @@ class CallHandler:
                         finally:
                             sdb.close()
 
-                    try:
-                        await asyncio.to_thread(_sync_mark_caller_spoke)
-                    except Exception as _se:
-                        logger.error(f"Failed to set caller_spoke: {_se}")
+                    # Fire-and-forget DB write; never block frame processing.
+                    _mark_task = asyncio.create_task(
+                        asyncio.to_thread(_sync_mark_caller_spoke),
+                        name=f"mark_caller_spoke:{_speech_call_sid}",
+                    )
+                    from ..utils import log_task_exception as _log_task_exception
+
+                    _mark_task.add_done_callback(_log_task_exception)
 
                 first_speech_tracker.set_first_speech_callback(_on_first_user_speech)
 
@@ -1300,7 +1306,7 @@ class CallHandler:
             return
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 f"_await_greeting_mark: greeting-mark task still pending after "
                 f"{timeout:.2f}s for {call_sid} — proceeding with finalization "
@@ -1482,7 +1488,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
             vad_config=assistant.vad_config or {},
         )
 
-    def _get_api_keys(self) -> Dict[str, str]:
+    def _get_api_keys(self) -> dict[str, str]:
         """Get API keys from environment variables.
 
         Returns:
@@ -1500,8 +1506,8 @@ You have access to the following Q&A knowledge base. Use this information to ans
     def _build_mcp_headers(
         self,
         auth_type: str,
-        credentials: Optional[Dict[str, str]],
-    ) -> Optional[Dict[str, str]]:
+        credentials: dict[str, str] | None,
+    ) -> dict[str, str] | None:
         """Build authentication headers for MCP server connection.
 
         Args:
@@ -1539,14 +1545,14 @@ You have access to the following Q&A knowledge base. Use this information to ans
         self,
         assistant: Assistant,
         tools: list,
-        api_keys: Dict[str, str],
+        api_keys: dict[str, str],
         call_sid: str,
         stream_sid: str = None,
         from_number: str = None,
         to_number: str = None,
         twilio_account_sid: str = None,
         twilio_auth_token: str = None,
-    ) -> tuple[list, Dict[str, Any]]:
+    ) -> tuple[list, dict[str, Any]]:
         """Build FunctionSchema objects and handlers for platform tools.
 
         This follows Pipecat's proper pattern of creating schemas before pipeline initialization.
@@ -1687,7 +1693,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
             return False
 
     async def _save_call_transcript(
-        self, call_sid: str, llm_context: Optional[Any], extra_messages: Optional[list] = None
+        self, call_sid: str, llm_context: Any | None, extra_messages: list | None = None
     ):
         """Save call transcript to database.
 

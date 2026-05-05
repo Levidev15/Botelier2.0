@@ -12,10 +12,11 @@ Key Design Principle:
 import asyncio
 import os
 import time
-from typing import Any, Callable, Dict, Optional
+from collections.abc import Callable
+from typing import Any, Dict, Optional
 
 from loguru import logger
-from pipecat.processors.idle_frame_processor import IdleFrameProcessor
+from pipecat.processors.user_idle_processor import UserIdleProcessor
 
 from pipecat.frames.frames import (
     AudioRawFrame,
@@ -66,7 +67,7 @@ class InterruptionTracker(FrameProcessor):
     content that was interrupted.
     """
 
-    def __init__(self, on_interruption: Optional[Callable[[str], None]] = None, **kwargs):
+    def __init__(self, on_interruption: Callable[[str], None] | None = None, **kwargs):
         super().__init__(**kwargs)
         self._current_text = ""
         self._on_interruption = on_interruption
@@ -300,7 +301,7 @@ class GreetingAudioInjector(FrameProcessor):
 
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self._pending_audio: Optional[bytes] = None
+        self._pending_audio: bytes | None = None
         self._injected = False
         self._start_received = False
 
@@ -438,10 +439,10 @@ class FirstUserSpeechTracker(FrameProcessor):
                     details={"transcript": frame.text.strip()[:200]},
                 )
             if self._first_speech_callback is not None:
-                try:
-                    await self._first_speech_callback()
-                except Exception as _cb_err:
-                    logger.error(f"first_speech_callback error: {_cb_err}")
+                from ..utils import log_task_exception as _log_task_exception
+
+                _cb_task = asyncio.create_task(self._first_speech_callback())
+                _cb_task.add_done_callback(_log_task_exception)
             logger.debug(f"user_first_speech logged: {frame.text.strip()[:50]}...")
 
         await self.push_frame(frame, direction)
@@ -559,10 +560,10 @@ class GreetingCompletionTracker(FrameProcessor):
                     severity="info",
                 )
             if self._greeting_callback is not None:
-                try:
-                    await self._greeting_callback()
-                except Exception as _cb_err:
-                    logger.error(f"greeting_callback error: {_cb_err}")
+                from ..utils import log_task_exception as _log_task_exception
+
+                _cb_task = asyncio.create_task(self._greeting_callback())
+                _cb_task.add_done_callback(_log_task_exception)
             logger.debug("greeting_completed logged")
 
         await self.push_frame(frame, direction)
@@ -644,7 +645,7 @@ class TtsCompletionWatcher(FrameProcessor):
             async def _timeout_guard():
                 try:
                     await asyncio.wait_for(self._speaking_done.wait(), timeout=timeout)
-                except asyncio.TimeoutError:
+                except TimeoutError:
                     # BotStoppedSpeakingFrame never arrived within the window.
                     # Fire the callback now so the transfer is never permanently lost.
                     # Check atomically: process_frame may have already fired it.
@@ -682,7 +683,7 @@ class TtsCompletionWatcher(FrameProcessor):
         try:
             await asyncio.wait_for(self._speaking_done.wait(), timeout=timeout)
             return True
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 f"TtsCompletionWatcher: timed out after {timeout}s waiting for BotStoppedSpeakingFrame"
             )
@@ -1039,7 +1040,7 @@ class VoiceEngineFactory:
     """
 
     @staticmethod
-    def create_stt_service(config: VoiceAgentConfig, api_keys: Dict[str, str]):
+    def create_stt_service(config: VoiceAgentConfig, api_keys: dict[str, str]):
         """Create STT service using Pipecat's proper configuration classes"""
         provider = config.stt_provider.lower()
         model = config.stt_model or "nova-3-general"
@@ -1125,7 +1126,7 @@ class VoiceEngineFactory:
             raise ValueError(f"Unsupported STT provider: {provider}")
 
     @staticmethod
-    def create_llm_service(config: VoiceAgentConfig, api_keys: Dict[str, str]):
+    def create_llm_service(config: VoiceAgentConfig, api_keys: dict[str, str]):
         """Create LLM service using Pipecat's proper InputParams classes"""
         provider = config.llm_provider.lower()
 
@@ -1153,7 +1154,7 @@ class VoiceEngineFactory:
             # `extra` is merged into the chat.completions.create() kwargs by
             # BaseOpenAILLMService.build_chat_completion_params (line 337) so
             # this is the supported plumbing for non-default request fields.
-            extra: Dict[str, Any] = {}
+            extra: dict[str, Any] = {}
             if config.agent_id:
                 extra["prompt_cache_key"] = f"botelier-assistant-{config.agent_id}"
             if hasattr(OpenAILLMService, "Settings"):
@@ -1201,7 +1202,7 @@ class VoiceEngineFactory:
             raise ValueError(f"Unsupported LLM provider: {provider}")
 
     @staticmethod
-    def create_tts_service(config: VoiceAgentConfig, api_keys: Dict[str, str]):
+    def create_tts_service(config: VoiceAgentConfig, api_keys: dict[str, str]):
         """Create TTS service using Pipecat's configuration"""
         provider = config.tts_provider.lower()
 
@@ -1256,15 +1257,15 @@ class VoiceEngineFactory:
     @staticmethod
     def create_pipeline(
         config: VoiceAgentConfig,
-        api_keys: Dict[str, str],
+        api_keys: dict[str, str],
         transport,
-        function_schemas: Optional[list] = None,
-        function_handlers: Optional[Dict[str, Any]] = None,
-        on_interruption: Optional[Callable[[str], None]] = None,
-        on_llm_response: Optional[Callable] = None,
-        on_user_turn: Optional[Callable] = None,
+        function_schemas: list | None = None,
+        function_handlers: dict[str, Any] | None = None,
+        on_interruption: Callable[[str], None] | None = None,
+        on_llm_response: Callable | None = None,
+        on_user_turn: Callable | None = None,
         call_start_mono: float = 0.0,
-        on_llm_start: Optional[Callable] = None,
+        on_llm_start: Callable | None = None,
     ) -> tuple:
         """Create complete voice pipeline from agent configuration.
 
