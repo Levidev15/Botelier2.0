@@ -12,17 +12,13 @@ function calling.
 """
 
 import asyncio
-import base64
-import copy
-import io
 import json
 import os
 import re
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 from loguru import logger
-from PIL import Image
 from pydantic import BaseModel, Field
 
 from pipecat.adapters.services.bedrock_adapter import (
@@ -31,20 +27,17 @@ from pipecat.adapters.services.bedrock_adapter import (
 )
 from pipecat.frames.frames import (
     Frame,
-    FunctionCallCancelFrame,
     FunctionCallFromLLM,
-    FunctionCallInProgressFrame,
-    FunctionCallResultFrame,
     LLMContextFrame,
+    LLMEnablePromptCachingFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
-    UserImageRawFrame,
 )
 from pipecat.metrics.metrics import LLMTokenUsage
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.llm_service import LLMService
-from pipecat.services.settings import NOT_GIVEN, LLMSettings, _NotGiven
+from pipecat.services.settings import NOT_GIVEN, LLMSettings, _NotGiven, assert_given
 from pipecat.utils.tracing.service_decorators import traced_llm
 
 try:
@@ -66,17 +59,22 @@ class AWSBedrockLLMSettings(LLMSettings):
     Parameters:
         stop_sequences: List of strings that stop generation.
         latency: Performance mode - "standard" or "optimized".
+        enable_prompt_caching: Whether to enable prompt caching by adding cachePoint
+            markers to system prompts and tool definitions. Can reduce TTFT by up to
+            85% for multi-turn conversations. See:
+            https://docs.aws.amazon.com/bedrock/latest/userguide/prompt-caching.html
         additional_model_request_fields: Additional model-specific parameters.
     """
 
-    stop_sequences: List[str] | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    latency: str | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
-    additional_model_request_fields: Dict[str, Any] | _NotGiven = field(
+    stop_sequences: list[str] | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    latency: str | None | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    enable_prompt_caching: bool | _NotGiven = field(default_factory=lambda: NOT_GIVEN)
+    additional_model_request_fields: dict[str, Any] | _NotGiven = field(
         default_factory=lambda: NOT_GIVEN
     )
 
 
-class AWSBedrockLLMService(LLMService):
+class AWSBedrockLLMService(LLMService[AWSBedrockLLMAdapter]):
     """AWS Bedrock Large Language Model service implementation.
 
     Provides inference capabilities for AWS Bedrock models including Amazon Nova
@@ -106,27 +104,27 @@ class AWSBedrockLLMService(LLMService):
             additional_model_request_fields: Additional model-specific parameters.
         """
 
-        max_tokens: Optional[int] = Field(default=None, ge=1)
-        temperature: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-        top_p: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-        stop_sequences: Optional[List[str]] = Field(default_factory=lambda: [])
-        latency: Optional[str] = Field(default=None)
-        additional_model_request_fields: Optional[Dict[str, Any]] = Field(default_factory=dict)
+        max_tokens: int | None = Field(default=None, ge=1)
+        temperature: float | None = Field(default=None, ge=0.0, le=1.0)
+        top_p: float | None = Field(default=None, ge=0.0, le=1.0)
+        stop_sequences: list[str] | None = Field(default_factory=lambda: [])
+        latency: str | None = Field(default=None)
+        additional_model_request_fields: dict[str, Any] | None = Field(default_factory=dict)
 
     def __init__(
         self,
         *,
-        model: Optional[str] = None,
-        aws_access_key: Optional[str] = None,
-        aws_secret_key: Optional[str] = None,
-        aws_session_token: Optional[str] = None,
-        aws_region: Optional[str] = None,
-        params: Optional[InputParams] = None,
-        settings: Optional[Settings] = None,
-        stop_sequences: Optional[List[str]] = None,
-        client_config: Optional[Config] = None,
-        retry_timeout_secs: Optional[float] = 5.0,
-        retry_on_timeout: Optional[bool] = False,
+        model: str | None = None,
+        aws_access_key: str | None = None,
+        aws_secret_key: str | None = None,
+        aws_session_token: str | None = None,
+        aws_region: str | None = None,
+        params: InputParams | None = None,
+        settings: Settings | None = None,
+        stop_sequences: list[str] | None = None,
+        client_config: Config | None = None,
+        retry_timeout_secs: float | None = 5.0,
+        retry_on_timeout: bool | None = False,
         **kwargs,
     ):
         """Initialize the AWS Bedrock LLM service.
@@ -174,6 +172,7 @@ class AWSBedrockLLMService(LLMService):
             user_turn_completion_config=None,
             stop_sequences=None,
             latency=None,
+            enable_prompt_caching=False,
             additional_model_request_fields={},
         )
 
@@ -240,7 +239,7 @@ class AWSBedrockLLMService(LLMService):
         """
         return True
 
-    def _build_inference_config(self) -> Dict[str, Any]:
+    def _build_inference_config(self) -> dict[str, Any]:
         """Build inference config with only the parameters that are set.
 
         This prevents conflicts with models (e.g., Claude Sonnet 4.5) that don't
@@ -263,9 +262,9 @@ class AWSBedrockLLMService(LLMService):
     async def run_inference(
         self,
         context: LLMContext,
-        max_tokens: Optional[int] = None,
-        system_instruction: Optional[str] = None,
-    ) -> Optional[str]:
+        max_tokens: int | None = None,
+        system_instruction: str | None = None,
+    ) -> str | None:
         """Run a one-shot, out-of-band (i.e. out-of-pipeline) inference with the given LLM context.
 
         Args:
@@ -280,9 +279,11 @@ class AWSBedrockLLMService(LLMService):
         """
         messages = []
         system = []
-        effective_instruction = system_instruction or self._settings.system_instruction
-        adapter: AWSBedrockLLMAdapter = self.get_llm_adapter()
-        params: AWSBedrockLLMInvocationParams = adapter.get_llm_invocation_params(
+        effective_instruction = system_instruction or assert_given(
+            self._settings.system_instruction
+        )
+        adapter = self.get_llm_adapter()
+        params = adapter.get_llm_invocation_params(
             context, system_instruction=effective_instruction
         )
         messages = params["messages"]
@@ -345,7 +346,7 @@ class AWSBedrockLLMService(LLMService):
                     client.converse_stream(**request_params), timeout=self._retry_timeout_secs
                 )
                 return response
-            except (ReadTimeoutError, asyncio.TimeoutError) as e:
+            except (TimeoutError, ReadTimeoutError) as e:
                 # Retry, this time without a timeout so we get a response
                 logger.debug(f"{self}: Retrying converse_stream due to timeout")
                 response = await client.converse_stream(**request_params)
@@ -370,9 +371,9 @@ class AWSBedrockLLMService(LLMService):
         }
 
     def _get_llm_invocation_params(self, context: LLMContext) -> AWSBedrockLLMInvocationParams:
-        adapter: AWSBedrockLLMAdapter = self.get_llm_adapter()
-        params: AWSBedrockLLMInvocationParams = adapter.get_llm_invocation_params(
-            context, system_instruction=self._settings.system_instruction
+        adapter = self.get_llm_adapter()
+        params = adapter.get_llm_invocation_params(
+            context, system_instruction=assert_given(self._settings.system_instruction)
         )
         return params
 
@@ -455,12 +456,28 @@ class AWSBedrockLLMService(LLMService):
             if self._settings.latency in ["standard", "optimized"]:
                 request_params["performanceConfig"] = {"latency": self._settings.latency}
 
+            # Add cache checkpoints to system prompts and tool definitions.
+            # This enables prompt caching for providers that support it (e.g.
+            # Anthropic Claude on Bedrock), reducing TTFT by up to 85% on
+            # multi-turn conversations where the system prompt stays constant.
+            if self._settings.enable_prompt_caching:
+                if "system" in request_params and request_params["system"]:
+                    system_list = request_params["system"]
+                    if not any("cachePoint" in item for item in system_list):
+                        system_list.append({"cachePoint": {"type": "default"}})
+                if (
+                    "toolConfig" in request_params
+                    and "tools" in request_params["toolConfig"]
+                    and request_params["toolConfig"]["tools"]
+                ):
+                    tools_list = request_params["toolConfig"]["tools"]
+                    if not any("cachePoint" in t for t in tools_list):
+                        tools_list.append({"cachePoint": {"type": "default"}})
+
             # Log request params with messages redacted for logging
             adapter = self.get_llm_adapter()
             messages_for_logging = adapter.get_messages_for_logging(context)
-            logger.debug(
-                f"{self}: Generating chat from context [{system}] | {messages_for_logging}"
-            )
+            logger.debug(f"{self}: Generating chat from context {messages_for_logging}")
 
             async with self._aws_session.client(
                 service_name="bedrock-runtime", **self._aws_params
@@ -536,7 +553,7 @@ class AWSBedrockLLMService(LLMService):
             # also get cancelled.
             use_completion_tokens_estimate = True
             raise
-        except (ReadTimeoutError, asyncio.TimeoutError):
+        except (TimeoutError, ReadTimeoutError):
             await self._call_event_handler("on_completion_timeout")
         except Exception as e:
             await self.push_error(error_msg=f"Unknown error occurred: {e}", exception=e)
@@ -566,6 +583,9 @@ class AWSBedrockLLMService(LLMService):
 
         if isinstance(frame, LLMContextFrame):
             await self._process_context(frame.context)
+        elif isinstance(frame, LLMEnablePromptCachingFrame):
+            logger.debug(f"Setting enable prompt caching to: [{frame.enable}]")
+            self._settings.enable_prompt_caching = frame.enable
         else:
             await self.push_frame(frame, direction)
 

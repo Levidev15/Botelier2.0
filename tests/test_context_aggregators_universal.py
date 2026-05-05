@@ -17,21 +17,25 @@ from pipecat.frames.frames import (
     FunctionCallsStartedFrame,
     InterimTranscriptionFrame,
     InterruptionFrame,
+    LLMAssistantPushAggregationFrame,
     LLMContextAssistantTimestampFrame,
     LLMContextFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMMessagesAppendFrame,
+    LLMMessagesTransformFrame,
     LLMMessagesUpdateFrame,
     LLMRunFrame,
     LLMTextFrame,
     LLMThoughtEndFrame,
     LLMThoughtStartFrame,
     LLMThoughtTextFrame,
+    SpeechControlParamsFrame,
     StartFrame,
     TextFrame,
     TranscriptionFrame,
     TranslationFrame,
+    TTSTextFrame,
     UserMuteStartedFrame,
     UserStartedSpeakingFrame,
     UserStoppedSpeakingFrame,
@@ -47,6 +51,7 @@ from pipecat.processors.aggregators.llm_response_universal import (
     LLMUserAggregator,
     LLMUserAggregatorParams,
 )
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.tests.utils import SleepFrame, run_test
 from pipecat.turns.user_mute import (
     FirstSpeechUserMuteStrategy,
@@ -55,6 +60,7 @@ from pipecat.turns.user_mute import (
 )
 from pipecat.turns.user_stop import SpeechTimeoutUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.utils.text.base_text_aggregator import AggregationType
 
 USER_TURN_STOP_TIMEOUT = 0.2
 TRANSCRIPTION_TIMEOUT = 0.1
@@ -67,7 +73,7 @@ class TestLLMUserAggregator(unittest.IsolatedAsyncioTestCase):
         pipeline = Pipeline([LLMUserAggregator(context)])
 
         frames_to_send = [LLMRunFrame()]
-        expected_down_frames = [LLMContextFrame]
+        expected_down_frames = [SpeechControlParamsFrame, LLMContextFrame]
         await run_test(
             pipeline,
             frames_to_send=frames_to_send,
@@ -89,9 +95,13 @@ class TestLLMUserAggregator(unittest.IsolatedAsyncioTestCase):
                 ]
             )
         ]
+        expected_down_frames = [
+            SpeechControlParamsFrame  # no LLMContextFrame expected, run_llm defaults to False
+        ]
         await run_test(
             pipeline,
             frames_to_send=frames_to_send,
+            expected_down_frames=expected_down_frames,
         )
         assert context.messages[0]["content"] == "Hi there!"
 
@@ -110,7 +120,7 @@ class TestLLMUserAggregator(unittest.IsolatedAsyncioTestCase):
                 run_llm=True,
             )
         ]
-        expected_down_frames = [LLMContextFrame]
+        expected_down_frames = [SpeechControlParamsFrame, LLMContextFrame]
         await run_test(
             pipeline,
             frames_to_send=frames_to_send,
@@ -132,9 +142,13 @@ class TestLLMUserAggregator(unittest.IsolatedAsyncioTestCase):
                 ]
             )
         ]
+        expected_down_frames = [
+            SpeechControlParamsFrame  # no LLMContextFrame expected, run_llm defaults to False
+        ]
         await run_test(
             pipeline,
             frames_to_send=frames_to_send,
+            expected_down_frames=expected_down_frames,
         )
         assert context.messages[0]["content"] == "Hi there!"
 
@@ -178,6 +192,56 @@ class TestLLMUserAggregator(unittest.IsolatedAsyncioTestCase):
         assert len(context.messages) == 2
         assert context.messages[0]["content"] == "You are a helpful assistant."
         assert context.messages[1]["content"] == "Hello!"
+
+    async def test_llm_messages_transform(self):
+        context = LLMContext()
+        # Set up initial messages
+        context.set_messages(
+            [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi there!"},
+                {"role": "user", "content": "How are you?"},
+            ]
+        )
+
+        pipeline = Pipeline([LLMUserAggregator(context)])
+
+        # Transform that keeps only user messages
+        def keep_user_messages(messages):
+            return [m for m in messages if m["role"] == "user"]
+
+        frames_to_send = [LLMMessagesTransformFrame(transform=keep_user_messages)]
+        expected_down_frames = [
+            SpeechControlParamsFrame  # no LLMContextFrame expected, run_llm defaults to False
+        ]
+        await run_test(
+            pipeline,
+            frames_to_send=frames_to_send,
+            expected_down_frames=expected_down_frames,
+        )
+        assert len(context.messages) == 2
+        assert context.messages[0]["content"] == "Hello"
+        assert context.messages[1]["content"] == "How are you?"
+
+    async def test_llm_messages_transform_run(self):
+        context = LLMContext()
+        # Set up initial messages
+        context.set_messages([{"role": "user", "content": "Hello"}])
+
+        pipeline = Pipeline([LLMUserAggregator(context)])
+
+        # Transform that modifies the content
+        def uppercase_content(messages):
+            return [{"role": m["role"], "content": m["content"].upper()} for m in messages]
+
+        frames_to_send = [LLMMessagesTransformFrame(transform=uppercase_content, run_llm=True)]
+        expected_down_frames = [SpeechControlParamsFrame, LLMContextFrame]
+        await run_test(
+            pipeline,
+            frames_to_send=frames_to_send,
+            expected_down_frames=expected_down_frames,
+        )
+        assert context.messages[0]["content"] == "HELLO"
 
     async def test_default_user_turn_strategies(self):
         context = LLMContext()
@@ -450,7 +514,7 @@ class TestLLMUserAggregator(unittest.IsolatedAsyncioTestCase):
         (down_frames, _) = await run_test(
             pipeline,
             frames_to_send=[],
-            expected_down_frames=[StartFrame, UserMuteStartedFrame],
+            expected_down_frames=[StartFrame, UserMuteStartedFrame, SpeechControlParamsFrame],
             ignore_start=False,
         )
 
@@ -467,6 +531,7 @@ class TestLLMUserAggregator(unittest.IsolatedAsyncioTestCase):
         # TranscriptionUserTurnStartStrategy, so we expect turn-related frames
         # but NOT the InterimTranscriptionFrame itself.
         expected_down_frames = [
+            SpeechControlParamsFrame,
             UserStartedSpeakingFrame,
             InterruptionFrame,
         ]
@@ -485,11 +550,12 @@ class TestLLMUserAggregator(unittest.IsolatedAsyncioTestCase):
         frames_to_send = [
             TranslationFrame(text="Hola!", user_id="", timestamp="now", language="es"),
         ]
-        # No downstream frames expected — translations are consumed.
+        # Only the SpeechControlParamsFrame from the default turn strategy on
+        # start is expected — the translation itself is consumed.
         await run_test(
             pipeline,
             frames_to_send=frames_to_send,
-            expected_down_frames=[],
+            expected_down_frames=[SpeechControlParamsFrame],
         )
 
 
@@ -517,8 +583,10 @@ class TestLLMAssistantAggregator(unittest.IsolatedAsyncioTestCase):
         frames_to_send = [LLMFullResponseStartFrame(), LLMFullResponseEndFrame()]
         await run_test(aggregator, frames_to_send=frames_to_send)
         self.assertTrue(should_start)
-        self.assertIsNone(should_stop)
-        self.assertIsNone(stop_message)
+        self.assertTrue(should_stop)
+        self.assertIsNotNone(stop_message)
+        self.assertFalse(stop_message.interrupted)
+        self.assertEqual(stop_message.content, "")
 
     async def test_simple(self):
         context = LLMContext()
@@ -553,6 +621,7 @@ class TestLLMAssistantAggregator(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(should_start)
         self.assertTrue(should_stop)
+        self.assertFalse(stop_message.interrupted)
         self.assertEqual(stop_message.content, "Hello from Pipecat!")
 
     async def test_multiple(self):
@@ -590,6 +659,7 @@ class TestLLMAssistantAggregator(unittest.IsolatedAsyncioTestCase):
         )
         self.assertTrue(should_start)
         self.assertTrue(should_stop)
+        self.assertFalse(stop_message.interrupted)
         self.assertEqual(stop_message.content, "Hello from Pipecat!")
 
     async def test_multiple_text_with_spaces(self):
@@ -795,7 +865,9 @@ class TestLLMAssistantAggregator(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(should_start, 2)
         self.assertEqual(should_stop, 2)
+        self.assertTrue(stop_messages[0].interrupted)
         self.assertEqual(stop_messages[0].content, "Hello")
+        self.assertFalse(stop_messages[1].interrupted)
         self.assertEqual(stop_messages[1].content, "Hello there!")
 
     async def test_function_call(self):
@@ -806,7 +878,7 @@ class TestLLMAssistantAggregator(unittest.IsolatedAsyncioTestCase):
                 function_name="get_weather",
                 tool_call_id="1",
                 arguments={"location": "Los Angeles"},
-                cancel_on_interruption=False,
+                cancel_on_interruption=True,
             ),
             SleepFrame(),
             FunctionCallResultFrame(
@@ -838,7 +910,7 @@ class TestLLMAssistantAggregator(unittest.IsolatedAsyncioTestCase):
                 function_name="get_weather",
                 tool_call_id="1",
                 arguments={"location": "Los Angeles"},
-                cancel_on_interruption=False,
+                cancel_on_interruption=True,
             ),
             SleepFrame(),
             FunctionCallResultFrame(
@@ -906,6 +978,83 @@ class TestLLMAssistantAggregator(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(stop_messages), 1)
         self.assertEqual(stop_messages[0].content, "Hello from Pipecat!")
 
+    async def test_push_aggregation_fires_turn_stopped_for_tts_speak(self):
+        """LLMAssistantPushAggregationFrame must fire on_assistant_turn_stopped.
+
+        Mirrors the TTSSpeakFrame(append_to_context=True) greeting flow: TTS-driven
+        TTSTextFrames accumulate without an LLMFullResponseStartFrame, then the
+        TTS service emits LLMAssistantPushAggregationFrame to commit them.
+        """
+        context = LLMContext()
+        aggregator = LLMAssistantAggregator(context)
+
+        start_count = 0
+        stop_messages = []
+
+        @aggregator.event_handler("on_assistant_turn_started")
+        async def on_assistant_turn_started(aggregator):
+            nonlocal start_count
+            start_count += 1
+
+        @aggregator.event_handler("on_assistant_turn_stopped")
+        async def on_assistant_turn_stopped(aggregator, message: AssistantTurnStoppedMessage):
+            stop_messages.append(message)
+
+        frames_to_send = [
+            TTSTextFrame("Hello,", aggregated_by=AggregationType.WORD),
+            TTSTextFrame("how", aggregated_by=AggregationType.WORD),
+            TTSTextFrame("can I help?", aggregated_by=AggregationType.WORD),
+            LLMAssistantPushAggregationFrame(),
+        ]
+        expected_down_frames = [LLMContextFrame, LLMContextAssistantTimestampFrame]
+        await run_test(
+            aggregator,
+            frames_to_send=frames_to_send,
+            expected_down_frames=expected_down_frames,
+        )
+        self.assertEqual(start_count, 1)
+        self.assertEqual(len(stop_messages), 1)
+        self.assertFalse(stop_messages[0].interrupted)
+        self.assertEqual(stop_messages[0].content, "Hello, how can I help?")
+        self.assertEqual(
+            context.messages[-1],
+            {"role": "assistant", "content": "Hello, how can I help?"},
+        )
+
+    async def test_push_aggregation_does_not_double_fire_in_llm_response(self):
+        """LLMAssistantPushAggregationFrame mid-response must not double-fire turn events.
+
+        Inside an LLMFullResponseStart/End cycle, a stray LLMAssistantPushAggregationFrame
+        should flush whatever is buffered and consume the active turn (firing exactly
+        one stopped event). The closing LLMFullResponseEndFrame then has no pending
+        turn to stop.
+        """
+        context = LLMContext()
+        aggregator = LLMAssistantAggregator(context)
+
+        start_count = 0
+        stop_messages = []
+
+        @aggregator.event_handler("on_assistant_turn_started")
+        async def on_assistant_turn_started(aggregator):
+            nonlocal start_count
+            start_count += 1
+
+        @aggregator.event_handler("on_assistant_turn_stopped")
+        async def on_assistant_turn_stopped(aggregator, message: AssistantTurnStoppedMessage):
+            stop_messages.append(message)
+
+        frames_to_send = [
+            LLMFullResponseStartFrame(),
+            LLMTextFrame("Hello!"),
+            LLMAssistantPushAggregationFrame(),
+            LLMFullResponseEndFrame(),
+        ]
+        await run_test(aggregator, frames_to_send=frames_to_send)
+        self.assertEqual(start_count, 1)
+        self.assertEqual(len(stop_messages), 1)
+        self.assertEqual(stop_messages[0].content, "Hello!")
+
     async def test_turn_completion_markers_stripped_from_transcript(self):
         """Turn completion markers should be stripped from assistant transcript."""
         from pipecat.turns.user_turn_completion_mixin import (
@@ -953,6 +1102,149 @@ class TestLLMAssistantAggregator(unittest.IsolatedAsyncioTestCase):
         # The incomplete marker should be stripped (resulting in empty content)
         self.assertEqual(len(stop_messages), 1)
         self.assertEqual(stop_messages[0].content, "")
+
+    async def test_llm_run(self):
+        context = LLMContext()
+        aggregator = LLMAssistantAggregator(context)
+
+        expected_up_frames = [LLMContextFrame]
+        await run_test(
+            aggregator,
+            frames_to_send=[LLMRunFrame()],
+            frames_to_send_direction=FrameDirection.UPSTREAM,
+            expected_up_frames=expected_up_frames,
+        )
+
+    async def test_llm_messages_append(self):
+        context = LLMContext()
+        aggregator = LLMAssistantAggregator(context)
+
+        await run_test(
+            aggregator,
+            frames_to_send=[
+                LLMMessagesAppendFrame(
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": "Hi there!",
+                        }
+                    ]
+                )
+            ],
+            frames_to_send_direction=FrameDirection.UPSTREAM,
+            expected_up_frames=[],  # no LLMContextFrame expected, run_llm defaults to False
+        )
+        assert context.messages[0]["content"] == "Hi there!"
+
+    async def test_llm_messages_append_run(self):
+        context = LLMContext()
+        aggregator = LLMAssistantAggregator(context)
+
+        expected_up_frames = [LLMContextFrame]
+        await run_test(
+            aggregator,
+            frames_to_send=[
+                LLMMessagesAppendFrame(
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": "Hi there!",
+                        }
+                    ],
+                    run_llm=True,
+                )
+            ],
+            frames_to_send_direction=FrameDirection.UPSTREAM,
+            expected_up_frames=expected_up_frames,
+        )
+        assert context.messages[0]["content"] == "Hi there!"
+
+    async def test_llm_messages_update(self):
+        context = LLMContext()
+        aggregator = LLMAssistantAggregator(context)
+
+        await run_test(
+            aggregator,
+            frames_to_send=[
+                LLMMessagesUpdateFrame(
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": "Hi there!",
+                        }
+                    ]
+                )
+            ],
+            frames_to_send_direction=FrameDirection.UPSTREAM,
+            expected_up_frames=[],  # no LLMContextFrame expected, run_llm defaults to False
+        )
+        assert context.messages[0]["content"] == "Hi there!"
+
+    async def test_llm_messages_update_run(self):
+        context = LLMContext()
+        aggregator = LLMAssistantAggregator(context)
+
+        await run_test(
+            aggregator,
+            frames_to_send=[
+                LLMMessagesUpdateFrame(
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": "Hi there!",
+                        }
+                    ],
+                    run_llm=True,
+                )
+            ],
+            frames_to_send_direction=FrameDirection.UPSTREAM,
+        )
+        assert context.messages[0]["content"] == "Hi there!"
+
+    async def test_llm_messages_transform(self):
+        context = LLMContext()
+        context.set_messages(
+            [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi there!"},
+                {"role": "user", "content": "How are you?"},
+            ]
+        )
+
+        aggregator = LLMAssistantAggregator(context)
+
+        # Transform that keeps only user messages
+        def keep_user_messages(messages):
+            return [m for m in messages if m["role"] == "user"]
+
+        await run_test(
+            aggregator,
+            frames_to_send=[LLMMessagesTransformFrame(transform=keep_user_messages)],
+            frames_to_send_direction=FrameDirection.UPSTREAM,
+            expected_up_frames=[],  # no LLMContextFrame expected, run_llm defaults to False
+        )
+        assert len(context.messages) == 2
+        assert context.messages[0]["content"] == "Hello"
+        assert context.messages[1]["content"] == "How are you?"
+
+    async def test_llm_messages_transform_run(self):
+        context = LLMContext()
+        context.set_messages([{"role": "user", "content": "Hello"}])
+
+        aggregator = LLMAssistantAggregator(context)
+
+        # Transform that modifies the content
+        def uppercase_content(messages):
+            return [{"role": m["role"], "content": m["content"].upper()} for m in messages]
+
+        expected_up_frames = [LLMContextFrame]
+        await run_test(
+            aggregator,
+            frames_to_send=[LLMMessagesTransformFrame(transform=uppercase_content, run_llm=True)],
+            frames_to_send_direction=FrameDirection.UPSTREAM,
+            expected_up_frames=expected_up_frames,
+        )
+        assert context.messages[0]["content"] == "HELLO"
 
 
 if __name__ == "__main__":

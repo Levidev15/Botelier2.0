@@ -70,11 +70,12 @@ import asyncio
 import mimetypes
 import os
 import sys
+import time
 import uuid
 from contextlib import asynccontextmanager
 from http import HTTPMethod
 from pathlib import Path
-from typing import Any, Dict, List, Optional, TypedDict, Union
+from typing import Any, TypedDict
 
 import aiohttp
 from fastapi.responses import FileResponse, Response
@@ -106,9 +107,28 @@ os.environ["ENV"] = "local"
 
 TELEPHONY_TRANSPORTS = ["twilio", "telnyx", "plivo", "exotel"]
 
-RUNNER_DOWNLOADS_FOLDER: Optional[str] = None
+# Mirror Pipecat Cloud's 4-hour max session limit so dev rooms get cleaned up.
+PIPECAT_ROOM_EXP_HOURS = 4.0
+
+RUNNER_DOWNLOADS_FOLDER: str | None = None
 RUNNER_HOST: str = "localhost"
 RUNNER_PORT: int = 7860
+
+app: FastAPI = FastAPI()
+"""The FastAPI application instance.
+
+Import this to add custom routes from other packages before calling
+:func:`main`::
+
+    from pipecat.runner.run import app, main
+
+    @app.get("/my-route")
+    async def my_route():
+        return {"hello": "world"}
+
+    if __name__ == "__main__":
+        main()
+"""
 
 
 def _get_bot_module():
@@ -140,6 +160,8 @@ def _get_bot_module():
                 spec = importlib.util.spec_from_file_location(
                     module_name, os.path.join(cwd, filename)
                 )
+                if spec is None or spec.loader is None:
+                    continue
                 module = importlib.util.module_from_spec(spec)
                 spec.loader.exec_module(module)
 
@@ -158,16 +180,14 @@ async def _run_telephony_bot(websocket: WebSocket, args: argparse.Namespace):
     bot_module = _get_bot_module()
 
     # Just pass the WebSocket - let the bot handle parsing
-    runner_args = WebSocketRunnerArguments(websocket=websocket)
+    runner_args = WebSocketRunnerArguments(websocket=websocket, session_id=str(uuid.uuid4()))
     runner_args.cli_args = args
 
     await bot_module.bot(runner_args)
 
 
-def _create_server_app(args: argparse.Namespace):
-    """Create FastAPI app with transport-specific routes."""
-    app = FastAPI()
-
+def _configure_server_app(args: argparse.Namespace):
+    """Configure the module-level FastAPI app with transport-specific routes."""
     app.add_middleware(
         CORSMiddleware,
         allow_origins=["*"],
@@ -188,7 +208,16 @@ def _create_server_app(args: argparse.Namespace):
     else:
         logger.warning(f"Unknown transport type: {args.transport}")
 
-    return app
+
+def _resolve_download_path(folder: str, filename: str) -> Path:
+    """Resolve a download path and ensure it stays within the downloads folder."""
+    allowed_base = Path(folder).resolve()
+    file_path = (allowed_base / filename).resolve()
+
+    if not file_path.is_relative_to(allowed_base):
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    return file_path
 
 
 def _setup_webrtc_routes(app: FastAPI, args: argparse.Namespace):
@@ -208,17 +237,17 @@ def _setup_webrtc_routes(app: FastAPI, args: argparse.Namespace):
         return
 
     class IceServer(TypedDict, total=False):
-        urls: Union[str, List[str]]
+        urls: str | list[str]
 
     class IceConfig(TypedDict):
-        iceServers: List[IceServer]
+        iceServers: list[IceServer]
 
     class StartBotResult(TypedDict, total=False):
         sessionId: str
-        iceConfig: Optional[IceConfig]
+        iceConfig: IceConfig | None
 
     # In-memory store of active sessions: session_id -> session info
-    active_sessions: Dict[str, Dict[str, Any]] = {}
+    active_sessions: dict[str, dict[str, Any]] = {}
 
     # Mount the frontend
     app.mount("/client", SmallWebRTCPrebuiltUI)
@@ -232,16 +261,16 @@ def _setup_webrtc_routes(app: FastAPI, args: argparse.Namespace):
     async def download_file(filename: str):
         """Handle file downloads."""
         if not args.folder:
-            logger.warning(f"Attempting to dowload {filename}, but downloads folder not setup.")
-            return
+            logger.warning(f"Attempting to download {filename}, but downloads folder not setup.")
+            raise HTTPException(404)
 
-        file_path = Path(args.folder) / filename
-        if not os.path.exists(file_path):
+        file_path = _resolve_download_path(args.folder, filename)
+        if not file_path.exists():
             raise HTTPException(404)
 
         media_type, _ = mimetypes.guess_type(file_path)
 
-        return FileResponse(path=file_path, media_type=media_type, filename=filename)
+        return FileResponse(path=file_path, media_type=media_type, filename=file_path.name)
 
     # Initialize the SmallWebRTC request handler
     small_webrtc_handler: SmallWebRTCRequestHandler = SmallWebRTCRequestHandler(
@@ -249,15 +278,25 @@ def _setup_webrtc_routes(app: FastAPI, args: argparse.Namespace):
     )
 
     @app.post("/api/offer")
-    async def offer(request: SmallWebRTCRequest, background_tasks: BackgroundTasks):
+    async def offer(
+        request: SmallWebRTCRequest,
+        background_tasks: BackgroundTasks,
+        session_id: str | None = None,
+    ):
         """Handle WebRTC offer requests via SmallWebRTCRequestHandler."""
+        # When called via the /sessions/{session_id}/api/offer proxy the
+        # session_id is threaded through; for direct /api/offer calls we mint
+        # one so bots see a stable identifier in either path.
+        resolved_session_id = session_id or str(uuid.uuid4())
 
         # Prepare runner arguments with the callback to run your bot
         async def webrtc_connection_callback(connection: SmallWebRTCConnection):
             bot_module = _get_bot_module()
 
             runner_args = SmallWebRTCRunnerArguments(
-                webrtc_connection=connection, body=request.request_data
+                webrtc_connection=connection,
+                body=request.request_data,
+                session_id=resolved_session_id,
             )
             runner_args.cli_args = args
             background_tasks.add_task(bot_module.bot, runner_args)
@@ -325,7 +364,7 @@ def _setup_webrtc_routes(app: FastAPI, args: argparse.Namespace):
                         or request_data.get("requestData")
                         or active_session,
                     )
-                    return await offer(webrtc_request, background_tasks)
+                    return await offer(webrtc_request, background_tasks, session_id=session_id)
                 elif request.method == HTTPMethod.PATCH.value:
                     patch_request = SmallWebRTCPatchRequest(
                         pc_id=request_data["pc_id"],
@@ -374,28 +413,26 @@ def _add_lifespan_to_app(app: FastAPI, new_lifespan):
 
 def _setup_whatsapp_routes(app: FastAPI, args: argparse.Namespace):
     """Set up WhatsApp-specific routes."""
-    WHATSAPP_APP_SECRET = os.getenv("WHATSAPP_APP_SECRET")
-    WHATSAPP_PHONE_NUMBER_ID = os.getenv("WHATSAPP_PHONE_NUMBER_ID")
-    WHATSAPP_TOKEN = os.getenv("WHATSAPP_TOKEN")
-    WHATSAPP_WEBHOOK_VERIFICATION_TOKEN = os.getenv("WHATSAPP_WEBHOOK_VERIFICATION_TOKEN")
-
-    if not all(
-        [
-            WHATSAPP_APP_SECRET,
-            WHATSAPP_PHONE_NUMBER_ID,
-            WHATSAPP_TOKEN,
-            WHATSAPP_WEBHOOK_VERIFICATION_TOKEN,
-        ]
-    ):
+    required_vars = [
+        "WHATSAPP_APP_SECRET",
+        "WHATSAPP_PHONE_NUMBER_ID",
+        "WHATSAPP_TOKEN",
+        "WHATSAPP_WEBHOOK_VERIFICATION_TOKEN",
+    ]
+    missing = [v for v in required_vars if not os.getenv(v)]
+    if missing:
+        missing_list = "\n    ".join(missing)
         logger.error(
-            """Missing required environment variables for WhatsApp transport:
-    WHATSAPP_APP_SECRET
-    WHATSAPP_PHONE_NUMBER_ID
-    WHATSAPP_TOKEN
-    WHATSAPP_WEBHOOK_VERIFICATION_TOKEN
+            f"""Missing required environment variables for WhatsApp transport:
+    {missing_list}
             """
         )
         return
+
+    WHATSAPP_APP_SECRET = os.environ["WHATSAPP_APP_SECRET"]
+    WHATSAPP_PHONE_NUMBER_ID = os.environ["WHATSAPP_PHONE_NUMBER_ID"]
+    WHATSAPP_TOKEN = os.environ["WHATSAPP_TOKEN"]
+    WHATSAPP_WEBHOOK_VERIFICATION_TOKEN = os.environ["WHATSAPP_WEBHOOK_VERIFICATION_TOKEN"]
 
     try:
         from pipecat.transports.smallwebrtc.connection import SmallWebRTCConnection
@@ -406,7 +443,7 @@ def _setup_whatsapp_routes(app: FastAPI, args: argparse.Namespace):
         return
 
     # Global WhatsApp client instance
-    whatsapp_client: Optional[WhatsAppClient] = None
+    whatsapp_client: WhatsAppClient | None = None
 
     @app.get(
         "/whatsapp",
@@ -474,7 +511,9 @@ def _setup_whatsapp_routes(app: FastAPI, args: argparse.Namespace):
                 connection: The established WebRTC connection
             """
             bot_module = _get_bot_module()
-            runner_args = SmallWebRTCRunnerArguments(webrtc_connection=connection)
+            runner_args = SmallWebRTCRunnerArguments(
+                webrtc_connection=connection, session_id=str(uuid.uuid4())
+            )
             runner_args.cli_args = args
             background_tasks.add_task(bot_module.bot, runner_args)
 
@@ -534,11 +573,13 @@ def _setup_daily_routes(app: FastAPI, args: argparse.Namespace):
         from pipecat.runner.daily import configure
 
         async with aiohttp.ClientSession() as session:
-            room_url, token = await configure(session)
+            room_url, token = await configure(session, room_exp_duration=PIPECAT_ROOM_EXP_HOURS)
 
             # Start the bot in the background with empty body for GET requests
             bot_module = _get_bot_module()
-            runner_args = DailyRunnerArguments(room_url=room_url, token=token)
+            runner_args = DailyRunnerArguments(
+                room_url=room_url, token=token, session_id=str(uuid.uuid4())
+            )
             runner_args.cli_args = args
             asyncio.create_task(bot_module.bot(runner_args))
             return RedirectResponse(room_url)
@@ -574,6 +615,7 @@ def _setup_daily_routes(app: FastAPI, args: argparse.Namespace):
 
         existing_room_url = os.getenv("DAILY_ROOM_URL")
 
+        session_id = str(uuid.uuid4())
         result = None
 
         # Configure room if:
@@ -592,6 +634,11 @@ def _setup_daily_routes(app: FastAPI, args: argparse.Namespace):
                 # Parse dailyRoomProperties if provided
                 room_properties = None
                 if daily_room_properties_dict:
+                    # Apply Pipecat Cloud's session policy if caller didn't override.
+                    daily_room_properties_dict.setdefault(
+                        "exp", time.time() + PIPECAT_ROOM_EXP_HOURS * 3600
+                    )
+                    daily_room_properties_dict.setdefault("eject_at_room_exp", True)
                     try:
                         room_properties = DailyRoomProperties(**daily_room_properties_dict)
                         logger.debug(f"Using custom room properties: {room_properties}")
@@ -612,16 +659,21 @@ def _setup_daily_routes(app: FastAPI, args: argparse.Namespace):
                         # Continue without custom properties
 
                 room_url, token = await configure(
-                    session, room_properties=room_properties, token_properties=token_properties
+                    session,
+                    room_exp_duration=PIPECAT_ROOM_EXP_HOURS,
+                    room_properties=room_properties,
+                    token_properties=token_properties,
                 )
-                runner_args = DailyRunnerArguments(room_url=room_url, token=token, body=body)
+                runner_args = DailyRunnerArguments(
+                    room_url=room_url, token=token, body=body, session_id=session_id
+                )
                 result = {
                     "dailyRoom": room_url,
                     "dailyToken": token,
-                    "sessionId": str(uuid.uuid4()),
+                    "sessionId": session_id,
                 }
         else:
-            runner_args = RunnerArguments(body=body)
+            runner_args = RunnerArguments(body=body, session_id=session_id)
 
         # Update CLI args.
         runner_args.cli_args = args
@@ -687,7 +739,11 @@ def _setup_daily_routes(app: FastAPI, args: argparse.Namespace):
             # Create Daily room with SIP capabilities
             async with aiohttp.ClientSession() as session:
                 try:
-                    room_config = await configure(session, sip_caller_phone=data.get("From"))
+                    room_config = await configure(
+                        session,
+                        sip_caller_phone=data.get("From"),
+                        room_exp_duration=PIPECAT_ROOM_EXP_HOURS,
+                    )
                 except Exception as e:
                     logger.error(f"Failed to create Daily room: {e}")
                     raise HTTPException(
@@ -721,19 +777,20 @@ def _setup_daily_routes(app: FastAPI, args: argparse.Namespace):
                 daily_api_url=daily_api_url,
             )
 
+            # Generate session ID for both the runner args and the response
+            session_id = str(uuid.uuid4())
+
             # Start bot with dial-in context
             bot_module = _get_bot_module()
             runner_args = DailyRunnerArguments(
                 room_url=room_config.room_url,
                 token=room_config.token,
                 body=request_body.model_dump(),
+                session_id=session_id,
             )
             runner_args.cli_args = args
 
             asyncio.create_task(bot_module.bot(runner_args))
-
-            # Generate session ID
-            session_id = str(uuid.uuid4())
 
             # Return response matching Pipecat Cloud format
             return {
@@ -807,10 +864,12 @@ async def _run_daily_direct(args: argparse.Namespace):
     logger.info("Running with direct Daily connection...")
 
     async with aiohttp.ClientSession() as session:
-        room_url, token = await configure(session)
+        room_url, token = await configure(session, room_exp_duration=PIPECAT_ROOM_EXP_HOURS)
 
         # Direct connections have no request body, so use empty dict
-        runner_args = DailyRunnerArguments(room_url=room_url, token=token)
+        runner_args = DailyRunnerArguments(
+            room_url=room_url, token=token, session_id=str(uuid.uuid4())
+        )
         runner_args.handle_sigint = True
         runner_args.cli_args = args
 
@@ -845,7 +904,7 @@ def _validate_and_clean_proxy(proxy: str) -> str:
     return proxy
 
 
-def runner_downloads_folder() -> Optional[str]:
+def runner_downloads_folder() -> str | None:
     """Returns the folder where files are stored for later download."""
     return RUNNER_DOWNLOADS_FOLDER
 
@@ -860,7 +919,7 @@ def runner_port() -> int:
     return RUNNER_PORT
 
 
-def main(parser: Optional[argparse.ArgumentParser] = None):
+def main(parser: argparse.ArgumentParser | None = None):
     """Start the Pipecat development runner.
 
     Parses command-line arguments and starts a FastAPI server configured
@@ -997,8 +1056,8 @@ def main(parser: Optional[argparse.ArgumentParser] = None):
     RUNNER_HOST = args.host
     RUNNER_PORT = args.port
 
-    # Create the app with transport-specific setup
-    app = _create_server_app(args)
+    # Configure the app with transport-specific routes
+    _configure_server_app(args)
 
     # Run the server
     uvicorn.run(app, host=args.host, port=args.port)
