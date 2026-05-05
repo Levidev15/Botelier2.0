@@ -1590,57 +1590,17 @@ class VoiceEngineFactory:
 
     @staticmethod
     def create_transport_params(config: VoiceAgentConfig):
-        """Create transport parameters based on agent config"""
-        from pipecat.audio.vad.vad_analyzer import VADParams
+        """Return base TransportParams for the Twilio / FastAPI WebSocket path.
+
+        pipecat 1.1.0 removed vad_analyzer and turn_analyzer from TransportParams
+        and FastAPIWebsocketParams entirely.  All VAD (Silero) and SmartTurn wiring
+        now lives inside LLMUserAggregatorParams, which is built by create_pipeline().
+        This method is kept for API compatibility but only returns the audio I/O flags;
+        callers must NOT attempt to read vad_analyzer from the returned object.
+        """
         from pipecat.transports.base_transport import TransportParams
 
-        params = TransportParams(
+        return TransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
         )
-
-        if config.enable_vad and config.vad_provider:
-            vad_config = config.vad_config or {}
-
-            try:
-                if config.vad_provider == "silero":
-                    # Silero VAD + SmartTurn are wired into LLMUserAggregatorParams
-                    # inside create_pipeline() — nothing to set on TransportParams.
-                    pass
-
-                elif config.vad_provider == "webrtc":
-                    from pipecat.transports.daily.transport import WebRTCVADAnalyzer
-
-                    vad_params = VADParams(
-                        confidence=vad_config.get("confidence", 0.5),
-                        start_secs=vad_config.get("start_secs", 0.0),
-                        stop_secs=vad_config.get("stop_secs", 0.2),
-                        min_volume=vad_config.get("min_volume", 0.0),
-                    )
-                    params.vad_analyzer = WebRTCVADAnalyzer(params=vad_params)
-                    logger.info(f"WebRTC VAD enabled with params: {vad_params}")
-
-                elif config.vad_provider == "aic":
-                    from pipecat.audio.vad.aic_vad import AICVADAnalyzer
-
-                    lookback_buffer_size = vad_config.get("lookback_buffer_size")
-                    sensitivity = vad_config.get("sensitivity")
-                    params.vad_analyzer = AICVADAnalyzer(
-                        lookback_buffer_size=lookback_buffer_size, sensitivity=sensitivity
-                    )
-                    logger.info(
-                        f"AIC VAD enabled with lookback={lookback_buffer_size}, sensitivity={sensitivity}"
-                    )
-
-                else:
-                    logger.warning(f"Unknown VAD provider '{config.vad_provider}', VAD disabled")
-
-            except ImportError as e:
-                logger.warning(
-                    f"VAD provider '{config.vad_provider}' not available (missing dependencies): {e}"
-                )
-                logger.info(
-                    "Continuing without VAD. Install dependencies or disable VAD in assistant settings."
-                )
-
-        return params

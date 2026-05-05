@@ -562,29 +562,21 @@ class CallHandler:
             # Without these, Pipecat's resampling chain is misconfigured: Deepgram TTS
             # defaults to 24 kHz linear16, causing 3× playback speed / corrupted audio.
             #
-            # create_transport_params() sets vad_analyzer on the transport only for
-            # WebRTC/AIC providers.  Silero VAD + SmartTurn are integrated directly
-            # into LLMUserAggregatorParams inside create_pipeline() to avoid the
-            # race condition that caused the first utterance to be silently dropped.
-            _vad_p = VoiceEngineFactory.create_transport_params(config)
-            _ws_params_kwargs = dict(
-                audio_in_enabled=True,
-                audio_out_enabled=True,
-                audio_in_sample_rate=8000,  # Twilio sends μ-law at 8 kHz
-                audio_out_sample_rate=8000,  # Twilio expects μ-law at 8 kHz
-                add_wav_header=False,  # Twilio uses raw μ-law, not WAV
-                serializer=serializer,
-                vad_analyzer=_vad_p.vad_analyzer,
-            )
-            _turn_analyzer = getattr(_vad_p, "turn_analyzer", None)
-            if _turn_analyzer is not None:
-                _ws_params_kwargs["turn_analyzer"] = _turn_analyzer
+            # pipecat 1.1.0: vad_analyzer and turn_analyzer are NOT fields on
+            # TransportParams or FastAPIWebsocketParams.  All VAD + SmartTurn
+            # wiring lives inside LLMUserAggregatorParams in create_pipeline().
             transport = FastAPIWebsocketTransport(
                 websocket=websocket,
-                params=FastAPIWebsocketParams(**_ws_params_kwargs),
+                params=FastAPIWebsocketParams(
+                    audio_in_enabled=True,
+                    audio_out_enabled=True,
+                    audio_in_sample_rate=8000,  # Twilio sends μ-law at 8 kHz
+                    audio_out_sample_rate=8000,  # Twilio expects μ-law at 8 kHz
+                    add_wav_header=False,        # Twilio uses raw μ-law, not WAV
+                    serializer=serializer,
+                ),
             )
-            # Silero VAD is wired via LLMUserAggregatorParams (no transport-level VAD),
-            # so check config directly for the log rather than _vad_p.vad_analyzer.
+            # VAD label for logging — read from config, not from transport params.
             _vad_label = (
                 f"enabled ({config.vad_provider})"
                 if (config.enable_vad and config.vad_provider)
