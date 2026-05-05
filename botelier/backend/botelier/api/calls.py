@@ -379,7 +379,7 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
         else:
             logger.warning(f"No phone number record found for {to_number}")
 
-        if call_log_id:
+        if call_log_id and not _event_exists(db, call_log_id, "call_initiated"):
             _write_event(
                 db,
                 call_log_id=call_log_id,

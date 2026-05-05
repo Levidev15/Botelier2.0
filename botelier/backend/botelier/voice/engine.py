@@ -16,7 +16,7 @@ from collections.abc import Callable
 from typing import Any, Dict, Optional
 
 from loguru import logger
-from pipecat.processors.user_idle_processor import UserIdleProcessor
+from pipecat.processors.idle_frame_processor import IdleFrameProcessor
 
 from pipecat.frames.frames import (
     AudioRawFrame,
@@ -458,7 +458,7 @@ class FirstUserSpeechTracker(FrameProcessor):
 
 
 class IdleTimeoutTracker:
-    """Thin wrapper that builds a UserIdleProcessor whose callback logs an
+    """Thin wrapper that builds an IdleFrameProcessor whose callback logs an
     idle_timeout event via an injected CallEventQueue.
 
     Usage::
@@ -1129,9 +1129,10 @@ class VoiceEngineFactory:
     def create_stt_service(config: VoiceAgentConfig, api_keys: dict[str, str]):
         """Create STT service using Pipecat's proper configuration classes"""
         provider = config.stt_provider.lower()
-        model = config.stt_model or "nova-3-general"
+        model = config.stt_model
 
         if provider == "deepgram":
+            model = model or "nova-3-general"
             from pipecat.services.deepgram.flux.stt import DeepgramFluxSTTService
             from pipecat.services.deepgram.stt import DeepgramSTTService
 
@@ -1199,7 +1200,7 @@ class VoiceEngineFactory:
 
             return OpenAISTTService(
                 api_key=api_keys.get("openai_api_key"),
-                model=model or "whisper-1",
+                model=model or "whisper-1",  # noqa: RUF100 — model is None here when stt_model unset
                 language=config.stt_language,
             )
         elif provider == "assemblyai":

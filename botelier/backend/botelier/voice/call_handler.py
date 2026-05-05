@@ -1504,6 +1504,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
             "cartesia_api_key": os.environ.get("CARTESIA_API_KEY"),
             "elevenlabs_api_key": os.environ.get("ELEVENLABS_API_KEY"),
             "google_api_key": os.environ.get("GOOGLE_API_KEY"),
+            "assemblyai_api_key": os.environ.get("ASSEMBLYAI_API_KEY"),
         }
 
     def _build_mcp_headers(
