@@ -299,11 +299,12 @@ class GreetingAudioInjector(FrameProcessor):
 
     _CHUNK_SIZE = 320  # 20 ms @ 8 kHz linear16 PCM (8000 * 2 bytes/sample * 0.020 s)
 
-    def __init__(self, **kwargs):
+    def __init__(self, inject_yield_every_chunks: int | None = 8, **kwargs):
         super().__init__(**kwargs)
         self._pending_audio: bytes | None = None
         self._injected = False
         self._start_received = False
+        self._inject_yield_every_chunks = inject_yield_every_chunks
 
     def set_pending_greeting(self, audio_bytes: bytes) -> None:
         """Stash cached greeting bytes to be injected once the pipeline starts.
@@ -375,6 +376,7 @@ class GreetingAudioInjector(FrameProcessor):
         """
         try:
             await self.push_frame(TTSStartedFrame(), FrameDirection.DOWNSTREAM)
+            chunk_idx = 0
             for i in range(0, len(audio), self._CHUNK_SIZE):
                 await self.push_frame(
                     TTSAudioRawFrame(
@@ -384,6 +386,13 @@ class GreetingAudioInjector(FrameProcessor):
                     ),
                     FrameDirection.DOWNSTREAM,
                 )
+                chunk_idx += 1
+                if (
+                    self._inject_yield_every_chunks is not None
+                    and self._inject_yield_every_chunks > 0
+                    and chunk_idx % self._inject_yield_every_chunks == 0
+                ):
+                    await asyncio.sleep(0)
             await self.push_frame(TTSStoppedFrame(), FrameDirection.DOWNSTREAM)
             chunk_count = -(-len(audio) // self._CHUNK_SIZE)  # ceil division
             logger.info(
