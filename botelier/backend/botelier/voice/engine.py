@@ -1419,7 +1419,9 @@ class VoiceEngineFactory:
                 confidence=vad_config.get("confidence", 0.7),
                 start_secs=vad_config.get("start_secs", 0.2),
                 stop_secs=vad_config.get("stop_secs", 0.2),
-                min_volume=vad_config.get("min_volume", 0.6),
+                # Keep fallback aligned with DB defaults: 0.4 is a balanced baseline,
+                # while ~0.35–0.45 is the recommended noisy-environment tuning band.
+                min_volume=vad_config.get("min_volume", 0.4),
             )
             user_params = LLMUserAggregatorParams(
                 vad_analyzer=SileroVADAnalyzer(params=vad_params),

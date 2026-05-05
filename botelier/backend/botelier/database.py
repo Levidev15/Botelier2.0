@@ -684,7 +684,9 @@ _SILERO_VAD_DEFAULTS = {
     # caller really done?" decision, so a tighter VAD silence threshold does
     # not cut off slow speakers.
     "stop_secs": 0.2,
-    "min_volume": 0.6,
+    # Baseline tuned for typical hotel ambient noise; in noisier environments
+    # operators usually land in the ~0.35–0.45 range to reduce false barge-in.
+    "min_volume": 0.4,
     "smart_turn_stop_secs": 0.5,
 }
 
