@@ -19,8 +19,8 @@ import GreetingCacheButton from "@/components/forms/GreetingCacheButton";
 const SILERO_VAD_DEFAULTS = {
   confidence: 0.7,
   start_secs: 0.2,
-  stop_secs: 0.8,
-  min_volume: 0.6,
+  stop_secs: 0.2,
+  min_volume: 0.4,
   smart_turn_stop_secs: 0.5,
 };
 
@@ -942,14 +942,14 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
 
                   <FormField
                     label="Stop Delay (seconds)"
-                    description="How long silence must be detected before considering speech ended. Default: 0.8"
+                    description="How long silence must be detected before considering speech ended. Default: 0.2"
                   >
                     <input
                       type="number"
                       min="0"
                       max="5"
                       step="0.1"
-                      value={formData.vad_config?.stop_secs ?? 0.8}
+                      value={formData.vad_config?.stop_secs ?? 0.2}
                       onChange={(e) => {
                         const newConfig = { ...formData.vad_config, stop_secs: parseFloat(e.target.value) };
                         handleFieldChange("vad_config", newConfig);
@@ -960,14 +960,14 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
 
                   <FormField
                     label="Minimum Volume"
-                    description="Minimum audio volume (0.0-1.0) to consider for VAD. Helps filter out background noise. Default: 0.6"
+                    description="Minimum audio volume (0.0-1.0) to consider for VAD. Helps filter out background noise. Recommended: 0.35-0.45 for noisy call-center/hotel environments. Default baseline: 0.4"
                   >
                     <input
                       type="number"
                       min="0"
                       max="1"
                       step="0.1"
-                      value={formData.vad_config?.min_volume ?? 0.6}
+                      value={formData.vad_config?.min_volume ?? 0.4}
                       onChange={(e) => {
                         const newConfig = { ...formData.vad_config, min_volume: parseFloat(e.target.value) };
                         handleFieldChange("vad_config", newConfig);
