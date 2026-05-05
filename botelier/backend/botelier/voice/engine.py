@@ -1419,7 +1419,7 @@ class VoiceEngineFactory:
                         TurnAnalyzerUserTurnStopStrategy(
                             turn_analyzer=LocalSmartTurnAnalyzerV3(
                                 params=SmartTurnParams(
-                                    stop_secs=vad_config.get("smart_turn_stop_secs", 1.0),
+                                    stop_secs=vad_config.get("smart_turn_stop_secs", 0.5),
                                 )
                             )
                         )
