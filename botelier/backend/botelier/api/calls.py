@@ -971,17 +971,11 @@ async def recording_status_callback(request: Request, db: Session = Depends(get_
         recording_url = str(form_data.get("RecordingUrl", ""))
         recording_status = str(form_data.get("RecordingStatus", ""))
 
-        # Validate Twilio signature using the hotel's sub-account auth token when
-        # available, falling back to the platform-level token.
-        auth_token = os.environ.get("TWILIO_AUTH_TOKEN", "")
-        if call_sid:
-            call_log_for_auth = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
-            if call_log_for_auth:
-                from ..models.account import Account as _Account
-                _acct = db.query(_Account).filter(_Account.id == call_log_for_auth.account_id).first()
-                if _acct and _acct.twilio_sub_auth_token:
-                    auth_token = _acct.twilio_sub_auth_token
-
+        # Delegate token resolution to the shared helper — prefers the hotel
+        # sub-account token (resolved via CallSid → CallLog → Account) and
+        # falls back to TWILIO_AUTH_TOKEN env var.  Eliminates the inline
+        # duplicate that previously drifted from the helper's logic.
+        auth_token = get_call_auth_token(db, call_sid=call_sid)
         is_valid, validated_url = _validate_recording_webhook_signature(request, form_data, auth_token)
         if not is_valid:
             logger.warning(
