@@ -1,41 +1,43 @@
-"""
-Call Handler - Orchestrates Pipecat pipeline for incoming Twilio calls.
+"""Call Handler - Orchestrates Pipecat pipeline for incoming Twilio calls.
 
 This module manages the lifecycle of voice call sessions, creating and running
 Pipecat pipelines with TwilioFrameSerializer for real-time audio streaming.
 """
 
-import os
-import json
 import asyncio
+import json
+import os
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from fastapi import WebSocket
-from sqlalchemy.orm import Session
-from loguru import logger
 
-from pipecat.transports.websocket.fastapi import FastAPIWebsocketTransport, FastAPIWebsocketParams
-from pipecat.serializers.twilio import TwilioFrameSerializer
+from fastapi import WebSocket
+from loguru import logger
+from sqlalchemy.orm import Session
+
 from pipecat.frames.frames import (
     TTSSpeakFrame,
 )
 from pipecat.pipeline.runner import PipelineRunner
+from pipecat.serializers.twilio import TwilioFrameSerializer
+from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 
-from .engine import VoiceEngineFactory
-from .greeting_cache import get_or_generate_greeting_audio
-from .agent import VoiceAgentConfig
-from .function_mapper import FunctionMapper
-from .prewarm import PreWarmCache, PreWarmBundle
+from ..database import SessionLocal
 from ..models.assistant import Assistant
 from ..models.phone_number import PhoneNumber
-from ..database import SessionLocal
-from ..services.call_logger import CallLogger
 from ..services.call_event_queue import CallEventQueue
+from ..services.call_logger import CallLogger
+from .agent import VoiceAgentConfig
+from .engine import VoiceEngineFactory
+from .function_mapper import FunctionMapper
+from .greeting_cache import get_or_generate_greeting_audio
+from .prewarm import PreWarmBundle, PreWarmCache
 
 try:
-    from pipecat.services.mcp_service import MCPClient as PipecatMCPClient
     from mcp.client.session_group import SseServerParameters
+
+    from pipecat.services.mcp_service import MCPClient as PipecatMCPClient
+
     PIPECAT_MCP_AVAILABLE = True
 except ImportError:
     PIPECAT_MCP_AVAILABLE = False
@@ -51,8 +53,9 @@ def _fetch_call_log_retry(call_sid: str):
     Must be called via asyncio.to_thread so that the synchronous DB round-trip
     does not block the asyncio event loop.
     """
-    from ..models.call_log import CallLog
     from ..database import SessionLocal as _SessionLocal
+    from ..models.call_log import CallLog
+
     _db = _SessionLocal()
     try:
         rec = _db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
@@ -66,7 +69,9 @@ def _fetch_call_log_retry(call_sid: str):
         _db.close()
 
 
-async def _prewarm_llm_cache(system_prompt: str, model: str, api_key: str, call_sid: str, event_queue=None) -> None:
+async def _prewarm_llm_cache(
+    system_prompt: str, model: str, api_key: str, call_sid: str, event_queue=None
+) -> None:
     """Fire a single low-cost OpenAI call to warm the server-side prompt cache.
 
     Runs as a background asyncio task concurrent with the greeting audio playback
@@ -82,9 +87,11 @@ async def _prewarm_llm_cache(system_prompt: str, model: str, api_key: str, call_
     or ``llm_prewarm_failed`` on failure with a sanitized error_type/message.
     """
     import time as _time
+
     _t_start = _time.monotonic()
     try:
         import openai as _openai
+
         _client = _openai.AsyncOpenAI(api_key=api_key)
         await _client.chat.completions.create(
             model=model,
@@ -92,7 +99,9 @@ async def _prewarm_llm_cache(system_prompt: str, model: str, api_key: str, call_
             max_tokens=1,
         )
         _duration_ms = int((_time.monotonic() - _t_start) * 1000)
-        logger.info(f"🔥 LLM prompt cache pre-warmed for call {call_sid} (model={model}, {_duration_ms}ms)")
+        logger.info(
+            f"🔥 LLM prompt cache pre-warmed for call {call_sid} (model={model}, {_duration_ms}ms)"
+        )
         if event_queue is not None:
             event_queue.log(
                 "llm_prewarm_completed",
@@ -118,9 +127,8 @@ async def _prewarm_llm_cache(system_prompt: str, model: str, api_key: str, call_
 
 
 class CallHandler:
-    """
-    Handles incoming Twilio call sessions.
-    
+    """Handles incoming Twilio call sessions.
+
     Orchestrates:
     - Database lookup: phone number → assistant
     - Pipecat pipeline creation with TwilioFrameSerializer
@@ -128,7 +136,7 @@ class CallHandler:
     - Call session lifecycle management
     - Function calling and knowledge base integration
     - Transcript capture on call end
-    
+
     Call-scoped state:
     - active_calls: Tracks running call sessions
     - call_mappers: Stores FunctionMapper per call_sid for state persistence
@@ -136,25 +144,37 @@ class CallHandler:
     - call_start_times: Tracks call start times for duration calculation
     - interrupted_responses: Tracks which assistant responses were interrupted
     """
-    
+
     def __init__(self):
         """Initialize call handler."""
         self.active_calls = {}
-        self.call_mappers: Dict[str, FunctionMapper] = {}
-        self.call_contexts: Dict[str, Any] = {}
-        self.call_start_times: Dict[str, datetime] = {}
-        self.interrupted_responses: Dict[str, set] = {}  # call_sid -> set of interrupted message contents
-        self.pending_responses: Dict[str, List[dict]] = {}  # call_sid -> list of {text, timestamp} per LLM turn (ALL turns, for timestamp lookup + incomplete recovery)
-        self.user_turn_timestamps: Dict[str, List[dict]] = {}  # call_sid -> list of {text, timestamp} per user utterance
-        self.call_mcp_clients: Dict[str, PipecatMCPClient] = {}  # call_sid -> Pipecat MCPClient for MCP tool execution
-        self.call_event_queues: Dict[str, CallEventQueue] = {}  # call_sid -> CallEventQueue
-        self.call_recording_sids: Dict[str, str] = {}  # call_sid -> Twilio recording SID (set when recording starts)
-        self.call_tasks: Dict[str, Any] = {}  # call_sid -> PipelineTask (cancelled by connect-complete when stream ends)
+        self.call_mappers: dict[str, FunctionMapper] = {}
+        self.call_contexts: dict[str, Any] = {}
+        self.call_start_times: dict[str, datetime] = {}
+        self.interrupted_responses: dict[
+            str, set
+        ] = {}  # call_sid -> set of interrupted message contents
+        self.pending_responses: dict[
+            str, list[dict]
+        ] = {}  # call_sid -> list of {text, timestamp} per LLM turn (ALL turns, for timestamp lookup + incomplete recovery)
+        self.user_turn_timestamps: dict[
+            str, list[dict]
+        ] = {}  # call_sid -> list of {text, timestamp} per user utterance
+        self.call_mcp_clients: dict[
+            str, PipecatMCPClient
+        ] = {}  # call_sid -> Pipecat MCPClient for MCP tool execution
+        self.call_event_queues: dict[str, CallEventQueue] = {}  # call_sid -> CallEventQueue
+        self.call_recording_sids: dict[
+            str, str
+        ] = {}  # call_sid -> Twilio recording SID (set when recording starts)
+        self.call_tasks: dict[
+            str, Any
+        ] = {}  # call_sid -> PipelineTask (cancelled by connect-complete when stream ends)
         # Task #96: track the asyncio.Task that runs mark_greeting_completed
         # in a thread, keyed by call_sid. Finalization paths await this (with
         # a 500 ms timeout) before calling complete_call so the late-firing
         # greeting callback never overwrites a completed row's status.
-        self.greeting_mark_tasks: Dict[str, Any] = {}
+        self.greeting_mark_tasks: dict[str, Any] = {}
         # SIDs for which connect_complete arrived BEFORE the pipeline finished
         # constructing/registering. handle_call checks this dict right after
         # registering the task and tears it down immediately, instead of
@@ -164,7 +184,7 @@ class CallHandler:
         # delayed/retried connect_complete arrives long after pipeline
         # teardown (no later finally would otherwise clean it up).
         # Only touched on the asyncio event loop — no locking needed.
-        self.pending_cancels: Dict[str, datetime] = {}
+        self.pending_cancels: dict[str, datetime] = {}
         # Purge pending_cancels entries older than this many seconds on every
         # write. Twilio retries arrive within minutes; 5 minutes is a generous
         # upper bound that still keeps memory bounded.
@@ -172,10 +192,8 @@ class CallHandler:
         # Task #111 — pre-warm cache. Populated by the /api/calls/incoming
         # webhook, consumed at the top of handle_call. Bounded LRU+TTL so
         # abandoned ringing calls never leak.
-        self.precomputed_configs: PreWarmCache = PreWarmCache(
-            max_size=256, ttl_secs=60.0
-        )
-    
+        self.precomputed_configs: PreWarmCache = PreWarmCache(max_size=256, ttl_secs=60.0)
+
     async def handle_call(
         self,
         websocket: WebSocket,
@@ -185,9 +203,8 @@ class CallHandler:
         db: Session,
         from_number: str = None,
     ):
-        """
-        Handle incoming call using Pipecat - Official Pattern.
-        
+        """Handle incoming call using Pipecat - Official Pattern.
+
         Args:
             websocket: FastAPI WebSocket (ALREADY ACCEPTED, 'start' event already read)
             to_number: Phone number being called (hotel's number)
@@ -195,7 +212,7 @@ class CallHandler:
             call_sid: Twilio call SID (from 'start' event)
             db: Database session
             from_number: Caller's phone number (for transfer callerId)
-        
+
         Pattern (from Pipecat docs):
             1. WebSocket already accepted, 'start' event already consumed
             2. Look up assistant by phone number
@@ -230,31 +247,27 @@ class CallHandler:
             # schema fetch entirely.  Any miss (expired, never pre-warmed,
             # pre-warm error, timeout waiting for ready) silently falls through
             # to the cold path below.
-            prewarm_bundle: Optional[PreWarmBundle] = None
+            prewarm_bundle: PreWarmBundle | None = None
             _prewarm_state: str = "missing"
             _prewarm_wait_ms: int = 0
-            _prewarm_error_class: Optional[str] = None
+            _prewarm_error_class: str | None = None
             # Task #122 — pop_and_wait now returns a PopResult that
-            # distinguishes ready-before-wait (zero-cost cache hit), 
-            # ready-during-wait (we blocked for ``wait_ms``), timeout, 
-            # error, and missing.  This is the primary diagnostic for 
+            # distinguishes ready-before-wait (zero-cost cache hit),
+            # ready-during-wait (we blocked for ``wait_ms``), timeout,
+            # error, and missing.  This is the primary diagnostic for
             # dev/prod parity: if prod shows mostly ``ready_during_wait``
-            # with high wait_ms, the prewarm is finishing AFTER the 
+            # with high wait_ms, the prewarm is finishing AFTER the
             # WebSocket opens — which means we're paying the WS-handshake
             # latency on top of the prewarm latency rather than overlapping
             # them as designed.
             try:
-                _pw_result = await self.precomputed_configs.pop_and_wait(
-                    call_sid, timeout_secs=0.5
-                )
+                _pw_result = await self.precomputed_configs.pop_and_wait(call_sid, timeout_secs=0.5)
                 _prewarm_state = _pw_result.state
                 _prewarm_wait_ms = _pw_result.wait_ms
                 _prewarm_error_class = _pw_result.error_class
                 prewarm_bundle = _pw_result.bundle
             except Exception as _pw_err:
-                logger.warning(
-                    f"pre-warm consumption raised for {call_sid}: {_pw_err}"
-                )
+                logger.warning(f"pre-warm consumption raised for {call_sid}: {_pw_err}")
                 prewarm_bundle = None
                 _prewarm_state = "error"
                 _prewarm_error_class = type(_pw_err).__name__
@@ -281,29 +294,23 @@ class CallHandler:
                         f"greeting_pcm={'yes' if prewarm_bundle.greeting_pcm else 'no'}"
                     )
                     if hotel_twilio_sid:
-                        logger.info(
-                            f"🏨 Using account sub-account: {hotel_twilio_sid[:10]}..."
-                        )
+                        logger.info(f"🏨 Using account sub-account: {hotel_twilio_sid[:10]}...")
                     # Resolve call_log_id / call_started_at — we still need
                     # the row that /api/calls/incoming created, for the
                     # event queue and answered_at stamp.
                     from ..models.call_log import CallLog
-                    call_log_record = db.query(CallLog).filter(
-                        CallLog.call_sid == call_sid
-                    ).first()
+
+                    call_log_record = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
                     if call_log_record is None:
                         _call_log_found = False
                         for _attempt in range(3):
                             await asyncio.sleep(0.2)
-                            _result = await asyncio.to_thread(
-                                _fetch_call_log_retry, call_sid
-                            )
+                            _result = await asyncio.to_thread(_fetch_call_log_retry, call_sid)
                             if _result is not None:
                                 call_log_id, call_started_at = _result
                                 _call_log_found = True
                                 logger.info(
-                                    f"call_log found on retry attempt "
-                                    f"{_attempt + 1} for {call_sid}"
+                                    f"call_log found on retry attempt {_attempt + 1} for {call_sid}"
                                 )
                                 break
                         if not _call_log_found:
@@ -318,15 +325,13 @@ class CallHandler:
                             call_log_record.answered_at = datetime.utcnow()
                             db.commit()
                     if call_log_id is not None:
-                        logger.info(
-                            f"call_log_id={call_log_id} resolved for {call_sid}"
-                        )
+                        logger.info(f"call_log_id={call_log_id} resolved for {call_sid}")
                 else:
                     # Cold path — pre-warm miss / error / never pre-warmed.
                     # Run the original sequence of DB queries + MCP handshake.
-                    phone_record = db.query(PhoneNumber).filter(
-                        PhoneNumber.phone_number == to_number
-                    ).first()
+                    phone_record = (
+                        db.query(PhoneNumber).filter(PhoneNumber.phone_number == to_number).first()
+                    )
 
                     if not phone_record or not phone_record.assistant_id:
                         logger.warning(f"⚠️ No assistant assigned to phone number: {to_number}")
@@ -335,9 +340,11 @@ class CallHandler:
                         return
 
                     # Fetch assistant configuration
-                    assistant = db.query(Assistant).filter(
-                        Assistant.id == phone_record.assistant_id
-                    ).first()
+                    assistant = (
+                        db.query(Assistant)
+                        .filter(Assistant.id == phone_record.assistant_id)
+                        .first()
+                    )
 
                     if not assistant:
                         logger.error(f"❌ Assistant not found: {phone_record.assistant_id}")
@@ -350,6 +357,7 @@ class CallHandler:
                     # environments.  Setting it here (when audio streaming begins)
                     # is the universal source of truth for when the call was answered.
                     from ..models.call_log import CallLog
+
                     call_log_record = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
                     if call_log_record is None:
                         _call_log_found = False
@@ -401,7 +409,12 @@ class CallHandler:
 
                     # Fetch account's Twilio sub-account credentials (for transfers)
                     from ..models.account import Account as _CallAccount
-                    _call_acct = db.query(_CallAccount).filter(_CallAccount.id == assistant.account_id).first()
+
+                    _call_acct = (
+                        db.query(_CallAccount)
+                        .filter(_CallAccount.id == assistant.account_id)
+                        .first()
+                    )
                     if _call_acct:
                         hotel_twilio_sid = _call_acct.twilio_sub_account_sid
                         hotel_twilio_token = _call_acct.twilio_sub_auth_token
@@ -411,8 +424,10 @@ class CallHandler:
                         # Resolve whether this call should be recorded.
                         # Done here (while DB is open) so we don't need the session later.
                         from ..auth.features import get_account_features as _get_acct_features
+
                         _acct_features = _get_acct_features(
-                            subscription_tier=getattr(_call_acct, "subscription_tier", None) or "free",
+                            subscription_tier=getattr(_call_acct, "subscription_tier", None)
+                            or "free",
                             feature_flags_override=(_call_acct.feature_flags or {}),
                         )
                         _acct_recording_allowed = _acct_features.get("call_recording", False)
@@ -434,50 +449,69 @@ class CallHandler:
                     tools = []
                     if config.enable_function_calling and assistant.tool_set_id:
                         from ..models.tool import Tool
-                        tools = db.query(Tool).filter(
-                            Tool.tool_set_id == assistant.tool_set_id,
-                            Tool.is_active == "true"
-                        ).all()
-                        logger.info(f"Loaded {len(tools)} tools from tool_set {assistant.tool_set_id}")
+
+                        tools = (
+                            db.query(Tool)
+                            .filter(
+                                Tool.tool_set_id == assistant.tool_set_id, Tool.is_active == "true"
+                            )
+                            .all()
+                        )
+                        logger.info(
+                            f"Loaded {len(tools)} tools from tool_set {assistant.tool_set_id}"
+                        )
                     elif config.enable_function_calling:
                         logger.info(f"No tool set assigned to assistant {assistant.id}")
 
                     # Fetch MCP connection data if assistant has one configured
                     mcp_connection_data = None
                     mcp_enabled_tools = []
-                    logger.info(f"🔍 Checking MCP: assistant.mcp_connection_id = {assistant.mcp_connection_id}, PIPECAT_MCP_AVAILABLE = {PIPECAT_MCP_AVAILABLE}")
+                    logger.info(
+                        f"🔍 Checking MCP: assistant.mcp_connection_id = {assistant.mcp_connection_id}, PIPECAT_MCP_AVAILABLE = {PIPECAT_MCP_AVAILABLE}"
+                    )
                     if assistant.mcp_connection_id:
                         from ..models.mcp_connection import MCPConnection, MCPConnectionStatus
-                        mcp_conn = db.query(MCPConnection).filter(
-                            MCPConnection.id == assistant.mcp_connection_id,
-                            MCPConnection.is_active == True
-                        ).first()
+
+                        mcp_conn = (
+                            db.query(MCPConnection)
+                            .filter(
+                                MCPConnection.id == assistant.mcp_connection_id,
+                                MCPConnection.is_active == True,
+                            )
+                            .first()
+                        )
                         if mcp_conn and mcp_conn.status == MCPConnectionStatus.CONNECTED:
                             credentials = None
                             if mcp_conn.credentials_encrypted:
                                 try:
                                     credentials = mcp_conn.get_credentials()
                                 except Exception as cred_error:
-                                    logger.warning(f"Failed to decrypt MCP credentials (may be stale): {cred_error}")
+                                    logger.warning(
+                                        f"Failed to decrypt MCP credentials (may be stale): {cred_error}"
+                                    )
 
                             mcp_connection_data = {
                                 "id": str(mcp_conn.id),
                                 "server_url": mcp_conn.server_url,
-                                "auth_type": mcp_conn.auth_type.value if mcp_conn.auth_type else "none",
+                                "auth_type": mcp_conn.auth_type.value
+                                if mcp_conn.auth_type
+                                else "none",
                                 "credentials": credentials,
                                 "discovered_tools": mcp_conn.discovered_tools or [],
                             }
                             mcp_enabled_tools = assistant.mcp_enabled_tools or []
-                            logger.info(f"Loaded MCP connection {mcp_conn.name} with {len(mcp_enabled_tools)} enabled tools")
+                            logger.info(
+                                f"Loaded MCP connection {mcp_conn.name} with {len(mcp_enabled_tools)} enabled tools"
+                            )
 
             finally:
                 # CRITICAL: Close database session immediately after fetching data
                 # WebSocket connections are long-lived - keeping sessions open exhausts the connection pool
                 db.close()
-            
+
             # 2. Get API keys
             api_keys = self._get_api_keys()
-            
+
             # 3. Build function schemas and handlers (knowledge base ALWAYS available)
             # Note: MCP tools are registered separately after pipeline creation using Pipecat's MCPClient
             function_schemas, function_handlers = self._build_function_schemas_and_handlers(
@@ -491,7 +525,7 @@ class CallHandler:
                 twilio_account_sid=hotel_twilio_sid,
                 twilio_auth_token=hotel_twilio_token,
             )
-            
+
             # 4. Create TwilioFrameSerializer (Pipecat pattern)
             #
             # auto_hang_up=False: disables the automatic REST hangup that
@@ -515,9 +549,9 @@ class CallHandler:
                 auth_token=os.environ.get("TWILIO_AUTH_TOKEN"),
                 params=TwilioFrameSerializer.InputParams(
                     auto_hang_up=False,
-                )
+                ),
             )
-            
+
             # 5. Create WebSocket transport (WebSocket ALREADY ACCEPTED, 'start' ALREADY READ)
             #
             # Twilio Media Streams are always 8 kHz μ-law on both directions.
@@ -536,9 +570,9 @@ class CallHandler:
             _ws_params_kwargs = dict(
                 audio_in_enabled=True,
                 audio_out_enabled=True,
-                audio_in_sample_rate=8000,   # Twilio sends μ-law at 8 kHz
+                audio_in_sample_rate=8000,  # Twilio sends μ-law at 8 kHz
                 audio_out_sample_rate=8000,  # Twilio expects μ-law at 8 kHz
-                add_wav_header=False,        # Twilio uses raw μ-law, not WAV
+                add_wav_header=False,  # Twilio uses raw μ-law, not WAV
                 serializer=serializer,
                 vad_analyzer=_vad_p.vad_analyzer,
             )
@@ -557,7 +591,7 @@ class CallHandler:
                 else "disabled"
             )
             logger.info(f"🔊 Transport sample rates: in=8000Hz, out=8000Hz | VAD={_vad_label}")
-            
+
             # 6. Create Pipecat pipeline with function calling support
             # Create interruption callback to track interrupted responses
             def on_interruption(content: str):
@@ -578,11 +612,15 @@ class CallHandler:
             def on_llm_response(text: str, timestamp: datetime):
                 start = self.call_start_times.get(call_sid)
                 elapsed_s = (timestamp - start).total_seconds() if start else 0.0
-                self.pending_responses[call_sid].append({
-                    "text": text,
-                    "elapsed_s": elapsed_s,
-                })
-                logger.debug(f"📝 Captured LLM response ({len(text)} chars) at T+{elapsed_s:.1f}s for call {call_sid}")
+                self.pending_responses[call_sid].append(
+                    {
+                        "text": text,
+                        "elapsed_s": elapsed_s,
+                    }
+                )
+                logger.debug(
+                    f"📝 Captured LLM response ({len(text)} chars) at T+{elapsed_s:.1f}s for call {call_sid}"
+                )
 
             # Create user turn capture callback.
             # Called by UserTurnCapture for each finalized user utterance, giving us
@@ -592,13 +630,30 @@ class CallHandler:
             def on_user_turn(text: str, timestamp: datetime):
                 start = self.call_start_times.get(call_sid)
                 elapsed_s = (timestamp - start).total_seconds() if start else 0.0
-                self.user_turn_timestamps[call_sid].append({
-                    "text": text,
-                    "elapsed_s": elapsed_s,
-                })
-                logger.debug(f"🗣️  Captured user turn ({len(text)} chars) at T+{elapsed_s:.1f}s for call {call_sid}")
-            
-            pipeline, task, llm, context_aggregator, llm_context, tts_completion_watcher, first_speech_tracker, greeting_completion_tracker, idle_timeout_tracker, user_turn_capture, tts_latency_tracker, greeting_injector = VoiceEngineFactory.create_pipeline(
+                self.user_turn_timestamps[call_sid].append(
+                    {
+                        "text": text,
+                        "elapsed_s": elapsed_s,
+                    }
+                )
+                logger.debug(
+                    f"🗣️  Captured user turn ({len(text)} chars) at T+{elapsed_s:.1f}s for call {call_sid}"
+                )
+
+            (
+                pipeline,
+                task,
+                llm,
+                context_aggregator,
+                llm_context,
+                tts_completion_watcher,
+                first_speech_tracker,
+                greeting_completion_tracker,
+                idle_timeout_tracker,
+                user_turn_capture,
+                tts_latency_tracker,
+                greeting_injector,
+            ) = VoiceEngineFactory.create_pipeline(
                 config=config,
                 api_keys=api_keys,
                 transport=transport,
@@ -614,14 +669,17 @@ class CallHandler:
             # created for this call) so transfer handlers can await actual TTS completion.
             if call_sid in self.call_mappers:
                 self.call_mappers[call_sid].set_tts_completion_watcher(tts_completion_watcher)
-            
+
             # 6.5 Register MCP tools if connection is configured (must happen AFTER pipeline creation)
             # The event_queue is created below (section 7.5) — we capture timing and outcome
             # in a local dict here and emit the event once the queue is available.
             _mcp_event_payload = None  # Tuple[event_type, details] or None if MCP skipped
-            logger.info(f"🔍 MCP registration check: mcp_connection_data={mcp_connection_data is not None}, mcp_enabled_tools={mcp_enabled_tools}, PIPECAT_MCP_AVAILABLE={PIPECAT_MCP_AVAILABLE}")
+            logger.info(
+                f"🔍 MCP registration check: mcp_connection_data={mcp_connection_data is not None}, mcp_enabled_tools={mcp_enabled_tools}, PIPECAT_MCP_AVAILABLE={PIPECAT_MCP_AVAILABLE}"
+            )
             if mcp_connection_data and mcp_enabled_tools and PIPECAT_MCP_AVAILABLE:
                 import time as _time_mcp
+
                 _mcp_t_start = _time_mcp.monotonic()
                 try:
                     # Build authentication headers based on auth_type
@@ -629,7 +687,7 @@ class CallHandler:
                         auth_type=mcp_connection_data.get("auth_type", "none"),
                         credentials=mcp_connection_data.get("credentials"),
                     )
-                    
+
                     # Create Pipecat MCP client with SSE parameters
                     sse_params = SseServerParameters(
                         url=mcp_connection_data["server_url"],
@@ -637,32 +695,37 @@ class CallHandler:
                         timeout=10.0,
                         sse_read_timeout=300.0,
                     )
-                    
+
                     mcp_client = PipecatMCPClient(server_params=sse_params)
-                    
+
                     # Get all available tools from MCP server
                     all_tools_schema = await mcp_client.get_tools_schema()
-                    
+
                     # Filter to only enabled tools for this assistant
                     _tools_registered = 0
                     if all_tools_schema.standard_tools:
                         from pipecat.adapters.schemas.tools_schema import ToolsSchema
-                        
+
                         filtered_tools = [
-                            tool for tool in all_tools_schema.standard_tools
+                            tool
+                            for tool in all_tools_schema.standard_tools
                             if tool.name in mcp_enabled_tools
                         ]
-                        
+
                         if filtered_tools:
                             filtered_schema = ToolsSchema(standard_tools=filtered_tools)
                             await mcp_client.register_tools_schema(filtered_schema, llm)
                             _tools_registered = len(filtered_tools)
-                            logger.info(f"🔌 Registered {len(filtered_tools)} MCP tools with LLM for call {call_sid}: {[t.name for t in filtered_tools]}")
+                            logger.info(
+                                f"🔌 Registered {len(filtered_tools)} MCP tools with LLM for call {call_sid}: {[t.name for t in filtered_tools]}"
+                            )
                         else:
-                            logger.warning(f"No MCP tools matched enabled list: {mcp_enabled_tools}")
+                            logger.warning(
+                                f"No MCP tools matched enabled list: {mcp_enabled_tools}"
+                            )
                     else:
                         logger.warning(f"MCP server returned no tools")
-                    
+
                     # Store client for cleanup
                     self.call_mcp_clients[call_sid] = mcp_client
 
@@ -688,10 +751,12 @@ class CallHandler:
                             "error_message": str(e)[:200],
                         },
                     )
-            
+
             # 7. Update active call with task and context
             self.active_calls[call_sid] = task
-            self.call_contexts[call_sid] = llm_context  # Store LLMContext directly for transcript extraction
+            self.call_contexts[call_sid] = (
+                llm_context  # Store LLMContext directly for transcript extraction
+            )
             self.call_start_times[call_sid] = datetime.utcnow()
             self.interrupted_responses[call_sid] = set()  # Initialize interruption tracking
 
@@ -726,8 +791,10 @@ class CallHandler:
                 #
                 # All scalar values are captured before entering the thread so that
                 # no ORM objects or mutable async state cross the thread boundary.
-                from ..models.call_event import CallEvent as _CallEvent
                 import uuid as _uuid
+
+                from ..models.call_event import CallEvent as _CallEvent
+
                 _t_call_log_id = call_log_id
                 _t_stream_sid = stream_sid
                 _t_started = call_started_at or self.call_start_times.get(call_sid)
@@ -782,8 +849,9 @@ class CallHandler:
                 # Reconfigure step is needed.  Failures are logged but never abort
                 # the call.
                 if should_record_call:
-                    from ..services.recording_sync import start_in_call_recording as _start_rec
                     from ..config.domain import get_public_base_url as _get_base_url
+                    from ..services.recording_sync import start_in_call_recording as _start_rec
+
                     _rec_task = asyncio.create_task(
                         _start_rec(
                             call_sid=call_sid,
@@ -792,19 +860,25 @@ class CallHandler:
                             base_url=_get_base_url(),
                         )
                     )
+
                     # Store the recording SID when the task completes so transfer
                     # handlers can stop the recording before handing off.
                     # done_callback runs synchronously in the event loop — no awaiting.
                     # Guard with active_calls check: if cleanup already ran the SID
                     # must not be re-inserted as a stale entry.
-                    def _on_rec_started(_t, _sid_store=self.call_recording_sids,
-                                        _active=self.active_calls, _csid=call_sid):
+                    def _on_rec_started(
+                        _t,
+                        _sid_store=self.call_recording_sids,
+                        _active=self.active_calls,
+                        _csid=call_sid,
+                    ):
                         try:
                             sid = _t.result()
                             if sid and _csid in _active:
                                 _sid_store[_csid] = sid
                         except Exception:
                             pass
+
                     _rec_task.add_done_callback(_on_rec_started)
                     logger.info(f"🎙️ In-call recording task queued for {call_sid}")
 
@@ -839,15 +913,18 @@ class CallHandler:
                 # independent of Twilio status webhook timing.
                 _greeting_call_sid = call_sid  # capture for closure
                 _handler = self  # capture for closure — track task handle per call
+
                 async def _on_greeting_completed():
                     def _sync_mark_greeting():
                         from ..services.call_logger import CallLogger as _CallLogger
+
                         gdb = SessionLocal()
                         try:
                             _cl = _CallLogger(gdb)
                             _cl.mark_greeting_completed(_greeting_call_sid)
                         finally:
                             gdb.close()
+
                     # Task #96: expose the underlying thread future as a task so
                     # finalization paths (_save_call_transcript, defensive finally)
                     # can wait up to 500 ms for this DB write to land before
@@ -859,10 +936,13 @@ class CallHandler:
                         name=f"mark_greeting_completed:{_greeting_call_sid}",
                     )
                     _handler.greeting_mark_tasks[_greeting_call_sid] = _mark_task
-                    try:
-                        await _mark_task
-                    except Exception as _ge:
-                        logger.error(f"Failed to set ai_greeting_completed: {_ge}")
+                    from ..utils import log_task_exception as _log_task_exception
+
+                    _mark_task.add_done_callback(_log_task_exception)
+                    # Do not await here — GreetingCompletionTracker now invokes
+                    # this callback via create_task so push_frame is never blocked.
+                    # Finalization paths explicitly await this tracked task (500 ms cap).
+
                 greeting_completion_tracker.set_greeting_callback(_on_greeting_completed)
 
                 # Wire WebSocket liveness check: if the caller hangs up during the
@@ -880,19 +960,27 @@ class CallHandler:
                 # pattern above. Used by the analytics partition to keep silent
                 # calls out of the AI Handled bucket.
                 _speech_call_sid = call_sid  # capture for closure
+
                 async def _on_first_user_speech():
                     def _sync_mark_caller_spoke():
                         from ..services.call_logger import CallLogger as _CallLogger
+
                         sdb = SessionLocal()
                         try:
                             _cl = _CallLogger(sdb)
                             _cl.mark_caller_spoke(_speech_call_sid)
                         finally:
                             sdb.close()
-                    try:
-                        await asyncio.to_thread(_sync_mark_caller_spoke)
-                    except Exception as _se:
-                        logger.error(f"Failed to set caller_spoke: {_se}")
+
+                    # Fire-and-forget DB write; never block frame processing.
+                    _mark_task = asyncio.create_task(
+                        asyncio.to_thread(_sync_mark_caller_spoke),
+                        name=f"mark_caller_spoke:{_speech_call_sid}",
+                    )
+                    from ..utils import log_task_exception as _log_task_exception
+
+                    _mark_task.add_done_callback(_log_task_exception)
+
                 first_speech_tracker.set_first_speech_callback(_on_first_user_speech)
 
             # Task #111 — emit prewarm hit/miss telemetry BEFORE greeting_started
@@ -951,9 +1039,7 @@ class CallHandler:
             # Task #111 — cold_path_latency_ms is the wall-clock from handle_call
             # entry to greeting queue. Strict upper bound on "WebSocket start →
             # first audio" and the primary SLO metric for Task #111.
-            _cold_path_latency_ms = int(
-                (time.monotonic() - _handle_call_start_mono) * 1000
-            )
+            _cold_path_latency_ms = int((time.monotonic() - _handle_call_start_mono) * 1000)
             if call_sid in self.call_event_queues:
                 self.call_event_queues[call_sid].log(
                     "greeting_started",
@@ -962,8 +1048,7 @@ class CallHandler:
                     details={
                         "cold_path_latency_ms": _cold_path_latency_ms,
                         "prewarm_hit": (
-                            prewarm_bundle is not None
-                            and prewarm_bundle.assistant is not None
+                            prewarm_bundle is not None and prewarm_bundle.assistant is not None
                         ),
                     },
                 )
@@ -987,10 +1072,7 @@ class CallHandler:
                     # inline fetch on bundle miss or greeting pre-fetch
                     # failure.
                     _audio = None
-                    if (
-                        prewarm_bundle is not None
-                        and prewarm_bundle.greeting_pcm is not None
-                    ):
+                    if prewarm_bundle is not None and prewarm_bundle.greeting_pcm is not None:
                         _audio = prewarm_bundle.greeting_pcm
                         logger.info(
                             f"🎙️ Greeting PCM sourced from pre-warm "
@@ -1015,8 +1097,7 @@ class CallHandler:
                     greeting_injector.set_pending_greeting(_audio)
                     _greeting_played_from_cache = True
                     logger.info(
-                        "🎙️ Greeting queued from cache (no Deepgram TTS token; "
-                        "downstream of STT)"
+                        "🎙️ Greeting queued from cache (no Deepgram TTS token; downstream of STT)"
                     )
                 except Exception as _cache_err:
                     logger.warning(
@@ -1043,7 +1124,9 @@ class CallHandler:
                     )
                 )
 
-            logger.info(f"▶️ Pipeline starting: STT ({config.stt_provider}) → LLM ({config.llm_provider}) → TTS ({config.tts_provider})")
+            logger.info(
+                f"▶️ Pipeline starting: STT ({config.stt_provider}) → LLM ({config.llm_provider}) → TTS ({config.tts_provider})"
+            )
 
             # 9. Run pipeline (blocks until call ends)
             # Pipecat handles all remaining WebSocket messages (media, dtmf, stop)
@@ -1083,12 +1166,12 @@ class CallHandler:
                 except Exception as e:
                     logger.warning(f"Error applying pending cancel for {call_sid}: {e}")
             await runner.run(task)
-            
+
             logger.info(f"✅ Call {call_sid} ended")
-            
+
             # 10. Capture transcript and save to call log
             await self._save_call_transcript(call_sid, llm_context)
-            
+
         except Exception as e:
             logger.exception(f"Error handling call {call_sid}: {e}")
             if websocket.client_state.name == "CONNECTED":
@@ -1102,7 +1185,7 @@ class CallHandler:
                     severity="error",
                     details={"error": str(e)},
                 )
-            
+
             # Still try to save transcript on error
             if call_sid in self.call_contexts:
                 try:
@@ -1135,8 +1218,11 @@ class CallHandler:
             # stuck on initiated/ringing/in_progress.
             try:
                 await self._await_greeting_mark(call_sid, timeout=0.5)
+
                 def _sync_defensive_finalize():
-                    from ..models.call_log import CallLog as _CallLog, CallStatus as _CS
+                    from ..models.call_log import CallLog as _CallLog
+                    from ..models.call_log import CallStatus as _CS
+
                     _db = SessionLocal()
                     try:
                         row = _db.query(_CallLog).filter(_CallLog.call_sid == call_sid).first()
@@ -1154,11 +1240,10 @@ class CallHandler:
                         )
                     finally:
                         _db.close()
+
                 await asyncio.to_thread(_sync_defensive_finalize)
             except Exception as _fin_err:
-                logger.warning(
-                    f"Defensive finalization failed for {call_sid}: {_fin_err}"
-                )
+                logger.warning(f"Defensive finalization failed for {call_sid}: {_fin_err}")
 
             # Cleanup call session state
             # Task #111 — always evict pre-warm entry (success or error path).
@@ -1198,16 +1283,14 @@ class CallHandler:
             self.pending_cancels.pop(call_sid, None)
 
     def is_pipeline_active(self, call_sid: str) -> bool:
-        """
-        Task #96: True iff a pipeline for ``call_sid`` is still registered
+        """Task #96: True iff a pipeline for ``call_sid`` is still registered
         in-process. Used by the stuck-call sweeper and the Twilio ``/status``
         safety-net to avoid racing with a healthy finalization.
         """
         return call_sid in self.active_calls or call_sid in self.call_tasks
 
     async def _await_greeting_mark(self, call_sid: str, timeout: float = 0.5) -> None:
-        """
-        Task #96: wait up to ``timeout`` seconds for a pending
+        """Task #96: wait up to ``timeout`` seconds for a pending
         mark_greeting_completed thread-task to finish before reading
         ``ai_greeting_completed`` in a finalization path.
 
@@ -1223,7 +1306,7 @@ class CallHandler:
             return
         try:
             await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 f"_await_greeting_mark: greeting-mark task still pending after "
                 f"{timeout:.2f}s for {call_sid} — proceeding with finalization "
@@ -1233,8 +1316,7 @@ class CallHandler:
             logger.warning(f"_await_greeting_mark: greeting-mark task failed for {call_sid}: {e}")
 
     async def cancel_call_pipeline(self, call_sid: str) -> None:
-        """
-        Cancel the running PipelineTask for a call.
+        """Cancel the running PipelineTask for a call.
 
         Called from connect_complete when Twilio signals the media stream has
         ended.  Sends a CancelFrame through the pipeline, which triggers a
@@ -1268,7 +1350,8 @@ class CallHandler:
             ttl = self._pending_cancel_ttl_secs
             if self.pending_cancels:
                 expired = [
-                    sid for sid, ts in self.pending_cancels.items()
+                    sid
+                    for sid, ts in self.pending_cancels.items()
                     if (now - ts).total_seconds() > ttl
                 ]
                 for sid in expired:
@@ -1287,50 +1370,48 @@ class CallHandler:
             logger.warning(f"cancel_call_pipeline: error cancelling pipeline for {call_sid}: {e}")
 
     def mark_response_interrupted(self, call_sid: str, content: str):
-        """
-        Mark an assistant response as interrupted.
-        
+        """Mark an assistant response as interrupted.
+
         Called when the user interrupts the AI mid-response.
-        
+
         Args:
             call_sid: Twilio call SID
             content: The content that was being spoken when interrupted
         """
         if call_sid not in self.interrupted_responses:
             self.interrupted_responses[call_sid] = set()
-        
+
         if content and content.strip():
             # Store first 100 chars as key (enough to match uniquely)
             key = content.strip()[:100]
             self.interrupted_responses[call_sid].add(key)
             logger.debug(f"🛑 Marked interrupted: {key[:50]}...")
-    
+
     async def _create_agent_config(self, assistant: Assistant) -> VoiceAgentConfig:
-        """
-        Convert database Assistant model to VoiceAgentConfig.
-        
+        """Convert database Assistant model to VoiceAgentConfig.
+
         Injects knowledge base content directly into the system prompt for:
         - Immediate access without tool-call latency
         - Prompt caching on subsequent turns
         - Better answer quality (LLM has full context)
-        
+
         The knowledge base load is run in a thread (asyncio.to_thread) so that
         the synchronous SQLAlchemy query does not block the event loop during
         call setup.
-        
+
         Args:
             assistant: Database assistant model
-            
+
         Returns:
             VoiceAgentConfig for pipeline creation
         """
         from botelier.voice.agent import AgentStatus
         from botelier.voice.knowledge_handler import load_knowledge_for_prompt
-        
+
         status = AgentStatus.ACTIVE if assistant.is_active else AgentStatus.PAUSED
-        
+
         base_prompt = assistant.system_prompt or "You are a friendly hotel assistant."
-        
+
         kb_content = ""
         if assistant.knowledge_base_id:
             try:
@@ -1342,7 +1423,7 @@ class CallHandler:
                 kb_content = ""
         else:
             logger.info(f"No knowledge base assigned to assistant {assistant.id}")
-        
+
         if kb_content:
             # Task #106 — order matters for OpenAI prompt caching.
             #
@@ -1371,11 +1452,13 @@ class CallHandler:
 You have access to the following Q&A knowledge base. Use this information to answer guest questions directly and confidently. Do NOT transfer the call or say you don't have information if the answer is in this knowledge base.
 
 {kb_content}"""
-            logger.info(f"📚 Injected KB ({len(kb_content)} chars) into system prompt for assistant {assistant.id}")
+            logger.info(
+                f"📚 Injected KB ({len(kb_content)} chars) into system prompt for assistant {assistant.id}"
+            )
         else:
             enhanced_prompt = base_prompt
             logger.info(f"📚 No KB content found for assistant {assistant.id}")
-        
+
         return VoiceAgentConfig(
             agent_id=str(assistant.id),
             account_id=str(assistant.account_id),
@@ -1404,11 +1487,10 @@ You have access to the following Q&A knowledge base. Use this information to ans
             vad_provider=assistant.vad_provider,
             vad_config=assistant.vad_config or {},
         )
-    
-    def _get_api_keys(self) -> Dict[str, str]:
-        """
-        Get API keys from environment variables.
-        
+
+    def _get_api_keys(self) -> dict[str, str]:
+        """Get API keys from environment variables.
+
         Returns:
             Dictionary of provider API keys
         """
@@ -1420,63 +1502,62 @@ You have access to the following Q&A knowledge base. Use this information to ans
             "elevenlabs_api_key": os.environ.get("ELEVENLABS_API_KEY"),
             "google_api_key": os.environ.get("GOOGLE_API_KEY"),
         }
-    
+
     def _build_mcp_headers(
         self,
         auth_type: str,
-        credentials: Optional[Dict[str, str]],
-    ) -> Optional[Dict[str, str]]:
-        """
-        Build authentication headers for MCP server connection.
-        
+        credentials: dict[str, str] | None,
+    ) -> dict[str, str] | None:
+        """Build authentication headers for MCP server connection.
+
         Args:
             auth_type: Authentication type (none, api_key, bearer, basic)
             credentials: Authentication credentials dictionary
-            
+
         Returns:
             Dictionary of headers, or None if no auth needed
         """
         if not auth_type or auth_type == "none" or not credentials:
             return None
-        
+
         headers = {}
-        
+
         if auth_type == "api_key":
             api_key = credentials.get("api_key", "")
             header_name = credentials.get("header_name", "X-API-Key")
             headers[header_name] = api_key
-        
+
         elif auth_type == "bearer":
             token = credentials.get("token", "")
             headers["Authorization"] = f"Bearer {token}"
-        
+
         elif auth_type == "basic":
             import base64
+
             username = credentials.get("username", "")
             password = credentials.get("password", "")
             encoded = base64.b64encode(f"{username}:{password}".encode()).decode()
             headers["Authorization"] = f"Basic {encoded}"
-        
+
         return headers if headers else None
-    
+
     def _build_function_schemas_and_handlers(
         self,
         assistant: Assistant,
         tools: list,
-        api_keys: Dict[str, str],
+        api_keys: dict[str, str],
         call_sid: str,
         stream_sid: str = None,
         from_number: str = None,
         to_number: str = None,
         twilio_account_sid: str = None,
         twilio_auth_token: str = None,
-    ) -> tuple[list, Dict[str, Any]]:
-        """
-        Build FunctionSchema objects and handlers for platform tools.
-        
+    ) -> tuple[list, dict[str, Any]]:
+        """Build FunctionSchema objects and handlers for platform tools.
+
         This follows Pipecat's proper pattern of creating schemas before pipeline initialization.
         Note: MCP tools are registered separately after pipeline creation using Pipecat's MCPClient.
-        
+
         Args:
             assistant: Database assistant model
             tools: List of Tool models (already fetched from database)
@@ -1487,19 +1568,19 @@ You have access to the following Q&A knowledge base. Use this information to ans
             to_number: Hotel's phone number that was called
             twilio_account_sid: Hotel's Twilio sub-account SID
             twilio_auth_token: Hotel's Twilio sub-account auth token
-            
+
         Returns:
             Tuple of (function_schemas, function_handlers)
         """
         from pipecat.adapters.schemas.function_schema import FunctionSchema
-        
+
         function_schemas = []
         function_handlers = {}
-        
+
         # NOTE: Knowledge base is now injected directly into the system prompt
         # in _create_agent_config() for faster response times and prompt caching.
         # The query_hotel_knowledge tool is no longer registered here.
-        
+
         # Add database tools
         if tools:
             # Get or create FunctionMapper for this call session
@@ -1520,14 +1601,14 @@ You have access to the following Q&A knowledge base. Use this information to ans
                 )
                 self.call_mappers[call_sid] = mapper
                 logger.info(f"Created FunctionMapper for call {call_sid}")
-            
+
             for tool in tools:
                 try:
                     # Check if this is a FLOW type tool - requires special handling
                     if tool.tool_type.value == "FLOW":
                         # Flow tools generate multiple function schemas (one per slot + API calls + etc.)
                         flow_schemas, flow_handlers = mapper.get_flow_functions(tool)
-                        
+
                         for schema in flow_schemas:
                             # Convert OpenAI format to FunctionSchema
                             func_def = schema.get("function", schema)
@@ -1538,40 +1619,43 @@ You have access to the following Q&A knowledge base. Use this information to ans
                                 required=func_def.get("parameters", {}).get("required", []),
                             )
                             function_schemas.append(tool_schema)
-                        
+
                         function_handlers.update(flow_handlers)
-                        logger.info(f"✅ Built {len(flow_schemas)} function schemas for flow: {tool.name}")
+                        logger.info(
+                            f"✅ Built {len(flow_schemas)} function schemas for flow: {tool.name}"
+                        )
                     else:
                         # Regular tool - single function
                         function_schema_dict, handler = mapper.map_tool_to_function(tool)
-                        
+
                         # Register non-flow tool schema for dynamic tool updates
                         # These tools remain available during flow execution
                         mapper.register_non_flow_tool_schema(function_schema_dict)
-                        
+
                         # Convert dict to FunctionSchema
                         tool_schema = FunctionSchema(
                             name=function_schema_dict["name"],
                             description=function_schema_dict["description"],
-                            properties=function_schema_dict.get("parameters", {}).get("properties", {}),
+                            properties=function_schema_dict.get("parameters", {}).get(
+                                "properties", {}
+                            ),
                             required=function_schema_dict.get("parameters", {}).get("required", []),
                         )
                         function_schemas.append(tool_schema)
                         function_handlers[function_schema_dict["name"]] = handler
-                        
+
                         logger.info(f"✅ Built function schema for tool: {tool.name}")
                 except Exception as e:
                     logger.error(f"Failed to build schema for tool {tool.name}: {e}")
-        
+
         # Note: MCP tools are registered separately after pipeline creation using Pipecat's MCPClient.register_tools()
         logger.info(f"📋 Built {len(function_schemas)} platform function schemas")
-        
+
         return function_schemas, function_handlers
-    
+
     async def hangup_call(self, call_sid: str):
-        """
-        Terminate an active call.
-        
+        """Terminate an active call.
+
         Args:
             call_sid: Twilio Call SID to terminate
         """
@@ -1581,24 +1665,25 @@ You have access to the following Q&A knowledge base. Use this information to ans
             logger.info(f"Terminated call {call_sid}")
         else:
             logger.warning(f"Call {call_sid} not found in active calls")
-    
+
     async def save_transcript_for_call(self, call_sid: str) -> bool:
-        """
-        Save transcript for a call from external context (e.g., connect-complete webhook).
-        
+        """Save transcript for a call from external context (e.g., connect-complete webhook).
+
         This is called when Twilio confirms the call has ended, allowing transcript
         capture even if the pipeline didn't exit cleanly.
-        
+
         Args:
             call_sid: Twilio Call SID
-            
+
         Returns:
             True if transcript was saved, False otherwise
         """
         if call_sid not in self.call_contexts:
-            logger.debug(f"No context stored for call {call_sid}, transcript may have already been saved")
+            logger.debug(
+                f"No context stored for call {call_sid}, transcript may have already been saved"
+            )
             return False
-        
+
         try:
             llm_context = self.call_contexts[call_sid]
             await self._save_call_transcript(call_sid, llm_context)
@@ -1606,10 +1691,11 @@ You have access to the following Q&A knowledge base. Use this information to ans
         except Exception as e:
             logger.exception(f"Error saving transcript for call {call_sid}: {e}")
             return False
-    
-    async def _save_call_transcript(self, call_sid: str, llm_context: Optional[Any], extra_messages: Optional[list] = None):
-        """
-        Save call transcript to database.
+
+    async def _save_call_transcript(
+        self, call_sid: str, llm_context: Any | None, extra_messages: list | None = None
+    ):
+        """Save call transcript to database.
 
         Uses tracked transcript (actual spoken content) if available,
         falls back to extracting from LLM context.
@@ -1637,7 +1723,9 @@ You have access to the following Q&A knowledge base. Use this information to ans
                 transcript, tools_used = self._extract_transcript(call_sid, llm_context)
                 if extra_messages:
                     transcript.extend(extra_messages)
-                logger.info(f"Extracted transcript ({len(transcript)} messages) for call {call_sid}")
+                logger.info(
+                    f"Extracted transcript ({len(transcript)} messages) for call {call_sid}"
+                )
                 if tools_used:
                     logger.info(f"🔧 Tools used during call {call_sid}: {tools_used}")
             else:
@@ -1658,10 +1746,10 @@ You have access to the following Q&A knowledge base. Use this information to ans
             # ── Capture plain values before thread boundary ───────────────────────
             # transcript is a list of plain dicts; tools_used is a list of strings.
             # All other values are plain Python scalars.
-            _cap_call_sid   = call_sid
+            _cap_call_sid = call_sid
             _cap_transcript = transcript if transcript else None
-            _cap_duration   = duration_seconds
-            _cap_tools      = tools_used
+            _cap_duration = duration_seconds
+            _cap_tools = tools_used
 
             # Task #96: before computing the terminal status, give any in-flight
             # mark_greeting_completed write a short window to land so the row's
@@ -1690,19 +1778,18 @@ You have access to the following Q&A knowledge base. Use this information to ans
 
         except Exception as e:
             logger.exception(f"Error saving transcript for call {call_sid}: {e}")
-    
+
     def _extract_transcript(self, call_sid: str, llm_context: Any) -> tuple:
-        """
-        Extract conversation messages and tool names from Pipecat's LLMContext.
-        
+        """Extract conversation messages and tool names from Pipecat's LLMContext.
+
         Filters to only user and assistant messages, excluding system prompts
         and tool/function call messages. Marks interrupted responses.
         Also collects unique tool names that were called during the conversation.
-        
+
         Args:
             call_sid: Twilio call SID (for checking interrupted responses)
             llm_context: Pipecat's LLMContext object (passed directly from create_pipeline)
-            
+
         Returns:
             Tuple of (transcript, tools_used) where:
                 - transcript: List of transcript entries with role, content, and interrupted flag
@@ -1711,37 +1798,37 @@ You have access to the following Q&A knowledge base. Use this information to ans
         transcript = []
         tools_used_set = set()
         interrupted_set = self.interrupted_responses.get(call_sid, set())
-        
+
         try:
             messages = None
-            
-            if hasattr(llm_context, 'get_messages'):
+
+            if hasattr(llm_context, "get_messages"):
                 messages = llm_context.get_messages()
                 logger.debug(f"Got {len(messages) if messages else 0} messages via get_messages()")
-            elif hasattr(llm_context, 'messages'):
+            elif hasattr(llm_context, "messages"):
                 messages = llm_context.messages
                 logger.debug(f"Got {len(messages) if messages else 0} messages via messages attr")
             elif isinstance(llm_context, dict):
-                messages = llm_context.get('messages', [])
+                messages = llm_context.get("messages", [])
                 logger.debug(f"Got {len(messages) if messages else 0} messages from dict")
-            
+
             if not messages:
                 logger.debug(f"No messages found. Context type: {type(llm_context)}")
                 return transcript, list(tools_used_set)
-            
+
             logger.debug(f"Found {len(messages)} raw messages in context")
-                
+
             for msg in messages:
                 if not isinstance(msg, dict):
-                    if hasattr(msg, '__dict__'):
+                    if hasattr(msg, "__dict__"):
                         msg = msg.__dict__
                     else:
                         continue
-                    
+
                 role = msg.get("role")
-                
+
                 content = msg.get("content") or msg.get("text")
-                
+
                 if role == "assistant" and msg.get("tool_calls"):
                     for tc in msg["tool_calls"]:
                         if isinstance(tc, dict):
@@ -1753,19 +1840,21 @@ You have access to the following Q&A knowledge base. Use this information to ans
                             continue
                         if name:
                             tools_used_set.add(name)
-                            transcript.append({
-                                "role": "assistant",
-                                "content": f"[Action: {name}]",
-                                "interrupted": False
-                            })
+                            transcript.append(
+                                {
+                                    "role": "assistant",
+                                    "content": f"[Action: {name}]",
+                                    "interrupted": False,
+                                }
+                            )
                     continue
-                
+
                 if role not in ("user", "assistant"):
                     continue
-                    
+
                 if not content:
                     continue
-                    
+
                 if isinstance(content, list):
                     text_parts = []
                     for part in content:
@@ -1774,27 +1863,25 @@ You have access to the following Q&A knowledge base. Use this information to ans
                         elif isinstance(part, str):
                             text_parts.append(part)
                     content = " ".join(text_parts)
-                
+
                 if not isinstance(content, str) or not content.strip():
                     continue
-                
+
                 content = content.strip()
-                
+
                 is_interrupted = False
                 if role == "assistant" and interrupted_set:
                     key = content[:100]
                     if key in interrupted_set:
                         is_interrupted = True
                         logger.debug(f"Marking message as interrupted: {key[:50]}...")
-                    
-                transcript.append({
-                    "role": role,
-                    "content": content,
-                    "interrupted": is_interrupted
-                })
-            
+
+                transcript.append({"role": role, "content": content, "interrupted": is_interrupted})
+
             tools_used = sorted(tools_used_set)
-            logger.debug(f"Extracted {len(transcript)} conversation messages, {len(tools_used)} unique tools: {tools_used}")
+            logger.debug(
+                f"Extracted {len(transcript)} conversation messages, {len(tools_used)} unique tools: {tools_used}"
+            )
 
             # --- Per-turn timestamp annotation ---
             # Timestamps are stored as elapsed seconds from call start (see
@@ -1828,11 +1915,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
                     continue  # already has a timestamp — leave it alone
                 content = msg.get("content", "")
                 key = content[:80].lower()
-                ts = (
-                    user_ts_map.get(key)
-                    if msg["role"] == "user"
-                    else assistant_ts_map.get(key)
-                )
+                ts = user_ts_map.get(key) if msg["role"] == "user" else assistant_ts_map.get(key)
                 if ts:
                     msg["timestamp"] = ts
 
@@ -1858,22 +1941,23 @@ You have access to the following Q&A knowledge base. Use this information to ans
                 )
 
                 if not already_committed:
-                    transcript.append({
-                        "role": "assistant",
-                        "content": captured_text,
-                        "interrupted": False,
-                        "incomplete": True,
-                        "timestamp": _fmt_elapsed(last_capture["elapsed_s"]),
-                    })
+                    transcript.append(
+                        {
+                            "role": "assistant",
+                            "content": captured_text,
+                            "interrupted": False,
+                            "incomplete": True,
+                            "timestamp": _fmt_elapsed(last_capture["elapsed_s"]),
+                        }
+                    )
                     logger.info(
                         f"📋 Recovered incomplete AI response ({len(captured_text)} chars) "
                         f"at T+{last_capture['elapsed_s']:.1f}s for call {call_sid} "
                         f"— caller hung up before LLM context committed"
                     )
-                
+
         except Exception as e:
             logger.exception(f"Error extracting transcript: {e}")
             tools_used = []
-            
+
         return transcript, tools_used
-    
