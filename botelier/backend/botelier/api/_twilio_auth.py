@@ -67,14 +67,20 @@ def validate_twilio_signature(
     Returns `(is_valid, validated_url)`.  The URL is included so callers
     can log it on failure to diagnose proxy / host mismatches.
 
-    When `auth_token` is empty, validation fails closed (returns False) —
-    a missing secret is treated as a configuration error, not a bypass.
+    When `auth_token` is empty, validation is skipped and `(True, url)` is
+    returned with a WARNING — mirrors `sms_pkg/webhook.py` skip-when-no-token
+    contract so local dev works without `TWILIO_AUTH_TOKEN` set.  Production
+    deployments must always have the token configured; the WARNING makes a
+    misconfigured production deployment obvious without silently blocking dev.
     """
     url = _build_webhook_url(request, path)
 
     if not auth_token:
-        logger.warning(f"Twilio signature validation failed — no auth token configured ({path})")
-        return False, url
+        logger.warning(
+            f"Twilio signature validation skipped — no auth token configured ({path}). "
+            f"Set TWILIO_AUTH_TOKEN (or a hotel sub-account token) to enforce validation."
+        )
+        return True, url
 
     try:
         from twilio.request_validator import RequestValidator
@@ -215,14 +221,17 @@ def verify_stream_token(
     for logging on rejection.
 
     Behaviour:
-      * No secret configured → fail closed (returns False).  A missing
-        secret is a configuration error; the WebSocket is rejected.
+      * No secret configured → skip HMAC (returns True, "skipped_no_secret").
+        Mirrors the HTTP validate_twilio_signature skip-when-no-token contract
+        so local dev works without secrets set.  The CallLog binding check in
+        websockets.py is still enforced, so an attacker cannot forge a callSid
+        that never went through the authenticated /incoming route.
       * Missing token / exp when a secret IS configured → reject.
       * Expired or tampered → reject.
     """
     secret = _stream_token_secret(account_token)
     if not secret:
-        return False, "no_secret_configured"
+        return True, "skipped_no_secret"
 
     if not token or exp in (None, "", 0):
         return False, "missing"

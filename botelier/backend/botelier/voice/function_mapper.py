@@ -20,6 +20,7 @@ from pipecat.services.llm_service import FunctionCallParams
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from twilio.rest import Client as TwilioClient
+from twilio.base.exceptions import TwilioRestException as _TwilioRestException
 
 from botelier.models.tool import Tool, ToolType
 from botelier.flow_executor import FlowExecutor, parse_flow_config
@@ -446,6 +447,7 @@ class FunctionMapper:
                 continues executing the TwiML it received (warm <Dial> or cold REFER).
                 """
                 _transfer_succeeded = False
+                _call_already_ended = False
                 # Capture T0 at function entry — this coroutine is scheduled
                 # immediately after BotStoppedSpeakingFrame fires (via
                 # asyncio.create_task()), so this timestamp is the best
@@ -653,7 +655,20 @@ class FunctionMapper:
                             )
 
                         except Exception as e:
-                            logger.error(f"❌ Twilio transfer failed for call {self.call_sid}: {e}")
+                            if isinstance(e, _TwilioRestException) and e.status == 400:
+                                # Race condition: Twilio returned 400 because the call leg
+                                # was already terminated — this happens when the transfer
+                                # completes so fast that by the time our REST update() call
+                                # lands, Twilio has already ended the original leg.  Treat
+                                # this as a clean transfer end so the pipeline closes
+                                # gracefully rather than staying alive indefinitely.
+                                logger.warning(
+                                    f"⚠️ Twilio 400 on transfer REST call for {self.call_sid} — "
+                                    f"call leg already ended (fast transfer race); treating as clean end"
+                                )
+                                _call_already_ended = True
+                            else:
+                                logger.error(f"❌ Twilio transfer failed for call {self.call_sid}: {e}")
                     else:
                         missing = []
                         if not self.twilio_client:
@@ -675,7 +690,7 @@ class FunctionMapper:
                     # the conversation.  If the call is truly gone (404), Twilio
                     # will close the WebSocket on its side and the transport will
                     # push EndFrame naturally.
-                    if _transfer_succeeded:
+                    if _transfer_succeeded or _call_already_ended:
                         await params.llm.push_frame(EndFrame())
                     else:
                         logger.warning(
