@@ -859,10 +859,11 @@ class CallHandler:
                         name=f"mark_greeting_completed:{_greeting_call_sid}",
                     )
                     _handler.greeting_mark_tasks[_greeting_call_sid] = _mark_task
-                    try:
-                        await _mark_task
-                    except Exception as _ge:
-                        logger.error(f"Failed to set ai_greeting_completed: {_ge}")
+                    from ..utils import log_task_exception as _log_task_exception
+                    _mark_task.add_done_callback(_log_task_exception)
+                    # Do not await here — GreetingCompletionTracker now invokes
+                    # this callback via create_task so push_frame is never blocked.
+                    # Finalization paths explicitly await this tracked task (500 ms cap).
                 greeting_completion_tracker.set_greeting_callback(_on_greeting_completed)
 
                 # Wire WebSocket liveness check: if the caller hangs up during the
@@ -889,10 +890,13 @@ class CallHandler:
                             _cl.mark_caller_spoke(_speech_call_sid)
                         finally:
                             sdb.close()
-                    try:
-                        await asyncio.to_thread(_sync_mark_caller_spoke)
-                    except Exception as _se:
-                        logger.error(f"Failed to set caller_spoke: {_se}")
+                    # Fire-and-forget DB write; never block frame processing.
+                    _mark_task = asyncio.create_task(
+                        asyncio.to_thread(_sync_mark_caller_spoke),
+                        name=f"mark_caller_spoke:{_speech_call_sid}",
+                    )
+                    from ..utils import log_task_exception as _log_task_exception
+                    _mark_task.add_done_callback(_log_task_exception)
                 first_speech_tracker.set_first_speech_callback(_on_first_user_speech)
 
             # Task #111 — emit prewarm hit/miss telemetry BEFORE greeting_started

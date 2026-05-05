@@ -414,10 +414,9 @@ class FirstUserSpeechTracker(FrameProcessor):
                     details={"transcript": frame.text.strip()[:200]},
                 )
             if self._first_speech_callback is not None:
-                try:
-                    await self._first_speech_callback()
-                except Exception as _cb_err:
-                    logger.error(f"first_speech_callback error: {_cb_err}")
+                from ..utils import log_task_exception as _log_task_exception
+                _cb_task = asyncio.create_task(self._first_speech_callback())
+                _cb_task.add_done_callback(_log_task_exception)
             logger.debug(f"user_first_speech logged: {frame.text.strip()[:50]}...")
 
         await self.push_frame(frame, direction)
@@ -539,10 +538,9 @@ class GreetingCompletionTracker(FrameProcessor):
                     severity="info",
                 )
             if self._greeting_callback is not None:
-                try:
-                    await self._greeting_callback()
-                except Exception as _cb_err:
-                    logger.error(f"greeting_callback error: {_cb_err}")
+                from ..utils import log_task_exception as _log_task_exception
+                _cb_task = asyncio.create_task(self._greeting_callback())
+                _cb_task.add_done_callback(_log_task_exception)
             logger.debug("greeting_completed logged")
 
         await self.push_frame(frame, direction)
