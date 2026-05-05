@@ -1,14 +1,14 @@
 #
-# Copyright (c) 2024-2025 Daily
+# Copyright (c) 2024–2026, Daily
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
 import importlib.util
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 GREEN = "\033[92m"
 RED = "\033[91m"
@@ -28,7 +28,7 @@ def check_env_variables() -> bool:
         "CARTESIA_API_KEY",
         "DEEPGRAM_API_KEY",
         "OPENAI_API_KEY",
-        "DAILY_SAMPLE_ROOM_URL",
+        "DAILY_ROOM_URL",
     ]
     for env in required_envs:
         if not os.getenv(env):
@@ -79,6 +79,8 @@ def load_module_from_path(path: str | Path):
     module_name = path.stem
 
     spec = importlib.util.spec_from_file_location(module_name, str(path))
+    if spec is None or spec.loader is None:
+        raise ImportError(f"Could not load module spec from {path}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module

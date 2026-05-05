@@ -1,12 +1,12 @@
 #
-# Copyright (c) 2024–2025, Daily
+# Copyright (c) 2024-2026, Daily
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
 """Stateless text transformation processor for Pipecat."""
 
-from typing import Callable, Coroutine, Union
+from collections.abc import Callable, Coroutine
 
 from pipecat.frames.frames import Frame, TextFrame
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
@@ -21,7 +21,7 @@ class StatelessTextTransformer(FrameProcessor):
     """
 
     def __init__(
-        self, transform_fn: Union[Callable[[str], str], Callable[[str], Coroutine[None, None, str]]]
+        self, transform_fn: Callable[[str], str] | Callable[[str], Coroutine[None, None, str]]
     ):
         """Initialize the text transformer.
 

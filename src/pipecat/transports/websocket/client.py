@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024–2025, Daily
+# Copyright (c) 2024-2026, Daily
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 #
@@ -15,7 +15,7 @@ import asyncio
 import io
 import time
 import wave
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
 import websockets
 from loguru import logger
@@ -27,6 +27,7 @@ from pipecat.frames.frames import (
     EndFrame,
     Frame,
     InputAudioRawFrame,
+    InputTransportMessageFrame,
     OutputAudioRawFrame,
     OutputTransportMessageFrame,
     OutputTransportMessageUrgentFrame,
@@ -50,7 +51,8 @@ class WebsocketClientParams(TransportParams):
     """
 
     add_wav_header: bool = True
-    serializer: Optional[FrameSerializer] = None
+    additional_headers: dict[str, str] | None = None
+    serializer: FrameSerializer | None = None
 
 
 class WebsocketClientCallbacks(BaseModel):
@@ -62,9 +64,18 @@ class WebsocketClientCallbacks(BaseModel):
         on_message: Called when a message is received from the WebSocket.
     """
 
-    on_connected: Callable[[websockets.WebSocketClientProtocol], Awaitable[None]]
-    on_disconnected: Callable[[websockets.WebSocketClientProtocol], Awaitable[None]]
-    on_message: Callable[[websockets.WebSocketClientProtocol, websockets.Data], Awaitable[None]]
+    on_connected: Callable[
+        [websockets.WebSocketClientProtocol],  # pyright: ignore[reportAttributeAccessIssue]
+        Awaitable[None],
+    ]
+    on_disconnected: Callable[
+        [websockets.WebSocketClientProtocol],  # pyright: ignore[reportAttributeAccessIssue]
+        Awaitable[None],
+    ]
+    on_message: Callable[
+        [websockets.WebSocketClientProtocol, websockets.Data],  # pyright: ignore[reportAttributeAccessIssue]
+        Awaitable[None],
+    ]
 
 
 class WebsocketClientSession:
@@ -95,8 +106,8 @@ class WebsocketClientSession:
         self._transport_name = transport_name
 
         self._leave_counter = 0
-        self._task_manager: Optional[BaseTaskManager] = None
-        self._websocket: Optional[websockets.WebSocketClientProtocol] = None
+        self._task_manager: BaseTaskManager | None = None
+        self._websocket: websockets.WebSocketClientProtocol | None = None  # pyright: ignore[reportAttributeAccessIssue]
 
     @property
     def task_manager(self) -> BaseTaskManager:
@@ -130,7 +141,11 @@ class WebsocketClientSession:
             return
 
         try:
-            self._websocket = await websocket_connect(uri=self._uri, open_timeout=10)
+            self._websocket = await websocket_connect(
+                uri=self._uri,
+                open_timeout=10,
+                additional_headers=self._params.additional_headers,
+            )
             self._client_task = self.task_manager.create_task(
                 self._client_task_handler(),
                 f"{self._transport_name}::WebsocketClientSession::_client_task_handler",
@@ -186,6 +201,10 @@ class WebsocketClientSession:
 
     async def _client_task_handler(self):
         """Handle incoming messages from the WebSocket connection."""
+        # `connect()` only starts this task after `_websocket` is assigned, and
+        # `disconnect()` cancels the task before clearing `_websocket`, so this
+        # invariant should always hold when this method runs.
+        assert self._websocket is not None
         try:
             # Handle incoming messages
             async for message in self._websocket:
@@ -293,6 +312,8 @@ class WebsocketClientInputTransport(BaseInputTransport):
             return
         if isinstance(frame, InputAudioRawFrame) and self._params.audio_in_enabled:
             await self.push_audio_frame(frame)
+        elif isinstance(frame, InputTransportMessageFrame):
+            await self.broadcast_frame(InputTransportMessageFrame, message=frame.message)
         else:
             await self.push_frame(frame)
 
@@ -463,12 +484,23 @@ class WebsocketClientTransport(BaseTransport):
 
     Provides a complete WebSocket client transport implementation with
     input and output capabilities, connection management, and event handling.
+
+    Event handlers available:
+
+    - on_connected(transport): Connected to WebSocket server
+    - on_disconnected(transport): Disconnected from WebSocket server
+
+    Example::
+
+        @transport.event_handler("on_connected")
+        async def on_connected(transport):
+            ...
     """
 
     def __init__(
         self,
         uri: str,
-        params: Optional[WebsocketClientParams] = None,
+        params: WebsocketClientParams | None = None,
     ):
         """Initialize the WebSocket client transport.
 
@@ -488,8 +520,8 @@ class WebsocketClientTransport(BaseTransport):
         )
 
         self._session = WebsocketClientSession(uri, self._params, callbacks, self.name)
-        self._input: Optional[WebsocketClientInputTransport] = None
-        self._output: Optional[WebsocketClientOutputTransport] = None
+        self._input: WebsocketClientInputTransport | None = None
+        self._output: WebsocketClientOutputTransport | None = None
 
         # Register supported handlers. The user will only be able to register
         # these handlers.

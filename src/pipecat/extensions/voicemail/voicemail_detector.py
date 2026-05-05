@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024–2025, Daily
+# Copyright (c) 2024-2026, Daily
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 #
@@ -16,7 +16,6 @@ Note:
 """
 
 import asyncio
-from typing import List, Optional
 
 from loguru import logger
 
@@ -36,12 +35,16 @@ from pipecat.frames.frames import (
     UserStoppedSpeakingFrame,
 )
 from pipecat.pipeline.parallel_pipeline import ParallelPipeline
-from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
+from pipecat.processors.aggregators.llm_context import LLMContext, LLMContextMessage
+from pipecat.processors.aggregators.llm_response_universal import (
+    LLMContextAggregatorPair,
+    LLMUserAggregatorParams,
+)
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor, FrameProcessorSetup
 from pipecat.services.llm_service import LLMService
-from pipecat.sync.base_notifier import BaseNotifier
-from pipecat.sync.event_notifier import EventNotifier
+from pipecat.turns.user_turn_strategies import ExternalUserTurnStrategies
+from pipecat.utils.sync.base_notifier import BaseNotifier
+from pipecat.utils.sync.event_notifier import EventNotifier
 
 
 class NotifierGate(FrameProcessor):
@@ -67,7 +70,7 @@ class NotifierGate(FrameProcessor):
         self._notifier = notifier
         self._task_name = task_name
         self._gate_opened = True
-        self._gate_task: Optional[asyncio.Task] = None
+        self._gate_task: asyncio.Task | None = None
 
     async def setup(self, setup: FrameProcessorSetup):
         """Set up the processor with required components.
@@ -139,7 +142,7 @@ class ClassifierGate(NotifierGate):
         super().__init__(gate_notifier, task_name="classifier_gate")
         self._conversation_notifier = conversation_notifier
         self._conversation_detected = False
-        self._conversation_task: Optional[asyncio.Task] = None
+        self._conversation_task: asyncio.Task | None = None
 
     async def setup(self, setup: FrameProcessorSetup):
         """Set up the processor with required components.
@@ -252,7 +255,8 @@ class ClassificationProcessor(FrameProcessor):
         self._voicemail_notifier = voicemail_notifier
         self._voicemail_response_delay = voicemail_response_delay
 
-        # Register the voicemail detected event
+        # Register the conversation and voicemail detected events
+        self._register_event_handler("on_conversation_detected")
         self._register_event_handler("on_voicemail_detected")
 
         # Aggregation state for collecting complete LLM responses
@@ -262,7 +266,7 @@ class ClassificationProcessor(FrameProcessor):
 
         # Voicemail timing state
         self._voicemail_detected = False
-        self._voicemail_task: Optional[asyncio.Task] = None
+        self._voicemail_task: asyncio.Task | None = None
         self._voicemail_event = asyncio.Event()
         self._voicemail_event.set()
 
@@ -317,11 +321,13 @@ class ClassificationProcessor(FrameProcessor):
             # User started speaking - set the voicemail event
             if self._voicemail_detected:
                 self._voicemail_event.set()
+            await self.push_frame(frame, direction)
 
         elif isinstance(frame, UserStoppedSpeakingFrame):
             # User stopped speaking - clear the voicemail event
             if self._voicemail_detected:
                 self._voicemail_event.clear()
+            await self.push_frame(frame, direction)
 
         else:
             # Pass all non-LLM frames through
@@ -350,6 +356,7 @@ class ClassificationProcessor(FrameProcessor):
             logger.info(f"{self}: CONVERSATION detected")
             await self._gate_notifier.notify()  # Close the classifier gate
             await self._conversation_notifier.notify()  # Release buffered TTS frames
+            await self._call_event_handler("on_conversation_detected")
 
         elif "VOICEMAIL" in response:
             # Voicemail detected - trigger voicemail handling
@@ -360,7 +367,7 @@ class ClassificationProcessor(FrameProcessor):
             await self._voicemail_notifier.notify()  # Clear buffered TTS frames
 
             # Interrupt the current pipeline to stop any ongoing processing
-            await self.push_interruption_task_frame_and_wait()
+            await self.broadcast_interruption()
 
             # Set the voicemail event to trigger the voicemail handler
             self._voicemail_event.clear()
@@ -382,7 +389,7 @@ class ClassificationProcessor(FrameProcessor):
                     self._voicemail_event.wait(), timeout=self._voicemail_response_delay
                 )
                 await asyncio.sleep(0.1)
-            except asyncio.TimeoutError:
+            except TimeoutError:
                 await self._call_event_handler("on_voicemail_detected")
                 break
 
@@ -415,10 +422,10 @@ class TTSGate(FrameProcessor):
         super().__init__()
         self._conversation_notifier = conversation_notifier
         self._voicemail_notifier = voicemail_notifier
-        self._frame_buffer: List[tuple[Frame, FrameDirection]] = []
+        self._frame_buffer: list[tuple[Frame, FrameDirection]] = []
         self._gating_active = True
-        self._conversation_task: Optional[asyncio.Task] = None
-        self._voicemail_task: Optional[asyncio.Task] = None
+        self._conversation_task: asyncio.Task | None = None
+        self._voicemail_task: asyncio.Task | None = None
 
     async def setup(self, setup: FrameProcessorSetup):
         """Set up the processor with required components.
@@ -539,6 +546,9 @@ class VoicemailDetector(ParallelPipeline):
         custom_prompt = "Your custom classification logic here. " + VoicemailDetector.CLASSIFIER_RESPONSE_INSTRUCTION
 
     Events:
+        on_conversation_detected: Triggered when a human conversation is detected. The
+            event handler receives one argument: the ClassificationProcessor instance
+            which can be used to push frames.
         on_voicemail_detected: Triggered when voicemail is detected after the configured
             delay. The event handler receives one argument: the ClassificationProcessor
             instance which can be used to push frames.
@@ -580,7 +590,7 @@ VOICEMAIL SYSTEM (respond "VOICEMAIL"):
         *,
         llm: LLMService,
         voicemail_response_delay: float = 2.0,
-        custom_system_prompt: Optional[str] = None,
+        custom_system_prompt: str | None = None,
     ):
         """Initialize the voicemail detector with classification and buffering components.
 
@@ -607,16 +617,19 @@ VOICEMAIL SYSTEM (respond "VOICEMAIL"):
             self._validate_prompt(custom_system_prompt)
 
         # Set up the LLM context with the classification prompt
-        self._messages = [
+        self._messages: list[LLMContextMessage] = [
             {
-                "role": "system",
+                "role": "developer",
                 "content": self._prompt,
             },
         ]
 
         # Create the LLM context and aggregators for conversation management
         self._context = LLMContext(self._messages)
-        self._context_aggregator = LLMContextAggregatorPair(self._context)
+        self._context_aggregator = LLMContextAggregatorPair(
+            self._context,
+            user_params=LLMUserAggregatorParams(user_turn_strategies=ExternalUserTurnStrategies()),
+        )
 
         # Create notification system for coordinating between components
         self._gate_notifier = EventNotifier()  # Signals classification completion
@@ -701,7 +714,7 @@ VOICEMAIL SYSTEM (respond "VOICEMAIL"):
             event_name: The name of the event to handle.
             handler: The function to call when the event occurs.
         """
-        if event_name == "on_voicemail_detected":
+        if event_name in ("on_conversation_detected", "on_voicemail_detected"):
             self._classification_processor.add_event_handler(event_name, handler)
         else:
             super().add_event_handler(event_name, handler)

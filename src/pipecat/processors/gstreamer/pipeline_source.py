@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024–2025, Daily
+# Copyright (c) 2024-2026, Daily
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 #
@@ -7,7 +7,6 @@
 """GStreamer pipeline source integration for Pipecat."""
 
 import asyncio
-from typing import Optional
 
 from loguru import logger
 from pydantic import BaseModel
@@ -58,11 +57,11 @@ class GStreamerPipelineSource(FrameProcessor):
 
         video_width: int = 1280
         video_height: int = 720
-        audio_sample_rate: Optional[int] = None
+        audio_sample_rate: int | None = None
         audio_channels: int = 1
         clock_sync: bool = True
 
-    def __init__(self, *, pipeline: str, out_params: Optional[OutputParams] = None, **kwargs):
+    def __init__(self, *, pipeline: str, out_params: OutputParams | None = None, **kwargs):
         """Initialize the GStreamer pipeline source.
 
         Args:

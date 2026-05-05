@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024–2025, Daily
+# Copyright (c) 2024-2026, Daily
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 #
@@ -12,7 +12,8 @@ and interruption handling.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Mapping
+from collections.abc import Mapping
+from typing import Any
 
 
 class BaseTextFilter(ABC):
@@ -26,7 +27,6 @@ class BaseTextFilter(ABC):
     behavior, settings management, and interruption handling logic.
     """
 
-    @abstractmethod
     async def update_settings(self, settings: Mapping[str, Any]):
         """Update the filter's configuration settings.
 
@@ -53,7 +53,6 @@ class BaseTextFilter(ABC):
         """
         pass
 
-    @abstractmethod
     async def handle_interruption(self):
         """Handle interruption events in the processing pipeline.
 
@@ -62,7 +61,6 @@ class BaseTextFilter(ABC):
         """
         pass
 
-    @abstractmethod
     async def reset_interruption(self):
         """Reset the filter state after an interruption has been handled.
 

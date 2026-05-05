@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024–2025, Daily
+# Copyright (c) 2024-2026, Daily
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 #
@@ -30,7 +30,6 @@ Example::
 
 import argparse
 import os
-from typing import Optional
 
 from livekit import api
 from loguru import logger
@@ -98,7 +97,7 @@ async def configure():
     return (url, token, room_name)
 
 
-async def configure_with_args(parser: Optional[argparse.ArgumentParser] = None):
+async def configure_with_args(parser: argparse.ArgumentParser | None = None):
     """Configure LiveKit room with command-line argument parsing.
 
     Args:

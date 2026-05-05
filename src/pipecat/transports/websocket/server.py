@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024–2025, Daily
+# Copyright (c) 2024-2026, Daily
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 #
@@ -15,16 +15,18 @@ import asyncio
 import io
 import time
 import wave
-from typing import Awaitable, Callable, Optional
+from collections.abc import Awaitable, Callable
 
 from loguru import logger
 from pydantic import BaseModel
 
 from pipecat.frames.frames import (
     CancelFrame,
+    ClientConnectedFrame,
     EndFrame,
     Frame,
     InputAudioRawFrame,
+    InputTransportMessageFrame,
     InterruptionFrame,
     OutputAudioRawFrame,
     OutputTransportMessageFrame,
@@ -57,8 +59,8 @@ class WebsocketServerParams(TransportParams):
     """
 
     add_wav_header: bool = False
-    serializer: Optional[FrameSerializer] = None
-    session_timeout: Optional[int] = None
+    serializer: FrameSerializer | None = None
+    session_timeout: int | None = None
 
 
 class WebsocketServerCallbacks(BaseModel):
@@ -111,7 +113,7 @@ class WebsocketServerInputTransport(BaseInputTransport):
         self._params = params
         self._callbacks = callbacks
 
-        self._websocket: Optional[websockets.WebSocketServerProtocol] = None
+        self._websocket: websockets.WebSocketServerProtocol | None = None
 
         self._server_task = None
 
@@ -214,6 +216,8 @@ class WebsocketServerInputTransport(BaseInputTransport):
 
                 if isinstance(frame, InputAudioRawFrame):
                     await self.push_audio_frame(frame)
+                elif isinstance(frame, InputTransportMessageFrame):
+                    await self.broadcast_frame(InputTransportMessageFrame, message=frame.message)
                 else:
                     await self.push_frame(frame)
         except Exception as e:
@@ -222,7 +226,7 @@ class WebsocketServerInputTransport(BaseInputTransport):
         # Notify disconnection
         await self._callbacks.on_client_disconnected(websocket)
 
-        await self._websocket.close()
+        await websocket.close()
         self._websocket = None
 
         logger.info(f"Client {websocket.remote_address} disconnected")
@@ -260,7 +264,7 @@ class WebsocketServerOutputTransport(BaseOutputTransport):
         self._transport = transport
         self._params = params
 
-        self._websocket: Optional[websockets.WebSocketServerProtocol] = None
+        self._websocket: websockets.WebSocketServerProtocol | None = None
 
         # write_audio_frame() is called quickly, as soon as we get audio
         # (e.g. from the TTS), and since this is just a network connection we
@@ -273,7 +277,7 @@ class WebsocketServerOutputTransport(BaseOutputTransport):
         # Whether we have seen a StartFrame already.
         self._initialized = False
 
-    async def set_client_connection(self, websocket: Optional[websockets.WebSocketServerProtocol]):
+    async def set_client_connection(self, websocket: websockets.WebSocketServerProtocol | None):
         """Set the active client WebSocket connection.
 
         Args:
@@ -417,6 +421,19 @@ class WebsocketServerTransport(BaseTransport):
     Provides a complete WebSocket server implementation with separate input and
     output transports, client connection management, and event handling for
     real-time audio and data streaming applications.
+
+    Event handlers available:
+
+    - on_client_connected(transport, websocket): Client WebSocket connected
+    - on_client_disconnected(transport, websocket): Client WebSocket disconnected
+    - on_session_timeout(transport, websocket): Session timed out
+    - on_websocket_ready(transport): WebSocket server is ready to accept connections
+
+    Example::
+
+        @transport.event_handler("on_client_connected")
+        async def on_client_connected(transport, websocket):
+            ...
     """
 
     def __init__(
@@ -424,8 +441,8 @@ class WebsocketServerTransport(BaseTransport):
         params: WebsocketServerParams,
         host: str = "localhost",
         port: int = 8765,
-        input_name: Optional[str] = None,
-        output_name: Optional[str] = None,
+        input_name: str | None = None,
+        output_name: str | None = None,
     ):
         """Initialize the WebSocket server transport.
 
@@ -447,9 +464,9 @@ class WebsocketServerTransport(BaseTransport):
             on_session_timeout=self._on_session_timeout,
             on_websocket_ready=self._on_websocket_ready,
         )
-        self._input: Optional[WebsocketServerInputTransport] = None
-        self._output: Optional[WebsocketServerOutputTransport] = None
-        self._websocket: Optional[websockets.WebSocketServerProtocol] = None
+        self._input: WebsocketServerInputTransport | None = None
+        self._output: WebsocketServerOutputTransport | None = None
+        self._websocket: websockets.WebSocketServerProtocol | None = None
 
         # Register supported handlers. The user will only be able to register
         # these handlers.
@@ -487,6 +504,8 @@ class WebsocketServerTransport(BaseTransport):
         if self._output:
             await self._output.set_client_connection(websocket)
             await self._call_event_handler("on_client_connected", websocket)
+            if self._input:
+                await self._input.push_frame(ClientConnectedFrame())
         else:
             logger.error("A WebsocketServerTransport output is missing in the pipeline")
 

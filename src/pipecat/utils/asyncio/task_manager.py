@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024–2025, Daily
+# Copyright (c) 2024-2026, Daily
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 #
@@ -12,9 +12,10 @@ comprehensive monitoring and cleanup capabilities.
 """
 
 import asyncio
+import traceback
 from abc import ABC, abstractmethod
+from collections.abc import Coroutine, Sequence
 from dataclasses import dataclass
-from typing import Coroutine, Dict, Optional, Sequence
 
 from loguru import logger
 
@@ -70,7 +71,7 @@ class BaseTaskManager(ABC):
         pass
 
     @abstractmethod
-    async def cancel_task(self, task: asyncio.Task, timeout: Optional[float] = None):
+    async def cancel_task(self, task: asyncio.Task, timeout: float | None = None):
         """Cancels the given asyncio Task and awaits its completion with an optional timeout.
 
         This function removes the task from the set of registered tasks upon
@@ -113,8 +114,8 @@ class TaskManager(BaseTaskManager):
 
     def __init__(self) -> None:
         """Initialize the task manager with empty task registry."""
-        self._tasks: Dict[str, TaskData] = {}
-        self._params: Optional[TaskManagerParams] = None
+        self._tasks: dict[str, TaskData] = {}
+        self._params: TaskManagerParams | None = None
 
     def setup(self, params: TaskManagerParams):
         """Initialize the task manager with configuration parameters.
@@ -156,13 +157,15 @@ class TaskManager(BaseTaskManager):
 
         async def run_coroutine():
             try:
-                await coroutine
+                return await coroutine
             except asyncio.CancelledError:
                 logger.trace(f"{name}: task cancelled")
                 # Re-raise the exception to ensure the task is cancelled.
                 raise
             except Exception as e:
-                logger.exception(f"{name}: unexpected exception: {e}")
+                tb = traceback.extract_tb(e.__traceback__)
+                last = tb[-1]
+                logger.error(f"{name} unexpected exception ({last.filename}:{last.lineno}): {e}")
 
         if not self._params:
             raise Exception("TaskManager is not setup: unable to get event loop")
@@ -174,7 +177,7 @@ class TaskManager(BaseTaskManager):
         logger.trace(f"{name}: task created")
         return task
 
-    async def cancel_task(self, task: asyncio.Task, timeout: Optional[float] = None):
+    async def cancel_task(self, task: asyncio.Task, timeout: float | None = None):
         """Cancels the given asyncio Task and awaits its completion with an optional timeout.
 
         This function removes the task from the set of registered tasks upon
@@ -191,15 +194,23 @@ class TaskManager(BaseTaskManager):
                 await asyncio.wait_for(task, timeout=timeout)
             else:
                 await task
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(f"{name}: timed out waiting for task to cancel")
         except asyncio.CancelledError:
             # Here are sure the task is cancelled properly.
             pass
         except Exception as e:
-            logger.exception(f"{name}: unexpected exception while cancelling task: {e}")
+            tb = traceback.extract_tb(e.__traceback__)
+            last = tb[-1]
+            logger.error(
+                f"{name} unexpected exception while cancelling task ({last.filename}:{last.lineno}): {e}"
+            )
         except BaseException as e:
-            logger.critical(f"{name}: fatal base exception while cancelling task: {e}")
+            tb = traceback.extract_tb(e.__traceback__)
+            last = tb[-1]
+            logger.critical(
+                f"{name} fatal base exception while cancelling task ({last.filename}:{last.lineno}): {e}"
+            )
             raise
 
     def current_tasks(self) -> Sequence[asyncio.Task]:

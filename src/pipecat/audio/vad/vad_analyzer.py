@@ -1,5 +1,5 @@
 #
-# Copyright (c) 2024–2025, Daily
+# Copyright (c) 2024-2026, Daily
 #
 # SPDX-License-Identifier: BSD 2-Clause License
 #
@@ -15,7 +15,6 @@ import asyncio
 from abc import ABC, abstractmethod
 from concurrent.futures import ThreadPoolExecutor
 from enum import Enum
-from typing import Optional
 
 from loguru import logger
 from pydantic import BaseModel
@@ -24,7 +23,7 @@ from pipecat.audio.utils import calculate_audio_volume, exp_smoothing
 
 VAD_CONFIDENCE = 0.7
 VAD_START_SECS = 0.2
-VAD_STOP_SECS = 0.8
+VAD_STOP_SECS = 0.2
 VAD_MIN_VOLUME = 0.6
 
 
@@ -68,7 +67,7 @@ class VADAnalyzer(ABC):
     Subclasses must implement the core voice confidence calculation.
     """
 
-    def __init__(self, *, sample_rate: Optional[int] = None, params: Optional[VADParams] = None):
+    def __init__(self, *, sample_rate: int | None = None, params: VADParams | None = None):
         """Initialize the VAD analyzer.
 
         Args:
@@ -127,7 +126,7 @@ class VADAnalyzer(ABC):
         pass
 
     @abstractmethod
-    def voice_confidence(self, buffer) -> float:
+    def voice_confidence(self, buffer: bytes) -> float:
         """Calculate voice activity confidence for the given audio buffer.
 
         Args:
@@ -242,3 +241,12 @@ class VADAnalyzer(ABC):
             self._vad_stopping_count = 0
 
         return self._vad_state
+
+    async def cleanup(self):
+        """Clean up resources.
+
+        This method should be called when the object is no longer needed.
+        It waits for all currently executing event handler tasks to finish
+        before returning.
+        """
+        pass
