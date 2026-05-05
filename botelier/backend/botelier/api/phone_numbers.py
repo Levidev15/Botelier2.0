@@ -1,5 +1,4 @@
-"""
-Phone Numbers API - CRUD operations for account phone numbers.
+"""Phone Numbers API - CRUD operations for account phone numbers.
 
 Endpoints:
 - GET /api/phone-numbers/available - Search available numbers by area code
@@ -9,31 +8,39 @@ Endpoints:
 - DELETE /api/phone-numbers/{id} - Release number
 """
 
-import os
 import logging
-from typing import Optional, List
-from fastapi import APIRouter, HTTPException, Depends, Query
-from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+import os
+from typing import List, Optional
 from uuid import UUID
 
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+from twilio.base.exceptions import TwilioRestException
+
+from botelier.auth.middleware import (
+    AccountContext,
+    check_account_permission,
+    get_current_user,
+    get_hotel_context,
+)
+from botelier.config.domain import get_public_base_url
 from botelier.database import get_db
-from botelier.models.phone_number import PhoneNumber
+from botelier.integrations.twilio.phone_numbers import PhoneNumberManager
 from botelier.models.account import Account
 from botelier.models.assistant import Assistant
-from botelier.integrations.twilio.phone_numbers import PhoneNumberManager
-from twilio.base.exceptions import TwilioRestException
-from botelier.config.domain import get_public_base_url
+from botelier.models.phone_number import PhoneNumber
 from botelier.models.user import User
-from botelier.auth.middleware import get_current_user, check_account_permission, get_hotel_context, AccountContext
-from botelier.services.recording_sync import sync_phone_number_recording as _sync_phone_number_recording
-
+from botelier.services.recording_sync import (
+    sync_phone_number_recording as _sync_phone_number_recording,
+)
 
 router = APIRouter(prefix="/api/phone-numbers", tags=["phone-numbers"])
 
 
 class AvailableNumberResponse(BaseModel):
     """Available phone number from Twilio search."""
+
     phone_number: str
     friendly_name: str
     capabilities: dict
@@ -45,6 +52,7 @@ class AvailableNumberResponse(BaseModel):
 
 class PurchaseNumberRequest(BaseModel):
     """Request to purchase a phone number."""
+
     phone_number: str = Field(..., description="E.164 format: +14155551234")
     friendly_name: Optional[str] = Field(None, description="Label for the number")
     account_id: str = Field(..., description="Account ID (UUID)")
@@ -52,11 +60,13 @@ class PurchaseNumberRequest(BaseModel):
 
 class AssignAssistantRequest(BaseModel):
     """Request to assign number to assistant."""
+
     assistant_id: Optional[str] = Field(None, description="Assistant UUID or null to unassign")
 
 
 class PhoneNumberResponse(BaseModel):
     """Phone number response model."""
+
     id: str
     phone_number: str
     friendly_name: Optional[str]
@@ -99,29 +109,23 @@ async def search_available_numbers(
 
     if not account.twilio_sub_account_sid or not account.twilio_sub_auth_token:
         raise HTTPException(
-            status_code=400,
-            detail="Account does not have a Twilio sub-account configured"
+            status_code=400, detail="Account does not have a Twilio sub-account configured"
         )
 
     try:
         manager = PhoneNumberManager(
             sub_account_sid=account.twilio_sub_account_sid,
-            sub_auth_token=account.twilio_sub_auth_token
+            sub_auth_token=account.twilio_sub_auth_token,
         )
 
         available = manager.search_available_numbers(
-            area_code=area_code,
-            country=country,
-            limit=limit
+            area_code=area_code, country=country, limit=limit
         )
 
         return available
 
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to search available numbers: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to search available numbers: {str(e)}")
 
 
 @router.get("", response_model=dict)
@@ -140,10 +144,7 @@ async def list_phone_numbers(
 
     numbers = query.all()
 
-    return {
-        "phone_numbers": [num.to_dict() for num in numbers],
-        "total": len(numbers)
-    }
+    return {"phone_numbers": [num.to_dict() for num in numbers], "total": len(numbers)}
 
 
 @router.post("/purchase", response_model=PhoneNumberResponse)
@@ -175,24 +176,18 @@ async def purchase_phone_number(
         raise HTTPException(status_code=404, detail="Account not found")
 
     if not account.twilio_sub_account_sid or not account.twilio_sub_auth_token:
-        raise HTTPException(
-            status_code=400,
-            detail="Account does not have a Twilio sub-account"
-        )
+        raise HTTPException(status_code=400, detail="Account does not have a Twilio sub-account")
 
-    existing = db.query(PhoneNumber).filter(
-        PhoneNumber.phone_number == request.phone_number
-    ).first()
+    existing = (
+        db.query(PhoneNumber).filter(PhoneNumber.phone_number == request.phone_number).first()
+    )
     if existing:
-        raise HTTPException(
-            status_code=409,
-            detail="Phone number already exists in database"
-        )
+        raise HTTPException(status_code=409, detail="Phone number already exists in database")
 
     try:
         manager = PhoneNumberManager(
             sub_account_sid=account.twilio_sub_account_sid,
-            sub_auth_token=account.twilio_sub_auth_token
+            sub_auth_token=account.twilio_sub_auth_token,
         )
 
         base_url = get_public_base_url()
@@ -215,7 +210,7 @@ async def purchase_phone_number(
             country_code=country_code,
             twilio_sid=purchased["sid"],
             account_id=request.account_id,
-            is_active=True
+            is_active=True,
         )
 
         db.add(phone_number)
@@ -226,10 +221,7 @@ async def purchase_phone_number(
 
     except Exception as e:
         db.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to purchase number: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to purchase number: {str(e)}")
 
 
 @router.put("/{phone_number_id}/assign", response_model=PhoneNumberResponse)
@@ -239,8 +231,7 @@ async def assign_to_assistant(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """
-    Assign phone number to a voice assistant.
+    """Assign phone number to a voice assistant.
 
     MULTI-TENANCY: Validates that the assistant belongs to the same account
     as the phone number to prevent cross-account contamination.
@@ -267,7 +258,7 @@ async def assign_to_assistant(
         if assistant.account_id != phone_number.account_id:
             raise HTTPException(
                 status_code=403,
-                detail=f"Cannot assign assistant from account {assistant.account_id} to phone number from account {phone_number.account_id}. Multi-tenancy violation."
+                detail=f"Cannot assign assistant from account {assistant.account_id} to phone number from account {phone_number.account_id}. Multi-tenancy violation.",
             )
 
         phone_number.assistant_id = request.assistant_id
@@ -289,8 +280,7 @@ async def release_phone_number(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """
-    Release a phone number back to Twilio.
+    """Release a phone number back to Twilio.
 
     Path params:
     - phone_number_id: Phone number UUID
@@ -305,22 +295,16 @@ async def release_phone_number(
 
     account = db.query(Account).filter(Account.id == phone_number.account_id).first()
     if not account or not account.twilio_sub_account_sid or not account.twilio_sub_auth_token:
-        raise HTTPException(
-            status_code=400,
-            detail="Account sub-account not configured"
-        )
+        raise HTTPException(status_code=400, detail="Account sub-account not configured")
 
     try:
         manager = PhoneNumberManager(
             sub_account_sid=account.twilio_sub_account_sid,
-            sub_auth_token=account.twilio_sub_auth_token
+            sub_auth_token=account.twilio_sub_auth_token,
         )
         released = manager.release_number(phone_number.twilio_sid)
         if not released:
-            raise HTTPException(
-                status_code=500,
-                detail="Failed to release number from Twilio"
-            )
+            raise HTTPException(status_code=500, detail="Failed to release number from Twilio")
         db.delete(phone_number)
         db.commit()
         return {"message": "Phone number released successfully"}
@@ -336,16 +320,12 @@ async def release_phone_number(
             return {"message": "Phone number removed (was already released from Twilio)"}
         db.rollback()
         raise HTTPException(
-            status_code=500,
-            detail=f"Failed to release number from Twilio: {str(e)}"
+            status_code=500, detail=f"Failed to release number from Twilio: {str(e)}"
         )
 
     except Exception as e:
         db.rollback()
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to release number: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to release number: {str(e)}")
 
 
 class SMSConfigRequest(BaseModel):
@@ -366,10 +346,14 @@ async def update_sms_config(
     Enable/disable SMS on a phone number and optionally assign an SMS-specific assistant.
     When SMS is enabled, configures the Twilio number's SMS webhook.
     """
-    phone_number = db.query(PhoneNumber).filter(
-        PhoneNumber.id == phone_number_id,
-        PhoneNumber.account_id == UUID(request.account_id),
-    ).first()
+    phone_number = (
+        db.query(PhoneNumber)
+        .filter(
+            PhoneNumber.id == phone_number_id,
+            PhoneNumber.account_id == UUID(request.account_id),
+        )
+        .first()
+    )
 
     if not phone_number:
         raise HTTPException(status_code=404, detail="Phone number not found")
@@ -379,15 +363,21 @@ async def update_sms_config(
         raise HTTPException(status_code=400, detail="Account sub-account not configured")
 
     if request.sms_assistant_id:
-        sms_assistant = db.query(Assistant).filter(
-            Assistant.id == UUID(request.sms_assistant_id),
-            Assistant.account_id == phone_number.account_id,
-        ).first()
+        sms_assistant = (
+            db.query(Assistant)
+            .filter(
+                Assistant.id == UUID(request.sms_assistant_id),
+                Assistant.account_id == phone_number.account_id,
+            )
+            .first()
+        )
         if not sms_assistant:
             raise HTTPException(status_code=404, detail="SMS assistant not found in this account")
 
     phone_number.sms_enabled = request.sms_enabled
-    phone_number.sms_assistant_id = UUID(request.sms_assistant_id) if request.sms_assistant_id else None
+    phone_number.sms_assistant_id = (
+        UUID(request.sms_assistant_id) if request.sms_assistant_id else None
+    )
 
     try:
         manager = PhoneNumberManager(
@@ -428,8 +418,7 @@ async def reconfigure_phone_number_webhooks(
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
-    """
-    Reconfigure phone number webhooks to use correct voice and status callback URLs.
+    """Reconfigure phone number webhooks to use correct voice and status callback URLs.
 
     Path params:
     - phone_number_id: Phone number UUID
@@ -444,15 +433,12 @@ async def reconfigure_phone_number_webhooks(
 
     account = db.query(Account).filter(Account.id == phone_number.account_id).first()
     if not account or not account.twilio_sub_account_sid or not account.twilio_sub_auth_token:
-        raise HTTPException(
-            status_code=400,
-            detail="Account sub-account not configured"
-        )
+        raise HTTPException(status_code=400, detail="Account sub-account not configured")
 
     try:
         manager = PhoneNumberManager(
             sub_account_sid=account.twilio_sub_account_sid,
-            sub_auth_token=account.twilio_sub_auth_token
+            sub_auth_token=account.twilio_sub_auth_token,
         )
 
         base_url = get_public_base_url()
@@ -464,7 +450,7 @@ async def reconfigure_phone_number_webhooks(
             voice_url=voice_url,
             voice_method="POST",
             status_callback=status_callback,
-            status_callback_method="POST"
+            status_callback_method="POST",
         )
 
         _sync_phone_number_recording(phone_number=phone_number, account=account, db=db)
@@ -473,11 +459,8 @@ async def reconfigure_phone_number_webhooks(
             "message": "Phone number webhooks reconfigured",
             "voice_url": voice_url,
             "status_callback": status_callback,
-            "twilio_result": result
+            "twilio_result": result,
         }
 
     except Exception as e:
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to reconfigure webhooks: {str(e)}"
-        )
+        raise HTTPException(status_code=500, detail=f"Failed to reconfigure webhooks: {str(e)}")

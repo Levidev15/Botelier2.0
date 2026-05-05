@@ -1,30 +1,29 @@
-"""
-Platform Admin API Endpoints.
+"""Platform Admin API Endpoints.
 
 Provides endpoints for platform administrators to manage accounts, users, and platform settings.
 All endpoints require platform_admin user type.
 """
 
-import uuid
 import re
 import secrets
-from typing import Optional, List, Dict
+import uuid
 from datetime import datetime, timedelta
+from typing import Dict, List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
 from pydantic import BaseModel, EmailStr, Field, validator
-from sqlalchemy.orm import Session
 from sqlalchemy import func
+from sqlalchemy.orm import Session
 
+from botelier.auth.features import FEATURE_CATALOG, get_account_features
+from botelier.auth.middleware import get_current_user, get_platform_admin
+from botelier.auth.permissions import DEFAULT_ROLES, PLATFORM_ADMIN_PERMISSIONS
 from botelier.database import get_db
 from botelier.models.account import Account, AccountStatus, SubscriptionTier
-from botelier.models.user import User, UserType, SupportSession
-from botelier.models.role import Role, AccountMembership
 from botelier.models.invitation import AccountInvitation, InvitationStatus
-from botelier.auth.permissions import DEFAULT_ROLES, PLATFORM_ADMIN_PERMISSIONS
-from botelier.auth.middleware import get_platform_admin, get_current_user
-from botelier.auth.features import FEATURE_CATALOG, get_account_features
-
+from botelier.models.role import AccountMembership, Role
+from botelier.models.user import SupportSession, User, UserType
 
 router = APIRouter(prefix="/api/admin", tags=["Admin"])
 
@@ -35,7 +34,7 @@ class AccountCreate(BaseModel):
     phone: Optional[str] = None
     business_type: Optional[str] = None
     subscription_tier: SubscriptionTier = SubscriptionTier.FREE
-    
+
     @validator("name")
     def validate_name(cls, v):
         if not v.strip():
@@ -65,7 +64,7 @@ class AccountResponse(BaseModel):
     twilio_sub_account_sid: Optional[str]
     member_count: int
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -88,7 +87,7 @@ class UserResponse(BaseModel):
     is_active: bool
     created_at: datetime
     last_login_at: Optional[datetime]
-    
+
     class Config:
         from_attributes = True
 
@@ -117,7 +116,7 @@ class InvitationResponse(BaseModel):
     expires_at: datetime
     accepted_at: Optional[datetime]
     created_at: datetime
-    
+
     class Config:
         from_attributes = True
 
@@ -143,11 +142,11 @@ def ensure_unique_slug(db: Session, base_slug: str) -> str:
     """Ensure slug is unique by appending numbers if needed."""
     slug = base_slug
     counter = 1
-    
+
     while db.query(Account).filter(Account.slug == slug).first():
         slug = f"{base_slug}-{counter}"
         counter += 1
-    
+
     return slug
 
 
@@ -162,44 +161,56 @@ async def list_accounts(
 ):
     """List all accounts with pagination and filtering."""
     query = db.query(Account)
-    
+
     if status:
         query = query.filter(Account.status == status)
-    
+
     if search:
         search_term = f"%{search}%"
         query = query.filter(
-            (Account.name.ilike(search_term)) |
-            (Account.email.ilike(search_term)) |
-            (Account.slug.ilike(search_term))
+            (Account.name.ilike(search_term))
+            | (Account.email.ilike(search_term))
+            | (Account.slug.ilike(search_term))
         )
-    
+
     total = query.count()
-    
-    accounts = query.order_by(Account.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
-    
+
+    accounts = (
+        query.order_by(Account.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
     account_responses = []
     for account in accounts:
-        member_count = db.query(func.count(AccountMembership.id)).filter(
-            AccountMembership.account_id == account.id,
-            AccountMembership.is_active == True,
-        ).scalar() or 0
-        
-        account_responses.append(AccountResponse(
-            id=str(account.id),
-            name=account.name,
-            slug=account.slug,
-            email=account.email,
-            phone=account.phone,
-            business_type=account.business_type,
-            status=account.status.value,
-            subscription_tier=account.subscription_tier.value,
-            has_twilio=account.has_twilio,
-            twilio_sub_account_sid=account.twilio_sub_account_sid,
-            member_count=member_count,
-            created_at=account.created_at,
-        ))
-    
+        member_count = (
+            db.query(func.count(AccountMembership.id))
+            .filter(
+                AccountMembership.account_id == account.id,
+                AccountMembership.is_active == True,
+            )
+            .scalar()
+            or 0
+        )
+
+        account_responses.append(
+            AccountResponse(
+                id=str(account.id),
+                name=account.name,
+                slug=account.slug,
+                email=account.email,
+                phone=account.phone,
+                business_type=account.business_type,
+                status=account.status.value,
+                subscription_tier=account.subscription_tier.value,
+                has_twilio=account.has_twilio,
+                twilio_sub_account_sid=account.twilio_sub_account_sid,
+                member_count=member_count,
+                created_at=account.created_at,
+            )
+        )
+
     return AccountListResponse(
         accounts=account_responses,
         total=total,
@@ -217,7 +228,7 @@ async def create_account(
     """Create a new account. A Twilio sub-account is provisioned automatically."""
     base_slug = generate_slug(data.name)
     slug = ensure_unique_slug(db, base_slug)
-    
+
     account = Account(
         name=data.name,
         slug=slug,
@@ -228,10 +239,10 @@ async def create_account(
         subscription_tier=data.subscription_tier,
         trial_ends_at=datetime.utcnow() + timedelta(days=14),
     )
-    
+
     db.add(account)
     db.flush()
-    
+
     for role_slug, role_data in DEFAULT_ROLES.items():
         role = Role(
             name=role_data["name"],
@@ -242,20 +253,21 @@ async def create_account(
             permissions=role_data["permissions"],
         )
         db.add(role)
-    
+
     twilio_warning = None
     try:
         from botelier.integrations.twilio.sub_accounts import create_sub_account
+
         sub_account_data = create_sub_account(data.name)
         account.twilio_sub_account_sid = sub_account_data["sid"]
         account.twilio_sub_auth_token = sub_account_data["auth_token"]
     except Exception as e:
         logger.warning("Failed to auto-provision Twilio sub-account for '{}': {}", data.name, e)
         twilio_warning = "Twilio sub-account provisioning failed — use 'Retry Twilio Provisioning' on the account page."
-    
+
     db.commit()
     db.refresh(account)
-    
+
     response = AccountResponse(
         id=str(account.id),
         name=account.name,
@@ -272,6 +284,7 @@ async def create_account(
     )
     if twilio_warning:
         from fastapi.responses import JSONResponse
+
         return JSONResponse(
             status_code=201,
             content={**response.model_dump(mode="json"), "warning": twilio_warning},
@@ -287,15 +300,20 @@ async def get_account(
 ):
     """Get account details."""
     account = db.query(Account).filter(Account.id == account_id).first()
-    
+
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-    
-    member_count = db.query(func.count(AccountMembership.id)).filter(
-        AccountMembership.account_id == account.id,
-        AccountMembership.is_active == True,
-    ).scalar() or 0
-    
+
+    member_count = (
+        db.query(func.count(AccountMembership.id))
+        .filter(
+            AccountMembership.account_id == account.id,
+            AccountMembership.is_active == True,
+        )
+        .scalar()
+        or 0
+    )
+
     return AccountResponse(
         id=str(account.id),
         name=account.name,
@@ -321,10 +339,10 @@ async def update_account(
 ):
     """Update account details."""
     account = db.query(Account).filter(Account.id == account_id).first()
-    
+
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-    
+
     if data.name is not None:
         account.name = data.name
     if data.email is not None:
@@ -337,15 +355,20 @@ async def update_account(
         account.status = data.status
     if data.subscription_tier is not None:
         account.subscription_tier = data.subscription_tier
-    
+
     db.commit()
     db.refresh(account)
-    
-    member_count = db.query(func.count(AccountMembership.id)).filter(
-        AccountMembership.account_id == account.id,
-        AccountMembership.is_active == True,
-    ).scalar() or 0
-    
+
+    member_count = (
+        db.query(func.count(AccountMembership.id))
+        .filter(
+            AccountMembership.account_id == account.id,
+            AccountMembership.is_active == True,
+        )
+        .scalar()
+        or 0
+    )
+
     return AccountResponse(
         id=str(account.id),
         name=account.name,
@@ -370,20 +393,24 @@ async def provision_twilio_for_account(
 ):
     """Retry Twilio sub-account provisioning for an account that has none (initial provisioning failed)."""
     account = db.query(Account).filter(Account.id == account_id).first()
-    
+
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-    
+
     if account.has_twilio:
-        raise HTTPException(status_code=400, detail="Account already has a Twilio sub-account. Use PATCH /admin/accounts/{id}/twilio to update the SID.")
-    
+        raise HTTPException(
+            status_code=400,
+            detail="Account already has a Twilio sub-account. Use PATCH /admin/accounts/{id}/twilio to update the SID.",
+        )
+
     try:
         from botelier.integrations.twilio.sub_accounts import create_sub_account
+
         sub_account_data = create_sub_account(account.name)
         account.twilio_sub_account_sid = sub_account_data["sid"]
         account.twilio_sub_auth_token = sub_account_data["auth_token"]
         db.commit()
-        
+
         return {
             "success": True,
             "message": "Twilio sub-account provisioned successfully",
@@ -412,14 +439,14 @@ async def update_twilio_credentials(
     what is recorded in the database.  Restricted to platform admins.
     """
     account = db.query(Account).filter(Account.id == account_id).first()
-    
+
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-    
+
     account.twilio_sub_account_sid = data.twilio_sub_account_sid.strip()
     account.twilio_sub_auth_token = data.twilio_sub_auth_token.strip()
     db.commit()
-    
+
     return {
         "success": True,
         "message": "Twilio credentials updated successfully",
@@ -431,15 +458,16 @@ async def update_twilio_credentials(
 # Feature entitlement endpoints (admin)
 # ---------------------------------------------------------------------------
 
+
 class FeatureOverrideUpdate(BaseModel):
-    """
-    PATCH body for updating feature overrides.
+    """PATCH body for updating feature overrides.
 
     Each key is a feature slug.  Values:
       True  — force-enable regardless of tier
       False — force-disable regardless of tier
       None  — remove override, revert to tier default
     """
+
     overrides: Dict[str, Optional[bool]]
 
 
@@ -449,8 +477,7 @@ async def get_account_features_admin(
     admin: User = Depends(get_platform_admin),
     db: Session = Depends(get_db),
 ):
-    """
-    Return resolved feature entitlements for an account plus catalog metadata.
+    """Return resolved feature entitlements for an account plus catalog metadata.
 
     Response shape:
         {
@@ -490,8 +517,7 @@ async def update_account_features_admin(
     admin: User = Depends(get_platform_admin),
     db: Session = Depends(get_db),
 ):
-    """
-    Update per-account feature overrides.
+    """Update per-account feature overrides.
 
     Pass ``null`` (JSON) / ``None`` for a feature slug to remove the override
     and revert to the tier default.  Unrecognised slugs are silently ignored.
@@ -538,20 +564,22 @@ async def list_users(
 ):
     """List all users in the platform."""
     query = db.query(User)
-    
+
     if user_type:
         query = query.filter(User.user_type == user_type)
-    
+
     if search:
         search_term = f"%{search}%"
         query = query.filter(
-            (User.email.ilike(search_term)) |
-            (User.first_name.ilike(search_term)) |
-            (User.last_name.ilike(search_term))
+            (User.email.ilike(search_term))
+            | (User.first_name.ilike(search_term))
+            | (User.last_name.ilike(search_term))
         )
-    
-    users = query.order_by(User.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
-    
+
+    users = (
+        query.order_by(User.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
+    )
+
     return [
         UserResponse(
             id=str(user.id),
@@ -577,13 +605,13 @@ async def make_platform_admin(
 ):
     """Promote a user to platform admin."""
     user = db.query(User).filter(User.id == user_id).first()
-    
+
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
+
     user.user_type = UserType.PLATFORM_ADMIN
     db.commit()
-    
+
     return {"success": True, "message": f"User {user.display_name} is now a platform admin"}
 
 
@@ -596,15 +624,15 @@ async def remove_platform_admin(
     """Demote a platform admin to regular user."""
     if str(admin.id) == user_id:
         raise HTTPException(status_code=400, detail="You cannot demote yourself")
-    
+
     user = db.query(User).filter(User.id == user_id).first()
-    
+
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
-    
+
     user.user_type = UserType.ACCOUNT_USER
     db.commit()
-    
+
     return {"success": True, "message": f"User {user.display_name} is no longer a platform admin"}
 
 
@@ -615,21 +643,25 @@ async def get_platform_stats(
 ):
     """Get platform-wide statistics."""
     total_accounts = db.query(func.count(Account.id)).scalar() or 0
-    active_accounts = db.query(func.count(Account.id)).filter(
-        Account.status.in_([AccountStatus.ACTIVE, AccountStatus.TRIAL])
-    ).scalar() or 0
+    active_accounts = (
+        db.query(func.count(Account.id))
+        .filter(Account.status.in_([AccountStatus.ACTIVE, AccountStatus.TRIAL]))
+        .scalar()
+        or 0
+    )
     total_users = db.query(func.count(User.id)).scalar() or 0
-    platform_admins = db.query(func.count(User.id)).filter(
-        User.user_type == UserType.PLATFORM_ADMIN
-    ).scalar() or 0
-    
+    platform_admins = (
+        db.query(func.count(User.id)).filter(User.user_type == UserType.PLATFORM_ADMIN).scalar()
+        or 0
+    )
+
     tier_counts = {}
     for tier in SubscriptionTier:
-        count = db.query(func.count(Account.id)).filter(
-            Account.subscription_tier == tier
-        ).scalar() or 0
+        count = (
+            db.query(func.count(Account.id)).filter(Account.subscription_tier == tier).scalar() or 0
+        )
         tier_counts[tier.value] = count
-    
+
     return {
         "total_accounts": total_accounts,
         "active_accounts": active_accounts,
@@ -640,8 +672,7 @@ async def get_platform_stats(
 
 
 def _get_effective_permissions(membership: AccountMembership) -> dict:
-    """
-    Compute the effective permission set for a membership.
+    """Compute the effective permission set for a membership.
 
     Resolution order (last writer wins per key):
 
@@ -712,11 +743,15 @@ async def get_my_permissions(
             "permissions": PLATFORM_ADMIN_PERMISSIONS,
         }
 
-    membership = db.query(AccountMembership).filter(
-        AccountMembership.user_id == user.id,
-        AccountMembership.account_id == account_id,
-        AccountMembership.is_active == True,
-    ).first()
+    membership = (
+        db.query(AccountMembership)
+        .filter(
+            AccountMembership.user_id == user.id,
+            AccountMembership.account_id == account_id,
+            AccountMembership.is_active == True,
+        )
+        .first()
+    )
 
     if not membership:
         raise HTTPException(
@@ -742,20 +777,22 @@ async def get_current_admin_user(
 ):
     """Get current user info with role information."""
     memberships = []
-    
+
     for membership in user.account_memberships:
         if membership.is_active:
-            memberships.append({
-                "account_id": str(membership.account_id),
-                "account_name": membership.account.name,
-                "account_slug": membership.account.slug,
-                "role_id": str(membership.role_id),
-                "role_name": membership.role.name,
-                "role_slug": membership.role.slug,
-                "is_owner": membership.is_owner,
-                "permissions": _get_effective_permissions(membership),
-            })
-    
+            memberships.append(
+                {
+                    "account_id": str(membership.account_id),
+                    "account_name": membership.account.name,
+                    "account_slug": membership.account.slug,
+                    "role_id": str(membership.role_id),
+                    "role_name": membership.role.name,
+                    "role_slug": membership.role.slug,
+                    "is_owner": membership.is_owner,
+                    "permissions": _get_effective_permissions(membership),
+                }
+            )
+
     return {
         "id": str(user.id),
         "replit_id": user.replit_id,
@@ -802,21 +839,26 @@ async def list_invitations(
 ):
     """List all invitations with pagination and filtering."""
     query = db.query(AccountInvitation)
-    
+
     if status:
         query = query.filter(AccountInvitation.status == status)
-    
+
     if account_id:
         query = query.filter(AccountInvitation.account_id == account_id)
-    
+
     if search:
         search_term = f"%{search}%"
         query = query.filter(AccountInvitation.invitee_email.ilike(search_term))
-    
+
     total = query.count()
-    
-    invitations = query.order_by(AccountInvitation.created_at.desc()).offset((page - 1) * page_size).limit(page_size).all()
-    
+
+    invitations = (
+        query.order_by(AccountInvitation.created_at.desc())
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+        .all()
+    )
+
     return InvitationListResponse(
         invitations=[build_invitation_response(inv) for inv in invitations],
         total=total,
@@ -835,29 +877,39 @@ async def create_invitation(
     account = db.query(Account).filter(Account.id == data.account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-    
+
     role = db.query(Role).filter(Role.id == data.role_id).first()
     if not role:
         raise HTTPException(status_code=404, detail="Role not found")
-    
+
     existing_user = db.query(User).filter(User.email == data.email).first()
     if existing_user:
-        existing_membership = db.query(AccountMembership).filter(
-            AccountMembership.user_id == existing_user.id,
-            AccountMembership.account_id == account.id,
-            AccountMembership.is_active == True,
-        ).first()
+        existing_membership = (
+            db.query(AccountMembership)
+            .filter(
+                AccountMembership.user_id == existing_user.id,
+                AccountMembership.account_id == account.id,
+                AccountMembership.is_active == True,
+            )
+            .first()
+        )
         if existing_membership:
             raise HTTPException(status_code=400, detail="User is already a member of this account")
-    
-    pending_invitation = db.query(AccountInvitation).filter(
-        AccountInvitation.account_id == account.id,
-        AccountInvitation.invitee_email == data.email,
-        AccountInvitation.status == InvitationStatus.PENDING,
-    ).first()
+
+    pending_invitation = (
+        db.query(AccountInvitation)
+        .filter(
+            AccountInvitation.account_id == account.id,
+            AccountInvitation.invitee_email == data.email,
+            AccountInvitation.status == InvitationStatus.PENDING,
+        )
+        .first()
+    )
     if pending_invitation:
-        raise HTTPException(status_code=400, detail="An invitation is already pending for this email")
-    
+        raise HTTPException(
+            status_code=400, detail="An invitation is already pending for this email"
+        )
+
     invitation = AccountInvitation(
         account_id=account.id,
         invitee_email=data.email,
@@ -866,11 +918,11 @@ async def create_invitation(
         token=AccountInvitation.generate_token(),
         expires_at=AccountInvitation.default_expiration(days=7),
     )
-    
+
     db.add(invitation)
     db.commit()
     db.refresh(invitation)
-    
+
     return build_invitation_response(invitation)
 
 
@@ -882,10 +934,10 @@ async def get_invitation(
 ):
     """Get invitation details."""
     invitation = db.query(AccountInvitation).filter(AccountInvitation.id == invitation_id).first()
-    
+
     if not invitation:
         raise HTTPException(status_code=404, detail="Invitation not found")
-    
+
     return build_invitation_response(invitation)
 
 
@@ -897,19 +949,19 @@ async def resend_invitation(
 ):
     """Resend an invitation with a new expiration date."""
     invitation = db.query(AccountInvitation).filter(AccountInvitation.id == invitation_id).first()
-    
+
     if not invitation:
         raise HTTPException(status_code=404, detail="Invitation not found")
-    
+
     if invitation.status != InvitationStatus.PENDING:
         raise HTTPException(status_code=400, detail="Can only resend pending invitations")
-    
+
     invitation.token = AccountInvitation.generate_token()
     invitation.expires_at = AccountInvitation.default_expiration(days=7)
-    
+
     db.commit()
     db.refresh(invitation)
-    
+
     return {
         "success": True,
         "message": f"Invitation resent to {invitation.invitee_email}",
@@ -925,16 +977,16 @@ async def revoke_invitation(
 ):
     """Revoke a pending invitation."""
     invitation = db.query(AccountInvitation).filter(AccountInvitation.id == invitation_id).first()
-    
+
     if not invitation:
         raise HTTPException(status_code=404, detail="Invitation not found")
-    
+
     if invitation.status != InvitationStatus.PENDING:
         raise HTTPException(status_code=400, detail="Can only revoke pending invitations")
-    
+
     invitation.revoke()
     db.commit()
-    
+
     return {
         "success": True,
         "message": f"Invitation to {invitation.invitee_email} has been revoked",
@@ -952,14 +1004,14 @@ async def list_account_invitations(
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-    
+
     query = db.query(AccountInvitation).filter(AccountInvitation.account_id == account_id)
-    
+
     if status:
         query = query.filter(AccountInvitation.status == status)
-    
+
     invitations = query.order_by(AccountInvitation.created_at.desc()).all()
-    
+
     return [build_invitation_response(inv) for inv in invitations]
 
 
@@ -973,9 +1025,9 @@ async def list_account_roles(
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-    
+
     roles = db.query(Role).filter(Role.account_id == account_id).all()
-    
+
     return [
         {
             "id": str(role.id),
@@ -1008,41 +1060,37 @@ async def check_integrations_health(
 ):
     """Check health status of all platform integrations."""
     import os
-    
+
     twilio_status = IntegrationStatus(name="Twilio", status="not_configured")
     openai_status = IntegrationStatus(name="OpenAI", status="not_configured")
     db_status = IntegrationStatus(name="Database", status="not_configured")
-    
+
     if os.environ.get("TWILIO_ACCOUNT_SID") and os.environ.get("TWILIO_AUTH_TOKEN"):
         try:
             from botelier.integrations.twilio.client import BotelierTwilioClient
+
             client = BotelierTwilioClient()
             if client.test_connection():
-                account_count = db.query(Account).filter(
-                    Account.twilio_sub_account_sid.isnot(None)
-                ).count()
+                account_count = (
+                    db.query(Account).filter(Account.twilio_sub_account_sid.isnot(None)).count()
+                )
                 twilio_status = IntegrationStatus(
                     name="Twilio",
                     status="connected",
                     message="Twilio API connection verified",
-                    details={"sub_accounts_provisioned": account_count}
+                    details={"sub_accounts_provisioned": account_count},
                 )
             else:
                 twilio_status = IntegrationStatus(
-                    name="Twilio",
-                    status="error",
-                    message="Twilio credentials are invalid"
+                    name="Twilio", status="error", message="Twilio credentials are invalid"
                 )
         except Exception as e:
-            twilio_status = IntegrationStatus(
-                name="Twilio",
-                status="error",
-                message=str(e)
-            )
-    
+            twilio_status = IntegrationStatus(name="Twilio", status="error", message=str(e))
+
     if os.environ.get("OPENAI_API_KEY"):
         try:
             import openai
+
             openai_client = openai.OpenAI()
             models = openai_client.models.list()
             model_count = len(list(models))
@@ -1050,43 +1098,29 @@ async def check_integrations_health(
                 name="OpenAI",
                 status="connected",
                 message="OpenAI API connection verified",
-                details={"available_models": model_count}
+                details={"available_models": model_count},
             )
         except Exception as e:
-            openai_status = IntegrationStatus(
-                name="OpenAI",
-                status="error",
-                message=str(e)
-            )
-    
+            openai_status = IntegrationStatus(name="OpenAI", status="error", message=str(e))
+
     try:
         from sqlalchemy import text
+
         db.execute(text("SELECT 1"))
-        
+
         user_count = db.query(func.count(User.id)).scalar()
         account_count = db.query(func.count(Account.id)).scalar()
-        
+
         db_status = IntegrationStatus(
             name="Database",
             status="connected",
             message="PostgreSQL connection verified",
-            details={
-                "total_users": user_count,
-                "total_accounts": account_count
-            }
+            details={"total_users": user_count, "total_accounts": account_count},
         )
     except Exception as e:
-        db_status = IntegrationStatus(
-            name="Database",
-            status="error",
-            message=str(e)
-        )
-    
-    return IntegrationHealthResponse(
-        twilio=twilio_status,
-        openai=openai_status,
-        database=db_status
-    )
+        db_status = IntegrationStatus(name="Database", status="error", message=str(e))
+
+    return IntegrationHealthResponse(twilio=twilio_status, openai=openai_status, database=db_status)
 
 
 class SupportSessionCreate(BaseModel):
@@ -1111,9 +1145,8 @@ async def create_support_session(
     admin: User = Depends(get_platform_admin),
     db: Session = Depends(get_db),
 ):
-    """
-    Create a time-limited support session for accessing an account.
-    
+    """Create a time-limited support session for accessing an account.
+
     This provides SaaS-compliant account access with:
     - Time-limited access (1 hour by default)
     - Audit trail of the access reason
@@ -1122,11 +1155,11 @@ async def create_support_session(
     account = db.query(Account).filter(Account.id == account_id).first()
     if not account:
         raise HTTPException(status_code=404, detail="Account not found")
-    
+
     session_token = secrets.token_urlsafe(32)
     created_at = datetime.utcnow()
     expires_at = created_at + timedelta(hours=1)
-    
+
     support_session = SupportSession(
         session_token=session_token,
         admin_id=admin.id,
@@ -1137,9 +1170,11 @@ async def create_support_session(
     )
     db.add(support_session)
     db.commit()
-    
-    print(f"[AUDIT] Support session created: admin={admin.email}, account={account.name}, reason={request.reason}, expires={expires_at}")
-    
+
+    print(
+        f"[AUDIT] Support session created: admin={admin.email}, account={account.name}, reason={request.reason}, expires={expires_at}"
+    )
+
     return SupportSessionResponse(
         session_token=session_token,
         account_id=str(account.id),
@@ -1148,7 +1183,7 @@ async def create_support_session(
         admin_email=admin.email or "unknown",
         reason=request.reason,
         created_at=created_at,
-        expires_at=expires_at
+        expires_at=expires_at,
     )
 
 
@@ -1159,9 +1194,8 @@ async def get_audit_log(
     admin: User = Depends(get_platform_admin),
     db: Session = Depends(get_db),
 ):
-    """
-    Get platform audit log entries.
-    
+    """Get platform audit log entries.
+
     Note: This is a placeholder for a full audit logging system.
     In production, this would query an immutable audit log table.
     """
@@ -1170,5 +1204,5 @@ async def get_audit_log(
         "total": 0,
         "page": page,
         "page_size": page_size,
-        "message": "Audit logging system ready for implementation"
+        "message": "Audit logging system ready for implementation",
     }

@@ -1,5 +1,4 @@
-"""
-Tests for Task #115 — sweeper-path complete_call fixes,
+"""Tests for Task #115 — sweeper-path complete_call fixes,
 plus Task #123 — call_events schema invariant + decoupled finalization commit.
 
 Covers:
@@ -18,10 +17,9 @@ from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
-
-from botelier.services.call_logger import CallLogger
-from botelier.models import CallLog, CallLeg, CallStatus, CallOutcome, LegType
+from botelier.models import CallLeg, CallLog, CallOutcome, CallStatus, LegType
 from botelier.models.call_event import CallEvent
+from botelier.services.call_logger import CallLogger
 
 # Task #123 — kept locally for legibility in the bigint-not-clamped assertion;
 # the production constant has been removed from call_logger.py.
@@ -96,8 +94,7 @@ class TestSweeperUnansweredDuration:
 
         assert result is True
         assert call_log.duration_seconds == 0, (
-            f"fabricated duration on call_log: {call_log.duration_seconds}s "
-            f"(expected 0)"
+            f"fabricated duration on call_log: {call_log.duration_seconds}s (expected 0)"
         )
         assert leg.duration_seconds == 0, (
             f"fabricated duration on leg: {leg.duration_seconds}s (expected 0)"
@@ -169,9 +166,7 @@ class TestSweeperAnsweredDuration:
 
         assert result is True
         # Duration should be roughly 1 h (3 600 s) from answered_at to now
-        assert call_log.duration_seconds > 3500, (
-            f"expected ~3600s, got {call_log.duration_seconds}"
-        )
+        assert call_log.duration_seconds > 3500, f"expected ~3600s, got {call_log.duration_seconds}"
 
 
 class TestOffsetMsBigint:
@@ -199,18 +194,28 @@ class TestOffsetMsBigint:
         captured: list[dict] = []
 
         def _capture_isolated(
-            *, call_log_id, event_type, event_source, severity, details,
+            *,
+            call_log_id,
+            event_type,
+            event_source,
+            severity,
+            details,
             call_started_at,
         ):
             from botelier.services._event_offset import compute_offset_ms
-            captured.append({
-                "event_type": event_type,
-                "offset_ms": compute_offset_ms(datetime.utcnow(), call_started_at),
-            })
+
+            captured.append(
+                {
+                    "event_type": event_type,
+                    "offset_ms": compute_offset_ms(datetime.utcnow(), call_started_at),
+                }
+            )
 
         with patch.object(
-            CallLogger, "_write_event_isolated",
-            side_effect=_capture_isolated, autospec=False,
+            CallLogger,
+            "_write_event_isolated",
+            side_effect=_capture_isolated,
+            autospec=False,
         ):
             result = CallLogger(db).complete_call(
                 call_log.call_sid,
@@ -247,13 +252,13 @@ class TestEventWriteFailureDoesNotBlockDisposition:
         # Patch the isolated event writer to raise — _write_event_isolated
         # must swallow the exception (its contract is "never raises").
         def _explode(**kwargs):
-            raise RuntimeError(
-                "simulated FK race / schema mismatch on CallEvent INSERT"
-            )
+            raise RuntimeError("simulated FK race / schema mismatch on CallEvent INSERT")
 
         with patch.object(
-            CallLogger, "_write_event_isolated",
-            side_effect=_explode, autospec=False,
+            CallLogger,
+            "_write_event_isolated",
+            side_effect=_explode,
+            autospec=False,
         ):
             # If decoupling is wrong (event INSERT inside the main txn),
             # complete_call would catch the RuntimeError, rollback, return
@@ -276,12 +281,14 @@ class TestEventWriteFailureDoesNotBlockDisposition:
 
     def test_isolated_writer_swallows_exceptions(self):
         """``_write_event_isolated`` must never propagate exceptions, so a
-        broken DB session in the helper cannot crash the sweeper loop."""
+        broken DB session in the helper cannot crash the sweeper loop.
+        """
         from botelier.services import call_logger as cl_mod
 
         # Patch SessionLocal so any access raises.
         with patch.object(
-            cl_mod, "logger"  # capture warnings without spamming pytest
+            cl_mod,
+            "logger",  # capture warnings without spamming pytest
         ):
             with patch(
                 "botelier.database.SessionLocal",

@@ -1,17 +1,18 @@
-"""
-Botelier Voice AI Provider Configurations
+"""Botelier Voice AI Provider Configurations
 
 This module defines all available STT, LLM, and TTS providers
 that hotels can choose from when configuring their voice agents.
 """
 
 from enum import Enum
-from typing import Dict, List, Any
+from typing import Any, Dict, List
+
 from pydantic import BaseModel, Field
 
 
 class STTProvider(str, Enum):
     """Speech-to-Text providers available in Botelier"""
+
     DEEPGRAM = "deepgram"
     OPENAI_WHISPER = "openai_whisper"
     AZURE = "azure"
@@ -30,6 +31,7 @@ class STTProvider(str, Enum):
 
 class LLMProvider(str, Enum):
     """Large Language Model providers available in Botelier"""
+
     OPENAI = "openai"
     ANTHROPIC = "anthropic"
     GOOGLE_GEMINI = "google_gemini"
@@ -48,6 +50,7 @@ class LLMProvider(str, Enum):
 
 class TTSProvider(str, Enum):
     """Text-to-Speech providers available in Botelier"""
+
     CARTESIA = "cartesia"
     ELEVENLABS = "elevenlabs"
     OPENAI = "openai"
@@ -67,6 +70,7 @@ class TTSProvider(str, Enum):
 
 class ProviderConfig(BaseModel):
     """Base configuration for any AI provider"""
+
     provider_type: str
     display_name: str
     description: str
@@ -78,6 +82,7 @@ class ProviderConfig(BaseModel):
 
 class STTConfig(ProviderConfig):
     """STT-specific configuration"""
+
     supports_vad: bool = False
     supports_diarization: bool = False
     supports_interim_results: bool = True
@@ -85,6 +90,7 @@ class STTConfig(ProviderConfig):
 
 class LLMConfig(ProviderConfig):
     """LLM-specific configuration"""
+
     supports_function_calling: bool = False
     supports_streaming: bool = True
     max_context_tokens: int = 4096
@@ -93,6 +99,7 @@ class LLMConfig(ProviderConfig):
 
 class TTSConfig(ProviderConfig):
     """TTS-specific configuration"""
+
     available_voices: List[Dict[str, str]] = Field(default_factory=list)
     supports_emotion: bool = False
     supports_speed_control: bool = True
@@ -127,7 +134,20 @@ STT_PROVIDERS: Dict[STTProvider, STTConfig] = {
         display_name="OpenAI Whisper",
         description="OpenAI's speech recognition model",
         requires_api_key=True,
-        supported_languages=["en", "es", "fr", "de", "it", "pt", "nl", "pl", "ru", "ja", "ko", "zh"],
+        supported_languages=[
+            "en",
+            "es",
+            "fr",
+            "de",
+            "it",
+            "pt",
+            "nl",
+            "pl",
+            "ru",
+            "ja",
+            "ko",
+            "zh",
+        ],
         default_model="whisper-1",
         available_models=["whisper-1"],
         supports_vad=False,
@@ -156,7 +176,14 @@ LLM_PROVIDERS: Dict[LLMProvider, LLMConfig] = {
         requires_api_key=True,
         supported_languages=["en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh"],
         default_model="gpt-4o-mini",
-        available_models=["gpt-4.1", "gpt-4.1-mini", "gpt-4.1-nano", "gpt-4o", "gpt-4o-mini", "gpt-4-turbo"],
+        available_models=[
+            "gpt-4.1",
+            "gpt-4.1-mini",
+            "gpt-4.1-nano",
+            "gpt-4o",
+            "gpt-4o-mini",
+            "gpt-4-turbo",
+        ],
         supports_function_calling=True,
         supports_streaming=True,
         max_context_tokens=128000,
@@ -169,7 +196,11 @@ LLM_PROVIDERS: Dict[LLMProvider, LLMConfig] = {
         requires_api_key=True,
         supported_languages=["en", "es", "fr", "de", "it", "pt", "ja", "ko", "zh"],
         default_model="claude-3-5-sonnet-20241022",
-        available_models=["claude-3-5-sonnet-20241022", "claude-3-opus-20240229", "claude-3-haiku-20240307"],
+        available_models=[
+            "claude-3-5-sonnet-20241022",
+            "claude-3-opus-20240229",
+            "claude-3-haiku-20240307",
+        ],
         supports_function_calling=True,
         supports_streaming=True,
         max_context_tokens=200000,
@@ -233,10 +264,26 @@ TTS_PROVIDERS: Dict[TTSProvider, TTSConfig] = {
         default_model="sonic-english",
         available_models=["sonic-english", "sonic-multilingual"],
         available_voices=[
-            {"id": "71a7ad14-091c-4e8e-a314-022ece01c121", "name": "British Reading Lady", "gender": "female"},
-            {"id": "79a125e8-cd45-4c13-8a67-188112f4dd22", "name": "British Narrator Lady", "gender": "female"},
-            {"id": "a0e99841-438c-4a64-b679-ae501e7d6091", "name": "Friendly Reading Man", "gender": "male"},
-            {"id": "95856005-0332-41b0-935f-352e296aa0df", "name": "Professional Man", "gender": "male"},
+            {
+                "id": "71a7ad14-091c-4e8e-a314-022ece01c121",
+                "name": "British Reading Lady",
+                "gender": "female",
+            },
+            {
+                "id": "79a125e8-cd45-4c13-8a67-188112f4dd22",
+                "name": "British Narrator Lady",
+                "gender": "female",
+            },
+            {
+                "id": "a0e99841-438c-4a64-b679-ae501e7d6091",
+                "name": "Friendly Reading Man",
+                "gender": "male",
+            },
+            {
+                "id": "95856005-0332-41b0-935f-352e296aa0df",
+                "name": "Professional Man",
+                "gender": "male",
+            },
         ],
         supports_emotion=True,
         supports_speed_control=True,
@@ -265,7 +312,20 @@ TTS_PROVIDERS: Dict[TTSProvider, TTSConfig] = {
         display_name="OpenAI TTS",
         description="OpenAI's text-to-speech models",
         requires_api_key=True,
-        supported_languages=["en", "es", "fr", "de", "it", "pt", "nl", "pl", "ru", "ja", "ko", "zh"],
+        supported_languages=[
+            "en",
+            "es",
+            "fr",
+            "de",
+            "it",
+            "pt",
+            "nl",
+            "pl",
+            "ru",
+            "ja",
+            "ko",
+            "zh",
+        ],
         default_model="tts-1",
         available_models=["tts-1", "tts-1-hd"],
         available_voices=[
@@ -316,7 +376,7 @@ PROVIDER_PARAMS = {
                 "step": 0.1,
                 "default": None,
                 "label": "Eager End-of-Turn Threshold",
-                "description": "Lower = faster response, more LLM calls"
+                "description": "Lower = faster response, more LLM calls",
             },
             "eot_threshold": {
                 "type": "number",
@@ -324,7 +384,7 @@ PROVIDER_PARAMS = {
                 "max": 1.0,
                 "step": 0.1,
                 "default": 0.7,
-                "label": "End-of-Turn Threshold"
+                "label": "End-of-Turn Threshold",
             },
             "eot_timeout_ms": {
                 "type": "number",
@@ -332,7 +392,7 @@ PROVIDER_PARAMS = {
                 "max": 10000,
                 "step": 500,
                 "default": 5000,
-                "label": "End-of-Turn Timeout (ms)"
+                "label": "End-of-Turn Timeout (ms)",
             },
         },
     },
@@ -345,7 +405,7 @@ PROVIDER_PARAMS = {
                 "step": 0.1,
                 "default": 0.0,
                 "label": "Frequency Penalty",
-                "description": "Reduces token repetition based on frequency"
+                "description": "Reduces token repetition based on frequency",
             },
             "presence_penalty": {
                 "type": "number",
@@ -354,7 +414,7 @@ PROVIDER_PARAMS = {
                 "step": 0.1,
                 "default": 0.0,
                 "label": "Presence Penalty",
-                "description": "Reduces repetition of any tokens"
+                "description": "Reduces repetition of any tokens",
             },
             "top_p": {
                 "type": "number",
@@ -362,7 +422,7 @@ PROVIDER_PARAMS = {
                 "max": 1.0,
                 "step": 0.05,
                 "default": 1.0,
-                "label": "Top P"
+                "label": "Top P",
             },
         },
         "anthropic": {
@@ -372,7 +432,7 @@ PROVIDER_PARAMS = {
                 "max": 500,
                 "step": 10,
                 "default": 0,
-                "label": "Top K"
+                "label": "Top K",
             },
             "top_p": {
                 "type": "number",
@@ -380,13 +440,13 @@ PROVIDER_PARAMS = {
                 "max": 1.0,
                 "step": 0.05,
                 "default": 1.0,
-                "label": "Top P"
+                "label": "Top P",
             },
             "enable_prompt_caching": {
                 "type": "boolean",
                 "default": False,
                 "label": "Enable Prompt Caching",
-                "description": "Cache system prompts for 50% cost savings"
+                "description": "Cache system prompts for 50% cost savings",
             },
         },
     },

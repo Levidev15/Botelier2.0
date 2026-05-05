@@ -1,5 +1,4 @@
-"""
-Authentication and Authorization module for Botelier.
+"""Authentication and Authorization module for Botelier.
 
 Provides:
 - JWT token validation (from NextAuth)
@@ -8,11 +7,11 @@ Provides:
 """
 
 from botelier.auth.permissions import (
-    PERMISSIONS,
     DEFAULT_ROLES,
+    PERMISSIONS,
     PLATFORM_ADMIN_PERMISSIONS,
-    get_flat_permissions,
     check_permission,
+    get_flat_permissions,
 )
 
 __all__ = [

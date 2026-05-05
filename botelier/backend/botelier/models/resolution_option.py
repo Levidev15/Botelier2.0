@@ -1,7 +1,9 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Text, DateTime, Boolean, ForeignKey, Integer
+
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
+
 from botelier.database import Base
 
 
@@ -9,7 +11,12 @@ class AssistantResolutionOption(Base):
     __tablename__ = "assistant_resolution_options"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    assistant_id = Column(UUID(as_uuid=True), ForeignKey("assistants.id", ondelete="CASCADE"), nullable=False, index=True)
+    assistant_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("assistants.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     name = Column(String(100), nullable=False)
     description = Column(Text, nullable=True)
     display_order = Column(Integer, nullable=False, default=0)

@@ -1,5 +1,4 @@
-"""
-Knowledge Bases API - CRUD operations for knowledge base collections and their entries.
+"""Knowledge Bases API - CRUD operations for knowledge base collections and their entries.
 
 Architecture:
 - Knowledge Bases are named collections belonging to an account
@@ -28,19 +27,19 @@ Entries within a Knowledge Base:
 import csv
 import io
 from datetime import date, datetime
-from typing import Optional, List
-from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File
+from typing import List, Optional
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
 from sqlalchemy import func
+from sqlalchemy.orm import Session
 
+from botelier.auth.middleware import check_account_permission, get_current_user
 from botelier.database import get_db
 from botelier.models.knowledge_base import KnowledgeBase
 from botelier.models.knowledge_entry import KnowledgeEntry
 from botelier.models.user import User
-from botelier.auth.middleware import get_current_user, check_account_permission
-
 
 router = APIRouter(prefix="/api/knowledge-bases", tags=["knowledge-bases"])
 
@@ -56,8 +55,10 @@ def _get_kb_and_check(kb_id: str, permission: str, user: User, db: Session) -> K
 
 # Pydantic Models - Knowledge Bases
 
+
 class KnowledgeBaseCreate(BaseModel):
     """Request model for creating a knowledge base."""
+
     account_id: str
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
@@ -65,14 +66,17 @@ class KnowledgeBaseCreate(BaseModel):
 
 class KnowledgeBaseUpdate(BaseModel):
     """Request model for updating a knowledge base."""
+
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
 
 
 # Pydantic Models - Entries
 
+
 class EntryCreate(BaseModel):
     """Request model for creating a Q&A entry."""
+
     question: str = Field(..., min_length=1)
     answer: str = Field(..., min_length=1)
     category: Optional[str] = Field(None, max_length=100)
@@ -81,6 +85,7 @@ class EntryCreate(BaseModel):
 
 class EntryUpdate(BaseModel):
     """Request model for updating a Q&A entry."""
+
     question: Optional[str] = Field(None, min_length=1)
     answer: Optional[str] = Field(None, min_length=1)
     category: Optional[str] = Field(None, max_length=100)
@@ -89,12 +94,14 @@ class EntryUpdate(BaseModel):
 
 class BulkDeleteRequest(BaseModel):
     """Request model for bulk delete."""
+
     entry_ids: List[str] = Field(..., min_length=1)
 
 
 # ============================================================
 # Knowledge Base Endpoints
 # ============================================================
+
 
 @router.post("", status_code=201)
 async def create_knowledge_base(
@@ -104,16 +111,12 @@ async def create_knowledge_base(
 ):
     """Create a new knowledge base."""
     check_account_permission(user, data.account_id, "knowledge_base.create", db)
-    kb = KnowledgeBase(
-        account_id=data.account_id,
-        name=data.name,
-        description=data.description
-    )
-    
+    kb = KnowledgeBase(account_id=data.account_id, name=data.name, description=data.description)
+
     db.add(kb)
     db.commit()
     db.refresh(kb)
-    
+
     return kb.to_dict()
 
 
@@ -125,14 +128,14 @@ async def list_knowledge_bases(
 ):
     """List all knowledge bases for an account with entry counts."""
     check_account_permission(user, account_id, "knowledge_base.view", db)
-    kbs = db.query(KnowledgeBase).filter(
-        KnowledgeBase.account_id == account_id
-    ).order_by(KnowledgeBase.created_at.desc()).all()
-    
-    return {
-        "knowledge_bases": [kb.to_dict() for kb in kbs],
-        "total": len(kbs)
-    }
+    kbs = (
+        db.query(KnowledgeBase)
+        .filter(KnowledgeBase.account_id == account_id)
+        .order_by(KnowledgeBase.created_at.desc())
+        .all()
+    )
+
+    return {"knowledge_bases": [kb.to_dict() for kb in kbs], "total": len(kbs)}
 
 
 @router.get("/{kb_id}")
@@ -161,10 +164,10 @@ async def update_knowledge_base(
         kb.name = data.name
     if data.description is not None:
         kb.description = data.description
-    
+
     db.commit()
     db.refresh(kb)
-    
+
     return kb.to_dict()
 
 
@@ -184,6 +187,7 @@ async def delete_knowledge_base(
 # Entry Endpoints (within a Knowledge Base)
 # ============================================================
 
+
 @router.post("/{kb_id}/entries", status_code=201)
 async def create_entry(
     kb_id: str,
@@ -193,26 +197,26 @@ async def create_entry(
 ):
     """Create a Q&A entry in a knowledge base."""
     kb = _get_kb_and_check(kb_id, "knowledge_base.create", user, db)
-    
+
     exp_date = None
     if data.expiration_date:
         try:
             exp_date = datetime.fromisoformat(data.expiration_date).date()
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
-    
+
     entry = KnowledgeEntry(
         knowledge_base_id=kb_id,
         question=data.question,
         answer=data.answer,
         category=data.category,
-        expiration_date=exp_date
+        expiration_date=exp_date,
     )
-    
+
     db.add(entry)
     db.commit()
     db.refresh(entry)
-    
+
     return entry.to_dict()
 
 
@@ -226,25 +230,21 @@ async def list_entries(
 ):
     """List all entries in a knowledge base."""
     kb = _get_kb_and_check(kb_id, "knowledge_base.view", user, db)
-    
+
     query = db.query(KnowledgeEntry).filter(KnowledgeEntry.knowledge_base_id == kb_id)
-    
+
     if category:
         query = query.filter(KnowledgeEntry.category == category)
-    
+
     if not include_expired:
         today = date.today()
         query = query.filter(
-            (KnowledgeEntry.expiration_date.is_(None)) | 
-            (KnowledgeEntry.expiration_date >= today)
+            (KnowledgeEntry.expiration_date.is_(None)) | (KnowledgeEntry.expiration_date >= today)
         )
-    
+
     entries = query.order_by(KnowledgeEntry.created_at.desc()).all()
-    
-    return {
-        "entries": [entry.to_dict() for entry in entries],
-        "total": len(entries)
-    }
+
+    return {"entries": [entry.to_dict() for entry in entries], "total": len(entries)}
 
 
 @router.get("/{kb_id}/entries/export-csv")
@@ -256,38 +256,39 @@ async def export_entries_csv(
 ):
     """Export all entries to CSV file."""
     kb = _get_kb_and_check(kb_id, "knowledge_base.view", user, db)
-    
+
     query = db.query(KnowledgeEntry).filter(KnowledgeEntry.knowledge_base_id == kb_id)
-    
+
     if not include_expired:
         today = date.today()
         query = query.filter(
-            (KnowledgeEntry.expiration_date.is_(None)) | 
-            (KnowledgeEntry.expiration_date >= today)
+            (KnowledgeEntry.expiration_date.is_(None)) | (KnowledgeEntry.expiration_date >= today)
         )
-    
+
     entries = query.order_by(KnowledgeEntry.created_at.desc()).all()
-    
+
     output = io.StringIO()
     writer = csv.writer(output)
     writer.writerow(["question", "answer", "category", "expiration_date", "created_at"])
-    
+
     for entry in entries:
-        writer.writerow([
-            entry.question,
-            entry.answer,
-            entry.category or "",
-            entry.expiration_date.isoformat() if entry.expiration_date else "",
-            entry.created_at.isoformat() if entry.created_at else ""
-        ])
-    
+        writer.writerow(
+            [
+                entry.question,
+                entry.answer,
+                entry.category or "",
+                entry.expiration_date.isoformat() if entry.expiration_date else "",
+                entry.created_at.isoformat() if entry.created_at else "",
+            ]
+        )
+
     output.seek(0)
     filename = f"{kb.name.replace(' ', '_')}_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
-    
+
     return StreamingResponse(
         iter([output.getvalue()]),
         media_type="text/csv",
-        headers={"Content-Disposition": f"attachment; filename={filename}"}
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
     )
 
 
@@ -300,13 +301,14 @@ async def bulk_delete_entries(
 ):
     """Bulk delete entries."""
     _get_kb_and_check(kb_id, "knowledge_base.delete", user, db)
-    deleted_count = db.query(KnowledgeEntry).filter(
-        KnowledgeEntry.knowledge_base_id == kb_id,
-        KnowledgeEntry.id.in_(data.entry_ids)
-    ).delete(synchronize_session=False)
-    
+    deleted_count = (
+        db.query(KnowledgeEntry)
+        .filter(KnowledgeEntry.knowledge_base_id == kb_id, KnowledgeEntry.id.in_(data.entry_ids))
+        .delete(synchronize_session=False)
+    )
+
     db.commit()
-    
+
     return {"success": True, "deleted": deleted_count}
 
 
@@ -319,14 +321,15 @@ async def get_entry(
 ):
     """Get a specific entry."""
     _get_kb_and_check(kb_id, "knowledge_base.view", user, db)
-    entry = db.query(KnowledgeEntry).filter(
-        KnowledgeEntry.id == entry_id,
-        KnowledgeEntry.knowledge_base_id == kb_id
-    ).first()
-    
+    entry = (
+        db.query(KnowledgeEntry)
+        .filter(KnowledgeEntry.id == entry_id, KnowledgeEntry.knowledge_base_id == kb_id)
+        .first()
+    )
+
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
-    
+
     return entry.to_dict()
 
 
@@ -340,14 +343,15 @@ async def update_entry(
 ):
     """Update a Q&A entry."""
     _get_kb_and_check(kb_id, "knowledge_base.edit", user, db)
-    entry = db.query(KnowledgeEntry).filter(
-        KnowledgeEntry.id == entry_id,
-        KnowledgeEntry.knowledge_base_id == kb_id
-    ).first()
-    
+    entry = (
+        db.query(KnowledgeEntry)
+        .filter(KnowledgeEntry.id == entry_id, KnowledgeEntry.knowledge_base_id == kb_id)
+        .first()
+    )
+
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
-    
+
     if data.question is not None:
         entry.question = data.question
     if data.answer is not None:
@@ -359,10 +363,10 @@ async def update_entry(
             entry.expiration_date = datetime.fromisoformat(data.expiration_date).date()
         except ValueError:
             raise HTTPException(status_code=400, detail="Invalid date format. Use YYYY-MM-DD")
-    
+
     db.commit()
     db.refresh(entry)
-    
+
     return entry.to_dict()
 
 
@@ -375,14 +379,15 @@ async def delete_entry(
 ):
     """Delete a Q&A entry."""
     _get_kb_and_check(kb_id, "knowledge_base.delete", user, db)
-    entry = db.query(KnowledgeEntry).filter(
-        KnowledgeEntry.id == entry_id,
-        KnowledgeEntry.knowledge_base_id == kb_id
-    ).first()
-    
+    entry = (
+        db.query(KnowledgeEntry)
+        .filter(KnowledgeEntry.id == entry_id, KnowledgeEntry.knowledge_base_id == kb_id)
+        .first()
+    )
+
     if not entry:
         raise HTTPException(status_code=404, detail="Entry not found")
-    
+
     db.delete(entry)
     db.commit()
 
@@ -391,51 +396,57 @@ async def delete_entry(
 async def import_csv(
     kb_id: str,
     file: UploadFile = File(...),
-    replace_duplicates: bool = Query(False, description="When true, update existing entries whose question matches instead of skipping them"),
+    replace_duplicates: bool = Query(
+        False,
+        description="When true, update existing entries whose question matches instead of skipping them",
+    ),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Bulk import Q&A entries from CSV file."""
     kb = _get_kb_and_check(kb_id, "knowledge_base.import", user, db)
-    
-    if not file.filename.endswith('.csv'):
+
+    if not file.filename.endswith(".csv"):
         raise HTTPException(status_code=400, detail="File must be a CSV")
-    
+
     content = await file.read()
-    csv_text = content.decode('utf-8')
+    csv_text = content.decode("utf-8")
     csv_reader = csv.DictReader(io.StringIO(csv_text))
-    
-    if not csv_reader.fieldnames or 'question' not in csv_reader.fieldnames or 'answer' not in csv_reader.fieldnames:
+
+    if (
+        not csv_reader.fieldnames
+        or "question" not in csv_reader.fieldnames
+        or "answer" not in csv_reader.fieldnames
+    ):
         raise HTTPException(
-            status_code=400, 
-            detail="CSV must contain 'question' and 'answer' columns"
+            status_code=400, detail="CSV must contain 'question' and 'answer' columns"
         )
-    
+
     existing_by_question = {
         e.question.strip().lower(): e
         for e in db.query(KnowledgeEntry).filter(KnowledgeEntry.knowledge_base_id == kb_id).all()
     }
-    
+
     created_count = 0
     replaced_count = 0
     skipped_count = 0
     error_count = 0
     errors = []
-    
+
     for row_num, row in enumerate(csv_reader, start=2):
         try:
-            question = row.get('question', '').strip()
-            answer = row.get('answer', '').strip()
-            
+            question = row.get("question", "").strip()
+            answer = row.get("answer", "").strip()
+
             if not question or not answer:
                 error_count += 1
                 errors.append(f"Row {row_num}: Missing question or answer")
                 continue
-            
-            category = row.get('category', '').strip() or None
-            
+
+            category = row.get("category", "").strip() or None
+
             exp_date = None
-            exp_date_str = row.get('expiration_date', '').strip()
+            exp_date_str = row.get("expiration_date", "").strip()
             if exp_date_str:
                 try:
                     exp_date = datetime.fromisoformat(exp_date_str).date()
@@ -443,7 +454,7 @@ async def import_csv(
                     error_count += 1
                     errors.append(f"Row {row_num}: Invalid date format '{exp_date_str}'")
                     continue
-            
+
             existing = existing_by_question.get(question.lower())
             if existing:
                 if replace_duplicates:
@@ -455,32 +466,32 @@ async def import_csv(
                 else:
                     skipped_count += 1
                 continue
-            
+
             entry = KnowledgeEntry(
                 knowledge_base_id=kb_id,
                 question=question,
                 answer=answer,
                 category=category,
-                expiration_date=exp_date
+                expiration_date=exp_date,
             )
-            
+
             db.add(entry)
             created_count += 1
-            
+
         except Exception as e:
             error_count += 1
             errors.append(f"Row {row_num}: {str(e)}")
-    
+
     if created_count > 0 or replaced_count > 0:
         db.commit()
-    
+
     return {
         "success": True,
         "created": created_count,
         "replaced": replaced_count,
         "skipped": skipped_count,
         "errors": error_count,
-        "error_details": errors[:10]
+        "error_details": errors[:10],
     }
 
 
@@ -498,7 +509,7 @@ async def legacy_list_entries(
     knowledge_base_id: str = Query(None, description="Knowledge Base UUID"),
     include_expired: bool = Query(False),
     category: Optional[str] = Query(None),
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db),
 ):
     """Legacy endpoint - list entries by account_id or knowledge_base_id."""
     if knowledge_base_id:
@@ -506,25 +517,21 @@ async def legacy_list_entries(
             KnowledgeEntry.knowledge_base_id == knowledge_base_id
         )
     elif account_id:
-        query = db.query(KnowledgeEntry).filter(
-            KnowledgeEntry.account_id == account_id
-        )
+        query = db.query(KnowledgeEntry).filter(KnowledgeEntry.account_id == account_id)
     else:
-        raise HTTPException(status_code=400, detail="Either account_id or knowledge_base_id required")
-    
+        raise HTTPException(
+            status_code=400, detail="Either account_id or knowledge_base_id required"
+        )
+
     if category:
         query = query.filter(KnowledgeEntry.category == category)
-    
+
     if not include_expired:
         today = date.today()
         query = query.filter(
-            (KnowledgeEntry.expiration_date.is_(None)) | 
-            (KnowledgeEntry.expiration_date >= today)
+            (KnowledgeEntry.expiration_date.is_(None)) | (KnowledgeEntry.expiration_date >= today)
         )
-    
+
     entries = query.order_by(KnowledgeEntry.created_at.desc()).all()
-    
-    return {
-        "entries": [entry.to_dict() for entry in entries],
-        "total": len(entries)
-    }
+
+    return {"entries": [entry.to_dict() for entry in entries], "total": len(entries)}

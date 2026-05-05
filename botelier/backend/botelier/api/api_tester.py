@@ -1,5 +1,5 @@
 import time
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 from urllib.parse import urlparse
 
 import httpx
@@ -7,7 +7,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from botelier.auth.middleware import get_current_user
-from botelier.services.ssrf_safe_transport import SSRFSafeTransport, _BLOCKED_LITERAL_HOSTS
+from botelier.services.ssrf_safe_transport import _BLOCKED_LITERAL_HOSTS, SSRFSafeTransport
 
 router = APIRouter(prefix="/api/api-tester", tags=["api-tester"])
 
@@ -21,7 +21,9 @@ def _validate_url(url: str) -> None:
     if not hostname:
         raise HTTPException(status_code=400, detail="Missing hostname in URL")
     if hostname in _BLOCKED_LITERAL_HOSTS:
-        raise HTTPException(status_code=400, detail="Requests to internal addresses are not allowed")
+        raise HTTPException(
+            status_code=400, detail="Requests to internal addresses are not allowed"
+        )
 
 
 class ApiTestRequest(BaseModel):
@@ -81,9 +83,7 @@ async def test_api_request(
                 else:
                     response = await client.patch(request.url, headers=req_headers)
             else:
-                raise HTTPException(
-                    status_code=400, detail=f"Unsupported method: {request.method}"
-                )
+                raise HTTPException(status_code=400, detail=f"Unsupported method: {request.method}")
 
         elapsed_ms = (time.time() - start_time) * 1000
         resp_headers = dict(response.headers)

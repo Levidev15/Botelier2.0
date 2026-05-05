@@ -1,5 +1,4 @@
-"""
-SMSConversation and SMSMessage Models - Track SMS conversation history.
+"""SMSConversation and SMSMessage Models - Track SMS conversation history.
 
 Multi-tenant isolation: All queries MUST filter by account_id to prevent data leakage.
 
@@ -16,9 +15,11 @@ Deferred columns (add when ready):
 import uuid
 from datetime import datetime
 from enum import Enum
-from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey, Integer, Text, Index, event
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text, event
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
+
 from botelier.database import Base
 
 
@@ -53,13 +54,13 @@ class MessageStatus(str, Enum):
 
 
 class SMSConversation(Base):
-    """
-    Represents a unified SMS conversation thread with a customer.
+    """Represents a unified SMS conversation thread with a customer.
 
     One conversation per customer_number + botelier_number + account_id.
     Session boundaries are tracked on individual messages rather than
     splitting into separate conversations.
     """
+
     __tablename__ = "sms_conversations"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -75,7 +76,12 @@ class SMSConversation(Base):
 
     status = Column(String(20), nullable=False, default=ConversationStatus.ACTIVE.value)
 
-    handler_mode = Column(String(10), nullable=False, default=HandlerMode.AI.value, server_default=HandlerMode.AI.value)
+    handler_mode = Column(
+        String(10),
+        nullable=False,
+        default=HandlerMode.AI.value,
+        server_default=HandlerMode.AI.value,
+    )
     needs_attention = Column(Boolean, nullable=False, default=False, server_default="false")
 
     message_count = Column(Integer, default=0)
@@ -90,7 +96,9 @@ class SMSConversation(Base):
     active_agent_name = Column(String, nullable=True)
     agent_active_at = Column(DateTime, nullable=True)
 
-    disposition_id = Column(UUID(as_uuid=True), ForeignKey("assistant_dispositions.id"), nullable=True)
+    disposition_id = Column(
+        UUID(as_uuid=True), ForeignKey("assistant_dispositions.id"), nullable=True
+    )
     ai_summary = Column(Text, nullable=True)
     tools_used = Column(String, nullable=True)
 
@@ -101,15 +109,20 @@ class SMSConversation(Base):
         "SMSMessage",
         back_populates="conversation",
         cascade="all, delete-orphan",
-        order_by="SMSMessage.created_at"
+        order_by="SMSMessage.created_at",
     )
     disposition = relationship("AssistantDisposition", foreign_keys=[disposition_id])
 
     __table_args__ = (
-        Index('ix_sms_conv_account_status', 'account_id', 'status'),
-        Index('ix_sms_conv_account_last_msg', 'account_id', 'last_message_at'),
-        Index('ix_sms_conv_account_customer_number', 'account_id', 'customer_number', 'botelier_number'),
-        Index('ix_sms_conv_account_started_at', 'account_id', 'started_at'),
+        Index("ix_sms_conv_account_status", "account_id", "status"),
+        Index("ix_sms_conv_account_last_msg", "account_id", "last_message_at"),
+        Index(
+            "ix_sms_conv_account_customer_number",
+            "account_id",
+            "customer_number",
+            "botelier_number",
+        ),
+        Index("ix_sms_conv_account_started_at", "account_id", "started_at"),
     )
 
     def __repr__(self):
@@ -129,17 +142,26 @@ class SMSConversation(Base):
             "needs_attention": bool(self.needs_attention),
             "message_count": self.message_count,
             "started_at": self.started_at.isoformat() + "Z" if self.started_at else None,
-            "last_message_at": self.last_message_at.isoformat() + "Z" if self.last_message_at else None,
+            "last_message_at": self.last_message_at.isoformat() + "Z"
+            if self.last_message_at
+            else None,
             "closed_at": self.closed_at.isoformat() + "Z" if self.closed_at else None,
-            "first_response_at": self.first_response_at.isoformat() + "Z" if self.first_response_at else None,
+            "first_response_at": self.first_response_at.isoformat() + "Z"
+            if self.first_response_at
+            else None,
             "last_read_at": self.last_read_at.isoformat() + "Z" if self.last_read_at else None,
-            "has_unread": bool(self.last_message_at and (not self.last_read_at or self.last_message_at > self.last_read_at)),
+            "has_unread": bool(
+                self.last_message_at
+                and (not self.last_read_at or self.last_message_at > self.last_read_at)
+            ),
             "disposition_id": str(self.disposition_id) if self.disposition_id else None,
             "disposition_name": self.disposition.name if self.disposition else None,
             "disposition_color": self.disposition.color if self.disposition else None,
             "active_agent_id": str(self.active_agent_id) if self.active_agent_id else None,
             "active_agent_name": self.active_agent_name,
-            "agent_active_at": self.agent_active_at.isoformat() + "Z" if self.agent_active_at else None,
+            "agent_active_at": self.agent_active_at.isoformat() + "Z"
+            if self.agent_active_at
+            else None,
             "ai_summary": self.ai_summary,
             "tools_used": self.tools_used,
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
@@ -166,18 +188,20 @@ def _init_sms_conversation_reference_id(target, args, kwargs):
 
 
 class SMSMessage(Base):
-    """
-    Represents a single SMS message within a conversation.
+    """Represents a single SMS message within a conversation.
 
     Deferred pricing columns (add when ready, see module docstring for migration SQL):
       price      — Twilio cost per message (e.g. Decimal("0.0075"))
       price_unit — ISO 4217 currency code (e.g. "USD")
     """
+
     __tablename__ = "sms_messages"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    conversation_id = Column(UUID(as_uuid=True), ForeignKey("sms_conversations.id", ondelete="CASCADE"), nullable=False)
+    conversation_id = Column(
+        UUID(as_uuid=True), ForeignKey("sms_conversations.id", ondelete="CASCADE"), nullable=False
+    )
 
     direction = Column(String(10), nullable=False)
     sender = Column(String(10), nullable=False)
@@ -196,9 +220,7 @@ class SMSMessage(Base):
 
     conversation = relationship("SMSConversation", back_populates="messages")
 
-    __table_args__ = (
-        Index('ix_sms_msg_conversation', 'conversation_id', 'created_at'),
-    )
+    __table_args__ = (Index("ix_sms_msg_conversation", "conversation_id", "created_at"),)
 
     def __repr__(self):
         return f"<SMSMessage {self.direction} ({self.sender})>"

@@ -1,5 +1,4 @@
-"""
-SMS Notification Broadcaster — Server-Sent Events (SSE) pub/sub.
+"""SMS Notification Broadcaster — Server-Sent Events (SSE) pub/sub.
 
 Architecture:
     - Module-level singleton, one per server process.
@@ -19,14 +18,14 @@ import asyncio
 import json
 from collections import defaultdict
 from typing import AsyncGenerator, Dict, Set
+
 from loguru import logger
 
 MAX_QUEUE_SIZE = 50
 
 
 class NotificationBroadcaster:
-    """
-    In-process pub/sub hub for SMS notifications.
+    """In-process pub/sub hub for SMS notifications.
 
     Usage:
         broadcaster = NotificationBroadcaster()          # singleton below
@@ -42,8 +41,10 @@ class NotificationBroadcaster:
         """Register a new SSE client for account_id. Returns its event queue."""
         q: asyncio.Queue = asyncio.Queue(maxsize=MAX_QUEUE_SIZE)
         self._subscribers[account_id].add(q)
-        logger.debug(f"SSE client subscribed — account {account_id} "
-                     f"({len(self._subscribers[account_id])} connected)")
+        logger.debug(
+            f"SSE client subscribed — account {account_id} "
+            f"({len(self._subscribers[account_id])} connected)"
+        )
         return q
 
     def unsubscribe(self, account_id: str, queue: asyncio.Queue) -> None:
@@ -51,12 +52,13 @@ class NotificationBroadcaster:
         self._subscribers[account_id].discard(queue)
         if not self._subscribers[account_id]:
             del self._subscribers[account_id]
-        logger.debug(f"SSE client disconnected — account {account_id} "
-                     f"({len(self._subscribers.get(account_id, set()))} remaining)")
+        logger.debug(
+            f"SSE client disconnected — account {account_id} "
+            f"({len(self._subscribers.get(account_id, set()))} remaining)"
+        )
 
     async def broadcast(self, account_id: str, event_type: str, data: dict) -> None:
-        """
-        Push an event to all SSE clients watching account_id.
+        """Push an event to all SSE clients watching account_id.
 
         Non-blocking: if a client queue is full the event is dropped for that
         client only — it will re-sync on the next conversation list refresh.
@@ -73,14 +75,15 @@ class NotificationBroadcaster:
             except asyncio.QueueFull:
                 dropped += 1
 
-        logger.debug(f"SSE broadcast '{event_type}' → account {account_id} "
-                     f"({len(subscribers)} clients, {dropped} dropped)")
+        logger.debug(
+            f"SSE broadcast '{event_type}' → account {account_id} "
+            f"({len(subscribers)} clients, {dropped} dropped)"
+        )
 
     async def event_generator(
         self, account_id: str, keepalive_seconds: int = 15
     ) -> AsyncGenerator[dict, None]:
-        """
-        Async generator consumed by EventSourceResponse.
+        """Async generator consumed by EventSourceResponse.
 
         Yields SSE-formatted dicts with 'event' and 'data' keys.
         Sends a keepalive comment every `keepalive_seconds` to prevent
@@ -90,9 +93,7 @@ class NotificationBroadcaster:
         try:
             while True:
                 try:
-                    payload = await asyncio.wait_for(
-                        queue.get(), timeout=keepalive_seconds
-                    )
+                    payload = await asyncio.wait_for(queue.get(), timeout=keepalive_seconds)
                     msg = json.loads(payload)
                     event_type = msg.pop("type", "message")
                     yield {"event": event_type, "data": json.dumps(msg)}

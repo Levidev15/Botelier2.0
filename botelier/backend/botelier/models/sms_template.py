@@ -1,7 +1,9 @@
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey, Text, Index
+
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import UUID
+
 from botelier.database import Base
 
 
@@ -19,9 +21,7 @@ class SMSTemplate(Base):
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
 
-    __table_args__ = (
-        Index('ix_sms_template_account', 'account_id'),
-    )
+    __table_args__ = (Index("ix_sms_template_account", "account_id"),)
 
     def to_dict(self):
         return {
