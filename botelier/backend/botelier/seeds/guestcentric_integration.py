@@ -1,6 +1,6 @@
 import json
-from botelier.models.integration import IntegrationType
 
+from botelier.models.integration import IntegrationType
 
 GUESTCENTRIC_INTEGRATION = {
     "slug": "guestcentric-crs",
@@ -10,7 +10,6 @@ GUESTCENTRIC_INTEGRATION = {
     "provider": "guestcentric",
     "auth_type": "basic_or_jwt",
     "documentation_url": "https://crs-api.guestcentric.net/documentation/developer.html",
-
     "auth_config": {
         "base_url": "https://crs-api.guestcentric.net/v1.0",
         "auth_methods": ["basic_auth", "jwt"],
@@ -18,9 +17,8 @@ GUESTCENTRIC_INTEGRATION = {
         "jwt_refresh_endpoint": "/authentication/refresh",
         "jwt_check_endpoint": "/authentication/check_token",
         "jwt_max_lifetime_hours": 3,
-        "basic_auth_query_params": ["apikey", "hotelId"]
+        "basic_auth_query_params": ["apikey", "hotelId"],
     },
-
     "required_fields": [
         {
             "key": "auth_method",
@@ -29,21 +27,21 @@ GUESTCENTRIC_INTEGRATION = {
             "options": ["basic_auth", "jwt"],
             "option_labels": {"basic_auth": "Basic Auth", "jwt": "JWT Token"},
             "description": "Choose Basic Auth for simpler setup or JWT for token-based auth",
-            "required": True
+            "required": True,
         },
         {
             "key": "username",
             "label": "Username",
             "type": "text",
             "placeholder": "Your GuestCentric username",
-            "required": True
+            "required": True,
         },
         {
             "key": "password",
             "label": "Password",
             "type": "password",
             "placeholder": "Your GuestCentric password",
-            "required": True
+            "required": True,
         },
         {
             "key": "apikey",
@@ -52,7 +50,7 @@ GUESTCENTRIC_INTEGRATION = {
             "placeholder": "Your API key",
             "description": "API key provided by GuestCentric integrations team",
             "required": True,
-            "show_when": {"auth_method": "basic_auth"}
+            "show_when": {"auth_method": "basic_auth"},
         },
         {
             "key": "hotelId",
@@ -61,10 +59,9 @@ GUESTCENTRIC_INTEGRATION = {
             "placeholder": "Hotel ID",
             "description": "Hotel ID provided by GuestCentric for this property",
             "required": False,
-            "show_when": {"auth_method": "basic_auth"}
-        }
+            "show_when": {"auth_method": "basic_auth"},
+        },
     ],
-
     "endpoints": [
         {
             "id": "search_locations",
@@ -73,16 +70,17 @@ GUESTCENTRIC_INTEGRATION = {
             "description": "Search for available locations (countries, cities, hotels)",
             "method": "GET",
             "path": "/search",
-            "query_params": [
-                {"key": "text", "value": "{{text}}", "required": True}
-            ],
+            "query_params": [{"key": "text", "value": "{{text}}", "required": True}],
             "variables": [
-                {"key": "text", "type": "text", "label": "Search Text", "description": "Search query (minimum 3 characters)", "required": True}
+                {
+                    "key": "text",
+                    "type": "text",
+                    "label": "Search Text",
+                    "description": "Search query (minimum 3 characters)",
+                    "required": True,
+                }
             ],
-            "response_mapping": {
-                "results": "$.results",
-                "count": "$.count"
-            }
+            "response_mapping": {"results": "$.results", "count": "$.count"},
         },
         {
             "id": "list_hotels",
@@ -95,18 +93,35 @@ GUESTCENTRIC_INTEGRATION = {
                 {"key": "language", "value": "{{language}}", "required": False},
                 {"key": "currency", "value": "{{currency}}", "required": False},
                 {"key": "hotels", "value": "{{hotels}}", "required": False},
-                {"key": "sap_code", "value": "{{sap_code}}", "required": False}
+                {"key": "sap_code", "value": "{{sap_code}}", "required": False},
             ],
             "variables": [
-                {"key": "language", "type": "text", "label": "Language", "description": "Response language code"},
-                {"key": "currency", "type": "text", "label": "Currency", "description": "Currency code for pricing"},
-                {"key": "hotels", "type": "text", "label": "Hotel IDs", "description": "JSON array of hotel IDs to filter"},
-                {"key": "sap_code", "type": "text", "label": "SAP Code", "description": "SAP code filter"}
+                {
+                    "key": "language",
+                    "type": "text",
+                    "label": "Language",
+                    "description": "Response language code",
+                },
+                {
+                    "key": "currency",
+                    "type": "text",
+                    "label": "Currency",
+                    "description": "Currency code for pricing",
+                },
+                {
+                    "key": "hotels",
+                    "type": "text",
+                    "label": "Hotel IDs",
+                    "description": "JSON array of hotel IDs to filter",
+                },
+                {
+                    "key": "sap_code",
+                    "type": "text",
+                    "label": "SAP Code",
+                    "description": "SAP code filter",
+                },
             ],
-            "response_mapping": {
-                "hotels": "$.hotels",
-                "count": "$.count"
-            }
+            "response_mapping": {"hotels": "$.hotels", "count": "$.count"},
         },
         {
             "id": "search_hotels",
@@ -127,26 +142,81 @@ GUESTCENTRIC_INTEGRATION = {
                 {"key": "currency", "value": "{{currency}}", "required": False},
                 {"key": "minimum_price", "value": "{{minimum_price}}", "required": False},
                 {"key": "maximum_price", "value": "{{maximum_price}}", "required": False},
-                {"key": "price_type", "value": "{{price_type}}", "required": False}
+                {"key": "price_type", "value": "{{price_type}}", "required": False},
             ],
             "variables": [
-                {"key": "checkin", "type": "date", "label": "Check-in Date", "description": "Check-in date (YYYY-MM-DD)", "required": True},
-                {"key": "checkout", "type": "date", "label": "Check-out Date", "description": "Check-out date (YYYY-MM-DD)", "required": True},
-                {"key": "adults", "type": "number", "label": "Adults", "description": "Number of adults", "required": True},
-                {"key": "children", "type": "number", "label": "Children", "description": "Number of children"},
+                {
+                    "key": "checkin",
+                    "type": "date",
+                    "label": "Check-in Date",
+                    "description": "Check-in date (YYYY-MM-DD)",
+                    "required": True,
+                },
+                {
+                    "key": "checkout",
+                    "type": "date",
+                    "label": "Check-out Date",
+                    "description": "Check-out date (YYYY-MM-DD)",
+                    "required": True,
+                },
+                {
+                    "key": "adults",
+                    "type": "number",
+                    "label": "Adults",
+                    "description": "Number of adults",
+                    "required": True,
+                },
+                {
+                    "key": "children",
+                    "type": "number",
+                    "label": "Children",
+                    "description": "Number of children",
+                },
                 {"key": "city", "type": "text", "label": "City", "description": "Filter by city"},
-                {"key": "country", "type": "text", "label": "Country", "description": "Filter by country"},
-                {"key": "hotel_name", "type": "text", "label": "Hotel Name", "description": "Filter by hotel name"},
-                {"key": "language", "type": "text", "label": "Language", "description": "Response language code"},
-                {"key": "currency", "type": "text", "label": "Currency", "description": "Currency code for pricing"},
-                {"key": "minimum_price", "type": "number", "label": "Minimum Price", "description": "Minimum price filter"},
-                {"key": "maximum_price", "type": "number", "label": "Maximum Price", "description": "Maximum price filter"},
-                {"key": "price_type", "type": "text", "label": "Price Type", "description": "Price type for filtering"}
+                {
+                    "key": "country",
+                    "type": "text",
+                    "label": "Country",
+                    "description": "Filter by country",
+                },
+                {
+                    "key": "hotel_name",
+                    "type": "text",
+                    "label": "Hotel Name",
+                    "description": "Filter by hotel name",
+                },
+                {
+                    "key": "language",
+                    "type": "text",
+                    "label": "Language",
+                    "description": "Response language code",
+                },
+                {
+                    "key": "currency",
+                    "type": "text",
+                    "label": "Currency",
+                    "description": "Currency code for pricing",
+                },
+                {
+                    "key": "minimum_price",
+                    "type": "number",
+                    "label": "Minimum Price",
+                    "description": "Minimum price filter",
+                },
+                {
+                    "key": "maximum_price",
+                    "type": "number",
+                    "label": "Maximum Price",
+                    "description": "Maximum price filter",
+                },
+                {
+                    "key": "price_type",
+                    "type": "text",
+                    "label": "Price Type",
+                    "description": "Price type for filtering",
+                },
             ],
-            "response_mapping": {
-                "hotels": "$.hotels",
-                "count": "$.count"
-            }
+            "response_mapping": {"hotels": "$.hotels", "count": "$.count"},
         },
         {
             "id": "hotel_rooms",
@@ -156,11 +226,15 @@ GUESTCENTRIC_INTEGRATION = {
             "method": "GET",
             "path": "/hotels/{{hotel_id}}/rooms",
             "variables": [
-                {"key": "hotel_id", "type": "text", "label": "Hotel ID", "description": "The hotel ID", "required": True}
+                {
+                    "key": "hotel_id",
+                    "type": "text",
+                    "label": "Hotel ID",
+                    "description": "The hotel ID",
+                    "required": True,
+                }
             ],
-            "response_mapping": {
-                "rooms": "$.rooms"
-            }
+            "response_mapping": {"rooms": "$.rooms"},
         },
         {
             "id": "hotel_cancellation_policies",
@@ -170,11 +244,15 @@ GUESTCENTRIC_INTEGRATION = {
             "method": "GET",
             "path": "/hotels/{{hotel_id}}/cancellation-policies",
             "variables": [
-                {"key": "hotel_id", "type": "text", "label": "Hotel ID", "description": "The hotel ID", "required": True}
+                {
+                    "key": "hotel_id",
+                    "type": "text",
+                    "label": "Hotel ID",
+                    "description": "The hotel ID",
+                    "required": True,
+                }
             ],
-            "response_mapping": {
-                "policies": "$.policies"
-            }
+            "response_mapping": {"policies": "$.policies"},
         },
         {
             "id": "hotel_guarantee_policies",
@@ -184,11 +262,15 @@ GUESTCENTRIC_INTEGRATION = {
             "method": "GET",
             "path": "/hotels/{{hotel_id}}/guarantee-policies",
             "variables": [
-                {"key": "hotel_id", "type": "text", "label": "Hotel ID", "description": "The hotel ID", "required": True}
+                {
+                    "key": "hotel_id",
+                    "type": "text",
+                    "label": "Hotel ID",
+                    "description": "The hotel ID",
+                    "required": True,
+                }
             ],
-            "response_mapping": {
-                "policies": "$.policies"
-            }
+            "response_mapping": {"policies": "$.policies"},
         },
         {
             "id": "hotel_currencies",
@@ -198,9 +280,7 @@ GUESTCENTRIC_INTEGRATION = {
             "method": "GET",
             "path": "/hotels/currencies",
             "variables": [],
-            "response_mapping": {
-                "currencies": "$.currencies"
-            }
+            "response_mapping": {"currencies": "$.currencies"},
         },
         {
             "id": "hotel_addons",
@@ -210,11 +290,15 @@ GUESTCENTRIC_INTEGRATION = {
             "method": "GET",
             "path": "/hotels/{{hotel_id}}/addons",
             "variables": [
-                {"key": "hotel_id", "type": "text", "label": "Hotel ID", "description": "The hotel ID", "required": True}
+                {
+                    "key": "hotel_id",
+                    "type": "text",
+                    "label": "Hotel ID",
+                    "description": "The hotel ID",
+                    "required": True,
+                }
             ],
-            "response_mapping": {
-                "addons": "$.addons"
-            }
+            "response_mapping": {"addons": "$.addons"},
         },
         {
             "id": "book_reservation",
@@ -235,27 +319,43 @@ GUESTCENTRIC_INTEGRATION = {
                     "first_name": "{{guest_first_name}}",
                     "last_name": "{{guest_last_name}}",
                     "email": "{{guest_email}}",
-                    "phone": "{{guest_phone}}"
-                }
+                    "phone": "{{guest_phone}}",
+                },
             },
             "variables": [
                 {"key": "hotel_id", "type": "text", "label": "Hotel ID", "required": True},
                 {"key": "checkin", "type": "date", "label": "Check-in Date", "required": True},
                 {"key": "checkout", "type": "date", "label": "Check-out Date", "required": True},
-                {"key": "adults", "type": "number", "label": "Adults", "default": 1, "required": True},
+                {
+                    "key": "adults",
+                    "type": "number",
+                    "label": "Adults",
+                    "default": 1,
+                    "required": True,
+                },
                 {"key": "children", "type": "number", "label": "Children", "default": 0},
                 {"key": "room_id", "type": "text", "label": "Room ID", "required": True},
                 {"key": "rate_id", "type": "text", "label": "Rate ID", "required": True},
-                {"key": "guest_first_name", "type": "text", "label": "Guest First Name", "required": True},
-                {"key": "guest_last_name", "type": "text", "label": "Guest Last Name", "required": True},
+                {
+                    "key": "guest_first_name",
+                    "type": "text",
+                    "label": "Guest First Name",
+                    "required": True,
+                },
+                {
+                    "key": "guest_last_name",
+                    "type": "text",
+                    "label": "Guest Last Name",
+                    "required": True,
+                },
                 {"key": "guest_email", "type": "text", "label": "Guest Email", "required": True},
-                {"key": "guest_phone", "type": "text", "label": "Guest Phone"}
+                {"key": "guest_phone", "type": "text", "label": "Guest Phone"},
             ],
             "response_mapping": {
                 "reservation_id": "$.reservation_id",
                 "confirmation_number": "$.confirmation_number",
-                "status": "$.status"
-            }
+                "status": "$.status",
+            },
         },
         {
             "id": "list_reservations",
@@ -269,21 +369,52 @@ GUESTCENTRIC_INTEGRATION = {
                 {"key": "checkin", "value": "{{checkin}}", "required": False},
                 {"key": "checkout", "value": "{{checkout}}", "required": False},
                 {"key": "status", "value": "{{status}}", "required": False},
-                {"key": "confirmation_number", "value": "{{confirmation_number}}", "required": False},
-                {"key": "guest_name", "value": "{{guest_name}}", "required": False}
+                {
+                    "key": "confirmation_number",
+                    "value": "{{confirmation_number}}",
+                    "required": False,
+                },
+                {"key": "guest_name", "value": "{{guest_name}}", "required": False},
             ],
             "variables": [
-                {"key": "hotel_id", "type": "text", "label": "Hotel ID", "description": "Filter by hotel ID"},
-                {"key": "checkin", "type": "date", "label": "Check-in Date", "description": "Filter by check-in date"},
-                {"key": "checkout", "type": "date", "label": "Check-out Date", "description": "Filter by check-out date"},
-                {"key": "status", "type": "text", "label": "Status", "description": "Filter by reservation status"},
-                {"key": "confirmation_number", "type": "text", "label": "Confirmation Number", "description": "Filter by confirmation number"},
-                {"key": "guest_name", "type": "text", "label": "Guest Name", "description": "Filter by guest name"}
+                {
+                    "key": "hotel_id",
+                    "type": "text",
+                    "label": "Hotel ID",
+                    "description": "Filter by hotel ID",
+                },
+                {
+                    "key": "checkin",
+                    "type": "date",
+                    "label": "Check-in Date",
+                    "description": "Filter by check-in date",
+                },
+                {
+                    "key": "checkout",
+                    "type": "date",
+                    "label": "Check-out Date",
+                    "description": "Filter by check-out date",
+                },
+                {
+                    "key": "status",
+                    "type": "text",
+                    "label": "Status",
+                    "description": "Filter by reservation status",
+                },
+                {
+                    "key": "confirmation_number",
+                    "type": "text",
+                    "label": "Confirmation Number",
+                    "description": "Filter by confirmation number",
+                },
+                {
+                    "key": "guest_name",
+                    "type": "text",
+                    "label": "Guest Name",
+                    "description": "Filter by guest name",
+                },
             ],
-            "response_mapping": {
-                "reservations": "$.reservations",
-                "count": "$.count"
-            }
+            "response_mapping": {"reservations": "$.reservations", "count": "$.count"},
         },
         {
             "id": "view_reservation",
@@ -293,7 +424,13 @@ GUESTCENTRIC_INTEGRATION = {
             "method": "GET",
             "path": "/reservations/{{reservation_id}}",
             "variables": [
-                {"key": "reservation_id", "type": "text", "label": "Reservation ID", "description": "The reservation ID", "required": True}
+                {
+                    "key": "reservation_id",
+                    "type": "text",
+                    "label": "Reservation ID",
+                    "description": "The reservation ID",
+                    "required": True,
+                }
             ],
             "response_mapping": {
                 "reservation_id": "$.reservation_id",
@@ -301,8 +438,8 @@ GUESTCENTRIC_INTEGRATION = {
                 "status": "$.status",
                 "guest_name": "$.guest.name",
                 "checkin": "$.checkin",
-                "checkout": "$.checkout"
-            }
+                "checkout": "$.checkout",
+            },
         },
         {
             "id": "update_reservation",
@@ -312,8 +449,14 @@ GUESTCENTRIC_INTEGRATION = {
             "method": "PUT",
             "path": "/reservations/{{reservation_id}}",
             "variables": [
-                {"key": "reservation_id", "type": "text", "label": "Reservation ID", "description": "The reservation ID", "required": True}
-            ]
+                {
+                    "key": "reservation_id",
+                    "type": "text",
+                    "label": "Reservation ID",
+                    "description": "The reservation ID",
+                    "required": True,
+                }
+            ],
         },
         {
             "id": "modify_reservation",
@@ -323,8 +466,14 @@ GUESTCENTRIC_INTEGRATION = {
             "method": "PUT",
             "path": "/reservations/{{reservation_id}}/modify",
             "variables": [
-                {"key": "reservation_id", "type": "text", "label": "Reservation ID", "description": "The reservation ID", "required": True}
-            ]
+                {
+                    "key": "reservation_id",
+                    "type": "text",
+                    "label": "Reservation ID",
+                    "description": "The reservation ID",
+                    "required": True,
+                }
+            ],
         },
         {
             "id": "cancel_reservation",
@@ -334,11 +483,15 @@ GUESTCENTRIC_INTEGRATION = {
             "method": "POST",
             "path": "/reservations/{{reservation_id}}/cancel",
             "variables": [
-                {"key": "reservation_id", "type": "text", "label": "Reservation ID", "description": "The reservation ID", "required": True}
+                {
+                    "key": "reservation_id",
+                    "type": "text",
+                    "label": "Reservation ID",
+                    "description": "The reservation ID",
+                    "required": True,
+                }
             ],
-            "response_mapping": {
-                "status": "$.status"
-            }
+            "response_mapping": {"status": "$.status"},
         },
         {
             "id": "resend_email",
@@ -348,13 +501,17 @@ GUESTCENTRIC_INTEGRATION = {
             "method": "POST",
             "path": "/reservations/{{reservation_id}}/resend-email",
             "variables": [
-                {"key": "reservation_id", "type": "text", "label": "Reservation ID", "description": "The reservation ID", "required": True}
+                {
+                    "key": "reservation_id",
+                    "type": "text",
+                    "label": "Reservation ID",
+                    "description": "The reservation ID",
+                    "required": True,
+                }
             ],
-            "response_mapping": {
-                "status": "$.status"
-            }
-        }
-    ]
+            "response_mapping": {"status": "$.status"},
+        },
+    ],
 }
 
 
@@ -383,7 +540,7 @@ def seed_guestcentric_integration(db_session):
             provider=GUESTCENTRIC_INTEGRATION["provider"],
             auth_type=GUESTCENTRIC_INTEGRATION["auth_type"],
             documentation_url=GUESTCENTRIC_INTEGRATION["documentation_url"],
-            is_enabled=True
+            is_enabled=True,
         )
         integration.set_auth_config(GUESTCENTRIC_INTEGRATION["auth_config"])
         integration.set_required_fields(GUESTCENTRIC_INTEGRATION["required_fields"])

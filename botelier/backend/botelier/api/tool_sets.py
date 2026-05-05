@@ -1,21 +1,21 @@
-"""
-API endpoints for ToolSet management.
+"""API endpoints for ToolSet management.
 
 ToolSets are named collections of tools that can be assigned to assistants.
 """
 
-from fastapi import APIRouter, HTTPException, Query, Depends
-from pydantic import BaseModel, Field
-from typing import Optional, List
-from uuid import UUID
 from datetime import datetime
+from typing import List, Optional
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from botelier.auth.middleware import check_account_permission, get_current_user
 from botelier.database import get_db
-from botelier.models.tool_set import ToolSet
 from botelier.models.tool import Tool, ToolType
+from botelier.models.tool_set import ToolSet
 from botelier.models.user import User
-from botelier.auth.middleware import get_current_user, check_account_permission
 
 router = APIRouter(prefix="/api/tool-sets", tags=["tool-sets"])
 
@@ -72,20 +72,22 @@ async def list_tool_sets(
     """List all tool sets for an account."""
     check_account_permission(user, str(account_id), "tools.view", db)
     tool_sets = db.query(ToolSet).filter(ToolSet.account_id == account_id).all()
-    
+
     result = []
     for ts in tool_sets:
         tool_count = db.query(Tool).filter(Tool.tool_set_id == ts.id).count()
-        result.append({
-            "id": ts.id,
-            "account_id": ts.account_id,
-            "name": ts.name,
-            "description": ts.description,
-            "tool_count": tool_count,
-            "created_at": ts.created_at,
-            "updated_at": ts.updated_at,
-        })
-    
+        result.append(
+            {
+                "id": ts.id,
+                "account_id": ts.account_id,
+                "name": ts.name,
+                "description": ts.description,
+                "tool_count": tool_count,
+                "created_at": ts.created_at,
+                "updated_at": ts.updated_at,
+            }
+        )
+
     return {"tool_sets": result, "total": len(result)}
 
 
@@ -103,11 +105,11 @@ async def create_tool_set(
             name=data.name,
             description=data.description,
         )
-        
+
         db.add(tool_set)
         db.commit()
         db.refresh(tool_set)
-        
+
         return {
             "id": tool_set.id,
             "account_id": tool_set.account_id,
@@ -130,12 +132,12 @@ async def get_tool_set(
 ):
     """Get a specific tool set by ID."""
     tool_set = db.query(ToolSet).filter(ToolSet.id == tool_set_id).first()
-    
+
     if not tool_set:
         raise HTTPException(status_code=404, detail="Tool set not found")
     check_account_permission(user, str(tool_set.account_id), "tools.view", db)
     tool_count = db.query(Tool).filter(Tool.tool_set_id == tool_set.id).count()
-    
+
     return {
         "id": tool_set.id,
         "account_id": tool_set.account_id,
@@ -157,7 +159,7 @@ async def update_tool_set(
     """Update a tool set."""
     try:
         tool_set = db.query(ToolSet).filter(ToolSet.id == tool_set_id).first()
-        
+
         if not tool_set:
             raise HTTPException(status_code=404, detail="Tool set not found")
         check_account_permission(user, str(tool_set.account_id), "tools.edit", db)
@@ -165,12 +167,12 @@ async def update_tool_set(
             tool_set.name = data.name
         if data.description is not None:
             tool_set.description = data.description
-        
+
         db.commit()
         db.refresh(tool_set)
-        
+
         tool_count = db.query(Tool).filter(Tool.tool_set_id == tool_set.id).count()
-        
+
         return {
             "id": tool_set.id,
             "account_id": tool_set.account_id,
@@ -194,17 +196,17 @@ async def delete_tool_set(
     """Delete a tool set and all its tools."""
     try:
         tool_set = db.query(ToolSet).filter(ToolSet.id == tool_set_id).first()
-        
+
         if not tool_set:
             raise HTTPException(status_code=404, detail="Tool set not found")
         check_account_permission(user, str(tool_set.account_id), "tools.delete", db)
-        
+
         tool_count = db.query(Tool).filter(Tool.tool_set_id == tool_set.id).count()
-        
+
         db.query(Tool).filter(Tool.tool_set_id == tool_set.id).delete()
         db.delete(tool_set)
         db.commit()
-        
+
         return {"message": f"Tool set deleted with {tool_count} tools"}
     except Exception as e:
         db.rollback()
@@ -222,21 +224,23 @@ async def list_tools_in_set(
     if not tool_set:
         raise HTTPException(status_code=404, detail="Tool set not found")
     check_account_permission(user, str(tool_set.account_id), "tools.view", db)
-    
+
     tools = db.query(Tool).filter(Tool.tool_set_id == tool_set_id).all()
-    
+
     result = []
     for tool in tools:
-        result.append({
-            "id": tool.id,
-            "tool_set_id": tool.tool_set_id,
-            "name": tool.name,
-            "description": tool.description,
-            "tool_type": tool.tool_type.value,
-            "config": tool.config,
-            "is_active": tool.is_active == "true",
-            "created_at": tool.created_at,
-            "updated_at": tool.updated_at,
-        })
-    
+        result.append(
+            {
+                "id": tool.id,
+                "tool_set_id": tool.tool_set_id,
+                "name": tool.name,
+                "description": tool.description,
+                "tool_type": tool.tool_type.value,
+                "config": tool.config,
+                "is_active": tool.is_active == "true",
+                "created_at": tool.created_at,
+                "updated_at": tool.updated_at,
+            }
+        )
+
     return {"tools": result, "total": len(result)}

@@ -1,5 +1,4 @@
-"""
-Tests for PreWarmCache (Task #111).
+"""Tests for PreWarmCache (Task #111).
 
 Covers LRU bounds, TTL expiry, pop-removes, and consumer timeout behaviour.
 No DB or network is touched — these tests operate solely on the cache
@@ -9,7 +8,6 @@ structure itself.
 import asyncio
 
 import pytest
-
 from botelier.voice.prewarm import (
     PopResult,
     PreWarmBundle,
@@ -107,17 +105,14 @@ def _fallback_details_from(result: PopResult) -> dict:
         "wait_ms": result.wait_ms,
         "error_class": result.error_class,
         "prewarm_to_use_ms": result.wait_ms,  # legacy
-        "reason": (
-            "no_prewarm_entry"
-            if result.state == "missing"
-            else "wait_timeout_or_error"
-        ),
+        "reason": ("no_prewarm_entry" if result.state == "missing" else "wait_timeout_or_error"),
     }
 
 
 def test_hit_event_details_carry_both_legacy_and_new_fields() -> None:
-    r = PopResult(state="ready_during_wait", wait_ms=120,
-                  bundle=PreWarmBundle(prewarm_duration_ms=300))
+    r = PopResult(
+        state="ready_during_wait", wait_ms=120, bundle=PreWarmBundle(prewarm_duration_ms=300)
+    )
     d = _hit_details_from(r, prewarm_duration_ms=300)
     # New fields
     assert d["state"] == "ready_during_wait"
@@ -130,7 +125,8 @@ def test_hit_event_details_carry_both_legacy_and_new_fields() -> None:
 class _FakeEventQueue:
     """Minimal stub for CallEventQueue capturing the (event_type, details)
     tuples the handler emits, so we can assert the additive contract
-    against the REAL emission code (not a mirror)."""
+    against the REAL emission code (not a mirror).
+    """
 
     def __init__(self) -> None:
         self.events: list[tuple[str, dict]] = []
@@ -150,7 +146,8 @@ def _run_emission_block(
 ) -> dict:
     """Replays the exact emission branch from
     ``CallHandler.handle_call`` (lines 888-936). Kept in lockstep with
-    that block so any change there must also update this fixture."""
+    that block so any change there must also update this fixture.
+    """
     q = _FakeEventQueue()
     if prewarm_bundle is not None and prewarm_bundle.assistant is not None:
         q.log(
@@ -177,10 +174,7 @@ def _run_emission_block(
                 "wait_ms": wait_ms,
                 "error_class": error_class,
                 "prewarm_to_use_ms": wait_ms,
-                "reason": (
-                    "no_prewarm_entry" if state == "missing"
-                    else "wait_timeout_or_error"
-                ),
+                "reason": ("no_prewarm_entry" if state == "missing" else "wait_timeout_or_error"),
             },
         )
     assert len(q.events) == 1
@@ -189,13 +183,17 @@ def _run_emission_block(
 
 def test_emission_hit_event_contains_legacy_and_new_keys() -> None:
     from botelier.voice.prewarm import AssistantSnapshot
+
     bundle = PreWarmBundle(
         assistant=AssistantSnapshot(id="a", account_id="b", name="n"),
         prewarm_duration_ms=400,
     )
     d = _run_emission_block(
-        prewarm_bundle=bundle, state="ready_during_wait", wait_ms=120,
-        tools_count=3, mcp=True,
+        prewarm_bundle=bundle,
+        state="ready_during_wait",
+        wait_ms=120,
+        tools_count=3,
+        mcp=True,
     )
     # New keys
     assert d["state"] == "ready_during_wait" and d["wait_ms"] == 120
@@ -207,7 +205,9 @@ def test_emission_hit_event_contains_legacy_and_new_keys() -> None:
 
 def test_emission_fallback_event_contains_legacy_and_new_keys() -> None:
     d = _run_emission_block(
-        prewarm_bundle=None, state="timeout", wait_ms=503,
+        prewarm_bundle=None,
+        state="timeout",
+        wait_ms=503,
     )
     assert d["state"] == "timeout" and d["wait_ms"] == 503
     # Legacy keys still emitted
@@ -225,9 +225,7 @@ def test_fallback_event_details_carry_both_legacy_and_new_fields() -> None:
     assert to["state"] == "timeout" and to["reason"] == "wait_timeout_or_error"
     assert to["prewarm_to_use_ms"] == 503
     # error → reason wait_timeout_or_error, error_class surfaced
-    er = _fallback_details_from(
-        PopResult(state="error", wait_ms=12, error_class="RuntimeError")
-    )
+    er = _fallback_details_from(PopResult(state="error", wait_ms=12, error_class="RuntimeError"))
     assert er["state"] == "error" and er["reason"] == "wait_timeout_or_error"
     assert er["error_class"] == "RuntimeError"
 
@@ -269,6 +267,7 @@ def test_discard_is_idempotent() -> None:
 async def test_reserve_supersedes_existing_entry_and_wakes_waiters() -> None:
     cache = PreWarmCache()
     old_entry = cache.reserve("CA-5")
+
     # A consumer is already waiting on the original entry.
     # Note: pop_and_wait removes it from the store, so we wait directly.
     async def _waiter() -> None:

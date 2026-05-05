@@ -1,5 +1,4 @@
-"""
-Single source of truth for ``CallEvent.offset_ms`` computation (Task #123).
+"""Single source of truth for ``CallEvent.offset_ms`` computation (Task #123).
 
 Before this helper, three writers computed offset_ms independently and the
 inline finalization writer additionally clamped to int4 max. The clamp was

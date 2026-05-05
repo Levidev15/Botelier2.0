@@ -1,20 +1,18 @@
-"""
-Dispositions API - CRUD endpoints for assistant call dispositions.
-"""
+"""Dispositions API - CRUD endpoints for assistant call dispositions."""
 
+from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
-from datetime import datetime
-from fastapi import APIRouter, Depends, HTTPException, status, Query
+
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-from loguru import logger
 
+from ..auth.middleware import check_account_permission, get_current_user
 from ..database import get_db
-from ..models import AssistantDisposition, Assistant
+from ..models import Assistant, AssistantDisposition
 from ..models.user import User
-from ..auth.middleware import get_current_user, check_account_permission
-
 
 router = APIRouter(prefix="/api/assistants", tags=["Dispositions"])
 
@@ -48,18 +46,22 @@ async def list_dispositions(
 ):
     check_account_permission(user, str(account_id), "assistants.edit", db)
     """List all dispositions for an assistant."""
-    assistant = db.query(Assistant).filter(
-        Assistant.id == assistant_id,
-        Assistant.account_id == account_id
-    ).first()
-    
+    assistant = (
+        db.query(Assistant)
+        .filter(Assistant.id == assistant_id, Assistant.account_id == account_id)
+        .first()
+    )
+
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
-    
-    dispositions = db.query(AssistantDisposition).filter(
-        AssistantDisposition.assistant_id == assistant_id
-    ).order_by(AssistantDisposition.display_order, AssistantDisposition.created_at).all()
-    
+
+    dispositions = (
+        db.query(AssistantDisposition)
+        .filter(AssistantDisposition.assistant_id == assistant_id)
+        .order_by(AssistantDisposition.display_order, AssistantDisposition.created_at)
+        .all()
+    )
+
     return [d.to_dict() for d in dispositions]
 
 
@@ -73,18 +75,21 @@ async def create_disposition(
 ):
     check_account_permission(user, str(account_id), "assistants.edit", db)
     """Create a new disposition for an assistant."""
-    assistant = db.query(Assistant).filter(
-        Assistant.id == assistant_id,
-        Assistant.account_id == account_id
-    ).first()
-    
+    assistant = (
+        db.query(Assistant)
+        .filter(Assistant.id == assistant_id, Assistant.account_id == account_id)
+        .first()
+    )
+
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
-    
-    max_order = db.query(AssistantDisposition).filter(
-        AssistantDisposition.assistant_id == assistant_id
-    ).count()
-    
+
+    max_order = (
+        db.query(AssistantDisposition)
+        .filter(AssistantDisposition.assistant_id == assistant_id)
+        .count()
+    )
+
     disposition = AssistantDisposition(
         assistant_id=assistant_id,
         name=data.name,
@@ -93,11 +98,11 @@ async def create_disposition(
         display_order=data.display_order if data.display_order else max_order,
         is_active=data.is_active,
     )
-    
+
     db.add(disposition)
     db.commit()
     db.refresh(disposition)
-    
+
     logger.info(f"Created disposition '{data.name}' for assistant {assistant_id}")
     return disposition.to_dict()
 
@@ -112,22 +117,27 @@ async def get_disposition(
 ):
     check_account_permission(user, str(account_id), "assistants.edit", db)
     """Get a specific disposition."""
-    assistant = db.query(Assistant).filter(
-        Assistant.id == assistant_id,
-        Assistant.account_id == account_id
-    ).first()
-    
+    assistant = (
+        db.query(Assistant)
+        .filter(Assistant.id == assistant_id, Assistant.account_id == account_id)
+        .first()
+    )
+
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
-    
-    disposition = db.query(AssistantDisposition).filter(
-        AssistantDisposition.id == disposition_id,
-        AssistantDisposition.assistant_id == assistant_id
-    ).first()
-    
+
+    disposition = (
+        db.query(AssistantDisposition)
+        .filter(
+            AssistantDisposition.id == disposition_id,
+            AssistantDisposition.assistant_id == assistant_id,
+        )
+        .first()
+    )
+
     if not disposition:
         raise HTTPException(status_code=404, detail="Disposition not found")
-    
+
     return disposition.to_dict()
 
 
@@ -142,35 +152,42 @@ async def update_disposition(
 ):
     check_account_permission(user, str(account_id), "assistants.edit", db)
     """Update a disposition."""
-    assistant = db.query(Assistant).filter(
-        Assistant.id == assistant_id,
-        Assistant.account_id == account_id
-    ).first()
-    
+    assistant = (
+        db.query(Assistant)
+        .filter(Assistant.id == assistant_id, Assistant.account_id == account_id)
+        .first()
+    )
+
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
-    
-    disposition = db.query(AssistantDisposition).filter(
-        AssistantDisposition.id == disposition_id,
-        AssistantDisposition.assistant_id == assistant_id
-    ).first()
-    
+
+    disposition = (
+        db.query(AssistantDisposition)
+        .filter(
+            AssistantDisposition.id == disposition_id,
+            AssistantDisposition.assistant_id == assistant_id,
+        )
+        .first()
+    )
+
     if not disposition:
         raise HTTPException(status_code=404, detail="Disposition not found")
-    
+
     update_data = data.model_dump(exclude_unset=True)
     for key, value in update_data.items():
         setattr(disposition, key, value)
-    
+
     disposition.updated_at = datetime.utcnow()
     db.commit()
     db.refresh(disposition)
-    
+
     logger.info(f"Updated disposition {disposition_id}")
     return disposition.to_dict()
 
 
-@router.delete("/{assistant_id}/dispositions/{disposition_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/{assistant_id}/dispositions/{disposition_id}", status_code=status.HTTP_204_NO_CONTENT
+)
 async def delete_disposition(
     assistant_id: UUID,
     disposition_id: UUID,
@@ -180,25 +197,30 @@ async def delete_disposition(
 ):
     check_account_permission(user, str(account_id), "assistants.edit", db)
     """Delete a disposition."""
-    assistant = db.query(Assistant).filter(
-        Assistant.id == assistant_id,
-        Assistant.account_id == account_id
-    ).first()
-    
+    assistant = (
+        db.query(Assistant)
+        .filter(Assistant.id == assistant_id, Assistant.account_id == account_id)
+        .first()
+    )
+
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
-    
-    disposition = db.query(AssistantDisposition).filter(
-        AssistantDisposition.id == disposition_id,
-        AssistantDisposition.assistant_id == assistant_id
-    ).first()
-    
+
+    disposition = (
+        db.query(AssistantDisposition)
+        .filter(
+            AssistantDisposition.id == disposition_id,
+            AssistantDisposition.assistant_id == assistant_id,
+        )
+        .first()
+    )
+
     if not disposition:
         raise HTTPException(status_code=404, detail="Disposition not found")
-    
+
     db.delete(disposition)
     db.commit()
-    
+
     logger.info(f"Deleted disposition {disposition_id}")
     return None
 
@@ -213,26 +235,34 @@ async def reorder_dispositions(
 ):
     check_account_permission(user, str(account_id), "assistants.edit", db)
     """Reorder dispositions by providing ordered list of IDs."""
-    assistant = db.query(Assistant).filter(
-        Assistant.id == assistant_id,
-        Assistant.account_id == account_id
-    ).first()
-    
+    assistant = (
+        db.query(Assistant)
+        .filter(Assistant.id == assistant_id, Assistant.account_id == account_id)
+        .first()
+    )
+
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
-    
+
     for idx, disp_id in enumerate(data.disposition_ids):
-        disposition = db.query(AssistantDisposition).filter(
-            AssistantDisposition.id == disp_id,
-            AssistantDisposition.assistant_id == assistant_id
-        ).first()
+        disposition = (
+            db.query(AssistantDisposition)
+            .filter(
+                AssistantDisposition.id == disp_id,
+                AssistantDisposition.assistant_id == assistant_id,
+            )
+            .first()
+        )
         if disposition:
             disposition.display_order = idx
-    
+
     db.commit()
-    
-    dispositions = db.query(AssistantDisposition).filter(
-        AssistantDisposition.assistant_id == assistant_id
-    ).order_by(AssistantDisposition.display_order).all()
-    
+
+    dispositions = (
+        db.query(AssistantDisposition)
+        .filter(AssistantDisposition.assistant_id == assistant_id)
+        .order_by(AssistantDisposition.display_order)
+        .all()
+    )
+
     return [d.to_dict() for d in dispositions]

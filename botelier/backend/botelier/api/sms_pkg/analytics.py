@@ -1,16 +1,15 @@
-"""
-SMS Analytics endpoints.
+"""SMS Analytics endpoints.
 
-  GET /api/sms/stats            — Aggregated analytics
-  GET /api/sms/export           — CSV export (max 10,000 rows)
-  GET /api/sms/pending-handoffs — Count of conversations needing attention
-  GET /api/sms/unread-count     — Count of conversations with unread messages
+GET /api/sms/stats            — Aggregated analytics
+GET /api/sms/export           — CSV export (max 10,000 rows)
+GET /api/sms/pending-handoffs — Count of conversations needing attention
+GET /api/sms/unread-count     — Count of conversations with unread messages
 """
 
 import csv
 import io
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -21,7 +20,7 @@ from sqlalchemy.orm import Session
 
 from botelier.auth.middleware import get_current_user
 from botelier.database import get_db
-from botelier.models.sms_conversation import SMSConversation, SMSMessage, ConversationStatus
+from botelier.models.sms_conversation import ConversationStatus, SMSConversation, SMSMessage
 from botelier.models.user import User
 
 from ._auth import assert_sms_account_access
@@ -37,11 +36,16 @@ async def get_pending_handoffs(
 ):
     """Return count of active conversations waiting for a human agent."""
     assert_sms_account_access(user, account_id, db)
-    count = db.query(func.count(SMSConversation.id)).filter(
-        SMSConversation.account_id == UUID(account_id),
-        SMSConversation.needs_attention == True,
-        SMSConversation.status == ConversationStatus.ACTIVE.value,
-    ).scalar() or 0
+    count = (
+        db.query(func.count(SMSConversation.id))
+        .filter(
+            SMSConversation.account_id == UUID(account_id),
+            SMSConversation.needs_attention == True,
+            SMSConversation.status == ConversationStatus.ACTIVE.value,
+        )
+        .scalar()
+        or 0
+    )
     return {"count": count}
 
 
@@ -53,14 +57,20 @@ async def get_unread_count(
 ):
     """Count of active conversations with messages newer than last_read_at."""
     assert_sms_account_access(user, account_id, db)
-    count = db.query(func.count(SMSConversation.id)).filter(
-        SMSConversation.account_id == UUID(account_id),
-        SMSConversation.status == ConversationStatus.ACTIVE.value,
-        SMSConversation.last_message_at > func.coalesce(
-            SMSConversation.last_read_at,
-            datetime(2000, 1, 1),
-        ),
-    ).scalar() or 0
+    count = (
+        db.query(func.count(SMSConversation.id))
+        .filter(
+            SMSConversation.account_id == UUID(account_id),
+            SMSConversation.status == ConversationStatus.ACTIVE.value,
+            SMSConversation.last_message_at
+            > func.coalesce(
+                SMSConversation.last_read_at,
+                datetime(2000, 1, 1),
+            ),
+        )
+        .scalar()
+        or 0
+    )
     return {"unread_count": count}
 
 
@@ -69,13 +79,14 @@ async def get_sms_stats(
     account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     date_from: Optional[datetime] = Query(None, description="Start of reporting window (ISO 8601)"),
     date_to: Optional[datetime] = Query(None, description="End of reporting window (ISO 8601)"),
-    assistant_ids: Optional[List[UUID]] = Query(None, description="Filter to these assistants (repeat param for multiple)."),
+    assistant_ids: Optional[List[UUID]] = Query(
+        None, description="Filter to these assistants (repeat param for multiple)."
+    ),
     botelier_number: Optional[str] = Query(None, description="Limit stats to one phone number"),
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    Aggregated analytics for SMS conversations.
+    """Aggregated analytics for SMS conversations.
 
     All figures are scoped to account_id. Optional filters narrow the window
     by date range, assistant, or account phone number.
@@ -142,7 +153,8 @@ async def get_sms_stats(
         total_escalated = handler_map.get("human", 0)
         escalation_rate_pct = (
             round(total_escalated / total_conversations * 100, 1)
-            if total_conversations > 0 else 0.0
+            if total_conversations > 0
+            else 0.0
         )
 
         # --- Message-level stats ---
@@ -158,11 +170,11 @@ async def get_sms_stats(
             .all()
         )
 
-        inbound_total  = sum(r.cnt for r in msg_agg if r.direction == "inbound")
+        inbound_total = sum(r.cnt for r in msg_agg if r.direction == "inbound")
         outbound_total = sum(r.cnt for r in msg_agg if r.direction == "outbound")
-        ai_responses   = sum(r.cnt for r in msg_agg if r.sender == "ai")
+        ai_responses = sum(r.cnt for r in msg_agg if r.sender == "ai")
         agent_responses = sum(r.cnt for r in msg_agg if r.sender == "agent")
-        total_tokens   = sum((r.tokens or 0) for r in msg_agg)
+        total_tokens = sum((r.tokens or 0) for r in msg_agg)
 
         # --- Response time ---
         rt_row = (
@@ -170,7 +182,9 @@ async def get_sms_stats(
             .filter(SMSConversation.first_response_at.isnot(None))
             .with_entities(
                 func.avg(
-                    func.extract("epoch", SMSConversation.first_response_at - SMSConversation.started_at)
+                    func.extract(
+                        "epoch", SMSConversation.first_response_at - SMSConversation.started_at
+                    )
                 ).label("avg_rt"),
                 func.count(SMSConversation.id).label("cnt"),
             )
@@ -196,8 +210,7 @@ async def get_sms_stats(
             .all()
         )
         msg_volume_map = {
-            r.day.date().isoformat() if r.day else None: r.msg_count
-            for r in msg_volume_rows
+            r.day.date().isoformat() if r.day else None: r.msg_count for r in msg_volume_rows
         }
 
         volume_by_day = [
@@ -257,7 +270,9 @@ async def get_sms_stats(
         disp_ids = [r.disposition_id for r in disp_rows]
         disp_info: dict = {}
         if disp_ids:
-            disps = db.query(AssistantDisposition).filter(AssistantDisposition.id.in_(disp_ids)).all()
+            disps = (
+                db.query(AssistantDisposition).filter(AssistantDisposition.id.in_(disp_ids)).all()
+            )
             disp_info = {str(d.id): {"name": d.name, "color": d.color} for d in disps}
 
         # --- Top customers ---
@@ -279,22 +294,22 @@ async def get_sms_stats(
         return {
             "period": {
                 "from": date_from.isoformat() if date_from else None,
-                "to":   date_to.isoformat() if date_to else None,
+                "to": date_to.isoformat() if date_to else None,
             },
             "overview": {
                 "total_conversations": total_conversations,
-                "active":      status_map.get("active",    0),
-                "closed":      status_map.get("closed",    0),
-                "opted_out":   status_map.get("opted_out", 0),
-                "ai_handled":  handler_map.get("ai",    0),
+                "active": status_map.get("active", 0),
+                "closed": status_map.get("closed", 0),
+                "opted_out": status_map.get("opted_out", 0),
+                "ai_handled": handler_map.get("ai", 0),
                 "human_handled": handler_map.get("human", 0),
                 "total_escalated": total_escalated,
                 "escalation_rate_pct": escalation_rate_pct,
                 "currently_needs_attention": currently_needs_attention,
                 "total_messages": int(conv_agg.total_msg or 0),
-                "inbound_messages":  inbound_total,
+                "inbound_messages": inbound_total,
                 "outbound_messages": outbound_total,
-                "ai_responses":    ai_responses,
+                "ai_responses": ai_responses,
                 "agent_responses": agent_responses,
                 "avg_messages_per_conversation": round(float(conv_agg.avg_msg or 0), 2),
                 "total_tokens_used": int(total_tokens),
@@ -307,23 +322,23 @@ async def get_sms_stats(
             "by_phone_number": [
                 {
                     "botelier_number": r.botelier_number,
-                    "conversations":   r.conv_count,
+                    "conversations": r.conv_count,
                     "messages": int(r.msg_count or 0),
                 }
                 for r in by_number_rows
             ],
             "by_assistant": [
                 {
-                    "assistant_id":   str(r.assistant_id),
+                    "assistant_id": str(r.assistant_id),
                     "assistant_name": asst_names.get(str(r.assistant_id), "Unknown"),
-                    "conversations":  r.conv_count,
+                    "conversations": r.conv_count,
                 }
                 for r in by_asst_rows
             ],
             "dispositions": [
                 {
                     "disposition_id": str(r.disposition_id),
-                    "name":  disp_info.get(str(r.disposition_id), {}).get("name", "Unknown"),
+                    "name": disp_info.get(str(r.disposition_id), {}).get("name", "Unknown"),
                     "color": disp_info.get(str(r.disposition_id), {}).get("color"),
                     "count": r.cnt,
                 }
@@ -331,7 +346,7 @@ async def get_sms_stats(
             ],
             "top_customers": [
                 {
-                    "customer_number":    r.customer_number,
+                    "customer_number": r.customer_number,
                     "conversation_count": r.conversation_count,
                     "message_count": int(r.message_count or 0),
                 }
@@ -356,8 +371,7 @@ async def export_sms_conversations(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    Export SMS conversations as a CSV file (max 10,000 rows).
+    """Export SMS conversations as a CSV file (max 10,000 rows).
 
     Columns:
       id, started_at, closed_at, status, handler_mode, needs_attention,
@@ -403,13 +417,27 @@ async def export_sms_conversations(
 
         output = io.StringIO()
         writer = csv.writer(output)
-        writer.writerow([
-            "id", "started_at", "closed_at", "status", "handler_mode", "needs_attention",
-            "customer_number", "botelier_number", "message_count",
-            "first_response_at", "response_time_seconds",
-            "ai_responses", "agent_responses", "tools_used",
-            "disposition", "ai_summary", "assistant_id",
-        ])
+        writer.writerow(
+            [
+                "id",
+                "started_at",
+                "closed_at",
+                "status",
+                "handler_mode",
+                "needs_attention",
+                "customer_number",
+                "botelier_number",
+                "message_count",
+                "first_response_at",
+                "response_time_seconds",
+                "ai_responses",
+                "agent_responses",
+                "tools_used",
+                "disposition",
+                "ai_summary",
+                "assistant_id",
+            ]
+        )
 
         for conv in conversations:
             cid = str(conv.id)
@@ -418,25 +446,27 @@ async def export_sms_conversations(
             if conv.first_response_at and conv.started_at:
                 response_time = round((conv.first_response_at - conv.started_at).total_seconds(), 1)
 
-            writer.writerow([
-                cid,
-                conv.started_at.isoformat() + "Z" if conv.started_at else "",
-                conv.closed_at.isoformat() + "Z" if conv.closed_at else "",
-                conv.status or "",
-                conv.handler_mode or "ai",
-                "true" if conv.needs_attention else "false",
-                conv.customer_number or "",
-                conv.botelier_number or "",
-                conv.message_count or 0,
-                conv.first_response_at.isoformat() + "Z" if conv.first_response_at else "",
-                response_time if response_time is not None else "",
-                counts.get("ai", 0),
-                counts.get("agent", 0),
-                conv.tools_used or "",
-                conv.disposition.name if conv.disposition else "",
-                (conv.ai_summary or "").replace("\n", " "),
-                str(conv.assistant_id) if conv.assistant_id else "",
-            ])
+            writer.writerow(
+                [
+                    cid,
+                    conv.started_at.isoformat() + "Z" if conv.started_at else "",
+                    conv.closed_at.isoformat() + "Z" if conv.closed_at else "",
+                    conv.status or "",
+                    conv.handler_mode or "ai",
+                    "true" if conv.needs_attention else "false",
+                    conv.customer_number or "",
+                    conv.botelier_number or "",
+                    conv.message_count or 0,
+                    conv.first_response_at.isoformat() + "Z" if conv.first_response_at else "",
+                    response_time if response_time is not None else "",
+                    counts.get("ai", 0),
+                    counts.get("agent", 0),
+                    conv.tools_used or "",
+                    conv.disposition.name if conv.disposition else "",
+                    (conv.ai_summary or "").replace("\n", " "),
+                    str(conv.assistant_id) if conv.assistant_id else "",
+                ]
+            )
 
         filename = f"sms-conversations-{datetime.utcnow().date().isoformat()}.csv"
         output.seek(0)

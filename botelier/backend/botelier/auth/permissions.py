@@ -1,5 +1,4 @@
-"""
-Permission Constants and Default Role Templates.
+"""Permission Constants and Default Role Templates.
 
 Three-tier permission system
 -----------------------------
@@ -32,8 +31,7 @@ Three-tier permission system
 platform admins regardless of account membership.
 """
 
-from typing import Dict, Any
-
+from typing import Any, Dict
 
 PERMISSIONS = {
     "assistants": {
@@ -107,16 +105,40 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
         "description": "Full access to all account features. Can manage team and settings.",
         "is_system_role": True,
         "permissions": {
-            "assistants": {"view": True, "create": True, "edit": True, "delete": True, "publish": True},
+            "assistants": {
+                "view": True,
+                "create": True,
+                "edit": True,
+                "delete": True,
+                "publish": True,
+            },
             "phone_numbers": {"view": True, "purchase": True, "configure": True, "release": True},
-            "call_logs": {"view": True, "view_transcripts": True, "export": True, "edit": True, "delete": True, "play_recordings": True},
-            "knowledge_base": {"view": True, "create": True, "edit": True, "delete": True, "import": True},
+            "call_logs": {
+                "view": True,
+                "view_transcripts": True,
+                "export": True,
+                "edit": True,
+                "delete": True,
+                "play_recordings": True,
+            },
+            "knowledge_base": {
+                "view": True,
+                "create": True,
+                "edit": True,
+                "delete": True,
+                "import": True,
+            },
             "tools": {"view": True, "create": True, "edit": True, "delete": True},
             "flows": {"view": True, "edit": True, "publish": True, "revert": True},
             "team": {"view": True, "invite": True, "manage_roles": True, "remove": True},
             "settings": {"view": True, "edit": True, "billing": True, "api_keys": True},
             "integrations": {"view": True, "manage": True},
-            "messages": {"view": True, "reply": True, "manage_conversations": True, "manage_settings": True},
+            "messages": {
+                "view": True,
+                "reply": True,
+                "manage_conversations": True,
+                "manage_settings": True,
+            },
         },
     },
     "staff": {
@@ -124,16 +146,45 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
         "description": "Standard access for daily operations. Can view and edit most features.",
         "is_system_role": True,
         "permissions": {
-            "assistants": {"view": True, "create": False, "edit": True, "delete": False, "publish": False},
-            "phone_numbers": {"view": True, "purchase": False, "configure": False, "release": False},
-            "call_logs": {"view": True, "view_transcripts": True, "export": True, "edit": True, "delete": False, "play_recordings": True},
-            "knowledge_base": {"view": True, "create": True, "edit": True, "delete": False, "import": False},
+            "assistants": {
+                "view": True,
+                "create": False,
+                "edit": True,
+                "delete": False,
+                "publish": False,
+            },
+            "phone_numbers": {
+                "view": True,
+                "purchase": False,
+                "configure": False,
+                "release": False,
+            },
+            "call_logs": {
+                "view": True,
+                "view_transcripts": True,
+                "export": True,
+                "edit": True,
+                "delete": False,
+                "play_recordings": True,
+            },
+            "knowledge_base": {
+                "view": True,
+                "create": True,
+                "edit": True,
+                "delete": False,
+                "import": False,
+            },
             "tools": {"view": True, "create": False, "edit": False, "delete": False},
             "flows": {"view": True, "edit": True, "publish": False, "revert": False},
             "team": {"view": True, "invite": False, "manage_roles": False, "remove": False},
             "settings": {"view": True, "edit": False, "billing": False, "api_keys": False},
             "integrations": {"view": True, "manage": False},
-            "messages": {"view": True, "reply": True, "manage_conversations": True, "manage_settings": False},
+            "messages": {
+                "view": True,
+                "reply": True,
+                "manage_conversations": True,
+                "manage_settings": False,
+            },
         },
     },
     "viewer": {
@@ -141,16 +192,45 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
         "description": "Read-only access. Can view all data but cannot make changes.",
         "is_system_role": True,
         "permissions": {
-            "assistants": {"view": True, "create": False, "edit": False, "delete": False, "publish": False},
-            "phone_numbers": {"view": True, "purchase": False, "configure": False, "release": False},
-            "call_logs": {"view": True, "view_transcripts": True, "export": True, "edit": False, "delete": False, "play_recordings": False},
-            "knowledge_base": {"view": True, "create": False, "edit": False, "delete": False, "import": False},
+            "assistants": {
+                "view": True,
+                "create": False,
+                "edit": False,
+                "delete": False,
+                "publish": False,
+            },
+            "phone_numbers": {
+                "view": True,
+                "purchase": False,
+                "configure": False,
+                "release": False,
+            },
+            "call_logs": {
+                "view": True,
+                "view_transcripts": True,
+                "export": True,
+                "edit": False,
+                "delete": False,
+                "play_recordings": False,
+            },
+            "knowledge_base": {
+                "view": True,
+                "create": False,
+                "edit": False,
+                "delete": False,
+                "import": False,
+            },
             "tools": {"view": True, "create": False, "edit": False, "delete": False},
             "flows": {"view": True, "edit": False, "publish": False, "revert": False},
             "team": {"view": True, "invite": False, "manage_roles": False, "remove": False},
             "settings": {"view": True, "edit": False, "billing": False, "api_keys": False},
             "integrations": {"view": True, "manage": False},
-            "messages": {"view": True, "reply": False, "manage_conversations": False, "manage_settings": False},
+            "messages": {
+                "view": True,
+                "reply": False,
+                "manage_conversations": False,
+                "manage_settings": False,
+            },
         },
     },
 }
@@ -167,10 +247,7 @@ PLATFORM_ADMIN_PERMISSIONS: Dict[str, Any] = {
         "view_billing": True,
         "manage_platform_settings": True,
     },
-    **{
-        feature: {perm: True for perm in perms}
-        for feature, perms in PERMISSIONS.items()
-    }
+    **{feature: {perm: True for perm in perms} for feature, perms in PERMISSIONS.items()},
 }
 
 
@@ -184,19 +261,18 @@ def get_flat_permissions() -> list:
 
 
 def check_permission(user_permissions: dict, permission: str) -> bool:
-    """
-    Check if a permission dict grants a specific permission.
-    
+    """Check if a permission dict grants a specific permission.
+
     Args:
         user_permissions: Nested dict of permissions
         permission: Dot-notation permission like "assistants.create"
-    
+
     Returns:
         bool: True if permission is granted
     """
     parts = permission.split(".")
     current = user_permissions
-    
+
     for part in parts:
         if isinstance(current, dict):
             current = current.get(part)
@@ -204,8 +280,8 @@ def check_permission(user_permissions: dict, permission: str) -> bool:
             return current
         else:
             return False
-        
+
         if current is None:
             return False
-    
+
     return current is True

@@ -1,5 +1,4 @@
-"""
-Botelier integration seed functions.
+"""Botelier integration seed functions.
 
 Contract
 --------
@@ -23,16 +22,15 @@ instead of importing individual seed functions directly.
 """
 
 from typing import List, Optional
-from sqlalchemy.orm import Session
 
+from sqlalchemy.orm import Session
 
 _REQUIRED_TOP_LEVEL = {"name", "slug", "auth_type", "provider"}
 _REQUIRED_ENDPOINT_KEYS = {"id", "name", "path", "method"}
 
 
 def verify_seed(slug: str, db: Session) -> Optional[List[str]]:
-    """
-    Validate that a seeded IntegrationType row in the DB is structurally sound.
+    """Validate that a seeded IntegrationType row in the DB is structurally sound.
 
     Checks for:
     - Row exists with the given slug
@@ -46,7 +44,9 @@ def verify_seed(slug: str, db: Session) -> Optional[List[str]]:
     immediately rather than at call-time.
     """
     import json as _json
+
     from loguru import logger as _logger
+
     from botelier.models.integration import IntegrationType
 
     row = db.query(IntegrationType).filter(IntegrationType.slug == slug).first()
@@ -108,8 +108,7 @@ def verify_seed(slug: str, db: Session) -> Optional[List[str]]:
 
 
 def seed_all_integrations(db: Session) -> None:
-    """
-    Run every integration seed in sequence, then validate each.
+    """Run every integration seed in sequence, then validate each.
 
     Idempotent — safe to call on every application startup.  Each seed is
     wrapped individually so a failure in one does not block the others.
@@ -122,12 +121,14 @@ def seed_all_integrations(db: Session) -> None:
 
     try:
         from botelier.seeds.opera_integration import seed_opera_integration
+
         seeds.append(("opera", "opera-cloud", seed_opera_integration))
     except ImportError as exc:
         logger.warning(f"Could not import opera seed: {exc}")
 
     try:
         from botelier.seeds.guestcentric_integration import seed_guestcentric_integration
+
         seeds.append(("guestcentric", "guestcentric-crs", seed_guestcentric_integration))
     except ImportError as exc:
         logger.warning(f"Could not import guestcentric seed: {exc}")
@@ -143,4 +144,6 @@ def seed_all_integrations(db: Session) -> None:
         try:
             verify_seed(slug, db)
         except Exception as exc:
-            logger.warning(f"Seed validation for '{name}' (slug='{slug}') raised an exception (non-fatal): {exc}")
+            logger.warning(
+                f"Seed validation for '{name}' (slug='{slug}') raised an exception (non-fatal): {exc}"
+            )

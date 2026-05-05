@@ -1,5 +1,4 @@
-"""
-One-shot backfill: clear ``caller_spoke`` on calls whose ``user_first_speech``
+"""One-shot backfill: clear ``caller_spoke`` on calls whose ``user_first_speech``
 transcript is actually the bot's own greeting (Task #110).
 
 Background
@@ -43,21 +42,21 @@ finds nothing to fix.
 """
 
 import argparse
+
+# Add backend root so ``botelier.*`` imports resolve when run as a module.
+import os
 import re
 import sys
 from datetime import datetime, timedelta, timezone
 
-# Add backend root so ``botelier.*`` imports resolve when run as a module.
-import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from sqlalchemy import and_, exists
 from botelier.database import SessionLocal
 from botelier.models.assistant import Assistant
-from botelier.models.call_log import CallLog
 from botelier.models.call_event import CallEvent
+from botelier.models.call_log import CallLog
 from loguru import logger
-
+from sqlalchemy import and_, exists
 
 _WS_RE = re.compile(r"\s+")
 _PUNCT_RE = re.compile(r"[^\w\s]")
@@ -99,7 +98,9 @@ def _similarity(transcript: str, greeting: str) -> float:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
-    parser.add_argument("--apply", action="store_true", help="Actually update rows (default: dry run).")
+    parser.add_argument(
+        "--apply", action="store_true", help="Actually update rows (default: dry run)."
+    )
     parser.add_argument("--days", type=int, default=30, help="Lookback window in days.")
     parser.add_argument(
         "--threshold",
@@ -159,9 +160,7 @@ def main():
         )
 
         for call_log, sim, transcript, greeting in to_fix[:20]:
-            logger.info(
-                f"  {call_log.id}  sim={sim:.2f}  transcript={transcript[:70]!r}"
-            )
+            logger.info(f"  {call_log.id}  sim={sim:.2f}  transcript={transcript[:70]!r}")
         if len(to_fix) > 20:
             logger.info(f"  … and {len(to_fix) - 20} more")
 

@@ -1,8 +1,11 @@
-import uuid
 import enum
+import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Boolean, Text, ForeignKey, Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text
+from sqlalchemy import Enum as SQLEnum
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+
 from botelier.database import Base
 
 
@@ -133,11 +136,15 @@ class SMSComplianceCampaign(Base):
     __tablename__ = "sms_compliance_campaigns"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    brand_id = Column(UUID(as_uuid=True), ForeignKey("sms_compliance_brands.id"), nullable=False, index=True)
+    brand_id = Column(
+        UUID(as_uuid=True), ForeignKey("sms_compliance_brands.id"), nullable=False, index=True
+    )
     account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=False, index=True)
 
     friendly_name = Column(String, nullable=False)
-    use_case = Column(SQLEnum(CampaignUseCase), default=CampaignUseCase.CUSTOMER_CARE, nullable=False)
+    use_case = Column(
+        SQLEnum(CampaignUseCase), default=CampaignUseCase.CUSTOMER_CARE, nullable=False
+    )
     description = Column(Text, nullable=True)
 
     message_samples = Column(JSONB, default=list)

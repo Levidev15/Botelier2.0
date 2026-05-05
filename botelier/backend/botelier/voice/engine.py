@@ -1,5 +1,4 @@
-"""
-Botelier Voice Engine Implementation
+"""Botelier Voice Engine Implementation
 
 This module contains the actual implementation that uses Pipecat.
 This is an internal module - hotel developers don't interact with this directly.
@@ -13,21 +12,15 @@ Key Design Principle:
 import asyncio
 import os
 import time
-from typing import Optional, Dict, Any, Callable
-from loguru import logger
+from typing import Any, Callable, Dict, Optional
 
-# Lazy imports for provider services to avoid startup issues with optional dependencies
-# Services will be imported only when actually used
-from pipecat.pipeline.pipeline import Pipeline
-from pipecat.pipeline.task import PipelineTask, PipelineParams
-from pipecat.processors.aggregators.llm_context import LLMContext
-from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair, LLMUserAggregatorParams
-from pipecat.transcriptions.language import Language
-from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
+from loguru import logger
+from pipecat.processors.idle_frame_processor import IdleFrameProcessor
+
 from pipecat.frames.frames import (
-    Frame,
     AudioRawFrame,
     BotStoppedSpeakingFrame,
+    Frame,
     InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
@@ -35,60 +28,71 @@ from pipecat.frames.frames import (
     MetricsFrame,
     StartFrame,
     TextFrame,
+    TranscriptionFrame,
     TTSAudioRawFrame,
     TTSSpeakFrame,
     TTSStartedFrame,
     TTSStoppedFrame,
-    TranscriptionFrame,
 )
 from pipecat.metrics.metrics import LLMUsageMetricsData
-from pipecat.processors.user_idle_processor import UserIdleProcessor
-from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy import MuteUntilFirstBotCompleteUserMuteStrategy
-from pipecat.turns.user_mute.function_call_user_mute_strategy import FunctionCallUserMuteStrategy
-from pipecat.turns.user_turn_strategies import UserTurnStrategies
-from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
 
-from .agent import VoiceAgentConfig
+# Lazy imports for provider services to avoid startup issues with optional dependencies
+# Services will be imported only when actually used
+from pipecat.pipeline.pipeline import Pipeline
+from pipecat.pipeline.task import PipelineParams, PipelineTask
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import (
+    LLMContextAggregatorPair,
+    LLMUserAggregatorParams,
+)
+from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
+from pipecat.transcriptions.language import Language
+from pipecat.turns.user_mute.function_call_user_mute_strategy import FunctionCallUserMuteStrategy
+from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy import (
+    MuteUntilFirstBotCompleteUserMuteStrategy,
+)
+from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
+from pipecat.turns.user_turn_strategies import UserTurnStrategies
+
 from ..config.providers import is_flux_model
+from .agent import VoiceAgentConfig
 
 
 class InterruptionTracker(FrameProcessor):
-    """
-    Tracks TTS content being spoken and detects when it's interrupted.
-    
+    """Tracks TTS content being spoken and detects when it's interrupted.
+
     Placed before TTS in the pipeline to monitor text frames.
     When an InterruptionFrame is detected, calls the callback with the
     content that was interrupted.
     """
-    
+
     def __init__(self, on_interruption: Optional[Callable[[str], None]] = None, **kwargs):
         super().__init__(**kwargs)
         self._current_text = ""
         self._on_interruption = on_interruption
-    
+
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
-        
+
         # Track outgoing TTS content (text frames from LLM)
         if isinstance(frame, (TextFrame, TTSSpeakFrame)):
-            if hasattr(frame, 'text') and frame.text:
+            if hasattr(frame, "text") and frame.text:
                 self._current_text = frame.text
                 logger.debug(f"🎤 Tracking TTS: {frame.text[:50]}...")
-        
+
         # Detect interruption
         if isinstance(frame, InterruptionFrame):
             if self._current_text and self._on_interruption:
                 logger.info(f"🛑 Interruption detected for: {self._current_text[:50]}...")
                 self._on_interruption(self._current_text)
             self._current_text = ""  # Reset after interruption
-        
+
         # CRITICAL: Always push frames through to next processor
         await self.push_frame(frame, direction)
 
 
 class LLMResponseCapture(FrameProcessor):
-    """
-    Pure-observer processor that captures each complete LLM response.
+    """Pure-observer processor that captures each complete LLM response.
 
     Placed immediately after the LLM in the pipeline so it sees LLM output
     frames before they reach the TTS service.  ALL frames are passed through
@@ -104,7 +108,14 @@ class LLMResponseCapture(FrameProcessor):
     it works across all LLM providers that may emit generic TextFrame tokens.
     """
 
-    def __init__(self, on_llm_response=None, on_llm_start=None, call_start_mono: float = 0.0, timing_state: dict = None, **kwargs):
+    def __init__(
+        self,
+        on_llm_response=None,
+        on_llm_start=None,
+        call_start_mono: float = 0.0,
+        timing_state: dict = None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self._buffer: str = ""
         self._in_response: bool = False
@@ -122,7 +133,11 @@ class LLMResponseCapture(FrameProcessor):
             self._in_response = True
             self._llm_turn_start_mono = time.monotonic()
             self._timing_state["t_llm_start"] = self._llm_turn_start_mono
-            _elapsed_ms = (self._llm_turn_start_mono - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
+            _elapsed_ms = (
+                (self._llm_turn_start_mono - self._call_start_mono) * 1000
+                if self._call_start_mono
+                else 0.0
+            )
             _t_stt = self._timing_state.get("t_stt", 0.0)
             _stt_to_llm_ms = (self._llm_turn_start_mono - _t_stt) * 1000 if _t_stt else 0.0
             # Per-turn latency observability (Task #95). INFO-level so it
@@ -148,8 +163,12 @@ class LLMResponseCapture(FrameProcessor):
             self._buffer = ""
             _now_mono = time.monotonic()
             self._timing_state["t_llm_end"] = _now_mono
-            _elapsed_ms = (_now_mono - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
-            _gen_ms = (_now_mono - self._llm_turn_start_mono) * 1000 if self._llm_turn_start_mono else 0.0
+            _elapsed_ms = (
+                (_now_mono - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
+            )
+            _gen_ms = (
+                (_now_mono - self._llm_turn_start_mono) * 1000 if self._llm_turn_start_mono else 0.0
+            )
             logger.info(
                 f"⏱️ [T+{_elapsed_ms:.0f}ms] LLM response complete: "
                 f"{len(text)} chars, generation={_gen_ms:.0f}ms"
@@ -157,6 +176,7 @@ class LLMResponseCapture(FrameProcessor):
             if text and self._on_llm_response:
                 try:
                     from datetime import datetime as _dt
+
                     self._on_llm_response(text, _dt.utcnow())
                 except Exception:
                     logger.exception("LLMResponseCapture: error in on_llm_response callback")
@@ -165,8 +185,7 @@ class LLMResponseCapture(FrameProcessor):
 
 
 class UserTurnCapture(FrameProcessor):
-    """
-    Pure-observer processor that captures each finalized user utterance with a
+    """Pure-observer processor that captures each finalized user utterance with a
     wall-clock timestamp.
 
     Placed immediately after the STT mute filter and before the LLM context
@@ -185,7 +204,14 @@ class UserTurnCapture(FrameProcessor):
     (emitted downstream by ``TtsPipelineLatencyTracker``) can reference it.
     """
 
-    def __init__(self, on_user_turn=None, call_start_mono: float = 0.0, timing_state: dict = None, event_queue=None, **kwargs):
+    def __init__(
+        self,
+        on_user_turn=None,
+        call_start_mono: float = 0.0,
+        timing_state: dict = None,
+        event_queue=None,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self._on_user_turn = on_user_turn
         self._call_start_mono = call_start_mono
@@ -227,6 +253,7 @@ class UserTurnCapture(FrameProcessor):
             if self._on_user_turn:
                 try:
                     from datetime import datetime as _dt
+
                     self._on_user_turn(_transcript, _dt.utcnow())
                 except Exception:
                     logger.exception("UserTurnCapture: error in on_user_turn callback")
@@ -235,8 +262,7 @@ class UserTurnCapture(FrameProcessor):
 
 
 class GreetingAudioInjector(FrameProcessor):
-    """
-    Pushes pre-rendered greeting PCM audio downstream as a TTSStartedFrame +
+    """Pushes pre-rendered greeting PCM audio downstream as a TTSStartedFrame +
     TTSAudioRawFrame chunks + TTSStoppedFrame sequence — but does so from a
     point in the pipeline that is downstream of STT, so the cached audio is
     never transcribed by the STT service.
@@ -333,6 +359,7 @@ class GreetingAudioInjector(FrameProcessor):
                 # error during reload) surfaces in the logs instead of
                 # being swallowed by garbage collection of the task object.
                 from ..utils import log_task_exception as _log_task_exception
+
                 _inject_task = asyncio.create_task(self._inject(audio))
                 _inject_task.add_done_callback(_log_task_exception)
 
@@ -359,16 +386,14 @@ class GreetingAudioInjector(FrameProcessor):
             await self.push_frame(TTSStoppedFrame(), FrameDirection.DOWNSTREAM)
             chunk_count = -(-len(audio) // self._CHUNK_SIZE)  # ceil division
             logger.info(
-                f"🎙️ Greeting injected downstream of STT ({len(audio)} bytes, "
-                f"{chunk_count} chunks)"
+                f"🎙️ Greeting injected downstream of STT ({len(audio)} bytes, {chunk_count} chunks)"
             )
         except Exception as e:
             logger.error(f"GreetingAudioInjector._inject failed: {e}")
 
 
 class FirstUserSpeechTracker(FrameProcessor):
-    """
-    Detects the first non-empty transcription from the user and logs a
+    """Detects the first non-empty transcription from the user and logs a
     user_first_speech event via the injected CallEventQueue.
 
     Placed between the STT service and the context_aggregator so it
@@ -387,8 +412,7 @@ class FirstUserSpeechTracker(FrameProcessor):
         self._event_queue = event_queue
 
     def set_first_speech_callback(self, callback) -> None:
-        """
-        Task #98 — wire an async callback fired exactly once on the first
+        """Task #98 — wire an async callback fired exactly once on the first
         non-empty caller transcription. Used by call_handler.py to flip
         ``call_logs.caller_spoke = TRUE`` so analytics can distinguish
         silent calls from real conversations.
@@ -424,8 +448,7 @@ class FirstUserSpeechTracker(FrameProcessor):
 
 
 class IdleTimeoutTracker:
-    """
-    Thin wrapper that builds a UserIdleProcessor whose callback logs an
+    """Thin wrapper that builds a UserIdleProcessor whose callback logs an
     idle_timeout event via an injected CallEventQueue.
 
     Usage::
@@ -437,8 +460,8 @@ class IdleTimeoutTracker:
 
     def __init__(self, timeout: float = 30.0):
         self._event_queue = None
-        self._retry_count = 0
-        self.processor = UserIdleProcessor(
+        self._timeout = timeout
+        self.processor = IdleFrameProcessor(
             callback=self._on_idle,
             timeout=timeout,
         )
@@ -446,8 +469,8 @@ class IdleTimeoutTracker:
     def set_event_queue(self, event_queue) -> None:
         self._event_queue = event_queue
 
-    async def _on_idle(self, processor: UserIdleProcessor, retry_count: int) -> bool:
-        """Called each time the idle timeout fires.  Returns False to stop retrying.
+    async def _on_idle(self, processor: IdleFrameProcessor) -> None:
+        """Called each time the idle timeout fires.
 
         Note: there is no explicit stop-event guard here against a race with
         pipeline teardown.  That guard lives in CallEventQueue.log() itself —
@@ -460,7 +483,7 @@ class IdleTimeoutTracker:
                 "idle_timeout",
                 event_source="pipecat",
                 severity="warning",
-                details={"retry_count": retry_count, "timeout_secs": processor._timeout},
+                details={"timeout_secs": self._timeout},
             )
             # Boundary event: makes "the caller went silent" explicitly visible
             # in the dashboard timeline alongside the existing idle_timeout
@@ -469,15 +492,13 @@ class IdleTimeoutTracker:
                 "caller_silence_detected",
                 event_source="pipecat",
                 severity="info",
-                details={"retry_count": retry_count, "timeout_secs": processor._timeout},
+                details={"timeout_secs": self._timeout},
             )
-        logger.info(f"idle_timeout / caller_silence_detected logged (retry #{retry_count})")
-        return False  # One notification per idle period; let pipeline decide to hang up elsewhere
+        logger.info("idle_timeout / caller_silence_detected logged")
 
 
 class GreetingCompletionTracker(FrameProcessor):
-    """
-    Logs a greeting_completed event when the greeting TTS finishes speaking.
+    """Logs a greeting_completed event when the greeting TTS finishes speaking.
 
     Placed immediately after the TTS service so it sees BotStoppedSpeakingFrame
     as it flows downstream.  Only the very first BotStoppedSpeakingFrame is
@@ -505,8 +526,7 @@ class GreetingCompletionTracker(FrameProcessor):
         self._greeting_callback = callback
 
     def set_call_active(self, is_call_active) -> None:
-        """
-        Wire a callable that returns True when the WebSocket is still connected.
+        """Wire a callable that returns True when the WebSocket is still connected.
 
         If the callable returns False when BotStoppedSpeakingFrame arrives, the
         greeting callback is suppressed — the audio drained after the caller hung
@@ -549,8 +569,7 @@ class GreetingCompletionTracker(FrameProcessor):
 
 
 class TtsCompletionWatcher(FrameProcessor):
-    """
-    Watches for BotStoppedSpeakingFrame to signal TTS completion.
+    """Watches for BotStoppedSpeakingFrame to signal TTS completion.
 
     Placed in the pipeline immediately after the TTS service so it can observe
     BotStoppedSpeakingFrame as it flows downstream toward the transport output.
@@ -579,8 +598,7 @@ class TtsCompletionWatcher(FrameProcessor):
         self._on_done_callback = None  # One-shot async callback
 
     def reset(self):
-        """
-        Clear the completion event.
+        """Clear the completion event.
 
         Call this synchronously (no await) just before pushing a TTSSpeakFrame
         so that schedule_after_speech / wait_until_done captures the correct
@@ -589,8 +607,7 @@ class TtsCompletionWatcher(FrameProcessor):
         self._speaking_done.clear()
 
     def schedule_after_speech(self, callback, timeout: float = 5.0) -> None:
-        """
-        Run ``callback`` as soon as the current speech is done.
+        """Run ``callback`` as soon as the current speech is done.
 
         - If speech has already ended (event is set), fires callback immediately
           via asyncio.create_task so it runs outside the current stack frame.
@@ -648,8 +665,7 @@ class TtsCompletionWatcher(FrameProcessor):
             asyncio.create_task(_timeout_guard())
 
     def clear_callback(self) -> None:
-        """
-        Remove any pending one-shot callback.
+        """Remove any pending one-shot callback.
 
         Call this on pipeline shutdown or call hang-up to avoid firing a
         stale transfer after the call has already ended.
@@ -657,8 +673,7 @@ class TtsCompletionWatcher(FrameProcessor):
         self._on_done_callback = None
 
     async def wait_until_done(self, timeout: float = 15.0) -> bool:
-        """
-        Wait until BotStoppedSpeakingFrame is observed or the timeout expires.
+        """Wait until BotStoppedSpeakingFrame is observed or the timeout expires.
 
         Returns:
             True  — speech completed within the timeout.
@@ -668,7 +683,9 @@ class TtsCompletionWatcher(FrameProcessor):
             await asyncio.wait_for(self._speaking_done.wait(), timeout=timeout)
             return True
         except asyncio.TimeoutError:
-            logger.warning(f"TtsCompletionWatcher: timed out after {timeout}s waiting for BotStoppedSpeakingFrame")
+            logger.warning(
+                f"TtsCompletionWatcher: timed out after {timeout}s waiting for BotStoppedSpeakingFrame"
+            )
             return False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
@@ -682,19 +699,22 @@ class TtsCompletionWatcher(FrameProcessor):
             cb = self._on_done_callback
             self._on_done_callback = None
             if cb is not None:
+
                 async def _guarded_cb(callback=cb):
                     try:
                         await callback()
                     except Exception:
-                        logger.exception("TtsCompletionWatcher: unhandled exception in post-speech callback")
+                        logger.exception(
+                            "TtsCompletionWatcher: unhandled exception in post-speech callback"
+                        )
+
                 asyncio.create_task(_guarded_cb())
         # Always pass frames through unchanged
         await self.push_frame(frame, direction)
 
 
 class InboundAudioTracker(FrameProcessor):
-    """
-    Pure-observer placed immediately after ``transport.input()`` in the pipeline.
+    """Pure-observer placed immediately after ``transport.input()`` in the pipeline.
 
     Stamps ``timing_state["t_last_inbound"]`` with a monotonic clock on every
     inbound AudioRawFrame.  UserTurnCapture reads this to compute:
@@ -718,8 +738,7 @@ class InboundAudioTracker(FrameProcessor):
 
 
 class TtsPipelineLatencyTracker(FrameProcessor):
-    """
-    Measures two pipeline-stage handoffs:
+    """Measures two pipeline-stage handoffs:
 
       3. LLM last token → TTS first audio chunk
          Streaming TTS often starts before LLM finishes; the delta may be
@@ -738,7 +757,9 @@ class TtsPipelineLatencyTracker(FrameProcessor):
     between this processor and LLMResponseCapture / UserTurnCapture.
     """
 
-    def __init__(self, call_start_mono: float = 0.0, timing_state: dict = None, event_queue=None, **kwargs):
+    def __init__(
+        self, call_start_mono: float = 0.0, timing_state: dict = None, event_queue=None, **kwargs
+    ):
         super().__init__(**kwargs)
         self._call_start_mono = call_start_mono
         self._timing_state = timing_state if timing_state is not None else {}
@@ -783,12 +804,24 @@ class TtsPipelineLatencyTracker(FrameProcessor):
         _t_last_inbound = self._timing_state.get("t_last_inbound", 0.0)
         _turn_index = self._timing_state.get("turn_index", 0)
 
-        _inbound_to_stt_ms = int((_t_stt - _t_last_inbound) * 1000) if (_t_stt and _t_last_inbound) else 0
-        _stt_to_llm_start_ms = int((_t_llm_start - _t_stt) * 1000) if (_t_llm_start and _t_stt) else 0
+        _inbound_to_stt_ms = (
+            int((_t_stt - _t_last_inbound) * 1000) if (_t_stt and _t_last_inbound) else 0
+        )
+        _stt_to_llm_start_ms = (
+            int((_t_llm_start - _t_stt) * 1000) if (_t_llm_start and _t_stt) else 0
+        )
         _llm_generation_ms = int((t_llm_end - _t_llm_start) * 1000) if _t_llm_start else 0
         _llm_to_tts_first_audio_ms = int(_delta_ms)
-        _turn_started_ms = int((_t_last_inbound - self._call_start_mono) * 1000) if (_t_last_inbound and self._call_start_mono) else 0
-        _turn_responded_ms = int((_t_first_audio_local - self._call_start_mono) * 1000) if self._call_start_mono else 0
+        _turn_started_ms = (
+            int((_t_last_inbound - self._call_start_mono) * 1000)
+            if (_t_last_inbound and self._call_start_mono)
+            else 0
+        )
+        _turn_responded_ms = (
+            int((_t_first_audio_local - self._call_start_mono) * 1000)
+            if self._call_start_mono
+            else 0
+        )
 
         # Task #106 — prompt-cache observability.
         # OpenAI's prompt cache is automatic (>=1024-token prefix), but a stable
@@ -864,10 +897,12 @@ class TtsPipelineLatencyTracker(FrameProcessor):
         elif self._expecting_audio and isinstance(frame, AudioRawFrame):
             self._expecting_audio = False
             self._t_first_audio = time.monotonic()
-            _elapsed_ms = (self._t_first_audio - self._call_start_mono) * 1000 if self._call_start_mono else 0.0
-            logger.info(
-                f"⏱️ [T+{_elapsed_ms:.0f}ms] TTS first audio chunk dispatched to transport"
+            _elapsed_ms = (
+                (self._t_first_audio - self._call_start_mono) * 1000
+                if self._call_start_mono
+                else 0.0
             )
+            logger.info(f"⏱️ [T+{_elapsed_ms:.0f}ms] TTS first audio chunk dispatched to transport")
             # If LLM already ended (t_llm_end set), emit immediately.
             # Otherwise emission fires when LLMFullResponseEndFrame arrives below.
             _t_llm_end = self._timing_state.get("t_llm_end", 0.0)
@@ -891,7 +926,7 @@ class TtsPipelineLatencyTracker(FrameProcessor):
             # via either branch above. Multiple MetricsData entries may be
             # bundled (TTFB, processing, usage) — only LLMUsageMetricsData is
             # relevant here.
-            for _data in (frame.data or []):
+            for _data in frame.data or []:
                 if isinstance(_data, LLMUsageMetricsData):
                     _usage = _data.value
                     self._timing_state["prompt_tokens"] = _usage.prompt_tokens
@@ -907,17 +942,19 @@ class TtsPipelineLatencyTracker(FrameProcessor):
 
 # Fallback allowlist used only if providers.py cannot be imported at runtime.
 # Keep in sync with STT_PROVIDERS[STTProvider.DEEPGRAM].available_models.
-_DEEPGRAM_VALID_MODELS_FALLBACK: frozenset = frozenset([
-    "nova-3-general",
-    "nova-3-meeting",
-    "nova-3-voicemail",
-    "nova-3-finance",
-    "nova-3-medical",
-    "nova-2-general",
-    "nova-2-meeting",
-    "nova-2-phonecall",
-    "nova-2-voicemail",
-])
+_DEEPGRAM_VALID_MODELS_FALLBACK: frozenset = frozenset(
+    [
+        "nova-3-general",
+        "nova-3-meeting",
+        "nova-3-voicemail",
+        "nova-3-finance",
+        "nova-3-medical",
+        "nova-2-general",
+        "nova-2-meeting",
+        "nova-2-phonecall",
+        "nova-2-voicemail",
+    ]
+)
 
 
 def _get_deepgram_valid_models() -> frozenset:
@@ -928,6 +965,7 @@ def _get_deepgram_valid_models() -> frozenset:
     above only if the import fails, which should never happen in production.
     """
     from ..config.providers import STT_PROVIDERS, STTProvider
+
     cfg = STT_PROVIDERS.get(STTProvider.DEEPGRAM)
     if cfg and cfg.available_models:
         return frozenset(cfg.available_models)
@@ -935,8 +973,7 @@ def _get_deepgram_valid_models() -> frozenset:
 
 
 class BotelierDeepgramSTTService:
-    """
-    Mixin for DeepgramSTTService that aborts the retry loop on permanent
+    """Mixin for DeepgramSTTService that aborts the retry loop on permanent
     HTTP errors (400, 401, 403) instead of retrying forever.
 
     Pipecat's ``_connection_handler`` catches every non-CancelledError
@@ -995,22 +1032,21 @@ class BotelierDeepgramSTTService:
 
 
 class VoiceEngineFactory:
-    """
-    Factory for creating voice AI pipelines
-    
+    """Factory for creating voice AI pipelines
+
     This encapsulates all Pipecat-specific code.
     Hotels never see this - they only interact with VoiceAgent.
     """
-    
+
     @staticmethod
     def create_stt_service(config: VoiceAgentConfig, api_keys: Dict[str, str]):
         """Create STT service using Pipecat's proper configuration classes"""
         provider = config.stt_provider.lower()
         model = config.stt_model or "nova-3-general"
-        
+
         if provider == "deepgram":
-            from pipecat.services.deepgram.stt import DeepgramSTTService
             from pipecat.services.deepgram.flux.stt import DeepgramFluxSTTService
+            from pipecat.services.deepgram.stt import DeepgramSTTService
 
             # Validate the model against the canonical allowlist before
             # opening any Deepgram WebSocket.  This runs for ALL Deepgram
@@ -1073,6 +1109,7 @@ class VoiceEngineFactory:
                 return _BotelierDeepgramSTTService(**deepgram_kwargs)
         elif provider == "openai_whisper":
             from pipecat.services.openai.stt import OpenAISTTService
+
             return OpenAISTTService(
                 api_key=api_keys.get("openai_api_key"),
                 model=model or "whisper-1",
@@ -1080,20 +1117,22 @@ class VoiceEngineFactory:
             )
         elif provider == "assemblyai":
             from pipecat.services.assemblyai import AssemblyAISTTService
+
             return AssemblyAISTTService(
                 api_key=api_keys.get("assemblyai_api_key"),
             )
         else:
             raise ValueError(f"Unsupported STT provider: {provider}")
-    
+
     @staticmethod
     def create_llm_service(config: VoiceAgentConfig, api_keys: Dict[str, str]):
         """Create LLM service using Pipecat's proper InputParams classes"""
         provider = config.llm_provider.lower()
-        
+
         if provider == "openai":
-            from pipecat.services.openai.llm import OpenAILLMService
             from pipecat.services.openai.base_llm import BaseOpenAILLMService
+            from pipecat.services.openai.llm import OpenAILLMService
+
             # Task #106 — explicit cache routing.
             #
             # OpenAI's prompt cache is automatic for prompts ≥1024 tokens, but
@@ -1153,20 +1192,22 @@ class VoiceEngineFactory:
             )
         elif provider == "google_gemini":
             from pipecat.services.google.llm import GoogleLLMService
+
             return GoogleLLMService(
                 api_key=api_keys.get("google_api_key"),
                 model=config.llm_model,
             )
         else:
             raise ValueError(f"Unsupported LLM provider: {provider}")
-    
+
     @staticmethod
     def create_tts_service(config: VoiceAgentConfig, api_keys: Dict[str, str]):
         """Create TTS service using Pipecat's configuration"""
         provider = config.tts_provider.lower()
-        
+
         if provider == "deepgram":
             from pipecat.services.deepgram.tts import DeepgramTTSService
+
             voice = config.tts_voice_id or "aura-2-helena-en"
             # Twilio Media Streams require 8 kHz audio; tell Deepgram to encode at
             # 8000 Hz so no downstream resampling is needed before the Twilio
@@ -1190,25 +1231,28 @@ class VoiceEngineFactory:
             )
         elif provider == "cartesia":
             from pipecat.services.cartesia.tts import CartesiaTTSService
+
             return CartesiaTTSService(
                 api_key=api_keys.get("cartesia_api_key"),
                 voice_id=config.tts_voice_id,
             )
         elif provider == "elevenlabs":
             from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
+
             return ElevenLabsTTSService(
                 api_key=api_keys.get("elevenlabs_api_key"),
                 voice_id=config.tts_voice_id,
             )
         elif provider == "openai":
             from pipecat.services.openai.tts import OpenAITTSService
+
             return OpenAITTSService(
                 api_key=api_keys.get("openai_api_key"),
                 voice=config.tts_voice_id or "alloy",
             )
         else:
             raise ValueError(f"Unsupported TTS provider: {provider}")
-    
+
     @staticmethod
     def create_pipeline(
         config: VoiceAgentConfig,
@@ -1222,8 +1266,7 @@ class VoiceEngineFactory:
         call_start_mono: float = 0.0,
         on_llm_start: Optional[Callable] = None,
     ) -> tuple:
-        """
-        Create complete voice pipeline from agent configuration.
+        """Create complete voice pipeline from agent configuration.
 
         This is where Pipecat is actually used, but it's completely hidden
         from the hotel-facing API.
@@ -1356,10 +1399,11 @@ class VoiceEngineFactory:
         #   (replaces FUNCTION_CALL).
         user_params: LLMUserAggregatorParams | None = None
         if config.enable_vad and config.vad_provider == "silero":
+            from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
+            from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
             from pipecat.audio.vad.silero import SileroVADAnalyzer
             from pipecat.audio.vad.vad_analyzer import VADParams
-            from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
-            from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
+
             vad_config = config.vad_config or {}
             vad_params = VADParams(
                 confidence=vad_config.get("confidence", 0.7),
@@ -1397,20 +1441,20 @@ class VoiceEngineFactory:
         pipeline = Pipeline(
             [
                 transport.input(),
-                inbound_audio_tracker,         # Stamps t_last_inbound for Twilio→STT latency measurement
+                inbound_audio_tracker,  # Stamps t_last_inbound for Twilio→STT latency measurement
                 stt,
-                user_turn_capture,             # Records per-turn user timestamps for transcript (pure observer)
-                first_speech_tracker,          # Detects caller's first utterance (non-blocking event log)
-                idle_timeout_tracker.processor, # Logs idle_timeout when caller goes silent too long
+                user_turn_capture,  # Records per-turn user timestamps for transcript (pure observer)
+                first_speech_tracker,  # Detects caller's first utterance (non-blocking event log)
+                idle_timeout_tracker.processor,  # Logs idle_timeout when caller goes silent too long
                 context_aggregator.user(),
                 llm,
-                llm_response_capture,          # Captures complete LLM responses for transcript recovery
-                interruption_tracker,          # Observes text frames + InterruptionFrame before TTS
-                greeting_injector,             # One-shot cached-greeting push, downstream of STT
+                llm_response_capture,  # Captures complete LLM responses for transcript recovery
+                interruption_tracker,  # Observes text frames + InterruptionFrame before TTS
+                greeting_injector,  # One-shot cached-greeting push, downstream of STT
                 tts,
-                greeting_completion_tracker,   # Logs greeting_completed on first BotStoppedSpeakingFrame
-                tts_completion_watcher,        # Observes BotStoppedSpeakingFrame after TTS
-                tts_latency_tracker,           # Measures LLM→TTS and TTS→transport handoff latencies
+                greeting_completion_tracker,  # Logs greeting_completed on first BotStoppedSpeakingFrame
+                tts_completion_watcher,  # Observes BotStoppedSpeakingFrame after TTS
+                tts_latency_tracker,  # Measures LLM→TTS and TTS→transport handoff latencies
                 transport.output(),
                 context_aggregator.assistant(),
             ]
@@ -1424,56 +1468,74 @@ class VoiceEngineFactory:
             ),
         )
 
-        return pipeline, task, llm, context_aggregator, context, tts_completion_watcher, first_speech_tracker, greeting_completion_tracker, idle_timeout_tracker, user_turn_capture, tts_latency_tracker, greeting_injector
-    
+        return (
+            pipeline,
+            task,
+            llm,
+            context_aggregator,
+            context,
+            tts_completion_watcher,
+            first_speech_tracker,
+            greeting_completion_tracker,
+            idle_timeout_tracker,
+            user_turn_capture,
+            tts_latency_tracker,
+            greeting_injector,
+        )
+
     @staticmethod
     def create_transport_params(config: VoiceAgentConfig):
         """Create transport parameters based on agent config"""
-        from pipecat.transports.base_transport import TransportParams
         from pipecat.audio.vad.vad_analyzer import VADParams
-        
+        from pipecat.transports.base_transport import TransportParams
+
         params = TransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
         )
-        
+
         if config.enable_vad and config.vad_provider:
             vad_config = config.vad_config or {}
-            
+
             try:
                 if config.vad_provider == "silero":
                     # Silero VAD + SmartTurn are wired into LLMUserAggregatorParams
                     # inside create_pipeline() — nothing to set on TransportParams.
                     pass
-                    
+
                 elif config.vad_provider == "webrtc":
                     from pipecat.transports.daily.transport import WebRTCVADAnalyzer
-                    
+
                     vad_params = VADParams(
                         confidence=vad_config.get("confidence", 0.5),
                         start_secs=vad_config.get("start_secs", 0.0),
                         stop_secs=vad_config.get("stop_secs", 0.2),
-                        min_volume=vad_config.get("min_volume", 0.0)
+                        min_volume=vad_config.get("min_volume", 0.0),
                     )
                     params.vad_analyzer = WebRTCVADAnalyzer(params=vad_params)
                     logger.info(f"WebRTC VAD enabled with params: {vad_params}")
-                    
+
                 elif config.vad_provider == "aic":
                     from pipecat.audio.vad.aic_vad import AICVADAnalyzer
-                    
+
                     lookback_buffer_size = vad_config.get("lookback_buffer_size")
                     sensitivity = vad_config.get("sensitivity")
                     params.vad_analyzer = AICVADAnalyzer(
-                        lookback_buffer_size=lookback_buffer_size,
-                        sensitivity=sensitivity
+                        lookback_buffer_size=lookback_buffer_size, sensitivity=sensitivity
                     )
-                    logger.info(f"AIC VAD enabled with lookback={lookback_buffer_size}, sensitivity={sensitivity}")
-                    
+                    logger.info(
+                        f"AIC VAD enabled with lookback={lookback_buffer_size}, sensitivity={sensitivity}"
+                    )
+
                 else:
                     logger.warning(f"Unknown VAD provider '{config.vad_provider}', VAD disabled")
-                    
+
             except ImportError as e:
-                logger.warning(f"VAD provider '{config.vad_provider}' not available (missing dependencies): {e}")
-                logger.info("Continuing without VAD. Install dependencies or disable VAD in assistant settings.")
-        
+                logger.warning(
+                    f"VAD provider '{config.vad_provider}' not available (missing dependencies): {e}"
+                )
+                logger.info(
+                    "Continuing without VAD. Install dependencies or disable VAD in assistant settings."
+                )
+
         return params

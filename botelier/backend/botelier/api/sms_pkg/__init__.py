@@ -1,5 +1,4 @@
-"""
-SMS API package.
+"""SMS API package.
 
 Combines four sub-routers into a single router that gets registered
 in main.py as `from botelier.api.sms import router as sms_router`.
@@ -13,10 +12,10 @@ Sub-modules:
 
 from fastapi import APIRouter
 
-from .webhook import router as _webhook_router
-from .conversations import router as _conversations_router
 from .analytics import router as _analytics_router
+from .conversations import router as _conversations_router
 from .settings import router as _settings_router
+from .webhook import router as _webhook_router
 
 router = APIRouter()
 router.include_router(_webhook_router)

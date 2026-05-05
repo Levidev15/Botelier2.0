@@ -1,5 +1,4 @@
-"""
-WebSocket API - Handles Twilio Media Streams connections.
+"""WebSocket API - Handles Twilio Media Streams connections.
 
 This module provides WebSocket endpoints for real-time audio streaming
 between Twilio and Pipecat voice pipelines.
@@ -7,15 +6,15 @@ between Twilio and Pipecat voice pipelines.
 
 import json
 from urllib.parse import parse_qs, urlparse
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends, Request
-from sqlalchemy.orm import Session
+
+from fastapi import APIRouter, Depends, Request, WebSocket, WebSocketDisconnect
 from loguru import logger
+from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import CallLog
 from ..voice.call_handler import CallHandler
 from ._twilio_auth import get_call_auth_token, verify_stream_token
-
 
 router = APIRouter(prefix="/api/ws", tags=["WebSocket"])
 
@@ -25,42 +24,38 @@ call_handler = CallHandler()
 
 
 @router.websocket("/call")
-async def websocket_call_endpoint(
-    websocket: WebSocket,
-    db: Session = Depends(get_db)
-):
-    """
-    WebSocket endpoint for Twilio Media Streams - Official Pipecat Pattern.
-    
+async def websocket_call_endpoint(websocket: WebSocket, db: Session = Depends(get_db)):
+    """WebSocket endpoint for Twilio Media Streams - Official Pipecat Pattern.
+
     Twilio sends: 'connected' → 'start' (with stream_sid) → 'media' frames
-    
+
     Pattern:
         1. Accept WebSocket
         2. Read 'start' event to get stream_sid/call_sid
         3. Look up assistant by phone number (from 'start' event or query param)
         4. Create Pipecat pipeline with FastAPIWebsocketTransport
         5. Run pipeline (Pipecat handles all subsequent Twilio messages)
-    
+
     URL: wss://domain/api/ws/call?to=%2B17027074036
     """
     try:
         # Step 1: Accept WebSocket (Pipecat official pattern)
         await websocket.accept()
         logger.info("✅ WebSocket accepted, waiting for Twilio 'start' event")
-        
+
         # Step 2: Read Twilio 'start' event to get stream_sid/call_sid
         # This is REQUIRED before creating TwilioFrameSerializer
         stream_sid = None
         call_sid = None
         to_number = None
         start_data = {}
-        
+
         # Read initial messages from Twilio
         for _ in range(3):  # Twilio sends 'connected' then 'start'
             data = await websocket.receive_text()
             message = json.loads(data)
             event_type = message.get("event")
-            
+
             if event_type == "start":
                 start_data = message.get("start", {})
                 stream_sid = start_data.get("streamSid")
@@ -72,12 +67,12 @@ async def websocket_call_endpoint(
                 logger.info(f"📞 Call started - Stream: {stream_sid}, Call: {call_sid}")
                 logger.info(f"📞 From: {from_number} → To: {to_number}")
                 break
-        
+
         if not stream_sid or not call_sid:
             logger.error("❌ Never received Twilio 'start' event")
             await websocket.close()
             return
-        
+
         if not to_number:
             # Scrub the short-lived stream token before logging — even
             # though it expires in 5 minutes, treat it as a bearer
@@ -132,9 +127,7 @@ async def websocket_call_endpoint(
         # When no secret is configured anywhere (local dev), the verifier
         # returns (True, "skipped_no_secret"). The CallLog binding above
         # is still enforced, so dev parity is preserved.
-        account_token = get_call_auth_token(
-            db, to_number=to_number, call_sid=call_sid
-        )
+        account_token = get_call_auth_token(db, to_number=to_number, call_sid=call_sid)
         token_ok, token_reason = verify_stream_token(
             call_sid=call_sid,
             to_number=to_number,
@@ -151,7 +144,7 @@ async def websocket_call_endpoint(
             return
 
         logger.info(f"🔌 Handling call for phone: {to_number}")
-        
+
         # Step 3-5: Delegate to CallHandler
         # Use module-level instance to persist state across function calls
         await call_handler.handle_call(
@@ -162,7 +155,7 @@ async def websocket_call_endpoint(
             db=db,
             from_number=from_number,
         )
-        
+
     except Exception as e:
         logger.exception(f"❌ WebSocket error: {e}")
         try:

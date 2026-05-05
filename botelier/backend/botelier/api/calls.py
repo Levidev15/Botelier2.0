@@ -1,5 +1,4 @@
-"""
-Calls API - Handles Twilio webhook for incoming phone calls.
+"""Calls API - Handles Twilio webhook for incoming phone calls.
 
 This module provides HTTP endpoints that Twilio calls when a phone number
 receives an incoming call. It returns TwiML to start a Media Stream.
@@ -12,25 +11,25 @@ import os
 import uuid
 from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Request, Response, Depends, BackgroundTasks
+
+from fastapi import APIRouter, BackgroundTasks, Depends, Request, Response
+from loguru import logger
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
-from loguru import logger
 
-from ..config.domain import get_websocket_url, get_public_base_url
+from ..auth.middleware import check_account_permission, get_current_user
+from ..config.domain import get_public_base_url, get_websocket_url
 from ..database import get_db
-from ..models import CallLog, CallLeg, PhoneNumber, CallStatus, LegType
+from ..models import CallLeg, CallLog, CallStatus, LegType, PhoneNumber
 from ..models.call_event import CallEvent
 from ..models.user import User
-from ..services.call_logger import CallLogger
 from ..services.acw_service import run_acw_background
-from ..auth.middleware import get_current_user, check_account_permission
+from ..services.call_logger import CallLogger
 from ._twilio_auth import (
     get_call_auth_token,
     mint_stream_token,
     validate_twilio_signature,
 )
-
 
 router = APIRouter(prefix="/api/calls", tags=["Calls"])
 
@@ -38,12 +37,12 @@ router = APIRouter(prefix="/api/calls", tags=["Calls"])
 def _get_call_handler():
     """Lazy import to avoid circular dependencies"""
     from .websockets import call_handler
+
     return call_handler
 
 
 def _event_exists(db: Session, call_log_id, event_type: str) -> bool:
-    """
-    Return True if a call event of the given type already exists for this call.
+    """Return True if a call event of the given type already exists for this call.
 
     Used to prevent duplicate events when both the pipeline path and the Twilio
     webhook path could write the same event type (e.g. call_answered is written
@@ -105,8 +104,7 @@ def _classify_twilio_call_ended(call_status: str) -> tuple[str, str]:
 
 
 def _classify_transfer_disposition(call_status: str, answered_by: str = None) -> str:
-    """
-    Map a Twilio terminal CallStatus + AnsweredBy on the transfer (child) leg
+    """Map a Twilio terminal CallStatus + AnsweredBy on the transfer (child) leg
     to a disposition value from the documented vocabulary.
 
     A successfully connected leg that completes normally is reported as
@@ -137,11 +135,8 @@ def _classify_transfer_disposition(call_status: str, answered_by: str = None) ->
     return "human_answered"
 
 
-def _derive_end_reason_from_events(
-    db: Session, call_log_id
-) -> Optional[tuple[str, str]]:
-    """
-    Inspect already-recorded CallEvent rows to refine (end_reason, ended_by)
+def _derive_end_reason_from_events(db: Session, call_log_id) -> Optional[tuple[str, str]]:
+    """Inspect already-recorded CallEvent rows to refine (end_reason, ended_by)
     when emitting a `call_ended` event.
 
     Only returns an override when there is *explicit* evidence of an internal
@@ -157,11 +152,7 @@ def _derive_end_reason_from_events(
     human leg ends) as bot-initiated. A future change can wire it from an
     explicit pipeline-side event when one exists.
     """
-    rows = (
-        db.query(CallEvent.event_type)
-        .filter(CallEvent.call_log_id == call_log_id)
-        .all()
-    )
+    rows = db.query(CallEvent.event_type).filter(CallEvent.call_log_id == call_log_id).all()
     types = {r[0] for r in rows}
     if "pipeline_error" in types:
         return "pipeline_error", "system"
@@ -179,8 +170,7 @@ def _write_event(
     details: dict = None,
     call_started_at: datetime = None,
 ):
-    """
-    Write a call event directly to the database.
+    """Write a call event directly to the database.
 
     Used for Twilio webhook events (call_initiated, call_answered, call_ended,
     transfer_connected, transfer_ended) which arrive via async HTTP handlers
@@ -195,6 +185,7 @@ def _write_event(
         # CallEvent writers (this webhook writer, CallEventQueue, and the
         # inline finalization writer in services/call_logger.py).
         from ..services._event_offset import compute_offset_ms
+
         offset_ms = compute_offset_ms(now, call_started_at)
 
         event = CallEvent(
@@ -220,12 +211,11 @@ def _write_event(
 @router.post("/incoming")
 @router.get("/incoming")
 async def incoming_call_webhook(request: Request, db: Session = Depends(get_db)):
-    """
-    Twilio webhook for incoming phone calls.
-    
+    """Twilio webhook for incoming phone calls.
+
     When a call comes in to a Botelier phone number, Twilio POSTs here.
     We return TwiML that tells Twilio to start a Media Stream to our WebSocket.
-    
+
     Also creates a CallLog record for tracking.
     """
     try:
@@ -264,7 +254,9 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
         # SID is safe.
         _TERMINAL_STATUSES = {"completed", "failed", "busy", "no-answer", "canceled"}
         if call_status in _TERMINAL_STATUSES:
-            logger.debug(f"incoming_call_webhook: skipping pipeline for terminal status '{call_status}' on {call_sid}")
+            logger.debug(
+                f"incoming_call_webhook: skipping pipeline for terminal status '{call_status}' on {call_sid}"
+            )
             try:
                 existing_log = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
                 if existing_log:
@@ -307,20 +299,18 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
                 content='<?xml version="1.0" encoding="UTF-8"?><Response/>',
                 media_type="application/xml",
             )
-        
+
         logger.info(f"Incoming call webhook - CallSid: {call_sid}")
         logger.info(f"From: {from_number} → To: {to_number}, Status: {call_status}")
-        
-        phone_record = db.query(PhoneNumber).filter(
-            PhoneNumber.phone_number == to_number
-        ).first()
-        
+
+        phone_record = db.query(PhoneNumber).filter(PhoneNumber.phone_number == to_number).first()
+
         call_log_id = None
         call_started_at = None
 
         if phone_record:
             existing_log = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
-            
+
             if not existing_log:
                 now = datetime.utcnow()
                 call_log = CallLog(
@@ -370,11 +360,7 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
                         f"incoming_call_webhook: concurrent insert race for "
                         f"{call_sid} — re-fetching existing row (Twilio retry)"
                     )
-                    existing_log = (
-                        db.query(CallLog)
-                        .filter(CallLog.call_sid == call_sid)
-                        .first()
-                    )
+                    existing_log = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
                     if existing_log:
                         call_log_id = existing_log.id
                         call_started_at = existing_log.started_at
@@ -392,7 +378,7 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
                 call_started_at = existing_log.started_at
         else:
             logger.warning(f"No phone number record found for {to_number}")
-        
+
         if call_log_id:
             _write_event(
                 db,
@@ -400,7 +386,12 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
                 event_type="call_initiated",
                 event_source="twilio",
                 severity="info",
-                details={"CallSid": call_sid, "From": from_number, "To": to_number, "CallStatus": call_status},
+                details={
+                    "CallSid": call_sid,
+                    "From": from_number,
+                    "To": to_number,
+                    "CallStatus": call_status,
+                },
                 call_started_at=call_started_at,
             )
 
@@ -416,7 +407,9 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
         if call_sid and call_log_id and phone_record and phone_record.assistant_id:
             try:
                 import asyncio as _asyncio
+
                 from ..voice.prewarm import prewarm_call_config
+
                 _ch = _get_call_handler()
                 # Reserve synchronously *and* pass the returned entry directly
                 # to the background task so the producer and the consumer
@@ -426,6 +419,7 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
                 _reserved_entry = _ch.precomputed_configs.reserve(call_sid)
                 _deepgram_key = os.environ.get("DEEPGRAM_API_KEY")
                 from ..utils import log_task_exception
+
                 _pw_task = _asyncio.create_task(
                     prewarm_call_config(
                         entry=_reserved_entry,
@@ -448,10 +442,10 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
 
         fallback_host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host")
         ws_url = get_websocket_url(path="/api/ws/call", fallback_host=fallback_host)
-        
+
         base_url = get_public_base_url(fallback_host=fallback_host)
         status_callback_url = f"{base_url}/api/calls/status"
-        
+
         logger.info(f"Directing call to WebSocket: {ws_url}")
 
         # Mint a short-lived HMAC token bound to (CallSid, To) and embed
@@ -476,29 +470,28 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
         </Stream>
     </Connect>
 </Response>"""
-        
+
         return Response(content=twiml, media_type="application/xml")
-        
+
     except Exception as e:
         logger.exception(f"Error handling incoming call webhook: {e}")
-        
+
         error_twiml = """<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Say>We're sorry, but we're unable to connect your call at this time. Please try again later.</Say>
     <Hangup/>
 </Response>"""
-        
+
         return Response(content=error_twiml, media_type="application/xml", status_code=500)
 
 
 @router.post("/status")
 async def call_status_callback(request: Request, db: Session = Depends(get_db)):
-    """
-    Twilio callback for call status updates.
-    
+    """Twilio callback for call status updates.
+
     Twilio POSTs here when call status changes:
     - initiated, ringing, in-progress, completed, busy, failed, no-answer, canceled
-    
+
     Uses CallLogger service to update the CallLog record.
     """
     try:
@@ -506,7 +499,9 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
         call_sid = str(form_data.get("CallSid", ""))
         call_status = str(form_data.get("CallStatus", "")) if form_data.get("CallStatus") else None
         call_duration = form_data.get("CallDuration")
-        parent_call_sid = str(form_data.get("ParentCallSid", "")) if form_data.get("ParentCallSid") else None
+        parent_call_sid = (
+            str(form_data.get("ParentCallSid", "")) if form_data.get("ParentCallSid") else None
+        )
         to_number = str(form_data.get("To", "")) if form_data.get("To") else None
 
         # --- Twilio signature validation (Task #138) ---
@@ -536,18 +531,20 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
             logger.debug(f"Stream status event for {call_sid} (no CallStatus); ignored")
             return {"status": "received"}
 
-        logger.info(f"Call status update - SID: {call_sid}, Status: {call_status}, Duration: {call_duration}s")
-        
+        logger.info(
+            f"Call status update - SID: {call_sid}, Status: {call_status}, Duration: {call_duration}s"
+        )
+
         call_logger = CallLogger(db)
         duration_seconds = int(call_duration) if call_duration else None
-        
+
         if parent_call_sid:
             logger.info(f"Child call detected - Parent: {parent_call_sid}")
             call_logger.create_transfer_leg_from_callback(
                 parent_call_sid=parent_call_sid,
                 child_call_sid=call_sid,
                 to_number=to_number or "",
-                status=call_status
+                status=call_status,
             )
             call_logger.update_leg_status(
                 leg_call_sid=call_sid,
@@ -615,7 +612,9 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
             }
             if call_status in _TERMINAL_TWILIO and not _pipeline_was_active:
                 _pre_log = call_logger.get_call_log(call_sid)
-                _row_still_non_terminal = _pre_log is not None and _pre_log.status in _NON_TERMINAL_DB
+                _row_still_non_terminal = (
+                    _pre_log is not None and _pre_log.status in _NON_TERMINAL_DB
+                )
                 if _row_still_non_terminal:
                     try:
                         call_logger.complete_call(
@@ -714,9 +713,9 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                             },
                             call_started_at=call_log.started_at,
                         )
-        
+
         return {"status": "received"}
-        
+
     except Exception as e:
         logger.exception(f"Error handling call status callback: {e}")
         return {"status": "error", "message": str(e)}
@@ -727,6 +726,7 @@ def _maybe_enqueue_acw(call_sid: str, db: Session, background_tasks: BackgroundT
     if not call_log or not call_log.assistant_id:
         return
     from ..models import Assistant
+
     assistant = db.query(Assistant).filter(Assistant.id == call_log.assistant_id).first()
     if not assistant:
         return
@@ -738,13 +738,16 @@ def _maybe_enqueue_acw(call_sid: str, db: Session, background_tasks: BackgroundT
 
 @router.post("/connect-complete")
 @router.get("/connect-complete")
-async def connect_complete(request: Request, db: Session = Depends(get_db), background_tasks: BackgroundTasks = BackgroundTasks()):
-    """
-    Called when <Connect> completes (Stream ends).
-    
+async def connect_complete(
+    request: Request,
+    db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
+    """Called when <Connect> completes (Stream ends).
+
     This is the action URL for <Connect>, called when the media stream ends.
     We can return TwiML here to continue the call (e.g., for transfers).
-    
+
     Uses CallLogger service for status updates and saves conversation transcript.
     """
     try:
@@ -766,16 +769,16 @@ async def connect_complete(request: Request, db: Session = Depends(get_db), back
             return Response(status_code=403, content="Forbidden")
 
         logger.info(f"Connect complete - SID: {call_sid}")
-        
+
         call_handler = _get_call_handler()
         await call_handler.save_transcript_for_call(call_sid)
-        
+
         call_logger = CallLogger(db)
-        
+
         if call_logger.has_transfer(call_sid):
             call_log = call_logger.get_call_log(call_sid)
             transfer_mode = call_log.transfer_mode if call_log else None
-            
+
             if transfer_mode == "cold":
                 # Cold (SIP REFER) transfer: Twilio already exited the bridge.
                 # No /transfer-status callbacks will arrive — finalize the record now.
@@ -786,7 +789,7 @@ async def connect_complete(request: Request, db: Session = Depends(get_db), back
                 # Warm transfer: Twilio is still bridging. Keep call alive and wait
                 # for /transfer-status callbacks to arrive with the final duration.
                 logger.info(f"Warm transfer call {call_sid} — keeping alive for status callbacks")
-            
+
             return Response(content="", media_type="application/xml")
 
         # Cancel the Pipecat pipeline now that the media stream has ended.
@@ -825,33 +828,36 @@ async def connect_complete(request: Request, db: Session = Depends(get_db), back
             )
 
         _maybe_enqueue_acw(call_sid, db, background_tasks)
-        
+
         hangup_twiml = """<?xml version="1.0" encoding="UTF-8"?>
 <Response>
     <Hangup/>
 </Response>"""
-        
+
         return Response(content=hangup_twiml, media_type="application/xml")
-        
+
     except Exception as e:
         logger.exception(f"Error in connect-complete: {e}")
         return Response(content="<Response><Hangup/></Response>", media_type="application/xml")
 
 
 @router.post("/transfer-status")
-async def transfer_status_callback(request: Request, db: Session = Depends(get_db), background_tasks: BackgroundTasks = BackgroundTasks()):
-    """
-    Callback specifically for tracking transfer call status.
-    
+async def transfer_status_callback(
+    request: Request,
+    db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
+    """Callback specifically for tracking transfer call status.
+
     When a call is transferred using Twilio's update call API,
     this endpoint receives status updates for the transferred leg.
-    
+
     Twilio sends these events: initiated, ringing, answered, completed
     This lets us track:
     - When the transfer started ringing
     - When it was answered (transfer leg duration starts)
     - When it ended (transfer leg duration ends)
-    
+
     Uses CallLogger service to update leg status.
     """
     try:
@@ -859,7 +865,9 @@ async def transfer_status_callback(request: Request, db: Session = Depends(get_d
         call_sid = str(form_data.get("CallSid", ""))
         call_status = str(form_data.get("CallStatus", "")) if form_data.get("CallStatus") else None
         call_duration = form_data.get("CallDuration")
-        parent_call_sid = str(form_data.get("ParentCallSid", "")) if form_data.get("ParentCallSid") else None
+        parent_call_sid = (
+            str(form_data.get("ParentCallSid", "")) if form_data.get("ParentCallSid") else None
+        )
         to_number = str(form_data.get("To", "")) if form_data.get("To") else None
 
         # --- Twilio signature validation (Task #138) ---
@@ -881,8 +889,10 @@ async def transfer_status_callback(request: Request, db: Session = Depends(get_d
             )
             return Response(status_code=403, content="Forbidden")
 
-        logger.info(f"Transfer status update - SID: {call_sid}, Parent: {parent_call_sid}, To: {to_number}, Status: {call_status}")
-        
+        logger.info(
+            f"Transfer status update - SID: {call_sid}, Parent: {parent_call_sid}, To: {to_number}, Status: {call_status}"
+        )
+
         if call_status:
             call_logger = CallLogger(db)
             duration_seconds = int(call_duration) if call_duration else None
@@ -893,7 +903,7 @@ async def transfer_status_callback(request: Request, db: Session = Depends(get_d
                 parent_call_sid=parent_call_sid,
                 to_number=to_number,
             )
-            
+
             # Log transfer_connected / transfer_ended on parent call.
             # Only query the parent record when we will actually write an event —
             # "initiated" and "ringing" callbacks carry no event so the query
@@ -927,17 +937,21 @@ async def transfer_status_callback(request: Request, db: Session = Depends(get_d
                                 "CallStatus": call_status,
                                 "CallDuration": call_duration,
                                 "AnsweredBy": answered_by,
-                                "disposition": _classify_transfer_disposition(call_status, answered_by),
+                                "disposition": _classify_transfer_disposition(
+                                    call_status, answered_by
+                                ),
                             },
                             call_started_at=parent_log.started_at,
                         )
 
             if call_status in _TERMINAL and parent_call_sid:
-                logger.info(f"Transfer leg {call_sid} ended ({call_status}) — enqueueing ACW for parent call {parent_call_sid}")
+                logger.info(
+                    f"Transfer leg {call_sid} ended ({call_status}) — enqueueing ACW for parent call {parent_call_sid}"
+                )
                 _maybe_enqueue_acw(parent_call_sid, db, background_tasks)
-        
+
         return {"status": "received"}
-        
+
     except Exception as e:
         logger.exception(f"Error handling transfer status callback: {e}")
         return {"status": "error", "message": str(e)}
@@ -947,15 +961,12 @@ def _validate_recording_webhook_signature(
     request: Request, form_data: dict, auth_token: str
 ) -> tuple[bool, str]:
     """Backwards-compatible wrapper around the shared validator."""
-    return validate_twilio_signature(
-        request, form_data, "/api/calls/recording-status", auth_token
-    )
+    return validate_twilio_signature(request, form_data, "/api/calls/recording-status", auth_token)
 
 
 @router.post("/recording-status")
 async def recording_status_callback(request: Request, db: Session = Depends(get_db)):
-    """
-    Twilio recording status callback.
+    """Twilio recording status callback.
 
     Twilio POSTs here when a call recording's status changes.
     Validates the X-Twilio-Signature before processing to prevent replay attacks.
@@ -976,13 +987,16 @@ async def recording_status_callback(request: Request, db: Session = Depends(get_
         # falls back to TWILIO_AUTH_TOKEN env var.  Eliminates the inline
         # duplicate that previously drifted from the helper's logic.
         auth_token = get_call_auth_token(db, call_sid=call_sid)
-        is_valid, validated_url = _validate_recording_webhook_signature(request, form_data, auth_token)
+        is_valid, validated_url = _validate_recording_webhook_signature(
+            request, form_data, auth_token
+        )
         if not is_valid:
             logger.warning(
                 f"Invalid Twilio signature on recording-status for CallSid={call_sid} "
                 f"(validated against: {validated_url})"
             )
             from fastapi.responses import Response as _Response
+
             return _Response(status_code=403, content="Forbidden")
 
         logger.info(
@@ -1014,8 +1028,7 @@ async def get_call_recording(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    Proxy endpoint to stream a Twilio call recording to authenticated clients.
+    """Proxy endpoint to stream a Twilio call recording to authenticated clients.
 
     Requires a valid JWT (Bearer token in Authorization header).
     Verifies the authenticated user has call_logs.play_recordings permission
@@ -1039,6 +1052,7 @@ async def get_call_recording(
         raise HTTPException(status_code=404, detail="No recording available for this call")
 
     from ..models.account import Account
+
     acct = db.query(Account).filter(Account.id == call_log.account_id).first()
     if acct and acct.twilio_sub_account_sid and acct.twilio_sub_auth_token:
         twilio_account_sid = acct.twilio_sub_account_sid
@@ -1089,6 +1103,7 @@ async def get_call_recording(
             raise HTTPException(status_code=502, detail="Twilio returned non-audio content")
 
         from fastapi.responses import Response as _BytesResponse
+
         return _BytesResponse(
             content=twilio_response.content,
             media_type="audio/mpeg",
@@ -1107,8 +1122,7 @@ async def get_call_events(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    Return the event timeline for a specific call.
+    """Return the event timeline for a specific call.
 
     Requires authentication. The authenticated user must belong to the account
     that owns the call (call_logs.view permission). Platform admins bypass
@@ -1120,6 +1134,7 @@ async def get_call_events(
         event_type, event_source, severity, offset_ms, occurred_at, details
     """
     from fastapi import HTTPException
+
     from ..models.call_event import CallEvent as CallEventModel
 
     call_log = db.query(CallLog).filter(CallLog.id == call_id).first()

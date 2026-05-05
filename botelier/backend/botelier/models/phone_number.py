@@ -1,5 +1,4 @@
-"""
-PhoneNumber Model - Represents a Twilio phone number assigned to a hotel.
+"""PhoneNumber Model - Represents a Twilio phone number assigned to a hotel.
 
 Each phone number is:
 - Owned by a hotel's Twilio sub-account
@@ -9,55 +8,59 @@ Each phone number is:
 
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, Boolean, ForeignKey
+
+from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
+
 from botelier.database import Base
 
 
 class PhoneNumber(Base):
-    """
-    PhoneNumber model for managing Twilio phone numbers.
-    
+    """PhoneNumber model for managing Twilio phone numbers.
+
     Flow:
     1. Hotel purchases number from their sub-account
     2. Number stored with Twilio SID
     3. Number assigned to voice assistant
     4. Incoming calls routed to that assistant
     """
+
     __tablename__ = "phone_numbers"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    
+
     # Phone number details
     phone_number = Column(String, unique=True, nullable=False)  # E.164 format: +14155551234
     friendly_name = Column(String, nullable=True)  # Optional label
     country_code = Column(String(2), nullable=False)  # US, GB, etc.
-    
+
     # Twilio metadata
     twilio_sid = Column(String, unique=True, nullable=False)  # Twilio's phone number SID
     twilio_capabilities = Column(String, nullable=True)  # JSON: {"voice": true, "sms": true}
-    
+
     # Ownership
     account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=False)
-    
+
     # Assignment to voice assistant
     assistant_id = Column(UUID(as_uuid=True), nullable=True)  # Which assistant handles calls
 
     # SMS configuration
     sms_enabled = Column(Boolean, default=False)
-    sms_assistant_id = Column(UUID(as_uuid=True), nullable=True)  # Defaults to voice assistant if null
-    
+    sms_assistant_id = Column(
+        UUID(as_uuid=True), nullable=True
+    )  # Defaults to voice assistant if null
+
     # Status
     is_active = Column(Boolean, default=True)
-    
+
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
-    
+
     def __repr__(self):
         return f"<PhoneNumber {self.phone_number}>"
-    
+
     def to_dict(self):
         """Convert to dictionary for API responses."""
         return {

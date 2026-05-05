@@ -1,5 +1,4 @@
-"""
-Feature Catalog and Entitlement System.
+"""Feature Catalog and Entitlement System.
 
 Defines every feature available on the platform, which subscription tiers include
 it by default, and provides a resolver that merges tier defaults with per-account
@@ -22,8 +21,7 @@ Adding a new feature
    effective state from the catalog + per-account override at request time.
 """
 
-from typing import Dict, Any
-
+from typing import Any, Dict
 
 # ---------------------------------------------------------------------------
 # FEATURE_CATALOG
@@ -63,8 +61,7 @@ def get_account_features(
     subscription_tier: str,
     feature_flags_override: Dict[str, Any],
 ) -> Dict[str, bool]:
-    """
-    Resolve the effective feature set for an account.
+    """Resolve the effective feature set for an account.
 
     Resolution order (last writer wins):
     1. FEATURE_CATALOG tier defaults for the account's subscription tier.

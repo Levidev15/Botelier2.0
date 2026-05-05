@@ -1,5 +1,4 @@
-"""
-Pre-warm cache for incoming Twilio calls (Task #111).
+"""Pre-warm cache for incoming Twilio calls (Task #111).
 
 Between the `/api/calls/incoming` webhook (which resolves the destination
 phone → assistant) and the WebSocket `start` event (which hands control to
@@ -32,7 +31,6 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
-
 # Task #122 — hard cap on greeting PCM kept in-memory on the bundle.
 # 8 kHz mono linear16 = 16 KB/s, so 1 MiB ≈ 64 s of audio — well above any
 # realistic greeting length. Anything larger is almost certainly a Deepgram
@@ -46,7 +44,8 @@ class AssistantSnapshot:
     """Plain-Python projection of the columns the consumer reads after the
     pre-warm session has been closed. Replaces the detached ORM object on
     :class:`PreWarmBundle` so the hot path never touches SQLAlchemy state
-    that may have expired (Task #122)."""
+    that may have expired (Task #122).
+    """
 
     id: str
     account_id: str
@@ -64,7 +63,8 @@ class ToolSnapshot:
     ``tool_type`` is the original Python enum value — enums are immutable
     and session-independent, so they survive ``expunge_all`` cleanly.
     ``config`` is captured as a shallow copy of the JSON-backed dict to
-    decouple from SQLAlchemy's mutable-tracking proxy."""
+    decouple from SQLAlchemy's mutable-tracking proxy.
+    """
 
     name: str
     description: Optional[str]
@@ -74,8 +74,7 @@ class ToolSnapshot:
 
 @dataclass
 class PreWarmBundle:
-    """
-    Result of a successful pre-warm. All fields are pure Python values —
+    """Result of a successful pre-warm. All fields are pure Python values —
     no SQLAlchemy ORM objects cross the session boundary (Task #122).
     """
 
@@ -120,7 +119,8 @@ class PopResult:
 class PreWarmEntry:
     """A slot in :class:`PreWarmCache`. Populated atomically by the pre-warm
     task; ``ready`` flips to set when the bundle is either filled or the
-    pre-warm failed."""
+    pre-warm failed.
+    """
 
     call_sid: str
     created_mono: float
@@ -130,8 +130,7 @@ class PreWarmEntry:
 
 
 class PreWarmCache:
-    """
-    LRU+TTL map of ``call_sid → PreWarmEntry``.
+    """LRU+TTL map of ``call_sid → PreWarmEntry``.
 
     * Size bound: ``max_size`` entries (LRU evict on overflow).
     * TTL: ``ttl_secs`` from insertion — expired entries are lazily purged on
@@ -156,7 +155,8 @@ class PreWarmCache:
     def reserve(self, call_sid: str) -> PreWarmEntry:
         """Insert (or replace) an empty entry and return it. The caller is
         expected to fill ``bundle`` / ``error`` and set ``ready`` when the
-        pre-warm task finishes."""
+        pre-warm task finishes.
+        """
         self._purge_expired()
         if call_sid in self._store:
             # Replace any stale entry for the same SID (unlikely but safe).
@@ -171,16 +171,15 @@ class PreWarmCache:
         self._enforce_size()
         return entry
 
-    async def pop_and_wait(
-        self, call_sid: str, timeout_secs: float = 0.5
-    ) -> PopResult:
+    async def pop_and_wait(self, call_sid: str, timeout_secs: float = 0.5) -> PopResult:
         """Remove the entry for ``call_sid`` and return a :class:`PopResult`
         describing whether it was already ready, became ready while we
         waited, timed out, errored, or was never reserved.
 
         The entry is always removed from the cache before returning
         (success or failure). Telemetry on this result powers the
-        dev/prod parity diagnostics for Task #122."""
+        dev/prod parity diagnostics for Task #122.
+        """
         self._purge_expired()
         entry = self._store.pop(call_sid, None)
         if entry is None:
@@ -222,20 +221,20 @@ class PreWarmCache:
                 wait_ms=wait_ms,
                 error_class=type(entry.error).__name__,
             )
-        return PopResult(
-            state="ready_during_wait", bundle=entry.bundle, wait_ms=wait_ms
-        )
+        return PopResult(state="ready_during_wait", bundle=entry.bundle, wait_ms=wait_ms)
 
     def discard(self, call_sid: str) -> None:
         """Remove an entry if still present (e.g. on call end).  No-op if
-        missing."""
+        missing.
+        """
         self._store.pop(call_sid, None)
 
     def has(self, call_sid: str) -> bool:
         """Return True iff a (possibly not-yet-ready) reservation exists for
         ``call_sid``. Used by handle_call to distinguish a true cache-miss
         (``no_prewarm_entry``) from a hit that timed out or errored
-        (``wait_timeout_or_error``) in telemetry."""
+        (``wait_timeout_or_error``) in telemetry.
+        """
         return call_sid in self._store
 
     def size(self) -> int:  # pragma: no cover — trivial accessor
@@ -257,9 +256,7 @@ class PreWarmCache:
         while len(self._store) > self._max_size:
             # popitem(last=False) evicts the oldest (insertion-ordered).
             evicted_sid, _ = self._store.popitem(last=False)
-            logger.info(
-                f"pre-warm cache overflow — LRU-evicted call_sid={evicted_sid}"
-            )
+            logger.info(f"pre-warm cache overflow — LRU-evicted call_sid={evicted_sid}")
 
 
 # ----------------------------------------------------------------------
@@ -299,15 +296,11 @@ async def prewarm_call_config(
         bundle.prewarm_duration_ms = int((time.monotonic() - t_start) * 1000)
         entry.bundle = bundle
         logger.info(
-            f"✅ pre-warm completed for call_sid={call_sid} "
-            f"in {bundle.prewarm_duration_ms} ms"
+            f"✅ pre-warm completed for call_sid={call_sid} in {bundle.prewarm_duration_ms} ms"
         )
     except BaseException as e:  # noqa: BLE001 — we never want to propagate
         entry.error = e
-        logger.warning(
-            f"pre-warm failed for call_sid={call_sid} "
-            f"({type(e).__name__}): {e}"
-        )
+        logger.warning(f"pre-warm failed for call_sid={call_sid} ({type(e).__name__}): {e}")
     finally:
         entry.ready.set()
 
@@ -317,9 +310,11 @@ async def _build_bundle(
     deepgram_api_key: Optional[str],
 ) -> PreWarmBundle:
     """Do the actual read/handshake work. Split out so it can be unit-tested
-    against a sqlite-backed session without touching the cache wiring."""
+    against a sqlite-backed session without touching the cache wiring.
+    """
     # Imports inside the function to avoid circulars at module import time.
     from sqlalchemy.orm import Session  # noqa: F401 — type hint aid
+
     from ..auth.features import get_account_features
     from ..database import SessionLocal
     from ..models.account import Account
@@ -334,30 +329,19 @@ async def _build_bundle(
     def _db_reads() -> dict:
         """Run all SQLAlchemy reads in a worker thread; return detached
         ORM objects + dicts.  We ``expunge_all`` before closing the session
-        so attribute reads on the hot path don't trigger lazy loads."""
+        so attribute reads on the hot path don't trigger lazy loads.
+        """
         _db = SessionLocal()
         try:
-            phone = (
-                _db.query(PhoneNumber)
-                .filter(PhoneNumber.phone_number == to_number)
-                .first()
-            )
+            phone = _db.query(PhoneNumber).filter(PhoneNumber.phone_number == to_number).first()
             if not phone or not phone.assistant_id:
                 return {"skip_reason": "no_assistant_for_phone"}
 
-            assistant = (
-                _db.query(Assistant)
-                .filter(Assistant.id == phone.assistant_id)
-                .first()
-            )
+            assistant = _db.query(Assistant).filter(Assistant.id == phone.assistant_id).first()
             if not assistant:
                 return {"skip_reason": "assistant_not_found"}
 
-            account = (
-                _db.query(Account)
-                .filter(Account.id == assistant.account_id)
-                .first()
-            )
+            account = _db.query(Account).filter(Account.id == assistant.account_id).first()
 
             tools: List[ToolSnapshot] = []
             if assistant.tool_set_id:
@@ -396,15 +380,11 @@ async def _build_bundle(
                         try:
                             credentials = mcp_conn.get_credentials()
                         except Exception as _e:
-                            logger.warning(
-                                f"pre-warm: failed to decrypt MCP credentials: {_e}"
-                            )
+                            logger.warning(f"pre-warm: failed to decrypt MCP credentials: {_e}")
                     mcp_conn_data = {
                         "id": str(mcp_conn.id),
                         "server_url": mcp_conn.server_url,
-                        "auth_type": (
-                            mcp_conn.auth_type.value if mcp_conn.auth_type else "none"
-                        ),
+                        "auth_type": (mcp_conn.auth_type.value if mcp_conn.auth_type else "none"),
                         "credentials": credentials,
                         "discovered_tools": mcp_conn.discovered_tools or [],
                     }
@@ -417,16 +397,12 @@ async def _build_bundle(
                 hotel_sid = account.twilio_sub_account_sid
                 hotel_token = account.twilio_sub_auth_token
                 _features = get_account_features(
-                    subscription_tier=(
-                        getattr(account, "subscription_tier", None) or "free"
-                    ),
+                    subscription_tier=(getattr(account, "subscription_tier", None) or "free"),
                     feature_flags_override=(account.feature_flags or {}),
                 )
                 _acct_recording_allowed = _features.get("call_recording", False)
                 _asst_recording_enabled = bool(
-                    (assistant.call_settings or {}).get(
-                        "call_recording_enabled", False
-                    )
+                    (assistant.call_settings or {}).get("call_recording_enabled", False)
                 )
                 should_record = _acct_recording_allowed and _asst_recording_enabled
 
@@ -462,9 +438,7 @@ async def _build_bundle(
 
     reads = await asyncio.to_thread(_db_reads)
     if reads.get("skip_reason"):
-        logger.info(
-            f"pre-warm: skipping (reason={reads['skip_reason']}, to={to_number})"
-        )
+        logger.info(f"pre-warm: skipping (reason={reads['skip_reason']}, to={to_number})")
         return bundle  # empty bundle — consumer will fall back to cold path
 
     bundle.assistant = reads["assistant_snapshot"]
@@ -492,15 +466,11 @@ async def _build_bundle(
 
     _assistant_orm = reads["assistant_orm"]
     try:
-        bundle.config = await _get_singleton_handler()._create_agent_config(
-            _assistant_orm
-        )
+        bundle.config = await _get_singleton_handler()._create_agent_config(_assistant_orm)
     except Exception as _cfg_err:
         # Config build failure is fatal for the pre-warm — without it the
         # consumer cannot proceed.  Record and let handle_call fall back.
-        raise RuntimeError(
-            f"_create_agent_config failed: {type(_cfg_err).__name__}: {_cfg_err}"
-        )
+        raise RuntimeError(f"_create_agent_config failed: {type(_cfg_err).__name__}: {_cfg_err}")
 
     # Pre-load greeting PCM (cache hit = 1 file read; miss = 1 REST call).
     # Only for Deepgram TTS — other providers aren't cached.
@@ -525,9 +495,7 @@ async def _build_bundle(
                     f"({len(_pcm)} > {MAX_GREETING_PCM_BYTES} bytes) — "
                     f"discarding for assistant={bundle.assistant.id}"
                 )
-                bundle.greeting_error = (
-                    f"oversize_greeting_pcm:{len(_pcm)}"
-                )
+                bundle.greeting_error = f"oversize_greeting_pcm:{len(_pcm)}"
             else:
                 bundle.greeting_pcm = _pcm
         except Exception as _g_err:

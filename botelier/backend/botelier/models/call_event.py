@@ -1,5 +1,4 @@
-"""
-CallEvent Model - Timeline of events during a call.
+"""CallEvent Model - Timeline of events during a call.
 
 Records meaningful state transitions throughout every call for
 root-cause diagnosis. Events are written in two ways:
@@ -9,14 +8,15 @@ root-cause diagnosis. Events are written in two ways:
 
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, DateTime, BigInteger, Index, ForeignKey
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+
+from sqlalchemy import BigInteger, Column, DateTime, ForeignKey, Index, String
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+
 from botelier.database import Base
 
 
 class CallEvent(Base):
-    """
-    Records a single event in the timeline of a call.
+    """Records a single event in the timeline of a call.
 
     Columns:
         id           UUID primary key
@@ -28,6 +28,7 @@ class CallEvent(Base):
         offset_ms    milliseconds since call started (for display: +0:04)
         details      JSONB payload with extra context (e.g. CallStatus, duration)
     """
+
     __tablename__ = "call_events"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
@@ -48,9 +49,7 @@ class CallEvent(Base):
 
     details = Column(JSONB, nullable=True)
 
-    __table_args__ = (
-        Index("ix_call_events_call_log_occurred", "call_log_id", "occurred_at"),
-    )
+    __table_args__ = (Index("ix_call_events_call_log_occurred", "call_log_id", "occurred_at"),)
 
     def __repr__(self):
         return f"<CallEvent {self.event_type} @ {self.occurred_at}>"

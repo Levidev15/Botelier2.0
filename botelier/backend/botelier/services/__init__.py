@@ -1,5 +1,4 @@
-"""
-Botelier Services.
+"""Botelier Services.
 
 Provides business logic services for the Botelier platform.
 """

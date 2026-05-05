@@ -1,18 +1,17 @@
 import json
 import os
 from datetime import datetime
-from typing import Optional, Dict, Any, List
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from loguru import logger
 from openai import OpenAI
 from sqlalchemy.orm import Session
 
-from botelier.models.call_log import CallLog, CallLeg, LegType
 from botelier.models.assistant import Assistant
+from botelier.models.call_log import CallLeg, CallLog, LegType
 from botelier.models.disposition import AssistantDisposition
 from botelier.models.resolution_option import AssistantResolutionOption
-
 
 _client: Optional[OpenAI] = None
 
@@ -60,8 +59,7 @@ def _fmt_duration(seconds: Optional[int]) -> str:
 
 
 def _build_transcript_text(transcript: list) -> str:
-    """
-    Convert raw LLM message list to a readable transcript string.
+    """Convert raw LLM message list to a readable transcript string.
 
     Handles four message types:
     - user: spoken by the caller
@@ -100,8 +98,7 @@ def _build_transcript_text(transcript: list) -> str:
 
 
 def _build_call_context(call_log: CallLog, db: Session) -> str:
-    """
-    Build a CALL CONTEXT block summarising call metadata for the ACW prompt.
+    """Build a CALL CONTEXT block summarising call metadata for the ACW prompt.
 
     Includes duration, masked caller number, call outcome, and transfer details
     so the LLM can make accurate disposition / resolution / quality decisions.
@@ -176,15 +173,25 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
 
     acw_config = assistant.acw_config or {}
 
-    dispositions = db.query(AssistantDisposition).filter(
-        AssistantDisposition.assistant_id == assistant.id,
-        AssistantDisposition.is_active == True
-    ).order_by(AssistantDisposition.display_order).all()
+    dispositions = (
+        db.query(AssistantDisposition)
+        .filter(
+            AssistantDisposition.assistant_id == assistant.id,
+            AssistantDisposition.is_active == True,
+        )
+        .order_by(AssistantDisposition.display_order)
+        .all()
+    )
 
-    resolution_options = db.query(AssistantResolutionOption).filter(
-        AssistantResolutionOption.assistant_id == assistant.id,
-        AssistantResolutionOption.is_active == True
-    ).order_by(AssistantResolutionOption.display_order).all()
+    resolution_options = (
+        db.query(AssistantResolutionOption)
+        .filter(
+            AssistantResolutionOption.assistant_id == assistant.id,
+            AssistantResolutionOption.is_active == True,
+        )
+        .order_by(AssistantResolutionOption.display_order)
+        .all()
+    )
 
     quality_rubric = acw_config.get("quality_rubric", "")
     summary_enabled = acw_config.get("summary_enabled", False)
@@ -213,9 +220,7 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
         logger.info(f"ACW: transcript truncated for call {call_log.id}")
 
     call_context = _build_call_context(call_log, db)
-    prompt_parts = [
-        f"Assistant: {assistant.name}\nAnalyze this call transcript.\n\n{call_context}"
-    ]
+    prompt_parts = [f"Assistant: {assistant.name}\nAnalyze this call transcript.\n\n{call_context}"]
     json_fields = []
 
     if has_dispositions:
@@ -237,9 +242,7 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
         json_fields.append('"resolution": "exact name from list above"')
 
     if has_quality:
-        prompt_parts.append(
-            f"QUALITY SCORE — rate 0-100 using this rubric:\n{quality_rubric}"
-        )
+        prompt_parts.append(f"QUALITY SCORE — rate 0-100 using this rubric:\n{quality_rubric}")
         json_fields.append('"quality_score": integer 0-100')
 
     if has_summary:
@@ -261,8 +264,11 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
         response = client.chat.completions.create(
             model=acw_config.get("llm_model", "gpt-4o-mini"),
             messages=[
-                {"role": "system", "content": "You are a call center QA analyst. Analyze the call transcript and return only valid JSON. Always select exactly one disposition and one resolution from the provided lists — never return null for these fields."},
-                {"role": "user", "content": full_prompt}
+                {
+                    "role": "system",
+                    "content": "You are a call center QA analyst. Analyze the call transcript and return only valid JSON. Always select exactly one disposition and one resolution from the provided lists — never return null for these fields.",
+                },
+                {"role": "user", "content": full_prompt},
             ],
             response_format={"type": "json_object"},
             temperature=0,
@@ -291,7 +297,9 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
             if matched:
                 call_log.acw_resolution = matched
             else:
-                logger.warning(f"ACW: LLM returned unrecognized resolution '{resolution_name}' for call {call_log.id}")
+                logger.warning(
+                    f"ACW: LLM returned unrecognized resolution '{resolution_name}' for call {call_log.id}"
+                )
                 call_log.acw_resolution = None
 
     if has_quality:
@@ -315,13 +323,17 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
         "acw_resolution": call_log.acw_resolution,
         "acw_quality_score": call_log.acw_quality_score,
         "summary": call_log.ai_summary,
-        "acw_completed_at": call_log.acw_completed_at.isoformat() + "Z" if call_log.acw_completed_at else None,
+        "acw_completed_at": call_log.acw_completed_at.isoformat() + "Z"
+        if call_log.acw_completed_at
+        else None,
     }
 
 
 def run_acw_background(call_log_id: UUID):
     import time
+
     from botelier.database import SessionLocal
+
     db = SessionLocal()
     try:
         max_retries = 5
@@ -334,7 +346,9 @@ def run_acw_background(call_log_id: UUID):
                 break
             db.expire(call_log)
             wait = 2 * (attempt + 1)
-            logger.info(f"ACW background: transcript not ready for {call_log_id}, retry {attempt+1}/{max_retries} in {wait}s")
+            logger.info(
+                f"ACW background: transcript not ready for {call_log_id}, retry {attempt + 1}/{max_retries} in {wait}s"
+            )
             time.sleep(wait)
         else:
             logger.warning(f"ACW background: transcript never arrived for {call_log_id}, skipping")
