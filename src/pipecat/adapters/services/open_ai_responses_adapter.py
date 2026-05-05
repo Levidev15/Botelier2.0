@@ -6,27 +6,27 @@
 
 """OpenAI Responses API adapter for Pipecat."""
 
-import copy
-from typing import Any, Dict, List, Optional, TypedDict
+from typing import Any, Required, TypedDict, cast
 
 from openai._types import NotGiven as OpenAINotGiven
-from openai.types.responses import FunctionToolParam, ResponseInputItemParam
+from openai.types.responses import FunctionToolParam, ResponseInputItemParam, ToolParam
 
 from pipecat.adapters.base_llm_adapter import BaseLLMAdapter
-from pipecat.adapters.schemas.tools_schema import ToolsSchema
+from pipecat.adapters.schemas.tools_schema import AdapterType, ToolsSchema
 from pipecat.processors.aggregators.llm_context import (
     LLMContext,
     LLMContextMessage,
     LLMSpecificMessage,
-    NotGiven,
 )
 
 
 class OpenAIResponsesLLMInvocationParams(TypedDict, total=False):
     """Context-based parameters for invoking OpenAI Responses API."""
 
-    input: List[ResponseInputItemParam]
-    tools: List[FunctionToolParam] | OpenAINotGiven
+    # `input` and `tools` are always populated by `get_llm_invocation_params`;
+    # `instructions` is only set when a system instruction is present.
+    input: Required[list[ResponseInputItemParam]]
+    tools: Required[list[ToolParam] | OpenAINotGiven]
     instructions: str
 
 
@@ -49,7 +49,7 @@ class OpenAIResponsesLLMAdapter(BaseLLMAdapter[OpenAIResponsesLLMInvocationParam
         self,
         context: LLMContext,
         *,
-        system_instruction: Optional[str] = None,
+        system_instruction: str | None = None,
     ) -> OpenAIResponsesLLMInvocationParams:
         """Get Responses API invocation parameters from a universal LLM context.
 
@@ -66,8 +66,11 @@ class OpenAIResponsesLLMAdapter(BaseLLMAdapter[OpenAIResponsesLLMInvocationParam
         if system_instruction and messages:
             first_msg = messages[0] if not isinstance(messages[0], LLMSpecificMessage) else None
             if first_msg and first_msg.get("role") == "system":
+                # `content` is `str | Iterable[...]`; we only forward it for
+                # warning purposes. Coerce non-strings to None.
+                first_content = first_msg.get("content", "")
                 self._resolve_system_instruction(
-                    first_msg.get("content", ""),
+                    first_content if isinstance(first_content, str) else None,
                     system_instruction,
                     discard_context_system=False,
                 )
@@ -107,7 +110,7 @@ class OpenAIResponsesLLMAdapter(BaseLLMAdapter[OpenAIResponsesLLMInvocationParam
 
         return params
 
-    def to_provider_tools_format(self, tools_schema: ToolsSchema) -> List[FunctionToolParam]:
+    def to_provider_tools_format(self, tools_schema: ToolsSchema) -> list[ToolParam]:
         """Convert function schemas to Responses API function tool format.
 
         Args:
@@ -129,12 +132,15 @@ class OpenAIResponsesLLMAdapter(BaseLLMAdapter[OpenAIResponsesLLMInvocationParam
             if "description" in d:
                 tool["description"] = d["description"]
             result.append(tool)
-        return result
+        custom_openai_tools = []
+        if tools_schema.custom_tools:
+            custom_openai_tools = tools_schema.custom_tools.get(AdapterType.OPENAI, [])
+        return result + custom_openai_tools
 
-    def get_messages_for_logging(self, context: LLMContext) -> List[Dict[str, Any]]:
+    def get_messages_for_logging(self, context: LLMContext) -> list[dict[str, Any]]:
         """Get messages from context in a format ready for logging.
 
-        Removes or truncates sensitive data like image content for safe logging.
+        Binary data (images, audio) is replaced with short placeholders.
 
         Args:
             context: The LLM context containing messages.
@@ -142,23 +148,14 @@ class OpenAIResponsesLLMAdapter(BaseLLMAdapter[OpenAIResponsesLLMInvocationParam
         Returns:
             List of messages in a format ready for logging.
         """
-        msgs = []
-        for message in self.get_messages(context):
-            msg = copy.deepcopy(message)
-            if "content" in msg:
-                if isinstance(msg["content"], list):
-                    for item in msg["content"]:
-                        if item.get("type") == "image_url":
-                            if item["image_url"]["url"].startswith("data:image/"):
-                                item["image_url"]["url"] = "data:image/..."
-                        if item.get("type") == "input_audio":
-                            item["input_audio"]["data"] = "..."
-            msgs.append(msg)
-        return msgs
+        return cast(
+            list[dict[str, Any]],
+            self.get_messages(context, truncate_large_values=True),
+        )
 
     def _convert_messages_to_input(
-        self, messages: List[LLMContextMessage]
-    ) -> List[ResponseInputItemParam]:
+        self, messages: list[LLMContextMessage]
+    ) -> list[ResponseInputItemParam]:
         """Convert LLMContext messages to Responses API input items.
 
         Args:
@@ -167,7 +164,7 @@ class OpenAIResponsesLLMAdapter(BaseLLMAdapter[OpenAIResponsesLLMInvocationParam
         Returns:
             List of Responses API input items.
         """
-        result: List[ResponseInputItemParam] = []
+        result: list[ResponseInputItemParam] = []
 
         for message in messages:
             if isinstance(message, LLMSpecificMessage):
@@ -180,13 +177,15 @@ class OpenAIResponsesLLMAdapter(BaseLLMAdapter[OpenAIResponsesLLMInvocationParam
                 content = message.get("content", "")
                 if isinstance(content, list):
                     content = self._convert_multimodal_content(content)
-                result.append({"role": "developer", "content": content})
+                result.append(
+                    cast(ResponseInputItemParam, {"role": "developer", "content": content})
+                )
 
             elif role == "user":
                 content = message.get("content", "")
                 if isinstance(content, list):
                     content = self._convert_multimodal_content(content)
-                result.append({"role": "user", "content": content})
+                result.append(cast(ResponseInputItemParam, {"role": "user", "content": content}))
 
             elif role == "assistant":
                 tool_calls = message.get("tool_calls")
@@ -205,7 +204,9 @@ class OpenAIResponsesLLMAdapter(BaseLLMAdapter[OpenAIResponsesLLMInvocationParam
                     content = message.get("content", "")
                     if isinstance(content, list):
                         content = self._convert_multimodal_content(content)
-                    result.append({"role": "assistant", "content": content})
+                    result.append(
+                        cast(ResponseInputItemParam, {"role": "assistant", "content": content})
+                    )
 
             elif role == "tool":
                 content = message.get("content", "")
