@@ -723,6 +723,83 @@ class TtsCompletionWatcher(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+
+
+class VadSuspicionTracker(FrameProcessor):
+    """Emit explicit VAD suspicion events for cohort analytics.
+
+    Heuristics are deterministic and only use existing pipeline timing context:
+
+    * vad_false_start_suspected: InterruptionFrame occurs but no finalized user
+      turn lands shortly after, suggesting VAD triggered on non-speech/noise.
+    * vad_missed_speech_suspected: inbound audio continues but no timely
+      turn_finalized event appears, suggesting potential missed speech.
+    """
+
+    def __init__(self, call_start_mono: float = 0.0, timing_state: dict = None, event_queue=None, metadata: dict | None = None, **kwargs):
+        super().__init__(**kwargs)
+        self._call_start_mono = call_start_mono
+        self._timing_state = timing_state if timing_state is not None else {}
+        self._event_queue = event_queue
+        self._metadata = metadata or {}
+        self._pending_interruption_mono: float = 0.0
+        self._last_turn_finalized_mono: float = 0.0
+        self._last_missed_emit_mono: float = 0.0
+
+    def set_event_queue(self, event_queue) -> None:
+        self._event_queue = event_queue
+
+    def _base_details(self) -> dict:
+        return {
+            "assistant_id": self._metadata.get("assistant_id"),
+            "vad_provider": self._metadata.get("vad_provider"),
+            "min_volume": self._metadata.get("min_volume"),
+        }
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        _now = time.monotonic()
+
+        _false_start_window_s = float(self._timing_state.get("vad_false_start_window_s", 1.5))
+        _missed_speech_window_s = float(self._timing_state.get("vad_missed_speech_window_s", 2.5))
+
+        if isinstance(frame, InterruptionFrame):
+            self._pending_interruption_mono = _now
+
+        if isinstance(frame, TranscriptionFrame) and frame.text and frame.text.strip():
+            self._last_turn_finalized_mono = _now
+            self._pending_interruption_mono = 0.0
+
+        if self._pending_interruption_mono and (_now - self._pending_interruption_mono) >= _false_start_window_s:
+            if self._last_turn_finalized_mono < self._pending_interruption_mono and self._event_queue is not None:
+                details = self._base_details()
+                details.update({
+                    "turn_index": int(self._timing_state.get("turn_index", 0)),
+                    "interruption_to_now_ms": int((_now - self._pending_interruption_mono) * 1000),
+                    "false_start_window_ms": int(_false_start_window_s * 1000),
+                    "confidence_inputs": {"interruption_seen": True, "finalized_turn_seen_in_window": False},
+                })
+                self._event_queue.log("vad_false_start_suspected", event_source="pipecat", severity="warning", details=details)
+            self._pending_interruption_mono = 0.0
+
+        _t_last_inbound = self._timing_state.get("t_last_inbound", 0.0)
+        if _t_last_inbound and (_now - _t_last_inbound) <= _missed_speech_window_s:
+            _since_last_turn = (_now - self._last_turn_finalized_mono) if self._last_turn_finalized_mono else 999999
+            _last_turn_before_inbound = self._last_turn_finalized_mono < _t_last_inbound
+            _cooldown_ok = (_now - self._last_missed_emit_mono) >= _missed_speech_window_s
+            if _last_turn_before_inbound and _since_last_turn >= _missed_speech_window_s and _cooldown_ok and self._event_queue is not None:
+                details = self._base_details()
+                details.update({
+                    "turn_index": int(self._timing_state.get("turn_index", 0)),
+                    "inbound_to_now_ms": int((_now - _t_last_inbound) * 1000),
+                    "since_last_turn_finalized_ms": int(_since_last_turn * 1000) if self._last_turn_finalized_mono else None,
+                    "missed_speech_window_ms": int(_missed_speech_window_s * 1000),
+                    "confidence_inputs": {"recent_inbound_audio_seen": True, "timely_turn_finalized_seen": False},
+                })
+                self._event_queue.log("vad_missed_speech_suspected", event_source="pipecat", severity="warning", details=details)
+                self._last_missed_emit_mono = _now
+
+        await self.push_frame(frame, direction)
 class InboundAudioTracker(FrameProcessor):
     """Pure-observer placed immediately after ``transport.input()`` in the pipeline.
 
@@ -1295,15 +1372,16 @@ class VoiceEngineFactory:
                 utterance.  Used to record per-turn timestamps for the call transcript.
 
         Returns:
-            11-tuple: (pipeline, task, llm, context_aggregator, context,
+            13-tuple: (pipeline, task, llm, context_aggregator, context,
                       tts_completion_watcher, first_speech_tracker,
                       greeting_completion_tracker, idle_timeout_tracker,
-                      user_turn_capture, tts_latency_tracker).
+                      user_turn_capture, tts_latency_tracker, vad_suspicion_tracker,
+                      greeting_injector).
             - context is returned separately for transcript extraction.
             - tts_completion_watcher can be linked to FunctionMapper.set_tts_completion_watcher()
               so transfer handlers can await TTS completion without time-based sleeps.
             - first_speech_tracker / greeting_completion_tracker / idle_timeout_tracker /
-              user_turn_capture / tts_latency_tracker need event_queue injected via
+              user_turn_capture / tts_latency_tracker / vad_suspicion_tracker need event_queue injected via
               set_event_queue() after pipeline creation.
         """
         from pipecat.adapters.schemas.tools_schema import ToolsSchema
@@ -1321,6 +1399,8 @@ class VoiceEngineFactory:
         #   "t_llm_start" — LLMResponseCapture on LLMFullResponseStartFrame
         #   "t_llm_end"   — LLMResponseCapture on LLMFullResponseEndFrame
         _timing_state: dict = {}
+        _timing_state["vad_false_start_window_s"] = float(config.stt_config.get("utterance_end_ms", 1000)) / 1000.0
+        _timing_state["vad_missed_speech_window_s"] = float(config.stt_config.get("eot_timeout_ms", 5000)) / 2000.0
 
         llm_response_capture = LLMResponseCapture(
             on_llm_response=on_llm_response,
@@ -1363,6 +1443,16 @@ class VoiceEngineFactory:
         # Log idle_timeout when the caller goes silent for too long.
         # UserIdleProcessor fires a callback after `timeout` seconds of silence.
         idle_timeout_tracker = IdleTimeoutTracker(timeout=30.0)
+
+        vad_suspicion_tracker = VadSuspicionTracker(
+            call_start_mono=call_start_mono,
+            timing_state=_timing_state,
+            metadata={
+                "assistant_id": config.agent_id,
+                "vad_provider": config.vad_provider,
+                "min_volume": config.vad_config.get("min_volume"),
+            },
+        )
 
         # Stamps t_last_inbound on every inbound AudioRawFrame from Twilio so that
         # UserTurnCapture can compute "Twilio inbound audio → STT finalized" delta.
@@ -1454,6 +1544,7 @@ class VoiceEngineFactory:
             [
                 transport.input(),
                 inbound_audio_tracker,  # Stamps t_last_inbound for Twilio→STT latency measurement
+                vad_suspicion_tracker,  # Emits vad_*_suspected events from timing context
                 stt,
                 user_turn_capture,  # Records per-turn user timestamps for transcript (pure observer)
                 first_speech_tracker,  # Detects caller's first utterance (non-blocking event log)
@@ -1492,6 +1583,7 @@ class VoiceEngineFactory:
             idle_timeout_tracker,
             user_turn_capture,
             tts_latency_tracker,
+            vad_suspicion_tracker,
             greeting_injector,
         )
 
