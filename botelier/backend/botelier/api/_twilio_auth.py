@@ -1,5 +1,4 @@
-"""
-Shared Twilio authenticity helpers for the voice surface.
+"""Shared Twilio authenticity helpers for the voice surface.
 
 Two concerns live here:
 
@@ -34,10 +33,10 @@ from fastapi import Request
 from loguru import logger
 from sqlalchemy.orm import Session
 
-
 # ---------------------------------------------------------------------------
 # HTTP signature validation
 # ---------------------------------------------------------------------------
+
 
 def _build_webhook_url(request: Request, path: str) -> str:
     """Reconstruct the public URL Twilio signed.
@@ -48,10 +47,7 @@ def _build_webhook_url(request: Request, path: str) -> str:
     """
     from ..config.domain import get_public_base_url
 
-    fallback_host = (
-        request.headers.get("X-Forwarded-Host")
-        or request.headers.get("Host", "")
-    )
+    fallback_host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host", "")
     base = get_public_base_url(fallback_host=fallback_host)
     return f"{base}{path}"
 
@@ -117,31 +113,17 @@ def get_call_auth_token(
         account = None
 
         if to_number:
-            phone = (
-                db.query(PhoneNumber)
-                .filter(PhoneNumber.phone_number == to_number)
-                .first()
-            )
+            phone = db.query(PhoneNumber).filter(PhoneNumber.phone_number == to_number).first()
             if phone:
-                account = (
-                    db.query(Account)
-                    .filter(Account.id == phone.account_id)
-                    .first()
-                )
+                account = db.query(Account).filter(Account.id == phone.account_id).first()
 
         if account is None:
             for sid in (call_sid, parent_call_sid):
                 if not sid:
                     continue
-                call_log = (
-                    db.query(CallLog).filter(CallLog.call_sid == sid).first()
-                )
+                call_log = db.query(CallLog).filter(CallLog.call_sid == sid).first()
                 if call_log:
-                    account = (
-                        db.query(Account)
-                        .filter(Account.id == call_log.account_id)
-                        .first()
-                    )
+                    account = db.query(Account).filter(Account.id == call_log.account_id).first()
                     if account:
                         break
 

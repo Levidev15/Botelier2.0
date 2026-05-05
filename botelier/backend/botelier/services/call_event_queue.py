@@ -1,5 +1,4 @@
-"""
-CallEventQueue - Non-blocking pipeline event logger.
+"""CallEventQueue - Non-blocking pipeline event logger.
 
 Pipecat pipeline events (websocket_connected, greeting_started, etc.) happen
 inside the asyncio event loop driving the WebSocket audio pipeline.  Any DB
@@ -25,8 +24,8 @@ import asyncio
 import uuid
 from datetime import datetime
 from typing import Any, Dict, Optional
-from loguru import logger
 
+from loguru import logger
 
 _BATCH_SIZE = 10
 _QUEUE_MAXSIZE = 50
@@ -34,8 +33,7 @@ _DRAIN_INTERVAL = 0.5  # seconds between drain cycles
 
 
 class CallEventQueue:
-    """
-    Bounded asyncio queue + background writer for call pipeline events.
+    """Bounded asyncio queue + background writer for call pipeline events.
 
     Args:
         call_log_id: UUID of the CallLog row (str or UUID).
@@ -61,8 +59,7 @@ class CallEventQueue:
         severity: str = "info",
         details: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """
-        Enqueue an event.  Synchronous — never blocks the caller.
+        """Enqueue an event.  Synchronous — never blocks the caller.
 
         If the queue is full (50 pending events), or if the queue has already
         been stopped (flush_and_stop called), the event is silently dropped.
@@ -93,6 +90,7 @@ class CallEventQueue:
         # __init__ so it is never None here, but compute_offset_ms is the
         # canonical helper everywhere.
         from ._event_offset import compute_offset_ms
+
         offset_ms = compute_offset_ms(now, self.call_started_at)
         event = {
             "call_log_id": self.call_log_id,
@@ -119,8 +117,7 @@ class CallEventQueue:
         logger.debug(f"CallEventQueue background writer started for call_log {self.call_log_id}")
 
     async def flush_and_stop(self) -> None:
-        """
-        Gracefully stop the background writer and flush any remaining events.
+        """Gracefully stop the background writer and flush any remaining events.
 
         Signals the writer loop to exit after its current batch, waits for it
         to finish (so no in-progress insert is interrupted), then drains any
@@ -172,8 +169,7 @@ class CallEventQueue:
                 await self._insert_batch(batch)
 
     async def _insert_batch(self, events: list) -> None:
-        """
-        Insert a batch of events into the database.
+        """Insert a batch of events into the database.
 
         Runs the synchronous DB call in the default executor to avoid
         blocking the event loop during I/O.
@@ -181,9 +177,7 @@ class CallEventQueue:
         try:
             await asyncio.to_thread(self._sync_insert_batch, events)
         except Exception as e:
-            logger.error(
-                f"CallEventQueue batch insert failed for call_log {self.call_log_id}: {e}"
-            )
+            logger.error(f"CallEventQueue batch insert failed for call_log {self.call_log_id}: {e}")
 
     @staticmethod
     def _sync_insert_batch(events: list) -> None:

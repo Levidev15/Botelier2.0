@@ -44,11 +44,8 @@ def log_task_exception(task: "asyncio.Task[Any]") -> None:
     if exc is None:
         return
     if isinstance(exc, asyncio.CancelledError):
-        logger.debug(
-            f"background task '{task.get_name()}' raised CancelledError"
-        )
+        logger.debug(f"background task '{task.get_name()}' raised CancelledError")
         return
     logger.opt(exception=exc).error(
-        f"background task '{task.get_name()}' failed with unhandled "
-        f"{type(exc).__name__}: {exc}"
+        f"background task '{task.get_name()}' failed with unhandled {type(exc).__name__}: {exc}"
     )

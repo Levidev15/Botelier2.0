@@ -1,5 +1,4 @@
-"""
-Knowledge Entry Model - Individual Q&A entries within a knowledge base.
+"""Knowledge Entry Model - Individual Q&A entries within a knowledge base.
 
 Each entry:
 - Belongs to a knowledge base (which belongs to an account)
@@ -9,57 +8,66 @@ Each entry:
 """
 
 import uuid
-from datetime import datetime, date
-from sqlalchemy import Column, String, Text, DateTime, Date, ForeignKey
+from datetime import date, datetime
+
+from sqlalchemy import Column, Date, DateTime, ForeignKey, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
+
 from botelier.database import Base
 
 
 class KnowledgeEntry(Base):
-    """
-    Knowledge Entry model for storing Q&A pairs.
-    
+    """Knowledge Entry model for storing Q&A pairs.
+
     Each entry is:
     - Owned by a knowledge base
     - Question/answer pair for structured RAG
     - Optionally categorized with free-text tags
     - Optionally expires for time-sensitive information
     """
+
     __tablename__ = "knowledge_entries"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    
-    knowledge_base_id = Column(UUID(as_uuid=True), ForeignKey("knowledge_bases.id", ondelete="CASCADE"), nullable=False, index=True)
-    
-    account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True)
-    
+
+    knowledge_base_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("knowledge_bases.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    account_id = Column(
+        UUID(as_uuid=True), ForeignKey("accounts.id", ondelete="SET NULL"), nullable=True
+    )
+
     # Q&A content
     question = Column(Text, nullable=False)
     answer = Column(Text, nullable=False)
-    
+
     # Organization via free-text category tags
     category = Column(String(100), nullable=True)
-    
+
     # Expiration for time-sensitive info (weekly specials, events, etc.)
     expiration_date = Column(Date, nullable=True)
-    
+
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+
     knowledge_base = relationship("KnowledgeBase", back_populates="entries")
-    
+
     def __repr__(self):
         return f"<KnowledgeEntry {self.question[:50]}...>"
-    
+
     @property
     def is_expired(self):
         """Check if entry is expired."""
         if not self.expiration_date:
             return False
         return date.today() > self.expiration_date
-    
+
     def to_dict(self):
         """Convert to dictionary for API responses."""
         return {

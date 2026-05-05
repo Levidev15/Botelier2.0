@@ -1,5 +1,4 @@
-"""
-Centralized loguru configuration for the Botelier backend.
+"""Centralized loguru configuration for the Botelier backend.
 
 Imported once from `main.py` BEFORE any router import so every module's
 `from loguru import logger` inherits these sinks.
@@ -34,8 +33,10 @@ LOG_PROMPTS - When ``true``, allows verbose payload dumps (Ava system
               prompt, transfer TwiML XML, etc.) and unmutes noisy pipecat
               debug/info traffic. Default ``false``. Off in production.
 """
+
 import os
 import sys
+
 from loguru import logger
 
 # Pipecat namespaces that emit very high-volume DEBUG/INFO traffic on every
@@ -57,10 +58,7 @@ _NOISY_PIPECAT_PREFIXES = (
     "pipecat.transports.base_output",
 )
 
-_FORMAT = (
-    "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | "
-    "{name}:{function}:{line} - {message}"
-)
+_FORMAT = "{time:YYYY-MM-DD HH:mm:ss.SSS} | {level: <8} | {name}:{function}:{line} - {message}"
 
 _configured = False
 
@@ -86,6 +84,7 @@ def _make_stdout_filter(log_prompts):
     duplicate emission). Returns False for noisy pipecat namespaces below
     WARNING unless LOG_PROMPTS is on.
     """
+
     def _filter(record):
         if record["level"].no >= 30:
             return False
@@ -93,6 +92,7 @@ def _make_stdout_filter(log_prompts):
             return True
         name = record.get("name") or ""
         return not any(name.startswith(p) for p in _NOISY_PIPECAT_PREFIXES)
+
     return _filter
 
 
@@ -138,8 +138,7 @@ def configure_logging():
 
     _configured = True
     logger.info(
-        f"Logging configured: LOG_LEVEL={log_level} "
-        f"LOG_PROMPTS={'on' if log_prompts else 'off'}"
+        f"Logging configured: LOG_LEVEL={log_level} LOG_PROMPTS={'on' if log_prompts else 'off'}"
     )
 
 

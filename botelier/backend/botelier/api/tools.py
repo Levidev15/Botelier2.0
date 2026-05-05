@@ -1,26 +1,32 @@
-"""
-Tools API endpoints.
+"""Tools API endpoints.
 
 Provides CRUD operations for managing AI assistant tools/functions.
 Tools are scoped through their ToolSet's account_id for multi-tenant isolation.
 """
 
+import uuid
+from typing import List
+
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
-from typing import List
-import uuid
 
+from botelier.auth.middleware import (
+    AccountContext,
+    check_account_permission,
+    get_current_user,
+    get_hotel_context,
+)
 from botelier.database import get_db
-from botelier.models.tool import Tool, ToolType as DBToolType
+from botelier.models.tool import Tool
+from botelier.models.tool import ToolType as DBToolType
 from botelier.models.tool_set import ToolSet
 from botelier.models.user import User
-from botelier.auth.middleware import get_current_user, check_account_permission, get_hotel_context, AccountContext
 from botelier.schemas.tool_schemas import (
     ToolCreate,
-    ToolUpdate,
-    ToolResponse,
     ToolListResponse,
-    ToolType
+    ToolResponse,
+    ToolType,
+    ToolUpdate,
 )
 
 router = APIRouter(prefix="/api/tools", tags=["tools"])
@@ -33,14 +39,17 @@ def _flow_config_has_expression_nodes(config: dict) -> bool:
         if node.get("type") == "set_variable":
             node_data = node.get("data", {})
             set_var = node_data.get("setVariable", node_data.get("set_variable", {}))
-            if set_var.get("valueType") == "expression" or set_var.get("value_type") == "expression":
+            if (
+                set_var.get("valueType") == "expression"
+                or set_var.get("value_type") == "expression"
+            ):
                 return True
     return False
 
 
 def _scope_query_by_account(query, db, tool_set_id: str = None, account_id: str = None):
     """Apply multi-tenant scoping to a tool query.
-    
+
     Tools are scoped through their ToolSet's account_id.
     When account_id is provided, it resolves through ToolSet.account_id.
     """
@@ -53,7 +62,7 @@ def _scope_query_by_account(query, db, tool_set_id: str = None, account_id: str 
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Either tool_set_id or account_id is required"
+            detail="Either tool_set_id or account_id is required",
         )
     return query
 
@@ -79,8 +88,7 @@ def list_tools(
             query = query.filter(Tool.tool_type == DBToolType(tool_type))
         except ValueError:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid tool_type: {tool_type}"
+                status_code=status.HTTP_400_BAD_REQUEST, detail=f"Invalid tool_type: {tool_type}"
             )
 
     tools = query.all()
@@ -109,10 +117,7 @@ def get_tool(
     tool = query.first()
 
     if not tool:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tool not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
 
     return tool.to_dict()
 
@@ -140,6 +145,7 @@ def get_primary_assistant_for_tool(
         return None
 
     from botelier.models.assistant import Assistant
+
     assistant = (
         db.query(Assistant)
         .filter(
@@ -167,16 +173,12 @@ def create_tool(
     """Create a new tool, scoped to a tool set."""
     if not tool_data.tool_set_id:
         raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="tool_set_id is required"
+            status_code=status.HTTP_400_BAD_REQUEST, detail="tool_set_id is required"
         )
 
     tool_set = db.query(ToolSet).filter(ToolSet.id == tool_data.tool_set_id).first()
     if not tool_set:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tool set not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool set not found")
     check_account_permission(user, str(tool_set.account_id), "tools.create", db)
 
     tool_id = str(uuid.uuid4())
@@ -189,7 +191,7 @@ def create_tool(
         tool_type=db_tool_type,
         config=tool_data.config,
         tool_set_id=tool_data.tool_set_id,
-        is_active="true" if tool_data.is_active else "false"
+        is_active="true" if tool_data.is_active else "false",
     )
 
     db.add(new_tool)
@@ -221,10 +223,7 @@ def update_tool(
     tool = query.first()
 
     if not tool:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tool not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
 
     if tool_data.name is not None:
         tool.name = tool_data.name
@@ -235,7 +234,7 @@ def update_tool(
             if _flow_config_has_expression_nodes(tool_data.config):
                 raise HTTPException(
                     status_code=status.HTTP_400_BAD_REQUEST,
-                    detail="Flow configuration contains disallowed expression nodes"
+                    detail="Flow configuration contains disallowed expression nodes",
                 )
         tool.config = tool_data.config
     if tool_data.is_active is not None:
@@ -268,10 +267,7 @@ def delete_tool(
     tool = query.first()
 
     if not tool:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Tool not found"
-        )
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Tool not found")
 
     db.delete(tool)
     db.commit()

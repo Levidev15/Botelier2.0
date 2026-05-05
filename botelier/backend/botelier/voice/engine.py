@@ -461,8 +461,8 @@ class IdleTimeoutTracker:
 
     def __init__(self, timeout: float = 30.0):
         self._event_queue = None
-        self._retry_count = 0
-        self.processor = UserIdleProcessor(
+        self._timeout = timeout
+        self.processor = IdleFrameProcessor(
             callback=self._on_idle,
             timeout=timeout,
         )
@@ -470,8 +470,8 @@ class IdleTimeoutTracker:
     def set_event_queue(self, event_queue) -> None:
         self._event_queue = event_queue
 
-    async def _on_idle(self, processor: UserIdleProcessor, retry_count: int) -> bool:
-        """Called each time the idle timeout fires.  Returns False to stop retrying.
+    async def _on_idle(self, processor: IdleFrameProcessor) -> None:
+        """Called each time the idle timeout fires.
 
         Note: there is no explicit stop-event guard here against a race with
         pipeline teardown.  That guard lives in CallEventQueue.log() itself —
@@ -484,7 +484,7 @@ class IdleTimeoutTracker:
                 "idle_timeout",
                 event_source="pipecat",
                 severity="warning",
-                details={"retry_count": retry_count, "timeout_secs": processor._timeout},
+                details={"timeout_secs": self._timeout},
             )
             # Boundary event: makes "the caller went silent" explicitly visible
             # in the dashboard timeline alongside the existing idle_timeout
@@ -493,10 +493,9 @@ class IdleTimeoutTracker:
                 "caller_silence_detected",
                 event_source="pipecat",
                 severity="info",
-                details={"retry_count": retry_count, "timeout_secs": processor._timeout},
+                details={"timeout_secs": self._timeout},
             )
-        logger.info(f"idle_timeout / caller_silence_detected logged (retry #{retry_count})")
-        return False  # One notification per idle period; let pipeline decide to hang up elsewhere
+        logger.info("idle_timeout / caller_silence_detected logged")
 
 
 class GreetingCompletionTracker(FrameProcessor):

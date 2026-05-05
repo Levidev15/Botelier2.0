@@ -1,5 +1,4 @@
-"""
-Assistant Model - Represents a voice AI assistant for an account.
+"""Assistant Model - Represents a voice AI assistant for an account.
 
 Each assistant has:
 - Voice configuration (STT, LLM, TTS providers)
@@ -10,75 +9,85 @@ Each assistant has:
 
 import uuid
 from datetime import datetime
-from sqlalchemy import Column, String, Text, DateTime, Boolean, ForeignKey, Float, Integer
-from sqlalchemy.dialects.postgresql import UUID, JSONB
+
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+
 from botelier.database import Base
 
 
 class Assistant(Base):
-    """
-    Assistant model representing a voice AI agent.
-    
+    """Assistant model representing a voice AI agent.
+
     Each assistant is:
     - Owned by a hotel
     - Has voice provider configuration
     - Can be assigned to phone numbers
     - Has tools/functions for actions
     """
+
     __tablename__ = "assistants"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    
+
     # Ownership
     account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=False)
-    
+
     # Assigned collections (named KB and ToolSet)
     knowledge_base_id = Column(UUID(as_uuid=True), ForeignKey("knowledge_bases.id"), nullable=True)
     tool_set_id = Column(UUID(as_uuid=True), ForeignKey("tool_sets.id"), nullable=True)
-    
+
     # MCP connection for dynamic external tools
-    mcp_connection_id = Column(UUID(as_uuid=True), ForeignKey("mcp_connections.id", ondelete="SET NULL"), nullable=True)
+    mcp_connection_id = Column(
+        UUID(as_uuid=True), ForeignKey("mcp_connections.id", ondelete="SET NULL"), nullable=True
+    )
     mcp_enabled_tools = Column(JSONB, nullable=True, default=list)
-    
+
     # Basic info
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
-    
+
     # Voice configuration
     stt_provider = Column(String(50), nullable=False, default="deepgram")  # Speech-to-text
-    llm_provider = Column(String(50), nullable=False, default="openai")    # Language model
+    llm_provider = Column(String(50), nullable=False, default="openai")  # Language model
     tts_provider = Column(String(50), nullable=False, default="cartesia")  # Text-to-speech
-    
+
     # Model selections
     stt_model = Column(String(100), nullable=True)
     llm_model = Column(String(100), nullable=False, default="gpt-4o-mini")
     tts_model = Column(String(100), nullable=True)
     tts_voice = Column(String(100), nullable=True)
-    
+
     # Behavior
     system_prompt = Column(Text, nullable=False, default="You are a helpful hotel assistant.")
     first_message = Column(Text, nullable=True)
     language = Column(String(10), nullable=False, default="en")
-    
+
     # Settings
     temperature = Column(Float, nullable=True, default=0.7)
     max_tokens = Column(Integer, nullable=True)
-    
+
     # Provider-specific configurations (stored as JSONB for flexibility)
     # These map directly to Pipecat's InputParams classes
-    stt_config = Column(JSONB, nullable=True, default=dict)  # Deepgram LiveOptions, Flux InputParams, etc.
-    llm_config = Column(JSONB, nullable=True, default=dict)  # OpenAI frequency_penalty, Anthropic prompt_caching, etc.
+    stt_config = Column(
+        JSONB, nullable=True, default=dict
+    )  # Deepgram LiveOptions, Flux InputParams, etc.
+    llm_config = Column(
+        JSONB, nullable=True, default=dict
+    )  # OpenAI frequency_penalty, Anthropic prompt_caching, etc.
     tts_config = Column(JSONB, nullable=True, default=dict)  # TTS-specific settings
-    
+
     # Voice Activity Detection (VAD) configuration
     # Note: Flux users should disable external VAD and use Flux's built-in endpointing
     vad_enabled = Column(Boolean, default=False)  # Enable transport-level VAD (Silero/WebRTC/AIC)
     vad_provider = Column(String(50), nullable=True)  # "silero", "webrtc", "aic", or null
-    vad_config = Column(JSONB, nullable=True, default=dict)  # VADParams: confidence, start_secs, stop_secs, min_volume, smart_turn_stop_secs
-    
+    vad_config = Column(
+        JSONB, nullable=True, default=dict
+    )  # VADParams: confidence, start_secs, stop_secs, min_volume, smart_turn_stop_secs
+
     # Status
     is_active = Column(Boolean, default=True)
-    
+
     # Pipecat Flows configuration (stored as JSONB)
     # This stores the complete flow graph designed in the visual editor
     # Structure follows Pipecat Flows format: nodes, edges, initial_node, etc.
@@ -98,14 +107,14 @@ class Assistant(Base):
     #       max_call_duration_seconds (int, default 600),
     #       no_response_timeout_seconds (int, default 10)
     call_settings = Column(JSONB, nullable=False, default=dict, server_default="{}")
-    
+
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
-    
+
     def __repr__(self):
         return f"<Assistant {self.name}>"
-    
+
     def to_dict(self):
         """Convert to dictionary for API responses."""
         return {

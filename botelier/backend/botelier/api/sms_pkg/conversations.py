@@ -1,40 +1,43 @@
-"""
-SMS Conversation management endpoints.
+"""SMS Conversation management endpoints.
 
-  GET    /api/sms/conversations
-  GET    /api/sms/conversations/{id}
-  POST   /api/sms/conversations/{id}/take-over
-  POST   /api/sms/conversations/{id}/return-to-ai
-  POST   /api/sms/conversations/{id}/close
-  POST   /api/sms/conversations/{id}/read
-  POST   /api/sms/conversations/{id}/presence
-  DELETE /api/sms/conversations/{id}/presence
-  POST   /api/sms/conversations/{id}/reply
-  POST   /api/sms/conversations/{id}/generate-summary
+GET    /api/sms/conversations
+GET    /api/sms/conversations/{id}
+POST   /api/sms/conversations/{id}/take-over
+POST   /api/sms/conversations/{id}/return-to-ai
+POST   /api/sms/conversations/{id}/close
+POST   /api/sms/conversations/{id}/read
+POST   /api/sms/conversations/{id}/presence
+DELETE /api/sms/conversations/{id}/presence
+POST   /api/sms/conversations/{id}/reply
+POST   /api/sms/conversations/{id}/generate-summary
 """
 
 import json
 import os
 from datetime import datetime
-from typing import Optional, List
+from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
+from loguru import logger
 from openai import OpenAI
 from pydantic import BaseModel
 from sqlalchemy import asc, desc, func, or_
 from sqlalchemy.orm import Session
-from loguru import logger
 
 from botelier.auth.middleware import get_current_user
 from botelier.database import get_db
 from botelier.models.sms_conversation import (
-    SMSConversation, SMSMessage,
-    ConversationStatus, MessageDirection, MessageSender, MessageStatus,
+    ConversationStatus,
+    MessageDirection,
+    MessageSender,
+    MessageStatus,
+    SMSConversation,
+    SMSMessage,
 )
 from botelier.models.user import User
-from botelier.services.sms_service import SMSService
 from botelier.services.notification_broadcaster import broadcaster
+from botelier.services.sms_service import SMSService
 
 from ._auth import assert_sms_account_access, assert_sms_permission
 
@@ -42,15 +45,15 @@ router = APIRouter(prefix="/api/sms", tags=["SMS"])
 
 _SORT_COLUMNS = {
     "last_message_at": SMSConversation.last_message_at,
-    "started_at":      SMSConversation.started_at,
-    "message_count":   SMSConversation.message_count,
-    "closed_at":       SMSConversation.closed_at,
+    "started_at": SMSConversation.started_at,
+    "message_count": SMSConversation.message_count,
+    "closed_at": SMSConversation.closed_at,
 }
 
 _SUMMARY_SENDER_LABEL = {
     MessageSender.CUSTOMER.value: "Customer",
-    MessageSender.AI.value:       "AI",
-    MessageSender.AGENT.value:    "Agent",
+    MessageSender.AI.value: "AI",
+    MessageSender.AGENT.value: "Agent",
 }
 
 _openai = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
@@ -66,8 +69,12 @@ async def list_conversations(
     handler_mode: Optional[str] = Query(None, description="Filter by handler: 'ai' or 'human'"),
     needs_attention: Optional[bool] = Query(None, description="Filter by needs_attention flag"),
     botelier_number: Optional[str] = Query(None, description="Filter by hotel phone number"),
-    date_from: Optional[datetime] = Query(None, description="Filter conversations started on or after (ISO 8601)"),
-    date_to: Optional[datetime] = Query(None, description="Filter conversations started on or before (ISO 8601)"),
+    date_from: Optional[datetime] = Query(
+        None, description="Filter conversations started on or after (ISO 8601)"
+    ),
+    date_to: Optional[datetime] = Query(
+        None, description="Filter conversations started on or before (ISO 8601)"
+    ),
     sort_by: Optional[str] = Query("last_message_at", description="Sort field"),
     sort_order: Optional[str] = Query("desc", description="Sort direction: asc | desc"),
     page: int = Query(1, ge=1),
@@ -105,21 +112,32 @@ async def list_conversations(
 
         sort_col = _SORT_COLUMNS.get(sort_by or "last_message_at", SMSConversation.last_message_at)
         order_fn = asc if (sort_order or "desc").lower() == "asc" else desc
-        conversations = query.order_by(order_fn(sort_col)).offset((page - 1) * limit).limit(limit).all()
+        conversations = (
+            query.order_by(order_fn(sort_col)).offset((page - 1) * limit).limit(limit).all()
+        )
 
         last_messages: dict = {}
         if conversations:
             conv_ids = [c.id for c in conversations]
-            subq = db.query(
-                SMSMessage.conversation_id,
-                func.max(SMSMessage.created_at).label("max_created"),
-            ).filter(SMSMessage.conversation_id.in_(conv_ids)).group_by(SMSMessage.conversation_id).subquery()
+            subq = (
+                db.query(
+                    SMSMessage.conversation_id,
+                    func.max(SMSMessage.created_at).label("max_created"),
+                )
+                .filter(SMSMessage.conversation_id.in_(conv_ids))
+                .group_by(SMSMessage.conversation_id)
+                .subquery()
+            )
 
-            latest = db.query(SMSMessage).join(
-                subq,
-                (SMSMessage.conversation_id == subq.c.conversation_id) &
-                (SMSMessage.created_at == subq.c.max_created),
-            ).all()
+            latest = (
+                db.query(SMSMessage)
+                .join(
+                    subq,
+                    (SMSMessage.conversation_id == subq.c.conversation_id)
+                    & (SMSMessage.created_at == subq.c.max_created),
+                )
+                .all()
+            )
             for msg in latest:
                 last_messages[str(msg.conversation_id)] = msg.content[:100]
 
@@ -152,17 +170,24 @@ async def get_conversation(
     """Get a single SMS conversation with all messages."""
     assert_sms_account_access(user, str(account_id), db)
     try:
-        conversation = db.query(SMSConversation).filter(
-            SMSConversation.id == conversation_id,
-            SMSConversation.account_id == account_id,
-        ).first()
+        conversation = (
+            db.query(SMSConversation)
+            .filter(
+                SMSConversation.id == conversation_id,
+                SMSConversation.account_id == account_id,
+            )
+            .first()
+        )
 
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
-        messages = db.query(SMSMessage).filter(
-            SMSMessage.conversation_id == conversation_id
-        ).order_by(SMSMessage.created_at.asc()).all()
+        messages = (
+            db.query(SMSMessage)
+            .filter(SMSMessage.conversation_id == conversation_id)
+            .order_by(SMSMessage.created_at.asc())
+            .all()
+        )
 
         result = conversation.to_dict()
         result["messages"] = [msg.to_dict() for msg in messages]
@@ -189,10 +214,14 @@ async def take_over_conversation(
     """Agent manually takes over a conversation — AI goes silent."""
     assert_sms_permission(user, request.account_id, "messages.manage_conversations", db)
     try:
-        conversation = db.query(SMSConversation).filter(
-            SMSConversation.id == conversation_id,
-            SMSConversation.account_id == UUID(request.account_id),
-        ).first()
+        conversation = (
+            db.query(SMSConversation)
+            .filter(
+                SMSConversation.id == conversation_id,
+                SMSConversation.account_id == UUID(request.account_id),
+            )
+            .first()
+        )
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -232,10 +261,14 @@ async def return_to_ai(
     """Return a conversation to AI handling."""
     assert_sms_permission(user, request.account_id, "messages.manage_conversations", db)
     try:
-        conversation = db.query(SMSConversation).filter(
-            SMSConversation.id == conversation_id,
-            SMSConversation.account_id == UUID(request.account_id),
-        ).first()
+        conversation = (
+            db.query(SMSConversation)
+            .filter(
+                SMSConversation.id == conversation_id,
+                SMSConversation.account_id == UUID(request.account_id),
+            )
+            .first()
+        )
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -279,10 +312,14 @@ async def close_conversation(
     """Close an SMS conversation."""
     assert_sms_permission(user, request.account_id, "messages.manage_conversations", db)
     try:
-        conversation = db.query(SMSConversation).filter(
-            SMSConversation.id == conversation_id,
-            SMSConversation.account_id == UUID(request.account_id),
-        ).first()
+        conversation = (
+            db.query(SMSConversation)
+            .filter(
+                SMSConversation.id == conversation_id,
+                SMSConversation.account_id == UUID(request.account_id),
+            )
+            .first()
+        )
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -313,10 +350,14 @@ async def mark_conversation_read(
     """Mark a conversation as read (updates last_read_at timestamp)."""
     assert_sms_permission(user, request.account_id, "messages.manage_conversations", db)
     try:
-        conversation = db.query(SMSConversation).filter(
-            SMSConversation.id == conversation_id,
-            SMSConversation.account_id == UUID(request.account_id),
-        ).first()
+        conversation = (
+            db.query(SMSConversation)
+            .filter(
+                SMSConversation.id == conversation_id,
+                SMSConversation.account_id == UUID(request.account_id),
+            )
+            .first()
+        )
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -347,10 +388,14 @@ async def set_agent_presence(
     """Set the active agent presence on a conversation (heartbeat every 15s)."""
     assert_sms_permission(user, request.account_id, "messages.manage_conversations", db)
     try:
-        conversation = db.query(SMSConversation).filter(
-            SMSConversation.id == conversation_id,
-            SMSConversation.account_id == UUID(request.account_id),
-        ).first()
+        conversation = (
+            db.query(SMSConversation)
+            .filter(
+                SMSConversation.id == conversation_id,
+                SMSConversation.account_id == UUID(request.account_id),
+            )
+            .first()
+        )
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -382,10 +427,14 @@ async def clear_agent_presence(
     """Clear the active agent presence from a conversation."""
     assert_sms_permission(user, request.account_id, "messages.manage_conversations", db)
     try:
-        conversation = db.query(SMSConversation).filter(
-            SMSConversation.id == conversation_id,
-            SMSConversation.account_id == UUID(request.account_id),
-        ).first()
+        conversation = (
+            db.query(SMSConversation)
+            .filter(
+                SMSConversation.id == conversation_id,
+                SMSConversation.account_id == UUID(request.account_id),
+            )
+            .first()
+        )
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -419,10 +468,14 @@ async def agent_reply(
     """Send a manual reply from a human agent in an SMS conversation."""
     assert_sms_permission(user, request.account_id, "messages.reply", db)
     try:
-        conversation = db.query(SMSConversation).filter(
-            SMSConversation.id == conversation_id,
-            SMSConversation.account_id == UUID(request.account_id),
-        ).first()
+        conversation = (
+            db.query(SMSConversation)
+            .filter(
+                SMSConversation.id == conversation_id,
+                SMSConversation.account_id == UUID(request.account_id),
+            )
+            .first()
+        )
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
@@ -465,7 +518,7 @@ async def agent_reply(
         db.commit()
 
         account_id_str = str(conversation.account_id)
-        conv_id_str    = str(conversation.id)
+        conv_id_str = str(conversation.id)
 
         try:
             await broadcaster.broadcast(
@@ -514,16 +567,23 @@ async def generate_sms_summary(
     """Generate an AI summary of an SMS conversation."""
     assert_sms_permission(user, request.account_id, "messages.manage_conversations", db)
     try:
-        conversation = db.query(SMSConversation).filter(
-            SMSConversation.id == conversation_id,
-            SMSConversation.account_id == UUID(request.account_id),
-        ).first()
+        conversation = (
+            db.query(SMSConversation)
+            .filter(
+                SMSConversation.id == conversation_id,
+                SMSConversation.account_id == UUID(request.account_id),
+            )
+            .first()
+        )
         if not conversation:
             raise HTTPException(status_code=404, detail="Conversation not found")
 
-        messages = db.query(SMSMessage).filter(
-            SMSMessage.conversation_id == conversation_id
-        ).order_by(SMSMessage.created_at.asc()).all()
+        messages = (
+            db.query(SMSMessage)
+            .filter(SMSMessage.conversation_id == conversation_id)
+            .order_by(SMSMessage.created_at.asc())
+            .all()
+        )
 
         if not messages:
             raise HTTPException(status_code=400, detail="No messages in this conversation")
@@ -566,7 +626,7 @@ Respond in JSON format:
         )
 
         result = json.loads(response.choices[0].message.content)
-        summary    = result.get("summary", "")
+        summary = result.get("summary", "")
         key_points = result.get("key_points", [])
 
         full_summary = summary
