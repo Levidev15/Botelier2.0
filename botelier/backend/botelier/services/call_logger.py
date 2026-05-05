@@ -1,5 +1,4 @@
-"""
-Call Logger Service - Centralized call log management.
+"""Call Logger Service - Centralized call log management.
 
 This service handles all call log updates to avoid code duplication
 across webhooks, WebSocket handlers, and other components.
@@ -7,13 +6,13 @@ across webhooks, WebSocket handlers, and other components.
 
 import uuid
 from datetime import datetime
-from typing import List, Dict, Any, Optional
-from sqlalchemy.orm import Session
+from typing import Any, Dict, List, Optional
+
 from loguru import logger
+from sqlalchemy.orm import Session
 
-from ..models import CallLog, CallLeg, CallStatus, CallOutcome, LegType
+from ..models import CallLeg, CallLog, CallOutcome, CallStatus, LegType
 from ..models.call_event import CallEvent
-
 
 # Vocabulary for forced-finalization sources. Kept aligned with Task #96.
 # Any new source must be documented here so dashboards/analytics can surface it.
@@ -28,27 +27,25 @@ _FORCED_BY_SOURCES = {"sweeper", "webhook_safety_net", "finally_defensive", "shu
 
 
 class CallLogger:
-    """
-    Centralized service for managing call log records.
-    
+    """Centralized service for managing call log records.
+
     Handles:
     - Creating call logs and legs
     - Updating call status (from Twilio callbacks or WebSocket events)
     - Capturing transcripts from Pipecat conversations
     - Setting call outcomes based on conversation analysis
     """
-    
+
     def __init__(self, db: Session):
         """Initialize with database session."""
         self.db = db
-    
+
     def get_call_log(self, call_sid: str) -> Optional[CallLog]:
         """Get a call log by call SID."""
         return self.db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
 
     def mark_greeting_completed(self, call_sid: str) -> bool:
-        """
-        Mark ai_greeting_completed=True on the call log.
+        """Mark ai_greeting_completed=True on the call log.
 
         Called when the greeting TTS finishes playing (GreetingCompletionTracker).
         This is the reliable source of truth for whether the AI actually spoke to
@@ -67,7 +64,9 @@ class CallLogger:
             if call_log.status == CallStatus.ENDED_EARLY.value:
                 call_log.status = CallStatus.COMPLETED.value
                 call_log.ended_early = False
-                logger.info(f"Race correction: {call_sid} ended_early → completed (greeting confirmed)")
+                logger.info(
+                    f"Race correction: {call_sid} ended_early → completed (greeting confirmed)"
+                )
             self.db.commit()
             logger.info(f"ai_greeting_completed=True for {call_sid}")
             return True
@@ -77,8 +76,7 @@ class CallLogger:
             return False
 
     def mark_caller_spoke(self, call_sid: str) -> bool:
-        """
-        Task #98 — set caller_spoke=True on first observed user utterance.
+        """Task #98 — set caller_spoke=True on first observed user utterance.
 
         Called from Pipecat's FirstUserSpeechTracker the first time a
         UserStartedSpeakingFrame (or transcription) is seen for the call.
@@ -105,19 +103,15 @@ class CallLogger:
             return False
 
     def update_status(
-        self,
-        call_sid: str,
-        status: str,
-        duration_seconds: Optional[int] = None
+        self, call_sid: str, status: str, duration_seconds: Optional[int] = None
     ) -> bool:
-        """
-        Update call log status from Twilio callback or WebSocket event.
-        
+        """Update call log status from Twilio callback or WebSocket event.
+
         Args:
             call_sid: Twilio call SID
             status: New status (initiated, ringing, in-progress, completed, etc.)
             duration_seconds: Call duration if available
-            
+
         Returns:
             True if update was successful
         """
@@ -126,7 +120,7 @@ class CallLogger:
             if not call_log:
                 logger.warning(f"Call log not found for SID: {call_sid}")
                 return False
-            
+
             status_mapping = {
                 "initiated": CallStatus.INITIATED.value,
                 "ringing": CallStatus.RINGING.value,
@@ -138,19 +132,23 @@ class CallLogger:
                 "no-answer": CallStatus.NO_ANSWER.value,
                 "canceled": CallStatus.CANCELED.value,
             }
-            
+
             new_status = status_mapping.get(status, status)
             call_log.status = new_status
-            
+
             if status == "in-progress" and not call_log.answered_at:
                 answer_time = datetime.utcnow()
                 call_log.answered_at = answer_time
                 # Reset the AI leg's started_at to the true answer time so the AI leg
                 # duration reflects only the actual conversation, not pre-answer setup.
-                ai_leg_for_answer = self.db.query(CallLeg).filter(
-                    CallLeg.call_log_id == call_log.id,
-                    CallLeg.leg_type == LegType.AI_CONVERSATION.value
-                ).first()
+                ai_leg_for_answer = (
+                    self.db.query(CallLeg)
+                    .filter(
+                        CallLeg.call_log_id == call_log.id,
+                        CallLeg.leg_type == LegType.AI_CONVERSATION.value,
+                    )
+                    .first()
+                )
                 if ai_leg_for_answer and ai_leg_for_answer.status not in (
                     CallStatus.COMPLETED.value,
                     CallStatus.FAILED.value,
@@ -174,20 +172,24 @@ class CallLogger:
                     elif call_log.answered_at and call_log.ended_at:
                         # answered_at → ended_at matches Twilio's CallDuration
                         # measurement and excludes ring time.
-                        call_log.duration_seconds = max(0, int(
-                            (call_log.ended_at - call_log.answered_at).total_seconds()
-                        ))
+                        call_log.duration_seconds = max(
+                            0, int((call_log.ended_at - call_log.answered_at).total_seconds())
+                        )
                     elif call_log.started_at and call_log.ended_at:
                         # Last resort: includes ring time, but better than nothing.
                         call_log.duration_seconds = int(
                             (call_log.ended_at - call_log.started_at).total_seconds()
                         )
-            
-            ai_leg = self.db.query(CallLeg).filter(
-                CallLeg.call_log_id == call_log.id,
-                CallLeg.leg_type == LegType.AI_CONVERSATION.value
-            ).first()
-            
+
+            ai_leg = (
+                self.db.query(CallLeg)
+                .filter(
+                    CallLeg.call_log_id == call_log.id,
+                    CallLeg.leg_type == LegType.AI_CONVERSATION.value,
+                )
+                .first()
+            )
+
             if ai_leg:
                 ai_leg.status = new_status
                 if status in ("completed", "busy", "failed", "no-answer", "canceled"):
@@ -198,17 +200,19 @@ class CallLogger:
                     # guard with answered_at again for robustness. Clamp to 0.
                     anchor = call_log.answered_at if call_log.answered_at else ai_leg.started_at
                     if anchor and ai_leg.ended_at:
-                        ai_leg.duration_seconds = max(0, int((ai_leg.ended_at - anchor).total_seconds()))
-            
+                        ai_leg.duration_seconds = max(
+                            0, int((ai_leg.ended_at - anchor).total_seconds())
+                        )
+
             self.db.commit()
             logger.info(f"Updated call {call_sid} status to {new_status}")
             return True
-            
+
         except Exception as e:
             logger.exception(f"Error updating call status: {e}")
             self.db.rollback()
             return False
-    
+
     def _write_event_inline(
         self,
         call_log_id,
@@ -218,8 +222,7 @@ class CallLogger:
         details: Dict[str, Any],
         call_started_at: Optional[datetime],
     ) -> None:
-        """
-        Direct, non-queued CallEvent insert using ``self.db``.
+        """Direct, non-queued CallEvent insert using ``self.db``.
 
         Safe to call from finalization paths where the per-call
         ``CallEventQueue`` has already been flushed/stopped (sweeper,
@@ -230,6 +233,7 @@ class CallLogger:
             # Task #123 — single offset_ms helper (no more int4 clamp; the
             # column is BIGINT and the startup invariant proves it).
             from ._event_offset import compute_offset_ms
+
             now = datetime.utcnow()
             offset_ms = compute_offset_ms(now, call_started_at)
             evt = CallEvent(
@@ -280,6 +284,7 @@ class CallLogger:
             # failure (pool exhaustion, DB unreachable) is swallowed too —
             # observability-helper guarantees never-raises end-to-end.
             from ..database import SessionLocal
+
             db = SessionLocal()
             evt = CallEvent(
                 id=uuid.uuid4(),
@@ -318,12 +323,11 @@ class CallLogger:
         forced_by: Optional[str] = None,
         sweeper_age_seconds: Optional[int] = None,
     ) -> bool:
-        """
-        Mark a call as completed and save transcript.
-        
+        """Mark a call as completed and save transcript.
+
         This is typically called when the WebSocket connection closes
         or when Pipecat's pipeline ends.
-        
+
         Args:
             call_sid: Twilio call SID
             transcript: List of conversation messages (role, content)
@@ -373,14 +377,20 @@ class CallLogger:
 
             # Determine terminal status: completed if AI greeted, ended_early otherwise.
             # Only override if the call is not already in a terminal state.
-            _non_terminal = {CallStatus.INITIATED.value, CallStatus.RINGING.value, CallStatus.IN_PROGRESS.value}
+            _non_terminal = {
+                CallStatus.INITIATED.value,
+                CallStatus.RINGING.value,
+                CallStatus.IN_PROGRESS.value,
+            }
             if call_log.status in _non_terminal:
                 if call_log.ai_greeting_completed:
                     call_log.status = CallStatus.COMPLETED.value
                 else:
                     call_log.status = CallStatus.ENDED_EARLY.value
                     call_log.ended_early = True
-            elif call_log.status == CallStatus.COMPLETED.value and not call_log.ai_greeting_completed:
+            elif (
+                call_log.status == CallStatus.COMPLETED.value and not call_log.ai_greeting_completed
+            ):
                 # Reclassify: Twilio said completed but greeting never played.
                 call_log.status = CallStatus.ENDED_EARLY.value
                 call_log.ended_early = True
@@ -399,7 +409,7 @@ class CallLogger:
 
             if not call_log.ended_at:
                 call_log.ended_at = datetime.utcnow()
-            
+
             if transcript and not call_log.transcript:
                 # Only write transcript if one is not already stored.
                 # Transfer calls save the transcript (including the spoken pre-transfer
@@ -426,19 +436,23 @@ class CallLogger:
                             entry["incomplete"] = True
                         formatted_transcript.append(entry)
                 call_log.transcript = formatted_transcript
-                logger.info(f"Saved transcript with {len(formatted_transcript)} messages for call {call_sid}")
+                logger.info(
+                    f"Saved transcript with {len(formatted_transcript)} messages for call {call_sid}"
+                )
             elif transcript and call_log.transcript:
-                logger.info(f"Transcript already saved for call {call_sid} — skipping overwrite ({len(call_log.transcript)} messages preserved)")
-            
+                logger.info(
+                    f"Transcript already saved for call {call_sid} — skipping overwrite ({len(call_log.transcript)} messages preserved)"
+                )
+
             if outcome:
                 call_log.outcome = outcome
             elif not call_log.outcome or call_log.outcome == CallOutcome.UNKNOWN.value:
                 call_log.outcome = CallOutcome.COMPLETED.value
-            
+
             if tools_used:
                 call_log.tool_name = ", ".join(tools_used)
                 logger.info(f"Saved tools used for call {call_sid}: {call_log.tool_name}")
-            
+
             # When the sweeper closes a call that never answered, the real call
             # duration is unknown — we must not fabricate it as (now - started_at).
             # All other paths (normal pipeline teardown, webhook safety-net, or
@@ -450,34 +464,36 @@ class CallLogger:
             elif call_log.answered_at and call_log.ended_at:
                 # answered_at → ended_at matches Twilio's CallDuration measurement
                 # (excludes ring time). answered_at is always set after Task #40.
-                call_log.duration_seconds = max(0, int(
-                    (call_log.ended_at - call_log.answered_at).total_seconds()
-                ))
+                call_log.duration_seconds = max(
+                    0, int((call_log.ended_at - call_log.answered_at).total_seconds())
+                )
             elif call_log.started_at and call_log.ended_at and not _skip_sweeper_duration:
-                call_log.duration_seconds = int((call_log.ended_at - call_log.started_at).total_seconds())
-            
+                call_log.duration_seconds = int(
+                    (call_log.ended_at - call_log.started_at).total_seconds()
+                )
+
             # Update all legs when call ends
-            all_legs = self.db.query(CallLeg).filter(
-                CallLeg.call_log_id == call_log.id
-            ).all()
-            
+            all_legs = self.db.query(CallLeg).filter(CallLeg.call_log_id == call_log.id).all()
+
             non_terminal_statuses = [
                 CallStatus.INITIATED.value,
                 CallStatus.RINGING.value,
                 CallStatus.IN_PROGRESS.value,
             ]
-            
+
             for leg in all_legs:
                 # Only change status for legs in non-terminal states
                 if leg.status in non_terminal_statuses:
                     leg.status = CallStatus.COMPLETED.value
-                
+
                 # For warm transfer legs, update end time to match call end time
                 if leg.leg_type in (LegType.TRANSFER_EXTERNAL.value, LegType.TRANSFER_SIP.value):
                     if call_log.ended_at and (not leg.ended_at or leg.ended_at < call_log.ended_at):
                         leg.ended_at = call_log.ended_at
                         if leg.started_at:
-                            leg.duration_seconds = int((leg.ended_at - leg.started_at).total_seconds())
+                            leg.duration_seconds = int(
+                                (leg.ended_at - leg.started_at).total_seconds()
+                            )
                 # Cold transfer legs are already marked completed — leave duration as-is (None = unknown)
                 elif leg.leg_type == LegType.TRANSFER_COLD.value:
                     pass
@@ -495,12 +511,14 @@ class CallLogger:
                             # set after Task #40; fall back to started_at for safety.
                             anchor = call_log.answered_at or leg.started_at
                             if anchor:
-                                leg.duration_seconds = max(0, int(
-                                    (leg.ended_at - anchor).total_seconds()
-                                ))
+                                leg.duration_seconds = max(
+                                    0, int((leg.ended_at - anchor).total_seconds())
+                                )
                         elif leg.started_at:
-                            leg.duration_seconds = int((leg.ended_at - leg.started_at).total_seconds())
-            
+                            leg.duration_seconds = int(
+                                (leg.ended_at - leg.started_at).total_seconds()
+                            )
+
             # Calculate total duration by summing all leg durations.
             # Cold transfer legs are excluded (duration unknown — Twilio exited the bridge).
             warm_legs = [leg for leg in all_legs if leg.leg_type != LegType.TRANSFER_COLD.value]
@@ -537,11 +555,13 @@ class CallLogger:
                 }
                 if forced_by == "sweeper" and sweeper_age_seconds is not None:
                     details["sweeper_age_seconds"] = int(sweeper_age_seconds)
-                forced_event_payloads.append({
-                    "event_type": "finalization_forced",
-                    "severity": "warning",
-                    "details": details,
-                })
+                forced_event_payloads.append(
+                    {
+                        "event_type": "finalization_forced",
+                        "severity": "warning",
+                        "details": details,
+                    }
+                )
                 # Also emit a call_ended event if one has not already been
                 # written — so a sweeper-closed call still has a complete
                 # timeline for the event-log modal.
@@ -557,16 +577,20 @@ class CallLogger:
                 if not has_call_ended:
                     _call_ended_details: Dict[str, Any] = {
                         "source": forced_by,
-                        "end_reason": "finalized_by_sweeper" if forced_by == "sweeper" else "finalized_by_safety_net",
+                        "end_reason": "finalized_by_sweeper"
+                        if forced_by == "sweeper"
+                        else "finalized_by_safety_net",
                         "ended_by": "system",
                     }
                     if forced_by == "sweeper" and sweeper_age_seconds is not None:
                         _call_ended_details["sweeper_age_seconds"] = int(sweeper_age_seconds)
-                    forced_event_payloads.append({
-                        "event_type": "call_ended",
-                        "severity": "warning",
-                        "details": _call_ended_details,
-                    })
+                    forced_event_payloads.append(
+                        {
+                            "event_type": "call_ended",
+                            "severity": "warning",
+                            "details": _call_ended_details,
+                        }
+                    )
 
             # Capture the values needed by the post-commit event writes
             # before commit() expires the ORM attributes on call_log.
@@ -601,26 +625,20 @@ class CallLogger:
                 + (f" (forced_by={forced_by})" if forced_by else "")
             )
             return True
-            
+
         except Exception as e:
             logger.exception(f"Error completing call: {e}")
             self.db.rollback()
             return False
-    
-    def record_tool_usage(
-        self,
-        call_sid: str,
-        tool_name: str,
-        is_flow: bool = False
-    ) -> bool:
-        """
-        Record that a tool or flow was used during a call.
-        
+
+    def record_tool_usage(self, call_sid: str, tool_name: str, is_flow: bool = False) -> bool:
+        """Record that a tool or flow was used during a call.
+
         Args:
             call_sid: Twilio call SID
             tool_name: Name of the tool or flow
             is_flow: True if this is a flow, False if a regular tool
-            
+
         Returns:
             True if update was successful
         """
@@ -629,7 +647,7 @@ class CallLogger:
             if not call_log:
                 logger.warning(f"Call log not found for SID: {call_sid}")
                 return False
-            
+
             # Store tool/flow name (first tool takes precedence)
             if is_flow:
                 if not call_log.flow_name:
@@ -637,25 +655,23 @@ class CallLogger:
             else:
                 if not call_log.tool_name:
                     call_log.tool_name = tool_name
-            
+
             self.db.commit()
-            logger.info(f"Recorded {'flow' if is_flow else 'tool'} usage: {tool_name} for call {call_sid}")
+            logger.info(
+                f"Recorded {'flow' if is_flow else 'tool'} usage: {tool_name} for call {call_sid}"
+            )
             return True
-            
+
         except Exception as e:
             logger.exception(f"Error recording tool usage: {e}")
             self.db.rollback()
             return False
-    
+
     def record_transfer(
-        self,
-        call_sid: str,
-        transfer_to: str,
-        transfer_type: str = "external"
+        self, call_sid: str, transfer_to: str, transfer_type: str = "external"
     ) -> bool:
-        """
-        Record that a call was transferred.
-        
+        """Record that a call was transferred.
+
         Args:
             call_sid: Twilio call SID
             transfer_to: Phone number or SIP URI transferred to
@@ -664,7 +680,7 @@ class CallLogger:
                 - "sip": warm Twilio-bridged transfer via SIP
                 - "cold": cold SIP REFER transfer — Twilio exits bridge immediately,
                           no status callbacks will arrive, leg is pre-marked completed
-            
+
         Returns:
             True if update was successful
         """
@@ -673,33 +689,43 @@ class CallLogger:
             if not call_log:
                 logger.warning(f"Call log not found for SID: {call_sid}")
                 return False
-            
+
             if transfer_type == "cold":
                 leg_type = LegType.TRANSFER_COLD.value
             elif transfer_type == "sip":
                 leg_type = LegType.TRANSFER_SIP.value
             else:
                 leg_type = LegType.TRANSFER_EXTERNAL.value
-            
-            existing_transfer = self.db.query(CallLeg).filter(
-                CallLeg.call_log_id == call_log.id,
-                CallLeg.leg_type == leg_type,
-                CallLeg.participant == transfer_to
-            ).first()
-            
+
+            existing_transfer = (
+                self.db.query(CallLeg)
+                .filter(
+                    CallLeg.call_log_id == call_log.id,
+                    CallLeg.leg_type == leg_type,
+                    CallLeg.participant == transfer_to,
+                )
+                .first()
+            )
+
             if existing_transfer:
-                logger.info(f"Transfer leg to {transfer_to} already exists for call {call_sid}, skipping duplicate")
+                logger.info(
+                    f"Transfer leg to {transfer_to} already exists for call {call_sid}, skipping duplicate"
+                )
                 return True
-            
+
             call_log.has_transfer = True
             call_log.outcome = CallOutcome.TRANSFERRED.value
             call_log.transfer_mode = "cold" if transfer_type == "cold" else "warm"
-            
-            ai_leg = self.db.query(CallLeg).filter(
-                CallLeg.call_log_id == call_log.id,
-                CallLeg.leg_type == LegType.AI_CONVERSATION.value
-            ).first()
-            
+
+            ai_leg = (
+                self.db.query(CallLeg)
+                .filter(
+                    CallLeg.call_log_id == call_log.id,
+                    CallLeg.leg_type == LegType.AI_CONVERSATION.value,
+                )
+                .first()
+            )
+
             if ai_leg and ai_leg.status != CallStatus.COMPLETED.value:
                 ai_leg.status = CallStatus.COMPLETED.value
                 ai_leg.ended_at = datetime.utcnow()
@@ -709,17 +735,22 @@ class CallLogger:
                 # intermediate value.
                 anchor = call_log.answered_at if call_log.answered_at else ai_leg.started_at
                 if anchor and ai_leg.ended_at:
-                    ai_leg.duration_seconds = max(0, int((ai_leg.ended_at - anchor).total_seconds()))
+                    ai_leg.duration_seconds = max(
+                        0, int((ai_leg.ended_at - anchor).total_seconds())
+                    )
                 logger.info(f"Marked AI leg as completed (duration: {ai_leg.duration_seconds}s)")
-            
-            max_leg = self.db.query(CallLeg).filter(
-                CallLeg.call_log_id == call_log.id
-            ).order_by(CallLeg.leg_number.desc()).first()
-            
+
+            max_leg = (
+                self.db.query(CallLeg)
+                .filter(CallLeg.call_log_id == call_log.id)
+                .order_by(CallLeg.leg_number.desc())
+                .first()
+            )
+
             next_leg_num = (max_leg.leg_number + 1) if max_leg else 1
-            
+
             now = datetime.utcnow()
-            
+
             if transfer_type == "cold":
                 # Cold transfer: Twilio exits immediately — no callbacks will arrive.
                 # Pre-mark the leg as completed with null duration (duration is unknown).
@@ -743,29 +774,28 @@ class CallLogger:
                     status=CallStatus.INITIATED.value,
                     started_at=now,
                 )
-            
+
             self.db.add(transfer_leg)
-            
+
             self.db.commit()
             logger.info(f"Recorded {transfer_type} transfer for call {call_sid} to {transfer_to}")
             return True
-            
+
         except Exception as e:
             logger.exception(f"Error recording transfer: {e}")
             self.db.rollback()
             return False
-    
+
     def complete_cold_transfer(self, call_sid: str) -> bool:
-        """
-        Finalize a cold-transferred call log.
-        
+        """Finalize a cold-transferred call log.
+
         Called from /connect-complete when transfer_mode='cold'. Since Twilio exits
         the bridge immediately on a SIP REFER, no /transfer-status callbacks arrive.
         We finalize the call here using the AI leg duration as the tracked duration.
-        
+
         Args:
             call_sid: Twilio call SID
-            
+
         Returns:
             True if update was successful
         """
@@ -774,34 +804,40 @@ class CallLogger:
             if not call_log:
                 logger.warning(f"Call log not found for SID: {call_sid}")
                 return False
-            
+
             now = datetime.utcnow()
-            
+
             if call_log.status != CallStatus.COMPLETED.value:
                 call_log.status = CallStatus.COMPLETED.value
-            
+
             if not call_log.ended_at:
                 call_log.ended_at = now
-            
+
             # Use AI leg duration as the logged call duration (transfer leg duration is unknown)
-            ai_leg = self.db.query(CallLeg).filter(
-                CallLeg.call_log_id == call_log.id,
-                CallLeg.leg_type == LegType.AI_CONVERSATION.value
-            ).first()
-            
+            ai_leg = (
+                self.db.query(CallLeg)
+                .filter(
+                    CallLeg.call_log_id == call_log.id,
+                    CallLeg.leg_type == LegType.AI_CONVERSATION.value,
+                )
+                .first()
+            )
+
             ai_duration = ai_leg.duration_seconds if ai_leg else 0
             if call_log.duration_seconds is None or call_log.duration_seconds == 0:
                 call_log.duration_seconds = ai_duration or 0
-            
+
             self.db.commit()
-            logger.info(f"Finalized cold transfer call {call_sid} (AI leg duration: {ai_duration}s)")
+            logger.info(
+                f"Finalized cold transfer call {call_sid} (AI leg duration: {ai_duration}s)"
+            )
             return True
-            
+
         except Exception as e:
             logger.exception(f"Error finalizing cold transfer call: {e}")
             self.db.rollback()
             return False
-    
+
     def update_leg_status(
         self,
         leg_call_sid: str,
@@ -810,18 +846,17 @@ class CallLogger:
         parent_call_sid: str = None,
         to_number: str = None,
     ) -> bool:
-        """
-        Update a specific call leg's status.
-        
+        """Update a specific call leg's status.
+
         Called when we receive status updates for transfer calls.
-        
+
         Args:
             leg_call_sid: The call SID of the specific leg (the child/transfer call)
             status: New status (initiated, ringing, in-progress, completed, etc.)
             duration_seconds: Duration if available
             parent_call_sid: The original call's SID (to find the leg if call_sid not set)
             to_number: The number being called (to match leg by participant)
-            
+
         Returns:
             True if update was successful
         """
@@ -836,38 +871,46 @@ class CallLogger:
                 "no-answer": CallStatus.NO_ANSWER.value,
                 "canceled": CallStatus.CANCELED.value,
             }
-            
+
             new_status = status_mapping.get(status, status)
-            
+
             # First try to find leg by call_sid
             leg = self.db.query(CallLeg).filter(CallLeg.call_sid == leg_call_sid).first()
-            
+
             # If not found, try to find by parent call + participant (transfer-to number)
             call_log = None
             if not leg and parent_call_sid and to_number:
                 call_log = self.get_call_log(parent_call_sid)
                 if call_log:
-                    leg = self.db.query(CallLeg).filter(
-                        CallLeg.call_log_id == call_log.id,
-                        CallLeg.participant == to_number,
-                        CallLeg.call_sid.is_(None),  # Leg created but not yet linked to child call
-                    ).first()
-                    
+                    leg = (
+                        self.db.query(CallLeg)
+                        .filter(
+                            CallLeg.call_log_id == call_log.id,
+                            CallLeg.participant == to_number,
+                            CallLeg.call_sid.is_(
+                                None
+                            ),  # Leg created but not yet linked to child call
+                        )
+                        .first()
+                    )
+
                     # If found, link the child call_sid to the leg
                     if leg:
                         leg.call_sid = leg_call_sid
-                        logger.info(f"Linked child call {leg_call_sid} to transfer leg {leg.leg_number}")
-            
+                        logger.info(
+                            f"Linked child call {leg_call_sid} to transfer leg {leg.leg_number}"
+                        )
+
             if not leg:
                 logger.warning(f"Call leg not found for SID: {leg_call_sid}")
                 return False
-            
+
             leg.status = new_status
-            
+
             # Mark in_progress when call is answered
             if status == "in-progress" and not leg.started_at:
                 leg.started_at = datetime.utcnow()
-            
+
             # Mark ended and calculate duration when call ends
             if status in ("completed", "busy", "failed", "no-answer", "canceled"):
                 leg.ended_at = datetime.utcnow()
@@ -879,15 +922,19 @@ class CallLogger:
                 if duration_seconds is not None:
                     leg.duration_seconds = duration_seconds
                 elif leg.started_at and leg.ended_at:
-                    leg.duration_seconds = max(0, int((leg.ended_at - leg.started_at).total_seconds()))
+                    leg.duration_seconds = max(
+                        0, int((leg.ended_at - leg.started_at).total_seconds())
+                    )
 
                 # When transfer leg ends (success or fail), update parent call.
                 if leg.leg_type in (LegType.TRANSFER_EXTERNAL.value, LegType.TRANSFER_SIP.value):
                     if not call_log and parent_call_sid:
                         call_log = self.get_call_log(parent_call_sid)
                     if not call_log:
-                        call_log = self.db.query(CallLog).filter(CallLog.id == leg.call_log_id).first()
-                    
+                        call_log = (
+                            self.db.query(CallLog).filter(CallLog.id == leg.call_log_id).first()
+                        )
+
                     if call_log:
                         # Only update status/outcome if not already marked complete.
                         if call_log.status != CallStatus.COMPLETED.value:
@@ -898,17 +945,21 @@ class CallLogger:
                             elif status in ("busy", "no-answer", "canceled"):
                                 call_log.outcome = f"transfer_{status.replace('-', '_')}"
                             # If completed successfully, keep "transferred" outcome
-                            logger.info(f"Marked parent call {call_log.call_sid} as completed after transfer {status}")
-                        
+                            logger.info(
+                                f"Marked parent call {call_log.call_sid} as completed after transfer {status}"
+                            )
+
                         # ALWAYS update ended_at and duration to include transfer time,
                         # even if the call was already marked completed by a parallel
                         # parent-call status callback. Using sum-of-legs ensures we never
                         # under-count when callbacks arrive out of order.
                         call_log.ended_at = leg.ended_at or datetime.utcnow()
-                        all_legs = self.db.query(CallLeg).filter(
-                            CallLeg.call_log_id == call_log.id
-                        ).all()
-                        non_cold = [l for l in all_legs if l.leg_type != LegType.TRANSFER_COLD.value]
+                        all_legs = (
+                            self.db.query(CallLeg).filter(CallLeg.call_log_id == call_log.id).all()
+                        )
+                        non_cold = [
+                            l for l in all_legs if l.leg_type != LegType.TRANSFER_COLD.value
+                        ]
 
                         # Recalculate AI leg duration now that transfer leg is authoritative.
                         # Use answered_at -> ai_leg.ended_at for the most accurate value.
@@ -919,18 +970,28 @@ class CallLogger:
                         )
                         if ai_leg_final and ai_leg_final.ended_at:
                             if call_log.answered_at:
-                                corrected = max(0, int(
-                                    (ai_leg_final.ended_at - call_log.answered_at).total_seconds()
-                                ))
+                                corrected = max(
+                                    0,
+                                    int(
+                                        (
+                                            ai_leg_final.ended_at - call_log.answered_at
+                                        ).total_seconds()
+                                    ),
+                                )
                                 ai_leg_final.duration_seconds = corrected
                                 logger.info(
                                     f"Recalculated AI leg duration to {corrected}s "
                                     f"(answered_at -> ai_leg.ended_at)"
                                 )
                             elif ai_leg_final.started_at:
-                                corrected = max(0, int(
-                                    (ai_leg_final.ended_at - ai_leg_final.started_at).total_seconds()
-                                ))
+                                corrected = max(
+                                    0,
+                                    int(
+                                        (
+                                            ai_leg_final.ended_at - ai_leg_final.started_at
+                                        ).total_seconds()
+                                    ),
+                                )
                                 ai_leg_final.duration_seconds = corrected
 
                         total_dur = sum(l.duration_seconds or 0 for l in non_cold)
@@ -939,81 +1000,84 @@ class CallLogger:
                         elif call_log.answered_at and call_log.ended_at:
                             # answered_at → ended_at excludes ring time and matches
                             # Twilio's CallDuration measurement.
-                            call_log.duration_seconds = max(0, int(
-                                (call_log.ended_at - call_log.answered_at).total_seconds()
-                            ))
+                            call_log.duration_seconds = max(
+                                0, int((call_log.ended_at - call_log.answered_at).total_seconds())
+                            )
                         elif call_log.started_at and call_log.ended_at:
                             call_log.duration_seconds = int(
                                 (call_log.ended_at - call_log.started_at).total_seconds()
                             )
-            
+
             self.db.commit()
-            logger.info(f"Updated leg {leg.leg_number} status to {new_status} (duration: {leg.duration_seconds}s)")
+            logger.info(
+                f"Updated leg {leg.leg_number} status to {new_status} (duration: {leg.duration_seconds}s)"
+            )
             return True
-            
+
         except Exception as e:
             logger.exception(f"Error updating leg status: {e}")
             self.db.rollback()
             return False
-    
+
     def create_transfer_leg_from_callback(
-        self,
-        parent_call_sid: str,
-        child_call_sid: str,
-        to_number: str,
-        status: str
+        self, parent_call_sid: str, child_call_sid: str, to_number: str, status: str
     ) -> bool:
-        """
-        Create a transfer leg when receiving a callback for a child call.
-        
+        """Create a transfer leg when receiving a callback for a child call.
+
         This handles the case where Twilio sends us a callback for a child call
         created by the transfer, and we need to track it as a leg.
-        
+
         Args:
             parent_call_sid: Original call SID
             child_call_sid: Transfer call SID
             to_number: Number being called
             status: Initial status
-            
+
         Returns:
             True if created successfully
         """
         try:
-            call_log = self.db.query(CallLog).filter(
-                CallLog.call_sid == parent_call_sid
-            ).first()
-            
+            call_log = self.db.query(CallLog).filter(CallLog.call_sid == parent_call_sid).first()
+
             if not call_log:
                 logger.warning(f"Parent call log not found: {parent_call_sid}")
                 return False
-            
-            existing_leg = self.db.query(CallLeg).filter(
-                CallLeg.call_log_id == call_log.id,
-                CallLeg.call_sid == child_call_sid
-            ).first()
-            
+
+            existing_leg = (
+                self.db.query(CallLeg)
+                .filter(CallLeg.call_log_id == call_log.id, CallLeg.call_sid == child_call_sid)
+                .first()
+            )
+
             if existing_leg:
                 return True
-            
-            max_leg = self.db.query(CallLeg).filter(
-                CallLeg.call_log_id == call_log.id
-            ).order_by(CallLeg.leg_number.desc()).first()
-            
+
+            max_leg = (
+                self.db.query(CallLeg)
+                .filter(CallLeg.call_log_id == call_log.id)
+                .order_by(CallLeg.leg_number.desc())
+                .first()
+            )
+
             next_leg_num = (max_leg.leg_number + 1) if max_leg else 1
-            
+
             # Use the AI leg's ended_at as the transfer leg's start time
             # This captures the ringing/bridging time that would otherwise be lost
-            ai_leg = self.db.query(CallLeg).filter(
-                CallLeg.call_log_id == call_log.id,
-                CallLeg.leg_type == LegType.AI_CONVERSATION.value
-            ).first()
-            
+            ai_leg = (
+                self.db.query(CallLeg)
+                .filter(
+                    CallLeg.call_log_id == call_log.id,
+                    CallLeg.leg_type == LegType.AI_CONVERSATION.value,
+                )
+                .first()
+            )
+
             transfer_started_at = datetime.utcnow()
             if ai_leg and ai_leg.ended_at:
                 transfer_started_at = ai_leg.ended_at
             elif call_log.answered_at:
                 transfer_started_at = call_log.answered_at
-            
+
             status_mapping = {
                 "initiated": CallStatus.INITIATED.value,
                 "ringing": CallStatus.RINGING.value,
@@ -1024,9 +1088,11 @@ class CallLogger:
                 "no-answer": CallStatus.NO_ANSWER.value,
                 "canceled": CallStatus.CANCELED.value,
             }
-            
-            new_status = status_mapping.get(status, status) if status else CallStatus.INITIATED.value
-            
+
+            new_status = (
+                status_mapping.get(status, status) if status else CallStatus.INITIATED.value
+            )
+
             transfer_leg = CallLeg(
                 call_log_id=call_log.id,
                 leg_number=next_leg_num,
@@ -1037,18 +1103,18 @@ class CallLogger:
                 started_at=transfer_started_at,
             )
             self.db.add(transfer_leg)
-            
+
             call_log.has_transfer = True
-            
+
             self.db.commit()
             logger.info(f"Created transfer leg {next_leg_num} for call {parent_call_sid}")
             return True
-            
+
         except Exception as e:
             logger.exception(f"Error creating transfer leg: {e}")
             self.db.rollback()
             return False
-    
+
     def has_transfer(self, call_sid: str) -> bool:
         """Check if a call has an active transfer."""
         call_log = self.get_call_log(call_sid)

@@ -1,5 +1,4 @@
-"""
-Assistants API - CRUD operations for voice AI assistants.
+"""Assistants API - CRUD operations for voice AI assistants.
 
 Endpoints:
 - GET /api/assistants - List hotel's assistants
@@ -9,24 +8,29 @@ Endpoints:
 - DELETE /api/assistants/{id} - Delete assistant
 """
 
-from typing import Optional, List
-from fastapi import APIRouter, HTTPException, Depends, Query
-from pydantic import BaseModel, Field
-from sqlalchemy.orm import Session
+from typing import List, Optional
 from uuid import UUID
 
+from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel, Field
+from sqlalchemy.orm import Session
+
+from botelier.auth.middleware import (
+    AccountContext,
+    check_account_permission,
+    get_current_user,
+    get_hotel_context,
+)
 from botelier.database import get_db
 from botelier.models.assistant import Assistant
-from botelier.models.user import User
-from botelier.auth.middleware import get_current_user, check_account_permission, get_hotel_context, AccountContext
-from botelier.models.user import UserType
-
+from botelier.models.user import User, UserType
 
 router = APIRouter(prefix="/api/assistants", tags=["assistants"])
 
 
 class AssistantCreate(BaseModel):
     """Assistant creation model."""
+
     account_id: str
     knowledge_base_id: Optional[str] = None
     tool_set_id: Optional[str] = None
@@ -58,6 +62,7 @@ class AssistantCreate(BaseModel):
 
 class AssistantUpdate(BaseModel):
     """Assistant update model."""
+
     knowledge_base_id: Optional[str] = None
     tool_set_id: Optional[str] = None
     mcp_connection_id: Optional[str] = None
@@ -90,11 +95,13 @@ class AssistantUpdate(BaseModel):
 
 class FlowConfigUpdate(BaseModel):
     """Flow configuration update model for the visual editor."""
+
     flow_config: dict = Field(..., description="Pipecat Flows configuration JSON")
 
 
 class AssistantResponse(BaseModel):
     """Assistant response model."""
+
     id: str
     account_id: str
     knowledge_base_id: Optional[str] = None
@@ -131,6 +138,7 @@ class AssistantResponse(BaseModel):
 
 class FlowConfigResponse(BaseModel):
     """Flow configuration response model."""
+
     assistant_id: str
     account_id: str
     flow_config: Optional[dict]
@@ -147,15 +155,15 @@ async def list_assistants(
     account_id = str(ctx.account.id)
 
     query = db.query(Assistant).filter(Assistant.account_id == account_id)
-    
+
     if is_active is not None:
         query = query.filter(Assistant.is_active == is_active)
-    
+
     assistants = query.order_by(Assistant.created_at.desc()).all()
-    
+
     return {
         "assistants": [assistant.to_dict() for assistant in assistants],
-        "total": len(assistants)
+        "total": len(assistants),
     }
 
 
@@ -208,11 +216,11 @@ async def create_assistant(
         is_active=data.is_active,
         call_settings=data.call_settings or {},
     )
-    
+
     db.add(assistant)
     db.commit()
     db.refresh(assistant)
-    
+
     return assistant.to_dict()
 
 
@@ -255,10 +263,10 @@ async def delete_assistant(
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
     check_account_permission(user, str(assistant.account_id), "assistants.delete", db)
-    
+
     db.delete(assistant)
     db.commit()
-    
+
     return None
 
 
@@ -273,12 +281,12 @@ async def get_assistant_flow(
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
     check_account_permission(user, str(assistant.account_id), "flows.view", db)
-    
+
     return {
         "assistant_id": str(assistant.id),
         "account_id": str(assistant.account_id),
         "flow_config": assistant.flow_config,
-        "has_flow": assistant.flow_config is not None
+        "has_flow": assistant.flow_config is not None,
     }
 
 
@@ -294,16 +302,16 @@ async def update_assistant_flow(
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
     check_account_permission(user, str(assistant.account_id), "flows.edit", db)
-    
+
     assistant.flow_config = data.flow_config
     db.commit()
     db.refresh(assistant)
-    
+
     return {
         "assistant_id": str(assistant.id),
         "account_id": str(assistant.account_id),
         "flow_config": assistant.flow_config,
-        "has_flow": True
+        "has_flow": True,
     }
 
 
@@ -318,10 +326,10 @@ async def delete_assistant_flow(
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
     check_account_permission(user, str(assistant.account_id), "flows.edit", db)
-    
+
     assistant.flow_config = None
     db.commit()
-    
+
     return None
 
 
@@ -333,10 +341,11 @@ async def get_acw_config(
     user: User = Depends(get_current_user),
 ):
     check_account_permission(user, account_id, "assistants.view", db)
-    assistant = db.query(Assistant).filter(
-        Assistant.id == assistant_id,
-        Assistant.account_id == account_id
-    ).first()
+    assistant = (
+        db.query(Assistant)
+        .filter(Assistant.id == assistant_id, Assistant.account_id == account_id)
+        .first()
+    )
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
 
@@ -360,10 +369,11 @@ async def update_acw_config(
     user: User = Depends(get_current_user),
 ):
     check_account_permission(user, account_id, "assistants.edit", db)
-    assistant = db.query(Assistant).filter(
-        Assistant.id == assistant_id,
-        Assistant.account_id == account_id
-    ).first()
+    assistant = (
+        db.query(Assistant)
+        .filter(Assistant.id == assistant_id, Assistant.account_id == account_id)
+        .first()
+    )
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
 
@@ -376,6 +386,7 @@ async def update_acw_config(
     current.update(filtered)
     assistant.acw_config = current
     from sqlalchemy.orm.attributes import flag_modified
+
     flag_modified(assistant, "acw_config")
     db.commit()
     db.refresh(assistant)
@@ -386,7 +397,9 @@ async def update_acw_config(
 async def get_greeting_cache_status(
     assistant_id: str,
     account_id: str = Query(..., description="Account ID for multi-tenant isolation"),
-    greeting_text: Optional[str] = Query(None, description="Override greeting text; defaults to assistant.first_message"),
+    greeting_text: Optional[str] = Query(
+        None, description="Override greeting text; defaults to assistant.first_message"
+    ),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -397,10 +410,14 @@ async def get_greeting_cache_status(
     check the cache status for an arbitrary text without modifying the assistant.
     """
     check_account_permission(user, account_id, "assistants.view", db)
-    assistant = db.query(Assistant).filter(
-        Assistant.id == assistant_id,
-        Assistant.account_id == account_id,
-    ).first()
+    assistant = (
+        db.query(Assistant)
+        .filter(
+            Assistant.id == assistant_id,
+            Assistant.account_id == account_id,
+        )
+        .first()
+    )
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
 
@@ -408,6 +425,7 @@ async def get_greeting_cache_status(
         return {"cached": False, "cached_at": None, "supported": False}
 
     from botelier.voice.greeting_cache import get_cache_status
+
     effective_text = greeting_text or assistant.first_message or "Hello! How can I help you today?"
     _voice = assistant.tts_voice or "aura-2-helena-en"
     tts_cfg = {"voice": _voice}
@@ -425,7 +443,9 @@ async def get_greeting_cache_status(
 async def cache_assistant_greeting(
     assistant_id: str,
     account_id: str = Query(..., description="Account ID for multi-tenant isolation"),
-    greeting_text: Optional[str] = Query(None, description="Override greeting text; defaults to assistant.first_message"),
+    greeting_text: Optional[str] = Query(
+        None, description="Override greeting text; defaults to assistant.first_message"
+    ),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -436,10 +456,14 @@ async def cache_assistant_greeting(
     greeting) that may differ from ``assistant.first_message``.
     """
     check_account_permission(user, account_id, "assistants.edit", db)
-    assistant = db.query(Assistant).filter(
-        Assistant.id == assistant_id,
-        Assistant.account_id == account_id,
-    ).first()
+    assistant = (
+        db.query(Assistant)
+        .filter(
+            Assistant.id == assistant_id,
+            Assistant.account_id == account_id,
+        )
+        .first()
+    )
     if not assistant:
         raise HTTPException(status_code=404, detail="Assistant not found")
 
@@ -450,11 +474,13 @@ async def cache_assistant_greeting(
         )
 
     import os
+
     api_key = os.environ.get("DEEPGRAM_API_KEY")
     if not api_key:
         raise HTTPException(status_code=500, detail="DEEPGRAM_API_KEY not configured")
 
-    from botelier.voice.greeting_cache import get_or_generate_greeting_audio, get_cache_status
+    from botelier.voice.greeting_cache import get_cache_status, get_or_generate_greeting_audio
+
     effective_text = greeting_text or assistant.first_message or "Hello! How can I help you today?"
     _voice = assistant.tts_voice or "aura-2-helena-en"
     tts_cfg = {"voice": _voice}

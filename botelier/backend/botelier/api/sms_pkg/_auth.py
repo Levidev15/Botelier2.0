@@ -1,5 +1,4 @@
-"""
-Shared authentication / tenant-isolation helpers for the SMS package.
+"""Shared authentication / tenant-isolation helpers for the SMS package.
 
 Every SMS endpoint must:
   1. Require a valid JWT (HTTPBearer via `get_current_user`).
@@ -20,7 +19,7 @@ from uuid import UUID
 from fastapi import Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
-from botelier.auth.middleware import get_current_user, check_account_permission
+from botelier.auth.middleware import check_account_permission, get_current_user
 from botelier.database import get_db
 from botelier.models.user import User
 
@@ -46,8 +45,7 @@ def assert_sms_account_access(
     account_id: str,
     db: Session,
 ) -> None:
-    """
-    Raise 403 unless `user` is a platform admin or has an active membership
+    """Raise 403 unless `user` is a platform admin or has an active membership
     in `account_id` with the `messages.view` permission.
     Raise 400 if account_id is missing or not a valid UUID.
 
@@ -64,8 +62,7 @@ def assert_sms_permission(
     permission: str,
     db: Session,
 ) -> None:
-    """
-    Raise 403 unless `user` is a platform admin or has an active membership
+    """Raise 403 unless `user` is a platform admin or has an active membership
     in `account_id` with the given `permission` (e.g. ``messages.reply``).
     Raise 400 if account_id is missing or not a valid UUID.
 
@@ -80,8 +77,7 @@ def assert_sms_permission(
 
 
 def require_sms_query_account():
-    """
-    FastAPI dependency: authenticates the caller, asserts they have
+    """FastAPI dependency: authenticates the caller, asserts they have
     `messages.view` access to the `account_id` query parameter, and
     returns it as a string. Use this for GET routes that accept
     `?account_id=...`.

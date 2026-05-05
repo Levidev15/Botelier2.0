@@ -1,3 +1,1 @@
-"""
-Botelier management scripts.
-"""
+"""Botelier management scripts."""

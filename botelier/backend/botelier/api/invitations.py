@@ -1,20 +1,19 @@
-"""
-Public Invitation API Endpoints.
+"""Public Invitation API Endpoints.
 
 Provides endpoints for accepting invitations (public access with token validation).
 """
 
 from datetime import datetime
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from botelier.auth.middleware import get_current_user
 from botelier.database import get_db
 from botelier.models.invitation import AccountInvitation, InvitationStatus
-from botelier.models.user import User, UserType
 from botelier.models.role import AccountMembership
-from botelier.auth.middleware import get_current_user
-
+from botelier.models.user import User, UserType
 
 router = APIRouter(prefix="/api/invitations", tags=["Invitations"])
 
@@ -46,42 +45,27 @@ async def verify_invitation(
     token: str,
     db: Session = Depends(get_db),
 ):
-    """
-    Verify an invitation token (public endpoint).
-    
+    """Verify an invitation token (public endpoint).
+
     Returns invitation details if valid, or error if invalid/expired.
     """
-    invitation = db.query(AccountInvitation).filter(
-        AccountInvitation.token == token
-    ).first()
-    
+    invitation = db.query(AccountInvitation).filter(AccountInvitation.token == token).first()
+
     if not invitation:
-        return InvitationVerifyResponse(
-            valid=False,
-            error="Invitation not found"
-        )
-    
+        return InvitationVerifyResponse(valid=False, error="Invitation not found")
+
     if invitation.status == InvitationStatus.ACCEPTED:
-        return InvitationVerifyResponse(
-            valid=False,
-            error="Invitation has already been accepted"
-        )
-    
+        return InvitationVerifyResponse(valid=False, error="Invitation has already been accepted")
+
     if invitation.status == InvitationStatus.REVOKED:
-        return InvitationVerifyResponse(
-            valid=False,
-            error="Invitation has been revoked"
-        )
-    
+        return InvitationVerifyResponse(valid=False, error="Invitation has been revoked")
+
     if invitation.is_expired:
         if invitation.status == InvitationStatus.PENDING:
             invitation.expire()
             db.commit()
-        return InvitationVerifyResponse(
-            valid=False,
-            error="Invitation has expired"
-        )
-    
+        return InvitationVerifyResponse(valid=False, error="Invitation has expired")
+
     return InvitationVerifyResponse(
         valid=True,
         invitation_id=str(invitation.id),
@@ -98,18 +82,15 @@ async def accept_invitation(
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """
-    Accept an invitation (requires authenticated user).
-    
+    """Accept an invitation (requires authenticated user).
+
     Creates account membership linking the user to the account with the invited role.
     """
-    invitation = db.query(AccountInvitation).filter(
-        AccountInvitation.token == data.token
-    ).first()
-    
+    invitation = db.query(AccountInvitation).filter(AccountInvitation.token == data.token).first()
+
     if not invitation:
         raise HTTPException(status_code=404, detail="Invitation not found")
-    
+
     if not invitation.is_valid:
         if invitation.status == InvitationStatus.ACCEPTED:
             raise HTTPException(status_code=400, detail="Invitation has already been accepted")
@@ -120,18 +101,22 @@ async def accept_invitation(
                 invitation.expire()
                 db.commit()
             raise HTTPException(status_code=400, detail="Invitation has expired")
-    
+
     if user.email and user.email.lower() != invitation.invitee_email.lower():
         raise HTTPException(
-            status_code=400, 
-            detail=f"This invitation was sent to {invitation.invitee_email}. Please sign in with that email."
+            status_code=400,
+            detail=f"This invitation was sent to {invitation.invitee_email}. Please sign in with that email.",
         )
-    
-    existing_membership = db.query(AccountMembership).filter(
-        AccountMembership.user_id == user.id,
-        AccountMembership.account_id == invitation.account_id,
-    ).first()
-    
+
+    existing_membership = (
+        db.query(AccountMembership)
+        .filter(
+            AccountMembership.user_id == user.id,
+            AccountMembership.account_id == invitation.account_id,
+        )
+        .first()
+    )
+
     if existing_membership:
         if existing_membership.is_active:
             raise HTTPException(status_code=400, detail="You are already a member of this account")
@@ -151,14 +136,14 @@ async def accept_invitation(
             accepted_at=datetime.utcnow(),
         )
         db.add(membership)
-    
+
     invitation.accept()
-    
+
     if not user.email and invitation.invitee_email:
         user.email = invitation.invitee_email
-    
+
     db.commit()
-    
+
     return InvitationAcceptResponse(
         success=True,
         message=f"Successfully joined {invitation.account.name}",

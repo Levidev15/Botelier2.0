@@ -1,5 +1,4 @@
-"""
-Botelier Flows - Hotel-specific conversation flow management.
+"""Botelier Flows - Hotel-specific conversation flow management.
 
 Wraps Pipecat Flows to provide:
 - Visual flow editor integration

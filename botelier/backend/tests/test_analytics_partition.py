@@ -1,5 +1,4 @@
-"""
-Task #99 — Analytics partition lock-in tests.
+"""Task #99 — Analytics partition lock-in tests.
 
 These tests pin down the contract between the in-process classifier
 (`_classify_partition`) and the SQL predicate (`_bucket_predicate`) used by
@@ -44,18 +43,16 @@ if not os.environ.get("DATABASE_URL"):
         "not be silently skipped — point DATABASE_URL at a test database."
     )
 
-from sqlalchemy import func
-
+from botelier.api.analytics import (
+    _PARTITION_BUCKETS,
+    _bucket_predicate,
+    _classify_partition,
+    _unresolved_subbucket_predicates,
+)
 from botelier.database import SessionLocal
 from botelier.models import CallLog, CallStatus
 from botelier.models.account import Account, AccountStatus, SubscriptionTier
-from botelier.api.analytics import (
-    _PARTITION_BUCKETS,
-    _classify_partition,
-    _bucket_predicate,
-    _unresolved_subbucket_predicates,
-)
-
+from sqlalchemy import func
 
 ALL_STATUSES = [s.value for s in CallStatus]
 GREETED_VALUES = [True, False]
@@ -93,8 +90,7 @@ def _make_call_log(account_id, status, greeted, caller_spoke) -> CallLog:
 
 @pytest.fixture(scope="module")
 def populated_account():
-    """
-    Create one CallLog per (status, greeted, caller_spoke) combination under
+    """Create one CallLog per (status, greeted, caller_spoke) combination under
     a fresh account_id, yield (account_id, expected_rows), and clean up.
 
     `expected_rows` is a list of (status, greeted, caller_spoke, expected_bucket)
@@ -129,6 +125,7 @@ def _bucket_count(db, account_id, predicate) -> int:
 # Classifier ↔ SQL predicate parity
 # ---------------------------------------------------------------------------
 
+
 class TestClassifierPredicateParity:
     """Every input combination routes to the same bucket via both paths."""
 
@@ -161,12 +158,9 @@ class TestClassifierPredicateParity:
                     .all()
                 )
                 sql_triples = {
-                    (r.status, bool(r.ai_greeting_completed), r.caller_spoke)
-                    for r in sql_rows
+                    (r.status, bool(r.ai_greeting_completed), r.caller_spoke) for r in sql_rows
                 }
-                expected_triples = {
-                    (s, g, cs) for (s, g, cs, b) in rows if b == bucket
-                }
+                expected_triples = {(s, g, cs) for (s, g, cs, b) in rows if b == bucket}
                 assert sql_triples == expected_triples, (
                     f"Bucket {bucket!r} mismatch.\n"
                     f"  SQL only:        {sql_triples - expected_triples}\n"
@@ -179,6 +173,7 @@ class TestClassifierPredicateParity:
 # ---------------------------------------------------------------------------
 # MECE invariant — sum(buckets) == total_calls
 # ---------------------------------------------------------------------------
+
 
 class TestPartitionMece:
     """The five buckets must always sum to the total number of calls."""
@@ -195,14 +190,11 @@ class TestPartitionMece:
         db = SessionLocal()
         try:
             total = (
-                db.query(func.count(CallLog.id))
-                .filter(CallLog.account_id == account_id)
-                .scalar()
+                db.query(func.count(CallLog.id)).filter(CallLog.account_id == account_id).scalar()
             )
             assert total == len(rows)
             counts = {
-                b: _bucket_count(db, account_id, _bucket_predicate(b))
-                for b in _PARTITION_BUCKETS
+                b: _bucket_count(db, account_id, _bucket_predicate(b)) for b in _PARTITION_BUCKETS
             }
             assert sum(counts.values()) == total, (
                 f"SQL bucket counts {counts} do not sum to total {total}"
@@ -212,15 +204,13 @@ class TestPartitionMece:
             # match zero rows. Catches accidental overlap that would still
             # sum correctly only by coincidence.
             for i, b1 in enumerate(_PARTITION_BUCKETS):
-                for b2 in _PARTITION_BUCKETS[i + 1:]:
+                for b2 in _PARTITION_BUCKETS[i + 1 :]:
                     overlap = _bucket_count(
                         db,
                         account_id,
                         _bucket_predicate(b1) & _bucket_predicate(b2),
                     )
-                    assert overlap == 0, (
-                        f"Buckets {b1!r} and {b2!r} overlap on {overlap} rows"
-                    )
+                    assert overlap == 0, f"Buckets {b1!r} and {b2!r} overlap on {overlap} rows"
         finally:
             db.close()
 
@@ -229,6 +219,7 @@ class TestPartitionMece:
 # NULL caller_spoke must behave like TRUE (legacy rows preserved)
 # ---------------------------------------------------------------------------
 
+
 class TestNullCallerSpokeIsSpoke:
     """A NULL caller_spoke is treated as "spoke" by both classifier and SQL."""
 
@@ -236,13 +227,9 @@ class TestNullCallerSpokeIsSpoke:
         # For every (status, greeted) pair, the classifier output for
         # caller_spoke=None must equal the output for caller_spoke=True.
         for status, greeted in product(ALL_STATUSES, GREETED_VALUES):
-            assert (
-                _classify_partition(status, greeted, None)
-                == _classify_partition(status, greeted, True)
-            ), (
-                f"NULL caller_spoke routed differently from TRUE for "
-                f"({status!r}, greeted={greeted})"
-            )
+            assert _classify_partition(status, greeted, None) == _classify_partition(
+                status, greeted, True
+            ), f"NULL caller_spoke routed differently from TRUE for ({status!r}, greeted={greeted})"
 
     def test_sql_treats_null_as_spoke(self, populated_account):
         # Per-bucket: rows with caller_spoke IS NULL must land in the SAME
@@ -286,6 +273,7 @@ class TestNullCallerSpokeIsSpoke:
 # Unresolved sub-breakdown integrity
 # ---------------------------------------------------------------------------
 
+
 class TestUnresolvedSubBreakdown:
     """silent_caller + non_terminal_gap + other == unresolved bucket count."""
 
@@ -293,9 +281,7 @@ class TestUnresolvedSubBreakdown:
         account_id, _rows = populated_account
         db = SessionLocal()
         try:
-            unresolved_total = _bucket_count(
-                db, account_id, _bucket_predicate("unresolved")
-            )
+            unresolved_total = _bucket_count(db, account_id, _bucket_predicate("unresolved"))
 
             sub = _unresolved_subbucket_predicates()
             silent = _bucket_count(db, account_id, sub["silent_caller"])
@@ -305,31 +291,23 @@ class TestUnresolvedSubBreakdown:
             other = _bucket_count(
                 db,
                 account_id,
-                _bucket_predicate("unresolved")
-                & ~sub["silent_caller"]
-                & ~sub["non_terminal_gap"],
+                _bucket_predicate("unresolved") & ~sub["silent_caller"] & ~sub["non_terminal_gap"],
             )
 
             assert silent + gap + other == unresolved_total, (
-                f"Sub-breakdown {silent=} + {gap=} + {other=} "
-                f"!= unresolved {unresolved_total}"
+                f"Sub-breakdown {silent=} + {gap=} + {other=} != unresolved {unresolved_total}"
             )
 
             # Sub-buckets are subsets of unresolved (no leakage into other
             # top-level buckets).
             for name, pred in sub.items():
-                leaked = _bucket_count(
-                    db, account_id, pred & ~_bucket_predicate("unresolved")
-                )
+                leaked = _bucket_count(db, account_id, pred & ~_bucket_predicate("unresolved"))
                 assert leaked == 0, (
-                    f"Sub-bucket {name!r} matched {leaked} rows outside "
-                    "the unresolved bucket"
+                    f"Sub-bucket {name!r} matched {leaked} rows outside the unresolved bucket"
                 )
 
             # And the two named sub-buckets are mutually exclusive.
-            overlap = _bucket_count(
-                db, account_id, sub["silent_caller"] & sub["non_terminal_gap"]
-            )
+            overlap = _bucket_count(db, account_id, sub["silent_caller"] & sub["non_terminal_gap"])
             assert overlap == 0
         finally:
             db.close()

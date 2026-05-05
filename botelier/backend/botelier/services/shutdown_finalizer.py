@@ -20,15 +20,12 @@ from __future__ import annotations
 
 import asyncio
 
-
 # Per-call shutdown finalization budget — keeps total deploy block bounded.
 SHUTDOWN_PER_CALL_TIMEOUT = 2.0
 SHUTDOWN_TOTAL_TIMEOUT = 10.0
 
 
-async def finalize_active_calls_on_shutdown(
-    session_factory, call_handler=None
-) -> None:
+async def finalize_active_calls_on_shutdown(session_factory, call_handler=None) -> None:
     """Finalize every in-flight call before the worker exits.
 
     On uvicorn restart (deploy / reload / SIGTERM), in-memory call state
@@ -63,15 +60,13 @@ async def finalize_active_calls_on_shutdown(
     if call_handler is None:
         try:
             from botelier.api.websockets import call_handler as _call_handler
+
             call_handler = _call_handler
         except Exception as e:
             print(f"⚠️  shutdown finalizer: could not import call_handler: {e}")
             return
 
-    active_sids = list(
-        set(call_handler.active_calls.keys())
-        | set(call_handler.call_tasks.keys())
-    )
+    active_sids = list(set(call_handler.active_calls.keys()) | set(call_handler.call_tasks.keys()))
     if not active_sids:
         return
 
@@ -83,9 +78,8 @@ async def finalize_active_calls_on_shutdown(
             db = session_factory()
             try:
                 from botelier.services.call_logger import CallLogger
-                CallLogger(db).complete_call(
-                    call_sid=sid, forced_by="shutdown"
-                )
+
+                CallLogger(db).complete_call(call_sid=sid, forced_by="shutdown")
             finally:
                 db.close()
 

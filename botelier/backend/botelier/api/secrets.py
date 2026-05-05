@@ -1,5 +1,4 @@
-"""
-Account Secrets API — encrypted key-value store for sensitive credentials.
+"""Account Secrets API — encrypted key-value store for sensitive credentials.
 
 Secrets are stored Fernet-encrypted and referenced in flow/tool configs as
 {{secrets.key_name}}. Secret VALUES are never returned by any endpoint.
@@ -11,16 +10,16 @@ preventing cross-account access for users who belong to multiple accounts.
 
 import re
 from datetime import datetime
-from typing import Optional, List
+from typing import List, Optional
+
 from fastapi import APIRouter, Depends, HTTPException, status
+from loguru import logger
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
-from loguru import logger
 
+from botelier.auth.middleware import get_current_user
 from botelier.database import get_db
 from botelier.models.integration import AccountSecret
-from botelier.auth.middleware import get_current_user
-
 
 router = APIRouter(prefix="/api/secrets", tags=["secrets"])
 
@@ -28,14 +27,15 @@ _KEY_RE = re.compile(r"^[a-z0-9_]{1,100}$")
 
 
 def _assert_account_access(current_user, account_id: str) -> None:
-    """
-    Raise 403 if the authenticated user does not have an active membership
+    """Raise 403 if the authenticated user does not have an active membership
     for the requested account_id.  Platform admins bypass this check.
     """
     if getattr(current_user, "user_type", None) == "platform_admin":
         return
     memberships = getattr(current_user, "account_memberships", None) or []
-    allowed = {str(getattr(m, "account_id", "")) for m in memberships if getattr(m, "is_active", False)}
+    allowed = {
+        str(getattr(m, "account_id", "")) for m in memberships if getattr(m, "is_active", False)
+    }
     if account_id not in allowed:
         raise HTTPException(
             status_code=403,
@@ -66,7 +66,9 @@ class CreateSecretRequest(BaseModel):
     def validate_key(cls, v: str) -> str:
         v = v.strip().lower().replace(" ", "_").replace("-", "_")
         if not _KEY_RE.match(v):
-            raise ValueError("Secret key must be lowercase letters, digits, and underscores only (max 100 chars)")
+            raise ValueError(
+                "Secret key must be lowercase letters, digits, and underscores only (max 100 chars)"
+            )
         return v
 
     @field_validator("name")

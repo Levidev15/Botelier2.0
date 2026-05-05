@@ -1,5 +1,4 @@
-"""
-SSRF-Safe HTTP Transport.
+"""SSRF-Safe HTTP Transport.
 
 Provides an httpx.AsyncHTTPTransport subclass that prevents Server-Side
 Request Forgery (SSRF) by resolving the destination hostname once at
@@ -44,8 +43,7 @@ _BLOCKED_LITERAL_HOSTS = {
 
 
 class SSRFSafeTransport(httpx.AsyncHTTPTransport):
-    """
-    SSRF-safe async transport.
+    """SSRF-safe async transport.
 
     Resolves the hostname **once** inside handle_async_request, validates
     every resolved IP against private/loopback/link-local/reserved ranges,
@@ -73,9 +71,7 @@ class SSRFSafeTransport(httpx.AsyncHTTPTransport):
                 lambda: socket.getaddrinfo(hostname, port, type=socket.SOCK_STREAM),
             )
         except socket.gaierror:
-            raise httpx.ConnectError(
-                f"Unable to resolve hostname: {hostname}", request=request
-            )
+            raise httpx.ConnectError(f"Unable to resolve hostname: {hostname}", request=request)
 
         safe_ip: Optional[str] = None
         for _, _, _, _, sockaddr in results:
@@ -114,8 +110,7 @@ class SSRFSafeTransport(httpx.AsyncHTTPTransport):
 
 
 def make_ssrf_safe_mcp_client_factory():
-    """
-    Return an MCP-compatible httpx_client_factory that injects the
+    """Return an MCP-compatible httpx_client_factory that injects the
     SSRFSafeTransport into every httpx.AsyncClient created by the MCP
     SSE transport, preventing DNS-rebinding SSRF on MCP connections.
     """

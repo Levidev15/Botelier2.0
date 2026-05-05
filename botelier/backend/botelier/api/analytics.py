@@ -1,5 +1,4 @@
-"""
-Analytics API — rich aggregated metrics for Call Analytics dashboard.
+"""Analytics API — rich aggregated metrics for Call Analytics dashboard.
 
 GET /api/analytics/calls            — All call metrics in one response.
 GET /api/analytics/calls/drilldown  — Paginated call records for a given metric slice.
@@ -8,20 +7,27 @@ GET /api/analytics/calls/drilldown  — Paginated call records for a given metri
 import csv
 import io
 from datetime import datetime, timedelta
-from typing import Optional, List
+from typing import List, Optional
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from loguru import logger
-from sqlalchemy import desc, func, case
+from sqlalchemy import case, desc, func
 from sqlalchemy.orm import Session, joinedload
 
+from botelier.auth.middleware import check_account_permission, get_current_user
 from botelier.database import get_db
-from botelier.models import CallLog, CallLeg, CallStatus, Assistant, AssistantDisposition, PhoneNumber
+from botelier.models import (
+    Assistant,
+    AssistantDisposition,
+    CallLeg,
+    CallLog,
+    CallStatus,
+    PhoneNumber,
+)
 from botelier.models.user import User
-from botelier.auth.middleware import get_current_user, check_account_permission
 
 router = APIRouter(prefix="/api/analytics", tags=["Analytics"])
 
@@ -67,8 +73,7 @@ def _classify_partition(
     ai_greeting_completed: bool,
     caller_spoke: Optional[bool] = None,
 ) -> str:
-    """
-    Pure classifier — returns exactly one bucket for every
+    """Pure classifier — returns exactly one bucket for every
     (status, greeted, caller_spoke) triple.
 
     Task #98: a row that *would* be ai_handled (greeted=TRUE on a non-terminal
@@ -192,10 +197,19 @@ def _resolve_date_range(
 @router.get("/calls")
 async def get_call_analytics(
     account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
-    date_from: Optional[datetime] = Query(None, description="Start of window (ISO 8601). Defaults to 7 days ago."),
-    date_to: Optional[datetime] = Query(None, description="End of window (ISO 8601). Defaults to now."),
-    assistant_ids: Optional[List[UUID]] = Query(None, description="Filter to these assistants (repeat param for multiple)."),
-    timezone: str = Query("UTC", description="IANA timezone name for time-bucketed aggregations (e.g. America/Los_Angeles)."),
+    date_from: Optional[datetime] = Query(
+        None, description="Start of window (ISO 8601). Defaults to 7 days ago."
+    ),
+    date_to: Optional[datetime] = Query(
+        None, description="End of window (ISO 8601). Defaults to now."
+    ),
+    assistant_ids: Optional[List[UUID]] = Query(
+        None, description="Filter to these assistants (repeat param for multiple)."
+    ),
+    timezone: str = Query(
+        "UTC",
+        description="IANA timezone name for time-bucketed aggregations (e.g. America/Los_Angeles).",
+    ),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -257,9 +271,7 @@ async def get_call_analytics(
         for r in partition_rows:
             cnt = int(r.cnt)
             total += cnt
-            partition_counts_by_status[r.status] = (
-                partition_counts_by_status.get(r.status, 0) + cnt
-            )
+            partition_counts_by_status[r.status] = partition_counts_by_status.get(r.status, 0) + cnt
             cs = r.caller_spoke  # Optional[bool]
             bucket = _classify_partition(r.status, bool(r.ai_greeting_completed), cs)
             buckets[bucket] += cnt
@@ -267,14 +279,10 @@ async def get_call_analytics(
                 if (
                     r.ai_greeting_completed
                     and cs is False
-                    and r.status
-                    in _AI_GREETED_STATUSES + (CallStatus.ENDED_EARLY.value,)
+                    and r.status in _AI_GREETED_STATUSES + (CallStatus.ENDED_EARLY.value,)
                 ):
                     unresolved_breakdown["no_caller_audio"] += cnt
-                elif (
-                    not r.ai_greeting_completed
-                    and r.status in _non_terminal_statuses
-                ):
+                elif not r.ai_greeting_completed and r.status in _non_terminal_statuses:
                     unresolved_breakdown["dropped_pre_greeting"] += cnt
                 else:
                     unresolved_breakdown["other"] += cnt
@@ -294,7 +302,10 @@ async def get_call_analytics(
             logger.warning(
                 "Analytics partition integrity fail for account {}: "
                 "total={} sum={} buckets={} per_status={}",
-                account_id, total, partition_sum, buckets,
+                account_id,
+                total,
+                partition_sum,
+                buckets,
                 partition_counts_by_status,
             )
 
@@ -340,7 +351,9 @@ async def get_call_analytics(
             )
             .filter(
                 CallLeg.call_log_id.in_(call_ids_subq),
-                CallLeg.leg_type.in_(["transfer_external", "transfer_sip", "transfer_internal", "transfer_cold"]),
+                CallLeg.leg_type.in_(
+                    ["transfer_external", "transfer_sip", "transfer_internal", "transfer_cold"]
+                ),
             )
             .one()
         )
@@ -401,10 +414,7 @@ async def get_call_analytics(
             .order_by("day")
             .all()
         )
-        volume_by_day = [
-            {"date": r.day.date().isoformat(), "calls": r.cnt}
-            for r in vol_rows
-        ]
+        volume_by_day = [{"date": r.day.date().isoformat(), "calls": r.cnt} for r in vol_rows]
 
         hour_label = func.extract("hour", local_ts).label("hr")
         hour_rows = (
@@ -414,10 +424,7 @@ async def get_call_analytics(
             .order_by("hr")
             .all()
         )
-        calls_by_hour = [
-            {"hour": int(r.hr), "calls": r.cnt}
-            for r in hour_rows
-        ]
+        calls_by_hour = [{"hour": int(r.hr), "calls": r.cnt} for r in hour_rows]
 
         status_rows = (
             _base()
@@ -426,10 +433,7 @@ async def get_call_analytics(
             .order_by(desc("cnt"))
             .all()
         )
-        status_distribution = [
-            {"status": r.status, "count": r.cnt}
-            for r in status_rows
-        ]
+        status_distribution = [{"status": r.status, "count": r.cnt} for r in status_rows]
 
         asst_rows = (
             _base()
@@ -455,20 +459,19 @@ async def get_call_analytics(
             .group_by(CallLog.assistant_id)
             .all()
         )
-        silent_per_asst: dict = {
-            str(r.assistant_id): int(r.cnt) for r in silent_per_asst_rows
-        }
+        silent_per_asst: dict = {str(r.assistant_id): int(r.cnt) for r in silent_per_asst_rows}
         # Resolve assistant names for any silent-only assistants not already in
         # the asst_names map (rare, but possible if no other call rows exist
         # for that assistant in the window).
         missing_silent_asst_ids = [
-            r.assistant_id for r in silent_per_asst_rows
-            if str(r.assistant_id) not in asst_names
+            r.assistant_id for r in silent_per_asst_rows if str(r.assistant_id) not in asst_names
         ]
         if missing_silent_asst_ids:
-            extra = db.query(Assistant.id, Assistant.name).filter(
-                Assistant.id.in_(missing_silent_asst_ids)
-            ).all()
+            extra = (
+                db.query(Assistant.id, Assistant.name)
+                .filter(Assistant.id.in_(missing_silent_asst_ids))
+                .all()
+            )
             for a in extra:
                 asst_names[str(a.id)] = a.name
 
@@ -509,9 +512,11 @@ async def get_call_analytics(
         silent_phone_ids = [r.phone_number_id for r in silent_per_phone_rows]
         silent_phone_map: dict = {}
         if silent_phone_ids:
-            prows = db.query(PhoneNumber.id, PhoneNumber.phone_number).filter(
-                PhoneNumber.id.in_(silent_phone_ids)
-            ).all()
+            prows = (
+                db.query(PhoneNumber.id, PhoneNumber.phone_number)
+                .filter(PhoneNumber.id.in_(silent_phone_ids))
+                .all()
+            )
             silent_phone_map = {str(p.id): p.phone_number for p in prows}
         silent_by_phone = [
             {
@@ -537,7 +542,9 @@ async def get_call_analytics(
         disp_ids = [r.disposition_id for r in disp_rows]
         disp_info: dict = {}
         if disp_ids:
-            disps = db.query(AssistantDisposition).filter(AssistantDisposition.id.in_(disp_ids)).all()
+            disps = (
+                db.query(AssistantDisposition).filter(AssistantDisposition.id.in_(disp_ids)).all()
+            )
             disp_info = {str(d.id): {"name": d.name, "color": d.color} for d in disps}
 
         dispositions = [
@@ -560,8 +567,7 @@ async def get_call_analytics(
         ).one()
 
         res_rows = (
-            acw_base
-            .filter(CallLog.acw_resolution.isnot(None))
+            acw_base.filter(CallLog.acw_resolution.isnot(None))
             .with_entities(CallLog.acw_resolution, func.count(CallLog.id).label("cnt"))
             .group_by(CallLog.acw_resolution)
             .order_by(desc("cnt"))
@@ -604,8 +610,7 @@ async def get_call_analytics(
             "min_quality_score": int(score_row.mn) if score_row.mn is not None else None,
             "max_quality_score": int(score_row.mx) if score_row.mx is not None else None,
             "resolution_distribution": [
-                {"resolution": r.acw_resolution, "count": r.cnt}
-                for r in res_rows
+                {"resolution": r.acw_resolution, "count": r.cnt} for r in res_rows
             ],
             "score_distribution": score_distribution,
         }
@@ -633,16 +638,22 @@ async def get_calls_drilldown(
     date_from: Optional[datetime] = Query(None, description="Start of window (ISO 8601)."),
     date_to: Optional[datetime] = Query(None, description="End of window (ISO 8601)."),
     assistant_ids: Optional[List[UUID]] = Query(None, description="Filter to these assistants."),
-    timezone: str = Query("UTC", description="IANA timezone name — used to match hour: filters to the same timezone as the chart."),
-    metric: str = Query("all", description=(  # noqa: E501
-        "Metric token — one of: all | completed | transferred | acw_completed | "
-        "status:<val> | disposition:<uuid> | hour:<0-23> | assistant:<uuid> | "
-        "quality_range:<label> | resolution:<val> | "
-        "ai_handled | ended_early | missed | failed | unresolved | silent_caller. "
-        "The Task #97 partition tokens (ai_handled..unresolved) match the "
-        "classifier used by GET /api/analytics/calls 1:1. silent_caller is the "
-        "Task #98 sub-bucket of unresolved (caller_spoke=FALSE on a greeted call)."
-    )),
+    timezone: str = Query(
+        "UTC",
+        description="IANA timezone name — used to match hour: filters to the same timezone as the chart.",
+    ),
+    metric: str = Query(
+        "all",
+        description=(  # noqa: E501
+            "Metric token — one of: all | completed | transferred | acw_completed | "
+            "status:<val> | disposition:<uuid> | hour:<0-23> | assistant:<uuid> | "
+            "quality_range:<label> | resolution:<val> | "
+            "ai_handled | ended_early | missed | failed | unresolved | silent_caller. "
+            "The Task #97 partition tokens (ai_handled..unresolved) match the "
+            "classifier used by GET /api/analytics/calls 1:1. silent_caller is the "
+            "Task #98 sub-bucket of unresolved (caller_spoke=FALSE on a greeted call)."
+        ),
+    ),
     page: int = Query(1, ge=1),
     limit: int = Query(_DRILLDOWN_PAGE_LIMIT, ge=1, le=100),
     db: Session = Depends(get_db),
@@ -674,11 +685,15 @@ async def get_calls_drilldown(
         if token == "completed":
             query = query.filter(CallLog.status == CallStatus.COMPLETED.value)
         elif token == "missed":
-            query = query.filter(CallLog.status.in_([
-                CallStatus.NO_ANSWER.value,
-                CallStatus.BUSY.value,
-                CallStatus.CANCELED.value,
-            ]))
+            query = query.filter(
+                CallLog.status.in_(
+                    [
+                        CallStatus.NO_ANSWER.value,
+                        CallStatus.BUSY.value,
+                        CallStatus.CANCELED.value,
+                    ]
+                )
+            )
         elif token == "failed":
             query = query.filter(CallLog.status == CallStatus.FAILED.value)
         elif token == "transferred":
@@ -686,27 +701,31 @@ async def get_calls_drilldown(
         elif token == "acw_completed":
             query = query.filter(CallLog.acw_completed_at.isnot(None))
         elif token.startswith("status:"):
-            status_val = token[len("status:"):]
+            status_val = token[len("status:") :]
             query = query.filter(CallLog.status == status_val)
         elif token.startswith("disposition:"):
-            disp_id = token[len("disposition:"):]
+            disp_id = token[len("disposition:") :]
             query = query.filter(CallLog.disposition_id == UUID(disp_id))
         elif token.startswith("hour:"):
-            hr = int(token[len("hour:"):])
+            hr = int(token[len("hour:") :])
             query = query.filter(
                 func.extract(
                     "hour",
                     func.timezone(timezone, func.timezone("UTC", CallLog.started_at)),
-                ) == hr
+                )
+                == hr
             )
         elif token.startswith("assistant:"):
-            asst_id = token[len("assistant:"):]
+            asst_id = token[len("assistant:") :]
             query = query.filter(CallLog.assistant_id == UUID(asst_id))
         elif token.startswith("quality_range:"):
-            label = token[len("quality_range:"):]
+            label = token[len("quality_range:") :]
             _ranges = {
-                "0-20": (0, 20), "21-40": (21, 40), "41-60": (41, 60),
-                "61-80": (61, 80), "81-100": (81, 100),
+                "0-20": (0, 20),
+                "21-40": (21, 40),
+                "41-60": (41, 60),
+                "61-80": (61, 80),
+                "81-100": (81, 100),
             }
             if label in _ranges:
                 lo, hi = _ranges[label]
@@ -715,7 +734,7 @@ async def get_calls_drilldown(
                     CallLog.acw_quality_score <= hi,
                 )
         elif token.startswith("resolution:"):
-            resolution_val = token[len("resolution:"):]
+            resolution_val = token[len("resolution:") :]
             query = query.filter(CallLog.acw_resolution == resolution_val)
         elif token in ("ai_handled", "ended_early", "unresolved"):
             # Canonical Task #97 partition bucket tokens.
@@ -730,11 +749,7 @@ async def get_calls_drilldown(
         total = query.count()
 
         call_logs = (
-            query
-            .order_by(desc(CallLog.started_at))
-            .offset((page - 1) * limit)
-            .limit(limit)
-            .all()
+            query.order_by(desc(CallLog.started_at)).offset((page - 1) * limit).limit(limit).all()
         )
 
         # Bulk-load assistant + phone names
@@ -744,55 +759,73 @@ async def get_calls_drilldown(
 
         asst_map: dict = {}
         if asst_id_set:
-            rows = db.query(Assistant.id, Assistant.name).filter(
-                Assistant.id.in_(asst_id_set), Assistant.account_id == account_id
-            ).all()
+            rows = (
+                db.query(Assistant.id, Assistant.name)
+                .filter(Assistant.id.in_(asst_id_set), Assistant.account_id == account_id)
+                .all()
+            )
             asst_map = {str(r.id): r.name for r in rows}
 
         phone_map: dict = {}
         if phone_id_set:
-            rows = db.query(PhoneNumber.id, PhoneNumber.phone_number).filter(
-                PhoneNumber.id.in_(phone_id_set), PhoneNumber.account_id == account_id
-            ).all()
+            rows = (
+                db.query(PhoneNumber.id, PhoneNumber.phone_number)
+                .filter(PhoneNumber.id.in_(phone_id_set), PhoneNumber.account_id == account_id)
+                .all()
+            )
             phone_map = {str(r.id): r.phone_number for r in rows}
 
         disp_map: dict = {}
         if disp_id_set:
-            rows = db.query(
-                AssistantDisposition.id,
-                AssistantDisposition.name,
-                AssistantDisposition.color,
-            ).filter(AssistantDisposition.id.in_(disp_id_set)).all()
+            rows = (
+                db.query(
+                    AssistantDisposition.id,
+                    AssistantDisposition.name,
+                    AssistantDisposition.color,
+                )
+                .filter(AssistantDisposition.id.in_(disp_id_set))
+                .all()
+            )
             disp_map = {str(r.id): {"name": r.name, "color": r.color} for r in rows}
 
         records = []
         for log in call_logs:
-            records.append({
-                "id": str(log.id),
-                "reference_id": log.reference_id,
-                "started_at": (log.started_at.isoformat() + "Z") if log.started_at else None,
-                "caller_number": log.caller_number,
-                "to_number": log.to_number,
-                "status": log.status,
-                "duration_seconds": log.duration_seconds,
-                "has_transfer": log.has_transfer,
-                "assistant_id": str(log.assistant_id) if log.assistant_id else None,
-                "assistant_name": asst_map.get(str(log.assistant_id)) if log.assistant_id else None,
-                "phone_number_display": phone_map.get(str(log.phone_number_id)) if log.phone_number_id else None,
-                "disposition_id": str(log.disposition_id) if log.disposition_id else None,
-                "disposition_name": disp_map.get(str(log.disposition_id), {}).get("name") if log.disposition_id else None,
-                "disposition_color": disp_map.get(str(log.disposition_id), {}).get("color") if log.disposition_id else None,
-                "acw_quality_score": log.acw_quality_score,
-                "acw_resolution": log.acw_resolution,
-                "ended_early": log.ended_early,
-                # Task #101 — surface recording metadata so the drilldown modal
-                # can render an inline lazy `<audio>` player. recording_url is
-                # the Twilio media URL; the frontend MUST stream through the
-                # authenticated proxy at GET /api/calls/{id}/recording rather
-                # than embed this URL directly.
-                "recording_url": log.recording_url,
-                "recording_sid": log.recording_sid,
-            })
+            records.append(
+                {
+                    "id": str(log.id),
+                    "reference_id": log.reference_id,
+                    "started_at": (log.started_at.isoformat() + "Z") if log.started_at else None,
+                    "caller_number": log.caller_number,
+                    "to_number": log.to_number,
+                    "status": log.status,
+                    "duration_seconds": log.duration_seconds,
+                    "has_transfer": log.has_transfer,
+                    "assistant_id": str(log.assistant_id) if log.assistant_id else None,
+                    "assistant_name": asst_map.get(str(log.assistant_id))
+                    if log.assistant_id
+                    else None,
+                    "phone_number_display": phone_map.get(str(log.phone_number_id))
+                    if log.phone_number_id
+                    else None,
+                    "disposition_id": str(log.disposition_id) if log.disposition_id else None,
+                    "disposition_name": disp_map.get(str(log.disposition_id), {}).get("name")
+                    if log.disposition_id
+                    else None,
+                    "disposition_color": disp_map.get(str(log.disposition_id), {}).get("color")
+                    if log.disposition_id
+                    else None,
+                    "acw_quality_score": log.acw_quality_score,
+                    "acw_resolution": log.acw_resolution,
+                    "ended_early": log.ended_early,
+                    # Task #101 — surface recording metadata so the drilldown modal
+                    # can render an inline lazy `<audio>` player. recording_url is
+                    # the Twilio media URL; the frontend MUST stream through the
+                    # authenticated proxy at GET /api/calls/{id}/recording rather
+                    # than embed this URL directly.
+                    "recording_url": log.recording_url,
+                    "recording_sid": log.recording_sid,
+                }
+            )
 
         return {
             "records": records,
@@ -865,21 +898,24 @@ async def export_calls_summary(
                 CallLog.caller_spoke,
                 func.count(CallLog.id).label("cnt"),
             )
-            .group_by(day_label, CallLog.assistant_id, CallLog.status,
-                      CallLog.ai_greeting_completed, CallLog.caller_spoke)
+            .group_by(
+                day_label,
+                CallLog.assistant_id,
+                CallLog.status,
+                CallLog.ai_greeting_completed,
+                CallLog.caller_spoke,
+            )
             .all()
         )
 
-        per_day: dict = {}        # date_str -> bucket -> count
+        per_day: dict = {}  # date_str -> bucket -> count
         per_assistant: dict = {}  # asst_id  -> bucket -> count
-        day_totals: dict = {}     # date_str -> total
-        asst_totals: dict = {}    # asst_id  -> total
+        day_totals: dict = {}  # date_str -> total
+        asst_totals: dict = {}  # asst_id  -> total
         asst_id_set = set()
         for r in rows:
             cnt = int(r.cnt)
-            bucket = _classify_partition(
-                r.status, bool(r.ai_greeting_completed), r.caller_spoke
-            )
+            bucket = _classify_partition(r.status, bool(r.ai_greeting_completed), r.caller_spoke)
             d_str = r.day.date().isoformat() if r.day else "unknown"
             per_day.setdefault(d_str, {b: 0 for b in _PARTITION_BUCKETS})[bucket] += cnt
             day_totals[d_str] = day_totals.get(d_str, 0) + cnt
@@ -898,10 +934,14 @@ async def export_calls_summary(
             # account_id here so the contract does not depend on FK
             # consistency. Defense in depth, matches the pattern used by
             # /api/call-logs/export.
-            for a in db.query(Assistant.id, Assistant.name).filter(
-                Assistant.id.in_(asst_id_set),
-                Assistant.account_id == account_id,
-            ).all():
+            for a in (
+                db.query(Assistant.id, Assistant.name)
+                .filter(
+                    Assistant.id.in_(asst_id_set),
+                    Assistant.account_id == account_id,
+                )
+                .all()
+            ):
                 asst_names[str(a.id)] = a.name
 
         output = io.StringIO()
@@ -921,14 +961,16 @@ async def export_calls_summary(
             d_total = day_totals[day_str] or 1
             for b in _PARTITION_BUCKETS:
                 cnt = buckets.get(b, 0)
-                writer.writerow([
-                    "per_day",
-                    day_str,
-                    day_str,
-                    b,
-                    cnt,
-                    round(cnt / d_total * 100, 2),
-                ])
+                writer.writerow(
+                    [
+                        "per_day",
+                        day_str,
+                        day_str,
+                        b,
+                        cnt,
+                        round(cnt / d_total * 100, 2),
+                    ]
+                )
 
         writer.writerow([])  # blank separator line between sections
 
@@ -939,14 +981,16 @@ async def export_calls_summary(
             label = asst_names.get(asst_key, "Unknown")
             for b in _PARTITION_BUCKETS:
                 cnt = buckets.get(b, 0)
-                writer.writerow([
-                    "per_assistant",
-                    asst_key,
-                    label,
-                    b,
-                    cnt,
-                    round(cnt / a_total * 100, 2),
-                ])
+                writer.writerow(
+                    [
+                        "per_assistant",
+                        asst_key,
+                        label,
+                        b,
+                        cnt,
+                        round(cnt / a_total * 100, 2),
+                    ]
+                )
 
         output.seek(0)
         filename = f"call_analytics_summary_{datetime.utcnow().strftime('%Y%m%d_%H%M%S')}.csv"
