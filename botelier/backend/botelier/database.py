@@ -685,7 +685,7 @@ _SILERO_VAD_DEFAULTS = {
     # not cut off slow speakers.
     "stop_secs": 0.2,
     "min_volume": 0.6,
-    "smart_turn_stop_secs": 1.0,
+    "smart_turn_stop_secs": 0.5,
 }
 
 
@@ -799,6 +799,63 @@ def _backfill_silero_vad_config():
 
     except Exception as e:
         logger.error(f"VAD config backfill failed (non-fatal): {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
+def _backfill_smart_turn_stop_secs_default():
+    """Idempotent data backfill for legacy SmartTurn stop default drift.
+
+    Assistants created before the lower-latency default may still store
+    ``vad_config.smart_turn_stop_secs = 1.0``. That exact value historically
+    came from system defaults, so we treat it as legacy default and backfill to
+    0.5. Explicit custom values (anything other than 1.0, including null/missing)
+    are preserved.
+    """
+    db = SessionLocal()
+    try:
+        from botelier.models.assistant import Assistant
+
+        candidates = (
+            db.query(Assistant)
+            .filter(Assistant.vad_provider == "silero")
+            .filter(Assistant.vad_config.isnot(None))
+            .all()
+        )
+
+        updated = []
+        for asst in candidates:
+            cfg = asst.vad_config or {}
+            if "smart_turn_stop_secs" not in cfg:
+                continue
+            try:
+                current = float(cfg.get("smart_turn_stop_secs"))
+            except (TypeError, ValueError):
+                continue
+            if current != 1.0:
+                continue
+
+            new_cfg = dict(cfg)
+            new_cfg["smart_turn_stop_secs"] = 0.5
+            asst.vad_config = new_cfg
+            updated.append(asst.name)
+            logger.info(
+                f"VAD config backfill: updated smart_turn_stop_secs 1.0->0.5 "
+                f"for assistant '{asst.name}' ({asst.id})"
+            )
+
+        if updated:
+            db.commit()
+            logger.info(
+                "VAD config backfill complete — updated legacy "
+                f"smart_turn_stop_secs on {len(updated)} assistant(s): {', '.join(updated)}"
+            )
+        else:
+            logger.info("VAD config backfill — no legacy smart_turn_stop_secs defaults found")
+
+    except Exception as e:
+        logger.error(f"VAD smart_turn_stop_secs backfill failed (non-fatal): {e}")
         db.rollback()
     finally:
         db.close()
@@ -1056,7 +1113,7 @@ def _assert_call_events_offset_ms_bigint() -> None:
 def init_db():
     """Initialize the database at application startup.
 
-    Runs five idempotent steps in order:
+    Runs idempotent startup steps in order:
 
     1. ``create_all`` — creates any tables that do not yet exist (SQLAlchemy
        inspects the engine and skips tables that are already present).
@@ -1080,7 +1137,8 @@ def init_db():
        null or empty vad_config get the canonical VAD parameter defaults so
        the voice engine never falls back to misconfigured hardcoded values.
 
-    6. ``run_stuck_call_sweeper`` — unified safety-net that reclassifies any
+    6. ``_backfill_smart_turn_stop_secs_default`` — updates legacy Silero assistants that still store ``smart_turn_stop_secs=1.0`` from historical defaults to ``0.5`` while preserving explicit custom values.
+    7. ``run_stuck_call_sweeper`` — unified safety-net that reclassifies any
        CallLog rows left in a non-terminal status (initiated / ringing /
        in_progress) with no active pipeline. Emits a ``finalization_forced``
        CallEvent per closed row for leak-rate observability. Supersedes the
@@ -1113,6 +1171,7 @@ def init_db():
     _assert_call_events_offset_ms_bigint()
     _sync_system_role_permissions()
     _backfill_silero_vad_config()
+    _backfill_smart_turn_stop_secs_default()
     # Task #96: the unified stuck-call sweeper supersedes the legacy
     # _backfill_stuck_initiated_calls. It covers initiated, ringing and
     # in_progress (not just initiated) AND emits finalization_forced
