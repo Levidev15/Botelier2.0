@@ -15,6 +15,7 @@ import {
   Mail,
   Sun,
   Moon,
+  DollarSign,
 } from "lucide-react";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { useTheme } from "@/lib/theme/ThemeContext";
@@ -22,6 +23,7 @@ import { useTheme } from "@/lib/theme/ThemeContext";
 const adminNavItems = [
   { href: "/admin", label: "Dashboard", icon: BarChart3 },
   { href: "/admin/accounts", label: "Accounts", icon: Building2 },
+  { href: "/admin/usage", label: "Usage", icon: DollarSign },
   { href: "/admin/invitations", label: "Invitations", icon: Mail },
   { href: "/admin/users", label: "Users", icon: Users },
   { href: "/admin/settings", label: "Settings", icon: Settings },

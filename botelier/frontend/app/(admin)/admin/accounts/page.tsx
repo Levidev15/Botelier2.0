@@ -11,9 +11,11 @@ import {
   ExternalLink,
   X,
   AlertCircle,
+  BarChart2,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
+import BillingSlideOver from "@/components/billing/BillingSlideOver";
 
 interface Account {
   id: string;
@@ -48,6 +50,7 @@ export default function AccountsPage() {
   const [statusFilter, setStatusFilter] = useState("");
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [billingAccountId, setBillingAccountId] = useState<string | null>(null);
   const [newAccount, setNewAccount] = useState({
     name: "",
     email: "",
@@ -352,13 +355,22 @@ export default function AccountsPage() {
                       {new Date(account.created_at).toLocaleDateString()}
                     </td>
                     <td className="px-6 py-4 text-right">
-                      <button
-                        onClick={() => router.push(`/admin/accounts/${account.id}`)}
-                        className="text-gray-400 hover:text-white p-2 hover:bg-[#222222] rounded-lg transition-colors"
-                        title="View Details"
-                      >
-                        <ExternalLink className="h-4 w-4" />
-                      </button>
+                      <div className="flex items-center justify-end gap-1">
+                        <button
+                          onClick={() => setBillingAccountId(account.id)}
+                          className="text-gray-400 hover:text-blue-400 p-2 hover:bg-[#222222] rounded-lg transition-colors"
+                          title="View Usage & Billing"
+                        >
+                          <BarChart2 className="h-4 w-4" />
+                        </button>
+                        <button
+                          onClick={() => router.push(`/admin/accounts/${account.id}`)}
+                          className="text-gray-400 hover:text-white p-2 hover:bg-[#222222] rounded-lg transition-colors"
+                          title="View Details"
+                        >
+                          <ExternalLink className="h-4 w-4" />
+                        </button>
+                      </div>
                     </td>
                   </tr>
                 ))}
@@ -391,6 +403,11 @@ export default function AccountsPage() {
           )}
         </>
       )}
+
+      <BillingSlideOver
+        accountId={billingAccountId}
+        onClose={() => setBillingAccountId(null)}
+      />
 
       {showCreateModal && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
