@@ -1,9 +1,58 @@
 # Botelier - Multichannel AI SaaS Platform
 
-## Overview
-Botelier is a **multi-tenant, multichannel AI platform** giving businesses one configurable AI agent that handles voice calls and SMS today (web chat on the roadmap), originally built for hotels but kept deliberately generic (`Account`, not `Hotel`) so the same platform serves any service-heavy industry. **Scale and concurrency are first-class constraints** — every decision assumes many simultaneous calls and SMS conversations per account, across many accounts, with strict per-tenant isolation. Capabilities include a visual flow editor, versioned flows, pluggable STT/LLM/TTS providers, Twilio sub-account isolation, and granular RBAC.
+Botelier is a multi-tenant, multichannel AI platform that provides businesses with a configurable AI agent capable of handling voice calls and SMS.
 
-## User Preferences
+## Run & Operate
+
+_Populate as you build_
+
+## Stack
+
+- **Frameworks:** Next.js, FastAPI, React
+- **Runtime Versions:** _Populate as you build_
+- **ORM:** _Populate as you build_
+- **Validation:** _Populate as you build_
+- **Build Tool:** _Populate as you build_
+
+## Where things live
+
+- `/botelier/api/`: FastAPI endpoints for core services.
+- `/botelier/auth/`: Authentication, authorization, and RBAC logic (see `permissions.py` for permission schemas).
+- `/botelier/backend/`: Backend services and business logic (e.g., `services/acw_service.py`, `voice/engine.py`).
+- `/botelier/frontend/`: Next.js frontend application.
+- `/botelier/sms_pkg/`: SMS specific services and webhooks.
+- `/config/domain.py`: Public base URL configuration.
+- `/database.py`: Database initialization and schema assertions.
+- `/lib/auth/usePermissions.ts`: Frontend permissions hook.
+- `/lib/theme/ThemeContext.tsx`: Manages UI theme state.
+- `/migrations/`: Database migrations (additive only).
+- `/uploads/greeting_cache/`: Greeting audio cache files.
+- `globals.css`: Global CSS overrides for theming.
+- **DB Schema:** `database.py` (for startup assertions), individual model definitions within relevant backend packages.
+- **API Contracts:** Defined implicitly by FastAPI endpoints in `/botelier/api/`.
+- **Theme Files:** `lib/theme/ThemeContext.tsx`, `globals.css`.
+
+## Architecture decisions
+
+- **Multi-tenant isolation by `account_id`:** Every query, Twilio sub-account, and cache key is isolated per tenant. RBAC is enforced at the API edge.
+- **Channel-agnostic abstractions:** Concepts shared across voice, SMS, and chat (assistants, knowledge bases, tools, dispositions, ACW) live in shared models, with channel-specific logic wrapping them.
+- **Decoupled writes from observability:** Business writes commit first; analytics/event writes happen post-commit in isolated transactions to prevent logging failures from rolling back business state.
+- **Schema invariants are startup-asserted:** Critical column types are checked on app startup, and the application refuses to start on drift. Migrations are additive only.
+- **Horizontal scale and concurrency:** The system is built for many simultaneous calls and SMS conversations per account, with stateless web/worker processes and persistent state in PostgreSQL.
+
+## Product
+
+- **Multichannel AI Agent:** Configurable AI agent handling voice calls and SMS, with web chat on the roadmap.
+- **Visual Flow Editor:** Drag-and-drop interface for creating and managing AI conversation flows with versioning and simulation.
+- **Pluggable AI Providers:** Supports various STT, LLM, and TTS providers.
+- **Twilio Integration:** Manages phone numbers, call handling, sub-account isolation, and call transfers.
+- **Role-Based Access Control (RBAC):** Granular permissions for users and administrators.
+- **Post Call QA / After-Call Work (ACW):** Configurable system for analyzing call transcripts, dispositions, resolution status, and AI quality scores.
+- **Analytics Dashboards:** Customizable dashboards for call and SMS analytics with real-time data, filtering, and export.
+- **SMS Management:** Comprehensive SMS handling including webhooks, conversations, analytics, AI handoff, and A2P 10DLC compliance.
+- **Feature Entitlement System:** Extensible system for managing subscription tier features and per-account overrides.
+
+## User preferences
 - **Branding:** All customer-facing code should be branded as "Botelier"
 - **Architecture:** Clean separation - Pipecat as hidden dependency
 - **Code Quality:** Organized, maintainable, no duplication
@@ -12,86 +61,17 @@ Botelier is a **multi-tenant, multichannel AI platform** giving businesses one c
 - **Scale & Concurrency:** Always design for horizontal scale and many concurrent calls / SMS / chat sessions per account. No global locks, no per-process state that prevents adding workers, no synchronous blocking on observability writes.
 - **Channel-Agnostic:** Voice and SMS are first-class peers, and chat is on the near-term roadmap. Shared concepts (assistant config, knowledge base, tools, dispositions, ACW) must live in channel-agnostic models — never lock an abstraction into a single channel.
 
-## System Architecture
-Botelier is built with a clean architectural separation, where the core SaaS application interacts with the Pipecat framework as a hidden dependency. The frontend uses Next.js with a Vapi.ai-style dark theme, prioritizing a professional user experience.
+## Gotchas
 
-### Engineering Principles
-Standing rules every change must respect — these bias every code review, refactor, and new task:
-- **Build for horizontal scale.** Stateless web/worker processes; persistent state lives in PostgreSQL. Never hold per-call/per-conversation state in module globals that would break when a second worker starts.
-- **Concurrency is the default.** Assume many simultaneous calls and SMS conversations per account. Hot paths use async I/O, fresh DB sessions per unit of work, and bounded queues with explicit backpressure — never unbounded `await` chains that block the event loop.
-- **Decouple writes from observability.** Terminal/business writes (e.g. `complete_call`, SMS reply send) must commit *first*; analytics/event writes happen post-commit in isolated transactions with per-event `try/except` so a logging failure can never roll back business state.
-- **Schema invariants are startup-asserted.** Critical column types (e.g. `call_events.offset_ms = BIGINT`) are checked in `init_db` and the app refuses to start on drift. Migrations are **additive only** — never destructive, never silent.
-- **Fail loudly, never silently.** Errors get a clear `logger.error` and either raise or stamp a structured failure column (`acw_skip_reason`, `caller_spoke`, etc.). Silent fallbacks are forbidden.
-- **Multi-tenant isolation by `account_id`.** Every query, every Twilio sub-account, every cache key. RBAC is enforced at the API edge via `check_account_permission`; platform admins bypass.
-- **Channel-agnostic abstractions.** Anything that could belong to voice + SMS + chat (assistants, knowledge bases, tools, dispositions, ACW) lives in shared models. Channel-specific logic (`SMSService`, `CallHandler`) wraps those models — never the other way around.
+- **Backend Workflow Reloads:** The `botelier-backend` workflow (uvicorn) does not use `--reload`. Manual restart is required after code changes, as reloads would terminate long-lived WebSockets for voice calls.
+- **`call_events.offset_ms`:** This column must be `BIGINT`. The app will refuse to start if it drifts to `int4` to prevent silent overflow in long-lived calls.
+- **Silent Caller Detection:** `caller_spoke` is a tri-state boolean. `NULL` and `TRUE` are considered eligible for `ai_handled` in analytics; `FALSE` (no caller audio) reclassifies calls into `unresolved`.
 
-### UI/UX Decisions
-The UI/UX includes a Sonner-based toast notification system, a unified 4-tab layout for assistant configuration with auto-tab-switching, reusable form components, sticky headers, dual-view systems (table/grid) with sorting and filtering, and bulk selection capabilities. The Flow Editor is a React Flow canvas with various node types (Initial, Message, CollectSlot, APIRequest, Condition, Router, Transfer, End) including a MiniMap, Controls, and a Node Inspector. A Flow Simulator is integrated for real-time testing.
+## Pointers
 
-**Light / Dark Mode Toggle:** A `ThemeProvider` context (`lib/theme/ThemeContext.tsx`) manages theme state, persists to `localStorage` under the key `botelier_theme`, and applies a `data-theme="dark"` or `data-theme="light"` attribute to `<html>`. Comprehensive CSS overrides in `globals.css` remap all hardcoded dark Tailwind classes (`bg-[#0a0a0a]`, `border-gray-800`, etc.) when `data-theme="light"` is set. Both the dashboard sidebar and admin sidebar footers include a Sun/Moon icon toggle button. The login/invite pages are unaffected. `suppressHydrationWarning` is set on `<html>` to handle server-side `data-theme="dark"` default cleanly.
-
-### Voice Pipeline — Runtime Constraints
-
-**No `--reload` on the backend workflow.** The `botelier-backend` workflow runs uvicorn without `--reload`. Uvicorn's reload mode starts a WatchFiles process that monitors `botelier/backend/` and kills the server process on any file change — including auto-generated `__pycache__` writes. Voice calls run over long-lived WebSockets; a reload mid-call terminates the WebSocket and drops the call instantly. After any code change, restart the workflow manually. The production `start.sh` has never had `--reload` and remains clean.
-
-### Technical Implementations & Feature Specifications
-The core of the system is a `VoiceAgent` interface wrapping Pipecat, configurable for STT, LLM, and TTS providers. Call handling is managed via Twilio Media Streams, with a FastAPI backend and a `CallHandler` orchestrating the Pipecat pipeline. A robust tools system (Function Calling) is implemented with PostgreSQL and multi-tenant FastAPI endpoints. Phone number management is integrated with Twilio, supporting sub-accounts and number lifecycle.
-
-**Named Collections Architecture:** Knowledge and tools are organized into named collections (KnowledgeBase, ToolSet) that can be shared across assistants and updated independently. The Knowledge Base uses direct system prompt injection.
-
-Advanced features include a comprehensive Twilio Call Transfer system with warm/cold transfer mode toggle. A Flow Versioning System with draft/publish workflow, version history, and revert functionality. The Flow Editor includes unsaved changes warnings. A `FlowExecutor` class converts visual flows into Pipecat function schemas. A Global Prompt System allows flow-level instructions to be injected into the LLM system prompt. A Delivery Mode system for Message and Confirmation nodes allows for "Guided" (AI phrasing) or "Static" (exact verbatim) outputs. Flows can also be exposed as tools for LLM intent activation.
-
-The Call Logs system provides comprehensive multi-tenant logging with `CallLog` and `CallLeg` models, a modern UI with search, filters, transcript popups, and CSV export. The system also includes a Call Dispositions System allowing custom call outcome categorization per assistant, with a dedicated UI for configuration and AI auto-selection. AI Summary Generation, using OpenAI's gpt-4o-mini, provides on-demand call transcript analysis.
-
-**Friendly Reference IDs:** Both `call_logs` and `sms_conversations` have a `reference_id VARCHAR(8)` column — an 8-char uppercase hex identifier (e.g. `A3F7B2C1`) auto-generated on creation via `_generate_reference_id()` (uses `uuid4().hex[:8].upper()`). Existing rows were backfilled at migration time using PostgreSQL's `gen_random_uuid()`. Unique per hotel (hotel_id + reference_id index). Reference IDs are shown as monospace chips in the call logs table rows and transcript modal header, and as small chips in the SMS conversation list. Search in both call logs (`GET /api/call-logs`) and SMS conversations (`GET /api/sms/conversations`) accepts reference IDs via the `search` parameter.
-
-**SMS Webhook Signature Validation:** `_validate_twilio_signature` in `sms_pkg/webhook.py` reconstructs the canonical public URL using `_build_webhook_url()` which calls `get_public_base_url()` from `config/domain.py`. This always returns the correct external-facing URL (never the internal `http://0.0.0.0:3001/...` URL that FastAPI sees), so Twilio's `X-Twilio-Signature` check passes. The validator returns `(is_valid, url_used)` so failures include the validated URL in the log for easy debugging. The sub-account auth token is used if available (Twilio signs with the sub-account token when the phone number belongs to a sub-account), falling back to the platform-level token.
-
-**SMS Backend Architecture:** The SMS API is organized as a sub-package with modules for webhooks, conversations, analytics, and settings. The `SMSService` OpenAI client is a module-level singleton.
-**SMS Frontend Architecture:** `messages/page.tsx` mounts three components: `hooks/useSMSData.ts` for state, data fetching, and SSE logic; `components/ConversationList.tsx` for the left panel; and `components/MessageThread.tsx` for the right panel. `components/SMSSettingsPanel.tsx` handles settings.
-**SMS Logs & Analytics Foundation:** The `sms_conversations` table includes `handler_mode` and `first_response_at` for tracking and analytics. API endpoints provide conversation lists, statistics, and CSV export.
-**SMS AI Channel:** Assistants can handle SMS conversations alongside voice calls, sharing the same system prompt, knowledge base, and tools. SMS configuration is stored on the Assistant model (`sms_config`). The `SMSService` processes incoming messages, builds LLM context, executes tool calls, and sends replies via Twilio. Separate `SMSConversation` and `SMSMessage` models are used. Phone numbers can be toggled for SMS with optional assistant assignment. The Messages inbox provides a split-panel UI with AI summary generation. TCPA compliance is built in with STOP/START opt-out/opt-in handling.
-**SMS AI Handoff System:** The AI initiates handoff by prefixing responses with `[HANDOFF]`. The backend processes this, flips `handler_mode` to `human` and `needs_attention` to `True`, and broadcasts an SSE event. Agents can manually take over or return to AI. Real-time AI reply updates are broadcast. A `pending-handoffs` endpoint provides counts for UI badges.
-**SMS Enhanced Messaging Features:** Includes unified threading with session timeouts, active agent indicators, agent replies with file attachments via Twilio MMS, SMS templates/canned responses with variable placeholders, and message notifications with configurable sounds and thresholds.
-**SMS Compliance (A2P 10DLC):** Full SMS compliance management, allowing accounts to register brands and campaigns with Twilio without leaving the platform. Uses Twilio's Trust Hub API and Messaging API for brand/campaign registration, status tracking, and phone number assignment.
-
-**Post Call QA / After-Call Work (ACW) System:** A per-assistant configurable system that analyzes call transcripts after completion. Three analysis sections: Dispositions (configurable call outcomes with name/description/color), Resolution Status (configurable resolution options with name/description, model: `AssistantResolutionOption`), and AI Quality Score (0-100 based on a configurable rubric). A separate Summary section with toggle and configurable prompt. Configuration is stored in `assistants.acw_config` JSONB column. Results are stored on `call_logs`: `disposition_id` (FK), `acw_resolution` (String), `acw_quality_score` (Integer), `acw_completed_at` (DateTime). `AcwService` (`botelier/services/acw_service.py`) runs a single `gpt-4o-mini` call returning structured JSON for all enabled sections — only requests what is enabled to minimize token usage. Auto-trigger via FastAPI `BackgroundTasks` in `calls.py` when `acw_config.auto_run=True`; otherwise manual via the `generate-summary` endpoint. The background task includes retry logic for transcript availability.
-
-**Analytics Dashboards:** Two dedicated customizable analytics pages — Call Analytics (`/dashboard/analytics/calls`) and SMS Analytics (`/dashboard/analytics/sms`). Each page features a widget-based layout with stat cards, line charts, bar charts, and donut charts powered by Recharts. Users can toggle widgets on/off via a "Customize" slide-over panel (preferences saved to localStorage per page). A time-range picker (7d / 30d / 90d) drives all widgets. Call Analytics covers: total calls, completion/transfer rates, avg duration, volume over time, calls by hour, status/disposition breakdowns, by-assistant, and Post Call QA metrics (quality score distribution, resolution status). SMS Analytics covers: conversations, escalation rate, AI handle rate, response time, volume over time, handler mode split, message volume, by assistant, and top phone numbers. Backend endpoint: `GET /api/analytics/calls` in `botelier/api/analytics.py`. SMS reuses existing `GET /api/sms/stats`. Shared components live in `components/analytics/` (StatCard, DashboardWidget, TimeRangePicker, CustomizePanel, useWidgetLayout hook).
-
-**Silent Caller Detection (Task #98):** `call_logs` has a tri-state `caller_spoke` BOOLEAN column (NULL=legacy/pre-deploy row, TRUE=Pipecat observed at least one caller transcription, FALSE=call ended with no caller audio). Pipecat's `FirstUserSpeechTracker` (`voice/engine.py`) gained `set_first_speech_callback()`; `call_handler.py` wires it to `CallLogger.mark_caller_spoke(call_sid)` so the column flips to TRUE the moment the first non-empty `TranscriptionFrame` arrives. `CallLogger.complete_call()` defaults `caller_spoke=False` if still NULL at terminal time — forward-only, so historical rows stay NULL and continue to count as ai_handled (no backfill, preserves Task #97 historical metrics). The analytics partition (`api/analytics.py`) treats `caller_spoke IS NOT FALSE` (TRUE or NULL) as eligible for the ai_handled bucket; `(greeted=TRUE, caller_spoke=FALSE)` rows are reclassified into the existing `unresolved` catch-all so the 5-bucket MECE contract from Task #97 is preserved. `_classify_partition` and `_bucket_predicate` both updated in lock-step (still the single source of truth for overview + drilldown). `/api/analytics/calls` now returns `unresolved_breakdown: {silent_caller, non_terminal_gap, other}` (sums to `unresolved_count`); the Unresolved StatCard tooltip surfaces the breakdown. `acw_service.run_acw()` short-circuits when `caller_spoke=False`, stamps `acw_skip_reason="no_caller_audio"` + `acw_completed_at`, and skips the LLM call. `call_logs.acw_skip_reason` (VARCHAR, nullable) is distinct from `acw_resolution` (LLM-picked). Frontend: TranscriptModal renders a yellow "No Caller Audio" banner when `acw_skip_reason="no_caller_audio"` or `caller_spoke=false`; CallLogRow's disposition cell shows the same chip in place of the disposition badge for those rows.
-
-**Analytics Partition & Reconciliation (Task #97):** The `/api/analytics/calls` overview exposes a mutually-exclusive, exhaustive partition computed via one `GROUP BY (status, ai_greeting_completed)` query, with the canonical new keys `ai_handled_count`, `ended_early_count`, `missed_count`, `failed_count`, `unresolved_count` — their sum always equals `total_calls`. Classification lives in the pure helper `_classify_partition(status, ai_greeting_completed)` in `api/analytics.py`; its SQL twin `_bucket_predicate(bucket)` is the single source of truth shared by `/api/analytics/calls/drilldown`, so the overview and drill-through row sets cannot drift. Buckets: `ai_handled = greeted=TRUE AND status IN (completed, in_progress, ringing)` (plus a defensive allowance for the forbidden `ended_early + greeted=TRUE` shape per edge case #4); `ended_early = greeted=FALSE AND status=ended_early`; `missed = no_answer/busy/canceled`; `failed = failed`; `unresolved = everything else` — covering `greeted=FALSE AND status IN (initiated, ringing, in_progress)` (the spec's primary "gap" case), plus any future `CallStatus` value "until explicitly classified" per spec scope #1, plus the anomalous shapes `(completed, greeted=FALSE)` and `(initiated, greeted=TRUE)` so the partition stays MECE. `partition_integrity_ok` is therefore a pure reconciliation check (`sum(bucket_counts) == total_calls`) — it should always be `true` in normal operation; any `false` value is a Task #96 data-quality bug (server logs a warning). `partition_counts_by_status` echoes raw per-status totals for debugging. Legacy aliases preserved for this release: `ai_handled_calls`, `missed`, `failed`, `ended_early_calls`, `completion_rate`, `transfer_rate`, `transferred` (status-level pre-#97 integers). **Semantic change:** `ai_handled_rate` and `ended_early_rate` are now computed from the NEW partition bucket numerators per spec ("Preserve the existing ended_early_rate and ai_handled_rate formulas but compute them from the new counts"); pre-#97 status-level numerators remain retrievable via `ai_handled_calls` / `ended_early_calls`. All legacy keys scheduled for removal in a future cleanup. Drilldown accepts the canonical bucket tokens directly: `ai_handled`, `ended_early`, `missed`, `failed`, `unresolved`. Frontend: "Unresolved" StatCard wired to `unresolved_count` with a tooltip affordance and drilldown; "AI Handled" and "Dropped Before AI" StatCards read the new partition counts.
-
-The Authentication & Authorization system features platform-owned email/password authentication with bcrypt hashing and JWT tokens, supporting `platform_admin` and `account_user` types. A robust Role-Based Access Control (RBAC) system uses role templates, granular permissions, and individual user overrides. A Platform Admin Panel provides comprehensive management for accounts, users, platform settings, and invitations, including a SaaS-compliant Support Session system and one-click Twilio sub-account provisioning. An Invitation-Only Access System ensures controlled user onboarding.
-
-**End-to-End RBAC Permission Enforcement (Task #11):** All API endpoints are protected with `check_account_permission(user, account_id, "resource.action", db)` calls via the `botelier/auth/middleware.py` helper. Protected resources: `assistants`, `call_logs`, `knowledge_bases`, `tools` & `tool_sets`, `flow_versions`, `phone_numbers`, `dispositions`, `resolution_options`, `analytics`. Platform admins bypass all permission checks. The frontend `usePermissions` hook (`lib/auth/usePermissions.ts`) fetches resolved permissions from `GET /api/admin/me/permissions?account_id=...` with 60s caching. A `PermissionGate` component and `usePagePermission` hook gate key dashboard pages (assistants, call-logs, knowledge-bases, tools, phone-numbers) with `AccessDeniedPage` fallback for unauthorized users. Permission keys follow the schema defined in `botelier/auth/permissions.py` (e.g., `phone_numbers.configure`, `phone_numbers.release`, `call_logs.view` for analytics).
-
-**Call Lifecycle Hardening (Tasks #122 & #123):** The call event pipeline is split into two layers — a **business write** (terminal state on `call_logs`) and an **observability write** (rows in `call_events`). `CallLogger.complete_call()` commits the disposition first, then emits `finalization_forced` / `call_ended` post-commit through `_write_event_isolated()`, which opens a fresh `SessionLocal` and swallows all errors so an event-insert failure cannot roll back finalization. `call_events.offset_ms` is **BIGINT** in the additive `CREATE TABLE`; `database._assert_call_events_offset_ms_bigint()` runs on every startup and refuses to boot the app if the column drifts back to int4 (long-lived calls would silently overflow). All three event writers (`api/calls._write_event`, `services/call_event_queue.log`, `services/call_logger._write_event_inline`) compute the offset through the single helper `services/_event_offset.compute_offset_ms` — no per-writer clamping. `CallHandler.handle_call` emits a structured `ToolSnapshot` projection of the resolved tool set on every call so dashboards/analytics can consume tool usage as an additive, channel-agnostic telemetry contract. Future changes must preserve all four invariants: BIGINT offsets, startup assertion, single offset helper, and isolated post-commit observability writes.
-
-**Feature Entitlement System (Task #61):** A clean, extensible subscription tier gating system. `botelier/auth/features.py` defines a `FEATURE_CATALOG` dict mapping feature slugs (`call_recording`, `qa_scoring`) to display name, description, and per-tier defaults. `get_account_features(subscription_tier, feature_flags_override)` resolves effective entitlements by merging tier defaults with per-account `feature_flags` JSONB overrides stored on the `accounts` table. Admin API: `GET/PATCH /api/admin/accounts/{id}/features` (platform admin only) returns resolved map, raw overrides, and catalog metadata; toggle logic sends `null` to remove an override and revert to tier default. Client API: `GET /api/account/features?account_id=...` (auth required, account member) returns the resolved feature map. Frontend: `botelier/frontend/hooks/useAccountFeatures.ts` — a `useAccountFeatures()` hook with 60s in-memory cache and `isFeatureEnabled(slug)` helper. Admin account detail page (`/admin/accounts/[id]/page.tsx`) has a collapsible "Features & Entitlements" section with per-feature on/off toggles showing override vs. tier-default badges. Adding a new feature requires only one entry in `FEATURE_CATALOG`.
-
-### System Design Choices
-The architecture emphasizes clean branding ("Botelier"), flexible provider configuration for AI services, and strict multi-tenancy with complete isolation by `account_id` across all resources and Twilio sub-accounts.
-
-## External Dependencies
-
-### AI Providers
-- **Speech-to-Text (STT):** Deepgram, OpenAI Whisper, AssemblyAI, Azure, Google, Groq, AWS Transcribe, Gladia, ElevenLabs, Riva, Soniox, Speechmatics, Cartesia, Sarvam.
-- **Language Models (LLM):** OpenAI, Anthropic, Google Gemini, Azure OpenAI, AWS Bedrock, Groq, Mistral, Together, DeepSeek, Perplexity, OpenRouter, Ollama, Fireworks, Cerebras.
-- **Text-to-Speech (TTS):** Cartesia, ElevenLabs, OpenAI, Azure, Google, AWS Polly, Deepgram, PlayHT, LMNT, Rime, Piper, Neuphonic, Speechmatics, Riva, Sarvam.
-
-### Databases
-- PostgreSQL
-
-### Third-Party Integrations
-- **Twilio:** For phone number management, call handling, sub-account isolation, and call transfers.
-- **Pipecat Framework:** Underlying framework for the voice AI engine.
-- **Sonner:** For React toast notifications.
-- **Multi-Tenant Integration System:** A platform-level integration registry for connecting account-specific third-party services (e.g., Oracle Opera Cloud, GuestCentric CRS) with universal authentication support.
-- **MCP (Model Context Protocol) Integration System:** Enables assistants to connect to external MCP servers for dynamic, hotel-specific tools, leveraging the official MCP Python SDK.
-- **Account Secrets Store (Task #54):** Fernet-encrypted per-account key-value store (`AccountSecret` model, `account_secrets` table). API keys stored encrypted; values never returned by any endpoint. Referenced in flows/tools as `{{secrets.key_name}}`; substituted server-side in `FlowExecutor._substitute_secrets()` before any API call (both custom URL and integration paths). CRUD via `/api/secrets`. Frontend: "Secrets" section on the Integrations page; secret picker dropdown in the Node Inspector headers section.
-- **Integration Call Log (Task #54):** `IntegrationCallLog` model (`integration_call_logs` table) records every external API call — integration ID (nullable for custom-URL calls), URL, method, status code, success flag, latency (ms), error type/message, timestamp. Written fire-and-forget inside `IntegrationClient._write_call_log()`. Stats and logs accessible via `/api/integrations/account/{id}/integration/{id}/call-logs` and `/call-stats`.
-- **Stale Pipeline Fix (Task #54):** `incoming_call_webhook` in `calls.py` now short-circuits with `<Response/>` XML for terminal Twilio call statuses (`completed`, `failed`, `busy`, `no-answer`), preventing ghost Pipecat pipelines from spawning on status-callback POSTs.
-- **Seeds Standardization (Task #54):** `seeds/__init__.py` now exposes `seed_all_integrations(db)` — the canonical entry point for all integration seeds. Each seed is wrapped with error isolation. `seeds/TEMPLATE.md` documents the upsert contract for new connector authors.
-- **Greeting Audio Cache (Task #72):** `botelier/backend/botelier/voice/greeting_cache.py` caches assistant greetings as raw μ-law files (`uploads/greeting_cache/*.ul`) keyed by SHA-256(text|voice|sample_rate). On a cache HIT, `call_handler.py` splits the bytes into 160-byte `AudioRawFrame` chunks bracketed by `TTSStartedFrame`/`TTSStoppedFrame` and queues them directly — no Deepgram TTS token consumed. On MISS (or non-Deepgram provider) it falls back to `TTSSpeakFrame`. Two API endpoints added to `assistants.py`: `GET /{id}/greeting-cache-status` and `POST /{id}/cache-greeting`. A shared `GreetingCacheButton` component renders a "Generate / Regenerate Audio" button with a live cache status indicator in both `AssistantConfigForm` (Info tab, Deepgram TTS only) and the Flow Editor's `InitialNodePanel` (via `assistantId` prop threaded FlowEditor → NodeInspector → InitialNodePanel).
+- **Pipecat Framework:** [Link to Pipecat documentation]
+- **Twilio Docs:** [Link to Twilio documentation]
+- **Sonner React Toasts:** [Link to Sonner documentation]
+- **React Flow:** [Link to React Flow documentation]
+- **Recharts:** [Link to Recharts documentation]
+- **OpenAI API:** [Link to OpenAI documentation]
