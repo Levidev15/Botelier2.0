@@ -251,13 +251,17 @@ async def get_usage_calls(
                 .all()
             )
 
-        # Bulk-load billing items for all fetched call_log_ids
+        # Bulk-load billing items for all fetched call_log_ids.
+        # ORDER BY created_at, id is required for deterministic leg-to-item
+        # matching in _build_row: outbound_transfer items must be in creation
+        # order so they zip correctly with the sorted transfer CallLegs.
         call_ids = [log.id for log in call_logs]
         items_by_call: dict = {}
         if call_ids:
             billing_items = (
                 db.query(CallBillingItem)
                 .filter(CallBillingItem.call_log_id.in_(call_ids))
+                .order_by(CallBillingItem.created_at, CallBillingItem.id)
                 .all()
             )
             for item in billing_items:
