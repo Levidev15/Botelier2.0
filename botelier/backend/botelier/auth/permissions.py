@@ -96,6 +96,14 @@ PERMISSIONS = {
         "manage_conversations": "Take over, return to AI, and close SMS conversations",
         "manage_settings": "Create, edit, and delete SMS templates and notification settings",
     },
+    "usage": {
+        "view": "View usage and billing summary, call cost list, and timeseries",
+        "export": "Export usage data to CSV",
+    },
+    "billing_rates": {
+        "view": "View the account's current billing rates",
+        "manage": "Update per-account billing rates (platform admin only)",
+    },
 }
 
 
@@ -139,6 +147,8 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
                 "manage_conversations": True,
                 "manage_settings": True,
             },
+            "usage": {"view": True, "export": True},
+            "billing_rates": {"view": True, "manage": False},
         },
     },
     "staff": {
@@ -185,6 +195,8 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
                 "manage_conversations": True,
                 "manage_settings": False,
             },
+            "usage": {"view": True, "export": True},
+            "billing_rates": {"view": False, "manage": False},
         },
     },
     "viewer": {
@@ -231,6 +243,8 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
                 "manage_conversations": False,
                 "manage_settings": False,
             },
+            "usage": {"view": True, "export": False},
+            "billing_rates": {"view": False, "manage": False},
         },
     },
 }

@@ -31,6 +31,9 @@ _Populate as you build_
 - **DB Schema:** `database.py` (for startup assertions), individual model definitions within relevant backend packages.
 - **API Contracts:** Defined implicitly by FastAPI endpoints in `/botelier/api/`.
 - **Theme Files:** `lib/theme/ThemeContext.tsx`, `globals.css`.
+- **Billing models:** `botelier/backend/botelier/models/billing.py` — `AccountBillingConfig`, `CallBillingItem`.
+- **Billing API (account):** `botelier/backend/botelier/api/billing.py` — `/api/billing/usage/summary|calls|timeseries`, `/api/billing/config`.
+- **Billing API (admin):** `botelier/backend/botelier/api/admin_billing.py` — `/api/admin/billing/accounts`, `/{id}/detail`, `/{id}/config`.
 
 ## Architecture decisions
 
@@ -51,6 +54,7 @@ _Populate as you build_
 - **Analytics Dashboards:** Customizable dashboards for call and SMS analytics with real-time data, filtering, and export.
 - **SMS Management:** Comprehensive SMS handling including webhooks, conversations, analytics, AI handoff, and A2P 10DLC compliance.
 - **Feature Entitlement System:** Extensible system for managing subscription tier features and per-account overrides.
+- **Usage & Billing APIs:** Account-scoped usage summary, paginated call cost list, cost timeseries, and rate config read endpoint. Admin cross-account table, per-account detail, and rate config CRUD. Permissions: `usage.view`, `usage.export`, `billing_rates.view`, `billing_rates.manage`.
 
 ## User preferences
 - **Branding:** All customer-facing code should be branded as "Botelier"

@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Index, Integer, String, Text, event
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, event
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
@@ -132,6 +132,17 @@ class CallLog(Base):
     caller_spoke = Column(Boolean, nullable=True)
 
     tool_name = Column(String, nullable=True)
+
+    # Task #155 — billing snapshot columns. Written at call-end by BillingService.
+    # direction: 'inbound' (default) or 'outbound' (click-to-call, future).
+    direction = Column(String(10), nullable=False, default="inbound", server_default="inbound")
+    # Internal cost-of-goods columns — admin-only, never exposed to account users.
+    llm_prompt_tokens = Column(BigInteger, nullable=True)
+    llm_completion_tokens = Column(BigInteger, nullable=True)
+    tts_characters = Column(BigInteger, nullable=True)
+    stt_seconds = Column(Numeric(10, 2), nullable=True)
+    # Account-facing cost: sum of call_billing_items for this call.
+    estimated_cost_usd = Column(Numeric(10, 6), nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
