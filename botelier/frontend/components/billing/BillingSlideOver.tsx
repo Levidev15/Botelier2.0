@@ -184,7 +184,7 @@ export default function BillingSlideOver({
     } finally {
       setLoading(false);
     }
-  }, [accountId, authFetch]);
+  }, [accountId, period, authFetch]);
 
   useEffect(() => {
     if (accountId) {
@@ -193,7 +193,7 @@ export default function BillingSlideOver({
       setExpandedCalls(new Set());
       fetchDetail();
     }
-  }, [accountId, fetchDetail]);
+  }, [accountId, period, fetchDetail]);
 
   const handleSaveRates = async () => {
     if (!accountId) return;
