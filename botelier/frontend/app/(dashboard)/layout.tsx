@@ -1,6 +1,6 @@
 "use client";
 
-import { Bot, Phone, BarChart, Key, Users, Wrench, BookOpen, Shield, LogOut, ArrowLeft, Building2, Plug, MessageSquare, TrendingUp, MessageCircle, Sun, Moon } from "lucide-react";
+import { Bot, Phone, BarChart, Key, Users, Wrench, BookOpen, Shield, LogOut, ArrowLeft, Building2, Plug, MessageSquare, TrendingUp, MessageCircle, Sun, Moon, DollarSign } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRouter } from "next/navigation";
@@ -194,6 +194,9 @@ export default function DashboardLayout({
           </NavItem>
           <NavItem href="/dashboard/analytics/sms" icon={<MessageCircle className="h-5 w-5" />} active={isActive("/dashboard/analytics/sms")}>
             SMS Analytics
+          </NavItem>
+          <NavItem href="/dashboard/usage" icon={<DollarSign className="h-5 w-5" />} active={isActive("/dashboard/usage")}>
+            Usage
           </NavItem>
           
           <div className="pt-4 pb-2">
