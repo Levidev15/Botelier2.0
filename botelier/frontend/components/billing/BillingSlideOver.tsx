@@ -120,6 +120,12 @@ function SkeletonCard() {
 // BillingSlideOver
 // ──────────────────────────────────────────────────────────────────────────────
 
+const PERIOD_LABEL: Record<string, string> = {
+  mtd: "Month-to-Date",
+  "7d": "Last 7 Days",
+  "30d": "Last 30 Days",
+};
+
 interface BillingSlideOverProps {
   accountId: string | null;
   onClose: () => void;
@@ -287,7 +293,7 @@ export default function BillingSlideOver({
               {detail?.account_name ?? "Account Billing"}
             </h2>
             <p className="text-xs text-gray-500 mt-0.5">
-              Month-to-date summary &amp; rate configuration
+              {PERIOD_LABEL[period] ?? period} summary &amp; rate configuration
             </p>
           </div>
           <button
