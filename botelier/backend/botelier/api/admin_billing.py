@@ -207,40 +207,30 @@ async def list_account_usage(
         }
 
         # Internal token/character/second aggregates from call_logs
-        internal_cols = []
-        has_internal = True
-        try:
-            _ = CallLog.llm_prompt_tokens
-        except AttributeError:
-            has_internal = False
-
-        if has_internal:
-            internal_agg = (
-                db.query(
-                    CallLog.account_id,
-                    func.coalesce(func.sum(CallLog.llm_prompt_tokens), 0).label("prompt_tokens"),
-                    func.coalesce(func.sum(CallLog.llm_completion_tokens), 0).label("completion_tokens"),
-                    func.coalesce(func.sum(CallLog.tts_characters), 0).label("tts_chars"),
-                    func.coalesce(func.sum(CallLog.stt_seconds), 0).label("stt_secs"),
-                )
-                .filter(
-                    CallLog.started_at >= period_start,
-                    CallLog.started_at <= period_end,
-                )
-                .group_by(CallLog.account_id)
-                .all()
+        internal_agg = (
+            db.query(
+                CallLog.account_id,
+                func.coalesce(func.sum(CallLog.llm_prompt_tokens), 0).label("prompt_tokens"),
+                func.coalesce(func.sum(CallLog.llm_completion_tokens), 0).label("completion_tokens"),
+                func.coalesce(func.sum(CallLog.tts_characters), 0).label("tts_chars"),
+                func.coalesce(func.sum(CallLog.stt_seconds), 0).label("stt_secs"),
             )
-            internal_by_acct = {
-                str(r.account_id): _internal_cost(
-                    int(r.prompt_tokens),
-                    int(r.completion_tokens),
-                    int(r.tts_chars),
-                    float(r.stt_secs),
-                )
-                for r in internal_agg
-            }
-        else:
-            internal_by_acct = {}
+            .filter(
+                CallLog.started_at >= period_start,
+                CallLog.started_at <= period_end,
+            )
+            .group_by(CallLog.account_id)
+            .all()
+        )
+        internal_by_acct = {
+            str(r.account_id): _internal_cost(
+                int(r.prompt_tokens),
+                int(r.completion_tokens),
+                int(r.tts_chars),
+                float(r.stt_secs),
+            )
+            for r in internal_agg
+        }
 
         # SMS per account
         sms_agg = (
@@ -420,25 +410,21 @@ async def get_account_detail(
         billable_total = round(inbound_cost + outbound_cost + sms_cost, 6)
 
         # Internal cost aggregates
-        has_internal = hasattr(CallLog, "llm_prompt_tokens")
-        if has_internal:
-            ic_row = (
-                db.query(
-                    func.coalesce(func.sum(CallLog.llm_prompt_tokens), 0).label("pt"),
-                    func.coalesce(func.sum(CallLog.llm_completion_tokens), 0).label("ct"),
-                    func.coalesce(func.sum(CallLog.tts_characters), 0).label("tts"),
-                    func.coalesce(func.sum(CallLog.stt_seconds), 0).label("stt"),
-                )
-                .filter(
-                    CallLog.account_id == account_id,
-                    CallLog.started_at >= period_start,
-                    CallLog.started_at <= period_end,
-                )
-                .one()
+        ic_row = (
+            db.query(
+                func.coalesce(func.sum(CallLog.llm_prompt_tokens), 0).label("pt"),
+                func.coalesce(func.sum(CallLog.llm_completion_tokens), 0).label("ct"),
+                func.coalesce(func.sum(CallLog.tts_characters), 0).label("tts"),
+                func.coalesce(func.sum(CallLog.stt_seconds), 0).label("stt"),
             )
-            ic = _internal_cost(int(ic_row.pt), int(ic_row.ct), int(ic_row.tts), float(ic_row.stt))
-        else:
-            ic = _internal_cost(0, 0, 0, 0.0)
+            .filter(
+                CallLog.account_id == account_id,
+                CallLog.started_at >= period_start,
+                CallLog.started_at <= period_end,
+            )
+            .one()
+        )
+        ic = _internal_cost(int(ic_row.pt), int(ic_row.ct), int(ic_row.tts), float(ic_row.stt))
 
         # MTD running total
         now = datetime.utcnow()
