@@ -498,6 +498,12 @@ async def get_account_detail(
             )
             inbound_c = float(inbound_item.cost_usd) if inbound_item else 0.0
             total_c = sum(float(i.cost_usd) for i in items)
+            ic = _internal_cost(
+                int(log.llm_prompt_tokens or 0),
+                int(log.llm_completion_tokens or 0),
+                int(log.tts_characters or 0),
+                float(log.stt_seconds or 0),
+            )
             return {
                 "call_log_id": str(log.id),
                 "reference_id": log.reference_id,
@@ -511,6 +517,7 @@ async def get_account_detail(
                 "inbound_cost_usd": round(inbound_c, 6),
                 "has_transfers": bool(log.has_transfer),
                 "total_cost_usd": round(total_c, 6),
+                "internal_cost_usd": ic["internal_cost_usd"],
                 "billing_items": [i.to_dict() for i in items],
             }
 

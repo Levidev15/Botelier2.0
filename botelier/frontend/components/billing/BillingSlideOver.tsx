@@ -54,12 +54,14 @@ interface CallRow {
   call_log_id: string;
   reference_id: string | null;
   started_at: string | null;
+  direction: string;
   caller_number: string | null;
   assistant_name: string | null;
   duration_seconds: number;
   billable_inbound_minutes: number;
   inbound_cost_usd: number;
   total_cost_usd: number;
+  internal_cost_usd: number;
   has_transfers: boolean;
   billing_items: Array<{
     item_type: string;
@@ -173,8 +175,8 @@ export default function BillingSlideOver({
               : "",
         });
       }
-    } catch (e: any) {
-      setError(e.message || "Failed to load data");
+    } catch (e: unknown) {
+      setError(e instanceof Error ? e.message : "Failed to load data");
     } finally {
       setLoading(false);
     }
@@ -199,8 +201,19 @@ export default function BillingSlideOver({
         ? parseFloat(rateForm.monthly_alert_threshold_usd)
         : null;
 
-    if ([inbound, outbound, smsIn, smsOut].some((v) => isNaN(v) || v < 0)) {
-      toast.error("All rates must be non-negative numbers");
+    const sixDecimalRe = /^\d+(\.\d{1,6})?$/;
+    const rateFields = [
+      rateForm.inbound_rate_usd,
+      rateForm.outbound_rate_usd,
+      rateForm.sms_inbound_rate_usd,
+      rateForm.sms_outbound_rate_usd,
+    ];
+    if (rateFields.some((s) => !sixDecimalRe.test(s.trim()))) {
+      toast.error("Rates must be positive numbers with up to 6 decimal places");
+      return;
+    }
+    if ([inbound, outbound, smsIn, smsOut].some((v) => isNaN(v) || v <= 0)) {
+      toast.error("All rates must be positive numbers greater than zero");
       return;
     }
     if (threshold !== null && (isNaN(threshold) || threshold < 0)) {
@@ -229,8 +242,8 @@ export default function BillingSlideOver({
       }
       toast.success("Billing rates updated");
       fetchDetail();
-    } catch (e: any) {
-      toast.error(e.message || "Failed to save rates");
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to save rates");
     } finally {
       setSaving(false);
     }
@@ -495,14 +508,20 @@ export default function BillingSlideOver({
                     <table className="w-full text-sm">
                       <thead>
                         <tr className="border-b border-[#222222]">
-                          <th className="py-2 pr-3 text-left text-xs text-gray-500 font-medium">
+                          <th className="py-2 pr-3 text-left text-xs text-gray-500 font-medium whitespace-nowrap">
                             Time
+                          </th>
+                          <th className="py-2 pr-3 text-left text-xs text-gray-500 font-medium">
+                            Dir
                           </th>
                           <th className="py-2 pr-3 text-left text-xs text-gray-500 font-medium">
                             Caller
                           </th>
                           <th className="py-2 pr-3 text-left text-xs text-gray-500 font-medium">
-                            Duration
+                            Assistant
+                          </th>
+                          <th className="py-2 pr-3 text-right text-xs text-gray-500 font-medium">
+                            Dur
                           </th>
                           <th className="py-2 pr-3 text-right text-xs text-gray-500 font-medium">
                             Mins
@@ -510,8 +529,11 @@ export default function BillingSlideOver({
                           <th className="py-2 pr-3 text-right text-xs text-gray-500 font-medium">
                             Billable
                           </th>
-                          <th className="py-2 text-right text-xs text-gray-500 font-medium">
+                          <th className="py-2 pr-3 text-right text-xs text-yellow-600 font-medium">
                             Internal
+                          </th>
+                          <th className="py-2 text-center text-xs text-gray-500 font-medium">
+                            Xfer
                           </th>
                         </tr>
                       </thead>
@@ -521,7 +543,6 @@ export default function BillingSlideOver({
                           const transferItems = call.billing_items.filter(
                             (i) => i.item_type === "outbound_transfer"
                           );
-                          const internalCost = 0;
 
                           const mainRow = (
                             <tr
@@ -533,10 +554,24 @@ export default function BillingSlideOver({
                                   ? new Date(call.started_at).toLocaleString()
                                   : "—"}
                               </td>
+                              <td className="py-2 pr-3 text-xs">
+                                <span
+                                  className={`inline-flex px-1.5 py-0.5 rounded text-xs font-medium ${
+                                    call.direction === "inbound"
+                                      ? "bg-blue-600/20 text-blue-400"
+                                      : "bg-purple-600/20 text-purple-400"
+                                  }`}
+                                >
+                                  {call.direction === "inbound" ? "In" : "Out"}
+                                </span>
+                              </td>
                               <td className="py-2 pr-3 text-gray-300 font-mono text-xs">
                                 {call.caller_number ?? "—"}
                               </td>
-                              <td className="py-2 pr-3 text-gray-400 text-xs">
+                              <td className="py-2 pr-3 text-gray-400 text-xs max-w-[80px] truncate">
+                                {call.assistant_name ?? "—"}
+                              </td>
+                              <td className="py-2 pr-3 text-right text-gray-400 text-xs whitespace-nowrap">
                                 {fmtDuration(call.duration_seconds)}
                               </td>
                               <td className="py-2 pr-3 text-right text-gray-300 text-xs">
@@ -545,13 +580,16 @@ export default function BillingSlideOver({
                               <td className="py-2 pr-3 text-right text-gray-300 text-xs">
                                 ${call.total_cost_usd.toFixed(4)}
                               </td>
-                              <td className="py-2 text-right text-xs">
+                              <td className="py-2 pr-3 text-right text-yellow-500 text-xs">
+                                ${call.internal_cost_usd.toFixed(4)}
+                              </td>
+                              <td className="py-2 text-center text-xs">
                                 {call.has_transfers ? (
                                   <button
                                     onClick={() =>
                                       toggleCall(call.call_log_id)
                                     }
-                                    className="inline-flex items-center gap-1 text-blue-400 hover:text-blue-300"
+                                    className="inline-flex items-center gap-0.5 text-blue-400 hover:text-blue-300"
                                   >
                                     {isExpanded ? (
                                       <ChevronDown className="h-3 w-3" />
@@ -561,7 +599,7 @@ export default function BillingSlideOver({
                                     {transferItems.length}
                                   </button>
                                 ) : (
-                                  <span className="text-gray-600">—</span>
+                                  <span className="text-gray-700">—</span>
                                 )}
                               </td>
                             </tr>
@@ -576,8 +614,9 @@ export default function BillingSlideOver({
                               key={`leg-${call.call_log_id}-${idx}`}
                               className="bg-[#0a0a0a]"
                             >
+                              {/* spans Time + Dir + Caller + Assistant */}
                               <td
-                                colSpan={2}
+                                colSpan={4}
                                 className="py-1.5 pl-6 pr-3 text-xs text-gray-500"
                               >
                                 <span className="text-gray-600 mr-2">↳</span>
@@ -588,18 +627,26 @@ export default function BillingSlideOver({
                                   </span>
                                 )}
                               </td>
-                              <td className="py-1.5 pr-3 text-xs text-gray-500">
+                              {/* Dur */}
+                              <td className="py-1.5 pr-3 text-right text-xs text-gray-500">
                                 {item.leg_duration_seconds != null
                                   ? fmtDuration(item.leg_duration_seconds)
                                   : "—"}
                               </td>
+                              {/* Mins */}
                               <td className="py-1.5 pr-3 text-right text-xs text-gray-500">
                                 {item.quantity_minutes}
                               </td>
+                              {/* Billable */}
                               <td className="py-1.5 pr-3 text-right text-xs text-gray-500">
                                 ${item.cost_usd.toFixed(4)}
                               </td>
-                              <td className="py-1.5 text-right text-xs text-gray-600">
+                              {/* Internal — not available per-transfer */}
+                              <td className="py-1.5 pr-3 text-right text-xs text-gray-700">
+                                —
+                              </td>
+                              {/* Xfer */}
+                              <td className="py-1.5 text-center text-xs text-gray-700">
                                 —
                               </td>
                             </tr>
