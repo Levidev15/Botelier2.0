@@ -54,6 +54,7 @@ interface AccountInfo {
 
 type SortField =
   | "account_name"
+  | "status"
   | "inbound_minutes"
   | "outbound_minutes"
   | "sms_total"
@@ -190,6 +191,10 @@ export default function AdminUsagePage() {
         case "account_name":
           va = a.account_name.toLowerCase();
           vb = b.account_name.toLowerCase();
+          break;
+        case "status":
+          va = a.status ?? "";
+          vb = b.status ?? "";
           break;
         case "inbound_minutes":
           va = a.inbound_minutes;
@@ -376,9 +381,7 @@ export default function AdminUsagePage() {
             <thead className="bg-[#0a0a0a] border-b border-[#222222]">
               <tr>
                 {colHeader("Account", "account_name")}
-                <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
-                  Status
-                </th>
+                {colHeader("Status", "status")}
                 {colHeader("Inbound Mins", "inbound_minutes")}
                 {colHeader("Outbound Mins", "outbound_minutes")}
                 {colHeader("SMS", "sms_total")}
@@ -456,6 +459,7 @@ export default function AdminUsagePage() {
       <BillingSlideOver
         accountId={billingAccountId}
         onClose={() => setBillingAccountId(null)}
+        period={period}
       />
     </div>
   );

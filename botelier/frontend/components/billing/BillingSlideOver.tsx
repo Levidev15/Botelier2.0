@@ -123,11 +123,21 @@ function SkeletonCard() {
 interface BillingSlideOverProps {
   accountId: string | null;
   onClose: () => void;
+  period?: string;
 }
+
+const EMPTY_RATE_FORM = {
+  inbound_rate_usd: "",
+  outbound_rate_usd: "",
+  sms_inbound_rate_usd: "",
+  sms_outbound_rate_usd: "",
+  monthly_alert_threshold_usd: "",
+};
 
 export default function BillingSlideOver({
   accountId,
   onClose,
+  period = "mtd",
 }: BillingSlideOverProps) {
   const { authFetch } = useAuthToken();
   const [detail, setDetail] = useState<AccountDetail | null>(null);
@@ -135,13 +145,7 @@ export default function BillingSlideOver({
   const [error, setError] = useState<string | null>(null);
 
   // Rate form state
-  const [rateForm, setRateForm] = useState({
-    inbound_rate_usd: "",
-    outbound_rate_usd: "",
-    sms_inbound_rate_usd: "",
-    sms_outbound_rate_usd: "",
-    monthly_alert_threshold_usd: "",
-  });
+  const [rateForm, setRateForm] = useState(EMPTY_RATE_FORM);
   const [saving, setSaving] = useState(false);
 
   // Expanded call rows
@@ -153,7 +157,7 @@ export default function BillingSlideOver({
     setError(null);
     try {
       const res = await authFetch(
-        `/api/admin/billing/accounts/${accountId}/detail?period=mtd&per_page=10`
+        `/api/admin/billing/accounts/${accountId}/detail?period=${period}&per_page=10`
       );
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -185,6 +189,7 @@ export default function BillingSlideOver({
   useEffect(() => {
     if (accountId) {
       setDetail(null);
+      setRateForm(EMPTY_RATE_FORM);
       setExpandedCalls(new Set());
       fetchDetail();
     }
