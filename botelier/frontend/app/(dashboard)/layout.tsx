@@ -7,6 +7,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
+import { usePermissions } from "@/lib/auth/usePermissions";
 import { useTheme } from "@/lib/theme/ThemeContext";
 import { AccountFeaturesProvider } from "@/contexts/AccountFeaturesContext";
 
@@ -17,7 +18,9 @@ export default function DashboardLayout({
 }) {
   const { token, loading: tokenLoading, authFetch } = useAuthToken();
   const { accountId, accountName, isAdminSession, exitAccount, loading: accountLoading } = useAccountContext();
+  const { can, isPlatformAdmin } = usePermissions();
   const { theme, toggleTheme } = useTheme();
+  const canViewUsage = isPlatformAdmin || can("usage", "view");
   const router = useRouter();
   const pathname = usePathname();
   const [userInfo, setUserInfo] = useState<any>(null);
@@ -195,9 +198,11 @@ export default function DashboardLayout({
           <NavItem href="/dashboard/analytics/sms" icon={<MessageCircle className="h-5 w-5" />} active={isActive("/dashboard/analytics/sms")}>
             SMS Analytics
           </NavItem>
-          <NavItem href="/dashboard/usage" icon={<DollarSign className="h-5 w-5" />} active={isActive("/dashboard/usage")}>
-            Usage
-          </NavItem>
+          {canViewUsage && (
+            <NavItem href="/dashboard/usage" icon={<DollarSign className="h-5 w-5" />} active={isActive("/dashboard/usage")}>
+              Usage
+            </NavItem>
+          )}
           
           <div className="pt-4 pb-2">
             <div className="px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">

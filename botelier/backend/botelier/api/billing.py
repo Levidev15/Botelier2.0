@@ -278,6 +278,27 @@ async def get_usage_calls(
             )
             inbound_cost = float(inbound_item.cost_usd) if inbound_item else 0.0
             total_cost = sum(float(i.cost_usd) for i in items)
+
+            # Enrich outbound_transfer billing items with CallLeg data (destination,
+            # leg_type, duration). Legs are already eager-loaded; we match them to
+            # transfer billing items by creation order (both are written sequentially).
+            transfer_legs = sorted(
+                [leg for leg in (log.legs or []) if leg.leg_type.startswith("transfer_")],
+                key=lambda l: l.leg_number,
+            )
+            leg_idx = 0
+            enriched_items = []
+            for item in items:
+                d = item.to_dict()
+                if item.item_type == "outbound_transfer":
+                    leg = transfer_legs[leg_idx] if leg_idx < len(transfer_legs) else None
+                    d["destination"] = leg.participant if leg else None
+                    d["destination_name"] = leg.participant_name if leg else None
+                    d["leg_type"] = leg.leg_type if leg else "outbound_transfer"
+                    d["leg_duration_seconds"] = (leg.duration_seconds or 0) if leg else 0
+                    leg_idx += 1
+                enriched_items.append(d)
+
             return {
                 "call_log_id": str(log.id),
                 "reference_id": log.reference_id,
@@ -291,7 +312,7 @@ async def get_usage_calls(
                 "inbound_cost_usd": round(inbound_cost, 6),
                 "has_transfers": bool(log.has_transfer),
                 "total_cost_usd": round(total_cost, 6),
-                "billing_items": [i.to_dict() for i in items],
+                "billing_items": enriched_items,
             }
 
         if format == "csv":

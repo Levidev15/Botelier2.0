@@ -67,6 +67,10 @@ interface BillingItem {
   quantity_minutes: number;
   rate_per_unit_usd: number;
   cost_usd: number;
+  destination?: string | null;
+  destination_name?: string | null;
+  leg_type?: string | null;
+  leg_duration_seconds?: number;
 }
 
 interface CallRow {
@@ -621,110 +625,130 @@ export default function UsagePage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {calls?.calls.map((call) => {
+                  {calls?.calls.flatMap((call) => {
                     const isExpanded = expandedRows.has(call.call_log_id);
                     const transferItems = call.billing_items.filter(
                       (i) => i.item_type === "outbound_transfer",
                     );
                     const hasNoCost = call.total_cost_usd === 0 && call.billing_items.length === 0;
 
-                    return (
-                      <>
-                        <tr
-                          key={call.call_log_id}
-                          className="border-b border-gray-800/60 hover:bg-gray-800/20 transition-colors"
-                        >
-                          {/* Expand toggle */}
-                          <td className="px-4 py-3">
-                            {call.has_transfers ? (
-                              <button
-                                onClick={() => toggleRow(call.call_log_id)}
-                                className="text-gray-500 hover:text-gray-300 transition-colors"
-                                title={isExpanded ? "Collapse transfer legs" : "Expand transfer legs"}
-                              >
-                                {isExpanded ? (
-                                  <ChevronDown className="h-4 w-4" />
-                                ) : (
-                                  <ChevronRight className="h-4 w-4" />
-                                )}
-                              </button>
-                            ) : null}
-                          </td>
-                          <td className="px-4 py-3 text-gray-300 whitespace-nowrap">
-                            {fmtDate(call.started_at)}
-                          </td>
-                          <td className="px-4 py-3">
-                            <span
-                              className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
-                                call.direction === "inbound"
-                                  ? "bg-blue-600/20 text-blue-400"
-                                  : "bg-purple-600/20 text-purple-400"
-                              }`}
+                    const mainRow = (
+                      <tr
+                        key={call.call_log_id}
+                        className="border-b border-gray-800/60 hover:bg-gray-800/20 transition-colors"
+                      >
+                        {/* Expand toggle */}
+                        <td className="px-4 py-3">
+                          {call.has_transfers ? (
+                            <button
+                              onClick={() => toggleRow(call.call_log_id)}
+                              className="text-gray-500 hover:text-gray-300 transition-colors"
+                              title={isExpanded ? "Collapse transfer legs" : "Expand transfer legs"}
                             >
-                              {call.direction === "inbound" ? "Inbound" : "Outbound"}
+                              {isExpanded ? (
+                                <ChevronDown className="h-4 w-4" />
+                              ) : (
+                                <ChevronRight className="h-4 w-4" />
+                              )}
+                            </button>
+                          ) : null}
+                        </td>
+                        <td className="px-4 py-3 text-gray-300 whitespace-nowrap">
+                          {fmtDate(call.started_at)}
+                        </td>
+                        <td className="px-4 py-3">
+                          <span
+                            className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
+                              call.direction === "inbound"
+                                ? "bg-blue-600/20 text-blue-400"
+                                : "bg-purple-600/20 text-purple-400"
+                            }`}
+                          >
+                            {call.direction === "inbound" ? "Inbound" : "Outbound"}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3 text-gray-400 font-mono text-xs">
+                          {call.caller_number ?? "—"}
+                        </td>
+                        <td className="px-4 py-3 text-gray-400 max-w-[140px] truncate">
+                          {call.assistant_name ?? "—"}
+                        </td>
+                        <td className="px-4 py-3 text-gray-400 whitespace-nowrap">
+                          {fmtMinutes(call.duration_seconds)}
+                        </td>
+                        <td className="px-4 py-3 text-gray-400">
+                          {call.billable_inbound_minutes}
+                        </td>
+                        <td className="px-4 py-3 font-mono">
+                          {hasNoCost ? (
+                            <span className="text-gray-600">—</span>
+                          ) : (
+                            <span className="text-gray-200">{fmtUsd(call.total_cost_usd)}</span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+
+                    if (!isExpanded || transferItems.length === 0) {
+                      return [mainRow];
+                    }
+
+                    const headerRow = (
+                      <tr
+                        key={`${call.call_log_id}-sub-header`}
+                        className="bg-[#151515]"
+                      >
+                        <td />
+                        <td
+                          colSpan={7}
+                          className="px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wide"
+                        >
+                          Transfer Legs
+                        </td>
+                      </tr>
+                    );
+
+                    const legRows = transferItems.map((item, idx) => {
+                      const legLabel = item.leg_type
+                        ? item.leg_type.replace("transfer_", "").replace("_", " ")
+                        : "transfer";
+                      const dest = item.destination_name || item.destination || "—";
+                      const legDur = item.leg_duration_seconds
+                        ? fmtMinutes(item.leg_duration_seconds)
+                        : "—";
+                      return (
+                        <tr
+                          key={item.id || `${call.call_log_id}-leg-${idx}`}
+                          className="bg-[#151515] border-b border-gray-800/40"
+                        >
+                          <td />
+                          <td className="px-4 py-2.5 whitespace-nowrap">
+                            <span className="inline-flex items-center px-2 py-0.5 rounded text-xs bg-purple-900/30 text-purple-400 capitalize">
+                              {legLabel}
                             </span>
                           </td>
-                          <td className="px-4 py-3 text-gray-400 font-mono text-xs">
-                            {call.caller_number ?? "—"}
+                          <td className="px-4 py-2.5 text-gray-500 text-xs" />
+                          <td className="px-4 py-2.5 text-gray-400 font-mono text-xs">
+                            {dest}
                           </td>
-                          <td className="px-4 py-3 text-gray-400 max-w-[140px] truncate">
-                            {call.assistant_name ?? "—"}
+                          <td className="px-4 py-2.5 text-gray-500 text-xs" />
+                          <td className="px-4 py-2.5 text-gray-400 text-xs whitespace-nowrap">
+                            {legDur}
                           </td>
-                          <td className="px-4 py-3 text-gray-400 whitespace-nowrap">
-                            {fmtMinutes(call.duration_seconds)}
+                          <td className="px-4 py-2.5 text-gray-400 text-xs">
+                            {item.quantity_minutes} min
                           </td>
-                          <td className="px-4 py-3 text-gray-400">
-                            {call.billable_inbound_minutes}
-                          </td>
-                          <td className="px-4 py-3 font-mono">
-                            {hasNoCost ? (
-                              <span className="text-gray-600">—</span>
-                            ) : (
-                              <span className="text-gray-200">{fmtUsd(call.total_cost_usd)}</span>
-                            )}
+                          <td className="px-4 py-2.5 font-mono text-xs text-gray-300">
+                            {fmtUsd(item.cost_usd)}
+                            <span className="text-gray-600 ml-1">
+                              @ ${item.rate_per_unit_usd.toFixed(3)}/min
+                            </span>
                           </td>
                         </tr>
+                      );
+                    });
 
-                        {/* Transfer sub-rows */}
-                        {isExpanded && transferItems.length > 0 && (
-                          <>
-                            <tr key={`${call.call_log_id}-sub-header`} className="bg-[#151515]">
-                              <td />
-                              <td
-                                colSpan={7}
-                                className="px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wide"
-                              >
-                                Transfer Legs
-                              </td>
-                            </tr>
-                            {transferItems.map((item) => (
-                              <tr
-                                key={item.id}
-                                className="bg-[#151515] border-b border-gray-800/40"
-                              >
-                                <td />
-                                <td colSpan={3} className="px-4 py-2.5">
-                                  <span className="inline-flex items-center px-2 py-0.5 rounded text-xs bg-purple-900/30 text-purple-400">
-                                    Outbound Transfer
-                                  </span>
-                                </td>
-                                <td className="px-4 py-2.5 text-gray-500 text-xs">—</td>
-                                <td className="px-4 py-2.5 text-gray-500 text-xs">—</td>
-                                <td className="px-4 py-2.5 text-gray-400 text-xs">
-                                  {item.quantity_minutes} min
-                                </td>
-                                <td className="px-4 py-2.5 font-mono text-xs text-gray-300">
-                                  {fmtUsd(item.cost_usd)}
-                                  <span className="text-gray-600 ml-1">
-                                    @ ${item.rate_per_unit_usd.toFixed(3)}/min
-                                  </span>
-                                </td>
-                              </tr>
-                            ))}
-                          </>
-                        )}
-                      </>
-                    );
+                    return [mainRow, headerRow, ...legRows];
                   })}
                 </tbody>
               </table>
