@@ -16,9 +16,14 @@ Two concerns live here:
    endpoint then verifies that token on the first `start` frame before
    any pipeline work begins.
 
-Both checks fail closed: if no auth token or stream-token secret is
-configured the request is rejected rather than allowed through.  A
-production deployment must have the required secrets set.
+HTTP signature validation fails closed: if no auth token is configured
+the request is rejected with a WARNING rather than allowed through.
+
+Stream-token verification skips the HMAC when no secret is available
+(dev-mode skip) but still requires a CallLog binding, so a fabricated
+callSid from an unauthenticated source is always rejected.
+
+Production deployments must always have the required secrets set.
 """
 
 from __future__ import annotations
@@ -63,20 +68,21 @@ def validate_twilio_signature(
     Returns `(is_valid, validated_url)`.  The URL is included so callers
     can log it on failure to diagnose proxy / host mismatches.
 
-    When `auth_token` is empty, validation is skipped and `(True, url)` is
-    returned with a WARNING — mirrors `sms_pkg/webhook.py` skip-when-no-token
-    contract so local dev works without `TWILIO_AUTH_TOKEN` set.  Production
-    deployments must always have the token configured; the WARNING makes a
-    misconfigured production deployment obvious without silently blocking dev.
+    When `auth_token` is empty, validation fails closed and `(False, url)` is
+    returned — mirrors the `sms_pkg/webhook.py` fail-closed contract and the
+    threat-model requirement that a missing Twilio secret must never silently
+    downgrade to allow-all behaviour.  Configure `TWILIO_AUTH_TOKEN` (or a
+    per-account sub-account token) in every environment that receives live
+    Twilio webhooks.
     """
     url = _build_webhook_url(request, path)
 
     if not auth_token:
         logger.warning(
-            f"Twilio signature validation skipped — no auth token configured ({path}). "
-            f"Set TWILIO_AUTH_TOKEN (or a hotel sub-account token) to enforce validation."
+            f"Twilio signature validation failed — no auth token configured ({path}). "
+            f"Set TWILIO_AUTH_TOKEN (or a per-account sub-account token)."
         )
-        return True, url
+        return False, url
 
     try:
         from twilio.request_validator import RequestValidator

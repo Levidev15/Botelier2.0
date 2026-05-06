@@ -416,11 +416,18 @@ export default function BillingSlideOver({
                     amber
                   />
                   <StatCard
-                    label="Total Internal"
+                    label="Total Internal Cost"
                     value={fmt$(detail.summary.internal_cost_usd)}
-                    sub={`Margin: ${fmt$(detail.summary.margin_usd)}`}
+                    sub="LLM + TTS + STT"
                     highlight
                     amber
+                  />
+                  <StatCard
+                    label="Implied Margin"
+                    value={fmt$(detail.summary.margin_usd)}
+                    sub="Billable − Internal"
+                    highlight={detail.summary.margin_usd >= 0}
+                    amber={detail.summary.margin_usd < 0}
                   />
                 </div>
               </Section>

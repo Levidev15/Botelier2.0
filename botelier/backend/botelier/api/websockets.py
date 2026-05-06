@@ -70,7 +70,7 @@ async def websocket_call_endpoint(websocket: WebSocket, db: Session = Depends(ge
 
         if not stream_sid or not call_sid:
             logger.error("❌ Never received Twilio 'start' event")
-            await websocket.close()
+            await websocket.close(code=1008, reason="Missing start event")
             return
 
         if not to_number:
@@ -160,6 +160,6 @@ async def websocket_call_endpoint(websocket: WebSocket, db: Session = Depends(ge
         logger.exception(f"❌ WebSocket error: {e}")
         try:
             if websocket.client_state.name == "CONNECTED":
-                await websocket.close()
-        except:
+                await websocket.close(code=1011, reason="Internal server error")
+        except Exception:
             pass
