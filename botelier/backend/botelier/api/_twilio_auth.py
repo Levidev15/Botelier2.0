@@ -219,6 +219,12 @@ def verify_stream_token(
     """
     secret = _stream_token_secret(account_token)
     if not secret:
+        logger.warning(
+            "Stream token verification skipped — no HMAC secret configured "
+            "(STREAM_TOKEN_SECRET / TWILIO_AUTH_TOKEN / sub-account token all absent). "
+            "WebSocket is protected only by CallLog binding. "
+            "Set TWILIO_AUTH_TOKEN or STREAM_TOKEN_SECRET in production."
+        )
         return True, "skipped_no_secret"
 
     if not token or exp in (None, "", 0):

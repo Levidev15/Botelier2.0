@@ -4,6 +4,7 @@ This module provides WebSocket endpoints for real-time audio streaming
 between Twilio and Pipecat voice pipelines.
 """
 
+import asyncio
 import json
 from urllib.parse import parse_qs, urlparse
 
@@ -50,9 +51,24 @@ async def websocket_call_endpoint(websocket: WebSocket, db: Session = Depends(ge
         to_number = None
         start_data = {}
 
-        # Read initial messages from Twilio
+        # Read initial messages from Twilio.
+        # Each receive_text() is time-bounded so unauthenticated callers cannot
+        # park a connection and stall event-loop resources indefinitely before
+        # the authentication gate fires (Task #138 DoS hardening).
+        # Twilio delivers 'connected' + 'start' within ~1 s; 10 s is generous.
+        _FRAME_TIMEOUT = 10.0
         for _ in range(3):  # Twilio sends 'connected' then 'start'
-            data = await websocket.receive_text()
+            try:
+                data = await asyncio.wait_for(
+                    websocket.receive_text(), timeout=_FRAME_TIMEOUT
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "❌ Timed out waiting for Twilio 'start' frame "
+                    f"(>{_FRAME_TIMEOUT}s) — closing unauthenticated socket"
+                )
+                await websocket.close(code=1008, reason="Handshake timeout")
+                return
             message = json.loads(data)
             event_type = message.get("event")
 

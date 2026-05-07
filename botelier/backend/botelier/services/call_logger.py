@@ -122,9 +122,13 @@ class CallLogger:
     def _write_transfer_billing(self, call_log, leg) -> None:
         """Write an outbound_transfer billing item for a completed warm transfer leg.
 
-        Idempotent: counts existing outbound_transfer items for this call against the
-        number of completed transfer legs with a billable duration, and creates at most
-        one new item per invocation.  Cold transfer legs (duration unknown) are skipped.
+        Idempotent per leg: when leg.started_at is available, checks whether an
+        outbound_transfer item already exists with created_at >= leg.started_at for
+        this call.  This scopes the dedup to the specific leg's time window, which is
+        robust under re-delivery and out-of-order callbacks.  Falls back to a global
+        count comparison only when leg.started_at is absent (rare legacy edge case).
+
+        Cold transfer legs (duration_seconds is None or 0) are skipped.
         The caller is responsible for committing the session.
         """
         if call_log.account_id is None:
@@ -132,30 +136,42 @@ class CallLogger:
         if not leg.duration_seconds or leg.duration_seconds <= 0:
             return
 
-        all_legs = (
-            self.db.query(CallLeg).filter(CallLeg.call_log_id == call_log.id).all()
-        )
-        billable_legs = [
-            l
-            for l in all_legs
-            if l.leg_type in (LegType.TRANSFER_EXTERNAL.value, LegType.TRANSFER_SIP.value)
-            and l.duration_seconds is not None
-            and l.duration_seconds > 0
-        ]
-
-        existing_count = (
-            self.db.query(CallBillingItem)
-            .filter(
-                CallBillingItem.call_log_id == call_log.id,
-                CallBillingItem.item_type == "outbound_transfer",
+        if leg.started_at is not None:
+            already_billed = (
+                self.db.query(CallBillingItem)
+                .filter(
+                    CallBillingItem.call_log_id == call_log.id,
+                    CallBillingItem.item_type == "outbound_transfer",
+                    CallBillingItem.created_at >= leg.started_at,
+                )
+                .first()
+                is not None
             )
-            .count()
-        )
+        else:
+            all_legs = (
+                self.db.query(CallLeg).filter(CallLeg.call_log_id == call_log.id).all()
+            )
+            billable_count = sum(
+                1
+                for l in all_legs
+                if l.leg_type in (LegType.TRANSFER_EXTERNAL.value, LegType.TRANSFER_SIP.value)
+                and l.duration_seconds is not None
+                and l.duration_seconds > 0
+            )
+            existing_count = (
+                self.db.query(CallBillingItem)
+                .filter(
+                    CallBillingItem.call_log_id == call_log.id,
+                    CallBillingItem.item_type == "outbound_transfer",
+                )
+                .count()
+            )
+            already_billed = existing_count >= billable_count
 
-        if existing_count >= len(billable_legs):
+        if already_billed:
             logger.debug(
-                f"Transfer billing already complete ({existing_count} items) "
-                f"for call {call_log.call_sid}"
+                f"Transfer billing already present for leg {leg.leg_number} "
+                f"of call {call_log.call_sid}"
             )
             return
 
@@ -178,7 +194,7 @@ class CallLogger:
         )
         logger.debug(
             f"Transfer billing item: {quantity_minutes} min × ${rate}/min = ${cost} "
-            f"(leg {leg.duration_seconds}s) for call {call_log.call_sid}"
+            f"(leg {leg.leg_number}, {leg.duration_seconds}s) for call {call_log.call_sid}"
         )
 
     def get_call_log(self, call_sid: str) -> Optional[CallLog]:
