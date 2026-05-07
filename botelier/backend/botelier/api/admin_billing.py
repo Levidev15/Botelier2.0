@@ -34,6 +34,10 @@ _INTERNAL_LLM_RATE_PER_1K_PROMPT = 0.003
 _INTERNAL_LLM_RATE_PER_1K_COMPLETION = 0.006
 _INTERNAL_TTS_RATE_PER_1K_CHARS = 0.015
 _INTERNAL_STT_RATE_PER_SECOND = 0.0001
+_INTERNAL_TWILIO_INBOUND_PER_MIN = 0.0085
+_INTERNAL_TWILIO_OUTBOUND_PER_MIN = 0.013
+_INTERNAL_TWILIO_SMS_IN_RATE = 0.0075
+_INTERNAL_TWILIO_SMS_OUT_RATE = 0.0079
 
 _DEFAULT_INBOUND_RATE = 0.05
 _DEFAULT_OUTBOUND_RATE = 0.08
@@ -112,6 +116,10 @@ def _internal_cost(
     llm_completion_tokens: int,
     tts_characters: int,
     stt_seconds: float,
+    inbound_minutes: int = 0,
+    outbound_minutes: int = 0,
+    sms_in_count: int = 0,
+    sms_out_count: int = 0,
 ) -> dict:
     llm_cost = (
         (llm_prompt_tokens / 1000) * _INTERNAL_LLM_RATE_PER_1K_PROMPT
@@ -119,6 +127,15 @@ def _internal_cost(
     )
     tts_cost = (tts_characters / 1000) * _INTERNAL_TTS_RATE_PER_1K_CHARS
     stt_cost = stt_seconds * _INTERNAL_STT_RATE_PER_SECOND
+    twilio_call_cost = (
+        inbound_minutes * _INTERNAL_TWILIO_INBOUND_PER_MIN
+        + outbound_minutes * _INTERNAL_TWILIO_OUTBOUND_PER_MIN
+    )
+    twilio_sms_cost = (
+        sms_in_count * _INTERNAL_TWILIO_SMS_IN_RATE
+        + sms_out_count * _INTERNAL_TWILIO_SMS_OUT_RATE
+    )
+    total = llm_cost + tts_cost + stt_cost + twilio_call_cost + twilio_sms_cost
     return {
         "llm_prompt_tokens": llm_prompt_tokens,
         "llm_completion_tokens": llm_completion_tokens,
@@ -127,7 +144,9 @@ def _internal_cost(
         "tts_cost_usd": round(tts_cost, 6),
         "stt_seconds": round(stt_seconds, 2),
         "stt_cost_usd": round(stt_cost, 6),
-        "internal_cost_usd": round(llm_cost + tts_cost + stt_cost, 6),
+        "twilio_call_cost_usd": round(twilio_call_cost, 6),
+        "twilio_sms_cost_usd": round(twilio_sms_cost, 6),
+        "internal_cost_usd": round(total, 6),
     }
 
 
@@ -222,13 +241,13 @@ async def list_account_usage(
             .group_by(CallLog.account_id)
             .all()
         )
-        internal_by_acct = {
-            str(r.account_id): _internal_cost(
-                int(r.prompt_tokens),
-                int(r.completion_tokens),
-                int(r.tts_chars),
-                float(r.stt_secs),
-            )
+        internal_raw_by_acct = {
+            str(r.account_id): {
+                "prompt_tokens": int(r.prompt_tokens),
+                "completion_tokens": int(r.completion_tokens),
+                "tts_chars": int(r.tts_chars),
+                "stt_secs": float(r.stt_secs),
+            }
             for r in internal_agg
         }
 
@@ -259,7 +278,7 @@ async def list_account_usage(
         all_account_ids = (
             set(inbound_by_acct)
             | set(outbound_by_acct)
-            | set(internal_by_acct)
+            | set(internal_raw_by_acct)
             | set(sms_in_by_acct)
             | set(sms_out_by_acct)
             | set(account_map)
@@ -277,7 +296,19 @@ async def list_account_usage(
             sms_cost = round(sms_in * rates["sms_in"] + sms_out * rates["sms_out"], 6)
             billable_total = round(inb["cost"] + outb["cost"] + sms_cost, 6)
 
-            ic = internal_by_acct.get(acct_id, _internal_cost(0, 0, 0, 0.0))
+            _iraw = internal_raw_by_acct.get(
+                acct_id, {"prompt_tokens": 0, "completion_tokens": 0, "tts_chars": 0, "stt_secs": 0.0}
+            )
+            ic = _internal_cost(
+                _iraw["prompt_tokens"],
+                _iraw["completion_tokens"],
+                _iraw["tts_chars"],
+                _iraw["stt_secs"],
+                inbound_minutes=inb["minutes"],
+                outbound_minutes=outb["minutes"],
+                sms_in_count=sms_in,
+                sms_out_count=sms_out,
+            )
 
             rows.append({
                 "account_id": acct_id,
@@ -424,7 +455,16 @@ async def get_account_detail(
             )
             .one()
         )
-        ic = _internal_cost(int(ic_row.pt), int(ic_row.ct), int(ic_row.tts), float(ic_row.stt))
+        ic = _internal_cost(
+            int(ic_row.pt),
+            int(ic_row.ct),
+            int(ic_row.tts),
+            float(ic_row.stt),
+            inbound_minutes=int(inbound_row.total_minutes),
+            outbound_minutes=int(outbound_row.total_minutes),
+            sms_in_count=sms_in_count,
+            sms_out_count=sms_out_count,
+        )
 
         # MTD running total
         now = datetime.utcnow()
@@ -498,11 +538,18 @@ async def get_account_detail(
             )
             inbound_c = float(inbound_item.cost_usd) if inbound_item else 0.0
             total_c = sum(float(i.cost_usd) for i in items)
+            outbound_mins = sum(
+                i.quantity_minutes or 0
+                for i in items
+                if i.item_type == "outbound_transfer"
+            )
             ic = _internal_cost(
                 int(log.llm_prompt_tokens or 0),
                 int(log.llm_completion_tokens or 0),
                 int(log.tts_characters or 0),
                 float(log.stt_seconds or 0),
+                inbound_minutes=inbound_mins,
+                outbound_minutes=outbound_mins,
             )
             return {
                 "call_log_id": str(log.id),
@@ -589,6 +636,7 @@ async def get_account_billing_timeseries(
             db.query(
                 trunc.label("bucket"),
                 func.coalesce(func.sum(CallBillingItem.cost_usd), 0).label("cost"),
+                func.coalesce(func.sum(CallBillingItem.quantity_minutes), 0).label("minutes"),
             )
             .join(CallBillingItem, CallBillingItem.call_log_id == CallLog.id)
             .filter(
@@ -606,6 +654,7 @@ async def get_account_billing_timeseries(
             db.query(
                 trunc.label("bucket"),
                 func.coalesce(func.sum(CallBillingItem.cost_usd), 0).label("cost"),
+                func.coalesce(func.sum(CallBillingItem.quantity_minutes), 0).label("minutes"),
             )
             .join(CallBillingItem, CallBillingItem.call_log_id == CallLog.id)
             .filter(
@@ -664,13 +713,16 @@ async def get_account_billing_timeseries(
         )
 
         inbound_map = {r.bucket.date().isoformat(): float(r.cost) for r in inbound_rows}
+        inbound_mins_map = {r.bucket.date().isoformat(): int(r.minutes) for r in inbound_rows}
         outbound_map = {r.bucket.date().isoformat(): float(r.cost) for r in outbound_rows}
+        outbound_mins_map = {r.bucket.date().isoformat(): int(r.minutes) for r in outbound_rows}
 
-        internal_map: dict = {}
+        internal_tokens_map: dict = {}
         for r in internal_rows:
             key = r.bucket.date().isoformat()
-            ic = _internal_cost(int(r.pt), int(r.ct), int(r.tts), float(r.stt))
-            internal_map[key] = ic["internal_cost_usd"]
+            internal_tokens_map[key] = {
+                "pt": int(r.pt), "ct": int(r.ct), "tts": int(r.tts), "stt": float(r.stt)
+            }
 
         sms_in_map: dict = {}
         sms_out_map: dict = {}
@@ -682,7 +734,11 @@ async def get_account_billing_timeseries(
                 sms_out_map[key] = sms_out_map.get(key, 0) + int(r.cnt)
 
         all_keys = sorted(
-            set(inbound_map) | set(outbound_map) | set(internal_map) | set(sms_in_map) | set(sms_out_map)
+            set(inbound_map)
+            | set(outbound_map)
+            | set(internal_tokens_map)
+            | set(sms_in_map)
+            | set(sms_out_map)
         )
 
         timeseries = []
@@ -694,7 +750,19 @@ async def get_account_billing_timeseries(
                 + sms_out_map.get(key, 0) * rates["sms_out"],
                 6,
             )
-            int_cost = internal_map.get(key, 0.0)
+            _itok = internal_tokens_map.get(
+                key, {"pt": 0, "ct": 0, "tts": 0, "stt": 0.0}
+            )
+            int_cost = _internal_cost(
+                _itok["pt"],
+                _itok["ct"],
+                _itok["tts"],
+                _itok["stt"],
+                inbound_minutes=inbound_mins_map.get(key, 0),
+                outbound_minutes=outbound_mins_map.get(key, 0),
+                sms_in_count=sms_in_map.get(key, 0),
+                sms_out_count=sms_out_map.get(key, 0),
+            )["internal_cost_usd"]
             timeseries.append({
                 "date": key,
                 "inbound_cost_usd": round(in_cost, 6),

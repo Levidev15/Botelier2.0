@@ -348,6 +348,9 @@ class CallLogger:
         tools_used: Optional[List[str]] = None,
         forced_by: Optional[str] = None,
         sweeper_age_seconds: Optional[int] = None,
+        llm_prompt_tokens: Optional[int] = None,
+        llm_completion_tokens: Optional[int] = None,
+        tts_characters: Optional[int] = None,
     ) -> bool:
         """Mark a call as completed and save transcript.
 
@@ -478,6 +481,18 @@ class CallLogger:
             if tools_used:
                 call_log.tool_name = ", ".join(tools_used)
                 logger.info(f"Saved tools used for call {call_sid}: {call_log.tool_name}")
+
+            if llm_prompt_tokens is not None:
+                call_log.llm_prompt_tokens = llm_prompt_tokens
+            if llm_completion_tokens is not None:
+                call_log.llm_completion_tokens = llm_completion_tokens
+            if tts_characters is not None:
+                call_log.tts_characters = tts_characters
+            if call_log.answered_at and call_log.ended_at:
+                call_log.stt_seconds = max(
+                    0.0,
+                    float((call_log.ended_at - call_log.answered_at).total_seconds()),
+                )
 
             # When the sweeper closes a call that never answered, the real call
             # duration is unknown — we must not fabricate it as (now - started_at).

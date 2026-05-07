@@ -56,6 +56,8 @@ interface AccountSummary {
   tts_cost_usd: number;
   stt_seconds: number;
   stt_cost_usd: number;
+  twilio_call_cost_usd: number;
+  twilio_sms_cost_usd: number;
   internal_cost_usd: number;
   margin_usd: number;
 }
@@ -464,9 +466,21 @@ export default function BillingSlideOver({
                     amber
                   />
                   <StatCard
+                    label="Twilio Call Cost"
+                    value={fmt$(detail.summary.twilio_call_cost_usd)}
+                    sub="Inbound + outbound minutes"
+                    amber
+                  />
+                  <StatCard
+                    label="Twilio SMS Cost"
+                    value={fmt$(detail.summary.twilio_sms_cost_usd)}
+                    sub="Inbound + outbound messages"
+                    amber
+                  />
+                  <StatCard
                     label="Total Internal Cost"
                     value={fmt$(detail.summary.internal_cost_usd)}
-                    sub="LLM + TTS + STT"
+                    sub="LLM + TTS + STT + Twilio"
                     highlight
                     amber
                   />

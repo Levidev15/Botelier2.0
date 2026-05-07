@@ -35,7 +35,7 @@ from pipecat.frames.frames import (
     TTSStartedFrame,
     TTSStoppedFrame,
 )
-from pipecat.metrics.metrics import LLMUsageMetricsData
+from pipecat.metrics.metrics import LLMUsageMetricsData, TTSUsageMetricsData
 
 # Lazy imports for provider services to avoid startup issues with optional dependencies
 # Services will be imported only when actually used
@@ -854,9 +854,24 @@ class TtsPipelineLatencyTracker(FrameProcessor):
         self._expecting_audio: bool = False
         self._t_first_audio: float = 0.0
         self._turn_emitted: bool = False  # Guards against double-emission per turn
+        self._total_prompt_tokens: int = 0
+        self._total_completion_tokens: int = 0
+        self._total_tts_chars: int = 0
 
     def set_event_queue(self, event_queue) -> None:
         self._event_queue = event_queue
+
+    @property
+    def total_prompt_tokens(self) -> int:
+        return self._total_prompt_tokens
+
+    @property
+    def total_completion_tokens(self) -> int:
+        return self._total_completion_tokens
+
+    @property
+    def total_tts_chars(self) -> int:
+        return self._total_tts_chars
 
     def _emit_turn_latency(self, t_llm_end: float) -> None:
         """Log LLM→TTS delta and emit the ``turn_latency`` CallEvent.
@@ -1023,6 +1038,10 @@ class TtsPipelineLatencyTracker(FrameProcessor):
                     # prompts under the 1024-token cache threshold). Coerce
                     # to 0 so dashboards can treat absence as "no cache hit".
                     self._timing_state["cached_tokens"] = _usage.cache_read_input_tokens or 0
+                    self._total_prompt_tokens += _usage.prompt_tokens
+                    self._total_completion_tokens += _usage.completion_tokens
+                elif isinstance(_data, TTSUsageMetricsData):
+                    self._total_tts_chars += _data.value
 
         await self.push_frame(frame, direction)
 

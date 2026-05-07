@@ -193,6 +193,7 @@ class CallHandler:
         # webhook, consumed at the top of handle_call. Bounded LRU+TTL so
         # abandoned ringing calls never leak.
         self.precomputed_configs: PreWarmCache = PreWarmCache(max_size=256, ttl_secs=60.0)
+        self.call_usage_trackers: dict = {}
 
     async def handle_call(
         self,
@@ -662,6 +663,10 @@ class CallHandler:
             # created for this call) so transfer handlers can await actual TTS completion.
             if call_sid in self.call_mappers:
                 self.call_mappers[call_sid].set_tts_completion_watcher(tts_completion_watcher)
+
+            # Store the latency tracker so _save_call_transcript can read
+            # accumulated token and character counts at call teardown.
+            self.call_usage_trackers[call_sid] = tts_latency_tracker
 
             # 6.5 Register MCP tools if connection is configured (must happen AFTER pipeline creation)
             # The event_queue is created below (section 7.5) — we capture timing and outcome
@@ -1276,6 +1281,7 @@ class CallHandler:
             # Always remove the pending-cancel intent at end of life so the
             # dict never grows unboundedly under abnormal terminations.
             self.pending_cancels.pop(call_sid, None)
+            self.call_usage_trackers.pop(call_sid, None)
 
     def is_pipeline_active(self, call_sid: str) -> bool:
         """Task #96: True iff a pipeline for ``call_sid`` is still registered
@@ -1746,6 +1752,10 @@ You have access to the following Q&A knowledge base. Use this information to ans
             _cap_transcript = transcript if transcript else None
             _cap_duration = duration_seconds
             _cap_tools = tools_used
+            _usage_tracker = self.call_usage_trackers.get(call_sid)
+            _cap_prompt_tokens = _usage_tracker.total_prompt_tokens if _usage_tracker else None
+            _cap_completion_tokens = _usage_tracker.total_completion_tokens if _usage_tracker else None
+            _cap_tts_chars = _usage_tracker.total_tts_chars if _usage_tracker else None
 
             # Task #96: before computing the terminal status, give any in-flight
             # mark_greeting_completed write a short window to land so the row's
@@ -1762,6 +1772,9 @@ You have access to the following Q&A knowledge base. Use this information to ans
                         transcript=_cap_transcript,
                         duration_seconds=_cap_duration,
                         tools_used=_cap_tools,
+                        llm_prompt_tokens=_cap_prompt_tokens,
+                        llm_completion_tokens=_cap_completion_tokens,
+                        tts_characters=_cap_tts_chars,
                     )
                 finally:
                     db.close()
