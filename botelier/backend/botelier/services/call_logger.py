@@ -488,11 +488,6 @@ class CallLogger:
                 call_log.llm_completion_tokens = llm_completion_tokens
             if tts_characters is not None:
                 call_log.tts_characters = tts_characters
-            if call_log.answered_at and call_log.ended_at:
-                call_log.stt_seconds = max(
-                    0.0,
-                    float((call_log.ended_at - call_log.answered_at).total_seconds()),
-                )
 
             # When the sweeper closes a call that never answered, the real call
             # duration is unknown — we must not fabricate it as (now - started_at).
@@ -566,6 +561,21 @@ class CallLogger:
             total_leg_duration = sum(leg.duration_seconds or 0 for leg in warm_legs)
             if total_leg_duration > 0:
                 call_log.duration_seconds = total_leg_duration
+
+            # Derive STT seconds after all duration resolution is complete so the
+            # fallback path sees the final resolved duration_seconds value.
+            # Primary: answered_at → ended_at (exact audio-stream window, same
+            # anchor used for Twilio media-stream billing).
+            # Fallback: use the resolved call duration when timestamps are absent
+            # (e.g. sweeper-closed calls that DID answer, or legacy rows missing
+            # ended_at).  Always overwrite — last finalization wins.
+            if call_log.answered_at and call_log.ended_at:
+                call_log.stt_seconds = max(
+                    0.0,
+                    float((call_log.ended_at - call_log.answered_at).total_seconds()),
+                )
+            elif call_log.duration_seconds is not None and call_log.duration_seconds >= 0:
+                call_log.stt_seconds = float(call_log.duration_seconds)
 
             # Write billing item for this call if one does not already exist.
             # Idempotent: skipped if complete_call is called more than once (e.g.
