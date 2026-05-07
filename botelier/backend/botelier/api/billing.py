@@ -103,7 +103,7 @@ def _config_rates(config: Optional[AccountBillingConfig]) -> dict:
 
 
 def _sms_conv_subq(db: Session, account_id):
-    return db.query(SMSConversation.id).filter(SMSConversation.account_id == account_id).subquery()
+    return db.query(SMSConversation.id).filter(SMSConversation.account_id == account_id).scalar_subquery()
 
 
 @router.get("/usage/summary")
