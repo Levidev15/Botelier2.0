@@ -379,7 +379,7 @@ async def get_account_detail(
         conv_subq = (
             db.query(SMSConversation.id)
             .filter(SMSConversation.account_id == account_id)
-            .subquery()
+            .scalar_subquery()
         )
         sms_in_count = (
             db.query(func.count(SMSMessage.id))
@@ -644,7 +644,7 @@ async def get_account_billing_timeseries(
         conv_subq = (
             db.query(SMSConversation.id)
             .filter(SMSConversation.account_id == account_id)
-            .subquery()
+            .scalar_subquery()
         )
         sms_trunc = func.date_trunc(bucket, SMSMessage.created_at)
         sms_rows = (
