@@ -34,6 +34,8 @@ _Populate as you build_
 - **Billing models:** `botelier/backend/botelier/models/billing.py` — `AccountBillingConfig`, `CallBillingItem`.
 - **Billing API (account):** `botelier/backend/botelier/api/billing.py` — `/api/billing/usage/summary|calls|timeseries`, `/api/billing/config`.
 - **Billing API (admin):** `botelier/backend/botelier/api/admin_billing.py` — `/api/admin/billing/accounts`, `/{id}/detail`, `/{id}/config`.
+- **Billing alert service:** `botelier/backend/botelier/services/billing_alert_service.py` — threshold check + email dispatch.
+- **Email service:** `botelier/backend/botelier/services/email_service.py` — SMTP delivery wrapper.
 
 ## Architecture decisions
 
@@ -55,6 +57,7 @@ _Populate as you build_
 - **SMS Management:** Comprehensive SMS handling including webhooks, conversations, analytics, AI handoff, and A2P 10DLC compliance.
 - **Feature Entitlement System:** Extensible system for managing subscription tier features and per-account overrides.
 - **Usage & Billing APIs:** Account-scoped usage summary, paginated call cost list, cost timeseries, and rate config read endpoint. Admin cross-account table, per-account detail, and rate config CRUD. Permissions: `usage.view`, `usage.export`, `billing_rates.view`, `billing_rates.manage`.
+- **Billing Threshold Alerts:** After each call completes, MTD spend is compared to `monthly_alert_threshold_usd`. When first crossed in a calendar month, an email is sent to platform admins and the account owner. Duplicate suppression is handled by the `account_billing_alerts` table (unique on `account_id + alert_year + alert_month`) using an atomic `INSERT ON CONFLICT DO NOTHING` — never stamped on the shared platform-default config row. The alert row is committed only after confirmed SMTP delivery; a failed send rolls the row back, enabling automatic retry on the next call. Email via `SMTP_HOST`/`SMTP_PORT`/`SMTP_USER`/`SMTP_PASSWORD`/`ALERT_EMAIL_FROM` env vars; silently skips if SMTP is unconfigured.
 
 ## User preferences
 - **Branding:** All customer-facing code should be branded as "Botelier"

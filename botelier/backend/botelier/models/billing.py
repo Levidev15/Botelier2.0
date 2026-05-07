@@ -10,7 +10,7 @@ the config row that was current at call-end, so rate edits never mutate past cos
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, Numeric, String
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -22,6 +22,10 @@ class AccountBillingConfig(Base):
 
     The active rate for an account is the row with the latest effective_from
     that is <= now(). A platform default row exists with account_id = NULL.
+
+    last_threshold_alert_at — records the most recent time a billing threshold
+    crossing email was dispatched for this account. Compared against the current
+    calendar month so each crossing fires at most once per month.
     """
 
     __tablename__ = "account_billing_config"
@@ -41,6 +45,12 @@ class AccountBillingConfig(Base):
     sms_outbound_rate_usd = Column(Numeric(10, 6), nullable=False, default=0.01)
 
     monthly_alert_threshold_usd = Column(Numeric(10, 2), nullable=True)
+
+    # NOTE: last_threshold_alert_at is retained for schema compatibility but is
+    # NOT used for deduplication.  The authoritative dedup source is the
+    # account_billing_alerts table (unique on account_id + alert_year +
+    # alert_month), which gives per-account isolation and atomic race safety.
+    last_threshold_alert_at = Column(DateTime, nullable=True)
 
     effective_from = Column(DateTime, nullable=False, default=datetime.utcnow)
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
@@ -62,11 +72,51 @@ class AccountBillingConfig(Base):
             "monthly_alert_threshold_usd": float(self.monthly_alert_threshold_usd)
             if self.monthly_alert_threshold_usd is not None
             else None,
+            "last_threshold_alert_at": self.last_threshold_alert_at.isoformat() + "Z"
+            if self.last_threshold_alert_at
+            else None,
             "effective_from": self.effective_from.isoformat() + "Z"
             if self.effective_from
             else None,
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
         }
+
+
+class AccountBillingAlert(Base):
+    """Per-account, per-calendar-month billing threshold alert record.
+
+    One row is inserted (atomically, ON CONFLICT DO NOTHING) the first time an
+    account's MTD spend crosses its configured alert threshold in a given month.
+    The unique constraint on (account_id, alert_year, alert_month) makes the
+    INSERT the race-safe deduplication primitive — no two workers can both claim
+    the slot. The row is only committed after confirmed email delivery, so a
+    failed send leaves no row and the next call completion can retry.
+    """
+
+    __tablename__ = "account_billing_alerts"
+    __table_args__ = (
+        UniqueConstraint("account_id", "alert_year", "alert_month", name="uq_billing_alert_account_month"),
+    )
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    account_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+
+    alert_year = Column(Integer, nullable=False)
+    alert_month = Column(Integer, nullable=False)
+    alerted_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    spend_usd = Column(Numeric(10, 4), nullable=True)
+    threshold_usd = Column(Numeric(10, 4), nullable=True)
+
+    account = relationship("Account", foreign_keys=[account_id])
+
+    def __repr__(self):
+        return f"<AccountBillingAlert account={self.account_id} {self.alert_year}-{self.alert_month:02d}>"
 
 
 class CallBillingItem(Base):

@@ -24,6 +24,7 @@ from ..models import CallLeg, CallLog, CallStatus, LegType, PhoneNumber
 from ..models.call_event import CallEvent
 from ..models.user import User
 from ..services.acw_service import run_acw_background
+from ..services.billing_alert_service import run_billing_alert_background
 from ..services.call_logger import CallLogger
 from ._twilio_auth import (
     get_call_auth_token,
@@ -736,6 +737,20 @@ def _maybe_enqueue_acw(call_sid: str, db: Session, background_tasks: BackgroundT
         background_tasks.add_task(run_acw_background, call_log.id)
 
 
+def _maybe_enqueue_billing_alert(call_sid: str, db: Session, background_tasks: BackgroundTasks):
+    """Enqueue a billing threshold check for the account that owns this call.
+
+    Runs as a background task so a slow DB query or email delivery cannot add
+    latency to the Twilio webhook response path. The check itself is idempotent
+    and suppresses duplicate alerts within the same calendar month.
+    """
+    call_log = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
+    if not call_log or not call_log.account_id:
+        return
+    logger.debug(f"Enqueueing billing alert check for account {call_log.account_id}")
+    background_tasks.add_task(run_billing_alert_background, call_log.account_id)
+
+
 @router.post("/connect-complete")
 @router.get("/connect-complete")
 async def connect_complete(
@@ -785,6 +800,7 @@ async def connect_complete(
                 call_logger.complete_cold_transfer(call_sid)
                 logger.info(f"Cold transfer call {call_sid} finalized at connect-complete")
                 _maybe_enqueue_acw(call_sid, db, background_tasks)
+                _maybe_enqueue_billing_alert(call_sid, db, background_tasks)
             else:
                 # Warm transfer: Twilio is still bridging. Keep call alive and wait
                 # for /transfer-status callbacks to arrive with the final duration.
@@ -828,6 +844,7 @@ async def connect_complete(
             )
 
         _maybe_enqueue_acw(call_sid, db, background_tasks)
+        _maybe_enqueue_billing_alert(call_sid, db, background_tasks)
 
         hangup_twiml = """<?xml version="1.0" encoding="UTF-8"?>
 <Response>
@@ -949,6 +966,7 @@ async def transfer_status_callback(
                     f"Transfer leg {call_sid} ended ({call_status}) — enqueueing ACW for parent call {parent_call_sid}"
                 )
                 _maybe_enqueue_acw(parent_call_sid, db, background_tasks)
+                _maybe_enqueue_billing_alert(parent_call_sid, db, background_tasks)
 
         return {"status": "received"}
 

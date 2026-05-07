@@ -417,6 +417,25 @@ SET duration_seconds = 0
 WHERE answered_at IS NULL
   AND duration_seconds > 7200
   AND status IN ('completed', 'ended_early')""",
+    # Task #162 — Billing threshold alert tracking.
+    # last_threshold_alert_at records when the most recent threshold-crossing
+    # email was sent for this account. The alert service uses it to suppress
+    # duplicate alerts within the same calendar month.
+    "ALTER TABLE account_billing_config ADD COLUMN IF NOT EXISTS last_threshold_alert_at TIMESTAMP",
+    # Task #162 (fix) — Dedicated per-account, per-month alert table.
+    # Replaces stamping on the shared platform-default config row.
+    # Unique constraint on (account_id, alert_year, alert_month) enables
+    # atomic INSERT ON CONFLICT DO NOTHING for race-safe deduplication.
+    """CREATE TABLE IF NOT EXISTS account_billing_alerts (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        alert_year INTEGER NOT NULL,
+        alert_month INTEGER NOT NULL,
+        alerted_at TIMESTAMP NOT NULL,
+        spend_usd NUMERIC(10,4),
+        threshold_usd NUMERIC(10,4),
+        UNIQUE(account_id, alert_year, alert_month)
+    )""",
 ]
 
 
