@@ -21,7 +21,12 @@ import {
   ExternalLink,
   ChevronDown,
   ChevronUp,
+  ChevronRight,
   Zap,
+  DollarSign,
+  RefreshCw,
+  Eye,
+  EyeOff,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
@@ -65,6 +70,61 @@ interface AccountFeaturesData {
   catalog: Record<string, FeatureMeta>;
 }
 
+interface BillingItem {
+  item_type: string;
+  destination: string | null;
+  leg_type: string | null;
+  quantity_minutes: number;
+  cost_usd: number;
+  leg_duration_seconds: number | null;
+}
+
+interface CallRow {
+  call_log_id: string;
+  reference_id: string | null;
+  started_at: string | null;
+  direction: string;
+  caller_number: string | null;
+  assistant_name: string | null;
+  duration_seconds: number;
+  billable_inbound_minutes: number;
+  inbound_cost_usd: number;
+  total_cost_usd: number;
+  internal_cost_usd: number;
+  has_transfers: boolean;
+  billing_items: BillingItem[];
+}
+
+interface BillingDetail {
+  account_id: string;
+  account_name: string;
+  period_start: string;
+  period_end: string;
+  mtd_total_usd: number;
+  alert_threshold_usd: number | null;
+  calls: {
+    items: CallRow[];
+    total: number;
+    page: number;
+    per_page: number;
+    pages: number;
+  };
+}
+
+type BillingPeriod = "mtd" | "7d" | "30d";
+
+const PERIOD_LABELS: Record<BillingPeriod, string> = {
+  mtd: "Month to Date",
+  "7d": "Last 7 Days",
+  "30d": "Last 30 Days",
+};
+
+function fmtDuration(secs: number): string {
+  const m = Math.floor(secs / 60);
+  const s = secs % 60;
+  return `${m}:${String(s).padStart(2, "0")}`;
+}
+
 export default function AccountDetailPage() {
   const { token, user, loading: authLoading, authFetch } = useAuthToken();
   const router = useRouter();
@@ -86,6 +146,15 @@ export default function AccountDetailPage() {
   const [showTwilioUpdateForm, setShowTwilioUpdateForm] = useState(false);
   const [twilioUpdateForm, setTwilioUpdateForm] = useState({ sid: "", token: "" });
   const [savingTwilio, setSavingTwilio] = useState(false);
+
+  const [billingDetail, setBillingDetail] = useState<BillingDetail | null>(null);
+  const [billingLoading, setBillingLoading] = useState(false);
+  const [billingError, setBillingError] = useState<string | null>(null);
+  const [billingPeriod, setBillingPeriod] = useState<BillingPeriod>("mtd");
+  const [billingPage, setBillingPage] = useState(1);
+  const [showCostCols, setShowCostCols] = useState(false);
+  const [expandedCalls, setExpandedCalls] = useState<Set<string>>(new Set());
+
   const [editForm, setEditForm] = useState({
     name: "",
     email: "",
@@ -110,8 +179,22 @@ export default function AccountDetailPage() {
 
     if (accountId) {
       fetchAccount();
+      fetchBillingDetail(billingPeriod, 1);
     }
   }, [token, user, authLoading, accountId]);
+
+  useEffect(() => {
+    if (!token || authLoading || !accountId) return;
+    setBillingPage(1);
+    setExpandedCalls(new Set());
+    fetchBillingDetail(billingPeriod, 1);
+  }, [billingPeriod]);
+
+  useEffect(() => {
+    if (!token || authLoading || !accountId) return;
+    setExpandedCalls(new Set());
+    fetchBillingDetail(billingPeriod, billingPage);
+  }, [billingPage]);
 
   const fetchAccount = async () => {
     try {
@@ -161,6 +244,35 @@ export default function AccountDetailPage() {
     if (next && !featuresData) {
       fetchFeatures();
     }
+  };
+
+  const fetchBillingDetail = async (period: BillingPeriod, page: number) => {
+    setBillingLoading(true);
+    setBillingError(null);
+    try {
+      const res = await authFetch(
+        `/api/admin/billing/accounts/${accountId}/detail?period=${period}&page=${page}&per_page=50`
+      );
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Failed to load call log");
+      }
+      const data: BillingDetail = await res.json();
+      setBillingDetail(data);
+    } catch (e: unknown) {
+      setBillingError(e instanceof Error ? e.message : "Failed to load call log");
+    } finally {
+      setBillingLoading(false);
+    }
+  };
+
+  const toggleCall = (id: string) => {
+    setExpandedCalls((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   };
 
   const handleFeatureToggle = async (slug: string, currentResolved: boolean) => {
@@ -802,6 +914,307 @@ export default function AccountDetailPage() {
               </button>
             </div>
           </div>
+        </div>
+      </div>
+
+      {/* ── Call Log with Billing Columns ── */}
+      <div className="mt-6 bg-[#111111] border border-[#222222] rounded-xl overflow-hidden">
+        {/* Section header */}
+        <div className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 border-b border-[#222222]">
+          <div className="flex items-center gap-2">
+            <DollarSign className="h-5 w-5 text-yellow-500" />
+            <h2 className="text-lg font-semibold text-white">Call Log</h2>
+            {billingDetail && (
+              <span className="text-xs text-gray-500">
+                {billingDetail.calls.total} calls
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-3 flex-wrap">
+            {/* Period picker */}
+            <div className="flex items-center gap-1 bg-[#0a0a0a] border border-[#222222] rounded-lg p-1">
+              {(["mtd", "7d", "30d"] as BillingPeriod[]).map((p) => (
+                <button
+                  key={p}
+                  onClick={() => setBillingPeriod(p)}
+                  className={`px-3 py-1 text-xs rounded-md transition-colors ${
+                    billingPeriod === p
+                      ? "bg-[#222222] text-white"
+                      : "text-gray-500 hover:text-gray-300"
+                  }`}
+                >
+                  {p === "mtd" ? "MTD" : p === "7d" ? "7 Days" : "30 Days"}
+                </button>
+              ))}
+            </div>
+            {/* Cost toggle */}
+            <button
+              onClick={() => setShowCostCols((v) => !v)}
+              className={`flex items-center gap-1.5 px-3 py-1.5 text-xs rounded-lg border transition-colors ${
+                showCostCols
+                  ? "bg-yellow-500/10 border-yellow-600/30 text-yellow-400"
+                  : "bg-[#1a1a1a] border-[#333333] text-gray-400 hover:text-gray-200"
+              }`}
+            >
+              {showCostCols ? (
+                <EyeOff className="h-3.5 w-3.5" />
+              ) : (
+                <Eye className="h-3.5 w-3.5" />
+              )}
+              {showCostCols ? "Hide Costs" : "Show Costs"}
+            </button>
+            {/* Refresh */}
+            <button
+              onClick={() => fetchBillingDetail(billingPeriod, billingPage)}
+              disabled={billingLoading}
+              className="p-1.5 text-gray-500 hover:text-gray-300 transition-colors disabled:opacity-40"
+              title="Refresh"
+            >
+              <RefreshCw className={`h-4 w-4 ${billingLoading ? "animate-spin" : ""}`} />
+            </button>
+          </div>
+        </div>
+
+        {/* Content */}
+        <div className="px-6 py-4">
+          {billingError && (
+            <div className="flex items-center gap-3 py-6 text-red-400 text-sm">
+              <AlertTriangle className="h-4 w-4 flex-shrink-0" />
+              {billingError}
+            </div>
+          )}
+
+          {billingLoading && !billingDetail && (
+            <div className="flex items-center gap-2 py-8 text-gray-500 text-sm justify-center">
+              <Loader2 className="h-4 w-4 animate-spin" />
+              Loading call log…
+            </div>
+          )}
+
+          {billingDetail && !billingError && (
+            <>
+              {/* MTD total summary strip (only when cost cols visible) */}
+              {showCostCols && (
+                <div className="flex items-center gap-6 mb-4 px-3 py-2.5 bg-yellow-500/5 border border-yellow-600/20 rounded-lg text-xs">
+                  <span className="text-gray-500">
+                    {PERIOD_LABELS[billingPeriod]} total:
+                  </span>
+                  <span className="text-yellow-300 font-semibold">
+                    ${billingDetail.mtd_total_usd.toFixed(4)} billable
+                  </span>
+                  {billingDetail.alert_threshold_usd !== null && (
+                    <span
+                      className={`${
+                        billingDetail.mtd_total_usd >= billingDetail.alert_threshold_usd
+                          ? "text-yellow-400"
+                          : "text-gray-500"
+                      }`}
+                    >
+                      threshold: ${billingDetail.alert_threshold_usd.toFixed(2)}
+                    </span>
+                  )}
+                </div>
+              )}
+
+              {billingDetail.calls.items.length === 0 ? (
+                <p className="text-center text-gray-500 text-sm py-8">
+                  No calls in this period.
+                </p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full text-sm">
+                    <thead>
+                      <tr className="border-b border-[#222222]">
+                        <th className="py-2 pr-3 text-left text-xs text-gray-500 font-medium whitespace-nowrap">
+                          Time
+                        </th>
+                        <th className="py-2 pr-3 text-left text-xs text-gray-500 font-medium">
+                          Dir
+                        </th>
+                        <th className="py-2 pr-3 text-left text-xs text-gray-500 font-medium">
+                          Caller
+                        </th>
+                        <th className="py-2 pr-3 text-left text-xs text-gray-500 font-medium">
+                          Assistant
+                        </th>
+                        <th className="py-2 pr-3 text-right text-xs text-gray-500 font-medium">
+                          Dur
+                        </th>
+                        {showCostCols && (
+                          <>
+                            <th className="py-2 pr-3 text-right text-xs text-gray-500 font-medium">
+                              Mins
+                            </th>
+                            <th className="py-2 pr-3 text-right text-xs text-gray-500 font-medium">
+                              Billable
+                            </th>
+                            <th className="py-2 pr-3 text-right text-xs text-yellow-600 font-medium">
+                              Internal
+                            </th>
+                          </>
+                        )}
+                        <th className="py-2 text-center text-xs text-gray-500 font-medium">
+                          Xfer
+                        </th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-[#1a1a1a]">
+                      {billingDetail.calls.items.flatMap((call) => {
+                        const isExpanded = expandedCalls.has(call.call_log_id);
+                        const transferItems = call.billing_items.filter(
+                          (i) => i.item_type === "outbound_transfer"
+                        );
+                        const colSpanBase = showCostCols ? 8 : 5;
+
+                        const mainRow = (
+                          <tr
+                            key={`main-${call.call_log_id}`}
+                            className="hover:bg-[#0a0a0a] transition-colors"
+                          >
+                            <td className="py-2 pr-3 text-gray-400 text-xs whitespace-nowrap">
+                              {call.started_at
+                                ? new Date(call.started_at).toLocaleString()
+                                : "—"}
+                            </td>
+                            <td className="py-2 pr-3 text-xs">
+                              <span
+                                className={`inline-flex px-1.5 py-0.5 rounded text-xs font-medium ${
+                                  call.direction === "inbound"
+                                    ? "bg-blue-600/20 text-blue-400"
+                                    : "bg-purple-600/20 text-purple-400"
+                                }`}
+                              >
+                                {call.direction === "inbound" ? "In" : "Out"}
+                              </span>
+                            </td>
+                            <td className="py-2 pr-3 text-gray-300 font-mono text-xs">
+                              {call.caller_number ?? "—"}
+                            </td>
+                            <td className="py-2 pr-3 text-gray-400 text-xs max-w-[100px] truncate">
+                              {call.assistant_name ?? "—"}
+                            </td>
+                            <td className="py-2 pr-3 text-right text-gray-400 text-xs whitespace-nowrap">
+                              {fmtDuration(call.duration_seconds)}
+                            </td>
+                            {showCostCols && (
+                              <>
+                                <td className="py-2 pr-3 text-right text-gray-300 text-xs">
+                                  {call.billable_inbound_minutes}
+                                </td>
+                                <td className="py-2 pr-3 text-right text-gray-300 text-xs">
+                                  ${call.total_cost_usd.toFixed(4)}
+                                </td>
+                                <td className="py-2 pr-3 text-right text-yellow-500 text-xs">
+                                  ${call.internal_cost_usd.toFixed(4)}
+                                </td>
+                              </>
+                            )}
+                            <td className="py-2 text-center text-xs">
+                              {call.has_transfers ? (
+                                <button
+                                  onClick={() => toggleCall(call.call_log_id)}
+                                  className="inline-flex items-center gap-0.5 text-blue-400 hover:text-blue-300"
+                                >
+                                  {isExpanded ? (
+                                    <ChevronDown className="h-3 w-3" />
+                                  ) : (
+                                    <ChevronRight className="h-3 w-3" />
+                                  )}
+                                  {transferItems.length}
+                                </button>
+                              ) : (
+                                <span className="text-gray-700">—</span>
+                              )}
+                            </td>
+                          </tr>
+                        );
+
+                        if (!isExpanded || transferItems.length === 0) {
+                          return [mainRow];
+                        }
+
+                        const subRows = transferItems.map((item, idx) => (
+                          <tr
+                            key={`leg-${call.call_log_id}-${idx}`}
+                            className="bg-[#0a0a0a]"
+                          >
+                            {/* spans Time + Dir + Caller + Assistant + Dur */}
+                            <td
+                              colSpan={showCostCols ? 5 : 5}
+                              className="py-1.5 pl-6 pr-3 text-xs text-gray-500"
+                            >
+                              <span className="text-gray-600 mr-2">↳</span>
+                              {item.destination ?? "Transfer"}
+                              {item.leg_type && (
+                                <span className="ml-2 text-gray-600">
+                                  ({item.leg_type})
+                                </span>
+                              )}
+                            </td>
+                            {showCostCols && (
+                              <>
+                                {/* Mins */}
+                                <td className="py-1.5 pr-3 text-right text-xs text-gray-500">
+                                  {item.quantity_minutes}
+                                </td>
+                                {/* Billable (transfer cost) */}
+                                <td className="py-1.5 pr-3 text-right text-xs text-gray-500">
+                                  ${item.cost_usd.toFixed(4)}
+                                </td>
+                                {/* Internal — not tracked per-transfer */}
+                                <td className="py-1.5 pr-3 text-right text-xs text-gray-700">
+                                  —
+                                </td>
+                              </>
+                            )}
+                            {/* Xfer */}
+                            <td className="py-1.5 text-center text-xs text-gray-700">
+                              —
+                            </td>
+                          </tr>
+                        ));
+
+                        return [mainRow, ...subRows];
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Pagination */}
+              {billingDetail.calls.pages > 1 && (
+                <div className="flex items-center justify-between mt-4 pt-4 border-t border-[#222222]">
+                  <span className="text-xs text-gray-500">
+                    Page {billingDetail.calls.page} of {billingDetail.calls.pages} ·{" "}
+                    {billingDetail.calls.total} total calls
+                  </span>
+                  <div className="flex items-center gap-2">
+                    <button
+                      onClick={() => setBillingPage((p) => Math.max(1, p - 1))}
+                      disabled={billingDetail.calls.page <= 1 || billingLoading}
+                      className="px-3 py-1.5 text-xs bg-[#1a1a1a] hover:bg-[#222222] text-gray-300 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    >
+                      Previous
+                    </button>
+                    <button
+                      onClick={() =>
+                        setBillingPage((p) =>
+                          Math.min(billingDetail.calls.pages, p + 1)
+                        )
+                      }
+                      disabled={
+                        billingDetail.calls.page >= billingDetail.calls.pages ||
+                        billingLoading
+                      }
+                      className="px-3 py-1.5 text-xs bg-[#1a1a1a] hover:bg-[#222222] text-gray-300 rounded-lg disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    >
+                      Next
+                    </button>
+                  </div>
+                </div>
+              )}
+            </>
+          )}
         </div>
       </div>
 
