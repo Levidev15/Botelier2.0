@@ -519,6 +519,7 @@ class FunctionMapper:
                                             self.call_sid,
                                             llm_context,
                                             extra_messages=extra if extra else None,
+                                            skip_billing=True,
                                         )
                                         logger.info(
                                             f"📝 Saved transcript before transfer for call {self.call_sid}"

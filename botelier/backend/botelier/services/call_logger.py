@@ -66,6 +66,121 @@ class CallLogger:
             .first()
         )
 
+    def _upsert_inbound_billing(self, call_log, duration_seconds: Optional[int]) -> None:
+        """Create or correct the inbound_call billing item using an authoritative duration.
+
+        Called from complete_call() for the initial write and again from update_status()
+        once Twilio's authoritative CallDuration arrives.  If the billing item already
+        exists but quantity_minutes differs from ceil(duration_seconds / 60) the item is
+        updated in-place so the minutes always match Twilio's measured billable duration.
+
+        No-op when account_id is None or duration_seconds is None.
+        The caller is responsible for committing the session.
+        """
+        if call_log.account_id is None or duration_seconds is None:
+            return
+        duration_secs = max(0, duration_seconds)
+        quantity_minutes = math.ceil(duration_secs / 60) if duration_secs > 0 else 0
+        config = self._get_effective_billing_config(call_log.account_id)
+        rate = float(config.inbound_rate_usd) if config else 0.05
+        config_id = config.id if config else None
+        cost = round(quantity_minutes * rate, 6)
+
+        existing = (
+            self.db.query(CallBillingItem)
+            .filter(
+                CallBillingItem.call_log_id == call_log.id,
+                CallBillingItem.item_type == "inbound_call",
+            )
+            .first()
+        )
+        if existing is None:
+            self.db.add(
+                CallBillingItem(
+                    call_log_id=call_log.id,
+                    account_id=call_log.account_id,
+                    item_type="inbound_call",
+                    quantity_minutes=quantity_minutes,
+                    rate_per_unit_usd=rate,
+                    cost_usd=cost,
+                    billing_config_id=config_id,
+                )
+            )
+            logger.debug(
+                f"Billing item created: {quantity_minutes} min × ${rate}/min = ${cost} "
+                f"for call {call_log.call_sid}"
+            )
+        elif existing.quantity_minutes != quantity_minutes:
+            old_mins = existing.quantity_minutes
+            existing.quantity_minutes = quantity_minutes
+            existing.cost_usd = cost
+            logger.debug(
+                f"Billing item corrected: {old_mins} → {quantity_minutes} min × ${rate}/min = ${cost} "
+                f"for call {call_log.call_sid} (Twilio authoritative duration)"
+            )
+
+    def _write_transfer_billing(self, call_log, leg) -> None:
+        """Write an outbound_transfer billing item for a completed warm transfer leg.
+
+        Idempotent: counts existing outbound_transfer items for this call against the
+        number of completed transfer legs with a billable duration, and creates at most
+        one new item per invocation.  Cold transfer legs (duration unknown) are skipped.
+        The caller is responsible for committing the session.
+        """
+        if call_log.account_id is None:
+            return
+        if not leg.duration_seconds or leg.duration_seconds <= 0:
+            return
+
+        all_legs = (
+            self.db.query(CallLeg).filter(CallLeg.call_log_id == call_log.id).all()
+        )
+        billable_legs = [
+            l
+            for l in all_legs
+            if l.leg_type in (LegType.TRANSFER_EXTERNAL.value, LegType.TRANSFER_SIP.value)
+            and l.duration_seconds is not None
+            and l.duration_seconds > 0
+        ]
+
+        existing_count = (
+            self.db.query(CallBillingItem)
+            .filter(
+                CallBillingItem.call_log_id == call_log.id,
+                CallBillingItem.item_type == "outbound_transfer",
+            )
+            .count()
+        )
+
+        if existing_count >= len(billable_legs):
+            logger.debug(
+                f"Transfer billing already complete ({existing_count} items) "
+                f"for call {call_log.call_sid}"
+            )
+            return
+
+        quantity_minutes = math.ceil(leg.duration_seconds / 60)
+        config = self._get_effective_billing_config(call_log.account_id)
+        rate = float(config.outbound_rate_usd) if config else 0.08
+        config_id = config.id if config else None
+        cost = round(quantity_minutes * rate, 6)
+
+        self.db.add(
+            CallBillingItem(
+                call_log_id=call_log.id,
+                account_id=call_log.account_id,
+                item_type="outbound_transfer",
+                quantity_minutes=quantity_minutes,
+                rate_per_unit_usd=rate,
+                cost_usd=cost,
+                billing_config_id=config_id,
+            )
+        )
+        logger.debug(
+            f"Transfer billing item: {quantity_minutes} min × ${rate}/min = ${cost} "
+            f"(leg {leg.duration_seconds}s) for call {call_log.call_sid}"
+        )
+
     def get_call_log(self, call_sid: str) -> Optional[CallLog]:
         """Get a call log by call SID."""
         return self.db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
@@ -206,6 +321,15 @@ class CallLogger:
                         call_log.duration_seconds = int(
                             (call_log.ended_at - call_log.started_at).total_seconds()
                         )
+
+                    # Correct the billing item using Twilio's authoritative
+                    # CallDuration.  complete_call() may have written a provisional
+                    # item from an internal timestamp; this upsert fixes quantity_minutes
+                    # to ceil(Twilio CallDuration / 60), which is what Twilio charges.
+                    # Only for non-transfer calls — transfer calls get their billing
+                    # corrected in update_leg_status() once the transfer leg ends.
+                    if duration_seconds is not None:
+                        self._upsert_inbound_billing(call_log, duration_seconds)
 
             ai_leg = (
                 self.db.query(CallLeg)
@@ -351,6 +475,7 @@ class CallLogger:
         llm_prompt_tokens: Optional[int] = None,
         llm_completion_tokens: Optional[int] = None,
         tts_characters: Optional[int] = None,
+        skip_billing: bool = False,
     ) -> bool:
         """Mark a call as completed and save transcript.
 
@@ -577,41 +702,14 @@ class CallLogger:
             elif call_log.duration_seconds is not None and call_log.duration_seconds >= 0:
                 call_log.stt_seconds = float(call_log.duration_seconds)
 
-            # Write billing item for this call if one does not already exist.
-            # Idempotent: skipped if complete_call is called more than once (e.g.
-            # sweeper or safety-net re-entry on an already-terminal row).
-            if call_log.account_id is not None:
-                already_billed = (
-                    self.db.query(CallBillingItem.id)
-                    .filter(
-                        CallBillingItem.call_log_id == call_log.id,
-                        CallBillingItem.item_type == "inbound_call",
-                    )
-                    .first()
-                    is not None
-                )
-                if not already_billed:
-                    duration_secs = call_log.duration_seconds or 0
-                    quantity_minutes = math.ceil(duration_secs / 60) if duration_secs > 0 else 0
-                    config = self._get_effective_billing_config(call_log.account_id)
-                    rate = float(config.inbound_rate_usd) if config else 0.05
-                    config_id = config.id if config else None
-                    cost = round(quantity_minutes * rate, 6)
-                    self.db.add(
-                        CallBillingItem(
-                            call_log_id=call_log.id,
-                            account_id=call_log.account_id,
-                            item_type="inbound_call",
-                            quantity_minutes=quantity_minutes,
-                            rate_per_unit_usd=rate,
-                            cost_usd=cost,
-                            billing_config_id=config_id,
-                        )
-                    )
-                    logger.debug(
-                        f"Billing item: {quantity_minutes} min × ${rate}/min = ${cost} "
-                        f"for call {call_sid}"
-                    )
+            # Write (or correct) the inbound billing item unless this call-site
+            # fires mid-call (skip_billing=True), which happens when the transfer
+            # path saves the transcript before the call has truly ended.  The
+            # authoritative write is deferred to update_status() where Twilio's
+            # CallDuration is available, ensuring quantity_minutes = ceil(Twilio
+            # CallDuration / 60) rather than an internal timestamp estimate.
+            if not skip_billing:
+                self._upsert_inbound_billing(call_log, call_log.duration_seconds)
 
             # Task #123 — observability events for safety-net finalizations.
             #
@@ -1094,6 +1192,13 @@ class CallLogger:
                             call_log.duration_seconds = int(
                                 (call_log.ended_at - call_log.started_at).total_seconds()
                             )
+
+                        # Write outbound_transfer billing item now that we have
+                        # the authoritative leg duration from Twilio.  Also correct
+                        # the inbound_call item using the newly resolved total
+                        # duration so both items stay consistent.
+                        self._write_transfer_billing(call_log, leg)
+                        self._upsert_inbound_billing(call_log, call_log.duration_seconds)
 
             self.db.commit()
             logger.info(

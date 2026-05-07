@@ -1695,7 +1695,11 @@ You have access to the following Q&A knowledge base. Use this information to ans
             return False
 
     async def _save_call_transcript(
-        self, call_sid: str, llm_context: Any | None, extra_messages: list | None = None
+        self,
+        call_sid: str,
+        llm_context: Any | None,
+        extra_messages: list | None = None,
+        skip_billing: bool = False,
     ):
         """Save call transcript to database.
 
@@ -1762,6 +1766,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
             _cap_transcript = transcript if transcript else None
             _cap_duration = duration_seconds
             _cap_tools = tools_used
+            _cap_skip_billing = skip_billing
 
             # Task #96: before computing the terminal status, give any in-flight
             # mark_greeting_completed write a short window to land so the row's
@@ -1781,6 +1786,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
                         llm_prompt_tokens=_cap_prompt_tokens,
                         llm_completion_tokens=_cap_completion_tokens,
                         tts_characters=_cap_tts_chars,
+                        skip_billing=_cap_skip_billing,
                     )
                 finally:
                     db.close()
