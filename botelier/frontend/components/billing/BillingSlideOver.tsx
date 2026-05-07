@@ -466,7 +466,7 @@ export default function BillingSlideOver({
                     amber
                   />
                   <StatCard
-                    label="Twilio Call Cost"
+                    label="Twilio Minutes Cost"
                     value={fmt$(detail.summary.twilio_call_cost_usd)}
                     sub="Inbound + outbound minutes"
                     amber

@@ -1735,8 +1735,18 @@ You have access to the following Q&A knowledge base. Use this information to ans
                 tools_used = []
                 logger.warning(f"No LLM context available for call {call_sid}")
 
-            if not transcript and not tools_used:
-                logger.warning(f"No transcript messages or tools found for call {call_sid}")
+            # ── Capture usage tracker values before the early-return guard ──────────
+            # Must happen here so that calls with no transcript but with real LLM/TTS
+            # usage (e.g. AI greeted but caller hung up before any user turn) still
+            # persist their token/character counts via complete_call().
+            _usage_tracker = self.call_usage_trackers.get(call_sid)
+            _cap_prompt_tokens = _usage_tracker.total_prompt_tokens if _usage_tracker else None
+            _cap_completion_tokens = _usage_tracker.total_completion_tokens if _usage_tracker else None
+            _cap_tts_chars = _usage_tracker.total_tts_chars if _usage_tracker else None
+            _has_usage = bool(_cap_prompt_tokens or _cap_completion_tokens or _cap_tts_chars)
+
+            if not transcript and not tools_used and not _has_usage:
+                logger.warning(f"No transcript messages, tools, or usage metrics found for call {call_sid}")
                 return
 
             # Datetime arithmetic — no I/O, safe on event loop
@@ -1745,17 +1755,13 @@ You have access to the following Q&A knowledge base. Use this information to ans
                 start_time = self.call_start_times[call_sid]
                 duration_seconds = max(0, int((datetime.utcnow() - start_time).total_seconds()))
 
-            # ── Capture plain values before thread boundary ───────────────────────
+            # ── Capture remaining plain values before thread boundary ─────────────
             # transcript is a list of plain dicts; tools_used is a list of strings.
             # All other values are plain Python scalars.
             _cap_call_sid = call_sid
             _cap_transcript = transcript if transcript else None
             _cap_duration = duration_seconds
             _cap_tools = tools_used
-            _usage_tracker = self.call_usage_trackers.get(call_sid)
-            _cap_prompt_tokens = _usage_tracker.total_prompt_tokens if _usage_tracker else None
-            _cap_completion_tokens = _usage_tracker.total_completion_tokens if _usage_tracker else None
-            _cap_tts_chars = _usage_tracker.total_tts_chars if _usage_tracker else None
 
             # Task #96: before computing the terminal status, give any in-flight
             # mark_greeting_completed write a short window to land so the row's
