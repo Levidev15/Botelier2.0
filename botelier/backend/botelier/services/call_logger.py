@@ -4,6 +4,7 @@ This service handles all call log updates to avoid code duplication
 across webhooks, WebSocket handlers, and other components.
 """
 
+import math
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -12,6 +13,7 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from ..models import CallLeg, CallLog, CallOutcome, CallStatus, LegType
+from ..models.billing import AccountBillingConfig, CallBillingItem
 from ..models.call_event import CallEvent
 
 # Vocabulary for forced-finalization sources. Kept aligned with Task #96.
@@ -39,6 +41,30 @@ class CallLogger:
     def __init__(self, db: Session):
         """Initialize with database session."""
         self.db = db
+
+    def _get_effective_billing_config(self, account_id) -> Optional[AccountBillingConfig]:
+        """Return the active billing config for an account, falling back to platform default."""
+        now = datetime.utcnow()
+        config = (
+            self.db.query(AccountBillingConfig)
+            .filter(
+                AccountBillingConfig.account_id == account_id,
+                AccountBillingConfig.effective_from <= now,
+            )
+            .order_by(AccountBillingConfig.effective_from.desc())
+            .first()
+        )
+        if config is not None:
+            return config
+        return (
+            self.db.query(AccountBillingConfig)
+            .filter(
+                AccountBillingConfig.account_id.is_(None),
+                AccountBillingConfig.effective_from <= now,
+            )
+            .order_by(AccountBillingConfig.effective_from.desc())
+            .first()
+        )
 
     def get_call_log(self, call_sid: str) -> Optional[CallLog]:
         """Get a call log by call SID."""
@@ -525,6 +551,42 @@ class CallLogger:
             total_leg_duration = sum(leg.duration_seconds or 0 for leg in warm_legs)
             if total_leg_duration > 0:
                 call_log.duration_seconds = total_leg_duration
+
+            # Write billing item for this call if one does not already exist.
+            # Idempotent: skipped if complete_call is called more than once (e.g.
+            # sweeper or safety-net re-entry on an already-terminal row).
+            if call_log.account_id is not None:
+                already_billed = (
+                    self.db.query(CallBillingItem.id)
+                    .filter(
+                        CallBillingItem.call_log_id == call_log.id,
+                        CallBillingItem.item_type == "inbound_call",
+                    )
+                    .first()
+                    is not None
+                )
+                if not already_billed:
+                    duration_secs = call_log.duration_seconds or 0
+                    quantity_minutes = math.ceil(duration_secs / 60) if duration_secs > 0 else 0
+                    config = self._get_effective_billing_config(call_log.account_id)
+                    rate = float(config.inbound_rate_usd) if config else 0.05
+                    config_id = config.id if config else None
+                    cost = round(quantity_minutes * rate, 6)
+                    self.db.add(
+                        CallBillingItem(
+                            call_log_id=call_log.id,
+                            account_id=call_log.account_id,
+                            item_type="inbound_call",
+                            quantity_minutes=quantity_minutes,
+                            rate_per_unit_usd=rate,
+                            cost_usd=cost,
+                            billing_config_id=config_id,
+                        )
+                    )
+                    logger.debug(
+                        f"Billing item: {quantity_minutes} min × ${rate}/min = ${cost} "
+                        f"for call {call_sid}"
+                    )
 
             # Task #123 — observability events for safety-net finalizations.
             #
