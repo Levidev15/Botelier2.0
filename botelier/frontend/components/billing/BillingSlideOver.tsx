@@ -468,13 +468,13 @@ export default function BillingSlideOver({
                   <StatCard
                     label="Twilio Minutes Cost"
                     value={fmt$(detail.summary.twilio_call_cost_usd)}
-                    sub="Inbound + outbound minutes"
+                    sub={`${detail.summary.inbound_minutes.toLocaleString()} in · ${detail.summary.outbound_minutes.toLocaleString()} out (mins)`}
                     amber
                   />
                   <StatCard
                     label="Twilio SMS Cost"
                     value={fmt$(detail.summary.twilio_sms_cost_usd)}
-                    sub="Inbound + outbound messages"
+                    sub={`${detail.summary.sms_inbound_count.toLocaleString()} in · ${detail.summary.sms_outbound_count.toLocaleString()} out (msgs)`}
                     amber
                   />
                   <StatCard
