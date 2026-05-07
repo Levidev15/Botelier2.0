@@ -436,6 +436,29 @@ WHERE answered_at IS NULL
         threshold_usd NUMERIC(10,4),
         UNIQUE(account_id, alert_year, alert_month)
     )""",
+    # Task #176 — Platform internal cost rates configurable via DB.
+    # Operator-editable wholesale rates for LLM, TTS, STT, and Twilio.
+    # Append-only: new row per change preserves a full audit trail of rate
+    # changes.  The effective row for cost calculations is the most recent
+    # with effective_from <= now(). No rows → backend falls back to hardcoded
+    # compile-time defaults so a fresh deployment works without seeding.
+    # NOTE: admin report queries always use the currently-effective row; they
+    # do not pin per-call rates at call time (that requires follow-up #178).
+    """CREATE TABLE IF NOT EXISTS platform_internal_rates (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        llm_prompt_rate_per_1k NUMERIC(12,8) NOT NULL,
+        llm_completion_rate_per_1k NUMERIC(12,8) NOT NULL,
+        tts_rate_per_1k_chars NUMERIC(12,8) NOT NULL,
+        stt_rate_per_second NUMERIC(12,8) NOT NULL,
+        twilio_inbound_per_min NUMERIC(12,8) NOT NULL,
+        twilio_outbound_per_min NUMERIC(12,8) NOT NULL,
+        twilio_sms_in_rate NUMERIC(12,8) NOT NULL,
+        twilio_sms_out_rate NUMERIC(12,8) NOT NULL,
+        note VARCHAR(500),
+        effective_from TIMESTAMP NOT NULL DEFAULT NOW(),
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    )""",
+    "CREATE INDEX IF NOT EXISTS ix_platform_internal_rates_effective ON platform_internal_rates(effective_from DESC)",
 ]
 
 

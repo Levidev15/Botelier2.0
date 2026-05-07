@@ -22,27 +22,65 @@ from botelier.auth.middleware import get_platform_admin
 from botelier.database import get_db
 from botelier.models.account import Account
 from botelier.models.assistant import Assistant
-from botelier.models.billing import AccountBillingConfig, CallBillingItem
+from botelier.models.billing import AccountBillingConfig, CallBillingItem, PlatformInternalRates
 from botelier.models.call_log import CallLog
 from botelier.models.sms_conversation import MessageDirection, SMSConversation, SMSMessage
 from botelier.models.user import User
 
 router = APIRouter(prefix="/api/admin/billing", tags=["Admin — Billing"])
 
-# Internal platform rates for cost-of-goods (never exposed to tenants)
-_INTERNAL_LLM_RATE_PER_1K_PROMPT = 0.003
-_INTERNAL_LLM_RATE_PER_1K_COMPLETION = 0.006
-_INTERNAL_TTS_RATE_PER_1K_CHARS = 0.015
-_INTERNAL_STT_RATE_PER_SECOND = 0.0001
-_INTERNAL_TWILIO_INBOUND_PER_MIN = 0.0085
-_INTERNAL_TWILIO_OUTBOUND_PER_MIN = 0.013
-_INTERNAL_TWILIO_SMS_IN_RATE = 0.0075
-_INTERNAL_TWILIO_SMS_OUT_RATE = 0.0079
+# Compile-time fallback rates — used only when no row exists in
+# platform_internal_rates.  Update via PUT /api/admin/billing/platform-rates.
+_DEFAULT_LLM_PROMPT_RATE = 0.003
+_DEFAULT_LLM_COMPLETION_RATE = 0.006
+_DEFAULT_TTS_RATE = 0.015
+_DEFAULT_STT_RATE = 0.0001
+_DEFAULT_TWILIO_INBOUND_RATE = 0.0085
+_DEFAULT_TWILIO_OUTBOUND_RATE = 0.013
+_DEFAULT_TWILIO_SMS_IN_RATE = 0.0075
+_DEFAULT_TWILIO_SMS_OUT_RATE = 0.0079
 
 _DEFAULT_INBOUND_RATE = 0.05
 _DEFAULT_OUTBOUND_RATE = 0.08
 _DEFAULT_SMS_IN_RATE = 0.01
 _DEFAULT_SMS_OUT_RATE = 0.01
+
+
+def _get_internal_rates(db: Session) -> dict:
+    """Return the currently effective platform internal cost rates.
+
+    Reads the most recent row from platform_internal_rates with
+    effective_from <= now().  Falls back to compile-time constants when the
+    table is empty so a fresh deployment works without any DB seed.
+    """
+    now = datetime.utcnow()
+    row = (
+        db.query(PlatformInternalRates)
+        .filter(PlatformInternalRates.effective_from <= now)
+        .order_by(PlatformInternalRates.effective_from.desc())
+        .first()
+    )
+    if row is not None:
+        return {
+            "llm_prompt": float(row.llm_prompt_rate_per_1k),
+            "llm_completion": float(row.llm_completion_rate_per_1k),
+            "tts": float(row.tts_rate_per_1k_chars),
+            "stt": float(row.stt_rate_per_second),
+            "twilio_inbound": float(row.twilio_inbound_per_min),
+            "twilio_outbound": float(row.twilio_outbound_per_min),
+            "twilio_sms_in": float(row.twilio_sms_in_rate),
+            "twilio_sms_out": float(row.twilio_sms_out_rate),
+        }
+    return {
+        "llm_prompt": _DEFAULT_LLM_PROMPT_RATE,
+        "llm_completion": _DEFAULT_LLM_COMPLETION_RATE,
+        "tts": _DEFAULT_TTS_RATE,
+        "stt": _DEFAULT_STT_RATE,
+        "twilio_inbound": _DEFAULT_TWILIO_INBOUND_RATE,
+        "twilio_outbound": _DEFAULT_TWILIO_OUTBOUND_RATE,
+        "twilio_sms_in": _DEFAULT_TWILIO_SMS_IN_RATE,
+        "twilio_sms_out": _DEFAULT_TWILIO_SMS_OUT_RATE,
+    }
 
 
 def _resolve_period(
@@ -116,24 +154,30 @@ def _internal_cost(
     llm_completion_tokens: int,
     tts_characters: int,
     stt_seconds: float,
+    rates: dict,
     inbound_minutes: int = 0,
     outbound_minutes: int = 0,
     sms_in_count: int = 0,
     sms_out_count: int = 0,
 ) -> dict:
+    """Calculate internal cost breakdown using the provided rate dict.
+
+    `rates` must come from _get_internal_rates(db) so that values are always
+    read from the DB-backed config rather than from module-level constants.
+    """
     llm_cost = (
-        (llm_prompt_tokens / 1000) * _INTERNAL_LLM_RATE_PER_1K_PROMPT
-        + (llm_completion_tokens / 1000) * _INTERNAL_LLM_RATE_PER_1K_COMPLETION
+        (llm_prompt_tokens / 1000) * rates["llm_prompt"]
+        + (llm_completion_tokens / 1000) * rates["llm_completion"]
     )
-    tts_cost = (tts_characters / 1000) * _INTERNAL_TTS_RATE_PER_1K_CHARS
-    stt_cost = stt_seconds * _INTERNAL_STT_RATE_PER_SECOND
+    tts_cost = (tts_characters / 1000) * rates["tts"]
+    stt_cost = stt_seconds * rates["stt"]
     twilio_call_cost = (
-        inbound_minutes * _INTERNAL_TWILIO_INBOUND_PER_MIN
-        + outbound_minutes * _INTERNAL_TWILIO_OUTBOUND_PER_MIN
+        inbound_minutes * rates["twilio_inbound"]
+        + outbound_minutes * rates["twilio_outbound"]
     )
     twilio_sms_cost = (
-        sms_in_count * _INTERNAL_TWILIO_SMS_IN_RATE
-        + sms_out_count * _INTERNAL_TWILIO_SMS_OUT_RATE
+        sms_in_count * rates["twilio_sms_in"]
+        + sms_out_count * rates["twilio_sms_out"]
     )
     total = llm_cost + tts_cost + stt_cost + twilio_call_cost + twilio_sms_cost
     return {
@@ -284,6 +328,8 @@ async def list_account_usage(
             | set(account_map)
         )
 
+        internal_rates = _get_internal_rates(db)
+
         rows = []
         for acct_id in all_account_ids:
             config = _get_effective_config(db, acct_id)
@@ -304,6 +350,7 @@ async def list_account_usage(
                 _iraw["completion_tokens"],
                 _iraw["tts_chars"],
                 _iraw["stt_secs"],
+                rates=internal_rates,
                 inbound_minutes=inb["minutes"],
                 outbound_minutes=outb["minutes"],
                 sms_in_count=sms_in,
@@ -374,6 +421,7 @@ async def get_account_detail(
 
         config = _get_effective_config(db, account_id)
         rates = _config_rates(config)
+        internal_rates = _get_internal_rates(db)
 
         # Summary aggregates (same logic as /usage/summary)
         inbound_row = (
@@ -460,6 +508,7 @@ async def get_account_detail(
             int(ic_row.ct),
             int(ic_row.tts),
             float(ic_row.stt),
+            rates=internal_rates,
             inbound_minutes=int(inbound_row.total_minutes),
             outbound_minutes=int(outbound_row.total_minutes),
             sms_in_count=sms_in_count,
@@ -548,6 +597,7 @@ async def get_account_detail(
                 int(log.llm_completion_tokens or 0),
                 int(log.tts_characters or 0),
                 float(log.stt_seconds or 0),
+                rates=internal_rates,
                 inbound_minutes=inbound_mins,
                 outbound_minutes=outbound_mins,
             )
@@ -689,6 +739,7 @@ async def get_account_billing_timeseries(
 
         config = _get_effective_config(db, account_id)
         rates = _config_rates(config)
+        internal_rates = _get_internal_rates(db)
 
         conv_subq = (
             db.query(SMSConversation.id)
@@ -758,6 +809,7 @@ async def get_account_billing_timeseries(
                 _itok["ct"],
                 _itok["tts"],
                 _itok["stt"],
+                rates=internal_rates,
                 inbound_minutes=inbound_mins_map.get(key, 0),
                 outbound_minutes=outbound_mins_map.get(key, 0),
                 sms_in_count=sms_in_map.get(key, 0),
@@ -899,3 +951,130 @@ async def update_account_billing_config(
     except Exception as e:
         logger.exception(f"Admin billing config PUT error for {account_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to update billing config")
+
+
+# ── Platform Internal Rates ───────────────────────────────────────────────────
+
+
+class PlatformRatesUpdate(BaseModel):
+    llm_prompt_rate_per_1k: float
+    llm_completion_rate_per_1k: float
+    tts_rate_per_1k_chars: float
+    stt_rate_per_second: float
+    twilio_inbound_per_min: float
+    twilio_outbound_per_min: float
+    twilio_sms_in_rate: float
+    twilio_sms_out_rate: float
+    note: Optional[str] = None
+
+
+@router.get("/platform-rates")
+async def get_platform_rates(
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_platform_admin),
+):
+    """Return the currently effective platform internal cost rates plus history.
+
+    When no rows exist in the DB the response includes is_default=true and the
+    fallback compile-time defaults so the UI always has values to display.
+    """
+    try:
+        now = datetime.utcnow()
+        effective = (
+            db.query(PlatformInternalRates)
+            .filter(PlatformInternalRates.effective_from <= now)
+            .order_by(PlatformInternalRates.effective_from.desc())
+            .first()
+        )
+        history = (
+            db.query(PlatformInternalRates)
+            .order_by(PlatformInternalRates.effective_from.desc())
+            .limit(20)
+            .all()
+        )
+
+        fallback = {
+            "llm_prompt_rate_per_1k": _DEFAULT_LLM_PROMPT_RATE,
+            "llm_completion_rate_per_1k": _DEFAULT_LLM_COMPLETION_RATE,
+            "tts_rate_per_1k_chars": _DEFAULT_TTS_RATE,
+            "stt_rate_per_second": _DEFAULT_STT_RATE,
+            "twilio_inbound_per_min": _DEFAULT_TWILIO_INBOUND_RATE,
+            "twilio_outbound_per_min": _DEFAULT_TWILIO_OUTBOUND_RATE,
+            "twilio_sms_in_rate": _DEFAULT_TWILIO_SMS_IN_RATE,
+            "twilio_sms_out_rate": _DEFAULT_TWILIO_SMS_OUT_RATE,
+        }
+
+        return {
+            "effective": effective.to_dict() if effective else None,
+            "is_default": effective is None,
+            "fallback_defaults": fallback,
+            "history": [r.to_dict() for r in history],
+        }
+    except Exception as e:
+        logger.exception(f"Admin platform rates GET error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch platform rates")
+
+
+@router.put("/platform-rates")
+async def update_platform_rates(
+    body: PlatformRatesUpdate,
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_platform_admin),
+):
+    """Append a new platform internal rate row (never mutates historical rows).
+
+    The new row becomes effective immediately (effective_from = now).
+    All rate values must be >= 0.
+    """
+    try:
+        for field, val in [
+            ("llm_prompt_rate_per_1k", body.llm_prompt_rate_per_1k),
+            ("llm_completion_rate_per_1k", body.llm_completion_rate_per_1k),
+            ("tts_rate_per_1k_chars", body.tts_rate_per_1k_chars),
+            ("stt_rate_per_second", body.stt_rate_per_second),
+            ("twilio_inbound_per_min", body.twilio_inbound_per_min),
+            ("twilio_outbound_per_min", body.twilio_outbound_per_min),
+            ("twilio_sms_in_rate", body.twilio_sms_in_rate),
+            ("twilio_sms_out_rate", body.twilio_sms_out_rate),
+        ]:
+            if val < 0:
+                raise HTTPException(status_code=422, detail=f"{field} must be >= 0")
+
+        new_rates = PlatformInternalRates(
+            id=uuid.uuid4(),
+            llm_prompt_rate_per_1k=body.llm_prompt_rate_per_1k,
+            llm_completion_rate_per_1k=body.llm_completion_rate_per_1k,
+            tts_rate_per_1k_chars=body.tts_rate_per_1k_chars,
+            stt_rate_per_second=body.stt_rate_per_second,
+            twilio_inbound_per_min=body.twilio_inbound_per_min,
+            twilio_outbound_per_min=body.twilio_outbound_per_min,
+            twilio_sms_in_rate=body.twilio_sms_in_rate,
+            twilio_sms_out_rate=body.twilio_sms_out_rate,
+            note=body.note or None,
+            effective_from=datetime.utcnow(),
+            created_at=datetime.utcnow(),
+        )
+        db.add(new_rates)
+        db.commit()
+        db.refresh(new_rates)
+
+        logger.info(
+            "Admin {} updated platform internal rates: llm_prompt={} llm_completion={} "
+            "tts={} stt={} twilio_in={} twilio_out={} sms_in={} sms_out={}",
+            admin.id,
+            body.llm_prompt_rate_per_1k,
+            body.llm_completion_rate_per_1k,
+            body.tts_rate_per_1k_chars,
+            body.stt_rate_per_second,
+            body.twilio_inbound_per_min,
+            body.twilio_outbound_per_min,
+            body.twilio_sms_in_rate,
+            body.twilio_sms_out_rate,
+        )
+        return new_rates.to_dict()
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Admin platform rates PUT error: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update platform rates")

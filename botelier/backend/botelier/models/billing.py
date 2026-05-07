@@ -1,10 +1,14 @@
-"""Billing Models — account_billing_config and call_billing_items.
+"""Billing Models — account_billing_config, call_billing_items, platform_internal_rates.
 
 Multi-tenant isolation: call_billing_items is scoped by account_id.
 account_billing_config uses account_id IS NULL for the platform default row.
 
 Rates are append-only (new row per change). Historical items always reference
 the config row that was current at call-end, so rate edits never mutate past cost.
+
+platform_internal_rates stores operator-configurable wholesale cost rates (LLM, TTS,
+STT, Twilio). The effective row is the most recent with effective_from <= now().
+When no rows exist, admin_billing.py falls back to compile-time default constants.
 """
 
 import uuid
@@ -178,5 +182,63 @@ class CallBillingItem(Base):
             "rate_per_unit_usd": float(self.rate_per_unit_usd),
             "cost_usd": float(self.cost_usd),
             "billing_config_id": str(self.billing_config_id) if self.billing_config_id else None,
+            "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
+        }
+
+
+class PlatformInternalRates(Base):
+    """Platform-level internal wholesale cost rates (append-only).
+
+    These are the operator's cost-of-goods rates for LLM tokens, TTS characters,
+    STT seconds, and Twilio call/SMS minutes — never exposed to tenants.
+
+    The effective row is the one with the latest effective_from that is <= now().
+    When no rows exist the backend falls back to compile-time default constants,
+    so a fresh deployment works without any DB seed.
+
+    Updating rates creates a new row (old rows are never mutated) so the
+    history of rate changes is preserved and auditable.
+
+    NOTE: internal cost figures in admin reports always reflect the *currently*
+    effective rate row, not the rate that was active at the time of each call.
+    If a rate change is saved, previously-computed internal costs will appear
+    differently in future report queries.  True per-call rate pinning would
+    require storing a platform_rates_id on each call log (see follow-up #178).
+    """
+
+    __tablename__ = "platform_internal_rates"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+
+    llm_prompt_rate_per_1k = Column(Numeric(12, 8), nullable=False)
+    llm_completion_rate_per_1k = Column(Numeric(12, 8), nullable=False)
+    tts_rate_per_1k_chars = Column(Numeric(12, 8), nullable=False)
+    stt_rate_per_second = Column(Numeric(12, 8), nullable=False)
+    twilio_inbound_per_min = Column(Numeric(12, 8), nullable=False)
+    twilio_outbound_per_min = Column(Numeric(12, 8), nullable=False)
+    twilio_sms_in_rate = Column(Numeric(12, 8), nullable=False)
+    twilio_sms_out_rate = Column(Numeric(12, 8), nullable=False)
+
+    note = Column(String(500), nullable=True)
+
+    effective_from = Column(DateTime, nullable=False, default=datetime.utcnow)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    def __repr__(self):
+        return f"<PlatformInternalRates from={self.effective_from}>"
+
+    def to_dict(self):
+        return {
+            "id": str(self.id),
+            "llm_prompt_rate_per_1k": float(self.llm_prompt_rate_per_1k),
+            "llm_completion_rate_per_1k": float(self.llm_completion_rate_per_1k),
+            "tts_rate_per_1k_chars": float(self.tts_rate_per_1k_chars),
+            "stt_rate_per_second": float(self.stt_rate_per_second),
+            "twilio_inbound_per_min": float(self.twilio_inbound_per_min),
+            "twilio_outbound_per_min": float(self.twilio_outbound_per_min),
+            "twilio_sms_in_rate": float(self.twilio_sms_in_rate),
+            "twilio_sms_out_rate": float(self.twilio_sms_out_rate),
+            "note": self.note,
+            "effective_from": self.effective_from.isoformat() + "Z" if self.effective_from else None,
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
         }

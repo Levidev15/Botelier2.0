@@ -10,6 +10,9 @@ import {
   Loader2,
   RefreshCw,
   BarChart3,
+  Settings2,
+  Save,
+  AlertCircle,
 } from "lucide-react";
 import { toast } from "sonner";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
@@ -36,7 +39,6 @@ interface AccountUsageRow {
   billable_total_usd: number;
   internal_cost_usd: number;
   margin_usd: number;
-  // Merged from accounts API
   status?: string;
 }
 
@@ -45,11 +47,6 @@ interface UsageListResponse {
   period_end: string;
   accounts: AccountUsageRow[];
   total_accounts: number;
-}
-
-interface AccountInfo {
-  id: string;
-  status: string;
 }
 
 type SortField =
@@ -61,6 +58,26 @@ type SortField =
   | "billable_total_usd"
   | "internal_cost_usd"
   | "margin_usd";
+
+interface PlatformRatesData {
+  llm_prompt_rate_per_1k: number;
+  llm_completion_rate_per_1k: number;
+  tts_rate_per_1k_chars: number;
+  stt_rate_per_second: number;
+  twilio_inbound_per_min: number;
+  twilio_outbound_per_min: number;
+  twilio_sms_in_rate: number;
+  twilio_sms_out_rate: number;
+  note?: string | null;
+  effective_from?: string | null;
+}
+
+interface PlatformRatesResponse {
+  effective: PlatformRatesData | null;
+  is_default: boolean;
+  fallback_defaults: PlatformRatesData;
+  history: (PlatformRatesData & { id: string; created_at: string })[];
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
@@ -98,6 +115,197 @@ function SortIcon({
     <ChevronUp className="h-3 w-3 text-blue-400 inline ml-1" />
   ) : (
     <ChevronDown className="h-3 w-3 text-blue-400 inline ml-1" />
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Platform Rates Panel
+// ──────────────────────────────────────────────────────────────────────────────
+
+function PlatformRatesPanel({ authFetch }: { authFetch: (url: string, opts?: RequestInit) => Promise<Response> }) {
+  const [expanded, setExpanded] = useState(false);
+  const [ratesData, setRatesData] = useState<PlatformRatesResponse | null>(null);
+  const [ratesLoading, setRatesLoading] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState<PlatformRatesData & { note: string }>({
+    llm_prompt_rate_per_1k: 0.003,
+    llm_completion_rate_per_1k: 0.006,
+    tts_rate_per_1k_chars: 0.015,
+    stt_rate_per_second: 0.0001,
+    twilio_inbound_per_min: 0.0085,
+    twilio_outbound_per_min: 0.013,
+    twilio_sms_in_rate: 0.0075,
+    twilio_sms_out_rate: 0.0079,
+    note: "",
+  });
+
+  const fetchRates = useCallback(async () => {
+    setRatesLoading(true);
+    try {
+      const res = await authFetch("/api/admin/billing/platform-rates");
+      if (!res.ok) throw new Error("Failed to load rates");
+      const data: PlatformRatesResponse = await res.json();
+      setRatesData(data);
+      const src = data.effective ?? data.fallback_defaults;
+      setForm({
+        llm_prompt_rate_per_1k: src.llm_prompt_rate_per_1k,
+        llm_completion_rate_per_1k: src.llm_completion_rate_per_1k,
+        tts_rate_per_1k_chars: src.tts_rate_per_1k_chars,
+        stt_rate_per_second: src.stt_rate_per_second,
+        twilio_inbound_per_min: src.twilio_inbound_per_min,
+        twilio_outbound_per_min: src.twilio_outbound_per_min,
+        twilio_sms_in_rate: src.twilio_sms_in_rate,
+        twilio_sms_out_rate: src.twilio_sms_out_rate,
+        note: "",
+      });
+    } catch {
+      toast.error("Failed to load platform rates");
+    } finally {
+      setRatesLoading(false);
+    }
+  }, [authFetch]);
+
+  const handleExpand = () => {
+    const next = !expanded;
+    setExpanded(next);
+    if (next && !ratesData) fetchRates();
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      const res = await authFetch("/api/admin/billing/platform-rates", {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(form),
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.detail || "Save failed");
+      }
+      toast.success("Platform rates updated");
+      await fetchRates();
+    } catch (e: unknown) {
+      toast.error(e instanceof Error ? e.message : "Failed to save rates");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const field = (
+    label: string,
+    key: keyof PlatformRatesData,
+    hint: string
+  ) => (
+    <div>
+      <label className="block text-xs font-medium text-gray-400 mb-1">
+        {label}
+        <span className="ml-1 text-gray-600 font-normal">{hint}</span>
+      </label>
+      <input
+        type="number"
+        step="any"
+        min="0"
+        value={form[key] as number}
+        onChange={(e) =>
+          setForm((f) => ({ ...f, [key]: parseFloat(e.target.value) || 0 }))
+        }
+        className="w-full px-3 py-1.5 bg-[#0a0a0a] border border-[#333333] rounded-lg text-white text-sm focus:outline-none focus:border-blue-600 font-mono"
+      />
+    </div>
+  );
+
+  return (
+    <div className="mb-6 bg-[#111111] border border-[#222222] rounded-xl overflow-hidden">
+      <button
+        onClick={handleExpand}
+        className="w-full flex items-center justify-between px-5 py-4 text-left hover:bg-[#1a1a1a] transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <Settings2 className="h-4 w-4 text-gray-400" />
+          <span className="text-sm font-medium text-gray-200">
+            Platform Internal Cost Rates
+          </span>
+          {ratesData?.is_default && (
+            <span className="inline-flex items-center gap-1 px-2 py-0.5 text-xs bg-yellow-600/15 text-yellow-400 border border-yellow-600/30 rounded-full">
+              <AlertCircle className="h-3 w-3" />
+              Using compile-time defaults
+            </span>
+          )}
+          {ratesData && !ratesData.is_default && ratesData.effective?.effective_from && (
+            <span className="text-xs text-gray-600">
+              Updated {new Date(ratesData.effective.effective_from).toLocaleDateString()}
+            </span>
+          )}
+        </div>
+        {expanded ? (
+          <ChevronUp className="h-4 w-4 text-gray-500" />
+        ) : (
+          <ChevronDown className="h-4 w-4 text-gray-500" />
+        )}
+      </button>
+
+      {expanded && (
+        <div className="px-5 pb-5 border-t border-[#1a1a1a]">
+          {ratesLoading ? (
+            <div className="flex items-center justify-center py-8">
+              <Loader2 className="h-5 w-5 text-blue-600 animate-spin" />
+            </div>
+          ) : (
+            <>
+              <p className="text-xs text-gray-500 mt-4 mb-4">
+                These wholesale rates are used to calculate your internal cost-of-goods. They are never shown to tenants.
+                Saving creates a new versioned row — history is preserved.
+              </p>
+
+              <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-4">
+                {field("LLM Prompt", "llm_prompt_rate_per_1k", "$ / 1K tokens")}
+                {field("LLM Completion", "llm_completion_rate_per_1k", "$ / 1K tokens")}
+                {field("TTS", "tts_rate_per_1k_chars", "$ / 1K chars")}
+                {field("STT", "stt_rate_per_second", "$ / second")}
+                {field("Twilio Inbound", "twilio_inbound_per_min", "$ / min")}
+                {field("Twilio Outbound", "twilio_outbound_per_min", "$ / min")}
+                {field("SMS Inbound", "twilio_sms_in_rate", "$ / message")}
+                {field("SMS Outbound", "twilio_sms_out_rate", "$ / message")}
+              </div>
+
+              <div className="mb-4">
+                <label className="block text-xs font-medium text-gray-400 mb-1">
+                  Note <span className="text-gray-600 font-normal">(optional — reason for this rate update)</span>
+                </label>
+                <input
+                  type="text"
+                  value={form.note}
+                  onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))}
+                  placeholder="e.g. Twilio price change Q3 2026"
+                  className="w-full px-3 py-1.5 bg-[#0a0a0a] border border-[#333333] rounded-lg text-white text-sm focus:outline-none focus:border-blue-600 placeholder-gray-600"
+                />
+              </div>
+
+              <div className="flex items-center justify-between">
+                <div className="text-xs text-gray-600">
+                  {ratesData && ratesData.history.length > 0
+                    ? `${ratesData.history.length} version${ratesData.history.length !== 1 ? "s" : ""} in history`
+                    : "No saved versions yet"}
+                </div>
+                <button
+                  onClick={handleSave}
+                  disabled={saving}
+                  className="flex items-center gap-2 px-4 py-2 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 text-white rounded-lg text-sm transition-colors"
+                >
+                  {saving ? (
+                    <Loader2 className="h-4 w-4 animate-spin" />
+                  ) : (
+                    <Save className="h-4 w-4" />
+                  )}
+                  Save Rates
+                </button>
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -349,6 +557,9 @@ export default function AdminUsagePage() {
           </button>
         </div>
       </div>
+
+      {/* Platform Internal Rates Panel */}
+      <PlatformRatesPanel authFetch={authFetch} />
 
       {/* Search */}
       <div className="mb-4 relative w-80">
