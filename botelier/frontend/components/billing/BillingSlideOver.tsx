@@ -11,6 +11,16 @@ import {
   Save,
   Info,
 } from "lucide-react";
+import {
+  ResponsiveContainer,
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  Legend,
+} from "recharts";
 import { toast } from "sonner";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 
@@ -91,6 +101,15 @@ interface AccountDetail {
   };
 }
 
+interface TimeseriesPoint {
+  date: string;
+  inbound_cost_usd: number;
+  outbound_cost_usd: number;
+  sms_cost_usd: number;
+  internal_cost_usd: number;
+  total_cost_usd: number;
+}
+
 // ──────────────────────────────────────────────────────────────────────────────
 // Helpers
 // ──────────────────────────────────────────────────────────────────────────────
@@ -157,6 +176,10 @@ export default function BillingSlideOver({
   // Expanded call rows
   const [expandedCalls, setExpandedCalls] = useState<Set<string>>(new Set());
 
+  // Timeseries chart state
+  const [timeseries, setTimeseries] = useState<TimeseriesPoint[]>([]);
+  const [chartLoading, setChartLoading] = useState(false);
+
   const fetchDetail = useCallback(async () => {
     if (!accountId) return;
     setLoading(true);
@@ -192,14 +215,36 @@ export default function BillingSlideOver({
     }
   }, [accountId, period, authFetch]);
 
+  const fetchTimeseries = useCallback(async () => {
+    if (!accountId) return;
+    setChartLoading(true);
+    try {
+      const res = await authFetch(
+        `/api/admin/billing/accounts/${accountId}/timeseries?period=${period}`
+      );
+      if (res.ok) {
+        const data = await res.json();
+        setTimeseries(data.timeseries ?? []);
+      } else {
+        setTimeseries([]);
+      }
+    } catch {
+      setTimeseries([]);
+    } finally {
+      setChartLoading(false);
+    }
+  }, [accountId, period, authFetch]);
+
   useEffect(() => {
     if (accountId) {
       setDetail(null);
+      setTimeseries([]);
       setRateForm(EMPTY_RATE_FORM);
       setExpandedCalls(new Set());
       fetchDetail();
+      fetchTimeseries();
     }
-  }, [accountId, period, fetchDetail]);
+  }, [accountId, period, fetchDetail, fetchTimeseries]);
 
   const handleSaveRates = async () => {
     if (!accountId) return;
@@ -393,6 +438,9 @@ export default function BillingSlideOver({
                   />
                 </div>
               </Section>
+
+              {/* ── Cost trend chart ── */}
+              <CostTrendChart timeseries={timeseries} loading={chartLoading} />
 
               {/* ── Internal cost (admin only) ── */}
               <Section title="Internal Cost (Admin Only)" amber>
@@ -776,6 +824,152 @@ function RateField({
         onChange={(e) => onChange(e.target.value)}
         className="w-full px-3 py-2 bg-[#0a0a0a] border border-[#222222] rounded-lg text-white text-sm focus:outline-none focus:border-blue-600"
       />
+    </div>
+  );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// CostTrendChart
+// ──────────────────────────────────────────────────────────────────────────────
+
+interface ChartTooltipPayload {
+  name?: string;
+  value?: number;
+  color?: string;
+}
+interface ChartTooltipProps {
+  active?: boolean;
+  payload?: ChartTooltipPayload[];
+  label?: string;
+}
+
+function ChartTooltip({ active, payload, label }: ChartTooltipProps) {
+  if (!active || !payload?.length) return null;
+  const total = payload.reduce((s, p) => s + (p.value ?? 0), 0);
+  return (
+    <div className="bg-[#1a1a1a] border border-[#333333] rounded-lg px-3 py-2 text-sm shadow-lg min-w-[180px]">
+      <p className="text-gray-400 mb-2 text-xs">{label}</p>
+      {payload.map((p, i) => (
+        <div key={i} className="flex justify-between gap-4">
+          <span style={{ color: p.color }} className="text-xs">
+            {p.name}
+          </span>
+          <span className="text-gray-200 text-xs font-mono">
+            ${(p.value ?? 0).toFixed(4)}
+          </span>
+        </div>
+      ))}
+      <div className="border-t border-[#333333] mt-1.5 pt-1.5 flex justify-between gap-4">
+        <span className="text-gray-400 text-xs">Total Billable</span>
+        <span className="text-gray-100 text-xs font-mono font-semibold">
+          ${total.toFixed(4)}
+        </span>
+      </div>
+    </div>
+  );
+}
+
+function CostTrendChart({
+  timeseries,
+  loading,
+}: {
+  timeseries: TimeseriesPoint[];
+  loading: boolean;
+}) {
+  const chartData = timeseries.map((p) => ({
+    ...p,
+    date: new Date(p.date + "T00:00:00").toLocaleDateString("en-US", {
+      month: "short",
+      day: "numeric",
+    }),
+  }));
+
+  const hasData =
+    chartData.length > 0 &&
+    chartData.some(
+      (d) =>
+        d.inbound_cost_usd > 0 ||
+        d.outbound_cost_usd > 0 ||
+        d.sms_cost_usd > 0 ||
+        d.internal_cost_usd > 0
+    );
+
+  return (
+    <div className="bg-[#0a0a0a] border border-[#1a1a1a] rounded-xl p-4">
+      <h3 className="text-sm font-semibold text-white mb-3">Cost Trend</h3>
+
+      {loading ? (
+        <div className="h-48 flex items-center justify-center">
+          <Loader2 className="h-5 w-5 animate-spin text-gray-600" />
+        </div>
+      ) : !hasData ? (
+        <div className="h-48 flex flex-col items-center justify-center text-gray-600 text-xs gap-1">
+          <p>No cost data for this period</p>
+        </div>
+      ) : (
+        <ResponsiveContainer width="100%" height={200}>
+          <AreaChart
+            data={chartData}
+            margin={{ top: 4, right: 8, left: 0, bottom: 0 }}
+          >
+            <CartesianGrid strokeDasharray="3 3" stroke="#1f2937" />
+            <XAxis
+              dataKey="date"
+              tick={{ fill: "#6b7280", fontSize: 10 }}
+              axisLine={{ stroke: "#1f2937" }}
+              tickLine={false}
+            />
+            <YAxis
+              tickFormatter={(v) => `$${(v as number).toFixed(2)}`}
+              tick={{ fill: "#6b7280", fontSize: 10 }}
+              axisLine={false}
+              tickLine={false}
+              width={48}
+            />
+            <Tooltip content={<ChartTooltip />} />
+            <Legend
+              wrapperStyle={{ fontSize: 11, color: "#9ca3af", paddingTop: 8 }}
+            />
+            <Area
+              type="monotone"
+              dataKey="inbound_cost_usd"
+              stackId="1"
+              stroke="#3b82f6"
+              fill="#3b82f6"
+              fillOpacity={0.5}
+              name="Inbound"
+            />
+            <Area
+              type="monotone"
+              dataKey="outbound_cost_usd"
+              stackId="1"
+              stroke="#8b5cf6"
+              fill="#8b5cf6"
+              fillOpacity={0.5}
+              name="Outbound"
+            />
+            <Area
+              type="monotone"
+              dataKey="sms_cost_usd"
+              stackId="1"
+              stroke="#22c55e"
+              fill="#22c55e"
+              fillOpacity={0.5}
+              name="SMS"
+            />
+            <Area
+              type="monotone"
+              dataKey="internal_cost_usd"
+              stackId="1"
+              stroke="#f59e0b"
+              fill="#f59e0b"
+              fillOpacity={0.35}
+              strokeDasharray="4 2"
+              name="Internal (Admin)"
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      )}
     </div>
   );
 }

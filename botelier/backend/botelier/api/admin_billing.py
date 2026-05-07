@@ -563,6 +563,162 @@ async def get_account_detail(
         raise HTTPException(status_code=500, detail="Failed to fetch account billing detail")
 
 
+@router.get("/accounts/{account_id}/timeseries")
+async def get_account_billing_timeseries(
+    account_id: UUID = Path(..., description="Account UUID"),
+    period: str = Query("30d"),
+    from_: Optional[datetime] = Query(None, alias="from"),
+    to_: Optional[datetime] = Query(None, alias="to"),
+    bucket: str = Query("day", description="day | week"),
+    db: Session = Depends(get_db),
+    admin: User = Depends(get_platform_admin),
+):
+    """Daily or weekly cost timeseries for a single account, including internal cost series."""
+    if bucket not in ("day", "week"):
+        raise HTTPException(status_code=400, detail="bucket must be 'day' or 'week'")
+    try:
+        account = db.query(Account).filter(Account.id == account_id).first()
+        if not account:
+            raise HTTPException(status_code=404, detail="Account not found")
+
+        period_start, period_end = _resolve_period(period, from_, to_)
+
+        trunc = func.date_trunc(bucket, CallLog.started_at)
+
+        inbound_rows = (
+            db.query(
+                trunc.label("bucket"),
+                func.coalesce(func.sum(CallBillingItem.cost_usd), 0).label("cost"),
+            )
+            .join(CallBillingItem, CallBillingItem.call_log_id == CallLog.id)
+            .filter(
+                CallBillingItem.account_id == account_id,
+                CallBillingItem.item_type == "inbound_call",
+                CallLog.started_at >= period_start,
+                CallLog.started_at <= period_end,
+            )
+            .group_by("bucket")
+            .order_by("bucket")
+            .all()
+        )
+
+        outbound_rows = (
+            db.query(
+                trunc.label("bucket"),
+                func.coalesce(func.sum(CallBillingItem.cost_usd), 0).label("cost"),
+            )
+            .join(CallBillingItem, CallBillingItem.call_log_id == CallLog.id)
+            .filter(
+                CallBillingItem.account_id == account_id,
+                CallBillingItem.item_type == "outbound_transfer",
+                CallLog.started_at >= period_start,
+                CallLog.started_at <= period_end,
+            )
+            .group_by("bucket")
+            .order_by("bucket")
+            .all()
+        )
+
+        # Internal cost (LLM + TTS + STT) per bucket
+        internal_rows = (
+            db.query(
+                trunc.label("bucket"),
+                func.coalesce(func.sum(CallLog.llm_prompt_tokens), 0).label("pt"),
+                func.coalesce(func.sum(CallLog.llm_completion_tokens), 0).label("ct"),
+                func.coalesce(func.sum(CallLog.tts_characters), 0).label("tts"),
+                func.coalesce(func.sum(CallLog.stt_seconds), 0).label("stt"),
+            )
+            .filter(
+                CallLog.account_id == account_id,
+                CallLog.started_at >= period_start,
+                CallLog.started_at <= period_end,
+            )
+            .group_by("bucket")
+            .order_by("bucket")
+            .all()
+        )
+
+        config = _get_effective_config(db, account_id)
+        rates = _config_rates(config)
+
+        conv_subq = (
+            db.query(SMSConversation.id)
+            .filter(SMSConversation.account_id == account_id)
+            .subquery()
+        )
+        sms_trunc = func.date_trunc(bucket, SMSMessage.created_at)
+        sms_rows = (
+            db.query(
+                sms_trunc.label("bucket"),
+                SMSMessage.direction,
+                func.count(SMSMessage.id).label("cnt"),
+            )
+            .filter(
+                SMSMessage.conversation_id.in_(conv_subq),
+                SMSMessage.created_at >= period_start,
+                SMSMessage.created_at <= period_end,
+            )
+            .group_by("bucket", SMSMessage.direction)
+            .order_by("bucket")
+            .all()
+        )
+
+        inbound_map = {r.bucket.date().isoformat(): float(r.cost) for r in inbound_rows}
+        outbound_map = {r.bucket.date().isoformat(): float(r.cost) for r in outbound_rows}
+
+        internal_map: dict = {}
+        for r in internal_rows:
+            key = r.bucket.date().isoformat()
+            ic = _internal_cost(int(r.pt), int(r.ct), int(r.tts), float(r.stt))
+            internal_map[key] = ic["internal_cost_usd"]
+
+        sms_in_map: dict = {}
+        sms_out_map: dict = {}
+        for r in sms_rows:
+            key = r.bucket.date().isoformat()
+            if r.direction == MessageDirection.INBOUND.value:
+                sms_in_map[key] = sms_in_map.get(key, 0) + int(r.cnt)
+            else:
+                sms_out_map[key] = sms_out_map.get(key, 0) + int(r.cnt)
+
+        all_keys = sorted(
+            set(inbound_map) | set(outbound_map) | set(internal_map) | set(sms_in_map) | set(sms_out_map)
+        )
+
+        timeseries = []
+        for key in all_keys:
+            in_cost = inbound_map.get(key, 0.0)
+            out_cost = outbound_map.get(key, 0.0)
+            sms_cost = round(
+                sms_in_map.get(key, 0) * rates["sms_in"]
+                + sms_out_map.get(key, 0) * rates["sms_out"],
+                6,
+            )
+            int_cost = internal_map.get(key, 0.0)
+            timeseries.append({
+                "date": key,
+                "inbound_cost_usd": round(in_cost, 6),
+                "outbound_cost_usd": round(out_cost, 6),
+                "sms_cost_usd": sms_cost,
+                "internal_cost_usd": round(int_cost, 6),
+                "total_cost_usd": round(in_cost + out_cost + sms_cost, 6),
+            })
+
+        return {
+            "account_id": str(account_id),
+            "period_start": period_start.isoformat() + "Z",
+            "period_end": period_end.isoformat() + "Z",
+            "bucket": bucket,
+            "timeseries": timeseries,
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.exception(f"Admin billing timeseries error for {account_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to fetch account billing timeseries")
+
+
 @router.get("/accounts/{account_id}/config")
 async def get_account_billing_config(
     account_id: UUID = Path(..., description="Account UUID"),
