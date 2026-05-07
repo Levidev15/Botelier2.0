@@ -113,12 +113,6 @@ interface BillingDetail {
 
 type BillingPeriod = "mtd" | "7d" | "30d";
 
-const PERIOD_LABELS: Record<BillingPeriod, string> = {
-  mtd: "Month to Date",
-  "7d": "Last 7 Days",
-  "30d": "Last 30 Days",
-};
-
 function fmtDuration(secs: number): string {
   const m = Math.floor(secs / 60);
   const s = secs % 60;
@@ -179,22 +173,14 @@ export default function AccountDetailPage() {
 
     if (accountId) {
       fetchAccount();
-      fetchBillingDetail(billingPeriod, 1);
     }
   }, [token, user, authLoading, accountId]);
 
   useEffect(() => {
-    if (!token || authLoading || !accountId) return;
-    setBillingPage(1);
-    setExpandedCalls(new Set());
-    fetchBillingDetail(billingPeriod, 1);
-  }, [billingPeriod]);
-
-  useEffect(() => {
-    if (!token || authLoading || !accountId) return;
+    if (authLoading || !token || !accountId || user?.user_type !== "platform_admin") return;
     setExpandedCalls(new Set());
     fetchBillingDetail(billingPeriod, billingPage);
-  }, [billingPage]);
+  }, [token, user?.user_type, authLoading, accountId, billingPeriod, billingPage]);
 
   const fetchAccount = async () => {
     try {
