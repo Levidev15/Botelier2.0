@@ -993,12 +993,10 @@ export default function AccountDetailPage() {
 
           {billingDetail && !billingError && (
             <>
-              {/* MTD total summary strip (only when cost cols visible) */}
+              {/* MTD total summary strip — always MTD regardless of period filter */}
               {showCostCols && (
                 <div className="flex items-center gap-6 mb-4 px-3 py-2.5 bg-yellow-500/5 border border-yellow-600/20 rounded-lg text-xs">
-                  <span className="text-gray-500">
-                    {PERIOD_LABELS[billingPeriod]} total:
-                  </span>
+                  <span className="text-gray-500">MTD total:</span>
                   <span className="text-yellow-300 font-semibold">
                     ${billingDetail.mtd_total_usd.toFixed(4)} billable
                   </span>
@@ -1046,10 +1044,16 @@ export default function AccountDetailPage() {
                               Mins
                             </th>
                             <th className="py-2 pr-3 text-right text-xs text-gray-500 font-medium">
-                              Billable
+                              Inbound $
+                            </th>
+                            <th className="py-2 pr-3 text-right text-xs text-gray-500 font-medium">
+                              Xfer $
+                            </th>
+                            <th className="py-2 pr-3 text-right text-xs text-gray-500 font-medium">
+                              Total $
                             </th>
                             <th className="py-2 pr-3 text-right text-xs text-yellow-600 font-medium">
-                              Internal
+                              Internal $
                             </th>
                           </>
                         )}
@@ -1064,7 +1068,10 @@ export default function AccountDetailPage() {
                         const transferItems = call.billing_items.filter(
                           (i) => i.item_type === "outbound_transfer"
                         );
-                        const colSpanBase = showCostCols ? 8 : 5;
+                        const xferCost = transferItems.reduce(
+                          (sum, i) => sum + i.cost_usd,
+                          0
+                        );
 
                         const mainRow = (
                           <tr
@@ -1100,6 +1107,14 @@ export default function AccountDetailPage() {
                               <>
                                 <td className="py-2 pr-3 text-right text-gray-300 text-xs">
                                   {call.billable_inbound_minutes}
+                                </td>
+                                <td className="py-2 pr-3 text-right text-gray-300 text-xs">
+                                  ${call.inbound_cost_usd.toFixed(4)}
+                                </td>
+                                <td className="py-2 pr-3 text-right text-gray-300 text-xs">
+                                  {xferCost > 0 ? `$${xferCost.toFixed(4)}` : (
+                                    <span className="text-gray-700">—</span>
+                                  )}
                                 </td>
                                 <td className="py-2 pr-3 text-right text-gray-300 text-xs">
                                   ${call.total_cost_usd.toFixed(4)}
@@ -1138,9 +1153,9 @@ export default function AccountDetailPage() {
                             key={`leg-${call.call_log_id}-${idx}`}
                             className="bg-[#0a0a0a]"
                           >
-                            {/* spans Time + Dir + Caller + Assistant + Dur */}
+                            {/* spans Time + Dir + Caller + Assistant (4 cols) */}
                             <td
-                              colSpan={showCostCols ? 5 : 5}
+                              colSpan={4}
                               className="py-1.5 pl-6 pr-3 text-xs text-gray-500"
                             >
                               <span className="text-gray-600 mr-2">↳</span>
@@ -1151,23 +1166,37 @@ export default function AccountDetailPage() {
                                 </span>
                               )}
                             </td>
+                            {/* Dur */}
+                            <td className="py-1.5 pr-3 text-right text-xs text-gray-500">
+                              {item.leg_duration_seconds != null
+                                ? fmtDuration(item.leg_duration_seconds)
+                                : "—"}
+                            </td>
                             {showCostCols && (
                               <>
                                 {/* Mins */}
                                 <td className="py-1.5 pr-3 text-right text-xs text-gray-500">
                                   {item.quantity_minutes}
                                 </td>
-                                {/* Billable (transfer cost) */}
+                                {/* Inbound $ — not applicable for transfer legs */}
+                                <td className="py-1.5 pr-3 text-right text-xs text-gray-700">
+                                  —
+                                </td>
+                                {/* Xfer $ — this leg's cost */}
                                 <td className="py-1.5 pr-3 text-right text-xs text-gray-500">
                                   ${item.cost_usd.toFixed(4)}
                                 </td>
-                                {/* Internal — not tracked per-transfer */}
+                                {/* Total $ — not shown per leg */}
+                                <td className="py-1.5 pr-3 text-right text-xs text-gray-700">
+                                  —
+                                </td>
+                                {/* Internal $ — not tracked per transfer */}
                                 <td className="py-1.5 pr-3 text-right text-xs text-gray-700">
                                   —
                                 </td>
                               </>
                             )}
-                            {/* Xfer */}
+                            {/* Xfer expand col */}
                             <td className="py-1.5 text-center text-xs text-gray-700">
                               —
                             </td>
