@@ -868,6 +868,34 @@ class InboundAudioTracker(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class TtsTextAccumulator(FrameProcessor):
+    """Pure-observer placed immediately before the TTS service in the pipeline.
+
+    Counts characters sent to TTS by intercepting downstream TextFrame objects.
+    This is provider-agnostic and streaming-mode-agnostic — it does not depend
+    on the TTS service emitting a MetricsFrame with TTSUsageMetricsData, which
+    is suppressed when the LLM streams tokens directly to TTS (the standard
+    OpenAI + Cartesia path).
+
+    Every frame passes through unchanged — this processor has no side effects,
+    no async I/O, and no blocking behaviour.  Zero pipeline latency impact.
+    """
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._total_chars: int = 0
+
+    @property
+    def total_tts_chars(self) -> int:
+        return self._total_chars
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        if direction == FrameDirection.DOWNSTREAM and isinstance(frame, TextFrame):
+            self._total_chars += len(frame.text)
+        await self.push_frame(frame, direction)
+
+
 class TtsPipelineLatencyTracker(FrameProcessor):
     """Measures two pipeline-stage handoffs:
 
@@ -1436,17 +1464,19 @@ class VoiceEngineFactory:
                 utterance.  Used to record per-turn timestamps for the call transcript.
 
         Returns:
-            13-tuple: (pipeline, task, llm, context_aggregator, context,
+            14-tuple: (pipeline, task, llm, context_aggregator, context,
                       tts_completion_watcher, first_speech_tracker,
                       greeting_completion_tracker, idle_timeout_tracker,
                       user_turn_capture, tts_latency_tracker, vad_suspicion_tracker,
-                      greeting_injector).
+                      greeting_injector, tts_text_accumulator).
             - context is returned separately for transcript extraction.
             - tts_completion_watcher can be linked to FunctionMapper.set_tts_completion_watcher()
               so transfer handlers can await TTS completion without time-based sleeps.
             - first_speech_tracker / greeting_completion_tracker / idle_timeout_tracker /
               user_turn_capture / tts_latency_tracker / vad_suspicion_tracker need event_queue injected via
               set_event_queue() after pipeline creation.
+            - tts_text_accumulator.total_tts_chars is the authoritative TTS character count —
+              provider-agnostic, does not rely on MetricsFrame emission from the TTS service.
         """
         from pipecat.adapters.schemas.tools_schema import ToolsSchema
 
@@ -1539,6 +1569,13 @@ class VoiceEngineFactory:
             timing_state=_timing_state,
         )
 
+        # Counts characters flowing downstream to the TTS service by intercepting TextFrame
+        # objects.  Provider-agnostic and streaming-mode-agnostic — does NOT rely on the
+        # TTS service emitting TTSUsageMetricsData (which is suppressed for the standard
+        # OpenAI + Cartesia token-streaming path).  Pure pass-through: every frame arrives
+        # at TTS unchanged.
+        tts_text_accumulator = TtsTextAccumulator()
+
         messages = [
             {
                 "role": "system",
@@ -1624,6 +1661,7 @@ class VoiceEngineFactory:
                 llm_response_capture,  # Captures complete LLM responses for transcript recovery
                 interruption_tracker,  # Observes text frames + InterruptionFrame before TTS
                 greeting_injector,  # One-shot cached-greeting push, downstream of STT
+                tts_text_accumulator,  # Counts chars sent to TTS (pure observer, zero latency impact)
                 tts,
                 greeting_completion_tracker,  # Logs greeting_completed on first BotStoppedSpeakingFrame
                 tts_completion_watcher,  # Observes BotStoppedSpeakingFrame after TTS
@@ -1655,6 +1693,7 @@ class VoiceEngineFactory:
             tts_latency_tracker,
             vad_suspicion_tracker,
             greeting_injector,
+            tts_text_accumulator,
         )
 
     @staticmethod

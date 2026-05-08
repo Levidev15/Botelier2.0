@@ -671,6 +671,8 @@ export default function AdminUsagePage() {
         accountId={billingAccountId}
         onClose={() => setBillingAccountId(null)}
         period={period}
+        periodFrom={periodStart || undefined}
+        periodTo={periodEnd || undefined}
       />
     </div>
   );

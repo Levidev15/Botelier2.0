@@ -194,6 +194,7 @@ class CallHandler:
         # abandoned ringing calls never leak.
         self.precomputed_configs: PreWarmCache = PreWarmCache(max_size=256, ttl_secs=60.0)
         self.call_usage_trackers: dict = {}
+        self.call_tts_accumulators: dict = {}  # call_sid -> TtsTextAccumulator (provider-agnostic char count)
         self.call_idle_trackers: dict = {}  # call_sid -> IdleTimeoutTracker (cancelled on teardown)
 
     async def handle_call(
@@ -648,6 +649,7 @@ class CallHandler:
                 tts_latency_tracker,
                 vad_suspicion_tracker,
                 greeting_injector,
+                tts_text_accumulator,
             ) = VoiceEngineFactory.create_pipeline(
                 config=config,
                 api_keys=api_keys,
@@ -666,8 +668,11 @@ class CallHandler:
                 self.call_mappers[call_sid].set_tts_completion_watcher(tts_completion_watcher)
 
             # Store the latency tracker so _save_call_transcript can read
-            # accumulated token and character counts at call teardown.
+            # accumulated LLM token counts at call teardown.
             self.call_usage_trackers[call_sid] = tts_latency_tracker
+            # Store the TTS text accumulator for authoritative character count at teardown.
+            # Uses direct TextFrame interception — provider-agnostic and streaming-mode-agnostic.
+            self.call_tts_accumulators[call_sid] = tts_text_accumulator
             # Store idle tracker so cancel_idle_tracker() can stop it on transfer or teardown.
             self.call_idle_trackers[call_sid] = idle_timeout_tracker
 
@@ -1302,6 +1307,7 @@ class CallHandler:
             # dict never grows unboundedly under abnormal terminations.
             self.pending_cancels.pop(call_sid, None)
             self.call_usage_trackers.pop(call_sid, None)
+            self.call_tts_accumulators.pop(call_sid, None)
             # Safety pop — already removed at the top of the finally block, but
             # handles any edge path where the pop above was skipped.
             self.call_idle_trackers.pop(call_sid, None)
@@ -1790,7 +1796,8 @@ You have access to the following Q&A knowledge base. Use this information to ans
             _usage_tracker = self.call_usage_trackers.get(call_sid)
             _cap_prompt_tokens = _usage_tracker.total_prompt_tokens if _usage_tracker else None
             _cap_completion_tokens = _usage_tracker.total_completion_tokens if _usage_tracker else None
-            _cap_tts_chars = _usage_tracker.total_tts_chars if _usage_tracker else None
+            _tts_accumulator = self.call_tts_accumulators.get(call_sid)
+            _cap_tts_chars = _tts_accumulator.total_tts_chars if _tts_accumulator else None
             _has_usage = bool(_cap_prompt_tokens or _cap_completion_tokens or _cap_tts_chars)
 
             if not transcript and not tools_used and not _has_usage:

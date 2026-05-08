@@ -151,6 +151,8 @@ interface BillingSlideOverProps {
   accountId: string | null;
   onClose: () => void;
   period?: string;
+  periodFrom?: string;
+  periodTo?: string;
 }
 
 const EMPTY_RATE_FORM = {
@@ -165,6 +167,8 @@ export default function BillingSlideOver({
   accountId,
   onClose,
   period = "mtd",
+  periodFrom,
+  periodTo,
 }: BillingSlideOverProps) {
   const { authFetch } = useAuthToken();
   const [detail, setDetail] = useState<AccountDetail | null>(null);
@@ -182,13 +186,19 @@ export default function BillingSlideOver({
   const [timeseries, setTimeseries] = useState<TimeseriesPoint[]>([]);
   const [chartLoading, setChartLoading] = useState(false);
 
+  // Build period query string — use fixed timestamps from the list response
+  // when available so the detail window is identical to what the list computed.
+  const periodParams = periodFrom && periodTo
+    ? `period=custom&from=${encodeURIComponent(periodFrom)}&to=${encodeURIComponent(periodTo)}`
+    : `period=${period}`;
+
   const fetchDetail = useCallback(async () => {
     if (!accountId) return;
     setLoading(true);
     setError(null);
     try {
       const res = await authFetch(
-        `/api/admin/billing/accounts/${accountId}/detail?period=${period}&per_page=10`
+        `/api/admin/billing/accounts/${accountId}/detail?${periodParams}&per_page=10`
       );
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -215,14 +225,14 @@ export default function BillingSlideOver({
     } finally {
       setLoading(false);
     }
-  }, [accountId, period, authFetch]);
+  }, [accountId, periodParams, authFetch]);
 
   const fetchTimeseries = useCallback(async () => {
     if (!accountId) return;
     setChartLoading(true);
     try {
       const res = await authFetch(
-        `/api/admin/billing/accounts/${accountId}/timeseries?period=${period}`
+        `/api/admin/billing/accounts/${accountId}/timeseries?${periodParams}`
       );
       if (res.ok) {
         const data = await res.json();
@@ -235,7 +245,7 @@ export default function BillingSlideOver({
     } finally {
       setChartLoading(false);
     }
-  }, [accountId, period, authFetch]);
+  }, [accountId, periodParams, authFetch]);
 
   useEffect(() => {
     if (accountId) {
@@ -246,7 +256,7 @@ export default function BillingSlideOver({
       fetchDetail();
       fetchTimeseries();
     }
-  }, [accountId, period, fetchDetail, fetchTimeseries]);
+  }, [accountId, periodParams, fetchDetail, fetchTimeseries]);
 
   const handleSaveRates = async () => {
     if (!accountId) return;

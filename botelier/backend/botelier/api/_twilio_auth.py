@@ -191,7 +191,7 @@ def mint_stream_token(
     digest = hmac.new(
         secret.encode("utf-8"),
         _stream_payload(call_sid, to_number, exp),
-        hashlib.sha256,
+        digestmod=hashlib.sha256,
     ).hexdigest()
     return digest, exp
 
@@ -241,7 +241,7 @@ def verify_stream_token(
     expected = hmac.new(
         secret.encode("utf-8"),
         _stream_payload(call_sid, to_number, exp_int),
-        hashlib.sha256,
+        digestmod=hashlib.sha256,
     ).hexdigest()
 
     if not hmac.compare_digest(expected, token):
