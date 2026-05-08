@@ -174,6 +174,9 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
       if (data.vad_provider === "silero") {
         data.vad_config = { ...SILERO_VAD_DEFAULTS, ...(data.vad_config || {}) };
       }
+      if (data.stt_model?.startsWith("flux-") && data.vad_enabled) {
+        data.vad_enabled = false;
+      }
       setAssistant(data);
       setFormData(data);
       if (data.mcp_enabled_tools) {
@@ -761,7 +764,12 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
                 handleFieldChange("stt_model", defaultModel);
               }
             }}
-            onModelChange={(value) => handleFieldChange("stt_model", value)}
+            onModelChange={(value) => {
+              handleFieldChange("stt_model", value);
+              if (value.startsWith("flux-")) {
+                handleFieldChange("vad_enabled", false);
+              }
+            }}
           />
 
           {formData.stt_provider === "deepgram" && 
@@ -845,30 +853,47 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
           title="Voice Activity Detection (VAD)"
           description="Optional: Detect when users start and stop speaking"
         >
-          <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4 mb-6">
-            <div className="flex items-start space-x-3">
-              <Info className="h-5 w-5 text-blue-400 mt-0.5 flex-shrink-0" />
-              <div className="text-sm text-blue-200">
-                <p className="font-semibold mb-1">Important Note</p>
-                <p>
-                  Do not enable external VAD if you&apos;re using a speech-to-text provider with built-in voice activity detection (like Deepgram Flux). 
-                  Built-in VAD is often more accurate because it uses both acoustic and textual cues. External VAD is useful for interruption 
-                  detection or when using STT providers without built-in VAD.
-                </p>
+          {formData.stt_model?.startsWith("flux-") ? (
+            <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 mb-6">
+              <div className="flex items-start space-x-3">
+                <Info className="h-5 w-5 text-amber-400 mt-0.5 flex-shrink-0" />
+                <div className="text-sm text-amber-200">
+                  <p className="font-semibold mb-1">External VAD disabled — Flux handles turn detection</p>
+                  <p>
+                    The selected STT model (<span className="font-mono">{formData.stt_model}</span>) is a Deepgram Flux model with built-in end-of-turn detection. 
+                    External VAD is automatically disabled because Flux uses both acoustic and textual cues to determine when a speaker has finished — 
+                    enabling external VAD alongside it would interfere with that process. Configure turn sensitivity in the Transcriber tab using the Flux parameters.
+                  </p>
+                </div>
               </div>
             </div>
-          </div>
+          ) : (
+            <div className="bg-blue-500/10 border border-blue-500/20 rounded-lg p-4 mb-6">
+              <div className="flex items-start space-x-3">
+                <Info className="h-5 w-5 text-blue-400 mt-0.5 flex-shrink-0" />
+                <div className="text-sm text-blue-200">
+                  <p className="font-semibold mb-1">Important Note</p>
+                  <p>
+                    Do not enable external VAD if you&apos;re using a speech-to-text provider with built-in voice activity detection (like Deepgram Flux). 
+                    Built-in VAD is often more accurate because it uses both acoustic and textual cues. External VAD is useful for interruption 
+                    detection or when using STT providers without built-in VAD.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
 
           <FormField
             label="Enable VAD"
             description="Turn on voice activity detection for this assistant"
           >
-            <label className="flex items-center space-x-3 cursor-pointer">
+            <label className={`flex items-center space-x-3 ${formData.stt_model?.startsWith("flux-") ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}>
               <input
                 type="checkbox"
                 checked={formData.vad_enabled || false}
                 onChange={(e) => handleFieldChange("vad_enabled", e.target.checked)}
-                className="w-4 h-4 bg-[#141414] border border-gray-800 rounded focus:ring-2 focus:ring-blue-600"
+                disabled={formData.stt_model?.startsWith("flux-")}
+                className="w-4 h-4 bg-[#141414] border border-gray-800 rounded focus:ring-2 focus:ring-blue-600 disabled:cursor-not-allowed"
               />
               <span className="text-sm text-gray-300">
                 {formData.vad_enabled ? "VAD Enabled" : "VAD Disabled"}

@@ -1085,6 +1085,8 @@ _DEEPGRAM_VALID_MODELS_FALLBACK: frozenset = frozenset(
         "nova-2-meeting",
         "nova-2-phonecall",
         "nova-2-voicemail",
+        "flux-general-en",
+        "flux-general-multi",
     ]
 )
 

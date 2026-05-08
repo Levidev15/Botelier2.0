@@ -124,6 +124,8 @@ STT_PROVIDERS: Dict[STTProvider, STTConfig] = {
             "nova-2-meeting",
             "nova-2-phonecall",
             "nova-2-voicemail",
+            "flux-general-en",
+            "flux-general-multi",
         ],
         supports_vad=True,
         supports_diarization=True,
