@@ -771,6 +771,21 @@ class VadSuspicionTracker(FrameProcessor):
     def set_event_queue(self, event_queue) -> None:
         self._event_queue = event_queue
 
+    def clear_stt_mute(self) -> None:
+        """Clear the STT-muted flag and reset the turn clock.
+
+        Called when the greeting window ends (GreetingCompletionTracker fires)
+        so the missed-speech heuristic starts from a clean baseline.
+
+        Without the turn-clock reset, _last_turn_finalized_mono = 0.0 would
+        immediately satisfy _last_turn_finalized_mono < _t_last_inbound and
+        fire a spurious vad_missed_speech_suspected on the very first
+        post-greeting audio frame — defeating the purpose of the guard.
+        """
+        self._timing_state["stt_muted"] = False
+        self._last_turn_finalized_mono = time.monotonic()
+        logger.debug("VadSuspicionTracker: STT mute cleared — missed-speech heuristic now active")
+
     def _base_details(self) -> dict:
         return {
             "assistant_id": self._metadata.get("assistant_id"),
@@ -804,22 +819,29 @@ class VadSuspicionTracker(FrameProcessor):
                 self._event_queue.log("vad_false_start_suspected", event_source="pipecat", severity="warning", details=details)
             self._pending_interruption_mono = 0.0
 
-        _t_last_inbound = self._timing_state.get("t_last_inbound", 0.0)
-        if _t_last_inbound and (_now - _t_last_inbound) <= _missed_speech_window_s:
-            _since_last_turn = (_now - self._last_turn_finalized_mono) if self._last_turn_finalized_mono else 999999
-            _last_turn_before_inbound = self._last_turn_finalized_mono < _t_last_inbound
-            _cooldown_ok = (_now - self._last_missed_emit_mono) >= _missed_speech_window_s
-            if _last_turn_before_inbound and _since_last_turn >= _missed_speech_window_s and _cooldown_ok and self._event_queue is not None:
-                details = self._base_details()
-                details.update({
-                    "turn_index": int(self._timing_state.get("turn_index", 0)),
-                    "inbound_to_now_ms": int((_now - _t_last_inbound) * 1000),
-                    "since_last_turn_finalized_ms": int(_since_last_turn * 1000) if self._last_turn_finalized_mono else None,
-                    "missed_speech_window_ms": int(_missed_speech_window_s * 1000),
-                    "confidence_inputs": {"recent_inbound_audio_seen": True, "timely_turn_finalized_seen": False},
-                })
-                self._event_queue.log("vad_missed_speech_suspected", event_source="pipecat", severity="warning", details=details)
-                self._last_missed_emit_mono = _now
+        # Only run the missed-speech heuristic when STT is active. During the
+        # muted greeting window, Twilio keeps streaming audio continuously but
+        # MuteUntilFirstBotCompleteUserMuteStrategy prevents any
+        # TranscriptionFrame from arriving — the absence of transcripts is
+        # intentional, not anomalous. clear_stt_mute() re-enables this check
+        # the moment the greeting finishes and STT begins accepting audio.
+        if not self._timing_state.get("stt_muted", False):
+            _t_last_inbound = self._timing_state.get("t_last_inbound", 0.0)
+            if _t_last_inbound and (_now - _t_last_inbound) <= _missed_speech_window_s:
+                _since_last_turn = (_now - self._last_turn_finalized_mono) if self._last_turn_finalized_mono else 999999
+                _last_turn_before_inbound = self._last_turn_finalized_mono < _t_last_inbound
+                _cooldown_ok = (_now - self._last_missed_emit_mono) >= _missed_speech_window_s
+                if _last_turn_before_inbound and _since_last_turn >= _missed_speech_window_s and _cooldown_ok and self._event_queue is not None:
+                    details = self._base_details()
+                    details.update({
+                        "turn_index": int(self._timing_state.get("turn_index", 0)),
+                        "inbound_to_now_ms": int((_now - _t_last_inbound) * 1000),
+                        "since_last_turn_finalized_ms": int(_since_last_turn * 1000) if self._last_turn_finalized_mono else None,
+                        "missed_speech_window_ms": int(_missed_speech_window_s * 1000),
+                        "confidence_inputs": {"recent_inbound_audio_seen": True, "timely_turn_finalized_seen": False},
+                    })
+                    self._event_queue.log("vad_missed_speech_suspected", event_source="pipecat", severity="warning", details=details)
+                    self._last_missed_emit_mono = _now
 
         await self.push_frame(frame, direction)
 class InboundAudioTracker(FrameProcessor):
@@ -1443,6 +1465,12 @@ class VoiceEngineFactory:
         _timing_state: dict = {}
         _timing_state["vad_false_start_window_s"] = float(config.stt_config.get("utterance_end_ms", 1000)) / 1000.0
         _timing_state["vad_missed_speech_window_s"] = float(config.stt_config.get("eot_timeout_ms", 5000)) / 2000.0
+        # STT is intentionally muted during the greeting window by
+        # MuteUntilFirstBotCompleteUserMuteStrategy. VadSuspicionTracker reads
+        # this flag to suppress the missed-speech heuristic while no
+        # TranscriptionFrames can ever arrive. Cleared via
+        # VadSuspicionTracker.clear_stt_mute() in the greeting callback.
+        _timing_state["stt_muted"] = True
 
         llm_response_capture = LLMResponseCapture(
             on_llm_response=on_llm_response,

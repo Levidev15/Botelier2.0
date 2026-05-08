@@ -918,6 +918,12 @@ class CallHandler:
                 _handler = self  # capture for closure — track task handle per call
 
                 async def _on_greeting_completed():
+                    # Clear STT mute gate the moment the greeting finishes playing.
+                    # This is the exact point MuteUntilFirstBotComplete releases and
+                    # STT begins accepting audio. VadSuspicionTracker can now fire
+                    # missed-speech heuristics from a clean turn-clock baseline.
+                    vad_suspicion_tracker.clear_stt_mute()
+
                     def _sync_mark_greeting():
                         from ..services.call_logger import CallLogger as _CallLogger
 
