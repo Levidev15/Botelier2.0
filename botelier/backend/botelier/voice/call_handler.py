@@ -194,6 +194,7 @@ class CallHandler:
         # abandoned ringing calls never leak.
         self.precomputed_configs: PreWarmCache = PreWarmCache(max_size=256, ttl_secs=60.0)
         self.call_usage_trackers: dict = {}
+        self.call_idle_trackers: dict = {}  # call_sid -> IdleTimeoutTracker (cancelled on teardown)
 
     async def handle_call(
         self,
@@ -667,6 +668,8 @@ class CallHandler:
             # Store the latency tracker so _save_call_transcript can read
             # accumulated token and character counts at call teardown.
             self.call_usage_trackers[call_sid] = tts_latency_tracker
+            # Store idle tracker so cancel_idle_tracker() can stop it on transfer or teardown.
+            self.call_idle_trackers[call_sid] = idle_timeout_tracker
 
             # 6.5 Register MCP tools if connection is configured (must happen AFTER pipeline creation)
             # The event_queue is created below (section 7.5) — we capture timing and outcome
@@ -1193,6 +1196,17 @@ class CallHandler:
                 except Exception as save_error:
                     logger.error(f"Failed to save transcript on error: {save_error}")
         finally:
+            # Stop the idle timer immediately — must run before flush_and_stop() to
+            # close the asyncio scheduling window between runner.run(task) returning
+            # and the first await inside flush_and_stop().  IdleTimeoutTracker.stop()
+            # is synchronous and idempotent; already a no-op if cancel_idle_tracker()
+            # was called earlier (transfer path) because asyncio.Event.set() is idempotent.
+            _idle_tracker = self.call_idle_trackers.pop(call_sid, None)
+            if _idle_tracker is not None:
+                try:
+                    _idle_tracker.stop()
+                except Exception as _idle_err:
+                    logger.warning(f"Error stopping idle tracker for {call_sid}: {_idle_err}")
             # Cancel any pending post-speech transfer callback so a stale transfer
             # cannot fire after the call has already ended / pipeline has shut down.
             if call_sid in self.call_mappers:
@@ -1282,6 +1296,9 @@ class CallHandler:
             # dict never grows unboundedly under abnormal terminations.
             self.pending_cancels.pop(call_sid, None)
             self.call_usage_trackers.pop(call_sid, None)
+            # Safety pop — already removed at the top of the finally block, but
+            # handles any edge path where the pop above was skipped.
+            self.call_idle_trackers.pop(call_sid, None)
 
     def is_pipeline_active(self, call_sid: str) -> bool:
         """Task #96: True iff a pipeline for ``call_sid`` is still registered
@@ -1369,6 +1386,27 @@ class CallHandler:
             await task.cancel()
         except Exception as e:
             logger.warning(f"cancel_call_pipeline: error cancelling pipeline for {call_sid}: {e}")
+
+    def cancel_idle_tracker(self, call_sid: str) -> None:
+        """Stop the IdleTimeoutTracker for a call.
+
+        Called at transfer initiation (from FunctionMapper) so the idle timer
+        stops the moment the AI leg ends — prevents ghost idle_timeout / caller_
+        silence_detected events during the transfer ringing/bridging window.
+
+        Also called defensively from the handle_call finally block (via the
+        call_idle_trackers pop at the top of the block), but that path uses the
+        dict directly; this method is the public API for callers outside handle_call.
+
+        Safe to call when no tracker is registered — no-op.
+        """
+        tracker = self.call_idle_trackers.pop(call_sid, None)
+        if tracker is not None:
+            try:
+                tracker.stop()
+                logger.debug(f"Idle tracker cancelled at transfer for call {call_sid}")
+            except Exception as e:
+                logger.warning(f"cancel_idle_tracker: error stopping tracker for {call_sid}: {e}")
 
     def mark_response_interrupted(self, call_sid: str, content: str):
         """Mark an assistant response as interrupted.

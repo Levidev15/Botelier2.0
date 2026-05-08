@@ -542,6 +542,13 @@ class FunctionMapper:
                                 f"(recording stop + transcript save, parallel) for call {self.call_sid}"
                             )
 
+                            # Stop the idle timer now that the AI leg is ending.
+                            # Prevents ghost idle_timeout events during the transfer
+                            # ringing/bridging window (the 30 s countdown from the last
+                            # user utterance fires AFTER the transfer if not cancelled here).
+                            if self.call_handler is not None:
+                                self.call_handler.cancel_idle_tracker(self.call_sid)
+
                             # Build mode-specific TwiML.
                             # Cold REFER: <Stop><Stream> is intentionally omitted — Twilio closes
                             # the WebSocket naturally on REFER, so including it would cut off any

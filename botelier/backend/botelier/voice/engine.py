@@ -466,11 +466,14 @@ class IdleTimeoutTracker:
         pipeline = Pipeline([..., tracker.processor, ...])
         # after pipeline creation:
         tracker.set_event_queue(event_queue)
+        # at call end or transfer initiation:
+        tracker.stop()
     """
 
     def __init__(self, timeout: float = 30.0):
         self._event_queue = None
         self._timeout = timeout
+        self._cancelled = asyncio.Event()
         self.processor = IdleFrameProcessor(
             callback=self._on_idle,
             timeout=timeout,
@@ -479,15 +482,34 @@ class IdleTimeoutTracker:
     def set_event_queue(self, event_queue) -> None:
         self._event_queue = event_queue
 
+    def stop(self) -> None:
+        """Cancel the idle timer — prevents _on_idle from emitting any further events.
+
+        This is the primary guard against ghost idle_timeout events after a call ends
+        or a transfer fires.  IdleFrameProcessor (Pipecat) owns an internal asyncio
+        Task that is NOT cancelled when PipelineTask.cancel() pushes a CancelFrame
+        through the frame chain — it keeps rearming itself every ``timeout`` seconds
+        for the lifetime of the event loop.  Calling stop() here gates the callback
+        before it can write to the event queue, regardless of asyncio scheduling order.
+
+        Safe to call multiple times — asyncio.Event.set() is idempotent.
+        """
+        self._cancelled.set()
+        logger.debug("IdleTimeoutTracker: stopped — no further idle events will be emitted")
+
     async def _on_idle(self, processor: IdleFrameProcessor) -> None:
         """Called each time the idle timeout fires.
 
-        Note: there is no explicit stop-event guard here against a race with
-        pipeline teardown.  That guard lives in CallEventQueue.log() itself —
-        it checks _stop_event.is_set() and silently drops any event enqueued
-        after flush_and_stop() is called.  This single centralised guard
-        protects all callers, including this one.
+        Primary guard: _cancelled.is_set() is checked first.  stop() sets this
+        flag synchronously in the call finally block (before flush_and_stop()) and
+        at transfer initiation — both of which happen before or concurrent with the
+        asyncio scheduling of this callback.  This closes the race window that the
+        CallEventQueue._stop_event guard alone cannot cover (the guard only fires
+        after flush_and_stop() is awaited, but this callback can be scheduled by
+        asyncio between runner.run(task) returning and flush_and_stop() being called).
         """
+        if self._cancelled.is_set():
+            return
         if self._event_queue is not None:
             self._event_queue.log(
                 "idle_timeout",
