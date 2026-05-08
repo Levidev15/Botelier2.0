@@ -1195,19 +1195,66 @@ class CallLogger:
                                 )
                                 ai_leg_final.duration_seconds = corrected
 
-                        total_dur = sum(l.duration_seconds or 0 for l in non_cold)
-                        if total_dur > 0:
-                            call_log.duration_seconds = total_dur
-                        elif call_log.answered_at and call_log.ended_at:
-                            # answered_at → ended_at excludes ring time and matches
-                            # Twilio's CallDuration measurement.
-                            call_log.duration_seconds = max(
-                                0, int((call_log.ended_at - call_log.answered_at).total_seconds())
+                        # Compute the caller-perceived (display) duration for the parent
+                        # call.  Twilio's CallDuration for an outbound transfer leg is
+                        # billable time only (answered-to-hangup), which excludes the
+                        # ringing window.  For transfer legs we use the wall-clock span
+                        # (leg.started_at → leg.ended_at) so that ring time is included
+                        # in the display total, matching what the caller actually heard.
+                        # The per-leg duration_seconds column keeps Twilio's value for
+                        # billing accuracy — only call_log.duration_seconds is adjusted.
+                        _TRANSFER_TYPES = (
+                            LegType.TRANSFER_EXTERNAL.value,
+                            LegType.TRANSFER_SIP.value,
+                        )
+                        total_dur = 0
+                        for _l in non_cold:
+                            if _l.leg_type in _TRANSFER_TYPES:
+                                # Wall-clock captures ring + answer time for display.
+                                # max(..., twilio_duration) ensures we never go below
+                                # Twilio's own measurement even when our timestamps
+                                # drift (e.g. server restart between start and end).
+                                if _l.started_at and _l.ended_at:
+                                    _leg_wall = max(
+                                        0,
+                                        int(
+                                            (_l.ended_at - _l.started_at).total_seconds()
+                                        ),
+                                    )
+                                    total_dur += max(_l.duration_seconds or 0, _leg_wall)
+                                else:
+                                    total_dur += _l.duration_seconds or 0
+                            else:
+                                total_dur += _l.duration_seconds or 0
+
+                        # Wall-clock floor: answered_at → ended_at is the authoritative
+                        # caller-perceived duration and acts as a safety net when leg
+                        # timestamps drift.  Promoted from a zero-total-only fallback to
+                        # always run so the final value is max(leg_sum, wall_clock).
+                        # Clamped to 0 to guard against server clock skew.
+                        _wall_clock_total = 0
+                        if call_log.answered_at and call_log.ended_at:
+                            _wall_clock_total = max(
+                                0,
+                                int(
+                                    (
+                                        call_log.ended_at - call_log.answered_at
+                                    ).total_seconds()
+                                ),
                             )
+
+                        if total_dur > 0 or _wall_clock_total > 0:
+                            call_log.duration_seconds = max(total_dur, _wall_clock_total)
                         elif call_log.started_at and call_log.ended_at:
                             call_log.duration_seconds = int(
                                 (call_log.ended_at - call_log.started_at).total_seconds()
                             )
+
+                        logger.debug(
+                            f"Transfer duration [{call_log.call_sid}]: "
+                            f"leg_sum={total_dur}s wall_clock={_wall_clock_total}s "
+                            f"final={call_log.duration_seconds}s (billing uses same value)"
+                        )
 
                         # Write outbound_transfer billing item now that we have
                         # the authoritative leg duration from Twilio.  Also correct
