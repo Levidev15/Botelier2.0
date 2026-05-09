@@ -1182,6 +1182,7 @@ class VoiceEngineFactory:
             model = model or "nova-3-general"
             from pipecat.services.deepgram.flux.stt import DeepgramFluxSTTService
             from pipecat.services.deepgram.stt import DeepgramSTTService
+            from pipecat.services.stt_latency import DEEPGRAM_TTFS_P99
 
             # Validate the model against the canonical allowlist before
             # opening any Deepgram WebSocket.  This runs for ALL Deepgram
@@ -1198,8 +1199,20 @@ class VoiceEngineFactory:
 
             # Check if using Flux model (advanced turn detection)
             if is_flux_model(model):
+                # ttfs_p99_latency:
+                #   Pipecat's TurnAnalyzerUserTurnStopStrategy sizes the STT
+                #   wait window as max(0, ttfs_p99 - vad.stop_secs).  Without
+                #   an explicit value Pipecat falls back to DEFAULT_TTFS_P99=1.0 s
+                #   → the window is ~650 ms too wide, adding ~650 ms of dead
+                #   silence per turn.  Deepgram Flux benchmarks at ~0.35 s
+                #   (DEEPGRAM_TTFS_P99), same as standard Deepgram.  Per-
+                #   assistant operators can override via stt_config.ttfs_p99_latency.
+                flux_ttfs = float(
+                    config.stt_config.get("ttfs_p99_latency", DEEPGRAM_TTFS_P99)
+                )
                 return DeepgramFluxSTTService(
                     api_key=api_keys.get("deepgram_api_key"),
+                    ttfs_p99_latency=flux_ttfs,
                     settings=DeepgramFluxSTTService.Settings(
                         model=model,
                         eager_eot_threshold=config.stt_config.get("eager_eot_threshold"),
