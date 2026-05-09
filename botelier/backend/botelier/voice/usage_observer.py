@@ -21,6 +21,13 @@ class UsageObserver(BaseObserver):
     enabling per-model cost rate lookups when different accounts use different
     providers (e.g. gpt-4o vs gpt-4o-mini, sonic-2 vs sonic-english).
 
+    Deduplication: on_push_frame is called once per processor-to-processor
+    push. A single MetricsFrame flows downstream through every processor after
+    the one that emitted it — without dedup, each frame would be counted N times
+    (where N is the number of downstream processors, typically ~10). Frame.id is
+    a unique integer per frame instance (assigned once at creation, stable across
+    all subsequent pushes), so we track seen frame IDs and skip re-processing.
+
     All state is mutated from the Pipecat asyncio event loop; no locking needed.
     """
 
@@ -31,6 +38,7 @@ class UsageObserver(BaseObserver):
         self._total_tts_chars: int = 0
         self._llm_model: str = ""
         self._tts_model: str = ""
+        self._seen_frame_ids: set[int] = set()
 
     @property
     def total_prompt_tokens(self) -> int:
@@ -57,6 +65,9 @@ class UsageObserver(BaseObserver):
     async def on_push_frame(self, data: FramePushed) -> None:
         if not isinstance(data.frame, MetricsFrame):
             return
+        if data.frame.id in self._seen_frame_ids:
+            return
+        self._seen_frame_ids.add(data.frame.id)
         for metric in data.frame.data or []:
             if isinstance(metric, LLMUsageMetricsData):
                 usage = metric.value

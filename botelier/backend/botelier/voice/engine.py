@@ -1343,6 +1343,18 @@ class VoiceEngineFactory:
         if provider == "deepgram":
             from pipecat.services.deepgram.tts import DeepgramTTSService
 
+            # Subclass that emits TTSUsageMetricsData so UsageObserver can
+            # capture TTS character counts for Deepgram Aura.  Pipecat's
+            # DeepgramTTSService.run_tts() does not call
+            # start_tts_usage_metrics(), unlike Cartesia.  We call it before
+            # delegating so the MetricsFrame is pushed once per synthesis
+            # request — the same call path Cartesia uses internally.
+            class _BotelierDeepgramTTSService(DeepgramTTSService):
+                async def run_tts(self, text: str, context_id: str):
+                    await self.start_tts_usage_metrics(text)
+                    async for frame in super().run_tts(text, context_id):
+                        yield frame
+
             voice = config.tts_voice_id or "aura-2-helena-en"
             # Twilio Media Streams require 8 kHz audio; tell Deepgram to encode at
             # 8000 Hz so no downstream resampling is needed before the Twilio
@@ -1350,7 +1362,7 @@ class VoiceEngineFactory:
             sample_rate = config.tts_config.get("sample_rate", 8000)
             encoding = config.tts_config.get("encoding", "linear16")
             if hasattr(DeepgramTTSService, "Settings"):
-                return DeepgramTTSService(
+                return _BotelierDeepgramTTSService(
                     api_key=api_keys.get("deepgram_api_key"),
                     sample_rate=sample_rate,
                     encoding=encoding,
@@ -1358,7 +1370,7 @@ class VoiceEngineFactory:
                         voice=voice,
                     ),
                 )
-            return DeepgramTTSService(
+            return _BotelierDeepgramTTSService(
                 api_key=api_keys.get("deepgram_api_key"),
                 voice=voice,
                 sample_rate=sample_rate,
