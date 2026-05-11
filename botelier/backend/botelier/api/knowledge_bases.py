@@ -338,6 +338,13 @@ async def import_from_url(
     """Crawl a website and generate Q&A knowledge entries via LLM."""
     kb = _get_kb_and_check(kb_id, "knowledge_base.import", user, db)
 
+    parsed_start = urlparse(str(data.url))
+    if parsed_start.scheme not in ("http", "https") or not parsed_start.netloc:
+        raise HTTPException(
+            status_code=400,
+            detail="URL must be a valid http:// or https:// address with a hostname",
+        )
+
     openai_key = os.environ.get("OPENAI_API_KEY", "")
     if not openai_key:
         raise HTTPException(status_code=503, detail="OpenAI API key is not configured")
@@ -352,10 +359,12 @@ async def import_from_url(
 
     start_url_clean = str(data.url).rstrip("/")
     if data.category:
-        raw_category = f"{data.category} [{start_url_clean}]"
+        suffix = f" [{start_url_clean}]"
+        max_prefix = 100 - len(suffix)
+        prefix = data.category[:max_prefix] if max_prefix > 0 else ""
+        entry_category = (prefix + suffix)[:100]
     else:
-        raw_category = start_url_clean
-    entry_category = raw_category[:100]
+        entry_category = start_url_clean[:100]
 
     total_created = 0
     for page in pages:
