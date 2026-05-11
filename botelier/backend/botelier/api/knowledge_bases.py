@@ -136,7 +136,7 @@ _QA_SYSTEM_PROMPT = """You are a knowledge-base assistant. Your job is to read a
 Q&A pairs that an AI phone agent can use to answer caller questions.
 
 Rules:
-- Generate between 3 and 8 Q&A pairs per page.
+- Generate between 3 and 10 Q&A pairs per page.
 - Questions must be short, natural, spoken-language questions a caller might ask.
 - Answers must be complete, spoken-language sentences — never bullet lists, markdown, or HTML.
 - Focus on facts: products, services, prices, hours, ingredients, policies, locations, contacts.
@@ -366,10 +366,15 @@ async def import_from_url(
     else:
         entry_category = start_url_clean[:100]
 
+    seen_questions_global: set = set()
     total_created = 0
     for page in pages:
         pairs = await _generate_qa_pairs(page["text"], page["url"], openai_key)
         for pair in pairs:
+            norm = pair["question"].lower().strip()
+            if norm in seen_questions_global:
+                continue
+            seen_questions_global.add(norm)
             entry = KnowledgeEntry(
                 knowledge_base_id=kb_id,
                 question=pair["question"],
