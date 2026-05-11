@@ -48,7 +48,7 @@ export default function ImportURLModal({ knowledgeBaseId, onClose, onImported }:
 
       const data = await res.json();
       const created = data.entries_created ?? 0;
-      const pages = data.pages_crawled ?? 0;
+      const pages = data.pages_fetched ?? data.pages_crawled ?? 0;
       notify.success(`Imported ${created} Q&A entries from ${pages} page${pages !== 1 ? "s" : ""}`);
       onImported(created);
     } catch {
