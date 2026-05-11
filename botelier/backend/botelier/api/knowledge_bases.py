@@ -186,11 +186,20 @@ def _same_domain_links(html: str, base_url: str) -> List[str]:
     return links
 
 
-async def _crawl_pages(start_url: str, max_pages: int) -> List[dict]:
-    """BFS crawl of same-domain pages. Returns list of {url, text} dicts."""
+async def _crawl_pages(start_url: str, max_pages: int) -> tuple:
+    """BFS crawl of same-domain pages.
+
+    Returns (pages, fetched_count) where pages is a list of {url, text} dicts
+    and fetched_count is the total number of HTTP requests made.
+
+    max_pages caps fetched pages, not just pages that yield extractable content,
+    so the crawler never exceeds the configured limit regardless of how many
+    pages contain only boilerplate.
+    """
     visited: set = set()
     queue: List[str] = [start_url]
-    pages = []
+    pages: List[dict] = []
+    fetched = 0
 
     async with httpx.AsyncClient(
         headers=_CRAWL_HEADERS,
@@ -198,12 +207,14 @@ async def _crawl_pages(start_url: str, max_pages: int) -> List[dict]:
         timeout=15.0,
         transport=SSRFSafeTransport(),
     ) as client:
-        while queue and len(pages) < max_pages:
+        while queue and fetched < max_pages:
             url = queue.pop(0)
             if url in visited:
                 continue
             visited.add(url)
+            fetched += 1
 
+            html: Optional[str] = None
             try:
                 resp = await client.get(url)
                 if resp.status_code != 200:
@@ -220,12 +231,12 @@ async def _crawl_pages(start_url: str, max_pages: int) -> List[dict]:
             if len(text) > 200:
                 pages.append({"url": url, "text": text})
 
-            if len(pages) < max_pages:
+            if fetched < max_pages:
                 for link in _same_domain_links(html, url):
                     if link not in visited and link not in queue:
                         queue.append(link)
 
-    return pages
+    return pages, fetched
 
 
 _CHUNK_SIZE = 4000
@@ -349,7 +360,7 @@ async def import_from_url(
     if not openai_key:
         raise HTTPException(status_code=503, detail="OpenAI API key is not configured")
 
-    pages = await _crawl_pages(str(data.url), data.max_pages)
+    pages, fetched_count = await _crawl_pages(str(data.url), data.max_pages)
     if not pages:
         raise HTTPException(
             status_code=422,
@@ -389,7 +400,8 @@ async def import_from_url(
 
     return {
         "success": True,
-        "pages_crawled": len(pages),
+        "pages_fetched": fetched_count,
+        "pages_with_content": len(pages),
         "entries_created": total_created,
         "category_tag": entry_category,
     }
