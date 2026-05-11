@@ -218,7 +218,7 @@ async def _crawl_pages(start_url: str, max_pages: int) -> List[dict]:
 
             text = _extract_text(html)
             if len(text) > 200:
-                pages.append({"url": url, "text": text[:6000]})
+                pages.append({"url": url, "text": text})
 
             if len(pages) < max_pages:
                 for link in _same_domain_links(html, url):
