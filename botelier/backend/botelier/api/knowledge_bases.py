@@ -26,11 +26,19 @@ Entries within a Knowledge Base:
 
 import csv
 import io
+import json
+import logging
+import os
+import re
 from datetime import date, datetime
 from typing import List, Optional
+from urllib.parse import urljoin, urlparse
 
+import httpx
+from bs4 import BeautifulSoup
 from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from fastapi.responses import StreamingResponse
+from openai import AsyncOpenAI
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
@@ -40,6 +48,8 @@ from botelier.database import get_db
 from botelier.models.knowledge_base import KnowledgeBase
 from botelier.models.knowledge_entry import KnowledgeEntry
 from botelier.models.user import User
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/knowledge-bases", tags=["knowledge-bases"])
 
@@ -98,9 +108,217 @@ class BulkDeleteRequest(BaseModel):
     entry_ids: List[str] = Field(..., min_length=1)
 
 
+class ImportURLRequest(BaseModel):
+    """Request model for importing knowledge entries from a website URL."""
+
+    url: str = Field(..., min_length=1, max_length=2048)
+    max_pages: int = Field(default=10, ge=1, le=20)
+    category: Optional[str] = Field(None, max_length=100)
+
+
+# ============================================================
+# Website crawl + LLM Q&A generation helpers
+# ============================================================
+
+_CRAWL_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (compatible; Botelier-KB-Importer/1.0; +https://botelier.ai)",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "en-US,en;q=0.5",
+}
+
+_UNWANTED_TAGS = {
+    "script", "style", "noscript", "header", "footer", "nav",
+    "aside", "form", "button", "svg", "iframe", "img",
+}
+
+_QA_SYSTEM_PROMPT = """You are a knowledge-base assistant. Your job is to read a web page and produce
+Q&A pairs that an AI phone agent can use to answer caller questions.
+
+Rules:
+- Generate between 3 and 8 Q&A pairs per page.
+- Questions must be short, natural, spoken-language questions a caller might ask.
+- Answers must be complete, spoken-language sentences — never bullet lists, markdown, or HTML.
+- Focus on facts: products, services, prices, hours, ingredients, policies, locations, contacts.
+- Ignore boilerplate (copyright notices, navigation labels, cookie banners, login prompts).
+- If the page has no useful factual content, return {"pairs": []}.
+
+Respond ONLY with a valid JSON object in this exact format:
+{"pairs": [
+  {"question": "What flavors do you offer?", "answer": "We offer chocolate chip, peanut butter, and snickerdoodle cookies."},
+  {"question": "Do you ship nationwide?", "answer": "Yes, we ship to all 50 states with free shipping on orders over $30."}
+]}"""
+
+
+def _extract_text(html: str) -> str:
+    """Strip HTML to clean readable text, removing nav/footer/script noise."""
+    soup = BeautifulSoup(html, "html.parser")
+    for tag in soup.find_all(_UNWANTED_TAGS):
+        tag.decompose()
+    text = soup.get_text(separator="\n", strip=True)
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    deduplicated = []
+    seen = set()
+    for ln in lines:
+        if ln not in seen:
+            seen.add(ln)
+            deduplicated.append(ln)
+    return "\n".join(deduplicated)
+
+
+def _same_domain_links(html: str, base_url: str) -> List[str]:
+    """Return same-domain absolute links found on the page (no fragments/queries)."""
+    base = urlparse(base_url)
+    soup = BeautifulSoup(html, "html.parser")
+    links = []
+    for a in soup.find_all("a", href=True):
+        href = a["href"].strip()
+        if not href or href.startswith(("#", "mailto:", "tel:", "javascript:")):
+            continue
+        abs_url = urljoin(base_url, href)
+        parsed = urlparse(abs_url)
+        if parsed.scheme not in ("http", "https"):
+            continue
+        if parsed.netloc != base.netloc:
+            continue
+        clean = parsed._replace(fragment="", query="").geturl()
+        links.append(clean)
+    return links
+
+
+async def _crawl_pages(start_url: str, max_pages: int) -> List[dict]:
+    """BFS crawl of same-domain pages. Returns list of {url, text} dicts."""
+    visited: set = set()
+    queue: List[str] = [start_url]
+    pages = []
+
+    async with httpx.AsyncClient(
+        headers=_CRAWL_HEADERS,
+        follow_redirects=True,
+        timeout=15.0,
+    ) as client:
+        while queue and len(pages) < max_pages:
+            url = queue.pop(0)
+            if url in visited:
+                continue
+            visited.add(url)
+
+            try:
+                resp = await client.get(url)
+                if resp.status_code != 200:
+                    continue
+                ct = resp.headers.get("content-type", "")
+                if "text/html" not in ct:
+                    continue
+                html = resp.text
+            except Exception as exc:
+                logger.warning("Crawl error for %s: %s", url, exc)
+                continue
+
+            text = _extract_text(html)
+            if len(text) > 200:
+                pages.append({"url": url, "text": text[:6000]})
+
+            if len(pages) < max_pages:
+                for link in _same_domain_links(html, url):
+                    if link not in visited and link not in queue:
+                        queue.append(link)
+
+    return pages
+
+
+async def _generate_qa_pairs(page_text: str, page_url: str, openai_key: str) -> List[dict]:
+    """Ask the LLM to produce Q&A pairs from a single page's text. Returns list of {question, answer}."""
+    client = AsyncOpenAI(api_key=openai_key)
+    user_content = f"Page URL: {page_url}\n\n---\n\n{page_text[:4000]}"
+    try:
+        resp = await client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=[
+                {"role": "system", "content": _QA_SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ],
+            temperature=0.3,
+            max_tokens=1500,
+            response_format={"type": "json_object"},
+        )
+    except Exception as exc:
+        logger.warning("OpenAI Q&A generation failed for %s: %s", page_url, exc)
+        return []
+
+    raw = resp.choices[0].message.content or ""
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, list):
+            pairs = parsed
+        elif isinstance(parsed, dict):
+            pairs = next(
+                (v for v in parsed.values() if isinstance(v, list)),
+                [],
+            )
+        else:
+            pairs = []
+    except json.JSONDecodeError:
+        logger.warning("Failed to parse Q&A JSON for %s: %s", page_url, raw[:200])
+        return []
+
+    valid = []
+    for item in pairs:
+        if isinstance(item, dict) and item.get("question") and item.get("answer"):
+            valid.append({
+                "question": str(item["question"]).strip(),
+                "answer": str(item["answer"]).strip(),
+            })
+    return valid
+
+
 # ============================================================
 # Knowledge Base Endpoints
 # ============================================================
+
+
+@router.post("/{kb_id}/import-url", status_code=200)
+async def import_from_url(
+    kb_id: str,
+    data: ImportURLRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Crawl a website and generate Q&A knowledge entries via LLM."""
+    kb = _get_kb_and_check(kb_id, "knowledge_base.import", user, db)
+
+    openai_key = os.environ.get("OPENAI_API_KEY", "")
+    if not openai_key:
+        raise HTTPException(status_code=503, detail="OpenAI API key is not configured")
+
+    pages = await _crawl_pages(str(data.url), data.max_pages)
+    if not pages:
+        raise HTTPException(
+            status_code=422,
+            detail="No readable content could be extracted from the URL. "
+            "The site may require JavaScript or block automated access.",
+        )
+
+    total_created = 0
+    for page in pages:
+        pairs = await _generate_qa_pairs(page["text"], page["url"], openai_key)
+        for pair in pairs:
+            entry = KnowledgeEntry(
+                knowledge_base_id=kb_id,
+                question=pair["question"],
+                answer=pair["answer"],
+                category=data.category,
+            )
+            db.add(entry)
+            total_created += 1
+
+    if total_created > 0:
+        db.commit()
+
+    return {
+        "success": True,
+        "pages_crawled": len(pages),
+        "entries_created": total_created,
+    }
 
 
 @router.post("", status_code=201)

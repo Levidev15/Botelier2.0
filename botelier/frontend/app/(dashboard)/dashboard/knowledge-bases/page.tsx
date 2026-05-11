@@ -12,6 +12,7 @@ import { parseCSVLine, formatDate } from "./types";
 import KBList from "./components/KBList";
 import KBDetailHeader from "./components/KBDetailHeader";
 import KBEntryList from "./components/KBEntryList";
+import ImportURLModal from "./components/ImportURLModal";
 
 export default function KnowledgeBasesPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
@@ -43,6 +44,7 @@ export default function KnowledgeBasesPage() {
   const [importProgress, setImportProgress] = useState<{ done: number; total: number } | null>(null);
   const [importResult, setImportResult] = useState<ImportResult | null>(null);
   const importFileRef = useRef<HTMLInputElement>(null);
+  const [showImportURLModal, setShowImportURLModal] = useState(false);
 
   useEffect(() => {
     if (!contextLoading && accountId) {
@@ -318,6 +320,7 @@ export default function KnowledgeBasesPage() {
           handleFileChange={handleFileChange}
           canCreate={canCreate}
           onAddEntry={() => setShowAddEntryModal(true)}
+          onImportURL={() => setShowImportURLModal(true)}
         />
 
         <div className="p-8">
@@ -351,6 +354,17 @@ export default function KnowledgeBasesPage() {
             onDismissResult={() => setImportResult(null)}
           />
         </div>
+
+        {showImportURLModal && (
+          <ImportURLModal
+            knowledgeBaseId={selectedKB.id}
+            onClose={() => setShowImportURLModal(false)}
+            onImported={(count) => {
+              setShowImportURLModal(false);
+              if (count > 0) fetchEntries(selectedKB.id);
+            }}
+          />
+        )}
       </div>
     );
   }

@@ -1,7 +1,7 @@
 "use client";
 
 import { useRef } from "react";
-import { ArrowLeft, Search, AlertCircle, Grid3x3, List, Download, Upload, Plus } from "lucide-react";
+import { ArrowLeft, Search, AlertCircle, Grid3x3, List, Download, Upload, Plus, Globe } from "lucide-react";
 import type { KnowledgeBase } from "../types";
 
 interface KBDetailHeaderProps {
@@ -24,6 +24,7 @@ interface KBDetailHeaderProps {
   handleFileChange: (e: React.ChangeEvent<HTMLInputElement>) => void;
   canCreate: boolean;
   onAddEntry: () => void;
+  onImportURL: () => void;
 }
 
 export default function KBDetailHeader({
@@ -46,6 +47,7 @@ export default function KBDetailHeader({
   handleFileChange,
   canCreate,
   onAddEntry,
+  onImportURL,
 }: KBDetailHeaderProps) {
   return (
     <>
@@ -115,11 +117,21 @@ export default function KBDetailHeader({
                 Export
               </button>
               {canImport && (
-                <label className="flex items-center gap-2 px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg text-gray-400 hover:text-white transition-colors cursor-pointer text-sm">
-                  <Upload className="w-4 h-4" />
-                  Import
-                  <input ref={importFileRef} type="file" accept=".csv" onChange={handleFileChange} className="hidden" />
-                </label>
+                <>
+                  <button
+                    onClick={onImportURL}
+                    className="flex items-center gap-2 px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg text-gray-400 hover:text-white transition-colors text-sm"
+                    title="Import Q&A entries from a website"
+                  >
+                    <Globe className="w-4 h-4" />
+                    From website
+                  </button>
+                  <label className="flex items-center gap-2 px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg text-gray-400 hover:text-white transition-colors cursor-pointer text-sm">
+                    <Upload className="w-4 h-4" />
+                    Import CSV
+                    <input ref={importFileRef} type="file" accept=".csv" onChange={handleFileChange} className="hidden" />
+                  </label>
+                </>
               )}
               {canCreate && (
                 <button onClick={onAddEntry} className="inline-flex items-center px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg transition text-sm font-medium">
