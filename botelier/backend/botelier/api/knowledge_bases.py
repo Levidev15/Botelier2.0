@@ -48,6 +48,7 @@ from botelier.database import get_db
 from botelier.models.knowledge_base import KnowledgeBase
 from botelier.models.knowledge_entry import KnowledgeEntry
 from botelier.models.user import User
+from botelier.services.ssrf_safe_transport import SSRFSafeTransport
 
 logger = logging.getLogger(__name__)
 
@@ -195,6 +196,7 @@ async def _crawl_pages(start_url: str, max_pages: int) -> List[dict]:
         headers=_CRAWL_HEADERS,
         follow_redirects=True,
         timeout=15.0,
+        transport=SSRFSafeTransport(),
     ) as client:
         while queue and len(pages) < max_pages:
             url = queue.pop(0)
@@ -298,6 +300,13 @@ async def import_from_url(
             "The site may require JavaScript or block automated access.",
         )
 
+    start_netloc = urlparse(str(data.url)).netloc.lstrip("www.")
+    if data.category:
+        raw_category = f"{data.category} [{start_netloc}]"
+    else:
+        raw_category = start_netloc
+    entry_category = raw_category[:100]
+
     total_created = 0
     for page in pages:
         pairs = await _generate_qa_pairs(page["text"], page["url"], openai_key)
@@ -306,7 +315,7 @@ async def import_from_url(
                 knowledge_base_id=kb_id,
                 question=pair["question"],
                 answer=pair["answer"],
-                category=data.category,
+                category=entry_category,
             )
             db.add(entry)
             total_created += 1
@@ -318,6 +327,7 @@ async def import_from_url(
         "success": True,
         "pages_crawled": len(pages),
         "entries_created": total_created,
+        "category_tag": entry_category,
     }
 
 
