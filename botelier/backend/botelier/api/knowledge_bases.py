@@ -228,10 +228,42 @@ async def _crawl_pages(start_url: str, max_pages: int) -> List[dict]:
     return pages
 
 
-async def _generate_qa_pairs(page_text: str, page_url: str, openai_key: str) -> List[dict]:
-    """Ask the LLM to produce Q&A pairs from a single page's text. Returns list of {question, answer}."""
-    client = AsyncOpenAI(api_key=openai_key)
-    user_content = f"Page URL: {page_url}\n\n---\n\n{page_text[:4000]}"
+_CHUNK_SIZE = 4000
+_CHUNK_OVERLAP = 200
+
+
+def _chunk_text(text: str) -> List[str]:
+    """Split text into overlapping windows that fit within the LLM prompt budget.
+
+    Splits on paragraph boundaries where possible to avoid cutting mid-sentence.
+    """
+    if len(text) <= _CHUNK_SIZE:
+        return [text]
+
+    chunks = []
+    paragraphs = re.split(r"\n{2,}", text)
+    current = ""
+    for para in paragraphs:
+        if len(current) + len(para) + 2 > _CHUNK_SIZE:
+            if current:
+                chunks.append(current.strip())
+                tail = current[-_CHUNK_OVERLAP:] if len(current) > _CHUNK_OVERLAP else current
+                current = tail + "\n\n" + para
+            else:
+                chunks.append(para[:_CHUNK_SIZE])
+                current = para[-_CHUNK_OVERLAP:]
+        else:
+            current = (current + "\n\n" + para).lstrip() if current else para
+
+    if current.strip():
+        chunks.append(current.strip())
+
+    return chunks or [text[:_CHUNK_SIZE]]
+
+
+async def _call_llm_for_chunk(client: AsyncOpenAI, chunk: str, page_url: str) -> List[dict]:
+    """Single LLM call for one text chunk. Returns validated {question, answer} dicts."""
+    user_content = f"Page URL: {page_url}\n\n---\n\n{chunk}"
     try:
         resp = await client.chat.completions.create(
             model="gpt-4.1-mini",
@@ -253,10 +285,7 @@ async def _generate_qa_pairs(page_text: str, page_url: str, openai_key: str) -> 
         if isinstance(parsed, list):
             pairs = parsed
         elif isinstance(parsed, dict):
-            pairs = next(
-                (v for v in parsed.values() if isinstance(v, list)),
-                [],
-            )
+            pairs = next((v for v in parsed.values() if isinstance(v, list)), [])
         else:
             pairs = []
     except json.JSONDecodeError:
@@ -273,12 +302,33 @@ async def _generate_qa_pairs(page_text: str, page_url: str, openai_key: str) -> 
     return valid
 
 
+async def _generate_qa_pairs(page_text: str, page_url: str, openai_key: str) -> List[dict]:
+    """Chunk page text and ask the LLM to produce Q&A pairs from each chunk.
+
+    Deduplicates by normalised question text before returning.
+    """
+    client = AsyncOpenAI(api_key=openai_key)
+    chunks = _chunk_text(page_text)
+
+    seen_questions: set = set()
+    all_pairs: List[dict] = []
+    for chunk in chunks:
+        pairs = await _call_llm_for_chunk(client, chunk, page_url)
+        for pair in pairs:
+            norm = pair["question"].lower().strip()
+            if norm not in seen_questions:
+                seen_questions.add(norm)
+                all_pairs.append(pair)
+
+    return all_pairs
+
+
 # ============================================================
 # Knowledge Base Endpoints
 # ============================================================
 
 
-@router.post("/{kb_id}/import-url", status_code=200)
+@router.post("/{kb_id}/import-url", status_code=202)
 async def import_from_url(
     kb_id: str,
     data: ImportURLRequest,
@@ -300,11 +350,11 @@ async def import_from_url(
             "The site may require JavaScript or block automated access.",
         )
 
-    start_netloc = urlparse(str(data.url)).netloc.lstrip("www.")
+    start_url_clean = str(data.url).rstrip("/")
     if data.category:
-        raw_category = f"{data.category} [{start_netloc}]"
+        raw_category = f"{data.category} [{start_url_clean}]"
     else:
-        raw_category = start_netloc
+        raw_category = start_url_clean
     entry_category = raw_category[:100]
 
     total_created = 0
