@@ -141,6 +141,10 @@ class CallLog(Base):
     llm_completion_tokens = Column(BigInteger, nullable=True)
     tts_characters = Column(BigInteger, nullable=True)
     stt_seconds = Column(Numeric(10, 2), nullable=True)
+    # Task #190 — model identifiers reported by providers at call-end (e.g. "gpt-4o",
+    # "sonic-2"). Used by future per-model rate lookups. NULL for legacy rows.
+    llm_model = Column(String(100), nullable=True)
+    tts_model = Column(String(100), nullable=True)
     # Account-facing cost: sum of call_billing_items for this call.
     estimated_cost_usd = Column(Numeric(10, 6), nullable=True)
 

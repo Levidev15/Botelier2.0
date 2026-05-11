@@ -459,6 +459,12 @@ WHERE answered_at IS NULL
         created_at TIMESTAMP NOT NULL DEFAULT NOW()
     )""",
     "CREATE INDEX IF NOT EXISTS ix_platform_internal_rates_effective ON platform_internal_rates(effective_from DESC)",
+    # Task #190 — Pipecat-native usage observer: record which LLM and TTS model
+    # was used per call so per-model billing rates can be applied in follow-on work.
+    # VARCHAR(100) matches the assistant model name columns (e.g. "gpt-4o", "sonic-2").
+    # Populated at call-end from UsageObserver.llm_model / .tts_model.
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS llm_model VARCHAR(100)",
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS tts_model VARCHAR(100)",
 ]
 
 

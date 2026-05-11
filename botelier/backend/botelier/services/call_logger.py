@@ -491,6 +491,8 @@ class CallLogger:
         llm_prompt_tokens: Optional[int] = None,
         llm_completion_tokens: Optional[int] = None,
         tts_characters: Optional[int] = None,
+        llm_model: Optional[str] = None,
+        tts_model: Optional[str] = None,
         skip_billing: bool = False,
     ) -> bool:
         """Mark a call as completed and save transcript.
@@ -629,6 +631,10 @@ class CallLogger:
                 call_log.llm_completion_tokens = llm_completion_tokens
             if tts_characters is not None:
                 call_log.tts_characters = tts_characters
+            if llm_model:
+                call_log.llm_model = llm_model
+            if tts_model:
+                call_log.tts_model = tts_model
 
             # When the sweeper closes a call that never answered, the real call
             # duration is unknown — we must not fabricate it as (now - started_at).

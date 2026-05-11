@@ -1792,6 +1792,8 @@ You have access to the following Q&A knowledge base. Use this information to ans
             _cap_prompt_tokens = _usage_obs.total_prompt_tokens if _usage_obs else None
             _cap_completion_tokens = _usage_obs.total_completion_tokens if _usage_obs else None
             _cap_tts_chars = _usage_obs.total_tts_chars if _usage_obs else None
+            _cap_llm_model = (_usage_obs.llm_model or None) if _usage_obs else None
+            _cap_tts_model = (_usage_obs.tts_model or None) if _usage_obs else None
             _has_usage = bool(_cap_prompt_tokens or _cap_completion_tokens or _cap_tts_chars)
 
             if not transcript and not tools_used and not _has_usage:
@@ -1831,6 +1833,8 @@ You have access to the following Q&A knowledge base. Use this information to ans
                         llm_prompt_tokens=_cap_prompt_tokens,
                         llm_completion_tokens=_cap_completion_tokens,
                         tts_characters=_cap_tts_chars,
+                        llm_model=_cap_llm_model,
+                        tts_model=_cap_tts_model,
                         skip_billing=_cap_skip_billing,
                     )
                 finally:
