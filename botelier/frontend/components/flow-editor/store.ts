@@ -58,11 +58,14 @@ export interface APIRequestConfig {
   bodyTemplate?: string;
   responseMapping?: Record<string, string>;
   responseInstructions?: string;
-  successMessage?: string;
-  errorMessage?: string;
+  thinkingMessage?: string;
   timeout?: number;
-  retries?: number;
+  retryCount?: number;
   retryDelay?: number;
+  onSuccess?: string;
+  onError?: string;
+  onNotFound?: string;
+  onAuthError?: string;
   apiSource?: "custom" | "integration";
   integrationId?: string;
   integrationSlug?: string;

@@ -1450,9 +1450,15 @@ You are executing a structured conversation flow. Follow these guidelines:
         api_source = api_config.get("apiSource", "custom")
 
         if api_source == "integration" and api_config.get("integrationId"):
-            return await self._handle_integration_api_request(node_id, node, api_config)
+            result = await self._handle_integration_api_request(node_id, node, api_config)
         else:
-            return await self._handle_custom_api_request(node_id, node, api_config)
+            result = await self._handle_custom_api_request(node_id, node, api_config)
+
+        thinking_message = (api_config.get("thinkingMessage") or "").strip()
+        if thinking_message:
+            result["thinking_message"] = thinking_message
+
+        return result
 
     async def _handle_integration_api_request(
         self, node_id: str, node: FlowNode, api_config: dict

@@ -1179,8 +1179,35 @@ class FunctionMapper:
                 await params.result_callback({"status": "error", "message": "Flow not initialized"})
                 return
 
+            # If the node has a thinking message, speak it BEFORE the HTTP call
+            # starts so the caller hears something during the API wait rather
+            # than dead silence.  We resolve it from the flow config here —
+            # before awaiting handle_function_call — so TTS fires concurrently
+            # with the outbound request.  This is the same pattern used by
+            # Retell AI, Vapi, and ElevenLabs Agents: emit a "speaking while
+            # processing" TTS frame the moment the tool call fires.
+            if hasattr(params, "llm") and params.llm is not None:
+                try:
+                    _node_id = function_name.replace("execute_", "", 1)
+                    _api_node = next(
+                        (n for n in executor.flow_config.nodes if n.id == _node_id), None
+                    )
+                    if _api_node:
+                        _thinking = (_api_node.data.get("api", {}).get("thinkingMessage") or "").strip()
+                        if _thinking:
+                            await params.llm.push_frame(TTSSpeakFrame(text=_thinking))
+                            logger.debug(
+                                f"🗣️ Thinking message for flow {tool_name} node {_node_id}: {_thinking!r}"
+                            )
+                except Exception as _tm_err:
+                    logger.warning(f"Could not emit thinking message for flow {tool_name}: {_tm_err}")
+
             # Execute the function and get result
             result = await executor.handle_function_call(function_name, dict(params.arguments))
+
+            # Strip thinking_message from result if the executor included it
+            # (belt-and-suspenders: the handler above already sent it)
+            result.pop("thinking_message", None)
 
             # Log collected data for debugging
             if result.get("collected"):

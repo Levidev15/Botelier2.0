@@ -43,6 +43,9 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
   const [showResponseMapping, setShowResponseMapping] = useState(
     !!(api.responseMapping && Object.keys(api.responseMapping).length > 0)
   );
+  const [showResponseMessages, setShowResponseMessages] = useState(
+    !!(api.onSuccess || api.onError || api.onNotFound || api.onAuthError)
+  );
   const [integrations, setIntegrations] = useState<APIAccountIntegration[]>([]);
   const [loadingIntegrations, setLoadingIntegrations] = useState(false);
   const [availableSecrets, setAvailableSecrets] = useState<Array<{ key: string; name: string }>>([]);
@@ -290,6 +293,53 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
         </div>
       )}
 
+      <div>
+        <label className="block text-sm font-medium text-gray-400 mb-1">
+          Thinking message
+        </label>
+        <textarea
+          value={api.thinkingMessage || ""}
+          onChange={(e) => updateApi({ thinkingMessage: e.target.value })}
+          rows={2}
+          className={`${inputCls} resize-none text-xs`}
+          placeholder="What the AI says while the request is in progress — e.g. &quot;Let me check that reservation for you.&quot;"
+        />
+        <p className="text-xs text-gray-500 mt-1">
+          Spoken aloud during the API call so callers don&apos;t hear silence
+        </p>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div>
+          <label className="block text-sm font-medium text-gray-400 mb-1">
+            Timeout (seconds)
+          </label>
+          <input
+            type="number"
+            min={1}
+            max={60}
+            value={api.timeout ?? 8}
+            onChange={(e) => updateApi({ timeout: parseInt(e.target.value, 10) || 8 })}
+            className={inputCls}
+          />
+          <p className="text-xs text-gray-500 mt-1">Keep under 10 s for voice</p>
+        </div>
+        <div>
+          <label className="block text-sm font-medium text-gray-400 mb-1">
+            Retry count
+          </label>
+          <input
+            type="number"
+            min={0}
+            max={3}
+            value={api.retryCount ?? 0}
+            onChange={(e) => updateApi({ retryCount: parseInt(e.target.value, 10) })}
+            className={inputCls}
+          />
+          <p className="text-xs text-gray-500 mt-1">Set to 0 for voice; retries add silence</p>
+        </div>
+      </div>
+
       <APIRequestHeadersSection
         showHeaders={showHeaders}
         onToggle={() => setShowHeaders(!showHeaders)}
@@ -395,6 +445,63 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
         <p className="text-xs text-gray-500 mt-1">
           Instructions for how the AI should format and present the response
         </p>
+      </div>
+
+      <div>
+        <button
+          onClick={() => setShowResponseMessages(!showResponseMessages)}
+          className="flex items-center gap-2 text-sm font-medium text-gray-300"
+        >
+          {showResponseMessages ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
+          Response messages
+          <span className="text-xs text-gray-600 font-normal">optional</span>
+        </button>
+
+        {showResponseMessages && (
+          <div className="mt-3 space-y-3">
+            <p className="text-xs text-gray-500">Override the default messages the AI hears after each outcome.</p>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">On success</label>
+              <input
+                type="text"
+                value={api.onSuccess || ""}
+                onChange={(e) => updateApi({ onSuccess: e.target.value })}
+                className={inputCls}
+                placeholder="Request completed successfully"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">On error</label>
+              <input
+                type="text"
+                value={api.onError || ""}
+                onChange={(e) => updateApi({ onError: e.target.value })}
+                className={inputCls}
+                placeholder="There was an issue processing your request"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">On not found (404)</label>
+              <input
+                type="text"
+                value={api.onNotFound || ""}
+                onChange={(e) => updateApi({ onNotFound: e.target.value })}
+                className={inputCls}
+                placeholder="The requested information was not found"
+              />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">On auth error</label>
+              <input
+                type="text"
+                value={api.onAuthError || ""}
+                onChange={(e) => updateApi({ onAuthError: e.target.value })}
+                className={inputCls}
+                placeholder="There was an authentication issue with the system"
+              />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
