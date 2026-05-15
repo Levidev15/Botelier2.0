@@ -4,6 +4,7 @@ This module bridges the gap between hotel-configured tools in the database
 and the actual Pipecat function calling system during voice conversations.
 """
 
+import asyncio
 import os
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
@@ -1179,20 +1180,30 @@ class FunctionMapper:
                 await params.result_callback({"status": "error", "message": "Flow not initialized"})
                 return
 
-            # Execute the function and get result
-            result = await executor.handle_function_call(function_name, dict(params.arguments))
+            # Start API execution as a task so TTS can fire while it runs.
+            api_task = asyncio.create_task(
+                executor.handle_function_call(function_name, dict(params.arguments))
+            )
 
-            # Speak thinking message before committing tool result to LLM context.
-            thinking_msg = result.pop("thinking_message", "")
-            if thinking_msg:
-                if hasattr(params, "llm") and params.llm is not None:
-                    try:
-                        await params.llm.push_frame(TTSSpeakFrame(text=thinking_msg))
-                        logger.debug(f"🗣️ Thinking message for flow {tool_name}: {thinking_msg!r}")
-                    except Exception as _tm_err:
-                        logger.warning(f"Could not emit thinking message for {tool_name}: {_tm_err}")
-                else:
-                    logger.debug(f"No LLM context to emit thinking message for {tool_name}")
+            # Emit thinking message concurrently — before the HTTP call returns.
+            _node_id = function_name.replace("execute_", "", 1)
+            _api_node = next(
+                (n for n in executor.flow_config.nodes if n.id == _node_id), None
+            )
+            if _api_node:
+                _thinking = (_api_node.data.get("api", {}).get("thinkingMessage") or "").strip()
+                if _thinking:
+                    if hasattr(params, "llm") and params.llm is not None:
+                        try:
+                            await params.llm.push_frame(TTSSpeakFrame(text=_thinking))
+                            logger.debug(f"🗣️ Thinking message for {tool_name}: {_thinking!r}")
+                        except Exception as _tm_err:
+                            logger.warning(f"Could not emit thinking message for {tool_name}: {_tm_err}")
+                    else:
+                        logger.debug(f"No LLM context to emit thinking message for {tool_name}")
+
+            result = await api_task
+            result.pop("thinking_message", None)
 
             # Log collected data for debugging
             if result.get("collected"):
