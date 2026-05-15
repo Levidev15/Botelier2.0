@@ -348,6 +348,8 @@ const getDefaultNodeData = (type: NodeType): NodeData => {
             "reservation_id": "response.id",
             "room_number": "response.room",
           },
+          timeout: 8,
+          retryCount: 0,
         },
       } as APIRequestNodeData;
     

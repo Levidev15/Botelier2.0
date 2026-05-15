@@ -319,7 +319,10 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
             min={1}
             max={60}
             value={api.timeout ?? 8}
-            onChange={(e) => updateApi({ timeout: parseInt(e.target.value, 10) || 8 })}
+            onChange={(e) => {
+              const val = parseInt(e.target.value, 10);
+              updateApi({ timeout: isNaN(val) ? 8 : Math.min(60, Math.max(1, val)) });
+            }}
             className={inputCls}
           />
           <p className="text-xs text-gray-500 mt-1">Keep under 10 s for voice</p>
@@ -333,7 +336,10 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
             min={0}
             max={3}
             value={api.retryCount ?? 0}
-            onChange={(e) => updateApi({ retryCount: parseInt(e.target.value, 10) })}
+            onChange={(e) => {
+              const val = parseInt(e.target.value, 10);
+              updateApi({ retryCount: isNaN(val) ? 0 : Math.min(3, Math.max(0, val)) });
+            }}
             className={inputCls}
           />
           <p className="text-xs text-gray-500 mt-1">Set to 0 for voice; retries add silence</p>
