@@ -1455,8 +1455,7 @@ You are executing a structured conversation flow. Follow these guidelines:
         else:
             result = await self._handle_custom_api_request(node_id, node, api_config)
 
-        if thinking_message:
-            result["thinking_message"] = thinking_message
+        result["thinking_message"] = thinking_message
 
         return result
 
