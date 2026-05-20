@@ -1,0 +1,27 @@
+{
+  "id": "sms/human-takeover",
+  "title": "Human Takeover",
+  "description": "Human Takeover lets a human agent take control of an AI-managed SMS conversation, reply directly to the customer, and optionally hand the conversation back to the AI.",
+  "source": "@site/docs/sms/human-takeover.md",
+  "sourceDirName": "sms",
+  "slug": "/sms/human-takeover",
+  "permalink": "/sms/human-takeover",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "human-takeover",
+    "title": "Human Takeover",
+    "sidebar_label": "Human Takeover"
+  },
+  "sidebar": "guidesSidebar",
+  "previous": {
+    "title": "Messaging Inbox",
+    "permalink": "/sms/messaging-inbox"
+  },
+  "next": {
+    "title": "SMS Templates",
+    "permalink": "/sms/sms-templates"
+  }
+}

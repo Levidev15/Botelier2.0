@@ -1,0 +1,27 @@
+{
+  "id": "team/permissions-reference",
+  "title": "Permissions Reference",
+  "description": "This page lists every named permission in Botelier and which default role grants it.",
+  "source": "@site/docs/team/permissions-reference.md",
+  "sourceDirName": "team",
+  "slug": "/team/permissions-reference",
+  "permalink": "/team/permissions-reference",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "permissions-reference",
+    "title": "Permissions Reference",
+    "sidebar_label": "Permissions Reference"
+  },
+  "sidebar": "guidesSidebar",
+  "previous": {
+    "title": "Team Management",
+    "permalink": "/team/team-management"
+  },
+  "next": {
+    "title": "API Keys",
+    "permalink": "/team/api-keys"
+  }
+}

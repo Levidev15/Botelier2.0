@@ -26,6 +26,10 @@ args = "botelier-backend"
 task = "workflow.run"
 args = "test-mcp-server"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "botelier-docs"
+
 [[workflows.workflow]]
 name = "botelier-dashboard"
 author = "agent"
@@ -62,13 +66,30 @@ waitForPort = 3002
 [workflows.workflow.metadata]
 outputType = "console"
 
+[[workflows.workflow]]
+name = "botelier-docs"
+author = "agent"
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "npm run start --prefix docs-site -- --port 3003"
+waitForPort = 3003
+
+[[ports]]
+localPort = 3000
+externalPort = 4200
+exposeLocalhost = true
+
 [[ports]]
 localPort = 3001
 externalPort = 3001
 
 [[ports]]
-localPort = 3002
-externalPort = 3002
+localPort = 3003
+externalPort = 3003
 
 [[ports]]
 localPort = 5000

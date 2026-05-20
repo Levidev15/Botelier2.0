@@ -1,0 +1,27 @@
+{
+  "id": "admin/managing-accounts",
+  "title": "Managing Accounts",
+  "description": "The Accounts section of the Admin Panel is the starting point for all per-account operations: creating accounts, viewing usage, configuring billing, managing feature flags, and exporting data.",
+  "source": "@site/docs/admin/managing-accounts.md",
+  "sourceDirName": "admin",
+  "slug": "/admin/managing-accounts",
+  "permalink": "/admin/managing-accounts",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "managing-accounts",
+    "title": "Managing Accounts",
+    "sidebar_label": "Managing Accounts"
+  },
+  "sidebar": "adminSidebar",
+  "previous": {
+    "title": "Admin Overview",
+    "permalink": "/admin/admin-overview"
+  },
+  "next": {
+    "title": "Managing Users",
+    "permalink": "/admin/managing-users"
+  }
+}

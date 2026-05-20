@@ -1,0 +1,208 @@
+{
+  "/api-reference/-716": {
+    "__comp": "f0ad3fbb",
+    "__context": {
+      "plugin": "6ba57622"
+    },
+    "specProps": "7eb71b66",
+    "layoutProps": "d6136899"
+  },
+  "/search-822": {
+    "__comp": "1a4e3797",
+    "__context": {
+      "plugin": "138e0e15"
+    }
+  },
+  "/-2e1": {
+    "__comp": "c4f5d8e4",
+    "__context": {
+      "plugin": "a7456010"
+    },
+    "config": "5e9f5e1a"
+  },
+  "/-c16": {
+    "__comp": "5e95c892",
+    "__context": {
+      "plugin": "aba21aa0"
+    }
+  },
+  "/-1d4": {
+    "__comp": "a7bd4aaa",
+    "__props": "22dd74f7"
+  },
+  "/-c50": {
+    "__comp": "a94703ab"
+  },
+  "/admin/admin-overview-bee": {
+    "__comp": "17896441",
+    "content": "1b91cb14"
+  },
+  "/admin/managing-accounts-64a": {
+    "__comp": "17896441",
+    "content": "3316fefd"
+  },
+  "/admin/managing-users-09e": {
+    "__comp": "17896441",
+    "content": "20c11da3"
+  },
+  "/admin/platform-billing-a98": {
+    "__comp": "17896441",
+    "content": "223e555a"
+  },
+  "/admin/platform-settings-cee": {
+    "__comp": "17896441",
+    "content": "72e9e149"
+  },
+  "/admin/security-log-d9e": {
+    "__comp": "17896441",
+    "content": "a16fa5de"
+  },
+  "/analytics/call-analytics-7a1": {
+    "__comp": "17896441",
+    "content": "b4429341"
+  },
+  "/analytics/call-logs-b29": {
+    "__comp": "17896441",
+    "content": "67b7583f"
+  },
+  "/analytics/sms-analytics-43e": {
+    "__comp": "17896441",
+    "content": "13e7996a"
+  },
+  "/assistants/acw-and-qa-c0f": {
+    "__comp": "17896441",
+    "content": "f6c4d8f6"
+  },
+  "/assistants/creating-an-assistant-57f": {
+    "__comp": "17896441",
+    "content": "0060f555"
+  },
+  "/assistants/greeting-cache-9c4": {
+    "__comp": "17896441",
+    "content": "33da06fc"
+  },
+  "/flows/flow-editor-overview-935": {
+    "__comp": "17896441",
+    "content": "9326517c"
+  },
+  "/flows/flow-simulation-c59": {
+    "__comp": "17896441",
+    "content": "32085e9b"
+  },
+  "/flows/flow-versioning-35d": {
+    "__comp": "17896441",
+    "content": "720bc2ae"
+  },
+  "/flows/node-reference-ee3": {
+    "__comp": "17896441",
+    "content": "4f6563d5"
+  },
+  "/getting-started/platform-overview-53c": {
+    "__comp": "17896441",
+    "content": "53a02808"
+  },
+  "/getting-started/quick-start-0e3": {
+    "__comp": "17896441",
+    "content": "588bd741"
+  },
+  "/integrations/custom-api-via-flow-8de": {
+    "__comp": "17896441",
+    "content": "f6c12f95"
+  },
+  "/integrations/guestcentric-crs-b6c": {
+    "__comp": "17896441",
+    "content": "f13d44c2"
+  },
+  "/integrations/integrations-overview-79d": {
+    "__comp": "17896441",
+    "content": "fa89a7be"
+  },
+  "/integrations/mcp-server-748": {
+    "__comp": "17896441",
+    "content": "a95a2470"
+  },
+  "/integrations/oracle-opera-ohip-4ba": {
+    "__comp": "17896441",
+    "content": "93d9b187"
+  },
+  "/knowledge-bases/managing-knowledge-bases-270": {
+    "__comp": "17896441",
+    "content": "911fec82"
+  },
+  "/phone-numbers/number-types-and-capabilities-57a": {
+    "__comp": "17896441",
+    "content": "0aad99b3"
+  },
+  "/phone-numbers/provisioning-numbers-d48": {
+    "__comp": "17896441",
+    "content": "679b976c"
+  },
+  "/settings/account-settings-060": {
+    "__comp": "17896441",
+    "content": "8ea3033e"
+  },
+  "/sms-compliance/a2p-10dlc-overview-f76": {
+    "__comp": "17896441",
+    "content": "04b5173e"
+  },
+  "/sms-compliance/brand-registration-b3d": {
+    "__comp": "17896441",
+    "content": "e95f7ff8"
+  },
+  "/sms-compliance/campaign-registration-49e": {
+    "__comp": "17896441",
+    "content": "6e9f3e36"
+  },
+  "/sms-compliance/compliance-checklist-1b4": {
+    "__comp": "17896441",
+    "content": "1d9bb9de"
+  },
+  "/sms/human-takeover-2c2": {
+    "__comp": "17896441",
+    "content": "fce04241"
+  },
+  "/sms/messaging-inbox-734": {
+    "__comp": "17896441",
+    "content": "7634db96"
+  },
+  "/sms/sms-ai-config-48e": {
+    "__comp": "17896441",
+    "content": "201a524b"
+  },
+  "/sms/sms-templates-beb": {
+    "__comp": "17896441",
+    "content": "2d0fb1f4"
+  },
+  "/team/api-keys-276": {
+    "__comp": "17896441",
+    "content": "8347c46b"
+  },
+  "/team/permissions-reference-559": {
+    "__comp": "17896441",
+    "content": "fad7ab1c"
+  },
+  "/team/team-management-928": {
+    "__comp": "17896441",
+    "content": "f4882238"
+  },
+  "/tools/linking-tools-to-assistants-fc0": {
+    "__comp": "17896441",
+    "content": "5361f621"
+  },
+  "/tools/tool-types-e4c": {
+    "__comp": "17896441",
+    "content": "e7988988"
+  },
+  "/tools/tools-overview-6f3": {
+    "__comp": "17896441",
+    "content": "f678b8a6"
+  },
+  "/usage-billing/billing-alerts-1ec": {
+    "__comp": "17896441",
+    "content": "5170991c"
+  },
+  "/usage-billing/usage-summary-524": {
+    "__comp": "17896441",
+    "content": "ad8b6a99"
+  }
+}

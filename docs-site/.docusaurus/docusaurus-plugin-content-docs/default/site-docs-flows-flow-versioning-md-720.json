@@ -1,0 +1,27 @@
+{
+  "id": "flows/flow-versioning",
+  "title": "Flow Versioning",
+  "description": "Botelier creates a new version every time you save a flow. Versions let you track changes, roll back to a previous state, and promote a past version to active.",
+  "source": "@site/docs/flows/flow-versioning.md",
+  "sourceDirName": "flows",
+  "slug": "/flows/flow-versioning",
+  "permalink": "/flows/flow-versioning",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "flow-versioning",
+    "title": "Flow Versioning",
+    "sidebar_label": "Flow Versioning"
+  },
+  "sidebar": "guidesSidebar",
+  "previous": {
+    "title": "Node Reference",
+    "permalink": "/flows/node-reference"
+  },
+  "next": {
+    "title": "Flow Simulation",
+    "permalink": "/flows/flow-simulation"
+  }
+}

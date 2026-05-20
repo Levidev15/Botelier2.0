@@ -1,0 +1,27 @@
+{
+  "id": "sms-compliance/compliance-checklist",
+  "title": "Compliance Checklist",
+  "description": "Use this checklist before sending any business SMS from US local numbers.",
+  "source": "@site/docs/sms-compliance/compliance-checklist.md",
+  "sourceDirName": "sms-compliance",
+  "slug": "/sms-compliance/compliance-checklist",
+  "permalink": "/sms-compliance/compliance-checklist",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "compliance-checklist",
+    "title": "Compliance Checklist",
+    "sidebar_label": "Compliance Checklist"
+  },
+  "sidebar": "guidesSidebar",
+  "previous": {
+    "title": "Campaign Registration",
+    "permalink": "/sms-compliance/campaign-registration"
+  },
+  "next": {
+    "title": "Integrations Overview",
+    "permalink": "/integrations/integrations-overview"
+  }
+}

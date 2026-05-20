@@ -1,0 +1,27 @@
+{
+  "id": "integrations/oracle-opera-ohip",
+  "title": "Oracle Opera Cloud (OHIP)",
+  "description": "The Oracle Opera Cloud (OHIP) integration connects Botelier to your Oracle Hospitality property management system via the Opera Cloud REST API.",
+  "source": "@site/docs/integrations/oracle-opera-ohip.md",
+  "sourceDirName": "integrations",
+  "slug": "/integrations/oracle-opera-ohip",
+  "permalink": "/integrations/oracle-opera-ohip",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "oracle-opera-ohip",
+    "title": "Oracle Opera Cloud (OHIP)",
+    "sidebar_label": "Oracle Opera Cloud"
+  },
+  "sidebar": "guidesSidebar",
+  "previous": {
+    "title": "Integrations Overview",
+    "permalink": "/integrations/integrations-overview"
+  },
+  "next": {
+    "title": "GuestCentric CRS",
+    "permalink": "/integrations/guestcentric-crs"
+  }
+}

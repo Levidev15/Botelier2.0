@@ -1,0 +1,27 @@
+{
+  "id": "sms/sms-templates",
+  "title": "SMS Templates",
+  "description": "SMS Templates are reusable message snippets that agents can insert into the reply box with a single click. They save time for common responses and ensure consistent messaging.",
+  "source": "@site/docs/sms/sms-templates.md",
+  "sourceDirName": "sms",
+  "slug": "/sms/sms-templates",
+  "permalink": "/sms/sms-templates",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "sms-templates",
+    "title": "SMS Templates",
+    "sidebar_label": "SMS Templates"
+  },
+  "sidebar": "guidesSidebar",
+  "previous": {
+    "title": "Human Takeover",
+    "permalink": "/sms/human-takeover"
+  },
+  "next": {
+    "title": "SMS AI Config",
+    "permalink": "/sms/sms-ai-config"
+  }
+}

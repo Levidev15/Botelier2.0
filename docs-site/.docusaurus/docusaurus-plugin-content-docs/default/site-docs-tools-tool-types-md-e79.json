@@ -1,0 +1,27 @@
+{
+  "id": "tools/tool-types",
+  "title": "Tool Types",
+  "description": "Transfer Tool",
+  "source": "@site/docs/tools/tool-types.md",
+  "sourceDirName": "tools",
+  "slug": "/tools/tool-types",
+  "permalink": "/tools/tool-types",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "tool-types",
+    "title": "Tool Types",
+    "sidebar_label": "Tool Types"
+  },
+  "sidebar": "guidesSidebar",
+  "previous": {
+    "title": "Tools Overview",
+    "permalink": "/tools/tools-overview"
+  },
+  "next": {
+    "title": "Linking to Assistants",
+    "permalink": "/tools/linking-tools-to-assistants"
+  }
+}

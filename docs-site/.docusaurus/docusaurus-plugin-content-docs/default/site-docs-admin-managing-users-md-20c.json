@@ -1,0 +1,27 @@
+{
+  "id": "admin/managing-users",
+  "title": "Managing Users",
+  "description": "The Users section in the Admin Panel provides a platform-wide view of all registered users, regardless of which account they belong to.",
+  "source": "@site/docs/admin/managing-users.md",
+  "sourceDirName": "admin",
+  "slug": "/admin/managing-users",
+  "permalink": "/admin/managing-users",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "managing-users",
+    "title": "Managing Users",
+    "sidebar_label": "Managing Users"
+  },
+  "sidebar": "adminSidebar",
+  "previous": {
+    "title": "Managing Accounts",
+    "permalink": "/admin/managing-accounts"
+  },
+  "next": {
+    "title": "Platform Billing",
+    "permalink": "/admin/platform-billing"
+  }
+}

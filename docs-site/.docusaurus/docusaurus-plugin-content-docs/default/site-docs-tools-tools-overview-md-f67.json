@@ -1,0 +1,27 @@
+{
+  "id": "tools/tools-overview",
+  "title": "Tools Overview",
+  "description": "Tools are actions the AI assistant can take during a conversation. When the LLM decides that an action is needed (e.g. \"transfer this caller to billing\"), it invokes the appropriate tool by name.",
+  "source": "@site/docs/tools/tools-overview.md",
+  "sourceDirName": "tools",
+  "slug": "/tools/tools-overview",
+  "permalink": "/tools/tools-overview",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "tools-overview",
+    "title": "Tools Overview",
+    "sidebar_label": "Tools Overview"
+  },
+  "sidebar": "guidesSidebar",
+  "previous": {
+    "title": "Managing Knowledge Bases",
+    "permalink": "/knowledge-bases/managing-knowledge-bases"
+  },
+  "next": {
+    "title": "Tool Types",
+    "permalink": "/tools/tool-types"
+  }
+}

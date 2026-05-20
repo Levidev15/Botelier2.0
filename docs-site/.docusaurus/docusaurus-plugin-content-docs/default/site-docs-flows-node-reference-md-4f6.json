@@ -1,0 +1,27 @@
+{
+  "id": "flows/node-reference",
+  "title": "Node Reference",
+  "description": "Complete reference for every node type in the Botelier Flow Editor.",
+  "source": "@site/docs/flows/node-reference.md",
+  "sourceDirName": "flows",
+  "slug": "/flows/node-reference",
+  "permalink": "/flows/node-reference",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "node-reference",
+    "title": "Node Reference",
+    "sidebar_label": "Node Reference"
+  },
+  "sidebar": "guidesSidebar",
+  "previous": {
+    "title": "Flow Editor Overview",
+    "permalink": "/flows/flow-editor-overview"
+  },
+  "next": {
+    "title": "Flow Versioning",
+    "permalink": "/flows/flow-versioning"
+  }
+}

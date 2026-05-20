@@ -1,0 +1,27 @@
+{
+  "id": "integrations/mcp-server",
+  "title": "MCP Server",
+  "description": "MCP (Model Context Protocol) is an open protocol for connecting AI models to external data sources and tools. Botelier supports MCP via SSE (Server-Sent Events) transport, allowing you to connect any MCP-compatible server and expose its tools to your AI assistants.",
+  "source": "@site/docs/integrations/mcp-server.md",
+  "sourceDirName": "integrations",
+  "slug": "/integrations/mcp-server",
+  "permalink": "/integrations/mcp-server",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "mcp-server",
+    "title": "MCP Server",
+    "sidebar_label": "MCP Server"
+  },
+  "sidebar": "guidesSidebar",
+  "previous": {
+    "title": "GuestCentric CRS",
+    "permalink": "/integrations/guestcentric-crs"
+  },
+  "next": {
+    "title": "Custom API via Flow",
+    "permalink": "/integrations/custom-api-via-flow"
+  }
+}

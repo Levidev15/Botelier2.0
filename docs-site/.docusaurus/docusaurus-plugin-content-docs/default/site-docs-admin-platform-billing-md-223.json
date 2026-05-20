@@ -1,0 +1,27 @@
+{
+  "id": "admin/platform-billing",
+  "title": "Platform Billing",
+  "description": "The Platform Billing section gives platform administrators a cross-account view of usage, margin analysis, and the controls to configure billing rates for all accounts.",
+  "source": "@site/docs/admin/platform-billing.md",
+  "sourceDirName": "admin",
+  "slug": "/admin/platform-billing",
+  "permalink": "/admin/platform-billing",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "platform-billing",
+    "title": "Platform Billing",
+    "sidebar_label": "Platform Billing"
+  },
+  "sidebar": "adminSidebar",
+  "previous": {
+    "title": "Managing Users",
+    "permalink": "/admin/managing-users"
+  },
+  "next": {
+    "title": "Platform Settings",
+    "permalink": "/admin/platform-settings"
+  }
+}

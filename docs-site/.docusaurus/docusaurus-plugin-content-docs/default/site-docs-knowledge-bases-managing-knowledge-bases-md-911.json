@@ -1,0 +1,27 @@
+{
+  "id": "knowledge-bases/managing-knowledge-bases",
+  "title": "Managing Knowledge Bases",
+  "description": "A Knowledge Base is a collection of question-and-answer entries that the assistant uses to respond to caller questions. During a call, the assistant performs a semantic search over the KB and includes relevant entries in its context window.",
+  "source": "@site/docs/knowledge-bases/managing-knowledge-bases.md",
+  "sourceDirName": "knowledge-bases",
+  "slug": "/knowledge-bases/managing-knowledge-bases",
+  "permalink": "/knowledge-bases/managing-knowledge-bases",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "managing-knowledge-bases",
+    "title": "Managing Knowledge Bases",
+    "sidebar_label": "Managing Knowledge Bases"
+  },
+  "sidebar": "guidesSidebar",
+  "previous": {
+    "title": "Flow Simulation",
+    "permalink": "/flows/flow-simulation"
+  },
+  "next": {
+    "title": "Tools Overview",
+    "permalink": "/tools/tools-overview"
+  }
+}

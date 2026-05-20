@@ -1,0 +1,27 @@
+{
+  "id": "phone-numbers/provisioning-numbers",
+  "title": "Provisioning Phone Numbers",
+  "description": "Phone numbers are provisioned from Twilio and assigned to assistants. Each number has Twilio webhook URLs configured automatically by Botelier.",
+  "source": "@site/docs/phone-numbers/provisioning-numbers.md",
+  "sourceDirName": "phone-numbers",
+  "slug": "/phone-numbers/provisioning-numbers",
+  "permalink": "/phone-numbers/provisioning-numbers",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "provisioning-numbers",
+    "title": "Provisioning Phone Numbers",
+    "sidebar_label": "Provisioning Numbers"
+  },
+  "sidebar": "guidesSidebar",
+  "previous": {
+    "title": "Linking to Assistants",
+    "permalink": "/tools/linking-tools-to-assistants"
+  },
+  "next": {
+    "title": "Number Types & Capabilities",
+    "permalink": "/phone-numbers/number-types-and-capabilities"
+  }
+}

@@ -1,0 +1,27 @@
+{
+  "id": "tools/linking-tools-to-assistants",
+  "title": "Linking Tools to Assistants",
+  "description": "Creating a Tool Set",
+  "source": "@site/docs/tools/linking-tools-to-assistants.md",
+  "sourceDirName": "tools",
+  "slug": "/tools/linking-tools-to-assistants",
+  "permalink": "/tools/linking-tools-to-assistants",
+  "draft": false,
+  "unlisted": false,
+  "tags": [],
+  "version": "current",
+  "frontMatter": {
+    "id": "linking-tools-to-assistants",
+    "title": "Linking Tools to Assistants",
+    "sidebar_label": "Linking to Assistants"
+  },
+  "sidebar": "guidesSidebar",
+  "previous": {
+    "title": "Tool Types",
+    "permalink": "/tools/tool-types"
+  },
+  "next": {
+    "title": "Provisioning Numbers",
+    "permalink": "/phone-numbers/provisioning-numbers"
+  }
+}
