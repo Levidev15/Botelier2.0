@@ -90,6 +90,7 @@ externalPort = 3001
 [[ports]]
 localPort = 3003
 externalPort = 3003
+exposeLocalhost = true
 
 [[ports]]
 localPort = 5000
