@@ -23,9 +23,9 @@ export default function CollectFormNodePanel({ data, nodeId }: Props) {
       id: `slot_${Date.now()}`,
       order: slots.length,
       variableKey: `field_${slots.length + 1}`,
-      prompt: "What would you like to provide?",
+      prompt: "",
       type: "text",
-      retryPrompt: "I didn't catch that. Could you please repeat?",
+      retryPrompt: "",
       maxRetries: 3,
     };
     updateNodeData(nodeId, { slots: [...slots, newSlot] });

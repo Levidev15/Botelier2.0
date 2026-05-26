@@ -11,8 +11,8 @@ export default function ConfirmationNodePanel({ data, nodeId }: Props) {
   const { updateNodeData, variables } = useFlowStore();
   const confirmation = data.confirmation || {
     summaryTemplate: "",
-    confirmPrompt: "Is this correct?",
-    editPrompt: "What would you like to change?",
+    confirmPrompt: "",
+    editPrompt: "",
     variablesToConfirm: [],
     allowEdit: true,
     deliveryMode: "guided" as DeliveryMode,
@@ -66,7 +66,7 @@ export default function ConfirmationNodePanel({ data, nodeId }: Props) {
           onChange={(e) => updateConfirmation({ summaryTemplate: e.target.value })}
           rows={3}
           className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none resize-none"
-          placeholder="Let me confirm: {{guest_name}}, checking in {{check_in_date}}..."
+          placeholder="Summary of collected information: {{variable_name}}..."
         />
       </div>
 

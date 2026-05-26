@@ -276,15 +276,15 @@ const getDefaultNodeData = (type: NodeType): NodeData => {
     case "initial":
       return {
         name: "Start",
-        systemPrompt: "You are a helpful hotel concierge assistant. Be friendly, professional, and helpful.",
-        greeting: "Hello! Thank you for calling. How may I assist you today?",
+        systemPrompt: "",
+        greeting: "",
         waitForResponse: true,
       } as InitialNodeData;
     
     case "message":
       return {
         name: "Message",
-        message: "Enter your message here. Use {{variable_name}} to include collected data.",
+        message: "",
         waitForResponse: true,
       } as MessageNodeData;
     
@@ -292,48 +292,19 @@ const getDefaultNodeData = (type: NodeType): NodeData => {
       return {
         name: "Collect Info",
         slot: {
-          variableKey: "guest_name",
-          prompt: "May I have your name, please?",
+          variableKey: "",
+          prompt: "",
           type: "text",
-          retryPrompt: "I didn't catch that. Could you please repeat your name?",
+          retryPrompt: "",
           maxRetries: 3,
         },
       } as CollectSlotNodeData;
     
     case "collect_form":
       return {
-        name: "Booking Details",
-        introMessage: "I'll need to collect a few details from you.",
-        slots: [
-          {
-            id: "slot_1",
-            order: 0,
-            variableKey: "guest_name",
-            prompt: "May I have your full name?",
-            type: "text",
-            retryPrompt: "Could you please spell your name?",
-            maxRetries: 3,
-          },
-          {
-            id: "slot_2",
-            order: 1,
-            variableKey: "check_in_date",
-            prompt: "What date would you like to check in?",
-            type: "date",
-            retryPrompt: "Please provide a valid date.",
-            maxRetries: 3,
-          },
-          {
-            id: "slot_3",
-            order: 2,
-            variableKey: "guest_count",
-            prompt: "How many guests will be staying?",
-            type: "number",
-            retryPrompt: "Please tell me the number of guests.",
-            maxRetries: 2,
-            validation: { min: 1, max: 10 },
-          },
-        ],
+        name: "Collect Form",
+        introMessage: "",
+        slots: [],
       } as CollectFormNodeData;
     
     case "api_request":
@@ -341,13 +312,10 @@ const getDefaultNodeData = (type: NodeType): NodeData => {
         name: "API Call",
         api: {
           method: "POST",
-          url: "https://api.example.com/reservations",
+          url: "",
           headers: { "Content-Type": "application/json" },
-          bodyTemplate: '{"check_in": "{{check_in_date}}", "guests": "{{guest_count}}"}',
-          responseMapping: {
-            "reservation_id": "response.id",
-            "room_number": "response.room",
-          },
+          bodyTemplate: "",
+          responseMapping: {},
           timeout: 8,
           retryCount: 0,
         },
@@ -357,22 +325,18 @@ const getDefaultNodeData = (type: NodeType): NodeData => {
       return {
         name: "Check Condition",
         condition: {
-          variable: "room_available",
+          variable: "",
           operator: "equals",
-          value: "true",
+          value: "",
         },
       } as ConditionNodeData;
     
     case "router":
       return {
-        name: "Route Decision",
+        name: "Router",
         router: {
-          variable: "request_type",
-          options: [
-            { id: "opt_new", value: "new", label: "New Reservation" },
-            { id: "opt_cancel", value: "cancel", label: "Cancel Reservation" },
-            { id: "opt_change", value: "change", label: "Modify Reservation" },
-          ],
+          variable: "",
+          options: [],
         },
       } as RouterNodeData;
     
@@ -380,10 +344,10 @@ const getDefaultNodeData = (type: NodeType): NodeData => {
       return {
         name: "Confirm Details",
         confirmation: {
-          summaryTemplate: "Let me confirm your reservation: {{guest_name}}, checking in on {{check_in_date}}, checking out on {{check_out_date}}, for {{guest_count}} guests.",
-          confirmPrompt: "Is this information correct?",
-          editPrompt: "What would you like to change?",
-          variablesToConfirm: ["guest_name", "check_in_date", "check_out_date", "guest_count"],
+          summaryTemplate: "",
+          confirmPrompt: "",
+          editPrompt: "",
+          variablesToConfirm: [],
           allowEdit: true,
         },
       } as ConfirmationNodeData;
@@ -392,9 +356,9 @@ const getDefaultNodeData = (type: NodeType): NodeData => {
       return {
         name: "Set Variable",
         setVariable: {
-          variableKey: "status",
+          variableKey: "",
           valueType: "static",
-          value: "confirmed",
+          value: "",
         },
       } as SetVariableNodeData;
     
@@ -403,7 +367,7 @@ const getDefaultNodeData = (type: NodeType): NodeData => {
         name: "Transfer Call",
         transfer: {
           phoneNumber: "",
-          preTransferMessage: "Let me connect you with our front desk team. Please hold.",
+          preTransferMessage: "",
           warmTransfer: false,
         },
       } as TransferNodeData;
@@ -411,7 +375,7 @@ const getDefaultNodeData = (type: NodeType): NodeData => {
     case "end":
       return {
         name: "End Call",
-        closingMessage: "Thank you for calling! Have a wonderful day.",
+        closingMessage: "",
       } as EndNodeData;
     
     default:

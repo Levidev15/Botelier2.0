@@ -25,7 +25,7 @@ export default function InitialNodePanel({ data, nodeId, assistantId, assistantT
           onChange={(e) => updateNodeData(nodeId, { systemPrompt: e.target.value })}
           rows={4}
           className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-green-500 focus:outline-none resize-none"
-          placeholder="You are a helpful hotel assistant..."
+          placeholder="Describe the AI's role and behavior..."
         />
       </div>
 

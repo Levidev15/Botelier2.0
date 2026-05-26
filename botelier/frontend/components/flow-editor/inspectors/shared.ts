@@ -21,21 +21,21 @@ export const operators = [
 ];
 
 export const defaultPromptsByType: Record<SlotType, string> = {
-  text: "May I have your name, please?",
-  date: "What date would you prefer?",
-  number: "How many would you like?",
-  phone: "What's the best phone number to reach you?",
-  email: "What's your email address?",
-  time: "What time works best for you?",
-  choice: "Which option would you prefer?",
+  text: "",
+  date: "",
+  number: "",
+  phone: "",
+  email: "",
+  time: "",
+  choice: "",
 };
 
 export const defaultRetryByType: Record<SlotType, string> = {
-  text: "I didn't catch that. Could you please repeat?",
-  date: "Please provide a valid date, for example, December 15th.",
-  number: "Please tell me a number.",
-  phone: "Could you please repeat your phone number?",
-  email: "Please provide a valid email address.",
-  time: "Please provide a valid time, like 3 PM or 15:00.",
-  choice: "Please choose one of the available options.",
+  text: "",
+  date: "",
+  number: "",
+  phone: "",
+  email: "",
+  time: "",
+  choice: "",
 };

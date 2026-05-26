@@ -370,7 +370,7 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
             onChange={(e) => updateApi({ bodyTemplate: e.target.value })}
             rows={4}
             className={`${inputCls} resize-none font-mono text-xs`}
-            placeholder='{"check_in": "{{check_in_date}}", "guests": {{guest_count}}}'
+            placeholder='{"key": "{{variable_name}}"}'
           />
 
           {variables.length > 0 && (

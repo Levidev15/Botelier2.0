@@ -37,7 +37,7 @@ export default function TransferNodePanel({ data, nodeId }: Props) {
           onChange={(e) => updateTransfer({ preTransferMessage: e.target.value })}
           rows={2}
           className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-cyan-500 focus:outline-none resize-none"
-          placeholder="Let me connect you with our front desk team. Please hold."
+          placeholder="Please hold while I connect you..."
         />
       </div>
 

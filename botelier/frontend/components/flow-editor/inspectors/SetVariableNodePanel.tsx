@@ -59,7 +59,7 @@ export default function SetVariableNodePanel({ data, nodeId }: Props) {
             value={setVariable.value || ""}
             onChange={(e) => updateSetVariable({ value: e.target.value })}
             className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-violet-500 focus:outline-none"
-            placeholder={setVariable.valueType === "template" ? "Hello, {{guest_name}}!" : "confirmed"}
+            placeholder={setVariable.valueType === "template" ? "Value with {{variable}}" : "Enter value"}
           />
       </div>
 
