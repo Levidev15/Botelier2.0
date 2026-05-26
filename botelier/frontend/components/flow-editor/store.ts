@@ -11,6 +11,22 @@ import {
   applyNodeChanges,
   applyEdgeChanges,
 } from "@xyflow/react";
+import { getAccountContext } from "@/lib/auth/accountContext";
+
+function getAuthHeaders(): Record<string, string> {
+  if (typeof window === "undefined") return {};
+  const token = localStorage.getItem("botelier_token");
+  if (!token) return {};
+  const headers: Record<string, string> = {
+    Authorization: `Bearer ${token}`,
+  };
+  const ctx = getAccountContext();
+  if (ctx?.isAdminSession && ctx.sessionToken) {
+    headers["X-Support-Session"] = ctx.sessionToken;
+    headers["X-Account-Id"] = ctx.accountId;
+  }
+  return headers;
+}
 
 export type SlotType = "text" | "date" | "number" | "phone" | "email" | "time" | "choice";
 
@@ -801,7 +817,9 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     set({ isLoading: true, toolId, accountId });
     try {
       const sourceParam = source ? `&source=${source}` : "";
-      const response = await fetch(`/api/tools/${toolId}/flow?account_id=${accountId}${sourceParam}`);
+      const response = await fetch(`/api/tools/${toolId}/flow?account_id=${accountId}${sourceParam}`, {
+        headers: { ...getAuthHeaders() },
+      });
       if (!response.ok) throw new Error("Failed to load flow");
       
       const data = await response.json();
@@ -885,7 +903,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
 
       const response = await fetch(`/api/tools/${toolId}/flow/draft?account_id=${accountId}`, {
         method: "PUT",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify({ 
           flow_config: flowConfig,
           description: description || draftDescription || undefined,
@@ -921,7 +939,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     try {
       const response = await fetch(`/api/tools/${toolId}/flow/publish?account_id=${accountId}`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: { "Content-Type": "application/json", ...getAuthHeaders() },
         body: JSON.stringify({ description }),
       });
       
@@ -963,6 +981,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     try {
       const response = await fetch(`/api/tools/${toolId}/flow/draft?account_id=${accountId}`, {
         method: "DELETE",
+        headers: { ...getAuthHeaders() },
       });
       
       if (!response.ok) throw new Error("Failed to discard draft");
@@ -982,7 +1001,9 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     if (!toolId || !accountId) return;
     
     try {
-      const response = await fetch(`/api/tools/${toolId}/flow/versions?account_id=${accountId}`);
+      const response = await fetch(`/api/tools/${toolId}/flow/versions?account_id=${accountId}`, {
+        headers: { ...getAuthHeaders() },
+      });
       if (!response.ok) return;
       
       const data = await response.json();
@@ -1006,7 +1027,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         `/api/tools/${toolId}/flow/versions/${versionNumber}/revert?account_id=${accountId}`,
         {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", ...getAuthHeaders() },
           body: JSON.stringify({ publish_immediately: publishImmediately }),
         }
       );
