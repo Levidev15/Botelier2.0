@@ -3,11 +3,14 @@
 These schemas validate request/response data for the Tools API.
 """
 
+import re
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, Optional
 
 from pydantic import BaseModel, Field, validator
+
+_TOOL_NAME_SAFE_RE = re.compile(r"^[a-zA-Z0-9 _\-]+$")
 
 
 class ToolType(str, Enum):
@@ -106,6 +109,34 @@ class FlowConfig(BaseModel):
 # Request schemas
 
 
+def _validate_tool_name(name: str) -> str:
+    """Shared validator for tool display names.
+
+    Rules:
+    - Only letters, digits, spaces, hyphens, and underscores are allowed.
+    - The name must contain at least one letter or digit so that it sanitizes
+      to a meaningful OpenAI function name (names that are purely whitespace
+      or separators would collide as ``fn_tool``).
+
+    Spaces are allowed in display names and are automatically converted to
+    underscores when the tool name is sent to the OpenAI API.  Characters
+    such as dots, slashes, and brackets are rejected because they cannot be
+    meaningfully sanitized into a stable, predictable OpenAI function name.
+    """
+    if not _TOOL_NAME_SAFE_RE.match(name):
+        raise ValueError(
+            "Tool name may only contain letters, digits, spaces, hyphens (-), and "
+            "underscores (_). Characters such as dots, slashes, and brackets are not "
+            "allowed. Spaces are permitted and will be displayed as-is in the UI."
+        )
+    if not re.search(r"[a-zA-Z0-9]", name):
+        raise ValueError(
+            "Tool name must contain at least one letter or digit so it can be used "
+            "as a valid function name by the AI."
+        )
+    return name
+
+
 class ToolCreate(BaseModel):
     """Schema for creating a new tool."""
 
@@ -120,6 +151,10 @@ class ToolCreate(BaseModel):
     assistant_id: Optional[str] = Field(None, description="Associated assistant ID")
     is_active: bool = Field(True, description="Whether tool is enabled")
 
+    @validator("name")
+    def name_characters(cls, v: str) -> str:
+        return _validate_tool_name(v)
+
 
 class ToolUpdate(BaseModel):
     """Schema for updating an existing tool."""
@@ -128,6 +163,12 @@ class ToolUpdate(BaseModel):
     description: Optional[str] = Field(None, min_length=1)
     config: Optional[Dict[str, Any]] = None
     is_active: Optional[bool] = None
+
+    @validator("name")
+    def name_characters(cls, v: Optional[str]) -> Optional[str]:
+        if v is not None:
+            return _validate_tool_name(v)
+        return v
 
 
 # Response schemas

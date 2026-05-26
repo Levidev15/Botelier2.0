@@ -5,6 +5,7 @@ import { useState, useEffect } from "react";
 import ToolTypeSelector from "./ToolTypeSelector";
 import TransferCallForm from "./tool-types/TransferCallForm";
 import FlowForm from "./tool-types/FlowForm";
+import FlowEditForm from "./tool-types/FlowEditForm";
 import ApiRequestForm from "./tool-types/ApiRequestForm";
 
 interface Tool {
@@ -149,6 +150,15 @@ export default function ToolDrawer({ isOpen, onClose, onToolCreated, onToolUpdat
                 onSuccess={handleToolSaved}
                 onCancel={handleReset}
                 accountId={accountId}
+                toolSetId={toolSetId}
+              />
+            )}
+
+            {selectedType === "FLOW" && isEditMode && editTool && (
+              <FlowEditForm
+                tool={editTool}
+                onSuccess={handleToolSaved}
+                onCancel={handleReset}
                 toolSetId={toolSetId}
               />
             )}

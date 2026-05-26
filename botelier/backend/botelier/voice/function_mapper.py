@@ -15,6 +15,7 @@ from loguru import logger
 from ..config.domain import get_public_base_url
 from ..logging_config import should_log_prompts as _should_log_prompts
 from ..services.ssrf_safe_transport import SSRFSafeTransport
+from ..utils import sanitize_function_name
 
 if TYPE_CHECKING:
     from .call_handler import CallHandler
@@ -27,24 +28,6 @@ from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
 from pipecat.frames.frames import EndFrame, TTSSpeakFrame
 from pipecat.services.llm_service import FunctionCallParams
-
-def sanitize_tool_name(name: str) -> str:
-    """Return a version of *name* that satisfies OpenAI's function-name pattern
-    ``^[a-zA-Z0-9_-]+$``.
-
-    Spaces and other disallowed characters are replaced with underscores.
-    Consecutive underscores are collapsed.  A name that starts with a digit
-    is prefixed with ``tool_``.  An empty result (e.g. a name that was
-    entirely punctuation) becomes ``tool_unnamed``.
-    """
-    sanitized = _re_tool_name.sub(r"[^a-zA-Z0-9_-]", "_", name)
-    sanitized = _re_tool_name.sub(r"_+", "_", sanitized)
-    sanitized = sanitized.strip("_")
-    if not sanitized:
-        sanitized = "tool_unnamed"
-    elif sanitized[0].isdigit():
-        sanitized = f"tool_{sanitized}"
-    return sanitized
 
 
 # Minimum seconds to wait from BotStoppedSpeakingFrame before sending the
@@ -321,7 +304,7 @@ class FunctionMapper:
 
             # 3. Include flow trigger function
             trigger_schema = FunctionSchema(
-                name=f"start_{sanitize_tool_name(tool_name)}",
+                name=f"start_{sanitize_function_name(tool_name)}",
                 description=f"Start the {tool_name} conversation flow",
                 properties={},
                 required=[],
@@ -362,6 +345,15 @@ class FunctionMapper:
             # schema = {"name": "transfer_to_front_desk", "description": "...", "parameters": {...}}
             # handler = async function that actually performs the transfer
         """
+        safe_name = sanitize_function_name(tool.name)
+        if safe_name != tool.name:
+            logger.warning(
+                f"Tool '{tool.name}' (id={getattr(tool, 'id', '?')}) has a name that requires "
+                f"sanitization for the OpenAI API. It will be sent as '{safe_name}'. "
+                "Consider renaming the tool to use only letters, digits, spaces, hyphens, "
+                "and underscores to suppress this warning."
+            )
+
         if tool.tool_type == ToolType.TRANSFER_CALL:
             return self._map_transfer_call(tool)
         elif tool.tool_type == ToolType.API_REQUEST:
@@ -412,7 +404,7 @@ class FunctionMapper:
 
         # OpenAI function schema
         function_schema = {
-            "name": sanitize_tool_name(tool.name),
+            "name": sanitize_function_name(tool.name),
             "description": tool.description,
             "parameters": {
                 "type": "object",
@@ -915,7 +907,7 @@ class FunctionMapper:
             description = f"{tool.description}\n\nWhen you receive the result, follow these instructions: {response_instructions}"
 
         function_schema = {
-            "name": sanitize_tool_name(tool.name),
+            "name": sanitize_function_name(tool.name),
             "description": description,
             "parameters": {
                 "type": "object",
@@ -1012,7 +1004,7 @@ class FunctionMapper:
         goodbye_message = tool.config.get("goodbye_message", "Thank you for calling. Goodbye!")
 
         function_schema = {
-            "name": sanitize_tool_name(tool.name),
+            "name": sanitize_function_name(tool.name),
             "description": tool.description,
             "parameters": {"type": "object", "properties": {}, "required": []},
         }
@@ -1062,7 +1054,7 @@ class FunctionMapper:
             logger.warning(f"Flow tool {tool.name} has no nodes configured")
             # Return a placeholder schema
             return {
-                "name": sanitize_tool_name(tool.name),
+                "name": sanitize_function_name(tool.name),
                 "description": tool.description or "Execute conversation flow",
                 "parameters": {"type": "object", "properties": {}, "required": []},
             }, self._create_empty_flow_handler(tool.name)
@@ -1081,7 +1073,7 @@ class FunctionMapper:
         # Return main flow trigger function
         # The LLM calls this when it detects the guest wants to start this flow
         function_schema = {
-            "name": f"start_{sanitize_tool_name(tool.name)}",
+            "name": f"start_{sanitize_function_name(tool.name)}",
             "description": f"Start the {tool.name} flow. {tool.description or ''}",
             "parameters": {"type": "object", "properties": {}, "required": []},
         }
@@ -1140,6 +1132,14 @@ class FunctionMapper:
         """
         flow_config_dict = tool.config or {}
         tool_name = str(tool.name)
+        safe_name = sanitize_function_name(tool_name)
+        if safe_name != tool_name:
+            logger.warning(
+                f"Flow tool '{tool_name}' (id={getattr(tool, 'id', '?')}) has a name that "
+                f"requires sanitization for the OpenAI API. It will be sent as 'start_{safe_name}'. "
+                "Consider renaming the tool to use only letters, digits, spaces, hyphens, "
+                "and underscores to suppress this warning."
+            )
 
         if not flow_config_dict.get("nodes"):
             # Empty flow - return just the trigger function
@@ -1172,17 +1172,17 @@ class FunctionMapper:
         function_schemas = executor.get_function_schemas()
 
         # Add trigger function
-        _safe_tool_name = sanitize_tool_name(tool_name)
+        safe_tool_name = sanitize_function_name(tool_name)
         trigger_schema = {
             "type": "function",
             "function": {
-                "name": f"start_{_safe_tool_name}",
+                "name": f"start_{safe_tool_name}",
                 "description": f"Start the {tool_name} conversation flow when the guest wants to {tool.description or 'complete this task'}",
                 "parameters": {"type": "object", "properties": {}, "required": []},
             },
         }
         function_schemas.insert(0, trigger_schema)
-        handlers[f"start_{_safe_tool_name}"] = self._create_flow_trigger_handler(tool_name)
+        handlers[f"start_{safe_tool_name}"] = self._create_flow_trigger_handler(tool_name)
 
         return function_schemas, handlers
 

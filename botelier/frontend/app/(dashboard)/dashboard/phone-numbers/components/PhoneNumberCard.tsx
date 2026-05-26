@@ -1,7 +1,7 @@
 "use client";
 
-import { useState } from "react";
-import { Phone, Trash2, MessageSquare } from "lucide-react";
+import { useState, useRef, useEffect } from "react";
+import { Phone, Trash2, MessageSquare, Pencil, Check, X } from "lucide-react";
 import { notify } from "@/lib/notifications";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 
@@ -32,7 +32,48 @@ interface PhoneNumberCardProps {
 export default function PhoneNumberCard({ phoneNumber, assistants, onDelete, onUpdate, canConfigure = true, canRelease = true }: PhoneNumberCardProps) {
   const [assigning, setAssigning] = useState(false);
   const [toggingSms, setTogglingSms] = useState(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameValue, setNameValue] = useState(phoneNumber.friendly_name || "");
+  const [savingName, setSavingName] = useState(false);
+  const nameInputRef = useRef<HTMLInputElement>(null);
   const { authFetch } = useAuthToken();
+
+  useEffect(() => {
+    if (editingName && nameInputRef.current) {
+      nameInputRef.current.focus();
+      nameInputRef.current.select();
+    }
+  }, [editingName]);
+
+  const handleNameSave = async () => {
+    setSavingName(true);
+    try {
+      const response = await authFetch(`/api/phone-numbers/${phoneNumber.id}/rename`, {
+        method: "PATCH",
+        body: JSON.stringify({ friendly_name: nameValue.trim() || null }),
+      });
+      if (response.ok) {
+        notify.success("Name updated");
+        setEditingName(false);
+        onUpdate();
+      } else {
+        const error = await response.json();
+        notify.error(error.detail || "Failed to update name");
+      }
+    } catch {
+      notify.error("Failed to update name");
+    } finally {
+      setSavingName(false);
+    }
+  };
+
+  const handleNameKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "Enter") handleNameSave();
+    if (e.key === "Escape") {
+      setNameValue(phoneNumber.friendly_name || "");
+      setEditingName(false);
+    }
+  };
 
   const handleAssignment = async (assistantId: string) => {
     setAssigning(true);
@@ -117,13 +158,56 @@ export default function PhoneNumberCard({ phoneNumber, assistants, onDelete, onU
     <div className="bg-[#141414] border border-gray-800 rounded-lg p-4 hover:border-gray-700 transition-colors">
       <div className="flex items-start justify-between mb-3">
         <div className="flex items-center space-x-3">
-          <div className="w-10 h-10 bg-blue-600/10 rounded-lg flex items-center justify-center">
+          <div className="w-10 h-10 bg-blue-600/10 rounded-lg flex items-center justify-center flex-shrink-0">
             <Phone className="h-5 w-5 text-blue-500" />
           </div>
-          <div>
+          <div className="min-w-0 flex-1">
             <div className="text-white font-medium">{phoneNumber.phone_number}</div>
-            {phoneNumber.friendly_name && (
-              <div className="text-sm text-gray-400">{phoneNumber.friendly_name}</div>
+            {editingName ? (
+              <div className="flex items-center gap-1 mt-1">
+                <input
+                  ref={nameInputRef}
+                  type="text"
+                  value={nameValue}
+                  onChange={(e) => setNameValue(e.target.value)}
+                  onKeyDown={handleNameKeyDown}
+                  placeholder="Add a label..."
+                  maxLength={255}
+                  className="flex-1 min-w-0 px-2 py-0.5 bg-[#1a1a1a] border border-blue-500 rounded text-sm text-gray-200 focus:outline-none"
+                />
+                <button
+                  onClick={handleNameSave}
+                  disabled={savingName}
+                  className="p-1 text-green-400 hover:text-green-300 disabled:opacity-50"
+                  title="Save"
+                >
+                  <Check size={14} />
+                </button>
+                <button
+                  onClick={() => {
+                    setNameValue(phoneNumber.friendly_name || "");
+                    setEditingName(false);
+                  }}
+                  className="p-1 text-gray-500 hover:text-gray-300"
+                  title="Cancel"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={() => canConfigure && setEditingName(true)}
+                disabled={!canConfigure}
+                className={`flex items-center gap-1 mt-0.5 group ${canConfigure ? "cursor-pointer" : "cursor-default"}`}
+                title={canConfigure ? "Click to edit label" : undefined}
+              >
+                <span className="text-sm text-gray-400 group-hover:text-gray-300 transition-colors">
+                  {phoneNumber.friendly_name || (canConfigure ? "Add a label..." : "")}
+                </span>
+                {canConfigure && (
+                  <Pencil size={11} className="text-gray-600 opacity-0 group-hover:opacity-100 transition-opacity flex-shrink-0" />
+                )}
+              </button>
             )}
           </div>
         </div>

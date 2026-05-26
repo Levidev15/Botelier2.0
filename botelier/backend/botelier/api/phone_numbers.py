@@ -328,6 +328,39 @@ async def release_phone_number(
         raise HTTPException(status_code=500, detail=f"Failed to release number: {str(e)}")
 
 
+class RenameNumberRequest(BaseModel):
+    friendly_name: Optional[str] = Field(None, max_length=255, description="Display label for the number (empty string clears it)")
+
+
+@router.patch("/{phone_number_id}/rename", response_model=PhoneNumberResponse)
+async def rename_phone_number(
+    phone_number_id: str,
+    request: RenameNumberRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Update the friendly name (label) of a phone number.
+
+    Path params:
+    - phone_number_id: Phone number UUID
+
+    Body:
+    - friendly_name: New label, or null/empty string to clear it
+
+    Returns:
+    - Updated phone number record
+    """
+    phone_number = db.query(PhoneNumber).filter(PhoneNumber.id == phone_number_id).first()
+    if not phone_number:
+        raise HTTPException(status_code=404, detail="Phone number not found")
+    check_account_permission(user, str(phone_number.account_id), "phone_numbers.configure", db)
+
+    phone_number.friendly_name = request.friendly_name or None
+    db.commit()
+    db.refresh(phone_number)
+    return phone_number.to_dict()
+
+
 class SMSConfigRequest(BaseModel):
     account_id: str
     sms_enabled: bool

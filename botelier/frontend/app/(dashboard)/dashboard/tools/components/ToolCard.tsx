@@ -1,6 +1,6 @@
 "use client";
 
-import { LucideIcon, Trash2, Edit, GitBranch, Play } from "lucide-react";
+import { LucideIcon, Trash2, Edit, GitBranch, Play, Pencil } from "lucide-react";
 import { useState } from "react";
 import { useRouter } from "next/navigation";
 import { notify, confirmAction } from "@/lib/notifications";
@@ -136,11 +136,20 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit
           <>
             {canEdit && (
               <button
+                onClick={handleEdit}
+                className="px-3 py-2 text-sm text-gray-400 hover:text-white hover:bg-gray-800 rounded transition-colors flex items-center justify-center gap-2"
+                title="Edit name and description"
+              >
+                <Pencil size={14} />
+              </button>
+            )}
+            {canEdit && (
+              <button
                 onClick={handleEditFlow}
                 className="flex-1 px-3 py-2 text-sm text-cyan-400 hover:text-cyan-300 hover:bg-cyan-950/20 rounded transition-colors flex items-center justify-center gap-2"
               >
                 <GitBranch size={14} />
-                Edit
+                Edit Flow
               </button>
             )}
             <button
