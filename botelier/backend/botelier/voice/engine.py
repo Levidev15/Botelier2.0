@@ -1622,6 +1622,38 @@ class VoiceEngineFactory:
             )
             logger.info(f"Silero VAD + SmartTurn wired into LLMUserAggregator: {vad_params}")
 
+        elif is_flux_model(config.stt_model):
+            # Flux path: apply mute strategies WITHOUT a VAD analyzer or SmartTurn.
+            #
+            # Flux owns its own turn detection (StartOfTurn / EndOfTurn events) so we
+            # must NOT attach a Silero VAD analyzer — doing so would create a second,
+            # conflicting turn-detection layer.  However, we still need the mute
+            # strategies so Pipecat stops forwarding caller audio to run_stt() while
+            # the bot is speaking.  Without them user_params is None, audio keeps
+            # flowing to the Flux WebSocket during TTS, and the Flux watchdog
+            # (_watchdog_task_handler) detects audio stalling mid-response (because
+            # the muted frames never arrive), injects synthetic silence, which causes
+            # Flux to fire a new StartOfTurn → broadcast_interruption() → the bot's
+            # voice is cut off mid-word.  The greeting suffers the same fate on the
+            # very first response before the caller has spoken at all.
+            #
+            # should_interrupt=True is intentional on the DeepgramFluxSTTService
+            # (see engine.py create_stt()).  With these mute strategies in place no
+            # caller audio reaches Flux while the bot is speaking, so Flux cannot
+            # spuriously fire StartOfTurn during bot speech, and broadcast_interruption()
+            # is only triggered by genuine caller speech that arrives after the mute
+            # window closes.
+            user_params = LLMUserAggregatorParams(
+                user_mute_strategies=[
+                    MuteUntilFirstBotCompleteUserMuteStrategy(),
+                    FunctionCallUserMuteStrategy(),
+                ],
+            )
+            logger.info(
+                f"Deepgram Flux mute strategies wired into LLMUserAggregator "
+                f"(model={config.stt_model!r}); VAD/SmartTurn omitted — Flux owns turn detection"
+            )
+
         context_aggregator = LLMContextAggregatorPair(context, user_params=user_params)
 
         # Register function handlers with LLM

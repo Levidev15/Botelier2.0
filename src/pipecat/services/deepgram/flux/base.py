@@ -293,7 +293,19 @@ class DeepgramFluxSTTBase(STTService):
             now = time.monotonic()
             # More than 500 ms without sending new audio to Flux
             if self._user_is_speaking and self._last_stt_time and now - self._last_stt_time > 0.5:
-                logger.warning("Sending silence to Flux to prevent dangling task")
+                elapsed_ms = int((now - self._last_stt_time) * 1000)
+                # This fires when Flux has signalled StartOfTurn but no audio has
+                # been forwarded to the Flux WebSocket for >500 ms.  During normal
+                # operation — with mute strategies applied — audio is intentionally
+                # withheld while the bot is speaking, so this watchdog should never
+                # trigger mid-response.  If you see this warning alongside an
+                # "Interruption detected" log it means audio is still reaching Flux
+                # while the bot is speaking and the mute strategies are not engaged.
+                logger.warning(
+                    f"Sending silence to Flux to prevent dangling task "
+                    f"(no audio for {elapsed_ms} ms while user_is_speaking=True; "
+                    f"if bot was speaking this indicates missing mute strategies)"
+                )
                 try:
                     await self._send_silence()
                 except Exception as e:
