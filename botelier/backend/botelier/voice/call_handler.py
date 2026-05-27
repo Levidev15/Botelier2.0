@@ -576,6 +576,12 @@ class CallHandler:
                     audio_out_sample_rate=8000,  # Twilio expects μ-law at 8 kHz
                     add_wav_header=False,        # Twilio uses raw μ-law, not WAV
                     serializer=serializer,
+                    # Twilio Media Streams expects 20ms RTP packets.  The Pipecat
+                    # default of 4 × 10ms = 40ms means a Deepgram micro-gap exposes
+                    # up to 40ms of silence on the wire; halving it to 2 × 10ms = 20ms
+                    # aligns the output packet interval with Twilio's RTP expectation
+                    # and halves the worst-case silent-packet window.
+                    audio_out_10ms_chunks=2,
                 ),
             )
             # VAD label for logging — read from config, not from transport params.
@@ -649,6 +655,7 @@ class CallHandler:
                 vad_suspicion_tracker,
                 greeting_injector,
                 usage_observer,
+                _tts_audio_gap_tracker,  # Pure observer; wired in pipeline, no direct use here
             ) = VoiceEngineFactory.create_pipeline(
                 config=config,
                 api_keys=api_keys,

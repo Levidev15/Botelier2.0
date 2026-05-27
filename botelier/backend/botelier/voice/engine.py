@@ -845,6 +845,50 @@ class VadSuspicionTracker(FrameProcessor):
                     self._last_missed_emit_mono = _now
 
         await self.push_frame(frame, direction)
+
+
+class TtsAudioGapTracker(FrameProcessor):
+    """Pure-observer placed immediately after the TTS service in the pipeline.
+
+    Measures the wall-clock gap between consecutive ``TTSAudioRawFrame`` events.
+    When the gap exceeds 30 ms, a DEBUG-level warning is emitted so engineers can
+    detect Deepgram sentence-boundary drain without any production overhead.
+
+    Cross-turn leakage is prevented by resetting ``_last_audio_t`` on every
+    ``LLMFullResponseStartFrame`` — gaps between separate AI turns are never
+    reported as intra-turn audio gaps.
+
+    This processor is completely transparent: every frame is passed through
+    unchanged with no blocking awaits on the hot path.
+    """
+
+    _GAP_THRESHOLD_S: float = 0.030  # 30 ms
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._last_audio_t: float = 0.0
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, LLMFullResponseStartFrame):
+            # Reset between turns so inter-turn silence is never flagged.
+            self._last_audio_t = 0.0
+
+        elif isinstance(frame, TTSAudioRawFrame):
+            now = time.monotonic()
+            if self._last_audio_t > 0.0:
+                gap_s = now - self._last_audio_t
+                if gap_s > self._GAP_THRESHOLD_S:
+                    logger.debug(
+                        f"TTS audio gap {gap_s * 1000:.1f}ms detected between consecutive "
+                        f"TTSAudioRawFrames — consider switching text_aggregation_mode to 'token'"
+                    )
+            self._last_audio_t = now
+
+        await self.push_frame(frame, direction)
+
+
 class InboundAudioTracker(FrameProcessor):
     """Pure-observer placed immediately after ``transport.input()`` in the pipeline.
 
@@ -1368,17 +1412,32 @@ class VoiceEngineFactory:
                     async for frame in super().run_tts(text, context_id):
                         yield frame
 
+            from pipecat.services.tts_service import TextAggregationMode
+
             voice = config.tts_voice_id or "aura-2-helena-en"
             # Twilio Media Streams require 8 kHz audio; tell Deepgram to encode at
             # 8000 Hz so no downstream resampling is needed before the Twilio
             # serialiser μ-law-encodes it for transmission.
             sample_rate = config.tts_config.get("sample_rate", 8000)
             encoding = config.tts_config.get("encoding", "linear16")
+
+            # TOKEN mode sends each LLM token to Deepgram the moment it arrives,
+            # keeping Deepgram's internal synthesis buffer continuously filled and
+            # eliminating sentence-boundary drain gaps.  Default is "sentence" to
+            # preserve existing behaviour for all current assistants.
+            _mode_str = config.tts_config.get("text_aggregation_mode", "sentence")
+            text_aggregation_mode = (
+                TextAggregationMode.TOKEN
+                if _mode_str == "token"
+                else TextAggregationMode.SENTENCE
+            )
+
             if hasattr(DeepgramTTSService, "Settings"):
                 return _BotelierDeepgramTTSService(
                     api_key=api_keys.get("deepgram_api_key"),
                     sample_rate=sample_rate,
                     encoding=encoding,
+                    text_aggregation_mode=text_aggregation_mode,
                     settings=DeepgramTTSService.Settings(
                         voice=voice,
                     ),
@@ -1388,6 +1447,7 @@ class VoiceEngineFactory:
                 voice=voice,
                 sample_rate=sample_rate,
                 encoding=encoding,
+                text_aggregation_mode=text_aggregation_mode,
             )
         elif provider == "cartesia":
             from pipecat.services.cartesia.tts import CartesiaTTSService
@@ -1517,6 +1577,11 @@ class VoiceEngineFactory:
         # Placed between STT and context_aggregator so it intercepts
         # TranscriptionFrames before they enter the LLM pipeline.
         first_speech_tracker = FirstUserSpeechTracker()
+
+        # Detect intra-turn audio gaps >30ms between consecutive TTSAudioRawFrames.
+        # Off by default in production (LOG_LEVEL=INFO); enable by raising to DEBUG.
+        # Resets on LLMFullResponseStartFrame to prevent cross-turn false positives.
+        tts_audio_gap_tracker = TtsAudioGapTracker()
 
         # Log greeting_completed on the first BotStoppedSpeakingFrame (greeting TTS done).
         # Placed between TTS and tts_completion_watcher; both see the same frame.
@@ -1676,6 +1741,7 @@ class VoiceEngineFactory:
                 interruption_tracker,  # Observes text frames + InterruptionFrame before TTS
                 greeting_injector,  # One-shot cached-greeting push, downstream of STT
                 tts,
+                tts_audio_gap_tracker,  # DEBUG-level gap monitor; pure observer, zero hot-path overhead
                 greeting_completion_tracker,  # Logs greeting_completed on first BotStoppedSpeakingFrame
                 tts_completion_watcher,  # Observes BotStoppedSpeakingFrame after TTS
                 tts_latency_tracker,  # Measures LLM→TTS and TTS→transport handoff latencies
@@ -1708,6 +1774,7 @@ class VoiceEngineFactory:
             vad_suspicion_tracker,
             greeting_injector,
             usage_observer,
+            tts_audio_gap_tracker,
         )
 
     @staticmethod
