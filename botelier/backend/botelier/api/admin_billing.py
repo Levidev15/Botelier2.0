@@ -29,6 +29,11 @@ from botelier.models.user import User
 
 router = APIRouter(prefix="/api/admin/billing", tags=["Admin — Billing"])
 
+# Fraction of the standard prompt rate charged for cached prompt tokens.
+# OpenAI currently bills cached tokens at 50% of the standard prompt rate.
+# Change this constant (not the formula) if providers update their discount.
+_CACHE_DISCOUNT = 0.5
+
 # Compile-time fallback rates — used only when no row exists in
 # platform_internal_rates.  Update via PUT /api/admin/billing/platform-rates.
 _DEFAULT_LLM_PROMPT_RATE = 0.003
@@ -159,14 +164,21 @@ def _internal_cost(
     outbound_minutes: int = 0,
     sms_in_count: int = 0,
     sms_out_count: int = 0,
+    llm_cached_tokens: int = 0,
 ) -> dict:
     """Calculate internal cost breakdown using the provided rate dict.
 
     `rates` must come from _get_internal_rates(db) so that values are always
     read from the DB-backed config rather than from module-level constants.
+
+    `llm_cached_tokens` is the subset of `llm_prompt_tokens` served from the
+    prompt cache.  Cached tokens are billed at `_CACHE_DISCOUNT` of the full
+    prompt rate; uncached tokens are billed at the full prompt rate.
     """
+    uncached_prompt = max(0, llm_prompt_tokens - llm_cached_tokens)
     llm_cost = (
-        (llm_prompt_tokens / 1000) * rates["llm_prompt"]
+        (uncached_prompt / 1000) * rates["llm_prompt"]
+        + (llm_cached_tokens / 1000) * rates["llm_prompt"] * _CACHE_DISCOUNT
         + (llm_completion_tokens / 1000) * rates["llm_completion"]
     )
     tts_cost = (tts_characters / 1000) * rates["tts"]
@@ -182,6 +194,7 @@ def _internal_cost(
     total = llm_cost + tts_cost + stt_cost + twilio_call_cost + twilio_sms_cost
     return {
         "llm_prompt_tokens": llm_prompt_tokens,
+        "llm_cached_tokens": llm_cached_tokens,
         "llm_completion_tokens": llm_completion_tokens,
         "llm_cost_usd": round(llm_cost, 6),
         "tts_characters": tts_characters,
@@ -275,6 +288,7 @@ async def list_account_usage(
                 CallLog.account_id,
                 func.coalesce(func.sum(CallLog.llm_prompt_tokens), 0).label("prompt_tokens"),
                 func.coalesce(func.sum(CallLog.llm_completion_tokens), 0).label("completion_tokens"),
+                func.coalesce(func.sum(CallLog.llm_cached_tokens), 0).label("cached_tokens"),
                 func.coalesce(func.sum(CallLog.tts_characters), 0).label("tts_chars"),
                 func.coalesce(func.sum(CallLog.stt_seconds), 0).label("stt_secs"),
             )
@@ -289,6 +303,7 @@ async def list_account_usage(
             str(r.account_id): {
                 "prompt_tokens": int(r.prompt_tokens),
                 "completion_tokens": int(r.completion_tokens),
+                "cached_tokens": int(r.cached_tokens),
                 "tts_chars": int(r.tts_chars),
                 "stt_secs": float(r.stt_secs),
             }
@@ -343,7 +358,7 @@ async def list_account_usage(
             billable_total = round(inb["cost"] + outb["cost"] + sms_cost, 6)
 
             _iraw = internal_raw_by_acct.get(
-                acct_id, {"prompt_tokens": 0, "completion_tokens": 0, "tts_chars": 0, "stt_secs": 0.0}
+                acct_id, {"prompt_tokens": 0, "completion_tokens": 0, "cached_tokens": 0, "tts_chars": 0, "stt_secs": 0.0}
             )
             ic = _internal_cost(
                 _iraw["prompt_tokens"],
@@ -355,6 +370,7 @@ async def list_account_usage(
                 outbound_minutes=outb["minutes"],
                 sms_in_count=sms_in,
                 sms_out_count=sms_out,
+                llm_cached_tokens=_iraw["cached_tokens"],
             )
 
             rows.append({
@@ -493,6 +509,7 @@ async def get_account_detail(
             db.query(
                 func.coalesce(func.sum(CallLog.llm_prompt_tokens), 0).label("pt"),
                 func.coalesce(func.sum(CallLog.llm_completion_tokens), 0).label("ct"),
+                func.coalesce(func.sum(CallLog.llm_cached_tokens), 0).label("cached"),
                 func.coalesce(func.sum(CallLog.tts_characters), 0).label("tts"),
                 func.coalesce(func.sum(CallLog.stt_seconds), 0).label("stt"),
             )
@@ -513,6 +530,7 @@ async def get_account_detail(
             outbound_minutes=int(outbound_row.total_minutes),
             sms_in_count=sms_in_count,
             sms_out_count=sms_out_count,
+            llm_cached_tokens=int(ic_row.cached),
         )
 
         # MTD running total
@@ -600,6 +618,7 @@ async def get_account_detail(
                 rates=internal_rates,
                 inbound_minutes=inbound_mins,
                 outbound_minutes=outbound_mins,
+                llm_cached_tokens=int(log.llm_cached_tokens or 0),
             )
             return {
                 "call_log_id": str(log.id),
@@ -724,6 +743,7 @@ async def get_account_billing_timeseries(
                 trunc.label("bucket"),
                 func.coalesce(func.sum(CallLog.llm_prompt_tokens), 0).label("pt"),
                 func.coalesce(func.sum(CallLog.llm_completion_tokens), 0).label("ct"),
+                func.coalesce(func.sum(CallLog.llm_cached_tokens), 0).label("cached"),
                 func.coalesce(func.sum(CallLog.tts_characters), 0).label("tts"),
                 func.coalesce(func.sum(CallLog.stt_seconds), 0).label("stt"),
             )
@@ -772,7 +792,8 @@ async def get_account_billing_timeseries(
         for r in internal_rows:
             key = r.bucket.date().isoformat()
             internal_tokens_map[key] = {
-                "pt": int(r.pt), "ct": int(r.ct), "tts": int(r.tts), "stt": float(r.stt)
+                "pt": int(r.pt), "ct": int(r.ct), "cached": int(r.cached),
+                "tts": int(r.tts), "stt": float(r.stt),
             }
 
         sms_in_map: dict = {}
@@ -802,7 +823,7 @@ async def get_account_billing_timeseries(
                 6,
             )
             _itok = internal_tokens_map.get(
-                key, {"pt": 0, "ct": 0, "tts": 0, "stt": 0.0}
+                key, {"pt": 0, "ct": 0, "cached": 0, "tts": 0, "stt": 0.0}
             )
             int_cost = _internal_cost(
                 _itok["pt"],
@@ -814,6 +835,7 @@ async def get_account_billing_timeseries(
                 outbound_minutes=outbound_mins_map.get(key, 0),
                 sms_in_count=sms_in_map.get(key, 0),
                 sms_out_count=sms_out_map.get(key, 0),
+                llm_cached_tokens=_itok["cached"],
             )["internal_cost_usd"]
             timeseries.append({
                 "date": key,

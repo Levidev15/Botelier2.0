@@ -35,6 +35,7 @@ class UsageObserver(BaseObserver):
         super().__init__(**kwargs)
         self._total_prompt_tokens: int = 0
         self._total_completion_tokens: int = 0
+        self._total_cached_tokens: int = 0
         self._total_tts_chars: int = 0
         self._llm_model: str = ""
         self._tts_model: str = ""
@@ -47,6 +48,10 @@ class UsageObserver(BaseObserver):
     @property
     def total_completion_tokens(self) -> int:
         return self._total_completion_tokens
+
+    @property
+    def total_cached_tokens(self) -> int:
+        return self._total_cached_tokens
 
     @property
     def total_tts_chars(self) -> int:
@@ -73,6 +78,7 @@ class UsageObserver(BaseObserver):
                 usage = metric.value
                 self._total_prompt_tokens += usage.prompt_tokens
                 self._total_completion_tokens += usage.completion_tokens
+                self._total_cached_tokens += getattr(usage, "cache_read_input_tokens", None) or 0
                 if metric.model:
                     self._llm_model = metric.model
             elif isinstance(metric, TTSUsageMetricsData):

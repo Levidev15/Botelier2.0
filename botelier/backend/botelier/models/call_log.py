@@ -139,6 +139,7 @@ class CallLog(Base):
     # Internal cost-of-goods columns — admin-only, never exposed to account users.
     llm_prompt_tokens = Column(BigInteger, nullable=True)
     llm_completion_tokens = Column(BigInteger, nullable=True)
+    llm_cached_tokens = Column(BigInteger, nullable=True)
     tts_characters = Column(BigInteger, nullable=True)
     stt_seconds = Column(Numeric(10, 2), nullable=True)
     # Task #190 — model identifiers reported by providers at call-end (e.g. "gpt-4o",

@@ -465,6 +465,12 @@ WHERE answered_at IS NULL
     # Populated at call-end from UsageObserver.llm_model / .tts_model.
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS llm_model VARCHAR(100)",
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS tts_model VARCHAR(100)",
+    # Task #225 — Track OpenAI prompt-cache hits for accurate COGS.
+    # OpenAI bills cached prompt tokens at ~50% of the standard rate.
+    # llm_cached_tokens is the subset of llm_prompt_tokens that were served from
+    # the prompt cache. NULL for calls that predate this migration; 0 when the
+    # call ran but no tokens were cached.
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS llm_cached_tokens BIGINT",
 ]
 
 

@@ -1798,6 +1798,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
             _usage_obs = self.call_usage_observers.get(call_sid)
             _cap_prompt_tokens = _usage_obs.total_prompt_tokens if _usage_obs else None
             _cap_completion_tokens = _usage_obs.total_completion_tokens if _usage_obs else None
+            _cap_cached_tokens = _usage_obs.total_cached_tokens if _usage_obs else None
             _cap_tts_chars = _usage_obs.total_tts_chars if _usage_obs else None
             _cap_llm_model = (_usage_obs.llm_model or None) if _usage_obs else None
             _cap_tts_model = (_usage_obs.tts_model or None) if _usage_obs else None
@@ -1839,6 +1840,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
                         tools_used=_cap_tools,
                         llm_prompt_tokens=_cap_prompt_tokens,
                         llm_completion_tokens=_cap_completion_tokens,
+                        llm_cached_tokens=_cap_cached_tokens,
                         tts_characters=_cap_tts_chars,
                         llm_model=_cap_llm_model,
                         tts_model=_cap_tts_model,

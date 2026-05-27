@@ -490,6 +490,7 @@ class CallLogger:
         sweeper_age_seconds: Optional[int] = None,
         llm_prompt_tokens: Optional[int] = None,
         llm_completion_tokens: Optional[int] = None,
+        llm_cached_tokens: Optional[int] = None,
         tts_characters: Optional[int] = None,
         llm_model: Optional[str] = None,
         tts_model: Optional[str] = None,
@@ -629,6 +630,8 @@ class CallLogger:
                 call_log.llm_prompt_tokens = llm_prompt_tokens
             if llm_completion_tokens is not None:
                 call_log.llm_completion_tokens = llm_completion_tokens
+            if llm_cached_tokens is not None:
+                call_log.llm_cached_tokens = llm_cached_tokens
             if tts_characters is not None:
                 call_log.tts_characters = tts_characters
             if llm_model:
