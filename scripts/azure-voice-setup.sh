@@ -102,6 +102,7 @@ az containerapp create \
     DEEPGRAM_API_KEY=secretref:deepgram-api-key \
     OPENAI_API_KEY=secretref:openai-api-key \
     PUBLIC_BASE_URL="https://$CUSTOM_DOMAIN" \
+    BACKEND_WS_URL="wss://$CUSTOM_DOMAIN" \
     LOG_LEVEL=INFO \
     DB_POOL_SIZE=5 \
     DB_MAX_OVERFLOW=10 \

@@ -16,9 +16,10 @@ def get_public_base_url(fallback_host: Optional[str] = None) -> str:
 
     Priority order:
     1. PUBLIC_BASE_URL - Explicitly configured for production (with custom domains)
-    2. REPLIT_DEV_DOMAIN - Automatic Replit development domain (with port from Host header)
-    3. fallback_host - Optional Host header from incoming request (preserves port)
-    4. localhost - Last resort (will not work for external webhooks)
+    2. REPLIT_DOMAINS - Replit production domain (auto-injected by Replit)
+    3. REPLIT_DEV_DOMAIN - Automatic Replit development domain (with port from Host header)
+    4. fallback_host - Optional Host header from incoming request (preserves port)
+    5. localhost - Last resort (will not work for external webhooks)
 
     Args:
         fallback_host: Optional host from request headers (e.g., request.headers.get("Host"))
@@ -90,13 +91,20 @@ def get_websocket_url(
     This connects directly to the FastAPI backend on port 3001, bypassing the Next.js
     frontend entirely. This is the standard Pipecat pattern and avoids proxy issues.
 
+    Priority order:
+    1. BACKEND_WS_URL - Explicit WebSocket URL (overrides everything)
+    2. PUBLIC_BASE_URL - Derived: https://domain → wss://domain (Azure / custom-domain envs)
+    3. REPLIT_DOMAINS - Replit production proxy (no :3001, proxied through port 443)
+    4. REPLIT_DEV_DOMAIN - Replit dev direct to :3001
+    5. ws://localhost:3001 - Local fallback only
+
     Args:
         path: WebSocket endpoint path (default: "/api/ws/call")
         fallback_host: Optional host from request headers (unused, kept for compatibility)
         query_params: Optional dict of query parameters to append
 
     Returns:
-        WebSocket URL pointing directly to backend port 3001
+        WebSocket URL pointing to the backend
 
     Examples:
         >>> # Replit dev - direct to backend
@@ -104,7 +112,12 @@ def get_websocket_url(
         >>> get_websocket_url()
         "wss://abc123.repl.dev:3001/api/ws/call"
 
-        >>> # Production with custom backend URL
+        >>> # Azure / custom domain — derived from PUBLIC_BASE_URL
+        >>> os.environ["PUBLIC_BASE_URL"] = "https://voice.botelier.ai"
+        >>> get_websocket_url()
+        "wss://voice.botelier.ai/api/ws/call"
+
+        >>> # Explicit override
         >>> os.environ["BACKEND_WS_URL"] = "wss://api.botelier.com"
         >>> get_websocket_url()
         "wss://api.botelier.com/api/ws/call"
@@ -118,8 +131,22 @@ def get_websocket_url(
         if not backend_ws_url.startswith(("ws://", "wss://")):
             backend_ws_url = f"wss://{backend_ws_url}"
         ws_url = backend_ws_url.rstrip("/")
+
+    # Priority 2: Derive WebSocket URL from PUBLIC_BASE_URL by converting
+    # https:// → wss://. This allows Azure Container Apps (and any environment
+    # that only sets PUBLIC_BASE_URL) to self-route correctly without also
+    # requiring a separate BACKEND_WS_URL env var.
+    elif os.environ.get("PUBLIC_BASE_URL"):
+        base = os.environ["PUBLIC_BASE_URL"].rstrip("/")
+        if base.startswith("https://"):
+            ws_url = "wss://" + base[len("https://"):]
+        elif base.startswith("http://"):
+            ws_url = "ws://" + base[len("http://"):]
+        else:
+            ws_url = f"wss://{base}"
+
     else:
-        # Priority 2: Replit domain — production (REPLIT_DOMAINS) before dev (REPLIT_DEV_DOMAIN).
+        # Priority 3: Replit domain — production (REPLIT_DOMAINS) before dev (REPLIT_DEV_DOMAIN).
         # Replit injects REPLIT_DEV_DOMAIN into both environments, so check REPLIT_DOMAINS first.
         #
         # Production: WebSocket traffic arrives at port 443 via the Node.js server (port 5000)
