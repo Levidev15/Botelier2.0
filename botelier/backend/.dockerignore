@@ -1,0 +1,45 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Tests
+tests/
+.pytest_cache/
+.coverage
+htmlcov/
+coverage.xml
+*.coveragerc
+
+# Dev tooling
+.env
+.env.*
+*.env
+.venv/
+venv/
+env/
+
+# Logs
+*.log
+logs/
+
+# Docs / READMEs
+README.md
+docs/
+
+# Scratch files
+*.sql
+run_prod_migration.py
+prod_migration.sql
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo

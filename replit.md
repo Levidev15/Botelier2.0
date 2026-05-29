@@ -4,7 +4,22 @@ Botelier is a multi-tenant, multichannel AI platform that provides businesses wi
 
 ## Run & Operate
 
-_Populate as you build_
+### Dev (Replit — unchanged)
+- `botelier-backend` workflow: `uvicorn main:app --host 0.0.0.0 --port 3001`
+- `botelier-dashboard` workflow: `npm run dev` (Next.js, port 5000)
+- Dev Twilio number (+1 702 707 4036) points to `riker.replit.dev`
+
+### Production voice (Azure Container Apps)
+- **`voice.botelier.ai`** runs the same full FastAPI codebase as Replit
+- Both connect to the same Neon PostgreSQL database
+- Only difference: `PUBLIC_BASE_URL=https://voice.botelier.ai` on the Azure container
+- Dockerfile: `botelier/backend/Dockerfile` (build context = repo root)
+- CI/CD: `.github/workflows/deploy-voice.yml` (triggers on push to `botelier/backend/**` or `src/pipecat/**`)
+- One-time infrastructure setup: `scripts/azure-voice-setup.sh`
+- Production Twilio numbers route to `voice.botelier.ai`:
+  - +1 702 935 1117 (Mrs Fields): `https://voice.botelier.ai/api/calls/incoming`
+  - +1 725 444 6079 (AVA-PV): `https://voice.botelier.ai/api/calls/incoming`
+- Dashboard, SMS, billing, and all non-voice APIs remain on `botelier.replit.app`
 
 ## Stack
 
