@@ -24,7 +24,7 @@ from botelier.auth.middleware import (
     get_current_user,
     get_hotel_context,
 )
-from botelier.config.domain import get_public_base_url
+from botelier.config.domain import get_voice_webhook_base_url
 from botelier.database import get_db
 from botelier.integrations.twilio.phone_numbers import PhoneNumberManager
 from botelier.models.account import Account
@@ -190,7 +190,7 @@ async def purchase_phone_number(
             sub_auth_token=account.twilio_sub_auth_token,
         )
 
-        base_url = get_public_base_url()
+        base_url = get_voice_webhook_base_url()
         voice_url = f"{base_url}/api/calls/incoming"
         status_callback = f"{base_url}/api/calls/status"
 
@@ -474,7 +474,7 @@ async def reconfigure_phone_number_webhooks(
             sub_auth_token=account.twilio_sub_auth_token,
         )
 
-        base_url = get_public_base_url()
+        base_url = get_voice_webhook_base_url()
         voice_url = f"{base_url}/api/calls/incoming"
         status_callback = f"{base_url}/api/calls/status"
 

@@ -1,0 +1,34 @@
+ az containerapp logs show --name botelier-voice --resource-group botelier-voice-rg --tail 30
+curl https://botelier-voice.lemonbay-80908dd7.eastus.azurecontainerapps.io/api/health
+{"TimeStamp": "2026-06-01T05:53:03.93999", "Log": "Connecting to the container 'botelier-voice'..."}
+{"TimeStamp": "2026-06-01T05:53:04.07334", "Log": "Successfully Connected to container: 'botelier-voice' [Revision: 'botelier-voice--0000004', Replica: 'botelier-voice--0000004-78488f85bc-np754']"}
+{"TimeStamp": "2026-06-01T05:52:06.7677029+00:00", "Log": "F FROM assistants"}
+{"TimeStamp": "2026-06-01T05:52:06.7677123+00:00", "Log": "F WHERE assistants.vad_provider = %(vad_provider_1)s AND (assistants.vad_config IS NULL OR CAST(assistants.vad_config AS JSONB) = CAST(%(param_1)s AS JSONB))]"}
+{"TimeStamp": "2026-06-01T05:52:06.7677143+00:00", "Log": "F [parameters: {'vad_provider_1': 'silero', 'param_1': '\"{}\"'}]"}
+{"TimeStamp": "2026-06-01T05:52:06.7677219+00:00", "Log": "F (Background on this error at: https://sqlalche.me/e/20/f405)"}
+{"TimeStamp": "2026-06-01T05:52:06.7817206+00:00", "Log": "F 2026-06-01 05:52:06.781 | ERROR    | botelier.database:_backfill_smart_turn_stop_secs_default:966 - VAD smart_turn_stop_secs backfill failed (non-fatal): (psycopg2.errors.UndefinedColumn) column assistants.sms_config does not exist"}
+{"TimeStamp": "2026-06-01T05:52:06.7817598+00:00", "Log": "F LINE 1: ...assistants.flow_config AS assistants_flow_config, assistants..."}
+{"TimeStamp": "2026-06-01T05:52:06.7817754+00:00", "Log": "F                                                              ^"}
+{"TimeStamp": "2026-06-01T05:52:06.7817778+00:00", "Log": "F HINT:  Perhaps you meant to reference the column \"assistants.stt_config\" or the column \"assistants.tts_config\"."}
+{"TimeStamp": "2026-06-01T05:52:06.7817794+00:00", "Log": "F"}
+{"TimeStamp": "2026-06-01T05:52:06.7819317+00:00", "Log": "F [SQL: SELECT assistants.id AS assistants_id, assistants.account_id AS assistants_account_id, assistants.knowledge_base_id AS assistants_knowledge_base_id, assistants.tool_set_id AS assistants_tool_set_id, assistants.mcp_connection_id AS assistants_mcp_connection_id, assistants.mcp_enabled_tools AS assistants_mcp_enabled_tools, assistants.name AS assistants_name, assistants.description AS assistants_description, assistants.stt_provider AS assistants_stt_provider, assistants.llm_provider AS assistants_llm_provider, assistants.tts_provider AS assistants_tts_provider, assistants.stt_model AS assistants_stt_model, assistants.llm_model AS assistants_llm_model, assistants.tts_model AS assistants_tts_model, assistants.tts_voice AS assistants_tts_voice, assistants.system_prompt AS assistants_system_prompt, assistants.first_message AS assistants_first_message, assistants.language AS assistants_language, assistants.temperature AS assistants_temperature, assistants.max_tokens AS assistants_max_tokens, assistants.stt_config AS assistants_stt_config, assistants.llm_config AS assistants_llm_config, assistants.tts_config AS assistants_tts_config, assistants.vad_enabled AS assistants_vad_enabled, assistants.vad_provider AS assistants_vad_provider, assistants.vad_config AS assistants_vad_config, assistants.is_active AS assistants_is_active, assistants.flow_config AS assistants_flow_config, assistants.sms_config AS assistants_sms_config, assistants.acw_config AS assistants_acw_config, assistants.call_settings AS assistants_call_settings, assistants.created_at AS assistants_created_at, assistants.updated_at AS assistants_updated_at"}
+{"TimeStamp": "2026-06-01T05:52:06.7819553+00:00", "Log": "F FROM assistants"}
+{"TimeStamp": "2026-06-01T05:52:06.7841558+00:00", "Log": "F WHERE assistants.vad_provider = %(vad_provider_1)s AND assistants.vad_config IS NOT NULL]"}
+{"TimeStamp": "2026-06-01T05:52:06.7841721+00:00", "Log": "F [parameters: {'vad_provider_1': 'silero'}]"}
+{"TimeStamp": "2026-06-01T05:52:06.7841738+00:00", "Log": "F (Background on this error at: https://sqlalche.me/e/20/f405)"}
+{"TimeStamp": "2026-06-01T05:52:06.9158422+00:00", "Log": "F 2026-06-01 05:52:06.915 | INFO     | botelier.services.call_logger:complete_call:833 - Completed call CAa02700c1293918a8238f9d57c1289581 with outcome: completed (forced_by=sweeper)"}
+{"TimeStamp": "2026-06-01T05:52:06.9996717+00:00", "Log": "F 2026-06-01 05:52:06.999 | INFO     | botelier.services.call_logger:complete_call:833 - Completed call CAce0e0875f9cdb71e08449b85e36a5883 with outcome: completed (forced_by=sweeper)"}
+{"TimeStamp": "2026-06-01T05:52:07.0830886+00:00", "Log": "F 2026-06-01 05:52:07.082 | INFO     | botelier.services.call_logger:complete_call:833 - Completed call CA1f5b2fa75963a5ad2a38e6e550a78d46 with outcome: completed (forced_by=sweeper)"}
+{"TimeStamp": "2026-06-01T05:52:07.1648747+00:00", "Log": "F 2026-06-01 05:52:07.164 | INFO     | botelier.services.call_logger:complete_call:833 - Completed call CA71103ef02e6ba0fee4debcdf4c4f7848 with outcome: completed (forced_by=sweeper)"}
+{"TimeStamp": "2026-06-01T05:52:07.1852834+00:00", "Log": "F 2026-06-01 05:52:07.185 | INFO     | botelier.database:run_stuck_call_sweeper:1087 - Stuck-call sweeper: {'scanned': 6, 'finalized': 4, 'skipped_active': 0, 'skipped_transfer': 2, 'errors': 0}"}
+{"TimeStamp": "2026-06-01T05:52:07.7343506+00:00", "Log": "F [transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used."}
+{"TimeStamp": "2026-06-01T05:52:08.0737261+00:00", "Log": "F INFO:     Application startup complete."}
+{"TimeStamp": "2026-06-01T05:52:08.0743206+00:00", "Log": "F INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)"}
+{"TimeStamp": "2026-06-01T05:52:08.0971275+00:00", "Log": "F \u2705 Database initialized"}
+{"TimeStamp": "2026-06-01T05:52:08.0971886+00:00", "Log": "F Updated Opera Cloud integration type: d4ab50cb-78f7-4a95-9ba8-566afa23b8ca"}
+{"TimeStamp": "2026-06-01T05:52:08.0972+00:00", "Log": "F Updated GuestCentric CRS integration type: 38ea2e02-15a6-4748-8628-eabfe26cb26d"}
+{"TimeStamp": "2026-06-01T05:52:08.0972019+00:00", "Log": "F \u2705 Integration types seeded"}
+{"TimeStamp": "2026-06-01T05:52:08.0972034+00:00", "Log": "F \u2705 Silero VAD and SmartTurn models pre-warmed"}
+{"TimeStamp": "2026-06-01T05:52:08.0972049+00:00", "Log": "F \u2705 Stuck-call sweeper started (runs every 5 min)"}
+{"TimeStamp": "2026-06-01T05:52:08.0972064+00:00", "Log": "F 2026-06-01 05:52:08.096 | INFO     | botelier.database:run_stuck_call_sweeper:1087 - Stuck-call sweeper: {'scanned': 2, 'finalized': 0, 'skipped_active': 0, 'skipped_transfer': 2, 'errors': 0}"}
+{"TimeStamp": "2026-06-01T05:52:58.6046675+00:00", "Log": "F INFO:     100.100.0.41:57000 - \"GET / HTTP/1.1\" 200 OK"}

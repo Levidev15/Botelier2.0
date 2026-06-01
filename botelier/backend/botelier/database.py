@@ -482,6 +482,9 @@ WHERE answered_at IS NULL
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS stt_seconds NUMERIC(10,2)",
     # Account-facing cost sum of call_billing_items for this call.
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS estimated_cost_usd NUMERIC(10,6)",
+    # SMS AI configuration on assistants — added after initial table creation.
+    # Keys: enabled, llm_model, max_response_length, welcome_message, etc.
+    "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS sms_config JSONB DEFAULT '{}'",
 ]
 
 

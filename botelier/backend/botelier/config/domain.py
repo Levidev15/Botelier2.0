@@ -77,6 +77,29 @@ def get_public_base_url(fallback_host: Optional[str] = None) -> str:
     return "https://localhost"
 
 
+def get_voice_webhook_base_url() -> str:
+    """Get the base URL to use for Twilio voice webhook configuration.
+
+    Separate from get_public_base_url() so the dashboard backend (Replit) can
+    point newly-purchased numbers at the dedicated voice backend (ACA) without
+    routing its own HTTP traffic there.
+
+    Priority order:
+    1. VOICE_WEBHOOK_BASE_URL — explicit override (set on Replit prod to the ACA URL)
+    2. get_public_base_url()  — falls back to the current server's public URL
+
+    Usage: set VOICE_WEBHOOK_BASE_URL=https://botelier-voice.lemonbay-80908dd7.eastus.azurecontainerapps.io
+    on the Replit production environment so purchased numbers always route to ACA.
+    On ACA itself this env var is not needed — PUBLIC_BASE_URL already covers it.
+    """
+    voice_url = os.environ.get("VOICE_WEBHOOK_BASE_URL")
+    if voice_url:
+        if not voice_url.startswith(("http://", "https://")):
+            voice_url = f"https://{voice_url}"
+        return voice_url.rstrip("/")
+    return get_public_base_url()
+
+
 def get_websocket_url(
     path: str = "/api/ws/call",
     fallback_host: Optional[str] = None,
