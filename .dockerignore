@@ -1,0 +1,62 @@
+# Root-level .dockerignore — applied when building from repo root.
+# Docker only reads .dockerignore from the build context root, not from the
+# Dockerfile location, so this file must live here.
+#
+# The voice image only needs:
+#   botelier/backend/   — FastAPI application
+#   src/                — Local Pipecat override (takes precedence over pip)
+# Everything else is excluded to keep the build context small.
+
+# Frontend — large node_modules, .next build output, not needed in backend image
+botelier/frontend/
+
+# Docs site
+docs-site/
+docs/
+
+# Git and CI
+.git/
+.github/
+
+# Replit / agent internals
+.local/
+.agents/
+.replit
+replit.nix
+
+# Python caches
+**/__pycache__/
+**/*.py[cod]
+**/*.pyo
+**/*.pyd
+**/*.egg-info/
+
+# Test artifacts
+**/tests/
+**/.pytest_cache/
+**/.coverage
+**/htmlcov/
+**/coverage.xml
+
+# Environment / secrets — never send to build context
+**/.env
+**/.env.*
+**/*.env
+**/.venv/
+**/venv/
+
+# Logs
+**/*.log
+**/logs/
+
+# IDE
+.vscode/
+.idea/
+**/*.swp
+**/*.swo
+
+# Node
+**/node_modules/
+**/.next/
+**/dist/
+**/build/
