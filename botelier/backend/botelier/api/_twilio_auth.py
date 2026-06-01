@@ -128,22 +128,35 @@ def get_call_auth_token(
     from ..models.call_log import CallLog
     from ..models.phone_number import PhoneNumber
 
-    account = None
+    # Query only the columns we need — never load a full Account ORM object here.
+    # Loading full Account rows triggers SQLAlchemy's PostgreSQL native-enum type
+    # resolution for `status` / `subscription_tier`, which can fail if the PG enum
+    # type in a remote DB (e.g. Neon) was created with different values/casing than
+    # the current Python enum definitions.  Selecting a single String column avoids
+    # that entirely and is also more efficient.
 
     if to_number:
         try:
-            phone = db.query(PhoneNumber).filter(PhoneNumber.phone_number == to_number).first()
-            if phone:
-                account = db.query(Account).filter(Account.id == phone.account_id).first()
-                if account:
+            phone_row = (
+                db.query(PhoneNumber.account_id)
+                .filter(PhoneNumber.phone_number == to_number)
+                .first()
+            )
+            if phone_row:
+                token_row = (
+                    db.query(Account.twilio_sub_auth_token)
+                    .filter(Account.id == phone_row.account_id)
+                    .first()
+                )
+                if token_row and token_row.twilio_sub_auth_token:
                     logger.debug(
                         f"get_call_auth_token: resolved via phone_number={to_number} "
-                        f"account_id={account.id} has_token={bool(account.twilio_sub_auth_token)}"
+                        f"account_id={phone_row.account_id}"
                     )
+                    return token_row.twilio_sub_auth_token
         except Exception:
             logger.warning(
-                f"get_call_auth_token: DB lookup via to_number={to_number} failed — "
-                f"falling back to call_sid lookup",
+                f"get_call_auth_token: DB lookup via to_number={to_number} failed",
                 exc_info=True,
             )
             try:
@@ -151,32 +164,36 @@ def get_call_auth_token(
             except Exception:
                 pass
 
-    if account is None:
-        for sid in (call_sid, parent_call_sid):
-            if not sid:
-                continue
-            try:
-                call_log = db.query(CallLog).filter(CallLog.call_sid == sid).first()
-                if call_log:
-                    account = db.query(Account).filter(Account.id == call_log.account_id).first()
-                    if account:
-                        logger.debug(
-                            f"get_call_auth_token: resolved via call_sid={sid} "
-                            f"account_id={account.id} has_token={bool(account.twilio_sub_auth_token)}"
-                        )
-                        break
-            except Exception:
-                logger.warning(
-                    f"get_call_auth_token: DB lookup via call_sid={sid} failed",
-                    exc_info=True,
+    for sid in (call_sid, parent_call_sid):
+        if not sid:
+            continue
+        try:
+            log_row = (
+                db.query(CallLog.account_id)
+                .filter(CallLog.call_sid == sid)
+                .first()
+            )
+            if log_row:
+                token_row = (
+                    db.query(Account.twilio_sub_auth_token)
+                    .filter(Account.id == log_row.account_id)
+                    .first()
                 )
-                try:
-                    db.rollback()
-                except Exception:
-                    pass
-
-    if account and account.twilio_sub_auth_token:
-        return account.twilio_sub_auth_token
+                if token_row and token_row.twilio_sub_auth_token:
+                    logger.debug(
+                        f"get_call_auth_token: resolved via call_sid={sid} "
+                        f"account_id={log_row.account_id}"
+                    )
+                    return token_row.twilio_sub_auth_token
+        except Exception:
+            logger.warning(
+                f"get_call_auth_token: DB lookup via call_sid={sid} failed",
+                exc_info=True,
+            )
+            try:
+                db.rollback()
+            except Exception:
+                pass
 
     logger.warning(
         f"get_call_auth_token: could not resolve sub-account token "
