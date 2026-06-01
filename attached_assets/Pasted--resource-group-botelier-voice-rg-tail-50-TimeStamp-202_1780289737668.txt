@@ -1,0 +1,51 @@
+  --resource-group botelier-voice-rg \
+  --tail 50
+{"TimeStamp": "2026-06-01T04:55:07.55265", "Log": "Connecting to the container 'botelier-voice'..."}
+{"TimeStamp": "2026-06-01T04:55:07.73227", "Log": "Successfully Connected to container: 'botelier-voice' [Revision: 'botelier-voice--0000001', Replica: 'botelier-voice--0000001-597fd46676-skhzc']"}
+{"TimeStamp": "2026-06-01T04:54:23.3659215+00:00", "Log": "F 2026-06-01 04:54:23.365 | INFO     | botelier.logging_config:configure_logging:140 - Logging configured: LOG_LEVEL=INFO LOG_PROMPTS=off"}
+{"TimeStamp": "2026-06-01T04:54:23.5215268+00:00", "Log": "F Traceback (most recent call last):"}
+{"TimeStamp": "2026-06-01T04:54:23.5215907+00:00", "Log": "F   File \"/usr/local/bin/uvicorn\", line 8, in <module>"}
+{"TimeStamp": "2026-06-01T04:54:23.5217247+00:00", "Log": "F     sys.exit(main())"}
+{"TimeStamp": "2026-06-01T04:54:23.5217318+00:00", "Log": "F              ^^^^^^"}
+{"TimeStamp": "2026-06-01T04:54:23.521735+00:00", "Log": "F   File \"/usr/local/lib/python3.11/site-packages/click/core.py\", line 1524, in __call__"}
+{"TimeStamp": "2026-06-01T04:54:23.5218581+00:00", "Log": "F     return self.main(*args, **kwargs)"}
+{"TimeStamp": "2026-06-01T04:54:23.5232074+00:00", "Log": "F            ^^^^^^^^^^^^^^^^^^^^^^^^^^"}
+{"TimeStamp": "2026-06-01T04:54:23.5232274+00:00", "Log": "F   File \"/usr/local/lib/python3.11/site-packages/click/core.py\", line 1445, in main"}
+{"TimeStamp": "2026-06-01T04:54:23.5232375+00:00", "Log": "F     rv = self.invoke(ctx)"}
+{"TimeStamp": "2026-06-01T04:54:23.5232399+00:00", "Log": "F          ^^^^^^^^^^^^^^^^"}
+{"TimeStamp": "2026-06-01T04:54:23.5232421+00:00", "Log": "F   File \"/usr/local/lib/python3.11/site-packages/click/core.py\", line 1308, in invoke"}
+{"TimeStamp": "2026-06-01T04:54:23.5232515+00:00", "Log": "F     return ctx.invoke(self.callback, **ctx.params)"}
+{"TimeStamp": "2026-06-01T04:54:23.5232536+00:00", "Log": "F            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"}
+{"TimeStamp": "2026-06-01T04:54:23.5232558+00:00", "Log": "F   File \"/usr/local/lib/python3.11/site-packages/click/core.py\", line 877, in invoke"}
+{"TimeStamp": "2026-06-01T04:54:23.523258+00:00", "Log": "F     return callback(*args, **kwargs)"}
+{"TimeStamp": "2026-06-01T04:54:23.5232602+00:00", "Log": "F            ^^^^^^^^^^^^^^^^^^^^^^^^^"}
+{"TimeStamp": "2026-06-01T04:54:23.5232622+00:00", "Log": "F   File \"/usr/local/lib/python3.11/site-packages/uvicorn/main.py\", line 441, in main"}
+{"TimeStamp": "2026-06-01T04:54:23.5232643+00:00", "Log": "F     run("}
+{"TimeStamp": "2026-06-01T04:54:23.5232664+00:00", "Log": "F   File \"/usr/local/lib/python3.11/site-packages/uvicorn/main.py\", line 609, in run"}
+{"TimeStamp": "2026-06-01T04:54:23.523269+00:00", "Log": "F     config.load_app()"}
+{"TimeStamp": "2026-06-01T04:54:23.5232713+00:00", "Log": "F   File \"/usr/local/lib/python3.11/site-packages/uvicorn/config.py\", line 415, in load_app"}
+{"TimeStamp": "2026-06-01T04:54:23.5232735+00:00", "Log": "F     return import_from_string(self.app)"}
+{"TimeStamp": "2026-06-01T04:54:23.5232756+00:00", "Log": "F            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^"}
+{"TimeStamp": "2026-06-01T04:54:23.5232788+00:00", "Log": "F   File \"/usr/local/lib/python3.11/site-packages/uvicorn/importer.py\", line 22, in import_from_string"}
+{"TimeStamp": "2026-06-01T04:54:23.5232811+00:00", "Log": "F     raise exc from None"}
+{"TimeStamp": "2026-06-01T04:54:23.5233394+00:00", "Log": "F   File \"/usr/local/lib/python3.11/site-packages/uvicorn/importer.py\", line 19, in import_from_string"}
+{"TimeStamp": "2026-06-01T04:54:23.5233433+00:00", "Log": "F     module = importlib.import_module(module_str)"}
+{"TimeStamp": "2026-06-01T04:54:23.5233461+00:00", "Log": "F              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"}
+{"TimeStamp": "2026-06-01T04:54:23.5233484+00:00", "Log": "F   File \"/usr/local/lib/python3.11/importlib/__init__.py\", line 126, in import_module"}
+{"TimeStamp": "2026-06-01T04:54:23.5233505+00:00", "Log": "F     return _bootstrap._gcd_import(name[level:], package, level)"}
+{"TimeStamp": "2026-06-01T04:54:23.5233526+00:00", "Log": "F            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^"}
+{"TimeStamp": "2026-06-01T04:54:23.5233548+00:00", "Log": "F   File \"<frozen importlib._bootstrap>\", line 1204, in _gcd_import"}
+{"TimeStamp": "2026-06-01T04:54:23.5233568+00:00", "Log": "F   File \"<frozen importlib._bootstrap>\", line 1176, in _find_and_load"}
+{"TimeStamp": "2026-06-01T04:54:23.5233602+00:00", "Log": "F   File \"<frozen importlib._bootstrap>\", line 1147, in _find_and_load_unlocked"}
+{"TimeStamp": "2026-06-01T04:54:23.5233624+00:00", "Log": "F   File \"<frozen importlib._bootstrap>\", line 690, in _load_unlocked"}
+{"TimeStamp": "2026-06-01T04:54:23.5233644+00:00", "Log": "F   File \"<frozen importlib._bootstrap_external>\", line 940, in exec_module"}
+{"TimeStamp": "2026-06-01T04:54:23.5233664+00:00", "Log": "F   File \"<frozen importlib._bootstrap>\", line 241, in _call_with_frames_removed"}
+{"TimeStamp": "2026-06-01T04:54:23.5233685+00:00", "Log": "F   File \"/app/main.py\", line 22, in <module>"}
+{"TimeStamp": "2026-06-01T04:54:23.5233707+00:00", "Log": "F     from botelier.api import tools_router"}
+{"TimeStamp": "2026-06-01T04:54:23.5233727+00:00", "Log": "F   File \"/app/botelier/api/__init__.py\", line 6, in <module>"}
+{"TimeStamp": "2026-06-01T04:54:23.5234329+00:00", "Log": "F     from botelier.api.tools import router as tools_router"}
+{"TimeStamp": "2026-06-01T04:54:23.5234894+00:00", "Log": "F   File \"/app/botelier/api/tools.py\", line 13, in <module>"}
+{"TimeStamp": "2026-06-01T04:54:23.5235005+00:00", "Log": "F     from botelier.auth.middleware import ("}
+{"TimeStamp": "2026-06-01T04:54:23.5236155+00:00", "Log": "F   File \"/app/botelier/auth/middleware.py\", line 15, in <module>"}
+{"TimeStamp": "2026-06-01T04:54:23.5236234+00:00", "Log": "F     from jose import JWTError, jwt"}
+{"TimeStamp": "2026-06-01T04:54:23.5236257+00:00", "Log": "F ModuleNotFoundError: No module named 'jose'"}
