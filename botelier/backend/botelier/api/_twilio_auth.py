@@ -124,33 +124,64 @@ def get_call_auth_token(
     the platform-level `TWILIO_AUTH_TOKEN` env var when the hotel-level
     token is not configured (or no resolution path is available).
     """
-    try:
-        from ..models.account import Account
-        from ..models.call_log import CallLog
-        from ..models.phone_number import PhoneNumber
+    from ..models.account import Account
+    from ..models.call_log import CallLog
+    from ..models.phone_number import PhoneNumber
 
-        account = None
+    account = None
 
-        if to_number:
+    if to_number:
+        try:
             phone = db.query(PhoneNumber).filter(PhoneNumber.phone_number == to_number).first()
             if phone:
                 account = db.query(Account).filter(Account.id == phone.account_id).first()
+                if account:
+                    logger.debug(
+                        f"get_call_auth_token: resolved via phone_number={to_number} "
+                        f"account_id={account.id} has_token={bool(account.twilio_sub_auth_token)}"
+                    )
+        except Exception:
+            logger.warning(
+                f"get_call_auth_token: DB lookup via to_number={to_number} failed — "
+                f"falling back to call_sid lookup",
+                exc_info=True,
+            )
+            try:
+                db.rollback()
+            except Exception:
+                pass
 
-        if account is None:
-            for sid in (call_sid, parent_call_sid):
-                if not sid:
-                    continue
+    if account is None:
+        for sid in (call_sid, parent_call_sid):
+            if not sid:
+                continue
+            try:
                 call_log = db.query(CallLog).filter(CallLog.call_sid == sid).first()
                 if call_log:
                     account = db.query(Account).filter(Account.id == call_log.account_id).first()
                     if account:
+                        logger.debug(
+                            f"get_call_auth_token: resolved via call_sid={sid} "
+                            f"account_id={account.id} has_token={bool(account.twilio_sub_auth_token)}"
+                        )
                         break
+            except Exception:
+                logger.warning(
+                    f"get_call_auth_token: DB lookup via call_sid={sid} failed",
+                    exc_info=True,
+                )
+                try:
+                    db.rollback()
+                except Exception:
+                    pass
 
-        if account and account.twilio_sub_auth_token:
-            return account.twilio_sub_auth_token
-    except Exception as exc:
-        logger.debug(f"get_call_auth_token: lookup failed ({exc}); falling back to env token")
+    if account and account.twilio_sub_auth_token:
+        return account.twilio_sub_auth_token
 
+    logger.warning(
+        f"get_call_auth_token: could not resolve sub-account token "
+        f"(to_number={to_number}, call_sid={call_sid}) — falling back to TWILIO_AUTH_TOKEN env var"
+    )
     return os.environ.get("TWILIO_AUTH_TOKEN", "")
 
 
