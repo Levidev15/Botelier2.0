@@ -1,0 +1,26 @@
+2026-06-01T06:46:35.96358  Connecting to the container 'botelier-voice'...
+2026-06-01T06:46:36.04461  Successfully Connected to container: 'botelier-voice' [Revision: 'botelier-voice--0000006', Replica: 'botelier-voice--0000006-6948cdb47b-q68dm']
+2026-06-01T06:30:56.5243618Z stdout F 2026-06-01 06:30:56.524 | INFO     | botelier.database:_backfill_silero_vad_config:909 - VAD config backfill — all Silero assistants already configured
+2026-06-01T06:30:56.5435596Z stdout F 2026-06-01 06:30:56.543 | INFO     | botelier.database:_backfill_smart_turn_stop_secs_default:966 - VAD config backfill — no legacy smart_turn_stop_secs defaults found
+2026-06-01T06:30:56.5812748Z stdout F 2026-06-01 06:30:56.580 | INFO     | botelier.database:run_stuck_call_sweeper:1090 - Stuck-call sweeper: {'scanned': 2, 'finalized': 0, 'skipped_active': 0, 'skipped_transfer': 2, 'errors': 0}
+2026-06-01T06:30:57.1540795Z stderr F [transformers] PyTorch was not found. Models won't be available and only tokenizers, configuration and file/data utilities can be used.
+2026-06-01T06:30:57.5140420Z stderr F INFO:     Application startup complete.
+2026-06-01T06:30:57.5145937Z stderr F INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)
+2026-06-01T06:30:57.5493630Z stdout F ✅ Database initialized
+2026-06-01T06:30:57.5494153Z stdout F Updated Opera Cloud integration type: d4ab50cb-78f7-4a95-9ba8-566afa23b8ca
+2026-06-01T06:30:57.5494357Z stdout F Updated GuestCentric CRS integration type: 38ea2e02-15a6-4748-8628-eabfe26cb26d
+2026-06-01T06:30:57.5494390Z stdout F ✅ Integration types seeded
+2026-06-01T06:30:57.5494413Z stdout F ✅ Silero VAD and SmartTurn models pre-warmed
+2026-06-01T06:30:57.5494446Z stdout F ✅ Stuck-call sweeper started (runs every 5 min)
+2026-06-01T06:30:57.5494463Z stdout F 2026-06-01 06:30:57.546 | INFO     | botelier.database:run_stuck_call_sweeper:1090 - Stuck-call sweeper: {'scanned': 2, 'finalized': 0, 'skipped_active': 0, 'skipped_transfer': 2, 'errors': 0}
+2026-06-01T06:35:58.3289206Z stdout F 2026-06-01 06:35:58.326 | INFO     | botelier.database:run_stuck_call_sweeper:1090 - Stuck-call sweeper: {'scanned': 2, 'finalized': 0, 'skipped_active': 0, 'skipped_transfer': 2, 'errors': 0}
+2026-06-01T06:40:59.1138664Z stdout F 2026-06-01 06:40:59.113 | INFO     | botelier.database:run_stuck_call_sweeper:1090 - Stuck-call sweeper: {'scanned': 2, 'finalized': 0, 'skipped_active': 0, 'skipped_transfer': 2, 'errors': 0}
+2026-06-01T06:46:00.0124697Z stdout F 2026-06-01 06:46:00.012 | INFO     | botelier.database:run_stuck_call_sweeper:1090 - Stuck-call sweeper: {'scanned': 2, 'finalized': 0, 'skipped_active': 0, 'skipped_transfer': 2, 'errors': 0}
+2026-06-01T06:46:11.1119731Z stderr F 2026-06-01 06:46:11.111 | WARNING  | botelier.api.calls:incoming_call_webhook:238 - Invalid Twilio signature on /api/calls/incoming for CallSid=CAe0567bb7e704849e568c1bfdee497ab1 To=+17029351117 (validated against: https://botelier-voice.lemonbay-80908dd7.eastus.azurecontainerapps.io/api/calls/incoming)
+2026-06-01T06:46:11.1121432Z stdout F INFO:     100.100.0.143:43402 - "POST /api/calls/incoming HTTP/1.1" 403 Forbidden
+2026-06-01T06:46:16.2445892Z stdout F INFO:     100.100.0.143:43402 - "POST /api/calls/status HTTP/1.1" 403 Forbidden
+2026-06-01T06:46:16.2447431Z stderr F 2026-06-01 06:46:16.244 | WARNING  | botelier.api.calls:call_status_callback:521 - Invalid Twilio signature on /api/calls/status for CallSid=CAe0567bb7e704849e568c1bfdee497ab1 (validated against: https://botelier-voice.lemonbay-80908dd7.eastus.azurecontainerapps.io/api/calls/status)
+2026-06-01T06:47:01.4827047Z stderr F 2026-06-01 06:47:01.482 | WARNING  | botelier.api.calls:incoming_call_webhook:238 - Invalid Twilio signature on /api/calls/incoming for CallSid=CA1f95b63a9605f6d07756d81370572f97 To=+17029351117 (validated against: https://botelier-voice.lemonbay-80908dd7.eastus.azurecontainerapps.io/api/calls/incoming)
+2026-06-01T06:47:01.4828657Z stdout F INFO:     100.100.0.143:43402 - "POST /api/calls/incoming HTTP/1.1" 403 Forbidden
+2026-06-01T06:47:05.4285369Z stderr F 2026-06-01 06:47:05.428 | WARNING  | botelier.api.calls:call_status_callback:521 - Invalid Twilio signature on /api/calls/status for CallSid=CA1f95b63a9605f6d07756d81370572f97 (validated against: https://botelier-voice.lemonbay-80908dd7.eastus.azurecontainerapps.io/api/calls/status)
+2026-06-01T06:47:05.4286082Z stdout F INFO:     100.100.0.143:49214 - "POST /api/calls/status HTTP/1.1" 403 Forbidden

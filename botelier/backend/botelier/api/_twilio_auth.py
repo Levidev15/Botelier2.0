@@ -89,6 +89,19 @@ def validate_twilio_signature(
 
         validator = RequestValidator(auth_token)
         signature = request.headers.get("X-Twilio-Signature", "")
+
+        # Diagnostic — logs enough to confirm header arrival and token usage
+        # without leaking the full values. Remove once signature validation is stable.
+        logger.info(
+            f"[twilio-sig-debug] path={path} "
+            f"sig_present={'yes' if signature else 'NO — HEADER MISSING'} "
+            f"sig_len={len(signature)} "
+            f"sig_prefix={signature[:8] if signature else ''} "
+            f"token_prefix={auth_token[:8] if auth_token else ''} "
+            f"form_keys={sorted(dict(form_data).keys())} "
+            f"url={url}"
+        )
+
         is_valid = validator.validate(url, dict(form_data), signature)
         return is_valid, url
     except Exception as exc:
