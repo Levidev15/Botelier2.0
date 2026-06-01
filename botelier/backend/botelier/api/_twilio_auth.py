@@ -142,17 +142,25 @@ def get_call_auth_token(
                 .filter(PhoneNumber.phone_number == to_number)
                 .first()
             )
+            logger.info(
+                f"[auth-diag] to_number={to_number!r} "
+                f"phone_found={phone_row is not None} "
+                f"account_id={phone_row.account_id if phone_row else 'N/A'}"
+            )
             if phone_row:
                 token_row = (
                     db.query(Account.twilio_sub_auth_token)
                     .filter(Account.id == phone_row.account_id)
                     .first()
                 )
-                if token_row and token_row.twilio_sub_auth_token:
-                    logger.debug(
-                        f"get_call_auth_token: resolved via phone_number={to_number} "
-                        f"account_id={phone_row.account_id}"
-                    )
+                has_token = bool(token_row and token_row.twilio_sub_auth_token)
+                logger.info(
+                    f"[auth-diag] account_id={phone_row.account_id} "
+                    f"token_row_found={token_row is not None} "
+                    f"has_token={has_token} "
+                    f"token_prefix={token_row.twilio_sub_auth_token[:8] if has_token else 'EMPTY/NULL'}"
+                )
+                if has_token:
                     return token_row.twilio_sub_auth_token
         except Exception:
             logger.warning(
@@ -173,17 +181,23 @@ def get_call_auth_token(
                 .filter(CallLog.call_sid == sid)
                 .first()
             )
+            logger.info(
+                f"[auth-diag] call_sid={sid!r} "
+                f"call_log_found={log_row is not None} "
+                f"account_id={log_row.account_id if log_row else 'N/A'}"
+            )
             if log_row:
                 token_row = (
                     db.query(Account.twilio_sub_auth_token)
                     .filter(Account.id == log_row.account_id)
                     .first()
                 )
-                if token_row and token_row.twilio_sub_auth_token:
-                    logger.debug(
-                        f"get_call_auth_token: resolved via call_sid={sid} "
-                        f"account_id={log_row.account_id}"
-                    )
+                has_token = bool(token_row and token_row.twilio_sub_auth_token)
+                logger.info(
+                    f"[auth-diag] call_sid={sid} account_id={log_row.account_id} "
+                    f"token_row_found={token_row is not None} has_token={has_token}"
+                )
+                if has_token:
                     return token_row.twilio_sub_auth_token
         except Exception:
             logger.warning(
