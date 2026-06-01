@@ -471,6 +471,17 @@ WHERE answered_at IS NULL
     # the prompt cache. NULL for calls that predate this migration; 0 when the
     # call ran but no tokens were cached.
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS llm_cached_tokens BIGINT",
+    # Task #155 — Billing snapshot columns written at call-end by BillingService.
+    # direction: 'inbound' (default) or 'outbound' (click-to-call, future).
+    # NOT NULL with server_default so existing rows get 'inbound' automatically.
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS direction VARCHAR(10) NOT NULL DEFAULT 'inbound'",
+    # COGS usage counters — NULL for calls predating this migration.
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS llm_prompt_tokens BIGINT",
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS llm_completion_tokens BIGINT",
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS tts_characters BIGINT",
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS stt_seconds NUMERIC(10,2)",
+    # Account-facing cost sum of call_billing_items for this call.
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS estimated_cost_usd NUMERIC(10,6)",
 ]
 
 
