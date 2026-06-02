@@ -1,0 +1,28 @@
+orey [ ~/botelier2.0 ]$ $TAG = Get-Date -Format "yyyyMMddHHmmss"
+az acr build --registry boteliervoiceacr --image botelier-voice:$TAG --file botelier/backend/Dockerfile .
+az containerapp update --name botelier-voice --resource-group botelier-voice-rg --image boteliervoiceacr.azurecr.io/botelier-voice:$TAG
+bash: =: command not found
+Packing source code into tar to upload...
+Excluding 'docs-site/.gitignore' based on default ignore rules
+Excluding '.gitignore' based on default ignore rules
+Excluding '.git' based on default ignore rules
+Excluding 'botelier/frontend/.gitignore' based on default ignore rules
+Uploading archived source code from '/tmp/build_archive_233c10445c8742b29f662ccd96909d8c.tar.gz'...
+Sending context (28.719 MiB) to registry: boteliervoiceacr...
+(InvalidInputValue) Some of the properties of 'runRequest' are invalid.. InnerErrors: DockerBuildRequest:Image name 'botelier-voice:' is invalid. 
+The acceptable patterns are 'repository' or 'repository:tag'.The repository and tag names follow the standardized docker repository and tag naming conventions. Tag templates are supported within '{{' and '}}'. 
+Please refer to docs for more information on using image name and tag:  https://aka.ms/az/acr/az-acr-build
+Code: InvalidInputValue
+Message: Some of the properties of 'runRequest' are invalid.. InnerErrors: DockerBuildRequest:Image name 'botelier-voice:' is invalid. 
+The acceptable patterns are 'repository' or 'repository:tag'.The repository and tag names follow the standardized docker repository and tag naming conventions. Tag templates are supported within '{{' and '}}'. 
+Please refer to docs for more information on using image name and tag:  https://aka.ms/az/acr/az-acr-build
+Target: request
+Exception Details:      (InvalidImageString) Image name 'botelier-voice:' is invalid. 
+        The acceptable patterns are 'repository' or 'repository:tag'.The repository and tag names follow the standardized docker repository and tag naming conventions. Tag templates are supported within '{{' and '}}'. 
+        Please refer to docs for more information on using image name and tag:  https://aka.ms/az/acr/az-acr-build
+        Code: InvalidImageString
+        Message: Image name 'botelier-voice:' is invalid. 
+        The acceptable patterns are 'repository' or 'repository:tag'.The repository and tag names follow the standardized docker repository and tag naming conventions. Tag templates are supported within '{{' and '}}'. 
+        Please refer to docs for more information on using image name and tag:  https://aka.ms/az/acr/az-acr-build
+        Target: DockerBuildRequest
+(ContainerAppInvalidImageFormat) Container with name 'botelier-voice' has an invalid image format 'boteliervoiceacr.azurecr.io/botelier-voice:'. Image must match format [registry/]repository[:tag][@digest].
