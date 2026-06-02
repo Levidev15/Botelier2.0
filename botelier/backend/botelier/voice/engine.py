@@ -21,12 +21,16 @@ from pipecat.processors.idle_frame_processor import IdleFrameProcessor
 from pipecat.frames.frames import (
     AudioRawFrame,
     BotStoppedSpeakingFrame,
+    CancelFrame,
+    EndFrame,
     Frame,
+    InputTransportMessageFrame,
     InterruptionFrame,
     LLMFullResponseEndFrame,
     LLMFullResponseStartFrame,
     LLMTextFrame,
     MetricsFrame,
+    OutputTransportMessageFrame,
     StartFrame,
     TextFrame,
     TranscriptionFrame,
@@ -746,6 +750,69 @@ class TtsCompletionWatcher(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+
+
+class TwilioMarkWatcher(FrameProcessor):
+    """Send Twilio marks and wait for matching playback acknowledgements.
+
+    Twilio sends a mark event back only after all buffered outbound media before
+    that mark has completed playback. Transfers use this as the caller-heard
+    boundary before replacing the live call with Dial/Refer TwiML.
+    """
+
+    def __init__(self, stream_sid: str = "", **kwargs):
+        super().__init__(**kwargs)
+        self._stream_sid = stream_sid
+        self._pending: dict[str, asyncio.Event] = {}
+
+    async def send_mark_and_wait(self, name: str, timeout: float = 2.0) -> bool:
+        if not self._stream_sid:
+            logger.warning("TwilioMarkWatcher: no stream SID; skipping playback mark")
+            return False
+
+        event = asyncio.Event()
+        self._pending[name] = event
+        message = {
+            "event": "mark",
+            "streamSid": self._stream_sid,
+            "mark": {"name": name},
+        }
+
+        logger.info(f"Sending Twilio playback mark {name}")
+        await self.push_frame(OutputTransportMessageFrame(message=message), FrameDirection.DOWNSTREAM)
+
+        try:
+            await asyncio.wait_for(event.wait(), timeout=timeout)
+            logger.info(f"Twilio playback mark acknowledged: {name}")
+            return True
+        except TimeoutError:
+            logger.warning(
+                f"Timed out after {timeout}s waiting for Twilio playback mark {name}; proceeding"
+            )
+            return False
+        finally:
+            self._pending.pop(name, None)
+
+    def clear_pending(self) -> None:
+        for event in self._pending.values():
+            event.set()
+        self._pending.clear()
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+
+        if isinstance(frame, InputTransportMessageFrame):
+            message = frame.message or {}
+            if message.get("event") == "mark":
+                name = (message.get("mark") or {}).get("name")
+                event = self._pending.get(name)
+                if event is not None:
+                    event.set()
+
+        if isinstance(frame, (EndFrame, CancelFrame)):
+            self.clear_pending()
+
+        await self.push_frame(frame, direction)
 
 
 class VadSuspicionTracker(FrameProcessor):
@@ -1485,6 +1552,7 @@ class VoiceEngineFactory:
         on_user_turn: Callable | None = None,
         call_start_mono: float = 0.0,
         on_llm_start: Callable | None = None,
+        stream_sid: str = "",
     ) -> tuple:
         """Create complete voice pipeline from agent configuration.
 
@@ -1505,14 +1573,16 @@ class VoiceEngineFactory:
                 utterance.  Used to record per-turn timestamps for the call transcript.
 
         Returns:
-            14-tuple: (pipeline, task, llm, context_aggregator, context,
-                      tts_completion_watcher, first_speech_tracker,
+            16-tuple: (pipeline, task, llm, context_aggregator, context,
+                      tts_completion_watcher, twilio_mark_watcher, first_speech_tracker,
                       greeting_completion_tracker, idle_timeout_tracker,
                       user_turn_capture, tts_latency_tracker, vad_suspicion_tracker,
-                      greeting_injector, usage_observer).
+                      greeting_injector, usage_observer, tts_audio_gap_tracker).
             - context is returned separately for transcript extraction.
             - tts_completion_watcher can be linked to FunctionMapper.set_tts_completion_watcher()
               so transfer handlers can await TTS completion without time-based sleeps.
+            - twilio_mark_watcher can be linked to FunctionMapper.set_twilio_mark_watcher()
+              so transfer handlers can wait for Twilio to acknowledge playback.
             - first_speech_tracker / greeting_completion_tracker / idle_timeout_tracker /
               user_turn_capture / tts_latency_tracker / vad_suspicion_tracker need event_queue injected via
               set_event_queue() after pipeline creation.
@@ -1572,6 +1642,10 @@ class VoiceEngineFactory:
         # Observe BotStoppedSpeakingFrame after TTS so transfer handlers can
         # await actual TTS completion rather than using fixed-duration sleeps.
         tts_completion_watcher = TtsCompletionWatcher()
+
+        # Sends Twilio mark messages and observes mark acks so transfer handlers
+        # can wait until the caller has heard the pre-transfer phrase.
+        twilio_mark_watcher = TwilioMarkWatcher(stream_sid=stream_sid)
 
         # Detect the caller's first speech utterance for event logging.
         # Placed between STT and context_aggregator so it intercepts
@@ -1744,6 +1818,7 @@ class VoiceEngineFactory:
                 tts_audio_gap_tracker,  # DEBUG-level gap monitor; pure observer, zero hot-path overhead
                 greeting_completion_tracker,  # Logs greeting_completed on first BotStoppedSpeakingFrame
                 tts_completion_watcher,  # Observes BotStoppedSpeakingFrame after TTS
+                twilio_mark_watcher,  # Awaits Twilio mark acks for playback boundaries
                 tts_latency_tracker,  # Measures LLM→TTS and TTS→transport handoff latencies
                 transport.output(),
                 context_aggregator.assistant(),
@@ -1766,6 +1841,7 @@ class VoiceEngineFactory:
             context_aggregator,
             context,
             tts_completion_watcher,
+            twilio_mark_watcher,
             first_speech_tracker,
             greeting_completion_tracker,
             idle_timeout_tracker,

@@ -21,6 +21,7 @@ from pipecat.frames.frames import (
     Frame,
     InputAudioRawFrame,
     InputDTMFFrame,
+    InputTransportMessageFrame,
     InterruptionFrame,
     OutputTransportMessageFrame,
     OutputTransportMessageUrgentFrame,
@@ -248,7 +249,9 @@ class TwilioFrameSerializer(FrameSerializer):
         """
         message = json.loads(data)
 
-        if message["event"] == "media":
+        event_type = message.get("event")
+
+        if event_type == "media":
             payload_base64 = message["media"]["payload"]
             payload = base64.b64decode(payload_base64)
 
@@ -264,7 +267,7 @@ class TwilioFrameSerializer(FrameSerializer):
                 audio=deserialized_data, num_channels=1, sample_rate=self._sample_rate
             )
             return audio_frame
-        elif message["event"] == "dtmf":
+        elif event_type == "dtmf":
             digit = message.get("dtmf", {}).get("digit")
 
             try:
@@ -272,5 +275,7 @@ class TwilioFrameSerializer(FrameSerializer):
             except ValueError as e:
                 # Handle case where string doesn't match any enum value
                 return None
+        elif event_type == "mark":
+            return InputTransportMessageFrame(message=message)
         else:
             return None
