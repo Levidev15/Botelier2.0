@@ -540,7 +540,7 @@ class CallHandler:
             # auto_hang_up=False the pipeline ends cleanly on our side, the
             # WebSocket connection closes, and Twilio handles call teardown via
             # its own TwiML execution path:
-            #   - Warm transfer: Twilio bridges via <Dial> after <Stop><Stream>
+            #   - Warm transfer: Twilio bridges via <Dial> after call update
             #   - Cold transfer: Twilio SIP REFERs the call away
             #   - Normal hangup: caller hangs up → WebSocket close → Twilio
             #     ends the call naturally (no separate hangup REST needed)
@@ -647,6 +647,7 @@ class CallHandler:
                 context_aggregator,
                 llm_context,
                 tts_completion_watcher,
+                twilio_mark_watcher,
                 first_speech_tracker,
                 greeting_completion_tracker,
                 idle_timeout_tracker,
@@ -666,12 +667,14 @@ class CallHandler:
                 on_llm_response=on_llm_response,
                 on_user_turn=on_user_turn,
                 call_start_mono=_call_start_mono,
+                stream_sid=stream_sid,
             )
 
             # Link the TTS completion watcher to the FunctionMapper (if one was
             # created for this call) so transfer handlers can await actual TTS completion.
             if call_sid in self.call_mappers:
                 self.call_mappers[call_sid].set_tts_completion_watcher(tts_completion_watcher)
+                self.call_mappers[call_sid].set_twilio_mark_watcher(twilio_mark_watcher)
 
             # Store the usage observer so _save_call_transcript can read accumulated
             # LLM token counts, TTS chars, and model names at call teardown.
@@ -1229,6 +1232,10 @@ class CallHandler:
                 if watcher is not None:
                     watcher.clear_callback()
                     logger.debug(f"Cleared pending TTS callback for call {call_sid}")
+                mark_watcher = getattr(mapper, "_twilio_mark_watcher", None)
+                if mark_watcher is not None:
+                    mark_watcher.clear_pending()
+                    logger.debug(f"Cleared pending Twilio mark waits for call {call_sid}")
             # Flush and stop the event queue
             if call_sid in self.call_event_queues:
                 try:

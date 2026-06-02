@@ -15,6 +15,7 @@ Coverage:
 """
 
 import asyncio
+import os
 import sys
 import time
 import types
@@ -22,6 +23,10 @@ import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost/test")
+os.environ.setdefault("NEXTAUTH_SECRET", "test-nextauth-secret")
+
 from botelier.api._twilio_auth import mint_stream_token, verify_stream_token
 
 
