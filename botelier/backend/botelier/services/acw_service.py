@@ -24,6 +24,7 @@ def _get_client() -> OpenAI:
 
 
 _MAX_TRANSCRIPT_CHARS = 8000
+_MAX_LLM_ATTEMPTS = 2
 
 _ROLE_LABELS = {
     "user": "Customer",
@@ -145,31 +146,135 @@ def _build_call_context(call_log: CallLog, db: Session) -> str:
     return "\n".join(lines)
 
 
+def _stamp_acw_skip(call_log: CallLog, db: Session, reason: str) -> Dict[str, Any]:
+    """Persist a terminal ACW skip state so rows do not look indefinitely pending."""
+    logger.info(f"ACW skipped for call {call_log.id}: {reason}")
+    try:
+        call_log.acw_skip_reason = reason
+        if not call_log.acw_completed_at:
+            call_log.acw_completed_at = datetime.utcnow()
+        db.commit()
+    except Exception as exc:
+        logger.warning(f"Failed to stamp acw_skip_reason for {call_log.id}: {exc}")
+        db.rollback()
+    return {"skipped": True, "reason": reason}
+
+
+def _normalize_option_key(value: Any) -> str:
+    return str(value or "").strip().casefold()
+
+
+def _find_option_by_id_or_name(options: List[Any], option_id: Any, option_name: Any):
+    """Match configured option IDs first, names second for legacy compatibility."""
+    if option_id:
+        wanted_id = str(option_id).strip()
+        for option in options:
+            if str(option.id) == wanted_id:
+                return option
+
+    wanted_name = _normalize_option_key(option_name)
+    if wanted_name:
+        for option in options:
+            if _normalize_option_key(option.name) == wanted_name:
+                return option
+
+    return None
+
+
+def _build_acw_response_schema(
+    *,
+    dispositions: List[AssistantDisposition],
+    resolution_options: List[AssistantResolutionOption],
+    has_quality: bool,
+    has_summary: bool,
+) -> Dict[str, Any]:
+    properties: Dict[str, Any] = {}
+    required: List[str] = []
+
+    if dispositions:
+        properties["disposition_id"] = {
+            "type": "string",
+            "enum": [str(d.id) for d in dispositions],
+            "description": "ID of the selected disposition.",
+        }
+        required.append("disposition_id")
+
+    if resolution_options:
+        properties["resolution_option_id"] = {
+            "type": "string",
+            "enum": [str(r.id) for r in resolution_options],
+            "description": "ID of the selected resolution option.",
+        }
+        required.append("resolution_option_id")
+
+    if has_quality:
+        properties["quality_score"] = {
+            "type": "integer",
+            "minimum": 0,
+            "maximum": 100,
+        }
+        required.append("quality_score")
+
+    if has_summary:
+        properties["summary"] = {"type": "string"}
+        required.append("summary")
+
+    return {
+        "type": "object",
+        "properties": properties,
+        "required": required,
+        "additionalProperties": False,
+    }
+
+
+def _json_schema_response_format(schema: Dict[str, Any]) -> Dict[str, Any]:
+    return {
+        "type": "json_schema",
+        "json_schema": {
+            "name": "post_call_qa",
+            "strict": True,
+            "schema": schema,
+        },
+    }
+
+
+def should_auto_run_acw(assistant: Optional[Assistant], call_sid: Optional[str] = None) -> bool:
+    """Return whether ACW should auto-run and log actionable diagnostics.
+
+    This preserves current behavior: only explicit acw_config.auto_run=true
+    enables automatic post-call QA.
+    """
+    if not assistant:
+        logger.warning(f"ACW auto-run skipped for call {call_sid}: assistant not found")
+        return False
+
+    acw_config = assistant.acw_config or {}
+    auto_run = acw_config.get("auto_run")
+    if auto_run is True:
+        return True
+
+    logger.info(
+        "ACW auto-run skipped for call "
+        f"{call_sid}: assistant_id={assistant.id} auto_run={auto_run!r} "
+        f"acw_config_keys={sorted(acw_config.keys())}"
+    )
+    return False
+
+
 def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
     # Task #98 — short-circuit when the caller never spoke. There is nothing
     # for the LLM to score, classify, or summarize. Stamp acw_completed_at
     # and acw_skip_reason so the UI can show a clean "No Caller Audio" badge
     # instead of leaving the row dangling in a perpetual "ACW pending" state.
     if call_log.caller_spoke is False:
-        logger.info(f"ACW skipped for call {call_log.id}: no_caller_audio")
-        try:
-            call_log.acw_skip_reason = "no_caller_audio"
-            if not call_log.acw_completed_at:
-                call_log.acw_completed_at = datetime.utcnow()
-            db.commit()
-        except Exception as _e:
-            logger.warning(f"Failed to stamp acw_skip_reason for {call_log.id}: {_e}")
-            db.rollback()
-        return {"skipped": True, "reason": "no_caller_audio"}
+        return _stamp_acw_skip(call_log, db, "no_caller_audio")
 
     if not call_log.transcript:
-        logger.warning(f"ACW skipped for call {call_log.id}: no transcript")
-        return {"skipped": True, "reason": "no_transcript"}
+        return _stamp_acw_skip(call_log, db, "no_transcript")
 
     assistant = db.query(Assistant).filter(Assistant.id == call_log.assistant_id).first()
     if not assistant:
-        logger.warning(f"ACW skipped for call {call_log.id}: assistant not found")
-        return {"skipped": True, "reason": "no_assistant"}
+        return _stamp_acw_skip(call_log, db, "no_assistant")
 
     acw_config = assistant.acw_config or {}
 
@@ -203,13 +308,11 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
     has_summary = summary_enabled
 
     if not any([has_dispositions, has_resolutions, has_quality, has_summary]):
-        logger.info(f"ACW skipped for call {call_log.id}: no sections enabled")
-        return {"skipped": True, "reason": "no_sections_enabled"}
+        return _stamp_acw_skip(call_log, db, "no_sections_enabled")
 
     transcript_text = _build_transcript_text(call_log.transcript)
     if not transcript_text.strip():
-        logger.warning(f"ACW skipped for call {call_log.id}: empty transcript")
-        return {"skipped": True, "reason": "empty_transcript"}
+        return _stamp_acw_skip(call_log, db, "empty_transcript")
 
     if len(transcript_text) > _MAX_TRANSCRIPT_CHARS:
         truncated = transcript_text[:_MAX_TRANSCRIPT_CHARS]
@@ -225,21 +328,23 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
 
     if has_dispositions:
         disp_list = "\n".join(
-            f"- {d.name}: {d.description or 'No description'}" for d in dispositions
+            f"- id={d.id} | name={d.name} | description={d.description or 'No description'}"
+            for d in dispositions
         )
         prompt_parts.append(
-            f"DISPOSITION (required) — pick exactly one. Return the exact name as listed:\n{disp_list}"
+            f"DISPOSITION (required) - pick exactly one active option and return its id:\n{disp_list}"
         )
-        json_fields.append('"disposition": "exact name from list above"')
+        json_fields.append('"disposition_id": "selected disposition id"')
 
     if has_resolutions:
         res_list = "\n".join(
-            f"- {r.name}: {r.description or 'No description'}" for r in resolution_options
+            f"- id={r.id} | name={r.name} | description={r.description or 'No description'}"
+            for r in resolution_options
         )
         prompt_parts.append(
-            f"RESOLUTION (required) — pick exactly one. Return the exact name as listed:\n{res_list}"
+            f"RESOLUTION (required) - pick exactly one active option and return its id:\n{res_list}"
         )
-        json_fields.append('"resolution": "exact name from list above"')
+        json_fields.append('"resolution_option_id": "selected resolution option id"')
 
     if has_quality:
         prompt_parts.append(f"QUALITY SCORE — rate 0-100 using this rubric:\n{quality_rubric}")
@@ -258,49 +363,125 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
     prompt_parts.append(f"\nRespond ONLY with JSON:\n{{{', '.join(json_fields)}}}")
 
     full_prompt = "\n\n".join(prompt_parts)
+    response_schema = _build_acw_response_schema(
+        dispositions=dispositions if has_dispositions else [],
+        resolution_options=resolution_options if has_resolutions else [],
+        has_quality=has_quality,
+        has_summary=has_summary,
+    )
 
+    result: Dict[str, Any] = {}
+    selected_disposition = None
+    selected_resolution = None
+    validation_errors: List[str] = []
     try:
         client = _get_client()
-        response = client.chat.completions.create(
-            model=acw_config.get("llm_model", "gpt-4o-mini"),
-            messages=[
-                {
-                    "role": "system",
-                    "content": "You are a call center QA analyst. Analyze the call transcript and return only valid JSON. Always select exactly one disposition and one resolution from the provided lists — never return null for these fields.",
-                },
-                {"role": "user", "content": full_prompt},
-            ],
-            response_format={"type": "json_object"},
-            temperature=0,
-        )
+        model = acw_config.get("llm_model", "gpt-4o-mini")
+        system_fields = []
+        if has_dispositions:
+            system_fields.append("disposition_id")
+        if has_resolutions:
+            system_fields.append("resolution_option_id")
+        if has_quality:
+            system_fields.append("quality_score")
+        if has_summary:
+            system_fields.append("summary")
 
-        result = json.loads(response.choices[0].message.content)
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a call center QA analyst. Analyze the call transcript and "
+                    "return only valid JSON. Select exactly one configured option ID "
+                    "for each required classification field: "
+                    f"{', '.join(system_fields)}."
+                ),
+            },
+            {"role": "user", "content": full_prompt},
+        ]
+
+        for attempt in range(1, _MAX_LLM_ATTEMPTS + 1):
+            if attempt == 1:
+                response_format = _json_schema_response_format(response_schema)
+            else:
+                response_format = {"type": "json_object"}
+                messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "The previous response did not validate against the configured "
+                            "ACW options. Return only JSON using the exact option IDs listed "
+                            "in the transcript analysis prompt."
+                        ),
+                    }
+                )
+
+            try:
+                response = client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    response_format=response_format,
+                    temperature=0,
+                )
+            except Exception as create_exc:
+                if attempt == 1:
+                    logger.warning(
+                        "ACW strict JSON schema call failed for call "
+                        f"{call_log.id}: {create_exc}; retrying with JSON object mode"
+                    )
+                    continue
+                raise
+
+            result = json.loads(response.choices[0].message.content or "{}")
+            validation_errors = []
+            selected_disposition = None
+            selected_resolution = None
+
+            if has_dispositions:
+                selected_disposition = _find_option_by_id_or_name(
+                    dispositions,
+                    result.get("disposition_id"),
+                    result.get("disposition"),
+                )
+                if not selected_disposition:
+                    validation_errors.append(
+                        "missing_or_invalid_disposition_id="
+                        f"{result.get('disposition_id')!r} disposition={result.get('disposition')!r}"
+                    )
+
+            if has_resolutions:
+                selected_resolution = _find_option_by_id_or_name(
+                    resolution_options,
+                    result.get("resolution_option_id"),
+                    result.get("resolution"),
+                )
+                if not selected_resolution:
+                    validation_errors.append(
+                        "missing_or_invalid_resolution_option_id="
+                        f"{result.get('resolution_option_id')!r} resolution={result.get('resolution')!r}"
+                    )
+
+            if not validation_errors:
+                break
+
+            logger.warning(
+                f"ACW validation failed for call {call_log.id} on attempt "
+                f"{attempt}/{_MAX_LLM_ATTEMPTS}: {validation_errors}"
+            )
+
+        if validation_errors:
+            call_log.acw_skip_reason = "classification_invalid"
+            db.commit()
+            return {"error": "classification_invalid", "details": validation_errors}
     except Exception as e:
         logger.exception(f"ACW LLM call failed for call {call_log.id}: {e}")
         return {"error": str(e)}
 
-    selected_disposition = None
-    if has_dispositions:
-        disposition_name = result.get("disposition")
-        if disposition_name:
-            for d in dispositions:
-                if d.name.lower() == disposition_name.lower():
-                    call_log.disposition_id = d.id
-                    selected_disposition = d.to_dict()
-                    break
+    if selected_disposition:
+        call_log.disposition_id = selected_disposition.id
 
-    if has_resolutions:
-        resolution_name = result.get("resolution")
-        if resolution_name:
-            valid_names = {r.name.lower(): r.name for r in resolution_options}
-            matched = valid_names.get(resolution_name.lower())
-            if matched:
-                call_log.acw_resolution = matched
-            else:
-                logger.warning(
-                    f"ACW: LLM returned unrecognized resolution '{resolution_name}' for call {call_log.id}"
-                )
-                call_log.acw_resolution = None
+    if selected_resolution:
+        call_log.acw_resolution = selected_resolution.name
 
     if has_quality:
         score = result.get("quality_score")
@@ -312,6 +493,7 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
         if summary_text:
             call_log.ai_summary = summary_text
 
+    call_log.acw_skip_reason = None
     call_log.acw_completed_at = datetime.utcnow()
     db.commit()
 
@@ -319,7 +501,7 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
 
     return {
         "success": True,
-        "disposition": selected_disposition,
+        "disposition": selected_disposition.to_dict() if selected_disposition else None,
         "acw_resolution": call_log.acw_resolution,
         "acw_quality_score": call_log.acw_quality_score,
         "summary": call_log.ai_summary,
@@ -352,6 +534,8 @@ def run_acw_background(call_log_id: UUID):
             time.sleep(wait)
         else:
             logger.warning(f"ACW background: transcript never arrived for {call_log_id}, skipping")
+            if call_log:
+                _stamp_acw_skip(call_log, db, "transcript_not_ready")
             return
         run_acw(call_log, db)
     except Exception as e:

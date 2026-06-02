@@ -23,7 +23,7 @@ from ..database import get_db
 from ..models import CallLeg, CallLog, CallStatus, LegType, PhoneNumber
 from ..models.call_event import CallEvent
 from ..models.user import User
-from ..services.acw_service import run_acw_background
+from ..services.acw_service import run_acw_background, should_auto_run_acw
 from ..services.billing_alert_service import run_billing_alert_background
 from ..services.call_logger import CallLogger
 from ._twilio_auth import (
@@ -724,15 +724,16 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
 
 def _maybe_enqueue_acw(call_sid: str, db: Session, background_tasks: BackgroundTasks):
     call_log = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
-    if not call_log or not call_log.assistant_id:
+    if not call_log:
+        logger.warning(f"ACW auto-run skipped for call {call_sid}: call log not found")
+        return
+    if not call_log.assistant_id:
+        logger.warning(f"ACW auto-run skipped for call {call_sid}: call has no assistant_id")
         return
     from ..models import Assistant
 
     assistant = db.query(Assistant).filter(Assistant.id == call_log.assistant_id).first()
-    if not assistant:
-        return
-    acw_config = assistant.acw_config or {}
-    if acw_config.get("auto_run"):
+    if should_auto_run_acw(assistant, call_sid):
         logger.info(f"Enqueueing ACW background task for call {call_sid}")
         background_tasks.add_task(run_acw_background, call_log.id)
 

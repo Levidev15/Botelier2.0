@@ -675,6 +675,7 @@ class FunctionMapper:
                                             from ..models import Assistant as _Assistant
                                             from ..services.acw_service import (
                                                 run_acw_background as _run_acw_bg,
+                                                should_auto_run_acw as _should_acw,
                                             )
 
                                             _call_log = call_logger.get_call_log(_call_sid_cap)
@@ -684,9 +685,7 @@ class FunctionMapper:
                                                     .filter(_Assistant.id == _call_log.assistant_id)
                                                     .first()
                                                 )
-                                                if _asst and (_asst.acw_config or {}).get(
-                                                    "auto_run"
-                                                ):
+                                                if _should_acw(_asst, _call_sid_cap):
                                                     import threading
 
                                                     threading.Thread(
@@ -1369,6 +1368,7 @@ class FunctionMapper:
                                             from ..models import Assistant as _Assistant2
                                             from ..services.acw_service import (
                                                 run_acw_background as _run_acw_bg2,
+                                                should_auto_run_acw as _should_acw2,
                                             )
 
                                             _flow_call_log = _cl.get_call_log(_cap_call_sid)
@@ -1381,9 +1381,7 @@ class FunctionMapper:
                                                     )
                                                     .first()
                                                 )
-                                                if _flow_asst and (_flow_asst.acw_config or {}).get(
-                                                    "auto_run"
-                                                ):
+                                                if _should_acw2(_flow_asst, _cap_call_sid):
                                                     import threading
 
                                                     # Extract scalar ID before ORM object goes out of scope
