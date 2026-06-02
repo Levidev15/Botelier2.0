@@ -13,6 +13,7 @@ import MCPModal from "./components/MCPModal";
 import ConnectModal from "./components/ConnectModal";
 import MCPSection from "./components/MCPSection";
 import SecretsSection from "./components/SecretsSection";
+import APILogsSection from "./components/APILogsSection";
 
 export default function IntegrationsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
@@ -47,6 +48,7 @@ export default function IntegrationsPage() {
     last_called_at: string | null;
     last_error: string | null;
   }>>({});
+  const [activeTab, setActiveTab] = useState<"connections" | "api_logs">("connections");
 
   const showNotification = (type: "success" | "error", message: string) => {
     setNotification({ type, message });
@@ -281,7 +283,7 @@ export default function IntegrationsPage() {
   }
 
   return (
-    <div className="p-8 max-w-4xl">
+    <div className="p-8 max-w-6xl">
       {notification && (
         <div className={`fixed top-4 right-4 z-[60] flex items-center gap-3 px-4 py-3 rounded-lg border shadow-lg transition-all ${
           notification.type === "success" 
@@ -310,6 +312,31 @@ export default function IntegrationsPage() {
         </p>
       </div>
 
+      <div className="mb-6 inline-flex rounded-lg border border-gray-800 bg-[#111111] p-1">
+        <button
+          onClick={() => setActiveTab("connections")}
+          className={`px-3 py-1.5 rounded text-sm transition-colors ${
+            activeTab === "connections"
+              ? "bg-gray-800 text-white"
+              : "text-gray-400 hover:text-white"
+          }`}
+        >
+          Connections
+        </button>
+        {canManage && (
+          <button
+            onClick={() => setActiveTab("api_logs")}
+            className={`px-3 py-1.5 rounded text-sm transition-colors ${
+              activeTab === "api_logs"
+                ? "bg-gray-800 text-white"
+                : "text-gray-400 hover:text-white"
+            }`}
+          >
+            API Logs
+          </button>
+        )}
+      </div>
+
       {!canManage && (
         <div className="mb-6 flex items-start gap-3 px-4 py-3 rounded-lg border border-gray-800 bg-[#141414] text-sm text-gray-300">
           <Lock className="h-4 w-4 mt-0.5 text-gray-500 flex-shrink-0" />
@@ -322,44 +349,52 @@ export default function IntegrationsPage() {
         </div>
       )}
 
-      <div className="space-y-4">
-        {integrationTypes.map((type) => (
-          <IntegrationCard
-            key={type.id}
-            type={type}
-            connections={getIntegrationConnections(type.id)}
-            integrationStats={integrationStats}
-            testing={testing}
-            canManage={canManage}
-            handleConnect={handleConnect}
-            handleTestConnection={handleTestConnection}
-            handleDisconnect={handleDisconnect}
-          />
-        ))}
+      {activeTab === "connections" ? (
+        <>
+          <div className="space-y-4 max-w-4xl">
+            {integrationTypes.map((type) => (
+              <IntegrationCard
+                key={type.id}
+                type={type}
+                connections={getIntegrationConnections(type.id)}
+                integrationStats={integrationStats}
+                testing={testing}
+                canManage={canManage}
+                handleConnect={handleConnect}
+                handleTestConnection={handleTestConnection}
+                handleDisconnect={handleDisconnect}
+              />
+            ))}
 
-        {integrationTypes.length === 0 && (
-          <div className="bg-[#141414] border border-gray-800 rounded-lg p-12 text-center">
-            <Plug className="h-12 w-12 text-gray-600 mx-auto mb-4" />
-            <p className="text-gray-400">No integrations available</p>
+            {integrationTypes.length === 0 && (
+              <div className="bg-[#141414] border border-gray-800 rounded-lg p-12 text-center">
+                <Plug className="h-12 w-12 text-gray-600 mx-auto mb-4" />
+                <p className="text-gray-400">No integrations available</p>
+              </div>
+            )}
           </div>
-        )}
-      </div>
 
-      <MCPSection
-        mcpConnections={mcpConnections}
-        testingMcp={testingMcp}
-        onCreateMcp={handleCreateMcp}
-        onTestMcp={handleTestMcp}
-        onEditMcp={handleEditMcp}
-        onDeleteMcp={handleDeleteMcp}
-      />
+          <div className="max-w-4xl">
+            <MCPSection
+              mcpConnections={mcpConnections}
+              testingMcp={testingMcp}
+              onCreateMcp={handleCreateMcp}
+              onTestMcp={handleTestMcp}
+              onEditMcp={handleEditMcp}
+              onDeleteMcp={handleDeleteMcp}
+            />
 
-      <SecretsSection
-        secrets={secrets}
-        onCreateSecret={handleCreateSecret}
-        onEditSecret={handleEditSecret}
-        onDeleteSecret={handleDeleteSecret}
-      />
+            <SecretsSection
+              secrets={secrets}
+              onCreateSecret={handleCreateSecret}
+              onEditSecret={handleEditSecret}
+              onDeleteSecret={handleDeleteSecret}
+            />
+          </div>
+        </>
+      ) : accountId ? (
+        <APILogsSection accountId={accountId} authFetch={authFetch} />
+      ) : null}
 
       {showSecretModal && accountId && (
         <SecretModal

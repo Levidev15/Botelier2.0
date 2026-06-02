@@ -21,6 +21,7 @@ from botelier.models.integration import (
     IntegrationStatus,
     IntegrationType,
 )
+from botelier.services.ssrf_safe_transport import SSRFSafeTransport
 
 _ORACLE_ALLOWED_SUFFIXES = (".oraclecloud.com", ".oracle.com")
 
@@ -388,7 +389,7 @@ class IntegrationClient:
         try:
             if refresh_token:
                 try:
-                    async with httpx.AsyncClient() as client:
+                    async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
                         response = await client.post(
                             f"{base_url}{refresh_endpoint}",
                             json={"refresh_token": refresh_token, "expired_time": expired_time},
@@ -431,7 +432,7 @@ class IntegrationClient:
                 return False
 
             try:
-                async with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
                     response = await client.post(
                         f"{base_url}{login_endpoint}",
                         json={
@@ -512,7 +513,7 @@ class IntegrationClient:
 
         db = self._get_db_session()
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
                 response = await client.post(
                     token_url,
                     headers=headers,
@@ -665,7 +666,7 @@ class IntegrationClient:
     async def _make_request(
         self, method: str, url: str, headers: dict, body: Optional[dict], timeout: int
     ) -> httpx.Response:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
             if method.upper() == "GET":
                 return await client.get(url, headers=headers, timeout=timeout)
             elif method.upper() == "POST":

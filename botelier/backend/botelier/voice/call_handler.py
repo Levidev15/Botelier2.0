@@ -28,7 +28,7 @@ from ..models.phone_number import PhoneNumber
 from ..services.call_event_queue import CallEventQueue
 from ..services.call_logger import CallLogger
 from .agent import VoiceAgentConfig
-from .engine import VoiceEngineFactory
+from .engine import VoiceEngineFactory, is_external_vad_effectively_enabled
 from .function_mapper import FunctionMapper
 from .greeting_cache import get_or_generate_greeting_audio
 from .prewarm import PreWarmBundle, PreWarmCache
@@ -585,12 +585,18 @@ class CallHandler:
                 ),
             )
             # VAD label for logging — read from config, not from transport params.
+            _effective_vad_enabled = is_external_vad_effectively_enabled(config)
             _vad_label = (
                 f"enabled ({config.vad_provider})"
-                if (config.enable_vad and config.vad_provider)
+                if _effective_vad_enabled
                 else "disabled"
             )
-            logger.info(f"🔊 Transport sample rates: in=8000Hz, out=8000Hz | VAD={_vad_label}")
+            logger.info(
+                "🔊 Transport sample rates: in=8000Hz, out=8000Hz | "
+                f"VAD={_vad_label} "
+                f"(stored_enabled={config.enable_vad}, provider={config.vad_provider}, "
+                f"stt_model={config.stt_model})"
+            )
 
             # 6. Create Pipecat pipeline with function calling support
             # Create interruption callback to track interrupted responses

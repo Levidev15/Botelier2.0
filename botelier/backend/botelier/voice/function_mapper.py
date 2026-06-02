@@ -10,12 +10,10 @@ import re as _re_tool_name
 import uuid
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional
 
-import httpx
 from loguru import logger
 
 from ..config.domain import get_public_base_url
 from ..logging_config import should_log_prompts as _should_log_prompts
-from ..services.ssrf_safe_transport import SSRFSafeTransport
 from ..utils import sanitize_function_name
 
 if TYPE_CHECKING:
@@ -877,15 +875,10 @@ class FunctionMapper:
         Supports response mapping (extracting specific fields) and
         response instructions (telling the LLM how to present data).
         """
-        url = tool.config.get("url")
-        method = tool.config.get("method", "GET")
-        headers = tool.config.get("headers", {})
         parameters = tool.config.get("parameters", {})
-        body = tool.config.get("body")
         body_template = tool.config.get("body_template")
-        response_mapping = tool.config.get("response_mapping", {})
+        response_mapping = tool.config.get("response_mapping") or tool.config.get("responseMapping") or {}
         response_instructions = tool.config.get("response_instructions", "")
-        request_timeout = tool.config.get("timeout", 30)
 
         # Build function schema with parameters from config
         description = tool.description
@@ -905,83 +898,49 @@ class FunctionMapper:
         mapper = self
 
         async def api_handler(params: FunctionCallParams):
-            """Handler that makes HTTP request to external API.
+            """Execute API tool through the shared ActionExecutor."""
+            from botelier.services.action_executor import (
+                ActionContext,
+                ActionExecutionRequest,
+                ActionExecutor,
+            )
 
-            The LLM extracts parameter values from conversation and passes them here.
-            """
             arguments = params.arguments
+            if not mapper.db_session or not mapper.account_id:
+                await params.result_callback(
+                    {"error": "API tool requires account context", "status": "failed"}
+                )
+                return
 
-            import json as json_module
-            import re as re_module
+            config = dict(tool.config or {})
+            if "bodyTemplate" not in config and body_template:
+                config["bodyTemplate"] = body_template
+            result = await ActionExecutor(mapper.db_session).execute_and_log(
+                ActionExecutionRequest(
+                    context=ActionContext(
+                        account_id=mapper.account_id,
+                        channel="voice",
+                        call_sid=mapper.call_sid,
+                        tool_id=tool.id,
+                    ),
+                    variables=arguments,
+                    legacy_config=config,
+                )
+            )
 
-            def substitute_placeholders(template: str, values: dict) -> str:
-                def replacer(match):
-                    key = match.group(1).strip()
-                    return str(values.get(key, match.group(0)))
-
-                result = re_module.sub(r"\{\{(\w+)\}\}", replacer, template)
-                try:
-                    result = result.format(**values)
-                except (KeyError, ValueError, IndexError):
-                    pass
-                return result
-
-            formatted_url = substitute_placeholders(url, arguments)
-            formatted_headers = {
-                k: substitute_placeholders(v, arguments) for k, v in headers.items()
-            }
-
-            request_body = None
-            if body_template:
-                try:
-                    formatted_body_str = substitute_placeholders(body_template, arguments)
-                    request_body = json_module.loads(formatted_body_str)
-                except (KeyError, json_module.JSONDecodeError):
-                    request_body = body
-            elif body:
-                request_body = body
-
-            async with httpx.AsyncClient(
-                transport=SSRFSafeTransport(), timeout=request_timeout
-            ) as client:
-                try:
-                    if method == "GET":
-                        response = await client.get(formatted_url, headers=formatted_headers)
-                    elif method == "POST":
-                        response = await client.post(
-                            formatted_url, headers=formatted_headers, json=request_body
-                        )
-                    elif method == "PUT":
-                        response = await client.put(
-                            formatted_url, headers=formatted_headers, json=request_body
-                        )
-                    elif method == "PATCH":
-                        response = await client.patch(
-                            formatted_url, headers=formatted_headers, json=request_body
-                        )
-                    elif method == "DELETE":
-                        response = await client.delete(formatted_url, headers=formatted_headers)
-                    else:
-                        await params.result_callback(
-                            {"error": f"Unsupported HTTP method: {method}", "status": "failed"}
-                        )
-                        return
-
-                    response.raise_for_status()
-                    data = response.json()
-
-                    if response_mapping:
-                        shaped_data = mapper._apply_response_mapping(data, response_mapping)
-                        await params.result_callback(shaped_data)
-                    else:
-                        await params.result_callback(data)
-
-                except httpx.TimeoutException:
-                    await params.result_callback(
-                        {"error": "API request timed out", "status": "failed"}
-                    )
-                except httpx.HTTPError as e:
-                    await params.result_callback({"error": str(e), "status": "failed"})
+            if result.success:
+                await params.result_callback(
+                    result.extracted_variables if response_mapping else result.data
+                )
+            else:
+                await params.result_callback(
+                    {
+                        "error": result.error_message or "API request failed",
+                        "status": "failed",
+                        "error_type": result.error_type.value,
+                        "status_code": result.status_code,
+                    }
+                )
 
         return function_schema, api_handler
 
@@ -1049,7 +1008,12 @@ class FunctionMapper:
         flow_config = parse_flow_config(flow_config_dict)
 
         # Create flow executor with db context for integration API calls
-        executor = FlowExecutor(flow_config, db_session=self.db_session, account_id=self.account_id)
+        executor = FlowExecutor(
+            flow_config,
+            db_session=self.db_session,
+            account_id=self.account_id,
+            flow_tool_id=str(tool.id),
+        )
 
         # Store executor for this flow (we might need to access collected data)
         if not hasattr(self, "_flow_executors"):
@@ -1140,7 +1104,10 @@ class FunctionMapper:
             # Parse and create new executor with db context for integration API calls
             flow_config = parse_flow_config(dict(flow_config_dict))
             executor = FlowExecutor(
-                flow_config, db_session=self.db_session, account_id=self.account_id
+                flow_config,
+                db_session=self.db_session,
+                account_id=self.account_id,
+                flow_tool_id=str(tool.id),
             )
             self._flow_executors[tool_name] = executor
             logger.info(f"Created new FlowExecutor for {tool_name}")

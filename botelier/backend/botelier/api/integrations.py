@@ -8,17 +8,20 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
 from pydantic import BaseModel
-from sqlalchemy import Integer
+from sqlalchemy import Integer, func as sqlfunc
 from sqlalchemy.orm import Session
 
 from botelier.auth.middleware import check_account_permission, get_current_user
 from botelier.database import get_db
 from botelier.models.integration import (
     AccountIntegration,
+    IntegrationAction,
+    IntegrationActionInvocation,
     IntegrationCallLog,
     IntegrationStatus,
     IntegrationType,
 )
+from botelier.services.ssrf_safe_transport import SSRFSafeTransport
 
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
 
@@ -720,6 +723,145 @@ async def get_integration_call_stats(
     }
 
 
+@router.get("/account/{account_id}/api-logs")
+async def get_account_api_logs(
+    account_id: str,
+    success: Optional[bool] = None,
+    channel: Optional[str] = None,
+    integration_id: Optional[str] = None,
+    action_id: Optional[str] = None,
+    flow_tool_id: Optional[str] = None,
+    node_id: Optional[str] = None,
+    call_sid: Optional[str] = None,
+    request_id: Optional[str] = None,
+    from_date: Optional[datetime] = None,
+    to_date: Optional[datetime] = None,
+    page: int = 1,
+    per_page: int = 50,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Account-level API invocation monitor.
+
+    Returns metadata only. Request headers, bodies, response bodies, and secret
+    values are intentionally not persisted or returned.
+    """
+    _assert_account_access(current_user, account_id, db, permission="integrations.manage")
+    page = max(page, 1)
+    per_page = min(max(per_page, 1), 100)
+
+    query = db.query(IntegrationActionInvocation).filter(
+        IntegrationActionInvocation.account_id == account_id
+    )
+    if success is not None:
+        query = query.filter(IntegrationActionInvocation.success == success)
+    if channel:
+        query = query.filter(IntegrationActionInvocation.channel == channel)
+    if integration_id:
+        query = query.filter(IntegrationActionInvocation.integration_id == integration_id)
+    if action_id:
+        query = query.filter(IntegrationActionInvocation.action_id == action_id)
+    if flow_tool_id:
+        query = query.filter(IntegrationActionInvocation.flow_tool_id == flow_tool_id)
+    if node_id:
+        query = query.filter(IntegrationActionInvocation.node_id == node_id)
+    if call_sid:
+        query = query.filter(IntegrationActionInvocation.call_sid == call_sid)
+    if request_id:
+        query = query.filter(IntegrationActionInvocation.request_id == request_id)
+    if from_date:
+        query = query.filter(IntegrationActionInvocation.called_at >= from_date)
+    if to_date:
+        query = query.filter(IntegrationActionInvocation.called_at <= to_date)
+
+    total = query.count()
+    summary_row = query.with_entities(
+        sqlfunc.count(IntegrationActionInvocation.id).label("total"),
+        sqlfunc.sum(sqlfunc.cast(IntegrationActionInvocation.success, Integer)).label("successes"),
+        sqlfunc.avg(IntegrationActionInvocation.latency_ms).label("avg_latency_ms"),
+        sqlfunc.max(IntegrationActionInvocation.called_at).label("last_called_at"),
+    ).one()
+    last_failed = (
+        query.filter(IntegrationActionInvocation.success == False)  # noqa: E712
+        .order_by(IntegrationActionInvocation.called_at.desc())
+        .first()
+    )
+
+    rows = (
+        query.order_by(
+            IntegrationActionInvocation.called_at.desc(),
+            IntegrationActionInvocation.id.desc(),
+        )
+        .offset((page - 1) * per_page)
+        .limit(per_page)
+        .all()
+    )
+
+    action_ids = {row.action_id for row in rows if row.action_id}
+    integration_ids = {row.integration_id for row in rows if row.integration_id}
+    actions = {
+        action.id: action
+        for action in db.query(IntegrationAction).filter(IntegrationAction.id.in_(action_ids)).all()
+    } if action_ids else {}
+    integrations = {
+        integration.id: integration
+        for integration in db.query(AccountIntegration)
+        .filter(AccountIntegration.id.in_(integration_ids))
+        .all()
+    } if integration_ids else {}
+
+    def source_label(row: IntegrationActionInvocation) -> str:
+        if row.source_label:
+            return row.source_label
+        if row.action_id in actions:
+            return actions[row.action_id].name
+        if row.integration_id in integrations:
+            integration = integrations[row.integration_id]
+            return integration.connection_name or integration.integration_type.name
+        return "Custom API"
+
+    successes = int(summary_row.successes or 0)
+    return {
+        "items": [
+            {
+                "id": str(row.id),
+                "source_label": source_label(row),
+                "channel": row.channel,
+                "method": row.method,
+                "endpoint_called": row.endpoint_called,
+                "status_code": row.status_code,
+                "success": row.success,
+                "latency_ms": row.latency_ms,
+                "error_type": row.error_type,
+                "error_message": row.error_message,
+                "request_id": row.request_id,
+                "call_sid": row.call_sid,
+                "tool_id": row.tool_id,
+                "flow_tool_id": str(row.flow_tool_id) if row.flow_tool_id else None,
+                "node_id": row.node_id,
+                "action_id": str(row.action_id) if row.action_id else None,
+                "integration_id": str(row.integration_id) if row.integration_id else None,
+                "response_metadata": row.response_metadata or {},
+                "called_at": row.called_at.isoformat() if row.called_at else None,
+            }
+            for row in rows
+        ],
+        "page": page,
+        "per_page": per_page,
+        "total": total,
+        "summary": {
+            "total": int(summary_row.total or 0),
+            "successful": successes,
+            "failed": int(summary_row.total or 0) - successes,
+            "avg_latency_ms": round(float(summary_row.avg_latency_ms or 0), 1),
+            "last_called_at": summary_row.last_called_at.isoformat()
+            if summary_row.last_called_at
+            else None,
+            "last_error": last_failed.error_message if last_failed else None,
+        },
+    }
+
+
 async def obtain_oauth_token(integration_type: IntegrationType, credentials: dict) -> dict:
     auth_config = integration_type.get_auth_config()
 
@@ -747,7 +889,7 @@ async def obtain_oauth_token(integration_type: IntegrationType, credentials: dic
     }
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
             response = await client.post(
                 token_url, headers=headers, data=data, auth=(client_id, client_secret), timeout=30.0
             )
@@ -804,7 +946,7 @@ async def obtain_jwt_token(integration_type: IntegrationType, credentials: dict)
     )
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
             response = await client.post(
                 login_url,
                 json={"username": username, "password": password, "expired_time": expired_time},
@@ -862,7 +1004,7 @@ async def validate_basic_auth(integration_type: IntegrationType, credentials: di
         params["hotelId"] = hotel_id
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
             response = await client.get(test_url, headers=headers, params=params, timeout=30.0)
 
             if response.status_code == 200:
@@ -902,7 +1044,7 @@ async def refresh_oauth_token(
 
         if refresh_token:
             try:
-                async with httpx.AsyncClient() as client:
+                async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
                     response = await client.post(
                         f"{base_url}{refresh_endpoint}",
                         json={"refresh_token": refresh_token, "expired_time": expired_time},
@@ -950,7 +1092,7 @@ async def refresh_oauth_token(
     data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
             response = await client.post(
                 token_url, headers=headers, data=data, auth=(client_id, client_secret), timeout=30.0
             )
@@ -1003,7 +1145,7 @@ async def test_api_connection(
             params["hotelId"] = hotel_id
 
         try:
-            async with httpx.AsyncClient() as client:
+            async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
                 response = await client.get(test_url, headers=headers, params=params, timeout=30.0)
 
                 if response.status_code == 200:
@@ -1044,7 +1186,7 @@ async def test_api_connection(
     }
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
             response = await client.get(test_url, headers=headers, timeout=30.0)
 
             if response.status_code == 200:
@@ -1090,7 +1232,7 @@ async def test_basic_auth_connection(integration_type: IntegrationType, credenti
         params["hotelId"] = hotel_id
 
     try:
-        async with httpx.AsyncClient() as client:
+        async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
             response = await client.get(test_url, headers=headers, params=params, timeout=30.0)
 
             if response.status_code == 200:

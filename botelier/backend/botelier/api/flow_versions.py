@@ -12,6 +12,7 @@ Tools are scoped through their ToolSet's account_id for multi-tenant isolation.
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
+from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import desc
@@ -26,6 +27,8 @@ from botelier.models.tool_set import ToolSet
 from botelier.models.user import User
 
 router = APIRouter(prefix="/api/tools", tags=["flow-versions"])
+
+_API_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 
 
 def _get_flow_tool(db: Session, tool_id: str, account_id: str) -> Tool:
@@ -135,8 +138,53 @@ def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str]]:
 
         elif node_type == "api_request":
             api = node_data.get("api", {})
-            if not api.get("url"):
-                errors.append(f"API Request node '{node_name}' has no URL")
+            method = str(api.get("method", "GET")).upper()
+            api_source = api.get("apiSource") or "custom"
+            if method not in _API_METHODS:
+                errors.append(
+                    f"API Request node '{node_name}' has unsupported method '{method}'"
+                )
+            if api_source == "integration":
+                if not api.get("integrationId"):
+                    errors.append(
+                        f"API Request node '{node_name}' has no connected integration selected"
+                    )
+                if not api.get("endpointId"):
+                    errors.append(f"API Request node '{node_name}' has no endpoint selected")
+            else:
+                url = api.get("url")
+                if not url:
+                    errors.append(f"API Request node '{node_name}' has no URL")
+                else:
+                    parsed = urlparse(str(url))
+                    if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                        errors.append(
+                            f"API Request node '{node_name}' has an invalid HTTP/HTTPS URL"
+                        )
+            timeout = api.get("timeout", 8)
+            if not isinstance(timeout, int) or timeout < 1 or timeout > 60:
+                errors.append(f"API Request node '{node_name}' timeout must be 1-60 seconds")
+            retry_count = api.get("retryCount", 0)
+            if not isinstance(retry_count, int) or retry_count < 0 or retry_count > 3:
+                errors.append(f"API Request node '{node_name}' retry count must be 0-3")
+            if method in {"POST", "PUT", "PATCH"} and api.get("bodyTemplate"):
+                import json
+
+                try:
+                    json.loads(api["bodyTemplate"])
+                except Exception:
+                    errors.append(
+                        f"API Request node '{node_name}' request body must be valid JSON"
+                    )
+            response_mapping = api.get("responseMapping") or {}
+            if not isinstance(response_mapping, dict):
+                errors.append(f"API Request node '{node_name}' response mapping is invalid")
+            else:
+                for key, path in response_mapping.items():
+                    if not str(key).strip() or not str(path).strip():
+                        errors.append(
+                            f"API Request node '{node_name}' has an incomplete response mapping"
+                        )
 
         elif node_type == "condition":
             condition = node_data.get("condition", {})

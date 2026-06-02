@@ -160,7 +160,12 @@ async def start_simulation(
 
     try:
         flow_config = parse_flow_config(flow_config_dict)
-        executor = FlowExecutor(flow_config)
+        executor = FlowExecutor(
+            flow_config,
+            db_session=db,
+            account_id=str(tool.account_id) if tool.account_id else None,
+            flow_tool_id=str(tool.id),
+        )
     except Exception as e:
         logger.error(f"Failed to parse flow config: {e}")
         raise HTTPException(status_code=400, detail=f"Invalid flow configuration: {str(e)}")

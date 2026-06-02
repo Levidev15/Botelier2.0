@@ -210,6 +210,76 @@ _ADDITIVE_MIGRATIONS = [
     "CREATE INDEX IF NOT EXISTS ix_integration_call_logs_account_id ON integration_call_logs(account_id)",
     "CREATE INDEX IF NOT EXISTS ix_integration_call_logs_integration_id ON integration_call_logs(integration_id)",
     "CREATE INDEX IF NOT EXISTS ix_integration_call_logs_called_at ON integration_call_logs(account_id, called_at DESC)",
+    # integration_actions — reusable certified/custom no-code action library
+    """
+    CREATE TABLE IF NOT EXISTS integration_actions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        account_id UUID REFERENCES accounts(id) ON DELETE CASCADE,
+        integration_type_id UUID REFERENCES integration_types(id) ON DELETE SET NULL,
+        source_endpoint_id VARCHAR(255),
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        slug VARCHAR(255) NOT NULL,
+        kind VARCHAR(32) NOT NULL,
+        status VARCHAR(32) NOT NULL DEFAULT 'draft',
+        published_version_id UUID,
+        last_tested_at TIMESTAMP,
+        last_test_success BOOLEAN,
+        last_error TEXT,
+        created_by_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_integration_actions_account_status ON integration_actions(account_id, status)",
+    "CREATE INDEX IF NOT EXISTS ix_integration_actions_integration_type ON integration_actions(integration_type_id)",
+    """
+    CREATE TABLE IF NOT EXISTS integration_action_versions (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        action_id UUID NOT NULL REFERENCES integration_actions(id) ON DELETE CASCADE,
+        version_number INTEGER NOT NULL,
+        status VARCHAR(32) NOT NULL,
+        config JSONB NOT NULL DEFAULT '{}',
+        input_schema JSONB NOT NULL DEFAULT '{}',
+        output_schema JSONB NOT NULL DEFAULT '{}',
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        published_at TIMESTAMP,
+        UNIQUE(action_id, version_number)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_integration_action_versions_action_status ON integration_action_versions(action_id, status)",
+    """
+    CREATE TABLE IF NOT EXISTS integration_action_invocations (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        action_id UUID REFERENCES integration_actions(id) ON DELETE SET NULL,
+        action_version_id UUID REFERENCES integration_action_versions(id) ON DELETE SET NULL,
+        integration_id UUID REFERENCES account_integrations(id) ON DELETE SET NULL,
+        channel VARCHAR(32) NOT NULL DEFAULT 'api',
+        call_sid VARCHAR(64),
+        call_log_id UUID,
+        tool_id VARCHAR(36),
+        flow_version_id UUID,
+        node_id VARCHAR(255),
+        request_id VARCHAR(64) NOT NULL,
+        endpoint_called VARCHAR(500),
+        method VARCHAR(10),
+        status_code INTEGER,
+        success BOOLEAN NOT NULL DEFAULT FALSE,
+        latency_ms INTEGER,
+        error_type VARCHAR(64),
+        error_message TEXT,
+        response_metadata JSONB,
+        called_at TIMESTAMP NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_integration_action_invocations_account_called ON integration_action_invocations(account_id, called_at DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_integration_action_invocations_action_called ON integration_action_invocations(action_id, called_at DESC)",
+    "CREATE INDEX IF NOT EXISTS ix_integration_action_invocations_call_sid ON integration_action_invocations(call_sid)",
+    "CREATE INDEX IF NOT EXISTS ix_integration_action_invocations_request_id ON integration_action_invocations(request_id)",
+    "ALTER TABLE integration_action_invocations ADD COLUMN IF NOT EXISTS flow_tool_id UUID",
+    "ALTER TABLE integration_action_invocations ADD COLUMN IF NOT EXISTS source_label VARCHAR(255)",
+    "CREATE INDEX IF NOT EXISTS ix_integration_action_invocations_flow_tool_id ON integration_action_invocations(flow_tool_id)",
     # ended_early — boolean flag, true when a call ends before the AI greeting finishes.
     # Set in real-time by the pipeline (GreetingCompletionTracker) via ai_greeting_completed.
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS ended_early BOOLEAN NOT NULL DEFAULT FALSE",

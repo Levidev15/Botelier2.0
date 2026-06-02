@@ -24,6 +24,8 @@ const SILERO_VAD_DEFAULTS = {
   smart_turn_stop_secs: 0.5,
 };
 
+const isFluxModel = (model?: string | null) => Boolean(model?.startsWith("flux-"));
+
 interface Assistant {
   id: string;
   account_id: string;
@@ -141,6 +143,8 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
   const [toolSets, setToolSets] = useState<ToolSet[]>([]);
   const [mcpConnections, setMcpConnections] = useState<MCPConnection[]>([]);
   const [selectedMcpTools, setSelectedMcpTools] = useState<string[]>([]);
+  const isFluxSttModel = isFluxModel(formData.stt_model);
+  const effectiveVadEnabled = Boolean(formData.vad_enabled && !isFluxSttModel);
 
   useEffect(() => {
     loadData();
@@ -173,9 +177,6 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
       const data = await response.json();
       if (data.vad_provider === "silero") {
         data.vad_config = { ...SILERO_VAD_DEFAULTS, ...(data.vad_config || {}) };
-      }
-      if (data.stt_model?.startsWith("flux-") && data.vad_enabled) {
-        data.vad_enabled = false;
       }
       setAssistant(data);
       setFormData(data);
@@ -282,11 +283,18 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
   const handleSave = async () => {
     setSaving(true);
     try {
+      const savePayload = { ...formData };
+      if (isFluxModel(savePayload.stt_model)) {
+        savePayload.vad_enabled = false;
+        savePayload.vad_provider = null;
+        savePayload.vad_config = {};
+      }
+
       if (mode === "create") {
         const response = await authFetch("/api/assistants", {
           method: "POST",
           body: JSON.stringify({
-            ...formData,
+            ...savePayload,
             account_id: accountId,
             is_active: true,
           }),
@@ -300,7 +308,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
       } else {
         const response = await authFetch(`/api/assistants/${assistantId}`, {
           method: "PUT",
-          body: JSON.stringify(formData),
+          body: JSON.stringify(savePayload),
         });
 
         if (!response.ok) throw new Error("Failed to save");
@@ -766,7 +774,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
             }}
             onModelChange={(value) => {
               handleFieldChange("stt_model", value);
-              if (value.startsWith("flux-")) {
+              if (isFluxModel(value)) {
                 handleFieldChange("vad_enabled", false);
               }
             }}
@@ -853,7 +861,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
           title="Voice Activity Detection (VAD)"
           description="Optional: Detect when users start and stop speaking"
         >
-          {formData.stt_model?.startsWith("flux-") ? (
+          {isFluxSttModel ? (
             <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 mb-6">
               <div className="flex items-start space-x-3">
                 <Info className="h-5 w-5 text-amber-400 mt-0.5 flex-shrink-0" />
@@ -887,21 +895,25 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
             label="Enable VAD"
             description="Turn on voice activity detection for this assistant"
           >
-            <label className={`flex items-center space-x-3 ${formData.stt_model?.startsWith("flux-") ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}>
+            <label className={`flex items-center space-x-3 ${isFluxSttModel ? "opacity-40 cursor-not-allowed" : "cursor-pointer"}`}>
               <input
                 type="checkbox"
-                checked={formData.vad_enabled || false}
+                checked={effectiveVadEnabled}
                 onChange={(e) => handleFieldChange("vad_enabled", e.target.checked)}
-                disabled={formData.stt_model?.startsWith("flux-")}
+                disabled={isFluxSttModel}
                 className="w-4 h-4 bg-[#141414] border border-gray-800 rounded focus:ring-2 focus:ring-blue-600 disabled:cursor-not-allowed"
               />
               <span className="text-sm text-gray-300">
-                {formData.vad_enabled ? "VAD Enabled" : "VAD Disabled"}
+                {isFluxSttModel
+                  ? "External VAD effectively disabled by Flux"
+                  : effectiveVadEnabled
+                    ? "VAD Enabled"
+                    : "VAD Disabled"}
               </span>
             </label>
           </FormField>
 
-          {formData.vad_enabled && (
+          {effectiveVadEnabled && (
             <>
               <FormField
                 label="VAD Provider"

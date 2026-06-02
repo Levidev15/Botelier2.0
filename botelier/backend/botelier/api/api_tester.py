@@ -6,7 +6,11 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
-from botelier.auth.middleware import get_current_user
+from botelier.auth.middleware import check_account_permission, get_current_user
+from botelier.database import get_db
+from botelier.models.integration import AccountIntegration, IntegrationStatus
+from botelier.services.action_executor import ActionContext, ActionExecutionRequest, ActionExecutor
+from botelier.services.integration_client import IntegrationAPIConfig, ResponseVariable
 from botelier.services.ssrf_safe_transport import _BLOCKED_LITERAL_HOSTS, SSRFSafeTransport
 
 router = APIRouter(prefix="/api/api-tester", tags=["api-tester"])
@@ -31,7 +35,19 @@ class ApiTestRequest(BaseModel):
     method: str = Field("GET", description="HTTP method")
     headers: Optional[Dict[str, str]] = Field(default=None)
     body: Optional[str] = Field(default=None, description="Request body as string")
+    bodyTemplate: Optional[str] = Field(default=None)
     timeout: Optional[int] = Field(default=30)
+    retryCount: Optional[int] = Field(default=0)
+    account_id: Optional[str] = Field(default=None)
+    variables: Optional[Dict[str, Any]] = Field(default=None)
+    responseMapping: Optional[Dict[str, str]] = Field(default=None)
+    apiSource: Optional[str] = Field(default=None)
+    integrationId: Optional[str] = Field(default=None)
+    endpointId: Optional[str] = Field(default=None)
+    endpointName: Optional[str] = Field(default=None)
+    nodeId: Optional[str] = Field(default=None)
+    flowToolId: Optional[str] = Field(default=None)
+    sourceLabel: Optional[str] = Field(default=None)
 
 
 class ApiTestResponse(BaseModel):
@@ -40,13 +56,95 @@ class ApiTestResponse(BaseModel):
     body: Any
     elapsed_ms: float
     error: Optional[str] = None
+    success: bool = False
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+    extracted_variables: Dict[str, Any] = Field(default_factory=dict)
+    request_id: Optional[str] = None
 
 
 @router.post("/test", response_model=ApiTestResponse)
 async def test_api_request(
     request: ApiTestRequest,
     current_user=Depends(get_current_user),
+    db=Depends(get_db),
 ):
+    if request.account_id:
+        check_account_permission(current_user, request.account_id, "integrations.manage", db)
+        variables = request.variables or {}
+        mapping = request.responseMapping or {}
+
+        execution_request = ActionExecutionRequest(
+            context=ActionContext(
+                account_id=request.account_id,
+                channel="test",
+                flow_tool_id=request.flowToolId,
+                node_id=request.nodeId,
+                source_label=request.sourceLabel or request.endpointName or "API Request test",
+            ),
+            variables=variables,
+        )
+
+        if request.apiSource == "integration" and request.integrationId:
+            integration = (
+                db.query(AccountIntegration)
+                .filter(
+                    AccountIntegration.id == request.integrationId,
+                    AccountIntegration.account_id == request.account_id,
+                )
+                .first()
+            )
+            if not integration or integration.status != IntegrationStatus.CONNECTED:
+                raise HTTPException(status_code=404, detail="Connected integration not found")
+
+            endpoint = None
+            for candidate in integration.integration_type.get_endpoints():
+                if str(candidate.get("id")) == str(request.endpointId):
+                    endpoint = candidate
+                    break
+            if not endpoint:
+                raise HTTPException(status_code=404, detail="Integration endpoint not found")
+
+            execution_request.integration_config = IntegrationAPIConfig(
+                integration_id=str(integration.id),
+                endpoint_id=request.endpointId,
+                method=str(endpoint.get("method", request.method)).upper(),
+                path=endpoint.get("path", request.url),
+                endpoint_template=endpoint.get("path", request.url),
+                body_template=request.bodyTemplate or request.body,
+                timeout=min(int(request.timeout or 8), 30),
+                retry_count=int(request.retryCount or 0),
+                response_variables=[
+                    ResponseVariable(variable_key=key, json_path=path)
+                    for key, path in mapping.items()
+                    if key and path
+                ],
+            )
+        else:
+            execution_request.legacy_config = {
+                "url": request.url,
+                "method": request.method,
+                "headers": request.headers or {},
+                "bodyTemplate": request.bodyTemplate or request.body,
+                "timeout": request.timeout or 8,
+                "retryCount": request.retryCount or 0,
+                "responseMapping": mapping,
+            }
+
+        result = await ActionExecutor(db).execute_and_log(execution_request)
+        return ApiTestResponse(
+            status_code=result.status_code,
+            headers={},
+            body=result.data,
+            elapsed_ms=result.latency_ms,
+            error=result.error_message,
+            success=result.success,
+            error_type=result.error_type.value,
+            error_message=result.error_message,
+            extracted_variables=result.extracted_variables,
+            request_id=result.request_id,
+        )
+
     _validate_url(request.url)
     start_time = time.time()
 
@@ -98,6 +196,7 @@ async def test_api_request(
             headers=resp_headers,
             body=body,
             elapsed_ms=round(elapsed_ms, 2),
+            success=200 <= response.status_code < 300,
         )
 
     except httpx.TimeoutException:

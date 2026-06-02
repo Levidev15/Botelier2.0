@@ -64,6 +64,19 @@ from ..config.providers import is_flux_model
 from .agent import VoiceAgentConfig
 
 
+def is_external_vad_effectively_enabled(config: VoiceAgentConfig) -> bool:
+    """Return whether Botelier should attach external VAD for this call.
+
+    Deepgram Flux owns turn detection. A stale DB row may still have
+    vad_enabled=true, but external Silero VAD must remain off for Flux models.
+    """
+    return bool(
+        config.enable_vad
+        and config.vad_provider == "silero"
+        and not is_flux_model(config.stt_model or "")
+    )
+
+
 class InterruptionTracker(FrameProcessor):
     """Tracks TTS content being spoken and detects when it's interrupted.
 
@@ -826,12 +839,21 @@ class VadSuspicionTracker(FrameProcessor):
       turn_finalized event appears, suggesting potential missed speech.
     """
 
-    def __init__(self, call_start_mono: float = 0.0, timing_state: dict = None, event_queue=None, metadata: dict | None = None, **kwargs):
+    def __init__(
+        self,
+        call_start_mono: float = 0.0,
+        timing_state: dict = None,
+        event_queue=None,
+        metadata: dict | None = None,
+        enabled: bool = True,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self._call_start_mono = call_start_mono
         self._timing_state = timing_state if timing_state is not None else {}
         self._event_queue = event_queue
         self._metadata = metadata or {}
+        self._enabled = enabled
         self._pending_interruption_mono: float = 0.0
         self._last_turn_finalized_mono: float = 0.0
         self._last_missed_emit_mono: float = 0.0
@@ -852,18 +874,26 @@ class VadSuspicionTracker(FrameProcessor):
         """
         self._timing_state["stt_muted"] = False
         self._last_turn_finalized_mono = time.monotonic()
-        logger.debug("VadSuspicionTracker: STT mute cleared — missed-speech heuristic now active")
+        if self._enabled:
+            logger.debug("VadSuspicionTracker: STT mute cleared — missed-speech heuristic now active")
 
     def _base_details(self) -> dict:
         return {
             "assistant_id": self._metadata.get("assistant_id"),
+            "vad_enabled": self._metadata.get("vad_enabled"),
+            "effective_vad_enabled": self._metadata.get("effective_vad_enabled"),
             "vad_provider": self._metadata.get("vad_provider"),
+            "stt_model": self._metadata.get("stt_model"),
             "min_volume": self._metadata.get("min_volume"),
         }
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         _now = time.monotonic()
+
+        if not self._enabled:
+            await self.push_frame(frame, direction)
+            return
 
         _false_start_window_s = float(self._timing_state.get("vad_false_start_window_s", 1.5))
         _missed_speech_window_s = float(self._timing_state.get("vad_missed_speech_window_s", 2.5))
@@ -1665,14 +1695,20 @@ class VoiceEngineFactory:
         # UserIdleProcessor fires a callback after `timeout` seconds of silence.
         idle_timeout_tracker = IdleTimeoutTracker(timeout=30.0)
 
+        effective_vad_enabled = is_external_vad_effectively_enabled(config)
+
         vad_suspicion_tracker = VadSuspicionTracker(
             call_start_mono=call_start_mono,
             timing_state=_timing_state,
             metadata={
                 "assistant_id": config.agent_id,
+                "vad_enabled": config.enable_vad,
+                "effective_vad_enabled": effective_vad_enabled,
                 "vad_provider": config.vad_provider,
+                "stt_model": config.stt_model,
                 "min_volume": config.vad_config.get("min_volume"),
             },
+            enabled=effective_vad_enabled,
         )
 
         # Stamps t_last_inbound on every inbound AudioRawFrame from Twilio so that
@@ -1726,7 +1762,7 @@ class VoiceEngineFactory:
         #   calls (e.g. transfers) so the caller cannot interrupt mid-transfer
         #   (replaces FUNCTION_CALL).
         user_params: LLMUserAggregatorParams | None = None
-        if config.enable_vad and config.vad_provider == "silero":
+        if effective_vad_enabled:
             from pipecat.audio.turn.smart_turn.base_smart_turn import SmartTurnParams
             from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
             from pipecat.audio.vad.silero import SileroVADAnalyzer

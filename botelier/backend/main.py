@@ -21,6 +21,7 @@ import asyncio
 
 from botelier.api import tools_router
 from botelier.api.account import router as account_router
+from botelier.api.actions import router as actions_router
 from botelier.api.admin import router as admin_router
 from botelier.api.admin_billing import router as admin_billing_router
 from botelier.api.billing import router as billing_router
@@ -93,6 +94,7 @@ app.include_router(auth_router)  # Email/password auth endpoints
 app.include_router(dispositions_router)  # Assistant dispositions
 app.include_router(resolution_options_router)  # Resolution status options
 app.include_router(integrations_router)  # Third-party integrations (Opera Cloud, etc.)
+app.include_router(actions_router)  # Reusable no-code action library
 app.include_router(secrets_router)  # Account secrets (encrypted API key store)
 app.include_router(tool_sets_router)  # Tool collection management
 app.include_router(mcp_connections_router)  # MCP server connections for dynamic tools

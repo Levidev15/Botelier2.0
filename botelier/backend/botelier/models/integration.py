@@ -19,16 +19,28 @@ from datetime import datetime
 from cryptography.fernet import Fernet
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
 from botelier.database import Base
 
 
 def get_encryption_key():
-    """Get or create encryption key for credential storage."""
+    """Get encryption key for credential storage.
+
+    Production must provide a stable key.  Local/dev keeps the historical
+    generated fallback so tests and developer machines do not need secrets.
+    """
     key = os.environ.get("INTEGRATION_ENCRYPTION_KEY")
     if not key:
+        env = (
+            os.environ.get("BOTELIER_ENV")
+            or os.environ.get("APP_ENV")
+            or os.environ.get("ENVIRONMENT")
+            or ""
+        ).lower()
+        if env in {"prod", "production"}:
+            raise RuntimeError("INTEGRATION_ENCRYPTION_KEY is required in production")
         key = Fernet.generate_key().decode()
         os.environ["INTEGRATION_ENCRYPTION_KEY"] = key
     return key.encode() if isinstance(key, str) else key
@@ -42,6 +54,31 @@ class IntegrationStatus(str, enum.Enum):
     CONNECTED = "connected"
     ERROR = "error"
     TOKEN_EXPIRED = "token_expired"
+
+
+class IntegrationActionKind(str, enum.Enum):
+    """Origin/type for a reusable account action."""
+
+    CERTIFIED = "certified"
+    CUSTOM_HTTP = "custom_http"
+
+
+class IntegrationActionStatus(str, enum.Enum):
+    """Lifecycle status for reusable actions."""
+
+    DRAFT = "draft"
+    PUBLISHED = "published"
+    DISABLED = "disabled"
+
+
+class IntegrationInvocationChannel(str, enum.Enum):
+    """Runtime channel that invoked an integration action."""
+
+    VOICE = "voice"
+    SMS = "sms"
+    FLOW = "flow"
+    TEST = "test"
+    API = "api"
 
 
 class IntegrationType(Base):
@@ -326,3 +363,179 @@ class IntegrationCallLog(Base):
 
     def __repr__(self):
         return f"<IntegrationCallLog account={self.account_id} integration={self.integration_id} success={self.success}>"
+
+
+class IntegrationAction(Base):
+    """Reusable action shown in the no-code Action Library.
+
+    Certified actions are owned by the platform and can be backed by an
+    AccountIntegration.  Custom HTTP actions are owned by an account and execute
+    through the same guarded runtime.
+    """
+
+    __tablename__ = "integration_actions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    account_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    integration_type_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("integration_types.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    source_endpoint_id = Column(String(255), nullable=True)
+
+    name = Column(String(255), nullable=False)
+    description = Column(Text, nullable=True)
+    slug = Column(String(255), nullable=False, index=True)
+    kind = Column(SQLEnum(IntegrationActionKind), nullable=False)
+    status = Column(
+        SQLEnum(IntegrationActionStatus),
+        nullable=False,
+        default=IntegrationActionStatus.DRAFT,
+        index=True,
+    )
+
+    published_version_id = Column(UUID(as_uuid=True), nullable=True)
+    last_tested_at = Column(DateTime, nullable=True)
+    last_test_success = Column(Boolean, nullable=True)
+    last_error = Column(Text, nullable=True)
+
+    created_by_user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
+
+    versions = relationship(
+        "IntegrationActionVersion",
+        back_populates="action",
+        cascade="all, delete-orphan",
+    )
+
+    def to_dict(self, include_config: bool = False):
+        result = {
+            "id": str(self.id),
+            "account_id": str(self.account_id) if self.account_id else None,
+            "integration_type_id": str(self.integration_type_id) if self.integration_type_id else None,
+            "source_endpoint_id": self.source_endpoint_id,
+            "name": self.name,
+            "description": self.description,
+            "slug": self.slug,
+            "kind": self.kind.value if self.kind else None,
+            "status": self.status.value if self.status else None,
+            "published_version_id": str(self.published_version_id)
+            if self.published_version_id
+            else None,
+            "last_tested_at": self.last_tested_at.isoformat() if self.last_tested_at else None,
+            "last_test_success": self.last_test_success,
+            "last_error": self.last_error,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "updated_at": self.updated_at.isoformat() if self.updated_at else None,
+        }
+        if include_config:
+            published = next(
+                (v for v in self.versions if str(v.id) == str(self.published_version_id)),
+                None,
+            )
+            if published:
+                result["config"] = published.config
+                result["input_schema"] = published.input_schema
+                result["output_schema"] = published.output_schema
+        return result
+
+
+class IntegrationActionVersion(Base):
+    """Versioned action configuration.
+
+    Published versions are immutable runtime contracts; drafts can be edited and
+    tested before publishing.
+    """
+
+    __tablename__ = "integration_action_versions"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    action_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("integration_actions.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    version_number = Column(Integer, nullable=False)
+    status = Column(SQLEnum(IntegrationActionStatus), nullable=False)
+    config = Column(JSONB, nullable=False, default=dict)
+    input_schema = Column(JSONB, nullable=False, default=dict)
+    output_schema = Column(JSONB, nullable=False, default=dict)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    published_at = Column(DateTime, nullable=True)
+
+    action = relationship("IntegrationAction", back_populates="versions")
+
+    def to_dict(self):
+        return {
+            "id": str(self.id),
+            "action_id": str(self.action_id),
+            "version_number": self.version_number,
+            "status": self.status.value if self.status else None,
+            "config": self.config,
+            "input_schema": self.input_schema,
+            "output_schema": self.output_schema,
+            "created_at": self.created_at.isoformat() if self.created_at else None,
+            "published_at": self.published_at.isoformat() if self.published_at else None,
+        }
+
+
+class IntegrationActionInvocation(Base):
+    """Normalized audit row for every action execution."""
+
+    __tablename__ = "integration_action_invocations"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    account_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    action_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("integration_actions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    action_version_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("integration_action_versions.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    integration_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("account_integrations.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    channel = Column(String(32), nullable=False, default=IntegrationInvocationChannel.API.value)
+    call_sid = Column(String(64), nullable=True, index=True)
+    call_log_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    tool_id = Column(String(36), nullable=True, index=True)
+    flow_version_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    flow_tool_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    node_id = Column(String(255), nullable=True, index=True)
+    source_label = Column(String(255), nullable=True)
+    request_id = Column(String(64), nullable=False, index=True)
+
+    endpoint_called = Column(String(500), nullable=True)
+    method = Column(String(10), nullable=True)
+    status_code = Column(Integer, nullable=True)
+    success = Column(Boolean, nullable=False, default=False)
+    latency_ms = Column(Integer, nullable=True)
+    error_type = Column(String(64), nullable=True)
+    error_message = Column(Text, nullable=True)
+    response_metadata = Column(JSONB, nullable=True)
+    called_at = Column(DateTime, default=datetime.utcnow, nullable=False, index=True)

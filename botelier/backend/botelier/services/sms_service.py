@@ -19,7 +19,6 @@ from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-import httpx
 from loguru import logger
 from openai import OpenAI
 from sqlalchemy.orm import Session
@@ -589,68 +588,39 @@ class SMSService:
             return {"error": f"Tool '{fn_name}' not found", "status": "failed"}
 
         if tool.tool_type == ToolType.API_REQUEST.value:
-            return self._execute_api_request(tool, fn_args)
+            return self._execute_api_request(assistant, tool, fn_args)
 
         return {"error": f"Unsupported tool type: {tool.tool_type}", "status": "failed"}
 
-    def _execute_api_request(self, tool: Tool, arguments: Dict[str, Any]) -> Any:
-        url = tool.config.get("url", "")
-        method = tool.config.get("method", "GET")
-        headers = tool.config.get("headers", {})
-        body_template = tool.config.get("body_template")
-        response_mapping = tool.config.get("response_mapping", {})
-        request_timeout = tool.config.get("timeout", 30)
-
-        def substitute(template: str, values: dict) -> str:
-            def replacer(match):
-                key = match.group(1).strip()
-                return str(values.get(key, match.group(0)))
-
-            result = re.sub(r"\{\{(\w+)\}\}", replacer, template)
-            try:
-                result = result.format(**values)
-            except (KeyError, ValueError, IndexError):
-                pass
-            return result
-
-        formatted_url = substitute(url, arguments)
-        formatted_headers = {k: substitute(v, arguments) for k, v in headers.items()}
-
-        request_body = None
-        if body_template:
-            try:
-                formatted_str = substitute(body_template, arguments)
-                request_body = json.loads(formatted_str)
-            except (KeyError, json.JSONDecodeError):
-                request_body = None
+    def _execute_api_request(self, assistant: Assistant, tool: Tool, arguments: Dict[str, Any]) -> Any:
+        from botelier.services.action_executor import (
+            ActionContext,
+            ActionExecutionRequest,
+            execute_action_sync,
+        )
 
         try:
-            with httpx.Client(timeout=request_timeout) as client:
-                if method == "GET":
-                    resp = client.get(formatted_url, headers=formatted_headers)
-                elif method == "POST":
-                    resp = client.post(formatted_url, headers=formatted_headers, json=request_body)
-                elif method == "PUT":
-                    resp = client.put(formatted_url, headers=formatted_headers, json=request_body)
-                elif method == "PATCH":
-                    resp = client.patch(formatted_url, headers=formatted_headers, json=request_body)
-                elif method == "DELETE":
-                    resp = client.delete(formatted_url, headers=formatted_headers)
-                else:
-                    return {"error": f"Unsupported HTTP method: {method}", "status": "failed"}
-
-                resp.raise_for_status()
-                data = resp.json()
-
-                if response_mapping:
-                    return self._apply_response_mapping(data, response_mapping)
-
-                return data
-
-        except httpx.TimeoutException:
-            return {"error": "API request timed out", "status": "failed"}
-        except httpx.HTTPError as e:
-            return {"error": str(e), "status": "failed"}
+            result = execute_action_sync(
+                self.db,
+                ActionExecutionRequest(
+                    context=ActionContext(
+                        account_id=str(assistant.account_id),
+                        channel="sms",
+                        tool_id=tool.id,
+                    ),
+                    variables=arguments,
+                    legacy_config=tool.config or {},
+                ),
+            )
+            if result.success:
+                response_mapping = tool.config.get("response_mapping") or tool.config.get("responseMapping") or {}
+                return result.extracted_variables if response_mapping else result.data
+            return {
+                "error": result.error_message or "API request failed",
+                "status": "failed",
+                "error_type": result.error_type.value,
+                "status_code": result.status_code,
+            }
         except Exception as e:
             logger.error(f"API request tool error: {e}")
             return {"error": "API request failed", "status": "failed"}

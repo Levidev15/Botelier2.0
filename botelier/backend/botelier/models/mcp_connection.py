@@ -19,11 +19,21 @@ from botelier.database import Base
 
 
 def get_mcp_encryption_key():
-    """Get or create encryption key for MCP credential storage."""
+    """Get encryption key for MCP credential storage."""
     key = os.environ.get("MCP_ENCRYPTION_KEY")
     if not key:
         key = os.environ.get("INTEGRATION_ENCRYPTION_KEY")
     if not key:
+        env = (
+            os.environ.get("BOTELIER_ENV")
+            or os.environ.get("APP_ENV")
+            or os.environ.get("ENVIRONMENT")
+            or ""
+        ).lower()
+        if env in {"prod", "production"}:
+            raise RuntimeError(
+                "MCP_ENCRYPTION_KEY or INTEGRATION_ENCRYPTION_KEY is required in production"
+            )
         key = Fernet.generate_key().decode()
         os.environ["MCP_ENCRYPTION_KEY"] = key
     return key.encode() if isinstance(key, str) else key

@@ -286,6 +286,7 @@ class FlowExecutor:
         end_call_callback: Optional[Callable[[str], Awaitable[None]]] = None,
         db_session: Optional[Any] = None,
         account_id: Optional[str] = None,
+        flow_tool_id: Optional[str] = None,
     ):
         self.flow_config = flow_config
         self.state = FlowState(flow_config)
@@ -294,6 +295,7 @@ class FlowExecutor:
         self.end_call_callback = end_call_callback
         self.db_session = db_session
         self.account_id = account_id
+        self.flow_tool_id = flow_tool_id
 
     def get_variables_in_flow_order(self) -> list[FlowVariable]:
         """Get variables in the order they appear in the flow traversal.
@@ -1463,10 +1465,13 @@ You are executing a structured conversation flow. Follow these guidelines:
         self, node_id: str, node: FlowNode, api_config: dict
     ) -> dict:
         """Handle API request using IntegrationClient for connected integrations."""
+        from botelier.services.action_executor import (
+            ActionContext,
+            ActionExecutionRequest,
+            ActionExecutor,
+        )
         from botelier.services.integration_client import (
-            APIErrorType,
             IntegrationAPIConfig,
-            IntegrationClient,
             ResponseVariable,
             get_llm_friendly_error_message,
         )
@@ -1527,8 +1532,19 @@ You are executing a structured conversation flow. Follow these guidelines:
             ),
         )
 
-        client = IntegrationClient(self.account_id, db=self.db_session)
-        response = await client.execute_request(config, self.state.collected_slots)
+        response = await ActionExecutor(self.db_session).execute_and_log(
+            ActionExecutionRequest(
+                context=ActionContext(
+                    account_id=self.account_id,
+                    channel="flow",
+                    flow_tool_id=self.flow_tool_id,
+                    node_id=node_id,
+                    source_label=node.data.get("name") or node_id,
+                ),
+                variables=self.state.collected_slots,
+                integration_config=config,
+            )
+        )
 
         if response.success:
             for var_key, value in response.extracted_variables.items():
@@ -1646,135 +1662,54 @@ You are executing a structured conversation flow. Follow these guidelines:
     async def _handle_custom_api_request(
         self, node_id: str, node: FlowNode, api_config: dict
     ) -> dict:
-        """Handle direct custom URL API request."""
-        url = substitute_variables(
-            self._substitute_secrets(api_config.get("url", "")), self.state.collected_slots
+        """Handle direct custom URL API request through ActionExecutor."""
+        from botelier.services.action_executor import (
+            ActionContext,
+            ActionExecutionRequest,
+            ActionExecutor,
         )
-        timeout = api_config.get("timeout", 30)
-        retry_count = api_config.get("retryCount", 2)
 
-        last_error = None
-        attempt = 0
-        _start_ms = int(time.time() * 1000)
-
-        while attempt <= retry_count:
-            try:
-                async with httpx.AsyncClient(
-                    transport=SSRFSafeTransport(), timeout=timeout
-                ) as client:
-                    method = api_config.get("method", "GET").upper()
-
-                    raw_headers = api_config.get("headers", {})
-                    headers = {
-                        k: substitute_variables(
-                            self._substitute_secrets(v), self.state.collected_slots
-                        )
-                        for k, v in raw_headers.items()
-                    }
-
-                    body = None
-                    if api_config.get("bodyTemplate"):
-                        body_str = substitute_variables(
-                            self._substitute_secrets(api_config["bodyTemplate"]),
-                            self.state.collected_slots,
-                        )
-                        body = json.loads(body_str)
-
-                    if method == "GET":
-                        response = await client.get(url, headers=headers)
-                    elif method == "POST":
-                        response = await client.post(url, headers=headers, json=body)
-                    elif method == "PUT":
-                        response = await client.put(url, headers=headers, json=body)
-                    elif method == "PATCH":
-                        response = await client.patch(url, headers=headers, json=body)
-                    elif method == "DELETE":
-                        response = await client.delete(url, headers=headers)
-                    else:
-                        self._write_custom_call_log(
-                            url,
-                            "UNKNOWN",
-                            0,
-                            False,
-                            int(time.time() * 1000) - _start_ms,
-                            "validation_error",
-                            f"Unsupported method: {method}",
-                        )
-                        return {
-                            "success": False,
-                            "message": f"Unsupported method: {method}",
-                            "action": None,
-                        }
-
-                    result = self._process_custom_api_response(node_id, api_config, response)
-                    self._write_custom_call_log(
-                        url,
-                        method,
-                        response.status_code,
-                        result.get("success", False),
-                        int(time.time() * 1000) - _start_ms,
-                        None if result.get("success") else "http_error",
-                        None if result.get("success") else result.get("message"),
-                    )
-                    return result
-
-            except httpx.TimeoutException:
-                last_error = "Request timed out"
-                attempt += 1
-            except httpx.NetworkError as e:
-                last_error = str(e)
-                attempt += 1
-            except json.JSONDecodeError as e:
-                self._write_custom_call_log(
-                    url,
-                    api_config.get("method", "GET").upper(),
-                    0,
-                    False,
-                    int(time.time() * 1000) - _start_ms,
-                    "json_error",
-                    str(e),
-                )
-                return {
-                    "success": False,
-                    "message": "Invalid request body format",
-                    "action": None,
-                    "error": str(e),
-                    "current_node_id": node_id,
-                }
-            except Exception as e:
-                self._write_custom_call_log(
-                    url,
-                    api_config.get("method", "GET").upper(),
-                    0,
-                    False,
-                    int(time.time() * 1000) - _start_ms,
-                    "unknown_error",
-                    str(e),
-                )
-                return {
-                    "success": False,
-                    "message": api_config.get(
-                        "onError", "There was an issue processing your request"
-                    ),
-                    "action": None,
-                    "error": str(e),
-                    "current_node_id": node_id,
-                }
-
-        self._write_custom_call_log(
-            url,
-            api_config.get("method", "GET").upper(),
-            0,
-            False,
-            int(time.time() * 1000) - _start_ms,
-            "timeout",
-            last_error,
+        response = await ActionExecutor(self.db_session).execute_and_log(
+            ActionExecutionRequest(
+                context=ActionContext(
+                    account_id=self.account_id,
+                    channel="flow",
+                    flow_tool_id=self.flow_tool_id,
+                    node_id=node_id,
+                    source_label=node.data.get("name") or node_id,
+                ),
+                variables=self.state.collected_slots,
+                legacy_config=api_config,
+            )
         )
+
+        if response.success:
+            for var_key, value in response.extracted_variables.items():
+                self.state.set_variable(var_key, value)
+
+            next_node = self.state.get_next_node(node_id)
+            if next_node:
+                self.state.advance_to(next_node.id)
+
+            success_msg = api_config.get("onSuccess", "Request completed successfully")
+            success_msg = substitute_variables(success_msg, self.state.collected_slots)
+            return {
+                "success": True,
+                "message": success_msg,
+                "action": None,
+                "data": response.data,
+                "extracted_variables": response.extracted_variables,
+                "current_node_id": next_node.id if next_node else node_id,
+            }
+
         return {
             "success": False,
-            "message": api_config.get("onError", "Request failed after multiple attempts"),
+            "message": response.error_message
+            or api_config.get("onError", "There was an issue processing your request"),
             "action": None,
-            "error": last_error,
+            "error": response.error_message,
+            "error_type": response.error_type.value,
+            "status_code": response.status_code,
             "current_node_id": node_id,
         }
 

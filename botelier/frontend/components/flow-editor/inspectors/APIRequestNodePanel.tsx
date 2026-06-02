@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { ChevronDown, ChevronRight, Plus, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, ChevronDown, ChevronRight, Loader2, Play, Plus, X } from "lucide-react";
 import { useFlowStore, APIRequestNodeData } from "../store";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
@@ -33,7 +33,7 @@ interface Props {
 }
 
 export default function APIRequestNodePanel({ data, nodeId }: Props) {
-  const { updateNodeData, variables } = useFlowStore();
+  const { updateNodeData, variables, toolId } = useFlowStore();
   const { authFetch } = useAuthToken();
   const { accountId } = useAccountContext();
   const api = data.api || { method: "GET" as const, url: "", apiSource: "custom" as const };
@@ -50,6 +50,19 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
   const [loadingIntegrations, setLoadingIntegrations] = useState(false);
   const [availableSecrets, setAvailableSecrets] = useState<Array<{ key: string; name: string }>>([]);
   const [secretPickerIndex, setSecretPickerIndex] = useState<number | null>(null);
+  const [testVariables, setTestVariables] = useState<Record<string, string>>({});
+  const [testLoading, setTestLoading] = useState(false);
+  const [testError, setTestError] = useState<string | null>(null);
+  const [testResult, setTestResult] = useState<null | {
+    success: boolean;
+    status_code: number;
+    elapsed_ms: number;
+    body: unknown;
+    error_type?: string | null;
+    error_message?: string | null;
+    extracted_variables?: Record<string, unknown>;
+    request_id?: string | null;
+  }>(null);
 
   useEffect(() => {
     const fetchIntegrations = async () => {
@@ -58,7 +71,7 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
         const response = await authFetch("/api/integrations/connections");
         if (response.ok) {
           const resData = await response.json();
-          setIntegrations(resData.filter((i: APIAccountIntegration) => i.status === "active"));
+          setIntegrations(resData.filter((i: APIAccountIntegration) => i.status === "connected"));
         }
       } catch (error) {
         console.error("Failed to fetch integrations:", error);
@@ -88,6 +101,7 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
 
   const selectedIntegration = integrations.find(i => i.id === api.integrationId);
   const selectedEndpoint = selectedIntegration?.integration_type.endpoints.find(e => e.id === api.endpointId);
+  const testableVariables = variables.filter(v => v.key);
 
   const handleIntegrationChange = (integrationId: string) => {
     const integration = integrations.find(i => i.id === integrationId);
@@ -106,13 +120,13 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
     const endpoint = selectedIntegration?.integration_type.endpoints.find(e => e.id === endpointId);
     if (endpoint) {
       let bodyTemplate = "";
-      if (endpoint.request_schema && (endpoint.method === "POST" || endpoint.method === "PUT")) {
+      if (endpoint.request_schema && (endpoint.method === "POST" || endpoint.method === "PUT" || endpoint.method === "PATCH")) {
         bodyTemplate = JSON.stringify(endpoint.request_schema, null, 2);
       }
       updateApi({
         endpointId,
         endpointName: endpoint.name,
-        method: endpoint.method as "GET" | "POST" | "PUT" | "DELETE",
+        method: endpoint.method as "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
         url: endpoint.path,
         bodyTemplate,
       });
@@ -169,6 +183,76 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
       if (i !== index) newMapping[k] = v;
     });
     updateApi({ responseMapping: newMapping });
+  };
+
+  const validateBeforeTest = () => {
+    const method = api.method || "GET";
+    if (apiSource === "integration") {
+      if (!api.integrationId) return "Select a connected integration first";
+      if (!api.endpointId) return "Select an integration endpoint first";
+    } else if (!api.url?.trim()) {
+      return "URL is required";
+    }
+    if (["POST", "PUT", "PATCH"].includes(method) && api.bodyTemplate?.trim()) {
+      try {
+        JSON.parse(api.bodyTemplate);
+      } catch {
+        return "Request body must be valid JSON before testing";
+      }
+    }
+    for (const [key, path] of Object.entries(api.responseMapping || {})) {
+      if (!key.trim() || !path.trim()) {
+        return "Response mappings need both a variable name and JSON path";
+      }
+    }
+    return null;
+  };
+
+  const handleTestApi = async () => {
+    if (!accountId) {
+      setTestError("Account context is still loading");
+      return;
+    }
+    const validationError = validateBeforeTest();
+    if (validationError) {
+      setTestError(validationError);
+      return;
+    }
+    setTestLoading(true);
+    setTestError(null);
+    setTestResult(null);
+    try {
+      const response = await authFetch("/api/api-tester/test", {
+        method: "POST",
+        body: JSON.stringify({
+          account_id: accountId,
+          method: api.method,
+          url: api.url || "",
+          headers: api.headers || {},
+          bodyTemplate: api.bodyTemplate || undefined,
+          timeout: api.timeout ?? 8,
+          retryCount: api.retryCount ?? 0,
+          variables: testVariables,
+          responseMapping: api.responseMapping || {},
+          apiSource,
+          integrationId: api.integrationId,
+          endpointId: api.endpointId,
+          endpointName: api.endpointName,
+          nodeId,
+          flowToolId: toolId,
+          sourceLabel: data.name || api.endpointName || "API Request",
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) {
+        throw new Error(result.detail || "API test failed");
+      }
+      setTestResult(result);
+    } catch (error) {
+      setTestError(error instanceof Error ? error.message : "API test failed");
+    } finally {
+      setTestLoading(false);
+    }
   };
 
   const apiSource = api.apiSource || "custom";
@@ -276,6 +360,7 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
               <option value="GET">GET</option>
               <option value="POST">POST</option>
               <option value="PUT">PUT</option>
+              <option value="PATCH">PATCH</option>
               <option value="DELETE">DELETE</option>
             </select>
           </div>
@@ -359,7 +444,7 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
         smallInputCls={smallInputCls}
       />
 
-      {(api.method === "POST" || api.method === "PUT") && (
+      {(api.method === "POST" || api.method === "PUT" || api.method === "PATCH") && (
         <div>
           <label className="block text-sm font-medium text-gray-400 mb-1">
             Request Body (JSON)
@@ -388,6 +473,88 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
           )}
         </div>
       )}
+
+      <div className="border border-gray-800 rounded-lg bg-[#111111] overflow-hidden">
+        <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between gap-3">
+          <div>
+            <h4 className="text-sm font-medium text-gray-200">Test API request</h4>
+            <p className="text-xs text-gray-500">Runs this node with sample variables and stores metadata only</p>
+          </div>
+          <button
+            onClick={handleTestApi}
+            disabled={testLoading}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded bg-orange-600 hover:bg-orange-700 disabled:opacity-50 text-white text-xs font-medium transition-colors"
+          >
+            {testLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+            {testLoading ? "Testing" : "Run test"}
+          </button>
+        </div>
+        <div className="p-3 space-y-3">
+          {testableVariables.length > 0 ? (
+            <div className="grid grid-cols-1 gap-2">
+              {testableVariables.map((variable) => (
+                <div key={variable.key}>
+                  <label className="block text-xs text-gray-500 mb-1">{variable.key}</label>
+                  <input
+                    value={testVariables[variable.key] ?? variable.defaultValue ?? ""}
+                    onChange={(e) =>
+                      setTestVariables(prev => ({ ...prev, [variable.key]: e.target.value }))
+                    }
+                    className={smallInputCls}
+                    placeholder={variable.description || variable.type}
+                  />
+                </div>
+              ))}
+            </div>
+          ) : (
+            <p className="text-xs text-gray-500">No flow variables defined yet. The request can still be tested without sample values.</p>
+          )}
+
+          {testError && (
+            <div className="flex items-start gap-2 rounded border border-red-900/70 bg-red-950/30 px-3 py-2 text-xs text-red-300">
+              <AlertCircle className="h-3.5 w-3.5 mt-0.5 flex-shrink-0" />
+              <span>{testError}</span>
+            </div>
+          )}
+
+          {testResult && (
+            <div className="rounded border border-gray-800 bg-[#0b0b0b] overflow-hidden">
+              <div className="px-3 py-2 flex items-center gap-3 border-b border-gray-800">
+                {testResult.success ? (
+                  <CheckCircle2 className="h-4 w-4 text-green-400" />
+                ) : (
+                  <AlertCircle className="h-4 w-4 text-red-400" />
+                )}
+                <span className={testResult.success ? "text-green-400" : "text-red-400"}>
+                  {testResult.status_code || "Error"}
+                </span>
+                <span className="text-xs text-gray-500">{Math.round(testResult.elapsed_ms || 0)}ms</span>
+                {testResult.request_id && (
+                  <code className="text-[11px] text-gray-600 truncate">req {testResult.request_id.slice(0, 10)}</code>
+                )}
+              </div>
+              {testResult.error_message && (
+                <div className="px-3 py-2 text-xs text-red-300 border-b border-gray-800">
+                  {testResult.error_type ? `${testResult.error_type}: ` : ""}{testResult.error_message}
+                </div>
+              )}
+              {testResult.extracted_variables && Object.keys(testResult.extracted_variables).length > 0 && (
+                <div className="px-3 py-2 border-b border-gray-800">
+                  <p className="text-xs text-gray-500 mb-1">Extracted variables</p>
+                  <pre className="text-xs text-gray-300 font-mono whitespace-pre-wrap">
+                    {JSON.stringify(testResult.extracted_variables, null, 2)}
+                  </pre>
+                </div>
+              )}
+              <pre className="max-h-52 overflow-auto p-3 text-xs text-gray-300 font-mono whitespace-pre-wrap">
+                {typeof testResult.body === "object"
+                  ? JSON.stringify(testResult.body, null, 2)
+                  : String(testResult.body ?? "")}
+              </pre>
+            </div>
+          )}
+        </div>
+      </div>
 
       <div>
         <button
