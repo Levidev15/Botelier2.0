@@ -4,7 +4,14 @@ All SQLAlchemy models should be imported here for database initialization.
 """
 
 from botelier.models.account import Account, AccountStatus, SubscriptionTier
-from botelier.models.billing import AccountBillingConfig, AccountBillingAlert, CallBillingItem, PlatformInternalRates
+from botelier.models.billing import (
+    AccountBillingAlert,
+    AccountBillingConfig,
+    CallBillingItem,
+    CallDurationReconciliationResult,
+    CallDurationReconciliationRun,
+    PlatformInternalRates,
+)
 from botelier.models.assistant import Assistant
 from botelier.models.call_event import CallEvent
 from botelier.models.call_log import CallLeg, CallLog, CallOutcome, CallStatus, LegType
@@ -87,5 +94,7 @@ __all__ = [
     "AccountBillingConfig",
     "AccountBillingAlert",
     "CallBillingItem",
+    "CallDurationReconciliationRun",
+    "CallDurationReconciliationResult",
     "PlatformInternalRates",
 ]

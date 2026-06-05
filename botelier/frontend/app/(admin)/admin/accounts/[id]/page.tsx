@@ -87,7 +87,11 @@ interface CallRow {
   caller_number: string | null;
   assistant_name: string | null;
   duration_seconds: number;
+  duration_source: string;
+  ai_duration_seconds: number;
+  transfer_duration_seconds: number;
   billable_inbound_minutes: number;
+  billable_transfer_minutes: number;
   inbound_cost_usd: number;
   total_cost_usd: number;
   internal_cost_usd: number;
@@ -1022,7 +1026,7 @@ export default function AccountDetailPage() {
                           Assistant
                         </th>
                         <th className="py-2 pr-3 text-right text-xs text-gray-500 font-medium">
-                          Dur
+                          Total
                         </th>
                         {showCostCols && (
                           <>

@@ -254,12 +254,21 @@ async def get_call_stats(
 
         total_duration = (
             db.query(func.sum(CallLog.duration_seconds))
-            .filter(CallLog.account_id == account_id, CallLog.started_at >= since)
+            .filter(
+                CallLog.account_id == account_id,
+                CallLog.started_at >= since,
+                CallLog.duration_source.in_(("twilio_webhook", "twilio_api")),
+            )
             .scalar()
             or 0
         )
+        duration_call_count = base_query.filter(
+            CallLog.duration_source.in_(("twilio_webhook", "twilio_api"))
+        ).count()
 
-        avg_duration = total_duration / total_calls if total_calls > 0 else 0
+        avg_duration = (
+            total_duration / duration_call_count if duration_call_count > 0 else 0
+        )
 
         return {
             "total_calls": total_calls,

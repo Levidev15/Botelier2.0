@@ -9,6 +9,7 @@ export interface CallLeg {
   started_at: string | null;
   ended_at: string | null;
   duration_seconds: number | null;
+  duration_source: string;
 }
 
 export interface TranscriptEntry {
@@ -34,6 +35,9 @@ export interface CallLog {
   answered_at: string | null;
   ended_at: string | null;
   duration_seconds: number;
+  duration_source: string;
+  ai_duration_seconds: number;
+  transfer_duration_seconds: number;
   has_transfer: boolean;
   flow_id: string | null;
   flow_name: string | null;

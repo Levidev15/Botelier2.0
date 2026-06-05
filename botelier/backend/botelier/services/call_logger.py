@@ -4,7 +4,6 @@ This service handles all call log updates to avoid code duplication
 across webhooks, WebSocket handlers, and other components.
 """
 
-import math
 import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -13,8 +12,8 @@ from loguru import logger
 from sqlalchemy.orm import Session
 
 from ..models import CallLeg, CallLog, CallOutcome, CallStatus, LegType
-from ..models.billing import AccountBillingConfig, CallBillingItem
 from ..models.call_event import CallEvent
+from .call_duration_billing import CallDurationBillingService
 
 # Vocabulary for forced-finalization sources. Kept aligned with Task #96.
 # Any new source must be documented here so dashboards/analytics can surface it.
@@ -42,159 +41,34 @@ class CallLogger:
         """Initialize with database session."""
         self.db = db
 
-    def _get_effective_billing_config(self, account_id) -> Optional[AccountBillingConfig]:
-        """Return the active billing config for an account, falling back to platform default."""
-        now = datetime.utcnow()
-        config = (
-            self.db.query(AccountBillingConfig)
-            .filter(
-                AccountBillingConfig.account_id == account_id,
-                AccountBillingConfig.effective_from <= now,
-            )
-            .order_by(AccountBillingConfig.effective_from.desc())
-            .first()
-        )
-        if config is not None:
-            return config
-        return (
-            self.db.query(AccountBillingConfig)
-            .filter(
-                AccountBillingConfig.account_id.is_(None),
-                AccountBillingConfig.effective_from <= now,
-            )
-            .order_by(AccountBillingConfig.effective_from.desc())
-            .first()
-        )
+    def _duration_billing(self) -> CallDurationBillingService:
+        return CallDurationBillingService(self.db)
 
-    def _upsert_inbound_billing(self, call_log, duration_seconds: Optional[int]) -> None:
-        """Create or correct the inbound_call billing item using an authoritative duration.
-
-        Called from complete_call() for the initial write and again from update_status()
-        once Twilio's authoritative CallDuration arrives.  If the billing item already
-        exists but quantity_minutes differs from ceil(duration_seconds / 60) the item is
-        updated in-place so the minutes always match Twilio's measured billable duration.
-
-        No-op when account_id is None or duration_seconds is None.
-        The caller is responsible for committing the session.
-        """
+    def _upsert_inbound_billing(
+        self,
+        call_log,
+        duration_seconds: Optional[int],
+        *,
+        source: str = "twilio_webhook",
+    ) -> None:
+        """Write inbound billing only from an authoritative parent duration."""
         if call_log.account_id is None or duration_seconds is None:
             return
-        duration_secs = max(0, duration_seconds)
-        quantity_minutes = math.ceil(duration_secs / 60) if duration_secs > 0 else 0
-        config = self._get_effective_billing_config(call_log.account_id)
-        rate = float(config.inbound_rate_usd) if config else 0.05
-        config_id = config.id if config else None
-        cost = round(quantity_minutes * rate, 6)
-
-        existing = (
-            self.db.query(CallBillingItem)
-            .filter(
-                CallBillingItem.call_log_id == call_log.id,
-                CallBillingItem.item_type == "inbound_call",
-            )
-            .first()
+        self._duration_billing().finalize_parent(
+            call_log,
+            duration_seconds,
+            source=source,
         )
-        if existing is None:
-            self.db.add(
-                CallBillingItem(
-                    call_log_id=call_log.id,
-                    account_id=call_log.account_id,
-                    item_type="inbound_call",
-                    quantity_minutes=quantity_minutes,
-                    rate_per_unit_usd=rate,
-                    cost_usd=cost,
-                    billing_config_id=config_id,
-                )
-            )
-            logger.debug(
-                f"Billing item created: {quantity_minutes} min × ${rate}/min = ${cost} "
-                f"for call {call_log.call_sid}"
-            )
-        elif existing.quantity_minutes != quantity_minutes:
-            old_mins = existing.quantity_minutes
-            existing.quantity_minutes = quantity_minutes
-            existing.cost_usd = cost
-            logger.debug(
-                f"Billing item corrected: {old_mins} → {quantity_minutes} min × ${rate}/min = ${cost} "
-                f"for call {call_log.call_sid} (Twilio authoritative duration)"
-            )
 
     def _write_transfer_billing(self, call_log, leg) -> None:
-        """Write an outbound_transfer billing item for a completed warm transfer leg.
-
-        Idempotent per leg: when leg.started_at is available, checks whether an
-        outbound_transfer item already exists with created_at >= leg.started_at for
-        this call.  This scopes the dedup to the specific leg's time window, which is
-        robust under re-delivery and out-of-order callbacks.  Falls back to a global
-        count comparison only when leg.started_at is absent (rare legacy edge case).
-
-        Cold transfer legs (duration_seconds is None or 0) are skipped.
-        The caller is responsible for committing the session.
-        """
-        if call_log.account_id is None:
+        """Write one idempotent outbound item for the exact child-call leg."""
+        if call_log.account_id is None or leg.duration_seconds is None:
             return
-        if not leg.duration_seconds or leg.duration_seconds <= 0:
-            return
-
-        if leg.started_at is not None:
-            already_billed = (
-                self.db.query(CallBillingItem)
-                .filter(
-                    CallBillingItem.call_log_id == call_log.id,
-                    CallBillingItem.item_type == "outbound_transfer",
-                    CallBillingItem.created_at >= leg.started_at,
-                )
-                .first()
-                is not None
-            )
-        else:
-            all_legs = (
-                self.db.query(CallLeg).filter(CallLeg.call_log_id == call_log.id).all()
-            )
-            billable_count = sum(
-                1
-                for l in all_legs
-                if l.leg_type in (LegType.TRANSFER_EXTERNAL.value, LegType.TRANSFER_SIP.value)
-                and l.duration_seconds is not None
-                and l.duration_seconds > 0
-            )
-            existing_count = (
-                self.db.query(CallBillingItem)
-                .filter(
-                    CallBillingItem.call_log_id == call_log.id,
-                    CallBillingItem.item_type == "outbound_transfer",
-                )
-                .count()
-            )
-            already_billed = existing_count >= billable_count
-
-        if already_billed:
-            logger.debug(
-                f"Transfer billing already present for leg {leg.leg_number} "
-                f"of call {call_log.call_sid}"
-            )
-            return
-
-        quantity_minutes = math.ceil(leg.duration_seconds / 60)
-        config = self._get_effective_billing_config(call_log.account_id)
-        rate = float(config.outbound_rate_usd) if config else 0.08
-        config_id = config.id if config else None
-        cost = round(quantity_minutes * rate, 6)
-
-        self.db.add(
-            CallBillingItem(
-                call_log_id=call_log.id,
-                account_id=call_log.account_id,
-                item_type="outbound_transfer",
-                quantity_minutes=quantity_minutes,
-                rate_per_unit_usd=rate,
-                cost_usd=cost,
-                billing_config_id=config_id,
-            )
-        )
-        logger.debug(
-            f"Transfer billing item: {quantity_minutes} min × ${rate}/min = ${cost} "
-            f"(leg {leg.leg_number}, {leg.duration_seconds}s) for call {call_log.call_sid}"
+        self._duration_billing().finalize_transfer_leg(
+            call_log,
+            leg,
+            leg.duration_seconds,
+            source=leg.duration_source or "twilio_webhook",
         )
 
     def get_call_log(self, call_sid: str) -> Optional[CallLog]:
@@ -273,7 +147,12 @@ class CallLogger:
             True if update was successful
         """
         try:
-            call_log = self.get_call_log(call_sid)
+            call_log = (
+                self.db.query(CallLog)
+                .filter(CallLog.call_sid == call_sid)
+                .with_for_update()
+                .first()
+            )
             if not call_log:
                 logger.warning(f"Call log not found for SID: {call_sid}")
                 return False
@@ -318,34 +197,14 @@ class CallLogger:
             if status in ("completed", "busy", "failed", "no-answer", "canceled"):
                 if not call_log.ended_at:
                     call_log.ended_at = datetime.utcnow()
-                # For transferred calls, duration is finalized by update_leg_status
-                # after the transfer leg ends. Avoid overwriting it here with a
-                # wall-clock value that may not yet include the transfer time.
-                if not call_log.has_transfer:
-                    if duration_seconds is not None:
-                        # Twilio's CallDuration is authoritative: talk time only
-                        # (answer → hangup), excludes ring time.
-                        call_log.duration_seconds = duration_seconds
-                    elif call_log.answered_at and call_log.ended_at:
-                        # answered_at → ended_at matches Twilio's CallDuration
-                        # measurement and excludes ring time.
-                        call_log.duration_seconds = max(
-                            0, int((call_log.ended_at - call_log.answered_at).total_seconds())
-                        )
-                    elif call_log.started_at and call_log.ended_at:
-                        # Last resort: includes ring time, but better than nothing.
-                        call_log.duration_seconds = int(
-                            (call_log.ended_at - call_log.started_at).total_seconds()
-                        )
-
-                    # Correct the billing item using Twilio's authoritative
-                    # CallDuration.  complete_call() may have written a provisional
-                    # item from an internal timestamp; this upsert fixes quantity_minutes
-                    # to ceil(Twilio CallDuration / 60), which is what Twilio charges.
-                    # Only for non-transfer calls — transfer calls get their billing
-                    # corrected in update_leg_status() once the transfer leg ends.
-                    if duration_seconds is not None:
-                        self._upsert_inbound_billing(call_log, duration_seconds)
+                if duration_seconds is not None:
+                    # The parent Twilio call is the only authority for total
+                    # inbound duration, including calls that transferred.
+                    self._upsert_inbound_billing(
+                        call_log,
+                        duration_seconds,
+                        source="twilio_webhook",
+                    )
 
             ai_leg = (
                 self.db.query(CallLeg)
@@ -361,14 +220,8 @@ class CallLogger:
                 if status in ("completed", "busy", "failed", "no-answer", "canceled"):
                     if not ai_leg.ended_at:
                         ai_leg.ended_at = datetime.utcnow()
-                    # Use answered_at as the conversation anchor if available; it was
-                    # already written to started_at during the in-progress callback, but
-                    # guard with answered_at again for robustness. Clamp to 0.
-                    anchor = call_log.answered_at if call_log.answered_at else ai_leg.started_at
-                    if anchor and ai_leg.ended_at:
-                        ai_leg.duration_seconds = max(
-                            0, int((ai_leg.ended_at - anchor).total_seconds())
-                        )
+                    if ai_leg.duration_source != "pipecat":
+                        ai_leg.duration_source = ai_leg.duration_source or "unknown"
 
             self.db.commit()
             logger.info(f"Updated call {call_sid} status to {new_status}")
@@ -639,27 +492,22 @@ class CallLogger:
             if tts_model:
                 call_log.tts_model = tts_model
 
-            # When the sweeper closes a call that never answered, the real call
-            # duration is unknown — we must not fabricate it as (now - started_at).
-            # All other paths (normal pipeline teardown, webhook safety-net, or
-            # sweeper on a call that DID answer) compute duration as normal.
+            # Pipecat owns AI/media duration. The parent CallLog duration is
+            # reserved for Twilio's parent CallDuration and is never derived here.
             _skip_sweeper_duration = forced_by == "sweeper" and not call_log.answered_at
-
-            if duration_seconds is not None:
-                call_log.duration_seconds = duration_seconds
-            elif call_log.answered_at and call_log.ended_at:
-                # answered_at → ended_at matches Twilio's CallDuration measurement
-                # (excludes ring time). answered_at is always set after Task #40.
-                call_log.duration_seconds = max(
-                    0, int((call_log.ended_at - call_log.answered_at).total_seconds())
-                )
-            elif call_log.started_at and call_log.ended_at and not _skip_sweeper_duration:
-                call_log.duration_seconds = int(
-                    (call_log.ended_at - call_log.started_at).total_seconds()
-                )
 
             # Update all legs when call ends
             all_legs = self.db.query(CallLeg).filter(CallLeg.call_log_id == call_log.id).all()
+            ai_leg = next(
+                (leg for leg in all_legs if leg.leg_type == LegType.AI_CONVERSATION.value),
+                None,
+            )
+            if ai_leg and duration_seconds is not None:
+                self._duration_billing().finalize_ai_leg(
+                    ai_leg,
+                    duration_seconds,
+                    source="pipecat",
+                )
 
             non_terminal_statuses = [
                 CallStatus.INITIATED.value,
@@ -668,73 +516,30 @@ class CallLogger:
             ]
 
             for leg in all_legs:
-                # Only change status for legs in non-terminal states
+                if leg.leg_type in (LegType.TRANSFER_EXTERNAL.value, LegType.TRANSFER_SIP.value):
+                    # Child Twilio callbacks own warm-transfer status and duration.
+                    continue
                 if leg.status in non_terminal_statuses:
                     leg.status = CallStatus.COMPLETED.value
-
-                # For warm transfer legs, update end time to match call end time
-                if leg.leg_type in (LegType.TRANSFER_EXTERNAL.value, LegType.TRANSFER_SIP.value):
-                    if call_log.ended_at and (not leg.ended_at or leg.ended_at < call_log.ended_at):
-                        leg.ended_at = call_log.ended_at
-                        if leg.started_at:
-                            leg.duration_seconds = int(
-                                (leg.ended_at - leg.started_at).total_seconds()
-                            )
-                # Cold transfer legs are already marked completed — leave duration as-is (None = unknown)
-                elif leg.leg_type == LegType.TRANSFER_COLD.value:
-                    pass
-                # For other legs (primarily ai_conversation), just ensure they have
-                # an end time and an accurate duration.
-                elif not leg.ended_at:
+                if leg.leg_type == LegType.TRANSFER_COLD.value:
+                    continue
+                if not leg.ended_at:
                     leg.ended_at = call_log.ended_at or datetime.utcnow()
-                    # When the sweeper closes an unanswered call, the real duration is
-                    # unknown — do not fabricate it as (now - started_at). Leave
-                    # leg.duration_seconds at its existing value (typically 0).
-                    if not _skip_sweeper_duration:
-                        if leg.leg_type == LegType.AI_CONVERSATION.value:
-                            # Use answered_at as the anchor — matches media stream billing
-                            # and is consistent with update_status(). answered_at is always
-                            # set after Task #40; fall back to started_at for safety.
-                            anchor = call_log.answered_at or leg.started_at
-                            if anchor:
-                                leg.duration_seconds = max(
-                                    0, int((leg.ended_at - anchor).total_seconds())
-                                )
-                        elif leg.started_at:
-                            leg.duration_seconds = int(
-                                (leg.ended_at - leg.started_at).total_seconds()
+                    if (
+                        leg.leg_type == LegType.AI_CONVERSATION.value
+                        and duration_seconds is None
+                        and not _skip_sweeper_duration
+                    ):
+                        anchor = call_log.answered_at or leg.started_at
+                        if anchor:
+                            self._duration_billing().finalize_ai_leg(
+                                leg,
+                                max(0, int((leg.ended_at - anchor).total_seconds())),
+                                source="pipecat",
                             )
 
-            # Calculate total duration by summing all leg durations.
-            # Cold transfer legs are excluded (duration unknown — Twilio exited the bridge).
-            warm_legs = [leg for leg in all_legs if leg.leg_type != LegType.TRANSFER_COLD.value]
-            total_leg_duration = sum(leg.duration_seconds or 0 for leg in warm_legs)
-            if total_leg_duration > 0:
-                call_log.duration_seconds = total_leg_duration
-
-            # Derive STT seconds after all duration resolution is complete so the
-            # fallback path sees the final resolved duration_seconds value.
-            # Primary: answered_at → ended_at (exact audio-stream window, same
-            # anchor used for Twilio media-stream billing).
-            # Fallback: use the resolved call duration when timestamps are absent
-            # (e.g. sweeper-closed calls that DID answer, or legacy rows missing
-            # ended_at).  Always overwrite — last finalization wins.
-            if call_log.answered_at and call_log.ended_at:
-                call_log.stt_seconds = max(
-                    0.0,
-                    float((call_log.ended_at - call_log.answered_at).total_seconds()),
-                )
-            elif call_log.duration_seconds is not None and call_log.duration_seconds >= 0:
-                call_log.stt_seconds = float(call_log.duration_seconds)
-
-            # Write (or correct) the inbound billing item unless this call-site
-            # fires mid-call (skip_billing=True), which happens when the transfer
-            # path saves the transcript before the call has truly ended.  The
-            # authoritative write is deferred to update_status() where Twilio's
-            # CallDuration is available, ensuring quantity_minutes = ceil(Twilio
-            # CallDuration / 60) rather than an internal timestamp estimate.
-            if not skip_billing:
-                self._upsert_inbound_billing(call_log, call_log.duration_seconds)
+            if ai_leg and ai_leg.duration_seconds is not None:
+                call_log.stt_seconds = float(max(0, ai_leg.duration_seconds))
 
             # Task #123 — observability events for safety-net finalizations.
             #
@@ -945,8 +750,10 @@ class CallLogger:
                 # intermediate value.
                 anchor = call_log.answered_at if call_log.answered_at else ai_leg.started_at
                 if anchor and ai_leg.ended_at:
-                    ai_leg.duration_seconds = max(
-                        0, int((ai_leg.ended_at - anchor).total_seconds())
+                    self._duration_billing().finalize_ai_leg(
+                        ai_leg,
+                        max(0, int((ai_leg.ended_at - anchor).total_seconds())),
+                        source="pipecat",
                     )
                 logger.info(f"Marked AI leg as completed (duration: {ai_leg.duration_seconds}s)")
 
@@ -973,6 +780,7 @@ class CallLogger:
                     started_at=now,
                     ended_at=now,
                     duration_seconds=None,
+                    duration_source="unknown",
                 )
             else:
                 # Warm transfer: Twilio stays in bridge, status callbacks will arrive.
@@ -983,6 +791,7 @@ class CallLogger:
                     participant=transfer_to,
                     status=CallStatus.INITIATED.value,
                     started_at=now,
+                    duration_source="unknown",
                 )
 
             self.db.add(transfer_leg)
@@ -1023,7 +832,6 @@ class CallLogger:
             if not call_log.ended_at:
                 call_log.ended_at = now
 
-            # Use AI leg duration as the logged call duration (transfer leg duration is unknown)
             ai_leg = (
                 self.db.query(CallLeg)
                 .filter(
@@ -1034,8 +842,6 @@ class CallLogger:
             )
 
             ai_duration = ai_leg.duration_seconds if ai_leg else 0
-            if call_log.duration_seconds is None or call_log.duration_seconds == 0:
-                call_log.duration_seconds = ai_duration or 0
 
             self.db.commit()
             logger.info(
@@ -1085,12 +891,22 @@ class CallLogger:
             new_status = status_mapping.get(status, status)
 
             # First try to find leg by call_sid
-            leg = self.db.query(CallLeg).filter(CallLeg.call_sid == leg_call_sid).first()
+            leg = (
+                self.db.query(CallLeg)
+                .filter(CallLeg.call_sid == leg_call_sid)
+                .with_for_update()
+                .first()
+            )
 
             # If not found, try to find by parent call + participant (transfer-to number)
             call_log = None
             if not leg and parent_call_sid and to_number:
-                call_log = self.get_call_log(parent_call_sid)
+                call_log = (
+                    self.db.query(CallLog)
+                    .filter(CallLog.call_sid == parent_call_sid)
+                    .with_for_update()
+                    .first()
+                )
                 if call_log:
                     leg = (
                         self.db.query(CallLeg)
@@ -1101,6 +917,7 @@ class CallLogger:
                                 None
                             ),  # Leg created but not yet linked to child call
                         )
+                        .with_for_update()
                         .first()
                     )
 
@@ -1123,154 +940,38 @@ class CallLogger:
 
             # Mark ended and calculate duration when call ends
             if status in ("completed", "busy", "failed", "no-answer", "canceled"):
-                leg.ended_at = datetime.utcnow()
-                # Prefer Twilio's authoritative CallDuration for transfer/outbound legs.
-                # Twilio measures from the moment the called party answers to hang-up,
-                # which is the billable duration and avoids server clock drift issues.
-                # Fall back to wall-clock arithmetic only when Twilio doesn't provide it,
-                # and clamp to zero to prevent negative values from clock skew.
-                if duration_seconds is not None:
-                    leg.duration_seconds = duration_seconds
-                elif leg.started_at and leg.ended_at:
-                    leg.duration_seconds = max(
-                        0, int((leg.ended_at - leg.started_at).total_seconds())
-                    )
-
-                # When transfer leg ends (success or fail), update parent call.
                 if leg.leg_type in (LegType.TRANSFER_EXTERNAL.value, LegType.TRANSFER_SIP.value):
+                    leg.ended_at = datetime.utcnow()
                     if not call_log and parent_call_sid:
                         call_log = self.get_call_log(parent_call_sid)
                     if not call_log:
                         call_log = (
-                            self.db.query(CallLog).filter(CallLog.id == leg.call_log_id).first()
+                            self.db.query(CallLog)
+                            .filter(CallLog.id == leg.call_log_id)
+                            .with_for_update()
+                            .first()
                         )
 
                     if call_log:
-                        # Only update status/outcome if not already marked complete.
-                        if call_log.status != CallStatus.COMPLETED.value:
-                            call_log.status = CallStatus.COMPLETED.value
-                            # Set outcome based on transfer result
-                            if status == "failed":
-                                call_log.outcome = "transfer_failed"
-                            elif status in ("busy", "no-answer", "canceled"):
-                                call_log.outcome = f"transfer_{status.replace('-', '_')}"
-                            # If completed successfully, keep "transferred" outcome
-                            logger.info(
-                                f"Marked parent call {call_log.call_sid} as completed after transfer {status}"
-                            )
+                        if status == "failed":
+                            call_log.outcome = "transfer_failed"
+                        elif status in ("busy", "no-answer", "canceled"):
+                            call_log.outcome = f"transfer_{status.replace('-', '_')}"
 
-                        # ALWAYS update ended_at and duration to include transfer time,
-                        # even if the call was already marked completed by a parallel
-                        # parent-call status callback. Using sum-of-legs ensures we never
-                        # under-count when callbacks arrive out of order.
-                        call_log.ended_at = leg.ended_at or datetime.utcnow()
-                        all_legs = (
-                            self.db.query(CallLeg).filter(CallLeg.call_log_id == call_log.id).all()
-                        )
-                        non_cold = [
-                            l for l in all_legs if l.leg_type != LegType.TRANSFER_COLD.value
-                        ]
-
-                        # Recalculate AI leg duration now that transfer leg is authoritative.
-                        # Use answered_at -> ai_leg.ended_at for the most accurate value.
-                        # This corrects any drift introduced before the in-progress anchor.
-                        ai_leg_final = next(
-                            (l for l in all_legs if l.leg_type == LegType.AI_CONVERSATION.value),
-                            None,
-                        )
-                        if ai_leg_final and ai_leg_final.ended_at:
-                            if call_log.answered_at:
-                                corrected = max(
-                                    0,
-                                    int(
-                                        (
-                                            ai_leg_final.ended_at - call_log.answered_at
-                                        ).total_seconds()
-                                    ),
-                                )
-                                ai_leg_final.duration_seconds = corrected
-                                logger.info(
-                                    f"Recalculated AI leg duration to {corrected}s "
-                                    f"(answered_at -> ai_leg.ended_at)"
-                                )
-                            elif ai_leg_final.started_at:
-                                corrected = max(
-                                    0,
-                                    int(
-                                        (
-                                            ai_leg_final.ended_at - ai_leg_final.started_at
-                                        ).total_seconds()
-                                    ),
-                                )
-                                ai_leg_final.duration_seconds = corrected
-
-                        # Compute the caller-perceived (display) duration for the parent
-                        # call.  Twilio's CallDuration for an outbound transfer leg is
-                        # billable time only (answered-to-hangup), which excludes the
-                        # ringing window.  For transfer legs we use the wall-clock span
-                        # (leg.started_at → leg.ended_at) so that ring time is included
-                        # in the display total, matching what the caller actually heard.
-                        # The per-leg duration_seconds column keeps Twilio's value for
-                        # billing accuracy — only call_log.duration_seconds is adjusted.
-                        _TRANSFER_TYPES = (
-                            LegType.TRANSFER_EXTERNAL.value,
-                            LegType.TRANSFER_SIP.value,
-                        )
-                        total_dur = 0
-                        for _l in non_cold:
-                            if _l.leg_type in _TRANSFER_TYPES:
-                                # Wall-clock captures ring + answer time for display.
-                                # max(..., twilio_duration) ensures we never go below
-                                # Twilio's own measurement even when our timestamps
-                                # drift (e.g. server restart between start and end).
-                                if _l.started_at and _l.ended_at:
-                                    _leg_wall = max(
-                                        0,
-                                        int(
-                                            (_l.ended_at - _l.started_at).total_seconds()
-                                        ),
-                                    )
-                                    total_dur += max(_l.duration_seconds or 0, _leg_wall)
-                                else:
-                                    total_dur += _l.duration_seconds or 0
-                            else:
-                                total_dur += _l.duration_seconds or 0
-
-                        # Wall-clock floor: answered_at → ended_at is the authoritative
-                        # caller-perceived duration and acts as a safety net when leg
-                        # timestamps drift.  Promoted from a zero-total-only fallback to
-                        # always run so the final value is max(leg_sum, wall_clock).
-                        # Clamped to 0 to guard against server clock skew.
-                        _wall_clock_total = 0
-                        if call_log.answered_at and call_log.ended_at:
-                            _wall_clock_total = max(
-                                0,
-                                int(
-                                    (
-                                        call_log.ended_at - call_log.answered_at
-                                    ).total_seconds()
-                                ),
-                            )
-
-                        if total_dur > 0 or _wall_clock_total > 0:
-                            call_log.duration_seconds = max(total_dur, _wall_clock_total)
-                        elif call_log.started_at and call_log.ended_at:
-                            call_log.duration_seconds = int(
-                                (call_log.ended_at - call_log.started_at).total_seconds()
-                            )
-
-                        logger.debug(
-                            f"Transfer duration [{call_log.call_sid}]: "
-                            f"leg_sum={total_dur}s wall_clock={_wall_clock_total}s "
-                            f"final={call_log.duration_seconds}s (billing uses same value)"
-                        )
-
-                        # Write outbound_transfer billing item now that we have
-                        # the authoritative leg duration from Twilio.  Also correct
-                        # the inbound_call item using the newly resolved total
-                        # duration so both items stay consistent.
-                        self._write_transfer_billing(call_log, leg)
-                        self._upsert_inbound_billing(call_log, call_log.duration_seconds)
+                        if duration_seconds is not None:
+                            leg.duration_seconds = max(0, duration_seconds)
+                            leg.duration_source = "twilio_webhook"
+                            self._write_transfer_billing(call_log, leg)
+                        elif status in ("busy", "failed", "no-answer", "canceled"):
+                            # Twilio did not connect the outbound leg, so its
+                            # provider-billable duration is exactly zero.
+                            leg.duration_seconds = 0
+                            leg.duration_source = "twilio_webhook"
+                            self._write_transfer_billing(call_log, leg)
+                        else:
+                            leg.duration_source = "unknown"
+                elif not leg.ended_at:
+                    leg.ended_at = datetime.utcnow()
 
             self.db.commit()
             logger.info(
@@ -1365,6 +1066,7 @@ class CallLogger:
                 participant=to_number,
                 status=new_status,
                 started_at=transfer_started_at,
+                duration_source="unknown",
             )
             self.db.add(transfer_leg)
 

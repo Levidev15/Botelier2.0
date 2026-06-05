@@ -82,7 +82,11 @@ interface CallRow {
   to_number: string | null;
   assistant_name: string | null;
   duration_seconds: number;
+  duration_source: string;
+  ai_duration_seconds: number;
+  transfer_duration_seconds: number;
   billable_inbound_minutes: number;
+  billable_transfer_minutes: number;
   inbound_cost_usd: number;
   has_transfers: boolean;
   total_cost_usd: number;
@@ -393,7 +397,7 @@ export default function UsagePage() {
 
   const rates = config ?? {
     inbound_rate_usd: 0.05,
-    outbound_rate_usd: 0.08,
+    outbound_rate_usd: 0.03,
     sms_inbound_rate_usd: 0.01,
     sms_outbound_rate_usd: 0.01,
     is_platform_default: true,
@@ -476,14 +480,14 @@ export default function UsagePage() {
       ) : (
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <StatCard
-            label="Inbound Minutes"
+            label="Billable Inbound Minutes"
             value={summaryLoading ? "—" : (summary?.inbound_minutes ?? 0).toLocaleString()}
             sub={`at $${rates.inbound_rate_usd.toFixed(3)}/min · ${summary?.inbound_calls ?? 0} calls`}
             note={!summaryLoading && (summary?.inbound_cost_usd ?? 0) > 0 ? fmtUsd(summary!.inbound_cost_usd) : undefined}
             skeleton={summaryLoading}
           />
           <StatCard
-            label="Outbound Minutes"
+            label="Billable Transfer Minutes"
             value={summaryLoading ? "—" : (summary?.outbound_minutes ?? 0).toLocaleString()}
             sub={`at $${rates.outbound_rate_usd.toFixed(3)}/min · ${summary?.outbound_transfers ?? 0} transfers`}
             note={!summaryLoading && (summary?.outbound_cost_usd ?? 0) > 0 ? fmtUsd(summary!.outbound_cost_usd) : undefined}
@@ -603,8 +607,11 @@ export default function UsagePage() {
                     <th className="px-4 py-3 text-xs font-medium text-gray-500">Direction</th>
                     <th className="px-4 py-3 text-xs font-medium text-gray-500">Caller</th>
                     <th className="px-4 py-3 text-xs font-medium text-gray-500">Assistant</th>
-                    <th className="px-4 py-3 text-xs font-medium text-gray-500">Duration</th>
-                    <th className="px-4 py-3 text-xs font-medium text-gray-500">Billable Min</th>
+                    <th className="px-4 py-3 text-xs font-medium text-gray-500">Total Inbound</th>
+                    <th className="px-4 py-3 text-xs font-medium text-gray-500">AI</th>
+                    <th className="px-4 py-3 text-xs font-medium text-gray-500">Transfer</th>
+                    <th className="px-4 py-3 text-xs font-medium text-gray-500">Billable Inbound</th>
+                    <th className="px-4 py-3 text-xs font-medium text-gray-500">Billable Transfer</th>
                     <th className="px-4 py-3 text-xs font-medium text-gray-500">
                       <span className="flex items-center gap-1">
                         Cost
@@ -676,8 +683,19 @@ export default function UsagePage() {
                         <td className="px-4 py-3 text-gray-400 whitespace-nowrap">
                           {fmtMinutes(call.duration_seconds)}
                         </td>
+                        <td className="px-4 py-3 text-gray-400 whitespace-nowrap">
+                          {fmtMinutes(call.ai_duration_seconds)}
+                        </td>
+                        <td className="px-4 py-3 text-gray-400 whitespace-nowrap">
+                          {call.transfer_duration_seconds
+                            ? fmtMinutes(call.transfer_duration_seconds)
+                            : "â€”"}
+                        </td>
                         <td className="px-4 py-3 text-gray-400">
                           {call.billable_inbound_minutes}
+                        </td>
+                        <td className="px-4 py-3 text-gray-400">
+                          {call.billable_transfer_minutes}
                         </td>
                         <td className="px-4 py-3 font-mono">
                           {hasNoCost ? (
@@ -700,7 +718,7 @@ export default function UsagePage() {
                       >
                         <td />
                         <td
-                          colSpan={7}
+                          colSpan={10}
                           className="px-4 py-2 text-xs font-medium text-gray-500 uppercase tracking-wide"
                         >
                           Transfer Legs
@@ -733,7 +751,16 @@ export default function UsagePage() {
                           </td>
                           <td className="px-4 py-2.5 text-gray-500 text-xs" />
                           <td className="px-4 py-2.5 text-gray-400 text-xs whitespace-nowrap">
+                            â€”
+                          </td>
+                          <td className="px-4 py-2.5 text-gray-400 text-xs whitespace-nowrap">
+                            â€”
+                          </td>
+                          <td className="px-4 py-2.5 text-gray-400 text-xs whitespace-nowrap">
                             {legDur}
+                          </td>
+                          <td className="px-4 py-2.5 text-gray-400 text-xs">
+                            â€”
                           </td>
                           <td className="px-4 py-2.5 text-gray-400 text-xs">
                             {item.quantity_minutes} min

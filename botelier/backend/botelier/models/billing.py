@@ -14,8 +14,8 @@ When no rows exist, admin_billing.py falls back to compile-time default constant
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Integer, Numeric, String, UniqueConstraint
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, Numeric, String, UniqueConstraint, text
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
 from botelier.database import Base
@@ -44,7 +44,8 @@ class AccountBillingConfig(Base):
     )
 
     inbound_rate_usd = Column(Numeric(10, 6), nullable=False, default=0.05)
-    outbound_rate_usd = Column(Numeric(10, 6), nullable=False, default=0.08)
+    outbound_rate_usd = Column(Numeric(10, 6), nullable=False, default=0.03)
+    voice_rate_model = Column(String(16), nullable=False, default="separate")
     sms_inbound_rate_usd = Column(Numeric(10, 6), nullable=False, default=0.01)
     sms_outbound_rate_usd = Column(Numeric(10, 6), nullable=False, default=0.01)
 
@@ -71,6 +72,7 @@ class AccountBillingConfig(Base):
             "account_id": str(self.account_id) if self.account_id else None,
             "inbound_rate_usd": float(self.inbound_rate_usd),
             "outbound_rate_usd": float(self.outbound_rate_usd),
+            "voice_rate_model": self.voice_rate_model,
             "sms_inbound_rate_usd": float(self.sms_inbound_rate_usd),
             "sms_outbound_rate_usd": float(self.sms_outbound_rate_usd),
             "monthly_alert_threshold_usd": float(self.monthly_alert_threshold_usd)
@@ -124,7 +126,7 @@ class AccountBillingAlert(Base):
 
 
 class CallBillingItem(Base):
-    """Immutable billing line item written at call-end.
+    """Provider-backed billing line item written or corrected at call-end.
 
     item_type:
       'inbound_call'       — one row per completed call (full call duration).
@@ -153,8 +155,16 @@ class CallBillingItem(Base):
     )
 
     item_type = Column(String(32), nullable=False)
+    call_leg_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_legs.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
 
     quantity_minutes = Column(Integer, nullable=False, default=0)
+    source_duration_seconds = Column(Integer, nullable=True)
+    duration_source = Column(String(32), nullable=False, default="unknown")
     rate_per_unit_usd = Column(Numeric(10, 6), nullable=False)
     cost_usd = Column(Numeric(10, 6), nullable=False)
 
@@ -167,7 +177,29 @@ class CallBillingItem(Base):
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
 
     call_log = relationship("CallLog", foreign_keys=[call_log_id])
+    call_leg = relationship("CallLeg", foreign_keys=[call_leg_id])
     billing_config = relationship("AccountBillingConfig", foreign_keys=[billing_config_id])
+
+    __table_args__ = (
+        Index(
+            "uq_call_billing_inbound_per_call",
+            "call_log_id",
+            unique=True,
+            postgresql_where=text("item_type = 'inbound_call'"),
+            sqlite_where=text("item_type = 'inbound_call'"),
+        ),
+        Index(
+            "uq_call_billing_transfer_per_leg",
+            "call_leg_id",
+            unique=True,
+            postgresql_where=text(
+                "item_type = 'outbound_transfer' AND call_leg_id IS NOT NULL"
+            ),
+            sqlite_where=text(
+                "item_type = 'outbound_transfer' AND call_leg_id IS NOT NULL"
+            ),
+        ),
+    )
 
     def __repr__(self):
         return f"<CallBillingItem {self.item_type} {self.cost_usd} USD>"
@@ -178,12 +210,78 @@ class CallBillingItem(Base):
             "call_log_id": str(self.call_log_id),
             "account_id": str(self.account_id),
             "item_type": self.item_type,
+            "call_leg_id": str(self.call_leg_id) if self.call_leg_id else None,
             "quantity_minutes": self.quantity_minutes,
+            "source_duration_seconds": self.source_duration_seconds,
+            "duration_source": self.duration_source,
             "rate_per_unit_usd": float(self.rate_per_unit_usd),
             "cost_usd": float(self.cost_usd),
             "billing_config_id": str(self.billing_config_id) if self.billing_config_id else None,
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
         }
+
+
+class CallDurationReconciliationRun(Base):
+    """Auditable execution record for a duration reconciliation batch."""
+
+    __tablename__ = "call_duration_reconciliation_runs"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    status = Column(String(24), nullable=False, default="running")
+    mode = Column(String(16), nullable=False)
+    account_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("accounts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    date_from = Column(DateTime, nullable=True)
+    date_to = Column(DateTime, nullable=True)
+    call_sid = Column(String, nullable=True)
+    batch_size = Column(Integer, nullable=False, default=100)
+    resume_after = Column(String, nullable=True)
+    summary = Column(JSONB, nullable=False, default=dict)
+    error_message = Column(String, nullable=True)
+    started_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+    completed_at = Column(DateTime, nullable=True)
+
+
+class CallDurationReconciliationResult(Base):
+    """Before/after evidence for one reconciled call."""
+
+    __tablename__ = "call_duration_reconciliation_results"
+
+    id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    run_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_duration_reconciliation_runs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    call_log_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("call_logs.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    account_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("accounts.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    call_sid = Column(String, nullable=False)
+    status = Column(String(24), nullable=False)
+    duration_source = Column(String(32), nullable=True)
+    old_values = Column(JSONB, nullable=False, default=dict)
+    new_values = Column(JSONB, nullable=False, default=dict)
+    provider_evidence = Column(JSONB, nullable=False, default=dict)
+    error_message = Column(String, nullable=True)
+    created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
+
+    __table_args__ = (
+        UniqueConstraint("run_id", "call_log_id", name="uq_duration_reconcile_run_call"),
+    )
 
 
 class PlatformInternalRates(Base):

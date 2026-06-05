@@ -320,6 +320,7 @@ async def get_call_analytics(
 
         dur_row = (
             _base()
+            .filter(CallLog.duration_source.in_(["twilio_webhook", "twilio_api"]))
             .with_entities(
                 func.coalesce(func.avg(CallLog.duration_seconds), 0).label("avg"),
                 func.coalesce(func.sum(CallLog.duration_seconds), 0).label("total"),
@@ -337,6 +338,7 @@ async def get_call_analytics(
             .filter(
                 CallLeg.call_log_id.in_(call_ids_subq),
                 CallLeg.leg_type == "ai_conversation",
+                CallLeg.duration_source == "pipecat",
             )
             .one()
         )
@@ -354,6 +356,7 @@ async def get_call_analytics(
                 CallLeg.leg_type.in_(
                     ["transfer_external", "transfer_sip", "transfer_internal", "transfer_cold"]
                 ),
+                CallLeg.duration_source.in_(["twilio_webhook", "twilio_api"]),
             )
             .one()
         )

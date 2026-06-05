@@ -148,8 +148,8 @@ class TestSweeperUnansweredDuration:
 
 
 class TestSweeperAnsweredDuration:
-    def test_answered_sweeper_call_computes_duration(self):
-        """Sweeper on a call that DID answer must still record a non-zero duration."""
+    def test_answered_sweeper_only_computes_ai_duration(self):
+        """Sweeper estimates media duration without fabricating parent duration."""
         answered_at = datetime.utcnow() - timedelta(hours=1)
         call_log = _make_call_log(answered_at=answered_at)
         call_log.started_at = answered_at - timedelta(minutes=5)
@@ -165,8 +165,9 @@ class TestSweeperAnsweredDuration:
         )
 
         assert result is True
-        # Duration should be roughly 1 h (3 600 s) from answered_at to now
-        assert call_log.duration_seconds > 3500, f"expected ~3600s, got {call_log.duration_seconds}"
+        assert call_log.duration_seconds == 0
+        assert leg.duration_seconds > 3500, f"expected ~3600s, got {leg.duration_seconds}"
+        assert leg.duration_source == "pipecat"
 
 
 class TestOffsetMsBigint:

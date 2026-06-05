@@ -159,12 +159,16 @@ export default function CallLogRow({
               ) : (
                 <Play className="h-3 w-3 fill-current" />
               )}
-              {formatDuration(log.duration_seconds)}
+              <span title="Total inbound call duration">
+                {formatDuration(log.duration_seconds)}
+              </span>
             </button>
           ) : (
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-gray-800 border border-gray-700 text-gray-400">
               <Clock className="h-3 w-3" />
-              {formatDuration(log.duration_seconds)}
+              <span title="Total inbound call duration">
+                {formatDuration(log.duration_seconds)}
+              </span>
             </span>
           )}
         </td>

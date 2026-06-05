@@ -108,6 +108,20 @@ _ADDITIVE_MIGRATIONS = [
     "ALTER TABLE sms_conversations ADD COLUMN IF NOT EXISTS needs_attention BOOLEAN NOT NULL DEFAULT FALSE",
     # call_logs — transfer_mode ('warm' or 'cold') — null means no transfer or legacy warm
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS transfer_mode VARCHAR",
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS duration_source VARCHAR(32) NOT NULL DEFAULT 'unknown'",
+    "ALTER TABLE call_legs ADD COLUMN IF NOT EXISTS duration_source VARCHAR(32) NOT NULL DEFAULT 'unknown'",
+    "ALTER TABLE account_billing_config ADD COLUMN IF NOT EXISTS voice_rate_model VARCHAR(16) NOT NULL DEFAULT 'combined'",
+    "ALTER TABLE account_billing_config ALTER COLUMN voice_rate_model SET DEFAULT 'separate'",
+    "ALTER TABLE account_billing_config ALTER COLUMN outbound_rate_usd SET DEFAULT 0.03",
+    "ALTER TABLE call_billing_items ADD COLUMN IF NOT EXISTS call_leg_id UUID REFERENCES call_legs(id) ON DELETE CASCADE",
+    "ALTER TABLE call_billing_items ADD COLUMN IF NOT EXISTS source_duration_seconds INTEGER",
+    "ALTER TABLE call_billing_items ADD COLUMN IF NOT EXISTS duration_source VARCHAR(32) NOT NULL DEFAULT 'unknown'",
+    "CREATE INDEX IF NOT EXISTS ix_call_billing_items_call_leg_id ON call_billing_items(call_leg_id)",
+    """CREATE UNIQUE INDEX IF NOT EXISTS uq_call_billing_inbound_per_call
+       ON call_billing_items(call_log_id) WHERE item_type = 'inbound_call'""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS uq_call_billing_transfer_per_leg
+       ON call_billing_items(call_leg_id)
+       WHERE item_type = 'outbound_transfer' AND call_leg_id IS NOT NULL""",
     # Indexes (CREATE INDEX IF NOT EXISTS is idempotent)
     "CREATE INDEX IF NOT EXISTS ix_sms_conv_account_started_at ON sms_conversations(account_id, started_at DESC)",
     # --- Pricing columns (deferred — uncomment when ready to capture Twilio costs) ---
@@ -721,6 +735,73 @@ def _run_additive_migrations():
             except Exception as e:
                 logger.warning(f"Migration skipped (non-fatal): {sql[:60]}... — {e}")
                 conn.rollback()
+
+
+def _convert_combined_voice_rates():
+    """Append one outbound-only config for each active combined-rate config.
+
+    Existing rows remain immutable for historical reconciliation. A PostgreSQL
+    advisory transaction lock prevents multiple ACA replicas from appending the
+    same conversion row concurrently during a rolling deployment.
+    """
+    from decimal import Decimal
+
+    from botelier.models.billing import AccountBillingConfig
+
+    db = SessionLocal()
+    try:
+        db.execute(text("SELECT pg_advisory_xact_lock(hashtext('botelier_voice_rate_model_v1'))"))
+        now = datetime.utcnow()
+        rows = (
+            db.query(AccountBillingConfig)
+            .filter(AccountBillingConfig.effective_from <= now)
+            .order_by(
+                AccountBillingConfig.account_id,
+                AccountBillingConfig.effective_from.desc(),
+                AccountBillingConfig.created_at.desc(),
+            )
+            .all()
+        )
+        latest_by_account = {}
+        for row in rows:
+            key = str(row.account_id) if row.account_id is not None else "__platform_default__"
+            latest_by_account.setdefault(key, row)
+
+        converted = 0
+        for row in latest_by_account.values():
+            if (row.voice_rate_model or "combined") != "combined":
+                continue
+            outbound_only = max(
+                Decimal("0"),
+                Decimal(str(row.outbound_rate_usd)) - Decimal(str(row.inbound_rate_usd)),
+            )
+            db.add(
+                AccountBillingConfig(
+                    account_id=row.account_id,
+                    inbound_rate_usd=row.inbound_rate_usd,
+                    outbound_rate_usd=outbound_only,
+                    voice_rate_model="separate",
+                    sms_inbound_rate_usd=row.sms_inbound_rate_usd,
+                    sms_outbound_rate_usd=row.sms_outbound_rate_usd,
+                    monthly_alert_threshold_usd=row.monthly_alert_threshold_usd,
+                    effective_from=now,
+                )
+            )
+            converted += 1
+        db.commit()
+        if converted:
+            logger.info(
+                f"Voice billing rate conversion complete: appended {converted} outbound-only configs"
+            )
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "Voice billing rate conversion failed; refusing startup to avoid "
+            "charging combined outbound rates as outbound-only rates"
+        )
+        raise
+    finally:
+        db.close()
 
 
 # ---------------------------------------------------------------------------
@@ -1346,6 +1427,7 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     _run_hotel_account_migration()
     _run_additive_migrations()
+    _convert_combined_voice_rates()
     # Task #123 — verify the schema invariant the additive migrations are
     # supposed to guarantee, AFTER they have had a chance to run. Failing
     # here is intentional: a silent int4 schema breaks the sweeper forever.
