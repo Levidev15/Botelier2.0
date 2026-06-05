@@ -62,3 +62,6 @@ docs/api/api
 
 # Pipecat
 whisker_setup.py
+
+# Pasted / attached assets (may contain secrets or PII)
+attached_assets/
