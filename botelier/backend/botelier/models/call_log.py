@@ -91,6 +91,7 @@ class CallLog(Base):
     ended_at = Column(DateTime, nullable=True)
 
     duration_seconds = Column(Integer, default=0)
+    duration_source = Column(String(32), nullable=False, default="unknown")
 
     ended_early = Column(Boolean, default=False, nullable=False)
 
@@ -184,7 +185,10 @@ class CallLog(Base):
             "started_at": self.started_at.isoformat() + "Z" if self.started_at else None,
             "answered_at": self.answered_at.isoformat() + "Z" if self.answered_at else None,
             "ended_at": self.ended_at.isoformat() + "Z" if self.ended_at else None,
-            "duration_seconds": self.duration_seconds,
+            "duration_seconds": self.duration_seconds
+            if self.duration_source in ("twilio_webhook", "twilio_api")
+            else 0,
+            "duration_source": self.duration_source,
             "ended_early": self.ended_early,
             "ai_greeting_completed": self.ai_greeting_completed,
             "has_transfer": self.has_transfer,
@@ -210,8 +214,25 @@ class CallLog(Base):
         if include_transcript:
             result["transcript"] = self.transcript
 
-        if include_legs and self.legs:
-            result["legs"] = [leg.to_dict() for leg in self.legs]
+        if include_legs:
+            legs = self.legs or []
+            result["legs"] = [leg.to_dict() for leg in legs]
+            result["ai_duration_seconds"] = sum(
+                leg.duration_seconds or 0
+                for leg in legs
+                if leg.leg_type == LegType.AI_CONVERSATION.value
+                and leg.duration_source == "pipecat"
+            )
+            result["transfer_duration_seconds"] = sum(
+                leg.duration_seconds or 0
+                for leg in legs
+                if leg.leg_type
+                in (
+                    LegType.TRANSFER_EXTERNAL.value,
+                    LegType.TRANSFER_SIP.value,
+                )
+                and leg.duration_source in ("twilio_webhook", "twilio_api")
+            )
 
         return result
 
@@ -266,6 +287,7 @@ class CallLeg(Base):
     started_at = Column(DateTime, nullable=True)
     ended_at = Column(DateTime, nullable=True)
     duration_seconds = Column(Integer, default=0)
+    duration_source = Column(String(32), nullable=False, default="unknown")
 
     created_at = Column(DateTime, default=datetime.utcnow)
 
@@ -290,5 +312,6 @@ class CallLeg(Base):
             "started_at": self.started_at.isoformat() + "Z" if self.started_at else None,
             "ended_at": self.ended_at.isoformat() + "Z" if self.ended_at else None,
             "duration_seconds": self.duration_seconds,
+            "duration_source": self.duration_source,
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
         }

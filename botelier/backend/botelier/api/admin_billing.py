@@ -46,7 +46,7 @@ _DEFAULT_TWILIO_SMS_IN_RATE = 0.0075
 _DEFAULT_TWILIO_SMS_OUT_RATE = 0.0079
 
 _DEFAULT_INBOUND_RATE = 0.05
-_DEFAULT_OUTBOUND_RATE = 0.08
+_DEFAULT_OUTBOUND_RATE = 0.03
 _DEFAULT_SMS_IN_RATE = 0.01
 _DEFAULT_SMS_OUT_RATE = 0.01
 
@@ -601,7 +601,10 @@ async def get_account_detail(
             items = items_by_call.get(str(log.id), [])
             inbound_item = next((i for i in items if i.item_type == "inbound_call"), None)
             inbound_mins = inbound_item.quantity_minutes if inbound_item else (
-                _ceil(log.duration_seconds / 60) if log.duration_seconds else 0
+                _ceil(log.duration_seconds / 60)
+                if log.duration_seconds
+                and log.duration_source in ("twilio_webhook", "twilio_api")
+                else 0
             )
             inbound_c = float(inbound_item.cost_usd) if inbound_item else 0.0
             total_c = sum(float(i.cost_usd) for i in items)
@@ -609,6 +612,18 @@ async def get_account_detail(
                 i.quantity_minutes or 0
                 for i in items
                 if i.item_type == "outbound_transfer"
+            )
+            ai_duration = sum(
+                leg.duration_seconds or 0
+                for leg in (log.legs or [])
+                if leg.leg_type == "ai_conversation"
+                and leg.duration_source == "pipecat"
+            )
+            transfer_duration = sum(
+                leg.duration_seconds or 0
+                for leg in (log.legs or [])
+                if leg.leg_type in ("transfer_external", "transfer_sip")
+                and leg.duration_source in ("twilio_webhook", "twilio_api")
             )
             ic = _internal_cost(
                 int(log.llm_prompt_tokens or 0),
@@ -628,8 +643,16 @@ async def get_account_detail(
                 "caller_number": log.caller_number,
                 "to_number": log.to_number,
                 "assistant_name": asst_names.get(str(log.assistant_id)) if log.assistant_id else None,
-                "duration_seconds": log.duration_seconds or 0,
+                "duration_seconds": (
+                    log.duration_seconds or 0
+                    if log.duration_source in ("twilio_webhook", "twilio_api")
+                    else 0
+                ),
+                "duration_source": log.duration_source or "unknown",
+                "ai_duration_seconds": ai_duration,
+                "transfer_duration_seconds": transfer_duration,
                 "billable_inbound_minutes": inbound_mins,
+                "billable_transfer_minutes": outbound_mins,
                 "inbound_cost_usd": round(inbound_c, 6),
                 "has_transfers": bool(log.has_transfer),
                 "total_cost_usd": round(total_c, 6),
@@ -947,6 +970,7 @@ async def update_account_billing_config(
             account_id=account_id,
             inbound_rate_usd=body.inbound_rate_usd,
             outbound_rate_usd=body.outbound_rate_usd,
+            voice_rate_model="separate",
             sms_inbound_rate_usd=body.sms_inbound_rate_usd,
             sms_outbound_rate_usd=body.sms_outbound_rate_usd,
             monthly_alert_threshold_usd=body.monthly_alert_threshold_usd,

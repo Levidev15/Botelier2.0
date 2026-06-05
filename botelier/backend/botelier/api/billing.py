@@ -30,7 +30,7 @@ from botelier.models.user import User
 router = APIRouter(prefix="/api/billing", tags=["Billing"])
 
 _DEFAULT_INBOUND_RATE = 0.05
-_DEFAULT_OUTBOUND_RATE = 0.08
+_DEFAULT_OUTBOUND_RATE = 0.03
 _DEFAULT_SMS_IN_RATE = 0.01
 _DEFAULT_SMS_OUT_RATE = 0.01
 
@@ -278,10 +278,18 @@ async def get_usage_calls(
             items = items_by_call.get(str(log.id), [])
             inbound_item = next((i for i in items if i.item_type == "inbound_call"), None)
             inbound_minutes = inbound_item.quantity_minutes if inbound_item else (
-                ceil(log.duration_seconds / 60) if log.duration_seconds else 0
+                ceil(log.duration_seconds / 60)
+                if log.duration_seconds
+                and log.duration_source in ("twilio_webhook", "twilio_api")
+                else 0
             )
             inbound_cost = float(inbound_item.cost_usd) if inbound_item else 0.0
             total_cost = sum(float(i.cost_usd) for i in items)
+            billable_transfer_minutes = sum(
+                int(item.quantity_minutes or 0)
+                for item in items
+                if item.item_type == "outbound_transfer"
+            )
 
             # Enrich outbound_transfer billing items with CallLeg data (destination,
             # leg_type, duration). Legs are already eager-loaded; we match them to
@@ -290,18 +298,39 @@ async def get_usage_calls(
                 [leg for leg in (log.legs or []) if leg.leg_type.startswith("transfer_")],
                 key=lambda l: l.leg_number,
             )
+            legs_by_id = {str(leg.id): leg for leg in transfer_legs}
             leg_idx = 0
             enriched_items = []
             for item in items:
                 d = item.to_dict()
                 if item.item_type == "outbound_transfer":
-                    leg = transfer_legs[leg_idx] if leg_idx < len(transfer_legs) else None
+                    leg = (
+                        legs_by_id.get(str(item.call_leg_id))
+                        if item.call_leg_id
+                        else (
+                            transfer_legs[leg_idx] if leg_idx < len(transfer_legs) else None
+                        )
+                    )
                     d["destination"] = leg.participant if leg else None
                     d["destination_name"] = leg.participant_name if leg else None
                     d["leg_type"] = leg.leg_type if leg else "outbound_transfer"
                     d["leg_duration_seconds"] = (leg.duration_seconds or 0) if leg else 0
-                    leg_idx += 1
+                    if not item.call_leg_id:
+                        leg_idx += 1
                 enriched_items.append(d)
+
+            ai_duration = sum(
+                leg.duration_seconds or 0
+                for leg in (log.legs or [])
+                if leg.leg_type == "ai_conversation"
+                and leg.duration_source == "pipecat"
+            )
+            transfer_duration = sum(
+                leg.duration_seconds or 0
+                for leg in transfer_legs
+                if leg.leg_type != "transfer_cold"
+                and leg.duration_source in ("twilio_webhook", "twilio_api")
+            )
 
             return {
                 "call_log_id": str(log.id),
@@ -311,8 +340,16 @@ async def get_usage_calls(
                 "caller_number": log.caller_number,
                 "to_number": log.to_number,
                 "assistant_name": asst_names.get(str(log.assistant_id)) if log.assistant_id else None,
-                "duration_seconds": log.duration_seconds or 0,
+                "duration_seconds": (
+                    log.duration_seconds or 0
+                    if log.duration_source in ("twilio_webhook", "twilio_api")
+                    else 0
+                ),
+                "duration_source": log.duration_source or "unknown",
+                "ai_duration_seconds": ai_duration,
+                "transfer_duration_seconds": transfer_duration,
                 "billable_inbound_minutes": inbound_minutes,
+                "billable_transfer_minutes": billable_transfer_minutes,
                 "inbound_cost_usd": round(inbound_cost, 6),
                 "has_transfers": bool(log.has_transfer),
                 "total_cost_usd": round(total_cost, 6),
@@ -324,7 +361,9 @@ async def get_usage_calls(
             writer = csv.writer(output)
             writer.writerow([
                 "Reference ID", "Started At", "Direction", "Caller", "To Number",
-                "Assistant", "Duration (s)", "Billable Inbound Minutes",
+                "Assistant", "Total Call Duration (s)", "Duration Source",
+                "AI Duration (s)", "Transfer Duration (s)",
+                "Billable Inbound Minutes", "Billable Transfer Minutes",
                 "Inbound Cost (USD)", "Has Transfers", "Total Cost (USD)",
             ])
             for log in call_logs:
@@ -337,7 +376,11 @@ async def get_usage_calls(
                     row["to_number"] or "",
                     row["assistant_name"] or "",
                     row["duration_seconds"],
+                    row["duration_source"],
+                    row["ai_duration_seconds"],
+                    row["transfer_duration_seconds"],
                     row["billable_inbound_minutes"],
+                    row["billable_transfer_minutes"],
                     row["inbound_cost_usd"],
                     "Yes" if row["has_transfers"] else "No",
                     row["total_cost_usd"],

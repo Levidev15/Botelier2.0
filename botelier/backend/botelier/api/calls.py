@@ -335,6 +335,7 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
                     participant_name=None,
                     status=CallStatus.INITIATED.value,
                     started_at=now,
+                    duration_source="unknown",
                 )
 
                 # Task #116 — webhook idempotency. Twilio retries the
