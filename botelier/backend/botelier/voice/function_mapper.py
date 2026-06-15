@@ -1013,6 +1013,7 @@ class FunctionMapper:
             db_session=self.db_session,
             account_id=self.account_id,
             flow_tool_id=str(tool.id),
+            call_sid=self.call_sid,
         )
 
         # Store executor for this flow (we might need to access collected data)
@@ -1108,6 +1109,7 @@ class FunctionMapper:
                 db_session=self.db_session,
                 account_id=self.account_id,
                 flow_tool_id=str(tool.id),
+                call_sid=self.call_sid,
             )
             self._flow_executors[tool_name] = executor
             logger.info(f"Created new FlowExecutor for {tool_name}")

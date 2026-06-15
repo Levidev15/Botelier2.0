@@ -287,6 +287,7 @@ class FlowExecutor:
         db_session: Optional[Any] = None,
         account_id: Optional[str] = None,
         flow_tool_id: Optional[str] = None,
+        call_sid: Optional[str] = None,
     ):
         self.flow_config = flow_config
         self.state = FlowState(flow_config)
@@ -296,6 +297,7 @@ class FlowExecutor:
         self.db_session = db_session
         self.account_id = account_id
         self.flow_tool_id = flow_tool_id
+        self.call_sid = call_sid
 
     def get_variables_in_flow_order(self) -> list[FlowVariable]:
         """Get variables in the order they appear in the flow traversal.
@@ -1537,6 +1539,7 @@ You are executing a structured conversation flow. Follow these guidelines:
                 context=ActionContext(
                     account_id=self.account_id,
                     channel="flow",
+                    call_sid=self.call_sid,
                     flow_tool_id=self.flow_tool_id,
                     node_id=node_id,
                     source_label=node.data.get("name") or node_id,
@@ -1674,6 +1677,7 @@ You are executing a structured conversation flow. Follow these guidelines:
                 context=ActionContext(
                     account_id=self.account_id,
                     channel="flow",
+                    call_sid=self.call_sid,
                     flow_tool_id=self.flow_tool_id,
                     node_id=node_id,
                     source_label=node.data.get("name") or node_id,

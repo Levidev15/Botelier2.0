@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Play, Plus, Trash2, ChevronDown, ChevronRight, Copy, Check, Loader2 } from "lucide-react";
 import { notify } from "@/lib/notifications";
+import { useAuthToken } from "@/lib/auth/useAuthToken";
 
 interface HeaderEntry {
   key: string;
@@ -50,6 +51,7 @@ function getNestedValue(obj: any, path: string): any {
 }
 
 export default function ApiTester() {
+  const { authFetch } = useAuthToken();
   const [method, setMethod] = useState("GET");
   const [url, setUrl] = useState("");
   const [headers, setHeaders] = useState<HeaderEntry[]>([]);
@@ -87,9 +89,8 @@ export default function ApiTester() {
         payload.body = body;
       }
 
-      const res = await fetch("/api/api-tester/test", {
+      const res = await authFetch("/api/api-tester/test", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
         body: JSON.stringify(payload),
       });
 
