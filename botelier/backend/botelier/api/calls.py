@@ -733,6 +733,10 @@ def _maybe_enqueue_acw(call_sid: str, db: Session, background_tasks: BackgroundT
         return
     from ..models import Assistant
 
+    if call_log.acw_completed_at:
+        logger.debug(f"ACW already completed for call {call_sid}, skipping duplicate enqueue")
+        return
+
     assistant = db.query(Assistant).filter(Assistant.id == call_log.assistant_id).first()
     if should_auto_run_acw(assistant, call_sid):
         logger.info(f"Enqueueing ACW background task for call {call_sid}")

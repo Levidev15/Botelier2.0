@@ -23,7 +23,7 @@ def _get_client() -> OpenAI:
     return _client
 
 
-_MAX_TRANSCRIPT_CHARS = 8000
+_MAX_TRANSCRIPT_CHARS = 32000
 _MAX_LLM_ATTEMPTS = 2
 
 _ROLE_LABELS = {
@@ -511,33 +511,39 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
     }
 
 
-def run_acw_background(call_log_id: UUID):
-    import time
+async def run_acw_background(call_log_id: UUID):
+    import asyncio
 
     from botelier.database import SessionLocal
 
     db = SessionLocal()
     try:
         max_retries = 5
+        call_log = None
         for attempt in range(max_retries):
             call_log = db.query(CallLog).filter(CallLog.id == call_log_id).first()
             if not call_log:
                 logger.warning(f"ACW background: call log {call_log_id} not found")
                 return
+            if call_log.acw_completed_at:
+                logger.debug(
+                    f"ACW background: already completed for {call_log_id}, skipping"
+                )
+                return
             if call_log.transcript:
                 break
-            db.expire(call_log)
             wait = 2 * (attempt + 1)
             logger.info(
                 f"ACW background: transcript not ready for {call_log_id}, retry {attempt + 1}/{max_retries} in {wait}s"
             )
-            time.sleep(wait)
+            await asyncio.sleep(wait)
         else:
             logger.warning(f"ACW background: transcript never arrived for {call_log_id}, skipping")
             if call_log:
                 _stamp_acw_skip(call_log, db, "transcript_not_ready")
             return
-        run_acw(call_log, db)
+        loop = asyncio.get_running_loop()
+        await loop.run_in_executor(None, run_acw, call_log, db)
     except Exception as e:
         logger.exception(f"ACW background task failed for call {call_log_id}: {e}")
     finally:

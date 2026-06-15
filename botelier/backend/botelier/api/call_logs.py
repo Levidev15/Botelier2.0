@@ -4,6 +4,7 @@ SECURITY: All endpoints enforce account_id filtering to prevent cross-tenant dat
 This is critical for multi-tenant isolation in the SaaS platform.
 """
 
+import asyncio
 import csv
 import io
 from datetime import datetime, timedelta
@@ -686,7 +687,8 @@ async def generate_summary(
 
         from ..services.acw_service import run_acw
 
-        result = run_acw(call_log, db)
+        loop = asyncio.get_running_loop()
+        result = await loop.run_in_executor(None, run_acw, call_log, db)
 
         if result.get("error"):
             raise HTTPException(status_code=500, detail=result["error"])
