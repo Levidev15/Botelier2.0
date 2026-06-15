@@ -8,7 +8,7 @@ echo "=== Starting Botelier (repo root: $REPO_ROOT) ==="
 echo "=== Installing Python dependencies ==="
 uv venv "$REPO_ROOT/.venv"
 uv pip install --python "$REPO_ROOT/.venv/bin/python" \
-  -r "$REPO_ROOT/botelier/backend/requirements.txt"
+  -r "$REPO_ROOT/botelier/backend/requirements-replit.txt"
 
 # Activate the venv for all subsequent python commands
 source "$REPO_ROOT/.venv/bin/activate"

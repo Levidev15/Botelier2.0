@@ -14,14 +14,22 @@ from sqlalchemy.orm import Session
 
 from ..database import get_db
 from ..models import CallLog
-from ..voice.call_handler import CallHandler
 from ._twilio_auth import get_call_auth_token, verify_stream_token
 
 router = APIRouter(prefix="/api/ws", tags=["WebSocket"])
 
-# Module-level CallHandler instance persists across WebSocket connections
-# This ensures FlowExecutor state is maintained during multi-turn conversations
-call_handler = CallHandler()
+# Lazy singleton — pipecat (and its heavy dependencies) is only imported the
+# first time a real voice WebSocket connects. On Replit, where voice is served
+# by Azure, this import never fires and pipecat does not need to be installed.
+_call_handler = None
+
+
+def _get_call_handler():
+    global _call_handler
+    if _call_handler is None:
+        from ..voice.call_handler import CallHandler
+        _call_handler = CallHandler()
+    return _call_handler
 
 
 @router.websocket("/call")
@@ -162,8 +170,8 @@ async def websocket_call_endpoint(websocket: WebSocket, db: Session = Depends(ge
         logger.info(f"🔌 Handling call for phone: {to_number}")
 
         # Step 3-5: Delegate to CallHandler
-        # Use module-level instance to persist state across function calls
-        await call_handler.handle_call(
+        # Use lazy singleton to persist state across function calls
+        await _get_call_handler().handle_call(
             websocket=websocket,
             to_number=to_number,
             stream_sid=stream_sid,
