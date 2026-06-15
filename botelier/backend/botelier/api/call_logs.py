@@ -685,10 +685,10 @@ async def generate_summary(
         if not call_log.transcript:
             raise HTTPException(status_code=400, detail="No transcript available for this call")
 
-        from ..services.acw_service import run_acw
+        from ..services.acw_service import run_acw_in_thread
 
         loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(None, run_acw, call_log, db)
+        result = await loop.run_in_executor(None, run_acw_in_thread, call_log_id)
 
         if result.get("error"):
             raise HTTPException(status_code=500, detail=result["error"])

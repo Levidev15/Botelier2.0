@@ -511,11 +511,46 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
     }
 
 
+def run_acw_in_thread(call_log_id: UUID) -> Dict[str, Any]:
+    """Thread-safe ACW runner.
+
+    Creates and owns its own DB session so it is safe to call from any thread
+    (including a thread-pool executor) without sharing a session across threads.
+    Re-checks ``acw_completed_at`` before starting to handle races between
+    concurrent background tasks.
+    """
+    from botelier.database import SessionLocal
+
+    db = SessionLocal()
+    try:
+        call_log = db.query(CallLog).filter(CallLog.id == call_log_id).first()
+        if not call_log:
+            logger.warning(f"ACW thread: call log {call_log_id} not found")
+            return {"error": "call_log_not_found"}
+        if call_log.acw_completed_at:
+            logger.debug(f"ACW thread: already completed for {call_log_id}, skipping")
+            return {"skipped": True, "reason": "already_completed"}
+        return run_acw(call_log, db)
+    except Exception as e:
+        logger.exception(f"ACW thread runner failed for {call_log_id}: {e}")
+        return {"error": str(e)}
+    finally:
+        db.close()
+
+
 async def run_acw_background(call_log_id: UUID):
+    """Async background task: polls for transcript readiness then runs ACW in a thread.
+
+    Polling uses ``asyncio.sleep`` so no thread-pool worker is held while waiting.
+    The actual ACW work (OpenAI call + DB writes) runs in a thread-pool executor
+    via ``run_acw_in_thread``, which owns its own session — safe across threads.
+    """
     import asyncio
 
     from botelier.database import SessionLocal
 
+    # --- polling phase: wait for transcript using a dedicated session ---
+    transcript_ready = False
     db = SessionLocal()
     try:
         max_retries = 5
@@ -531,20 +566,31 @@ async def run_acw_background(call_log_id: UUID):
                 )
                 return
             if call_log.transcript:
+                transcript_ready = True
                 break
+            # Expire before sleeping so the next loop iteration re-fetches from DB
+            # rather than returning the identity-mapped cached object.
+            db.expire(call_log)
             wait = 2 * (attempt + 1)
             logger.info(
-                f"ACW background: transcript not ready for {call_log_id}, retry {attempt + 1}/{max_retries} in {wait}s"
+                f"ACW background: transcript not ready for {call_log_id}, "
+                f"retry {attempt + 1}/{max_retries} in {wait}s"
             )
             await asyncio.sleep(wait)
         else:
-            logger.warning(f"ACW background: transcript never arrived for {call_log_id}, skipping")
+            logger.warning(
+                f"ACW background: transcript never arrived for {call_log_id}, skipping"
+            )
             if call_log:
                 _stamp_acw_skip(call_log, db, "transcript_not_ready")
-            return
-        loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, run_acw, call_log, db)
     except Exception as e:
-        logger.exception(f"ACW background task failed for call {call_log_id}: {e}")
+        logger.exception(f"ACW background polling failed for {call_log_id}: {e}")
     finally:
         db.close()
+
+    if not transcript_ready:
+        return
+
+    # --- execution phase: run ACW in a thread with its own session ---
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, run_acw_in_thread, call_log_id)
