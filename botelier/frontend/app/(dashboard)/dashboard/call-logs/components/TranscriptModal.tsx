@@ -33,6 +33,8 @@ interface CallLog {
   status: string;
   started_at: string | null;
   duration_seconds: number;
+  ai_duration_seconds?: number;
+  transfer_duration_seconds?: number;
   has_transfer: boolean;
   transcript: TranscriptEntry[] | null;
   legs: CallLeg[];
@@ -144,7 +146,17 @@ export default function TranscriptModal({ log, onClose, onLogUpdated, onViewEven
                 )}
               </div>
               <p className="text-xs text-gray-400">
-                {formatDateTime(log.started_at)} • {formatDuration(log.duration_seconds)}
+                {formatDateTime(log.started_at)} •{" "}
+                {log.has_transfer && (log.ai_duration_seconds ?? 0) > 0 ? (
+                  <>
+                    {formatDuration(log.ai_duration_seconds!)} AI
+                    {(log.transfer_duration_seconds ?? 0) > 0 && (
+                      <span className="text-gray-500"> + {formatDuration(log.transfer_duration_seconds!)} transfer</span>
+                    )}
+                  </>
+                ) : (
+                  formatDuration(log.duration_seconds)
+                )}
               </p>
             </div>
           </div>

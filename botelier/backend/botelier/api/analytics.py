@@ -755,6 +755,33 @@ async def get_calls_drilldown(
             query.order_by(desc(CallLog.started_at)).offset((page - 1) * limit).limit(limit).all()
         )
 
+        # Batch-fetch AI + transfer leg durations for the current page so the
+        # drilldown modal can display the AI leg duration separately from the
+        # transfer leg duration for transferred calls.
+        call_log_ids = [log.id for log in call_logs]
+        ai_dur_map: dict = {}
+        transfer_dur_map: dict = {}
+        if call_log_ids:
+            leg_rows = (
+                db.query(
+                    CallLeg.call_log_id,
+                    CallLeg.leg_type,
+                    CallLeg.duration_source,
+                    CallLeg.duration_seconds,
+                )
+                .filter(CallLeg.call_log_id.in_(call_log_ids))
+                .all()
+            )
+            for _leg in leg_rows:
+                cid = str(_leg.call_log_id)
+                if _leg.leg_type == "ai_conversation" and _leg.duration_source == "pipecat":
+                    ai_dur_map[cid] = ai_dur_map.get(cid, 0) + (_leg.duration_seconds or 0)
+                elif _leg.leg_type in ("transfer_external", "transfer_sip") and _leg.duration_source in (
+                    "twilio_webhook",
+                    "twilio_api",
+                ):
+                    transfer_dur_map[cid] = transfer_dur_map.get(cid, 0) + (_leg.duration_seconds or 0)
+
         # Bulk-load assistant + phone names
         asst_id_set = {log.assistant_id for log in call_logs if log.assistant_id}
         phone_id_set = {log.phone_number_id for log in call_logs if log.phone_number_id}
@@ -802,6 +829,8 @@ async def get_calls_drilldown(
                     "to_number": log.to_number,
                     "status": log.status,
                     "duration_seconds": log.duration_seconds,
+                    "ai_duration_seconds": ai_dur_map.get(str(log.id), log.duration_seconds),
+                    "transfer_duration_seconds": transfer_dur_map.get(str(log.id), 0),
                     "has_transfer": log.has_transfer,
                     "assistant_id": str(log.assistant_id) if log.assistant_id else None,
                     "assistant_name": asst_map.get(str(log.assistant_id))

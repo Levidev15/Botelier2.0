@@ -21,6 +21,8 @@ interface DrilldownRecord {
   to_number: string | null;
   status: string;
   duration_seconds: number;
+  ai_duration_seconds: number;
+  transfer_duration_seconds: number;
   has_transfer: boolean;
   assistant_id: string | null;
   assistant_name: string | null;
@@ -116,10 +118,16 @@ const PAGE_LIMIT = 25;
 function RecordingCell({
   callId,
   durationSeconds,
+  aiDurationSeconds,
+  transferDurationSeconds,
+  hasTransfer,
   hasRecording,
 }: {
   callId: string;
   durationSeconds: number;
+  aiDurationSeconds: number;
+  transferDurationSeconds: number;
+  hasTransfer: boolean;
   hasRecording: boolean;
 }) {
   const { authFetch } = useAuthToken();
@@ -160,7 +168,10 @@ function RecordingCell({
     return (
       <span className="inline-flex items-center gap-1 text-gray-600 text-xs">
         <Clock className="h-3 w-3" />
-        {fmtDuration(durationSeconds)}
+        {fmtDuration(hasTransfer && aiDurationSeconds > 0 ? aiDurationSeconds : durationSeconds)}
+        {hasTransfer && aiDurationSeconds > 0 && transferDurationSeconds > 0 && (
+          <span className="opacity-50">+{fmtDuration(transferDurationSeconds)}</span>
+        )}
       </span>
     );
   }
@@ -181,7 +192,10 @@ function RecordingCell({
         ) : (
           <Play className="h-3 w-3 fill-current" />
         )}
-        {fmtDuration(durationSeconds)}
+        {fmtDuration(hasTransfer && aiDurationSeconds > 0 ? aiDurationSeconds : durationSeconds)}
+        {hasTransfer && aiDurationSeconds > 0 && transferDurationSeconds > 0 && (
+          <span className="opacity-50">+{fmtDuration(transferDurationSeconds)}</span>
+        )}
       </button>
       {showPlayer && blobUrl && (
         <audio
@@ -567,6 +581,9 @@ export default function CallDrilldownModal({
                       <RecordingCell
                         callId={rec.id}
                         durationSeconds={rec.duration_seconds}
+                        aiDurationSeconds={rec.ai_duration_seconds}
+                        transferDurationSeconds={rec.transfer_duration_seconds}
+                        hasTransfer={rec.has_transfer}
                         hasRecording={hasRecording}
                       />
                     </td>
