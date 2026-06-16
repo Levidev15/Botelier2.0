@@ -11,6 +11,7 @@ import IntegrationCard from "./components/IntegrationCard";
 import SecretModal from "./components/SecretModal";
 import MCPModal from "./components/MCPModal";
 import ConnectModal from "./components/ConnectModal";
+import EditModal from "./components/EditModal";
 import MCPSection from "./components/MCPSection";
 import SecretsSection from "./components/SecretsSection";
 import APILogsSection from "./components/APILogsSection";
@@ -29,6 +30,7 @@ export default function IntegrationsPage() {
   const [loading, setLoading] = useState(true);
   const [selectedType, setSelectedType] = useState<IntegrationType | null>(null);
   const [showConnectModal, setShowConnectModal] = useState(false);
+  const [editingConn, setEditingConn] = useState<{ type: IntegrationType; conn: AccountIntegration } | null>(null);
   const [testing, setTesting] = useState<string | null>(null);
   const [notification, setNotification] = useState<{ type: "success" | "error"; message: string } | null>(null);
   
@@ -226,6 +228,10 @@ export default function IntegrationsPage() {
     setShowConnectModal(true);
   };
 
+  const handleEdit = (type: IntegrationType, conn: AccountIntegration) => {
+    setEditingConn({ type, conn });
+  };
+
   const handleDisconnect = async (integration: AccountIntegration) => {
     const confirmed = await confirmAction("Are you sure you want to disconnect this integration? This will remove your stored credentials.", {
       confirmText: "Disconnect",
@@ -361,6 +367,7 @@ export default function IntegrationsPage() {
                 testing={testing}
                 canManage={canManage}
                 handleConnect={handleConnect}
+                handleEdit={handleEdit}
                 handleTestConnection={handleTestConnection}
                 handleDisconnect={handleDisconnect}
               />
@@ -425,6 +432,18 @@ export default function IntegrationsPage() {
           onSuccess={fetchIntegrations}
           onNotify={showNotification}
           onClose={() => setShowConnectModal(false)}
+        />
+      )}
+
+      {editingConn && accountId && (
+        <EditModal
+          conn={editingConn.conn}
+          selectedType={editingConn.type}
+          accountId={accountId}
+          authFetch={authFetch}
+          onSuccess={fetchIntegrations}
+          onNotify={showNotification}
+          onClose={() => setEditingConn(null)}
         />
       )}
     </div>

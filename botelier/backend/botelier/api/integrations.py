@@ -132,6 +132,11 @@ class ConnectIntegrationRequest(BaseModel):
     connection_name: Optional[str] = None
 
 
+class UpdateCredentialsRequest(BaseModel):
+    credentials: dict
+    connection_name: Optional[str] = None
+
+
 class IntegrationEndpointResponse(BaseModel):
     id: str
     category: str
@@ -505,6 +510,182 @@ async def connect_integration(
 
     db.refresh(integration)
 
+    return AccountIntegrationResponse(
+        id=str(integration.id),
+        integration_type_id=str(integration.integration_type_id),
+        integration_slug=integration.integration_type.slug,
+        integration_name=integration.integration_type.name,
+        connection_name=integration.connection_name,
+        status=integration.status.value,
+        connected_at=integration.connected_at,
+        last_sync_at=integration.last_sync_at,
+        last_error=integration.last_error,
+    )
+
+
+@router.get("/account/{account_id}/integration/{integration_id}/credentials")
+async def get_integration_credentials(
+    account_id: str,
+    integration_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return decrypted credential values for the edit form.
+
+    Password-type fields are returned as empty strings so the UI can pre-fill
+    non-sensitive fields (gateway URL, client ID, hotel ID, etc.) while never
+    exposing stored secrets to the browser.
+    """
+    _assert_account_access(current_user, account_id, db, permission="integrations.manage")
+    integration = (
+        db.query(AccountIntegration)
+        .filter(
+            AccountIntegration.id == integration_id,
+            AccountIntegration.account_id == account_id,
+        )
+        .first()
+    )
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+
+    credentials = integration.get_credentials()
+    required_fields = integration.integration_type.get_required_fields()
+
+    safe_credentials: dict = {}
+    for field in required_fields:
+        key = field["key"]
+        if field.get("type") == "password":
+            safe_credentials[key] = ""
+        else:
+            safe_credentials[key] = credentials.get(key, "")
+
+    return {
+        "connection_name": integration.connection_name,
+        "credentials": safe_credentials,
+    }
+
+
+@router.patch(
+    "/account/{account_id}/integration/{integration_id}/credentials",
+    response_model=AccountIntegrationResponse,
+)
+async def update_integration_credentials(
+    account_id: str,
+    integration_id: str,
+    request: UpdateCredentialsRequest,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Update credentials for an existing integration and re-authenticate.
+
+    Password fields left blank in the request retain their current stored value —
+    the caller only needs to supply a new value to rotate a secret.
+    All non-password fields are overwritten. After merging, a fresh token fetch
+    is attempted and the status is updated accordingly.
+    """
+    _assert_account_access(current_user, account_id, db, permission="integrations.manage")
+    integration = (
+        db.query(AccountIntegration)
+        .filter(
+            AccountIntegration.id == integration_id,
+            AccountIntegration.account_id == account_id,
+        )
+        .first()
+    )
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+
+    integration_type = integration.integration_type
+    existing_credentials = integration.get_credentials()
+    required_fields = integration_type.get_required_fields()
+
+    merged = dict(existing_credentials)
+    for field in required_fields:
+        key = field["key"]
+        incoming = request.credentials.get(key)
+        if field.get("type") == "password" and not incoming:
+            continue
+        if incoming is not None:
+            merged[key] = incoming
+
+    if integration_type.auth_type == "oauth2_client_credentials":
+        gateway_url = merged.get("gateway_url", "")
+        _validate_opera_gateway_url(gateway_url)
+
+    if request.connection_name is not None:
+        integration.connection_name = request.connection_name or integration.connection_name
+
+    integration.set_credentials(merged)
+    integration.status = IntegrationStatus.CONNECTING
+    integration.last_error = None
+    db.commit()
+
+    try:
+        auth_type = integration_type.auth_type
+
+        if auth_type == "oauth2_client_credentials":
+            token_result = await obtain_oauth_token(integration_type, merged)
+            if token_result.get("success"):
+                integration.set_access_token(token_result["access_token"])
+                if token_result.get("refresh_token"):
+                    integration.set_refresh_token(token_result["refresh_token"])
+                if token_result.get("expires_in"):
+                    integration.token_expires_at = datetime.utcnow() + timedelta(
+                        seconds=token_result["expires_in"]
+                    )
+                integration.status = IntegrationStatus.CONNECTED
+                integration.last_error = None
+                logger.info(
+                    f"Credentials updated for {integration_type.slug} integration {integration_id}"
+                )
+            else:
+                integration.status = IntegrationStatus.ERROR
+                integration.last_error = token_result.get("error", "Failed to obtain access token")
+                logger.error(
+                    f"Credential update failed for {integration_type.slug}: {integration.last_error}"
+                )
+
+        elif auth_type == "basic_or_jwt":
+            auth_method = merged.get("auth_method", "basic_auth")
+            if auth_method == "basic_auth":
+                validation_result = await validate_basic_auth(integration_type, merged)
+                if validation_result.get("success"):
+                    integration.status = IntegrationStatus.CONNECTED
+                    integration.last_error = None
+                else:
+                    integration.status = IntegrationStatus.ERROR
+                    integration.last_error = validation_result.get("error", "Auth validation failed")
+            elif auth_method == "jwt":
+                token_result = await obtain_jwt_token(integration_type, merged)
+                if token_result.get("success"):
+                    integration.set_access_token(token_result["access_token"])
+                    if token_result.get("refresh_token"):
+                        integration.set_refresh_token(token_result["refresh_token"])
+                    if token_result.get("expires_in"):
+                        integration.token_expires_at = datetime.utcnow() + timedelta(
+                            seconds=token_result["expires_in"]
+                        )
+                    integration.status = IntegrationStatus.CONNECTED
+                    integration.last_error = None
+                else:
+                    integration.status = IntegrationStatus.ERROR
+                    integration.last_error = token_result.get("error", "Failed to obtain JWT token")
+            else:
+                integration.status = IntegrationStatus.ERROR
+                integration.last_error = f"Unsupported auth method: {auth_method}"
+        else:
+            integration.status = IntegrationStatus.ERROR
+            integration.last_error = f"Unsupported auth type: {auth_type}"
+
+        db.commit()
+
+    except Exception as e:
+        logger.error(f"Error updating integration credentials: {e}")
+        integration.status = IntegrationStatus.ERROR
+        integration.last_error = str(e)
+        db.commit()
+
+    db.refresh(integration)
     return AccountIntegrationResponse(
         id=str(integration.id),
         integration_type_id=str(integration.integration_type_id),

@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  Plug, AlertCircle, ExternalLink, RefreshCw, Loader2, Trash2, Plus,
+  Plug, AlertCircle, ExternalLink, RefreshCw, Loader2, Trash2, Plus, Pencil,
 } from "lucide-react";
 import type { IntegrationType, AccountIntegration, IntegrationStats } from "../types";
 
@@ -58,6 +58,7 @@ interface IntegrationCardProps {
   testing: string | null;
   canManage: boolean;
   handleConnect: (type: IntegrationType) => void;
+  handleEdit: (type: IntegrationType, conn: AccountIntegration) => void;
   handleTestConnection: (conn: AccountIntegration) => void;
   handleDisconnect: (conn: AccountIntegration) => void;
 }
@@ -69,6 +70,7 @@ export default function IntegrationCard({
   testing,
   canManage,
   handleConnect,
+  handleEdit,
   handleTestConnection,
   handleDisconnect,
 }: IntegrationCardProps) {
@@ -177,6 +179,13 @@ export default function IntegrationCard({
                     ) : (
                       <RefreshCw className="h-3.5 w-3.5" />
                     )}
+                  </button>
+                  <button
+                    onClick={() => handleEdit(type, conn)}
+                    className="px-2.5 py-1 text-sm text-gray-300 bg-gray-800 hover:bg-gray-700 rounded-lg transition"
+                    title="Edit credentials"
+                  >
+                    <Pencil className="h-3.5 w-3.5" />
                   </button>
                   <button
                     onClick={() => handleDisconnect(conn)}
