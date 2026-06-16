@@ -233,7 +233,7 @@ export default function IntegrationsPage() {
   };
 
   const handleDisconnect = async (integration: AccountIntegration) => {
-    const confirmed = await confirmAction("Are you sure you want to disconnect this integration? This will remove your stored credentials.", {
+    const confirmed = await confirmAction("Disconnect this integration? Your credentials will be wiped but the connection record will remain so you can reconnect later.", {
       confirmText: "Disconnect",
     });
     if (!confirmed) return;
@@ -253,6 +253,30 @@ export default function IntegrationsPage() {
       }
     } catch (error) {
       showNotification("error", "Failed to disconnect — please try again");
+    }
+  };
+
+  const handleDelete = async (integration: AccountIntegration) => {
+    const confirmed = await confirmAction(`Permanently delete "${integration.connection_name || integration.integration_name}"? This cannot be undone.`, {
+      confirmText: "Delete",
+    });
+    if (!confirmed) return;
+
+    try {
+      const response = await authFetch(
+        `/api/integrations/account/${accountId}/integration/${integration.id}/permanent`,
+        { method: "DELETE" }
+      );
+
+      if (response.ok) {
+        showNotification("success", `${integration.connection_name || integration.integration_name} deleted`);
+        fetchIntegrations();
+      } else {
+        const data = await response.json().catch(() => ({}));
+        showNotification("error", data.detail || "Failed to delete integration");
+      }
+    } catch (error) {
+      showNotification("error", "Failed to delete — please try again");
     }
   };
 
@@ -370,6 +394,7 @@ export default function IntegrationsPage() {
                 handleEdit={handleEdit}
                 handleTestConnection={handleTestConnection}
                 handleDisconnect={handleDisconnect}
+                handleDelete={handleDelete}
               />
             ))}
 

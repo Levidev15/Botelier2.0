@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  Plug, AlertCircle, ExternalLink, RefreshCw, Loader2, Trash2, Plus, Pencil,
+  Plug, AlertCircle, ExternalLink, RefreshCw, Loader2, Trash2, Plus, Pencil, Unplug,
 } from "lucide-react";
 import type { IntegrationType, AccountIntegration, IntegrationStats } from "../types";
 
@@ -61,6 +61,7 @@ interface IntegrationCardProps {
   handleEdit: (type: IntegrationType, conn: AccountIntegration) => void;
   handleTestConnection: (conn: AccountIntegration) => void;
   handleDisconnect: (conn: AccountIntegration) => void;
+  handleDelete: (conn: AccountIntegration) => void;
 }
 
 export default function IntegrationCard({
@@ -73,6 +74,7 @@ export default function IntegrationCard({
   handleEdit,
   handleTestConnection,
   handleDisconnect,
+  handleDelete,
 }: IntegrationCardProps) {
   const slugInitials = type.slug === "opera-cloud" ? "OC" : type.slug === "guestcentric-crs" ? "GC" : type.name.slice(0, 2).toUpperCase();
   const gradientClass = type.slug === "opera-cloud" ? "from-orange-500 to-red-600" : "from-emerald-500 to-teal-600";
@@ -187,10 +189,19 @@ export default function IntegrationCard({
                   >
                     <Pencil className="h-3.5 w-3.5" />
                   </button>
+                  {conn.status !== "disconnected" && (
+                    <button
+                      onClick={() => handleDisconnect(conn)}
+                      className="px-2.5 py-1 text-sm text-amber-400 hover:text-amber-300 bg-gray-800 hover:bg-gray-700 rounded-lg transition"
+                      title="Disconnect (keeps record, wipes credentials)"
+                    >
+                      <Unplug className="h-3.5 w-3.5" />
+                    </button>
+                  )}
                   <button
-                    onClick={() => handleDisconnect(conn)}
+                    onClick={() => handleDelete(conn)}
                     className="px-2.5 py-1 text-sm text-red-400 hover:text-red-300 bg-gray-800 hover:bg-gray-700 rounded-lg transition"
-                    title="Remove connection"
+                    title="Delete permanently"
                   >
                     <Trash2 className="h-3.5 w-3.5" />
                   </button>

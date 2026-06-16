@@ -789,6 +789,36 @@ async def disconnect_integration(
     return {"status": "disconnected"}
 
 
+@router.delete("/account/{account_id}/integration/{integration_id}/permanent")
+async def delete_integration(
+    account_id: str,
+    integration_id: str,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    _assert_account_access(current_user, account_id, db, permission="integrations.manage")
+    integration = (
+        db.query(AccountIntegration)
+        .filter(
+            AccountIntegration.id == integration_id, AccountIntegration.account_id == account_id
+        )
+        .first()
+    )
+
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+
+    slug = integration.integration_type.slug
+    db.delete(integration)
+    db.commit()
+
+    logger.info(
+        f"Deleted integration {slug} ({integration_id}) for account {account_id}"
+    )
+
+    return {"status": "deleted"}
+
+
 class CallLogEntry(BaseModel):
     id: str
     integration_id: Optional[str]
