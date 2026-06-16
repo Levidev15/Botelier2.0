@@ -1076,13 +1076,21 @@ async def obtain_oauth_token(integration_type: IntegrationType, credentials: dic
 
     token_url = f"{gateway_url}{auth_config.get('token_endpoint_path', '/oauth/v1/tokens')}"
 
-    headers = {"Content-Type": "application/x-www-form-urlencoded", "x-app-key": app_key}
+    headers = {
+        "Content-Type": "application/x-www-form-urlencoded",
+        "x-app-key": app_key,
+        "x-enterpriseid": enterprise_id,
+    }
 
     data = {
         "grant_type": "client_credentials",
         "scope": auth_config.get("scope", "urn:opc:hgbu:ws:__myscopes__"),
-        "enterpriseId": enterprise_id,
     }
+
+    logger.debug(
+        f"OHIP token request → {token_url} | x-app-key={app_key} | "
+        f"x-enterpriseid={enterprise_id} | scope={data['scope']}"
+    )
 
     try:
         async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
@@ -1099,7 +1107,10 @@ async def obtain_oauth_token(integration_type: IntegrationType, credentials: dic
                     "expires_in": token_data.get("expires_in", 3600),
                 }
             else:
-                logger.error(f"OHIP token request failed: {response.status_code} - {response.text}")
+                logger.error(
+                    f"OHIP token request failed: {response.status_code} - {response.text} "
+                    f"(url={token_url}, x-app-key={app_key}, x-enterpriseid={enterprise_id})"
+                )
                 return {
                     "success": False,
                     "error": f"Token request failed: {response.status_code} - {response.text}",
@@ -1287,10 +1298,10 @@ async def refresh_oauth_token(
     headers = {"Content-Type": "application/x-www-form-urlencoded", "x-app-key": app_key}
 
     enterprise_id = credentials.get("enterprise_id")
+    headers["x-enterpriseid"] = enterprise_id
     data = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,
-        "enterpriseId": enterprise_id,
     }
 
     try:
