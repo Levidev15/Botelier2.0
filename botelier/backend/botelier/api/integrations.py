@@ -161,6 +161,8 @@ class IntegrationEndpointDetail(BaseModel):
     description: Optional[str] = None
     request_schema: Optional[dict] = None
     response_schema: Optional[dict] = None
+    variables: List[dict] = []
+    response_mapping: dict = {}
 
 
 class IntegrationTypeDetail(BaseModel):
@@ -210,6 +212,8 @@ async def get_my_connections(current_user=Depends(get_current_user), db: Session
                     description=ep.get("description"),
                     request_schema=ep.get("request_schema"),
                     response_schema=ep.get("response_schema"),
+                    variables=ep.get("variables", []),
+                    response_mapping=ep.get("response_mapping", {}),
                 )
             )
 

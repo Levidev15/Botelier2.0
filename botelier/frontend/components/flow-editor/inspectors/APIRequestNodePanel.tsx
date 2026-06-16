@@ -7,6 +7,16 @@ import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import APIRequestHeadersSection from "./APIRequestHeadersSection";
 
+interface EndpointVariable {
+  key: string;
+  label?: string;
+  description?: string;
+  placeholder?: string;
+  type?: string;
+  required?: boolean;
+  default?: unknown;
+}
+
 interface APIAccountIntegration {
   id: string;
   integration_type_id: string;
@@ -22,6 +32,8 @@ interface APIAccountIntegration {
       description?: string;
       request_schema?: Record<string, unknown>;
       response_schema?: Record<string, unknown>;
+      variables?: EndpointVariable[];
+      response_mapping?: Record<string, string>;
     }>;
   };
   status: string;
@@ -123,12 +135,30 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
       if (endpoint.request_schema && (endpoint.method === "POST" || endpoint.method === "PUT" || endpoint.method === "PATCH")) {
         bodyTemplate = JSON.stringify(endpoint.request_schema, null, 2);
       }
+
+      const endpointHasMapping = endpoint.response_mapping && Object.keys(endpoint.response_mapping).length > 0;
+      const hasExistingMappings = Object.keys(api.responseMapping || {}).length > 0;
+
+      let newResponseMapping: Record<string, string> | undefined = api.responseMapping;
+      if (endpointHasMapping) {
+        if (hasExistingMappings) {
+          const confirmed = window.confirm(
+            `Replace existing response mappings with the defaults for "${endpoint.name}"?`
+          );
+          if (confirmed) newResponseMapping = endpoint.response_mapping;
+        } else {
+          newResponseMapping = endpoint.response_mapping;
+        }
+        setShowResponseMapping(true);
+      }
+
       updateApi({
         endpointId,
         endpointName: endpoint.name,
         method: endpoint.method as "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
         url: endpoint.path,
         bodyTemplate,
+        responseMapping: newResponseMapping,
       });
     }
   };
@@ -490,25 +520,57 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
           </button>
         </div>
         <div className="p-3 space-y-3">
-          {testableVariables.length > 0 ? (
-            <div className="grid grid-cols-1 gap-2">
-              {testableVariables.map((variable) => (
-                <div key={variable.key}>
-                  <label className="block text-xs text-gray-500 mb-1">{variable.key}</label>
-                  <input
-                    value={testVariables[variable.key] ?? variable.defaultValue ?? ""}
-                    onChange={(e) =>
-                      setTestVariables(prev => ({ ...prev, [variable.key]: e.target.value }))
-                    }
-                    className={smallInputCls}
-                    placeholder={variable.description || variable.type}
-                  />
+          {(() => {
+            const epVars = selectedEndpoint?.variables?.filter(v => v.key) ?? [];
+            if (apiSource === "integration" && epVars.length > 0) {
+              return (
+                <div className="space-y-2">
+                  <p className="text-xs text-orange-400/80 font-medium">{selectedEndpoint!.name} — test parameters</p>
+                  {epVars.map((variable) => (
+                    <div key={variable.key}>
+                      <label className="block text-xs text-gray-400 mb-1">
+                        {variable.label || variable.key}
+                        {variable.required && <span className="text-red-400 ml-1">*</span>}
+                      </label>
+                      <input
+                        value={testVariables[variable.key] ?? (variable.default != null ? String(variable.default) : "")}
+                        onChange={(e) =>
+                          setTestVariables(prev => ({ ...prev, [variable.key]: e.target.value }))
+                        }
+                        className={smallInputCls}
+                        placeholder={variable.placeholder || (variable.type === "date" ? "YYYY-MM-DD" : variable.type === "number" ? "0" : "")}
+                      />
+                      {variable.description && (
+                        <p className="text-[11px] text-gray-600 mt-0.5">{variable.description}</p>
+                      )}
+                    </div>
+                  ))}
                 </div>
-              ))}
-            </div>
-          ) : (
-            <p className="text-xs text-gray-500">No flow variables defined yet. The request can still be tested without sample values.</p>
-          )}
+              );
+            }
+            if (testableVariables.length > 0) {
+              return (
+                <div className="grid grid-cols-1 gap-2">
+                  {testableVariables.map((variable) => (
+                    <div key={variable.key}>
+                      <label className="block text-xs text-gray-500 mb-1">{variable.key}</label>
+                      <input
+                        value={testVariables[variable.key] ?? variable.defaultValue ?? ""}
+                        onChange={(e) =>
+                          setTestVariables(prev => ({ ...prev, [variable.key]: e.target.value }))
+                        }
+                        className={smallInputCls}
+                        placeholder={variable.description || variable.type}
+                      />
+                    </div>
+                  ))}
+                </div>
+              );
+            }
+            return (
+              <p className="text-xs text-gray-500">No flow variables defined yet. The request can still be tested without sample values.</p>
+            );
+          })()}
 
           {testError && (
             <div className="flex items-start gap-2 rounded border border-red-900/70 bg-red-950/30 px-3 py-2 text-xs text-red-300">
@@ -568,32 +630,42 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
 
         {showResponseMapping && (
           <div className="mt-2 space-y-2">
-            <p className="text-xs text-gray-500">Extract response fields into flow variables (dot notation: data.guest.name)</p>
-            {responseMappingEntries.map(([key, path], i) => (
-              <div key={i} className="flex gap-2 items-center">
-                <input
-                  type="text"
-                  value={key}
-                  onChange={(e) => updateResponseMapping(key, e.target.value, path, i)}
-                  className={smallInputCls}
-                  placeholder="variable_name"
-                />
-                <span className="text-gray-500">=</span>
-                <input
-                  type="text"
-                  value={path}
-                  onChange={(e) => updateResponseMapping(key, key, e.target.value, i)}
-                  className={smallInputCls}
-                  placeholder="data.guest.name"
-                />
-                <button
-                  onClick={() => removeResponseMapping(i)}
-                  className="text-red-400 hover:text-red-300 p-1"
-                >
-                  <X className="h-3 w-3" />
-                </button>
-              </div>
-            ))}
+            <div className="rounded bg-gray-900 border border-gray-800 px-3 py-2 text-xs text-gray-400">
+              Maps API response fields into flow variables the AI can reference. Use JSONPath (e.g. <code className="text-orange-400">$.data.guest.name</code>) or dot notation (e.g. <code className="text-orange-400">data.guest.name</code>).
+            </div>
+            {responseMappingEntries.map(([key, path], i) => {
+              const isAuto = !!(selectedEndpoint?.response_mapping && selectedEndpoint.response_mapping[key] === path && key !== "");
+              return (
+                <div key={i} className="flex gap-2 items-center">
+                  <div className="flex-1 relative">
+                    <input
+                      type="text"
+                      value={key}
+                      onChange={(e) => updateResponseMapping(key, e.target.value, path, i)}
+                      className={smallInputCls}
+                      placeholder="variable_name"
+                    />
+                    {isAuto && (
+                      <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] bg-orange-900/40 text-orange-400 rounded px-1 pointer-events-none">auto</span>
+                    )}
+                  </div>
+                  <span className="text-gray-500">=</span>
+                  <input
+                    type="text"
+                    value={path}
+                    onChange={(e) => updateResponseMapping(key, key, e.target.value, i)}
+                    className={`${smallInputCls} flex-1`}
+                    placeholder="$.data.guest.name"
+                  />
+                  <button
+                    onClick={() => removeResponseMapping(i)}
+                    className="text-red-400 hover:text-red-300 p-1"
+                  >
+                    <X className="h-3 w-3" />
+                  </button>
+                </div>
+              );
+            })}
             <button
               onClick={addResponseMapping}
               className="text-xs text-orange-400 hover:text-orange-300 flex items-center gap-1"
@@ -613,10 +685,12 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
           onChange={(e) => updateApi({ responseInstructions: e.target.value })}
           rows={3}
           className={`${inputCls} resize-none text-xs`}
-          placeholder="Tell the AI how to present the API response to the caller (e.g., 'Summarize the reservation details including room type, dates, and price')"
+          placeholder={selectedEndpoint
+            ? `For "${selectedEndpoint.name}": tell the AI how to present the results — e.g., "Mention the top 3 options by name and price, then ask which one the caller prefers."`
+            : "Tell the AI how to present the API response to the caller — e.g., 'Summarize the reservation details including room type, dates, and price.'"}
         />
         <p className="text-xs text-gray-500 mt-1">
-          Instructions for how the AI should format and present the response
+          Instructions for how the AI should format and present the response to the caller
         </p>
       </div>
 
