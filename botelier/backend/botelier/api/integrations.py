@@ -1079,7 +1079,7 @@ async def obtain_oauth_token(integration_type: IntegrationType, credentials: dic
     headers = {
         "Content-Type": "application/x-www-form-urlencoded",
         "x-app-key": app_key,
-        "x-enterpriseid": enterprise_id,
+        "enterpriseId": enterprise_id,
     }
 
     data = {
@@ -1089,7 +1089,7 @@ async def obtain_oauth_token(integration_type: IntegrationType, credentials: dic
 
     logger.debug(
         f"OHIP token request → {token_url} | x-app-key={app_key} | "
-        f"x-enterpriseid={enterprise_id} | scope={data['scope']}"
+        f"enterpriseId={enterprise_id} | scope={data['scope']}"
     )
 
     try:
@@ -1298,7 +1298,7 @@ async def refresh_oauth_token(
     headers = {"Content-Type": "application/x-www-form-urlencoded", "x-app-key": app_key}
 
     enterprise_id = credentials.get("enterprise_id")
-    headers["x-enterpriseid"] = enterprise_id
+    headers["enterpriseId"] = enterprise_id
     data = {
         "grant_type": "refresh_token",
         "refresh_token": refresh_token,

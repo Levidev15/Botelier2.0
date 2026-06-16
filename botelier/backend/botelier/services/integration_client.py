@@ -516,7 +516,7 @@ class IntegrationClient:
         headers = {
             "Content-Type": "application/x-www-form-urlencoded",
             "x-app-key": app_key,
-            "x-enterpriseid": enterprise_id,
+            "enterpriseId": enterprise_id,
         }
 
         refresh_token = integration.get_refresh_token()
