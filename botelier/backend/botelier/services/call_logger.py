@@ -810,7 +810,12 @@ class CallLogger:
 
         Called from /connect-complete when transfer_mode='cold'. Since Twilio exits
         the bridge immediately on a SIP REFER, no /transfer-status callbacks arrive.
-        We finalize the call here using the AI leg duration as the tracked duration.
+
+        Inbound duration is computed from call_log.answered_at → ended_at (falling
+        back to started_at → ended_at). Twilio's SIP REFER parent call typically
+        reports CallDuration=0 because Twilio's leg ends the moment the REFER is
+        accepted — the actual caller duration continues via SIP infrastructure outside
+        Twilio. Computing from timestamps here is the only authoritative source.
 
         Args:
             call_sid: Twilio call SID
@@ -843,9 +848,24 @@ class CallLogger:
 
             ai_duration = ai_leg.duration_seconds if ai_leg else 0
 
+            # Compute inbound duration from timestamps. answered_at is preferred
+            # because it excludes ring time; started_at is the fallback for calls
+            # that were never answered before the AI connected (uncommon but valid).
+            anchor = call_log.answered_at or call_log.started_at
+            ended = call_log.ended_at
+            inbound_duration = (
+                max(0, int((ended - anchor).total_seconds())) if anchor else 0
+            )
+            self._upsert_inbound_billing(
+                call_log,
+                inbound_duration,
+                source="cold_transfer_finalize",
+            )
+
             self.db.commit()
             logger.info(
-                f"Finalized cold transfer call {call_sid} (AI leg duration: {ai_duration}s)"
+                f"Finalized cold transfer call {call_sid} "
+                f"(inbound: {inbound_duration}s from timestamps, AI leg: {ai_duration}s)"
             )
             return True
 

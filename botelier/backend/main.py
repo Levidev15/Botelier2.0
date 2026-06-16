@@ -24,6 +24,7 @@ from botelier.api.account import router as account_router
 from botelier.api.actions import router as actions_router
 from botelier.api.admin import router as admin_router
 from botelier.api.admin_billing import router as admin_billing_router
+from botelier.api.call_duration_admin import router as call_duration_admin_router
 from botelier.api.billing import router as billing_router
 from botelier.api.analytics import router as analytics_router
 from botelier.api.api_tester import router as api_tester_router
@@ -106,6 +107,7 @@ app.include_router(team_router)  # Account team management
 app.include_router(account_router)  # Account-level client endpoints (features, etc.)
 app.include_router(billing_router)  # Account usage & billing
 app.include_router(admin_billing_router)  # Admin billing — cross-account view and rate config
+app.include_router(call_duration_admin_router)  # Admin — call duration reconciliation
 
 uploads_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "uploads")
 os.makedirs(uploads_dir, exist_ok=True)
