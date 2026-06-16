@@ -33,6 +33,7 @@ interface APIAccountIntegration {
       request_schema?: Record<string, unknown>;
       response_schema?: Record<string, unknown>;
       variables?: EndpointVariable[];
+      query_params?: Array<{ key: string; value: string; required?: boolean }>;
       response_mapping?: Record<string, string>;
     }>;
   };
@@ -62,6 +63,7 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
   const [loadingIntegrations, setLoadingIntegrations] = useState(false);
   const [availableSecrets, setAvailableSecrets] = useState<Array<{ key: string; name: string }>>([]);
   const [secretPickerIndex, setSecretPickerIndex] = useState<number | null>(null);
+  const [lastAutoMapping, setLastAutoMapping] = useState<Record<string, string> | null>(null);
   const [testVariables, setTestVariables] = useState<Record<string, string>>({});
   const [testLoading, setTestLoading] = useState(false);
   const [testError, setTestError] = useState<string | null>(null);
@@ -115,8 +117,19 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
   const selectedEndpoint = selectedIntegration?.integration_type.endpoints.find(e => e.id === api.endpointId);
   const testableVariables = variables.filter(v => v.key);
 
+  const areMappingsEqual = (a: Record<string, string>, b: Record<string, string>): boolean => {
+    const aKeys = Object.keys(a);
+    const bKeys = Object.keys(b);
+    if (aKeys.length !== bKeys.length) return false;
+    return aKeys.every(k => a[k] === b[k]);
+  };
+
+  const formatMappingLabel = (key: string) =>
+    key.replace(/_/g, " ").replace(/\b\w/g, c => c.toUpperCase());
+
   const handleIntegrationChange = (integrationId: string) => {
     const integration = integrations.find(i => i.id === integrationId);
+    setLastAutoMapping(null);
     updateApi({
       integrationId,
       integrationSlug: integration?.integration_type.slug,
@@ -130,37 +143,54 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
 
   const handleEndpointChange = (endpointId: string) => {
     const endpoint = selectedIntegration?.integration_type.endpoints.find(e => e.id === endpointId);
-    if (endpoint) {
-      let bodyTemplate = "";
-      if (endpoint.request_schema && (endpoint.method === "POST" || endpoint.method === "PUT" || endpoint.method === "PATCH")) {
-        bodyTemplate = JSON.stringify(endpoint.request_schema, null, 2);
-      }
+    if (!endpoint) return;
 
-      const endpointHasMapping = endpoint.response_mapping && Object.keys(endpoint.response_mapping).length > 0;
-      const hasExistingMappings = Object.keys(api.responseMapping || {}).length > 0;
-
-      let newResponseMapping: Record<string, string> | undefined = api.responseMapping;
-      if (endpointHasMapping) {
-        if (hasExistingMappings) {
-          const confirmed = window.confirm(
-            `Replace existing response mappings with the defaults for "${endpoint.name}"?`
-          );
-          if (confirmed) newResponseMapping = endpoint.response_mapping;
-        } else {
-          newResponseMapping = endpoint.response_mapping;
-        }
-        setShowResponseMapping(true);
-      }
-
-      updateApi({
-        endpointId,
-        endpointName: endpoint.name,
-        method: endpoint.method as "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
-        url: endpoint.path,
-        bodyTemplate,
-        responseMapping: newResponseMapping,
-      });
+    let bodyTemplate = "";
+    if (endpoint.request_schema && (endpoint.method === "POST" || endpoint.method === "PUT" || endpoint.method === "PATCH")) {
+      bodyTemplate = JSON.stringify(endpoint.request_schema, null, 2);
     }
+
+    const currentMapping = api.responseMapping || {};
+    const endpointMapping = endpoint.response_mapping || {};
+    const endpointHasMapping = Object.keys(endpointMapping).length > 0;
+    const isCustomized = lastAutoMapping !== null && !areMappingsEqual(currentMapping, lastAutoMapping);
+
+    let newResponseMapping: Record<string, string>;
+
+    if (endpointHasMapping) {
+      if (isCustomized) {
+        const confirmed = window.confirm(
+          `Replace your customized response mappings with the defaults for "${endpoint.name}"?`
+        );
+        newResponseMapping = confirmed ? { ...endpointMapping } : currentMapping;
+      } else {
+        newResponseMapping = { ...endpointMapping };
+      }
+      setLastAutoMapping({ ...endpointMapping });
+      setShowResponseMapping(true);
+    } else {
+      if (lastAutoMapping !== null) {
+        const customOnly: Record<string, string> = {};
+        for (const [k, v] of Object.entries(currentMapping)) {
+          if (!(k in lastAutoMapping) || lastAutoMapping[k] !== v) {
+            customOnly[k] = v;
+          }
+        }
+        newResponseMapping = customOnly;
+      } else {
+        newResponseMapping = currentMapping;
+      }
+      setLastAutoMapping(null);
+    }
+
+    updateApi({
+      endpointId,
+      endpointName: endpoint.name,
+      method: endpoint.method as "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
+      url: endpoint.path,
+      bodyTemplate,
+      responseMapping: newResponseMapping,
+    });
   };
 
   const headerEntries = Object.entries(api.headers || {});
@@ -634,35 +664,40 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
               Maps API response fields into flow variables the AI can reference. Use JSONPath (e.g. <code className="text-orange-400">$.data.guest.name</code>) or dot notation (e.g. <code className="text-orange-400">data.guest.name</code>).
             </div>
             {responseMappingEntries.map(([key, path], i) => {
-              const isAuto = !!(selectedEndpoint?.response_mapping && selectedEndpoint.response_mapping[key] === path && key !== "");
+              const isAuto = !!(lastAutoMapping && key !== "" && lastAutoMapping[key] === path);
               return (
-                <div key={i} className="flex gap-2 items-center">
-                  <div className="flex-1 relative">
+                <div key={i}>
+                  <div className="flex gap-2 items-center">
+                    <div className="flex-1 relative">
+                      <input
+                        type="text"
+                        value={key}
+                        onChange={(e) => updateResponseMapping(key, e.target.value, path, i)}
+                        className={smallInputCls}
+                        placeholder="variable_name"
+                      />
+                      {isAuto && (
+                        <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] bg-orange-900/40 text-orange-400 rounded px-1 pointer-events-none">auto</span>
+                      )}
+                    </div>
+                    <span className="text-gray-500">=</span>
                     <input
                       type="text"
-                      value={key}
-                      onChange={(e) => updateResponseMapping(key, e.target.value, path, i)}
-                      className={smallInputCls}
-                      placeholder="variable_name"
+                      value={path}
+                      onChange={(e) => updateResponseMapping(key, key, e.target.value, i)}
+                      className={`${smallInputCls} flex-1`}
+                      placeholder="$.data.guest.name"
                     />
-                    {isAuto && (
-                      <span className="absolute right-1.5 top-1/2 -translate-y-1/2 text-[10px] bg-orange-900/40 text-orange-400 rounded px-1 pointer-events-none">auto</span>
-                    )}
+                    <button
+                      onClick={() => removeResponseMapping(i)}
+                      className="text-red-400 hover:text-red-300 p-1"
+                    >
+                      <X className="h-3 w-3" />
+                    </button>
                   </div>
-                  <span className="text-gray-500">=</span>
-                  <input
-                    type="text"
-                    value={path}
-                    onChange={(e) => updateResponseMapping(key, key, e.target.value, i)}
-                    className={`${smallInputCls} flex-1`}
-                    placeholder="$.data.guest.name"
-                  />
-                  <button
-                    onClick={() => removeResponseMapping(i)}
-                    className="text-red-400 hover:text-red-300 p-1"
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
+                  {isAuto && key && (
+                    <p className="text-[11px] text-gray-600 mt-0.5 ml-0.5">{formatMappingLabel(key)}</p>
+                  )}
                 </div>
               );
             })}
