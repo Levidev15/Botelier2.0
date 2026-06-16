@@ -17,12 +17,17 @@ OPERA_CLOUD_INTEGRATION = {
     "auth_type": "oauth2_client_credentials",
     "documentation_url": "https://docs.oracle.com/en/industries/hospitality/integration-platform/ohipu/",
     "auth_config": {
+        # OHIP OAuth2 client_credentials flow.
+        # Token endpoint: POST {gateway_url}/oauth/v1/tokens
+        # Auth: HTTP Basic (client_id:client_secret)
+        # Body: grant_type=client_credentials&scope=<scope>
+        # x-app-key header: set to the app_key credential when present,
+        #                    otherwise falls back to client_id (sandbox behaviour).
         "token_endpoint_path": "/oauth/v1/tokens",
-        "grant_type": "password",
-        "scope": "oraclecloud",
+        "grant_type": "client_credentials",
+        "scope": "urn:opc:hgbu:ws:__myscopes__",
         "token_header": "Authorization",
         "token_prefix": "Bearer",
-        "additional_headers": {"x-app-key": "{{app_key}}"},
     },
     "required_fields": [
         {
@@ -34,19 +39,11 @@ OPERA_CLOUD_INTEGRATION = {
             "required": True,
         },
         {
-            "key": "app_key",
-            "label": "Application Key",
-            "type": "password",
-            "placeholder": "Your x-app-key",
-            "description": "Application key from registering your app in the Developer Portal",
-            "required": True,
-        },
-        {
             "key": "client_id",
             "label": "Client ID",
             "type": "text",
             "placeholder": "Your OAuth Client ID",
-            "description": "OAuth Client ID from the Developer Portal",
+            "description": "OAuth Client ID from the Developer Portal. Also used as x-app-key in the sandbox when no separate Application Key is provided.",
             "required": True,
         },
         {
@@ -61,7 +58,7 @@ OPERA_CLOUD_INTEGRATION = {
             "key": "enterprise_id",
             "label": "Enterprise ID",
             "type": "text",
-            "placeholder": "Your Enterprise ID",
+            "placeholder": "e.g. OCR4ENT",
             "description": "Your Oracle Hospitality Enterprise ID",
             "required": True,
         },
@@ -69,9 +66,25 @@ OPERA_CLOUD_INTEGRATION = {
             "key": "hotel_id",
             "label": "Hotel ID (Property Code)",
             "type": "text",
-            "placeholder": "SAND01 or your property code",
-            "description": "The property/hotel ID in OPERA Cloud (e.g., SAND01 for sandbox)",
+            "placeholder": "e.g. OHIPSB02",
+            "description": "The property/hotel ID in OPERA Cloud. Sent as x-hotelid header on all OHIP API calls.",
             "required": True,
+        },
+        {
+            "key": "chain_code",
+            "label": "Chain Code",
+            "type": "text",
+            "placeholder": "e.g. OHIPLAB",
+            "description": "Your Oracle chain code. Sent as x-chainid header on OHIP API calls that require it. Optional for sandbox.",
+            "required": False,
+        },
+        {
+            "key": "app_key",
+            "label": "Application Key (optional)",
+            "type": "password",
+            "placeholder": "Leave blank to use Client ID (sandbox default)",
+            "description": "x-app-key value for production environments where the app key differs from the Client ID. Leave blank for the OHIP sandbox.",
+            "required": False,
         },
     ],
     "endpoints": [

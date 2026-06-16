@@ -25,7 +25,15 @@ from botelier.services.ssrf_safe_transport import SSRFSafeTransport
 
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
 
-_ORACLE_ALLOWED_SUFFIXES = (".oraclecloud.com", ".oracle.com")
+# Accepted Oracle hostname suffixes for the OHIP gateway URL.
+# Production environments end in .oraclecloud.com or .oracle.com.
+# Oracle's self-service sandbox environments end in .ocs.oc-test.com
+# (e.g. *.hospitality-api.<region>.ocs.oc-test.com).
+_ORACLE_ALLOWED_SUFFIXES = (
+    ".oraclecloud.com",
+    ".oracle.com",
+    ".ocs.oc-test.com",
+)
 
 
 def _validate_opera_gateway_url(gateway_url: str) -> None:
@@ -48,7 +56,10 @@ def _validate_opera_gateway_url(gateway_url: str) -> None:
     if not any(hostname.endswith(suffix) for suffix in _ORACLE_ALLOWED_SUFFIXES):
         raise HTTPException(
             status_code=400,
-            detail="gateway_url must be an Oracle Cloud hostname (*.oraclecloud.com or *.oracle.com)",
+            detail=(
+                "gateway_url must be an Oracle Cloud hostname "
+                "(*.oraclecloud.com, *.oracle.com, or *.ocs.oc-test.com for sandbox)"
+            ),
         )
 
 
@@ -869,9 +880,12 @@ async def obtain_oauth_token(integration_type: IntegrationType, credentials: dic
     client_id = credentials.get("client_id")
     client_secret = credentials.get("client_secret")
     enterprise_id = credentials.get("enterprise_id")
-    app_key = credentials.get("app_key")
+    # OHIP sandbox does not issue a separate app_key — the client_id doubles as
+    # the x-app-key header. Production accounts may supply a distinct app_key;
+    # use it when present, otherwise fall back to client_id.
+    app_key = credentials.get("app_key") or client_id
 
-    if not all([gateway_url, client_id, client_secret, enterprise_id, app_key]):
+    if not all([gateway_url, client_id, client_secret, enterprise_id]):
         return {"success": False, "error": "Missing required credentials"}
 
     try:
@@ -885,7 +899,7 @@ async def obtain_oauth_token(integration_type: IntegrationType, credentials: dic
 
     data = {
         "grant_type": "client_credentials",
-        "scope": f"{auth_config.get('scope', 'oraclecloud')}",
+        "scope": auth_config.get("scope", "urn:opc:hgbu:ws:__myscopes__"),
     }
 
     try:
@@ -1078,7 +1092,8 @@ async def refresh_oauth_token(
     gateway_url = credentials.get("gateway_url", "").rstrip("/")
     client_id = credentials.get("client_id")
     client_secret = credentials.get("client_secret")
-    app_key = credentials.get("app_key")
+    # OHIP sandbox uses client_id as app_key; prefer explicit app_key if supplied.
+    app_key = credentials.get("app_key") or client_id
 
     try:
         _validate_opera_gateway_url(gateway_url)

@@ -23,7 +23,15 @@ from botelier.models.integration import (
 )
 from botelier.services.ssrf_safe_transport import SSRFSafeTransport
 
-_ORACLE_ALLOWED_SUFFIXES = (".oraclecloud.com", ".oracle.com")
+# Accepted Oracle hostname suffixes for the OHIP gateway URL.
+# Production environments end in .oraclecloud.com or .oracle.com.
+# Oracle's self-service sandbox environments end in .ocs.oc-test.com
+# (e.g. *.hospitality-api.<region>.ocs.oc-test.com).
+_ORACLE_ALLOWED_SUFFIXES = (
+    ".oraclecloud.com",
+    ".oracle.com",
+    ".ocs.oc-test.com",
+)
 
 
 def _validate_opera_gateway_url(gateway_url: str) -> None:
@@ -39,7 +47,8 @@ def _validate_opera_gateway_url(gateway_url: str) -> None:
     hostname = (parsed.hostname or "").lower()
     if not any(hostname.endswith(suffix) for suffix in _ORACLE_ALLOWED_SUFFIXES):
         raise ValueError(
-            "gateway_url must be an Oracle Cloud hostname (*.oraclecloud.com or *.oracle.com)"
+            "gateway_url must be an Oracle Cloud hostname "
+            "(*.oraclecloud.com, *.oracle.com, or *.ocs.oc-test.com for sandbox)"
         )
 
 
@@ -492,9 +501,12 @@ class IntegrationClient:
         gateway_url = raw_gateway.rstrip("/")
         client_id = credentials.get("client_id")
         client_secret = credentials.get("client_secret")
-        app_key = credentials.get("app_key")
+        # OHIP sandbox does not issue a separate app_key — the client_id is used
+        # as the x-app-key header value. Production accounts may supply a distinct
+        # app_key; use it when present, otherwise fall back to client_id.
+        app_key = credentials.get("app_key") or client_id
 
-        if not all([gateway_url, client_id, client_secret, app_key]):
+        if not all([gateway_url, client_id, client_secret]):
             logger.error("Missing credentials for token refresh")
             return False
 
@@ -627,12 +639,18 @@ class IntegrationClient:
                 headers["Authorization"] = f"Bearer {access_token}"
 
         if auth_type == "oauth2_client_credentials":
-            app_key = credentials.get("app_key")
+            # OHIP sandbox uses client_id as the app_key; production accounts may
+            # supply a distinct app_key field — prefer it when present.
+            app_key = credentials.get("app_key") or credentials.get("client_id")
             if app_key:
                 headers["x-app-key"] = app_key
             hotel_id = credentials.get("hotel_id")
             if hotel_id:
                 headers["x-hotelid"] = hotel_id
+            # chain_code is required by some OHIP endpoints (sent as x-chainid).
+            chain_code = credentials.get("chain_code")
+            if chain_code:
+                headers["x-chainid"] = chain_code
 
         if config.headers:
             headers.update(config.headers)
