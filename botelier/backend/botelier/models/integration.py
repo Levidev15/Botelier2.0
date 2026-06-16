@@ -16,7 +16,7 @@ import os
 import uuid
 from datetime import datetime
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import Fernet, InvalidToken
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
@@ -215,12 +215,27 @@ class AccountIntegration(Base):
         self.credentials_encrypted = cipher.encrypt(data).decode()
 
     def get_credentials(self) -> dict:
-        """Decrypt and return credentials."""
+        """Decrypt and return credentials.
+
+        Returns {} if the stored blob cannot be decrypted (e.g. the encryption
+        key was rotated since the credentials were saved).  Callers that need
+        to merge-in new values will treat missing fields as absent, prompting
+        the user to re-enter them — far better than a 500.
+        """
         if not self.credentials_encrypted:
             return {}
-        cipher = self._get_cipher()
-        data = cipher.decrypt(self.credentials_encrypted.encode())
-        return json.loads(data.decode())
+        try:
+            cipher = self._get_cipher()
+            data = cipher.decrypt(self.credentials_encrypted.encode())
+            return json.loads(data.decode())
+        except (InvalidToken, Exception):
+            import logging
+            logging.getLogger(__name__).warning(
+                "get_credentials: decryption failed for integration %s — "
+                "key may have rotated; returning empty dict",
+                self.id,
+            )
+            return {}
 
     def set_access_token(self, token: str):
         """Encrypt and store access token."""
@@ -228,11 +243,22 @@ class AccountIntegration(Base):
         self.access_token_encrypted = cipher.encrypt(token.encode()).decode()
 
     def get_access_token(self) -> str | None:
-        """Decrypt and return access token."""
+        """Decrypt and return access token.
+
+        Returns None on decryption failure so callers treat the token as
+        expired and trigger a fresh token fetch rather than crashing.
+        """
         if not self.access_token_encrypted:
             return None
-        cipher = self._get_cipher()
-        return cipher.decrypt(self.access_token_encrypted.encode()).decode()
+        try:
+            cipher = self._get_cipher()
+            return cipher.decrypt(self.access_token_encrypted.encode()).decode()
+        except (InvalidToken, Exception):
+            import logging
+            logging.getLogger(__name__).warning(
+                "get_access_token: decryption failed for integration %s", self.id
+            )
+            return None
 
     def set_refresh_token(self, token: str):
         """Encrypt and store refresh token."""
@@ -240,11 +266,22 @@ class AccountIntegration(Base):
         self.refresh_token_encrypted = cipher.encrypt(token.encode()).decode()
 
     def get_refresh_token(self) -> str | None:
-        """Decrypt and return refresh token."""
+        """Decrypt and return refresh token.
+
+        Returns None on decryption failure so callers skip the stale token
+        and fall back to a full re-authenticate.
+        """
         if not self.refresh_token_encrypted:
             return None
-        cipher = self._get_cipher()
-        return cipher.decrypt(self.refresh_token_encrypted.encode()).decode()
+        try:
+            cipher = self._get_cipher()
+            return cipher.decrypt(self.refresh_token_encrypted.encode()).decode()
+        except (InvalidToken, Exception):
+            import logging
+            logging.getLogger(__name__).warning(
+                "get_refresh_token: decryption failed for integration %s", self.id
+            )
+            return None
 
     def get_connection_config(self) -> dict:
         """Parse connection_config JSON."""
