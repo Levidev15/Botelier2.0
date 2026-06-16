@@ -35,6 +35,7 @@ interface APIAccountIntegration {
       variables?: EndpointVariable[];
       query_params?: Array<{ key: string; value: string; required?: boolean }>;
       response_mapping?: Record<string, string>;
+      response_mapping_labels?: Record<string, string>;
     }>;
   };
   status: string;
@@ -63,7 +64,6 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
   const [loadingIntegrations, setLoadingIntegrations] = useState(false);
   const [availableSecrets, setAvailableSecrets] = useState<Array<{ key: string; name: string }>>([]);
   const [secretPickerIndex, setSecretPickerIndex] = useState<number | null>(null);
-  const [lastAutoMapping, setLastAutoMapping] = useState<Record<string, string> | null>(null);
   const [testVariables, setTestVariables] = useState<Record<string, string>>({});
   const [testLoading, setTestLoading] = useState(false);
   const [testError, setTestError] = useState<string | null>(null);
@@ -129,7 +129,6 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
 
   const handleIntegrationChange = (integrationId: string) => {
     const integration = integrations.find(i => i.id === integrationId);
-    setLastAutoMapping(null);
     updateApi({
       integrationId,
       integrationSlug: integration?.integration_type.slug,
@@ -138,6 +137,7 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
       url: "",
       method: "GET" as const,
       bodyTemplate: "",
+      autoMappingSource: undefined,
     });
   };
 
@@ -151,11 +151,19 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
     }
 
     const currentMapping = api.responseMapping || {};
+    const autoSource = api.autoMappingSource;
     const endpointMapping = endpoint.response_mapping || {};
     const endpointHasMapping = Object.keys(endpointMapping).length > 0;
-    const isCustomized = lastAutoMapping !== null && !areMappingsEqual(currentMapping, lastAutoMapping);
+    const hasCurrentMappings = Object.keys(currentMapping).length > 0;
+
+    // Customized = has mappings that differ from the last auto-populated source,
+    // or has mappings that were manually created (no autoMappingSource set)
+    const isCustomized = hasCurrentMappings && (
+      !autoSource || !areMappingsEqual(currentMapping, autoSource)
+    );
 
     let newResponseMapping: Record<string, string>;
+    let newAutoMappingSource: Record<string, string> | undefined;
 
     if (endpointHasMapping) {
       if (isCustomized) {
@@ -166,21 +174,25 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
       } else {
         newResponseMapping = { ...endpointMapping };
       }
-      setLastAutoMapping({ ...endpointMapping });
+      newAutoMappingSource = { ...endpointMapping };
       setShowResponseMapping(true);
     } else {
-      if (lastAutoMapping !== null) {
+      // New endpoint has no mapping — strip auto-populated rows, keep user-added ones
+      if (autoSource) {
         const customOnly: Record<string, string> = {};
         for (const [k, v] of Object.entries(currentMapping)) {
-          if (!(k in lastAutoMapping) || lastAutoMapping[k] !== v) {
-            customOnly[k] = v;
-          }
+          if (!(k in autoSource) || autoSource[k] !== v) customOnly[k] = v;
         }
         newResponseMapping = customOnly;
+      } else if (isCustomized) {
+        const confirmed = window.confirm(
+          `"${endpoint.name}" has no default response mappings. Clear your existing mappings?`
+        );
+        newResponseMapping = confirmed ? {} : currentMapping;
       } else {
-        newResponseMapping = currentMapping;
+        newResponseMapping = {};
       }
-      setLastAutoMapping(null);
+      newAutoMappingSource = undefined;
     }
 
     updateApi({
@@ -190,6 +202,7 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
       url: endpoint.path,
       bodyTemplate,
       responseMapping: newResponseMapping,
+      autoMappingSource: newAutoMappingSource,
     });
   };
 
@@ -664,7 +677,10 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
               Maps API response fields into flow variables the AI can reference. Use JSONPath (e.g. <code className="text-orange-400">$.data.guest.name</code>) or dot notation (e.g. <code className="text-orange-400">data.guest.name</code>).
             </div>
             {responseMappingEntries.map(([key, path], i) => {
-              const isAuto = !!(lastAutoMapping && key !== "" && lastAutoMapping[key] === path);
+              const isAuto = !!(api.autoMappingSource && key !== "" && api.autoMappingSource[key] === path);
+              const autoLabel = isAuto && key
+                ? (selectedEndpoint?.response_mapping_labels?.[key] ?? formatMappingLabel(key))
+                : null;
               return (
                 <div key={i}>
                   <div className="flex gap-2 items-center">
@@ -695,8 +711,8 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
                       <X className="h-3 w-3" />
                     </button>
                   </div>
-                  {isAuto && key && (
-                    <p className="text-[11px] text-gray-600 mt-0.5 ml-0.5">{formatMappingLabel(key)}</p>
+                  {autoLabel && (
+                    <p className="text-[11px] text-gray-600 mt-0.5 ml-0.5">{autoLabel}</p>
                   )}
                 </div>
               );

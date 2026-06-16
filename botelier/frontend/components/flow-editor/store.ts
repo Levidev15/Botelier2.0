@@ -87,6 +87,7 @@ export interface APIRequestConfig {
   integrationSlug?: string;
   endpointId?: string;
   endpointName?: string;
+  autoMappingSource?: Record<string, string>;
 }
 
 export interface ConfirmationConfig {

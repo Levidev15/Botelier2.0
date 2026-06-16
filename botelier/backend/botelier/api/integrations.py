@@ -164,6 +164,7 @@ class IntegrationEndpointDetail(BaseModel):
     variables: List[dict] = []
     query_params: List[dict] = []
     response_mapping: dict = {}
+    response_mapping_labels: dict = {}
 
 
 class IntegrationTypeDetail(BaseModel):
@@ -216,6 +217,7 @@ async def get_my_connections(current_user=Depends(get_current_user), db: Session
                     variables=ep.get("variables", []),
                     query_params=ep.get("query_params", []),
                     response_mapping=ep.get("response_mapping", {}),
+                    response_mapping_labels=ep.get("response_mapping_labels", {}),
                 )
             )
 

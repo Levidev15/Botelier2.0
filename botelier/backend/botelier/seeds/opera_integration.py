@@ -114,6 +114,14 @@ OPERA_CLOUD_INTEGRATION = {
                 "room_type": "$.reservations.reservation[0].roomType",
                 "status": "$.reservations.reservation[0].reservationStatus",
             },
+            "response_mapping_labels": {
+                "reservation_id": "System reservation identifier",
+                "guest_name": "Guest given name",
+                "arrival_date": "Check-in date (YYYY-MM-DD)",
+                "departure_date": "Check-out date (YYYY-MM-DD)",
+                "room_type": "Room type code",
+                "status": "Reservation status (e.g. RESERVED, INHOUSE)",
+            },
         },
         {
             "id": "search_reservations",
@@ -157,6 +165,10 @@ OPERA_CLOUD_INTEGRATION = {
             "response_mapping": {
                 "reservations": "$.reservations.reservation",
                 "count": "$.reservations.count",
+            },
+            "response_mapping_labels": {
+                "reservations": "Array of matching reservation objects",
+                "count": "Total number of results returned",
             },
         },
         {
@@ -236,6 +248,10 @@ OPERA_CLOUD_INTEGRATION = {
                 "confirmation_number": "$.links[0].href",
                 "reservation_id": "$.reservationId.id",
             },
+            "response_mapping_labels": {
+                "confirmation_number": "New reservation confirmation number",
+                "reservation_id": "System-assigned reservation identifier",
+            },
         },
         {
             "id": "get_guest_profile",
@@ -260,6 +276,13 @@ OPERA_CLOUD_INTEGRATION = {
                 "email": "$.profileDetails.emails[0].email",
                 "phone": "$.profileDetails.phones[0].phoneNumber",
             },
+            "response_mapping_labels": {
+                "profile_id": "Guest profile system identifier",
+                "first_name": "Guest given (first) name",
+                "last_name": "Guest family (last) name",
+                "email": "Primary email address",
+                "phone": "Primary phone number",
+            },
         },
         {
             "id": "search_profiles",
@@ -281,6 +304,10 @@ OPERA_CLOUD_INTEGRATION = {
                 {"key": "phone", "type": "text", "label": "Phone Number"},
             ],
             "response_mapping": {"profiles": "$.profiles.profileInfo", "count": "$.profiles.count"},
+            "response_mapping_labels": {
+                "profiles": "Array of matching guest profile objects",
+                "count": "Total number of profiles found",
+            },
         },
         {
             "id": "check_availability",
@@ -307,6 +334,10 @@ OPERA_CLOUD_INTEGRATION = {
                 "available_rooms": "$.hotelAvailability.roomTypes",
                 "rates": "$.hotelAvailability.ratePlans",
             },
+            "response_mapping_labels": {
+                "available_rooms": "List of available room types for the dates",
+                "rates": "List of applicable rate plans",
+            },
         },
         {
             "id": "get_room_types",
@@ -317,6 +348,9 @@ OPERA_CLOUD_INTEGRATION = {
             "path": "/fof/v1/hotels/{{hotel_id}}/roomTypes",
             "variables": [],
             "response_mapping": {"room_types": "$.roomTypes.roomType"},
+            "response_mapping_labels": {
+                "room_types": "All configured room types at the property",
+            },
         },
         {
             "id": "get_rate_plans",
@@ -327,6 +361,9 @@ OPERA_CLOUD_INTEGRATION = {
             "path": "/rtp/v1/hotels/{{hotel_id}}/ratePlans",
             "variables": [],
             "response_mapping": {"rate_plans": "$.ratePlans.ratePlanInfo"},
+            "response_mapping_labels": {
+                "rate_plans": "All configured rate plans at the property",
+            },
         },
         {
             "id": "get_in_house_guests",
@@ -340,6 +377,10 @@ OPERA_CLOUD_INTEGRATION = {
             "response_mapping": {
                 "guests": "$.reservationsDetails.reservationInfo",
                 "count": "$.reservationsDetails.count",
+            },
+            "response_mapping_labels": {
+                "guests": "List of currently checked-in guest records",
+                "count": "Total number of in-house guests",
             },
         },
         {
@@ -359,6 +400,10 @@ OPERA_CLOUD_INTEGRATION = {
             "response_mapping": {
                 "arrivals": "$.reservationsDetails.reservationInfo",
                 "count": "$.reservationsDetails.count",
+            },
+            "response_mapping_labels": {
+                "arrivals": "List of guests expected to arrive on the given date",
+                "count": "Total number of expected arrivals",
             },
         },
     ],
