@@ -1081,6 +1081,7 @@ async def obtain_oauth_token(integration_type: IntegrationType, credentials: dic
     data = {
         "grant_type": "client_credentials",
         "scope": auth_config.get("scope", "urn:opc:hgbu:ws:__myscopes__"),
+        "enterpriseId": enterprise_id,
     }
 
     try:
@@ -1285,7 +1286,12 @@ async def refresh_oauth_token(
 
     headers = {"Content-Type": "application/x-www-form-urlencoded", "x-app-key": app_key}
 
-    data = {"grant_type": "refresh_token", "refresh_token": refresh_token}
+    enterprise_id = credentials.get("enterprise_id")
+    data = {
+        "grant_type": "refresh_token",
+        "refresh_token": refresh_token,
+        "enterpriseId": enterprise_id,
+    }
 
     try:
         async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
