@@ -675,7 +675,7 @@ const OPERA_OHIP_BOOKING_TEMPLATE = {
     { key: "check_in_date",      type: "date"   as SlotType, description: "Check-in date",                          required: true  },
     { key: "check_out_date",     type: "date"   as SlotType, description: "Check-out date",                         required: true  },
     { key: "guest_count",        type: "number" as SlotType, description: "Number of adult guests",                 required: true  },
-    { key: "room_type_code",     type: "text"   as SlotType, description: "Selected room type code from availability", required: true },
+    { key: "room_type",          type: "text"   as SlotType, description: "Selected room type from availability results", required: true },
     { key: "guest_name",         type: "text"   as SlotType, description: "Guest full name",                        required: true  },
     { key: "phone_number",       type: "phone"  as SlotType, description: "Contact phone number",                   required: true  },
     { key: "confirmation_number",type: "text"   as SlotType, description: "Reservation confirmation number (from Opera)", required: false },
@@ -749,8 +749,8 @@ const OPERA_OHIP_BOOKING_TEMPLATE = {
           variableKey: "guest_count",
           prompt: "How many adult guests will be staying?",
           type: "number",
-          validation: { min: 1, max: 20 },
-          retryPrompt: "Please give me a number between 1 and 20.",
+          validation: { min: 1, max: 10 },
+          retryPrompt: "Please give me a number between 1 and 10.",
           maxRetries: 2,
           useBuiltInValidator: true,
         },
@@ -801,12 +801,12 @@ const OPERA_OHIP_BOOKING_TEMPLATE = {
       data: {
         name: "Room Type Selection",
         slot: {
-          variableKey: "room_type_code",
+          variableKey: "room_type",
           prompt:
-            "Which room type would you like? Please tell me the room type code or name — " +
-            "for example, {{room_type_codes}}.",
+            "Which room type would you like? The available options are: {{room_type_codes}}. " +
+            "Please tell me the room type name or code.",
           type: "text",
-          retryPrompt: "Could you repeat the room type code you'd like?",
+          retryPrompt: "Could you repeat which room type you'd like?",
           maxRetries: 3,
         },
       } as CollectSlotNodeData,
@@ -850,7 +850,7 @@ const OPERA_OHIP_BOOKING_TEMPLATE = {
         name: "Confirm Booking Details",
         confirmation: {
           summaryTemplate:
-            "Just to confirm before I submit: a {{room_type_code}} room for {{guest_count}} guest(s), " +
+            "Just to confirm before I submit: a {{room_type}} room for {{guest_count}} guest(s), " +
             "checking in on {{check_in_date}} and checking out on {{check_out_date}}, " +
             "under {{guest_name}} — contact number {{phone_number}}.",
           confirmPrompt: "Shall I go ahead and create this reservation?",
@@ -859,7 +859,7 @@ const OPERA_OHIP_BOOKING_TEMPLATE = {
             "check_in_date",
             "check_out_date",
             "guest_count",
-            "room_type_code",
+            "room_type",
             "guest_name",
             "phone_number",
           ],
@@ -891,7 +891,7 @@ const OPERA_OHIP_BOOKING_TEMPLATE = {
               checkInDate:   "{{check_in_date}}",
               checkOutDate:  "{{check_out_date}}",
               adults:        "{{guest_count}}",
-              roomTypeCode:  "{{room_type_code}}",
+              roomTypeCode:  "{{room_type}}",
               guestName:     "{{guest_name}}",
               phoneNumber:   "{{phone_number}}",
             },
@@ -1387,5 +1387,5 @@ export const AVAILABLE_TEMPLATES = [
   { id: "room-booking",       name: "Room Booking",             description: "Complete room reservation flow with guest details collection" },
   { id: "concierge",          name: "Concierge Services",        description: "Help guests with dining, spa, and activity requests" },
   { id: "room-service",       name: "Room Service",              description: "Take food and beverage orders with special dietary requirements" },
-  { id: "opera-ohip-booking", name: "Opera OHIP Booking",        description: "Check availability and create a reservation via Oracle Opera OHIP — includes two pre-wired API Request nodes" },
+  { id: "opera-ohip-booking", name: "Opera OHIP Booking",        description: "Check availability and create a reservation via Oracle Opera OHIP — includes two pre-wired API Request nodes", complexity: "medium" },
 ];
