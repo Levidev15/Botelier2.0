@@ -348,10 +348,21 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
                     disabled={isLoading}
                     className="w-full px-3 py-2 text-left hover:bg-gray-800 disabled:opacity-50"
                   >
-                    <div className="text-sm text-white font-medium">
-                      {template.name}
+                    <div className="flex items-center gap-2">
+                      <span className="text-sm text-white font-medium">{template.name}</span>
+                      {"complexity" in template && template.complexity && (
+                        <span className={`text-[10px] px-1.5 py-0.5 rounded font-medium ${
+                          template.complexity === "complex"
+                            ? "bg-red-900/40 text-red-400"
+                            : template.complexity === "medium"
+                            ? "bg-orange-900/40 text-orange-400"
+                            : "bg-green-900/40 text-green-400"
+                        }`}>
+                          {template.complexity}
+                        </span>
+                      )}
                     </div>
-                    <div className="text-xs text-gray-400">
+                    <div className="text-xs text-gray-400 mt-0.5">
                       {template.description}
                     </div>
                   </button>

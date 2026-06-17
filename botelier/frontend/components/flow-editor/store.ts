@@ -767,13 +767,13 @@ const OPERA_OHIP_BOOKING_TEMPLATE = {
           "If no rooms are available, apologise and offer to try different dates.",
         api: {
           method: "GET",
-          url: "",
-          apiSource: "integration",
-          integrationId: "",
-          integrationSlug: "",
-          endpointId: "",
-          endpointName: "",
+          url: "{{opera_base_url}}/availability",
+          apiSource: "custom",
           thinkingMessage: "Let me check availability for those dates — one moment please.",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer {{opera_api_token}}",
+          },
           responseMapping: {
             available_rooms:  "$.roomTypes",
             prices:           "$.rates",
@@ -879,12 +879,12 @@ const OPERA_OHIP_BOOKING_TEMPLATE = {
           "spelling it out if needed.",
         api: {
           method: "POST",
-          url: "",
-          apiSource: "integration",
-          integrationId: "",
-          integrationSlug: "",
-          endpointId: "",
-          endpointName: "",
+          url: "{{opera_base_url}}/reservations",
+          apiSource: "custom",
+          headers: {
+            "Content-Type": "application/json",
+            "Authorization": "Bearer {{opera_api_token}}",
+          },
           thinkingMessage: "Creating your reservation now — just a moment.",
           bodyTemplate: JSON.stringify(
             {
