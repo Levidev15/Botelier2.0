@@ -904,12 +904,12 @@ const OPERA_OHIP_BOOKING_TEMPLATE = {
           endpointName: "Create Reservation",
           thinkingMessage: "Creating your reservation in Opera now — just a moment.",
           responseMapping: {
-            confirmation_number: "$.links[0].href",
-            booking_id:          "$.reservationId.id",
+            confirmation_number: "$.reservationId.id",
+            booking_url:         "$.links[0].href",
           },
           autoMappingSource: {
-            confirmation_number: "$.links[0].href",
-            booking_id:          "$.reservationId.id",
+            confirmation_number: "$.reservationId.id",
+            booking_url:         "$.links[0].href",
           },
           responseInstructions:
             "Tell the caller their reservation is confirmed in Opera and read out their confirmation number: {{confirmation_number}}. " +

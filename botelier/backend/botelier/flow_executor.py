@@ -583,6 +583,25 @@ You are executing a structured conversation flow. Follow these guidelines:
                 resolved = substitute_variables(pre_message, self.state.collected_slots)
                 context_lines.append(f'CURRENT NODE: Before transfer, say: "{resolved}"')
 
+        elif current_node.type == NodeType.API_REQUEST:
+            api_config = current_node.data.get("api", {})
+            node_name = current_node.data.get("name", "API call")
+            thinking_message = (api_config.get("thinkingMessage") or "").strip()
+            response_instructions = (api_config.get("responseInstructions") or "").strip()
+            node_instructions = (current_node.data.get("instructions") or "").strip()
+            fn_name = f"execute_{current_node.id}"
+            context_lines.append(
+                f'CURRENT NODE: API Request — call `{fn_name}` to execute "{node_name}".'
+            )
+            if thinking_message:
+                context_lines.append(f'Say to the guest: "{thinking_message}"')
+            if response_instructions:
+                context_lines.append(
+                    f"After the API responds, follow these instructions: {response_instructions}"
+                )
+            if node_instructions:
+                context_lines.append(f"Additional instructions: {node_instructions}")
+
         return "\n".join(context_lines) if context_lines else None
 
     def _get_validation_for_variable(self, var_key: str) -> Optional[dict]:
@@ -1091,11 +1110,17 @@ You are executing a structured conversation flow. Follow these guidelines:
 
     def _create_api_function(self, node: FlowNode) -> dict:
         """Create a function schema for an API request node."""
+        api_config = node.data.get("api", {})
+        thinking_message = (api_config.get("thinkingMessage") or "").strip()
+        node_name = node.data.get("name", node.id)
+        description = f"Execute the '{node_name}' API call."
+        if thinking_message:
+            description += f' While executing, say to the guest: "{thinking_message}".'
         return {
             "type": "function",
             "function": {
                 "name": f"execute_{node.id}",
-                "description": f"Execute API call: {node.data.get('name', node.id)}",
+                "description": description,
                 "parameters": {"type": "object", "properties": {}, "required": []},
             },
         }

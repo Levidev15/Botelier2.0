@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 from ..auth.middleware import check_account_permission, get_current_user
 from ..database import get_db
-from ..flow_executor import FlowExecutor, parse_flow_config
+from ..flow_executor import FlowExecutor, NodeType, parse_flow_config
 from ..models.tool import Tool
 from ..models.user import User
 from ..services.ssrf_safe_transport import _BLOCKED_LITERAL_HOSTS, SSRFSafeTransport
@@ -289,7 +289,9 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
     """Process user message with OpenAI LLM using function calling.
 
     The LLM will naturally converse and call functions to collect slots.
-    Handles multiple function calls in sequence until a text response is generated.
+    When the current node is an API Request, tool_choice is forced to the
+    specific execute_ function so the API fires immediately — not after a
+    separate round-trip back to the user.
     """
     if not openai_client:
         return {
@@ -315,19 +317,43 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
     all_function_results = []
     is_ended = False
     max_iterations = 5
+    last_text_content = ""
 
     try:
         for iteration in range(max_iterations):
+            # Force the specific API function when the current node is an API
+            # Request and it has not been called yet this turn.  Using "auto"
+            # here lets the LLM return a plain thinking-message text response
+            # and stall the conversation waiting for the next user input.
+            current_node = state.executor.state.get_current_node()
+            if (
+                tools
+                and current_node
+                and current_node.type == NodeType.API_REQUEST
+                and f"execute_{current_node.id}" not in all_functions_called
+            ):
+                tool_choice = {
+                    "type": "function",
+                    "function": {"name": f"execute_{current_node.id}"},
+                }
+            else:
+                tool_choice = "auto" if tools else None
+
             response = openai_client.chat.completions.create(
                 model=OPENAI_MODEL,
                 messages=state.llm_messages,
                 tools=tools if tools else None,
-                tool_choice="auto" if tools else None,
+                tool_choice=tool_choice,
             )
 
             assistant_message = response.choices[0].message
 
             if assistant_message.tool_calls:
+                # Preserve any content the LLM included alongside the tool call
+                # (e.g. a thinking message) so it reaches the final response.
+                if assistant_message.content:
+                    last_text_content = assistant_message.content
+
                 tool_calls_to_process = []
                 for tool_call in assistant_message.tool_calls:
                     tool_calls_to_process.append(
@@ -342,7 +368,11 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                     )
 
                 state.llm_messages.append(
-                    {"role": "assistant", "content": None, "tool_calls": tool_calls_to_process}
+                    {
+                        "role": "assistant",
+                        "content": assistant_message.content,
+                        "tool_calls": tool_calls_to_process,
+                    }
                 )
 
                 for tool_call in assistant_message.tool_calls:
@@ -380,6 +410,7 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                     }
             else:
                 content = assistant_message.content or ""
+                last_text_content = content
                 state.add_llm_message("assistant", content)
 
                 return {
@@ -390,7 +421,8 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                 }
 
         return {
-            "response": "I've processed your information. Is there anything else I can help with?",
+            "response": last_text_content
+            or "I've processed your information. Is there anything else I can help with?",
             "function_called": all_functions_called[-1] if all_functions_called else None,
             "function_result": all_function_results[-1] if all_function_results else None,
             "is_ended": is_ended,
@@ -399,7 +431,7 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
     except Exception as e:
         logger.error(f"LLM processing error: {e}")
         return {
-            "response": f"I apologize, I'm having trouble processing that. Could you please repeat?",
+            "response": "I apologize, I'm having trouble processing that. Could you please repeat?",
             "function_called": None,
             "function_result": None,
             "is_ended": False,

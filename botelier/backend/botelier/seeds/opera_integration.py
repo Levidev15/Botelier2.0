@@ -245,12 +245,12 @@ OPERA_CLOUD_INTEGRATION = {
                 },
             ],
             "response_mapping": {
-                "confirmation_number": "$.links[0].href",
-                "reservation_id": "$.reservationId.id",
+                "confirmation_number": "$.reservationId.id",
+                "booking_url": "$.links[0].href",
             },
             "response_mapping_labels": {
-                "confirmation_number": "New reservation confirmation number",
-                "reservation_id": "System-assigned reservation identifier",
+                "confirmation_number": "Opera reservation ID / confirmation number",
+                "booking_url": "HATEOAS self-link for the new reservation",
             },
         },
         {
