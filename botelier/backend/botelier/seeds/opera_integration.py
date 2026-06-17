@@ -107,12 +107,12 @@ OPERA_CLOUD_INTEGRATION = {
                 }
             ],
             "response_mapping": {
-                "reservation_id": "$.reservations.reservation[0].reservationIdList[0].id",
-                "guest_name": "$.reservations.reservation[0].guestName.givenName",
-                "arrival_date": "$.reservations.reservation[0].arrivalDate",
-                "departure_date": "$.reservations.reservation[0].departureDate",
-                "room_type": "$.reservations.reservation[0].roomType",
-                "status": "$.reservations.reservation[0].reservationStatus",
+                "reservation_id": "$.reservations.reservationInfo[0].reservationIdList[0].id",
+                "guest_name": "$.reservations.reservationInfo[0].guestName.givenName",
+                "arrival_date": "$.reservations.reservationInfo[0].arrivalDate",
+                "departure_date": "$.reservations.reservationInfo[0].departureDate",
+                "room_type": "$.reservations.reservationInfo[0].roomType",
+                "status": "$.reservations.reservationInfo[0].reservationStatus",
             },
             "response_mapping_labels": {
                 "reservation_id": "System reservation identifier",
@@ -163,7 +163,7 @@ OPERA_CLOUD_INTEGRATION = {
                 },
             ],
             "response_mapping": {
-                "reservations": "$.reservations.reservation",
+                "reservations": "$.reservations.reservationInfo",
                 "count": "$.reservations.count",
             },
             "response_mapping_labels": {
@@ -201,12 +201,12 @@ OPERA_CLOUD_INTEGRATION = {
                                 ]
                             },
                             "roomStay": {
-                                "arrivalDate": "{{arrival_date}}",
-                                "departureDate": "{{departure_date}}",
+                                "arrivalDate": "{{check_in_date}}",
+                                "departureDate": "{{check_out_date}}",
                                 "roomTypes": [{"roomTypeCode": "{{room_type}}"}],
                                 "ratePlanCodes": [{"ratePlanCode": "{{rate_code}}"}],
                                 "guestCounts": {
-                                    "adults": "{{adult_count}}",
+                                    "adults": "{{guest_count}}",
                                     "children": "{{child_count}}",
                                 },
                             },
@@ -227,16 +227,16 @@ OPERA_CLOUD_INTEGRATION = {
                     "label": "Guest Last Name",
                     "required": True,
                 },
-                {"key": "arrival_date", "type": "date", "label": "Arrival Date", "required": True},
+                {"key": "check_in_date", "type": "date", "label": "Arrival Date", "required": True},
                 {
-                    "key": "departure_date",
+                    "key": "check_out_date",
                     "type": "date",
                     "label": "Departure Date",
                     "required": True,
                 },
                 {"key": "room_type", "type": "text", "label": "Room Type Code", "required": True},
                 {"key": "rate_code", "type": "text", "label": "Rate Plan Code", "required": True},
-                {"key": "adult_count", "type": "number", "label": "Number of Adults", "default": 1},
+                {"key": "guest_count", "type": "number", "label": "Number of Adults", "default": 1},
                 {
                     "key": "child_count",
                     "type": "number",
@@ -259,7 +259,7 @@ OPERA_CLOUD_INTEGRATION = {
             "name": "Get Guest Profile",
             "description": "Retrieve a guest profile by profile ID",
             "method": "GET",
-            "path": "/crm/v1/hotels/{{hotel_id}}/profiles/{{profile_id}}",
+            "path": "/crm/v1/profiles/{{profile_id}}",
             "variables": [
                 {
                     "key": "profile_id",
@@ -290,12 +290,12 @@ OPERA_CLOUD_INTEGRATION = {
             "name": "Search Guest Profiles",
             "description": "Search for guest profiles by name, email, or phone",
             "method": "GET",
-            "path": "/crm/v1/hotels/{{hotel_id}}/profiles",
+            "path": "/crm/v1/profiles",
             "query_params": [
                 {"key": "givenName", "value": "{{first_name}}", "required": False},
-                {"key": "surname", "value": "{{last_name}}", "required": False},
+                {"key": "profileName", "value": "{{last_name}}", "required": False},
                 {"key": "email", "value": "{{email}}", "required": False},
-                {"key": "phoneNumber", "value": "{{phone}}", "required": False},
+                {"key": "phone", "value": "{{phone}}", "required": False},
             ],
             "variables": [
                 {"key": "first_name", "type": "text", "label": "First Name"},
@@ -303,7 +303,10 @@ OPERA_CLOUD_INTEGRATION = {
                 {"key": "email", "type": "text", "label": "Email Address"},
                 {"key": "phone", "type": "text", "label": "Phone Number"},
             ],
-            "response_mapping": {"profiles": "$.profiles.profileInfo", "count": "$.profiles.count"},
+            "response_mapping": {
+                "profiles": "$.profileSummaries.profileInfo",
+                "count": "$.profileSummaries.count",
+            },
             "response_mapping_labels": {
                 "profiles": "Array of matching guest profile objects",
                 "count": "Total number of profiles found",
@@ -317,22 +320,22 @@ OPERA_CLOUD_INTEGRATION = {
             "method": "GET",
             "path": "/par/v1/hotels/{{hotel_id}}/availability",
             "query_params": [
-                {"key": "roomStayStartDate", "value": "{{start_date}}", "required": True},
-                {"key": "roomStayEndDate", "value": "{{end_date}}", "required": True},
-                {"key": "adults", "value": "{{adults}}", "required": True},
+                {"key": "roomStayStartDate", "value": "{{check_in_date}}", "required": True},
+                {"key": "roomStayEndDate", "value": "{{check_out_date}}", "required": True},
+                {"key": "adults", "value": "{{guest_count}}", "required": True},
                 {"key": "children", "value": "{{children}}", "required": False},
                 {"key": "roomType", "value": "{{room_type}}", "required": False},
             ],
             "variables": [
-                {"key": "start_date", "type": "date", "label": "Check-in Date", "required": True},
-                {"key": "end_date", "type": "date", "label": "Check-out Date", "required": True},
-                {"key": "adults", "type": "number", "label": "Number of Adults", "default": 1},
+                {"key": "check_in_date", "type": "date", "label": "Check-in Date", "required": True},
+                {"key": "check_out_date", "type": "date", "label": "Check-out Date", "required": True},
+                {"key": "guest_count", "type": "number", "label": "Number of Adults", "default": 1},
                 {"key": "children", "type": "number", "label": "Number of Children", "default": 0},
                 {"key": "room_type", "type": "text", "label": "Room Type (optional)"},
             ],
             "response_mapping": {
-                "available_rooms": "$.hotelAvailability.roomTypes",
-                "rates": "$.hotelAvailability.ratePlans",
+                "available_rooms": "$.hotelAvailability[*].roomStays[*].roomRates[*].roomType",
+                "rates": "$.hotelAvailability[*].roomStays[*].roomRates[*].ratePlanCode",
             },
             "response_mapping_labels": {
                 "available_rooms": "List of available room types for the dates",
@@ -345,9 +348,9 @@ OPERA_CLOUD_INTEGRATION = {
             "name": "Get Room Types",
             "description": "Get list of all room types configured in the property",
             "method": "GET",
-            "path": "/fof/v1/hotels/{{hotel_id}}/roomTypes",
+            "path": "/lov/v1/listOfValues/hotels/{{hotel_id}}/roomTypes",
             "variables": [],
-            "response_mapping": {"room_types": "$.roomTypes.roomType"},
+            "response_mapping": {"room_types": "$.listOfValues.items"},
             "response_mapping_labels": {
                 "room_types": "All configured room types at the property",
             },
@@ -360,7 +363,7 @@ OPERA_CLOUD_INTEGRATION = {
             "method": "GET",
             "path": "/rtp/v1/hotels/{{hotel_id}}/ratePlans",
             "variables": [],
-            "response_mapping": {"rate_plans": "$.ratePlans.ratePlanInfo"},
+            "response_mapping": {"rate_plans": "$.ratePlans"},
             "response_mapping_labels": {
                 "rate_plans": "All configured rate plans at the property",
             },
@@ -371,12 +374,12 @@ OPERA_CLOUD_INTEGRATION = {
             "name": "Get In-House Guests",
             "description": "Get list of currently checked-in guests",
             "method": "GET",
-            "path": "/fof/v1/hotels/{{hotel_id}}/reservations",
+            "path": "/rsv/v1/hotels/{{hotel_id}}/reservations",
             "query_params": [{"key": "reservationStatuses", "value": "INHOUSE", "required": True}],
             "variables": [],
             "response_mapping": {
-                "guests": "$.reservationsDetails.reservationInfo",
-                "count": "$.reservationsDetails.count",
+                "guests": "$.reservations.reservationInfo",
+                "count": "$.reservations.count",
             },
             "response_mapping_labels": {
                 "guests": "List of currently checked-in guest records",
@@ -389,17 +392,18 @@ OPERA_CLOUD_INTEGRATION = {
             "name": "Get Today's Arrivals",
             "description": "Get list of guests arriving today",
             "method": "GET",
-            "path": "/fof/v1/hotels/{{hotel_id}}/reservations",
+            "path": "/rsv/v1/hotels/{{hotel_id}}/reservations",
             "query_params": [
                 {"key": "reservationStatuses", "value": "RESERVED", "required": True},
-                {"key": "arrivalDate", "value": "{{date}}", "required": True},
+                {"key": "arrivalStartDate", "value": "{{date}}", "required": True},
+                {"key": "arrivalEndDate", "value": "{{date}}", "required": True},
             ],
             "variables": [
                 {"key": "date", "type": "date", "label": "Arrival Date", "default": "today"}
             ],
             "response_mapping": {
-                "arrivals": "$.reservationsDetails.reservationInfo",
-                "count": "$.reservationsDetails.count",
+                "arrivals": "$.reservations.reservationInfo",
+                "count": "$.reservations.count",
             },
             "response_mapping_labels": {
                 "arrivals": "List of guests expected to arrive on the given date",

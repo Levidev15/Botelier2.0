@@ -13,7 +13,7 @@ from urllib.parse import parse_qs, urlencode, urlparse, urlunparse
 
 import httpx
 from loguru import logger
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from botelier.models.integration import (
     AccountIntegration,
@@ -81,6 +81,14 @@ def _sanitize_endpoint_for_log(endpoint: Optional[str]) -> Optional[str]:
     return sanitized[:500]
 
 
+class _MissingRequiredVariables(Exception):
+    """Raised when a required endpoint query param cannot be resolved from variables."""
+
+    def __init__(self, names: list[str]):
+        self.names = names
+        super().__init__(f"Missing required variables: {', '.join(names)}")
+
+
 class APIErrorType(str, Enum):
     SUCCESS = "success"
     AUTH_ERROR = "auth_error"
@@ -126,6 +134,78 @@ class IntegrationAPIConfig:
     on_error_message: str = "There was an issue processing your request"
     on_not_found_message: str = "The requested information was not found"
     on_auth_error_message: str = "There was an authentication issue with the system"
+
+
+def extract_json_value(data: Any, path: str) -> Any:
+    """Extract a value from parsed JSON using a small JSONPath dialect.
+
+    Shared by IntegrationClient and the flow executor so every integration and
+    flow node resolves response paths identically.
+
+    Supported syntax:
+      - ``$`` / ``$.`` root prefix (optional)
+      - dot keys: ``a.b.c``
+      - bracket index: ``a[0].b``
+      - legacy dot index: ``a.0.b``
+      - wildcard: ``a[*].b`` expands across list elements and flattens
+
+    Returns a single value when the path has no wildcard, or a flattened list
+    (order-preserving, deduped) when a wildcard is used. ``None`` is returned
+    when the path resolves to nothing, so callers can apply default values.
+    """
+    if not path:
+        return data
+
+    if path.startswith("$"):
+        path = path[1:]
+    # Normalize bracket segments into dot segments so a single split handles
+    # ``a[0].b`` and ``a[*].b`` alongside ``a.b`` and legacy ``a.0.b``.
+    normalized = path.replace("[", ".[")
+    parts = [p for p in normalized.split(".") if p != ""]
+
+    # The "frontier" is the set of live values being resolved. A wildcard
+    # expands it; every other token narrows each entry to a single child.
+    frontier: list[Any] = [data]
+    used_wildcard = False
+
+    for part in parts:
+        if part == "[*]":
+            used_wildcard = True
+            expanded: list[Any] = []
+            for item in frontier:
+                if isinstance(item, list):
+                    expanded.extend(item)
+            frontier = expanded
+            continue
+
+        index: Optional[int] = None
+        if part.startswith("[") and part.endswith("]"):
+            inner = part[1:-1]
+            index = int(inner) if inner.isdigit() else None
+        elif part.isdigit():
+            index = int(part)
+
+        next_frontier: list[Any] = []
+        for item in frontier:
+            if index is not None:
+                if isinstance(item, list) and 0 <= index < len(item):
+                    next_frontier.append(item[index])
+            elif isinstance(item, dict):
+                child = item.get(part)
+                if child is not None:
+                    next_frontier.append(child)
+        frontier = next_frontier
+
+    results = [v for v in frontier if v is not None]
+
+    if used_wildcard:
+        deduped: list[Any] = []
+        for v in results:
+            if v not in deduped:
+                deduped.append(v)
+        return deduped or None
+
+    return results[0] if results else None
 
 
 class IntegrationClient:
@@ -209,9 +289,30 @@ class IntegrationClient:
                     error_message="Failed to refresh authentication token",
                 )
 
-        url = self._build_url(integration, config, variables)
+        endpoint_def = self._resolve_endpoint(integration, config)
+        effective_vars = self._apply_endpoint_defaults(variables, endpoint_def)
+        try:
+            url = self._build_url(integration, config, effective_vars, endpoint_def)
+        except _MissingRequiredVariables as exc:
+            self._write_call_log(
+                integration_id=str(integration.id),
+                endpoint_called=config.endpoint_template or config.path,
+                method=config.method,
+                status_code=0,
+                success=False,
+                latency_ms=int(time.time() * 1000) - start_ms,
+                error_type=APIErrorType.VALIDATION_ERROR.value,
+                error_message=str(exc)[:500],
+            )
+            return APIResponse(
+                success=False,
+                status_code=0,
+                error_type=APIErrorType.VALIDATION_ERROR,
+                error_message=config.on_error_message,
+            )
         headers = self._build_headers(integration, config)
-        body = self._build_body(config, variables)
+        body = self._build_body(config, effective_vars, endpoint_def)
+        effective_response_vars = self._effective_response_variables(config, endpoint_def)
         log_endpoint = config.endpoint_template or config.path
 
         attempt = 0
@@ -227,7 +328,7 @@ class IntegrationClient:
                     timeout=config.timeout,
                 )
 
-                result = self._process_response(response, config)
+                result = self._process_response(response, config, effective_response_vars)
                 self._write_call_log(
                     integration_id=str(integration.id),
                     endpoint_called=log_endpoint,
@@ -339,6 +440,7 @@ class IntegrationClient:
         try:
             integration = (
                 db.query(AccountIntegration)
+                .options(joinedload(AccountIntegration.integration_type))
                 .filter(
                     AccountIntegration.id == integration_id,
                     AccountIntegration.account_id == self.account_id,
@@ -577,11 +679,63 @@ class IntegrationClient:
             if not self._external_db:
                 db.close()
 
+    def _resolve_endpoint(
+        self, integration: AccountIntegration, config: IntegrationAPIConfig
+    ) -> Optional[dict]:
+        """Return the certified endpoint definition for config.endpoint_id, if any."""
+        if not config.endpoint_id:
+            return None
+        try:
+            endpoints = integration.integration_type.get_endpoints() or []
+        except Exception:
+            return None
+        for endpoint in endpoints:
+            if endpoint.get("id") == config.endpoint_id:
+                return endpoint
+        return None
+
+    def _apply_endpoint_defaults(
+        self, variables: dict[str, Any], endpoint_def: Optional[dict]
+    ) -> dict[str, Any]:
+        """Merge certified-endpoint variable defaults under caller-provided values."""
+        if not endpoint_def:
+            return variables
+        merged: dict[str, Any] = {}
+        for var in endpoint_def.get("variables") or []:
+            key = var.get("key")
+            default = var.get("default")
+            if not key or default is None:
+                continue
+            # "today" is a sentinel default — resolve it to the current date so
+            # required date params (e.g. arrivals) are satisfied when no caller
+            # value is supplied, instead of being dropped.
+            if default == "today":
+                merged[key] = datetime.utcnow().date().isoformat()
+            else:
+                merged[key] = default
+        merged.update(variables or {})
+        return merged
+
+    def _effective_response_variables(
+        self, config: IntegrationAPIConfig, endpoint_def: Optional[dict]
+    ) -> list[ResponseVariable]:
+        """Response-extraction precedence: explicit node vars, else certified mapping."""
+        if config.response_variables:
+            return config.response_variables
+        if endpoint_def:
+            mapping = endpoint_def.get("response_mapping") or {}
+            return [
+                ResponseVariable(variable_key=key, json_path=path)
+                for key, path in mapping.items()
+            ]
+        return []
+
     def _build_url(
         self,
         integration: AccountIntegration,
         config: IntegrationAPIConfig,
         variables: dict[str, Any],
+        endpoint_def: Optional[dict] = None,
     ) -> str:
         credentials = integration.get_credentials()
         auth_type = integration.integration_type.auth_type
@@ -595,12 +749,8 @@ class IntegrationClient:
             base_url = raw_gateway.rstrip("/")
 
         path = config.path
-        if config.endpoint_id:
-            endpoints = integration.integration_type.get_endpoints()
-            for endpoint in endpoints:
-                if endpoint.get("id") == config.endpoint_id:
-                    path = endpoint.get("path", path)
-                    break
+        if endpoint_def:
+            path = endpoint_def.get("path", path)
 
         path = self._substitute_variables(path, variables)
 
@@ -612,6 +762,28 @@ class IntegrationClient:
             path = path.replace("{{hotel_id}}", hotel_id)
 
         url = f"{base_url}{path}"
+
+        # Certified endpoints declare query params separately from the path.
+        # Render them with call variables; omit unresolved optional params but
+        # fail fast when a required param cannot be resolved.
+        if endpoint_def:
+            rendered_params: dict[str, str] = {}
+            missing_required: list[str] = []
+            for qp in endpoint_def.get("query_params") or []:
+                key = qp.get("key")
+                if not key:
+                    continue
+                rendered = self._substitute_variables(str(qp.get("value", "")), variables)
+                if rendered == "" or "{{" in rendered:
+                    if qp.get("required"):
+                        missing_required.append(key)
+                    continue
+                rendered_params[key] = rendered
+            if missing_required:
+                raise _MissingRequiredVariables(missing_required)
+            if rendered_params:
+                separator = "&" if "?" in url else "?"
+                url = f"{url}{separator}{urlencode(rendered_params)}"
 
         if auth_type == "basic_or_jwt":
             basic_auth_query_params = auth_config.get("basic_auth_query_params", [])
@@ -666,12 +838,23 @@ class IntegrationClient:
         return headers
 
     def _build_body(
-        self, config: IntegrationAPIConfig, variables: dict[str, Any]
+        self,
+        config: IntegrationAPIConfig,
+        variables: dict[str, Any],
+        endpoint_def: Optional[dict] = None,
     ) -> Optional[dict]:
-        if not config.body_template:
+        body_template = config.body_template
+        if not body_template and endpoint_def:
+            seed_body = endpoint_def.get("body_template")
+            if seed_body is not None:
+                body_template = (
+                    seed_body if isinstance(seed_body, str) else json.dumps(seed_body)
+                )
+
+        if not body_template:
             return None
 
-        body_str = self._substitute_variables(config.body_template, variables)
+        body_str = self._substitute_variables(body_template, variables)
 
         try:
             return json.loads(body_str)
@@ -707,9 +890,15 @@ class IntegrationClient:
                 raise ValueError(f"Unsupported HTTP method: {method}")
 
     def _process_response(
-        self, response: httpx.Response, config: IntegrationAPIConfig
+        self,
+        response: httpx.Response,
+        config: IntegrationAPIConfig,
+        response_variables: Optional[list[ResponseVariable]] = None,
     ) -> APIResponse:
         status_code = response.status_code
+
+        if response_variables is None:
+            response_variables = config.response_variables
 
         try:
             data = response.json()
@@ -717,7 +906,7 @@ class IntegrationClient:
             data = response.text
 
         if 200 <= status_code < 300:
-            extracted = self._extract_variables(data, config.response_variables)
+            extracted = self._extract_variables(data, response_variables)
             return APIResponse(
                 success=True,
                 status_code=status_code,
@@ -787,34 +976,7 @@ class IntegrationClient:
         return extracted
 
     def _extract_json_value(self, data: Any, path: str) -> Any:
-        if not path:
-            return data
-
-        if path.startswith("$."):
-            path = path[2:]
-
-        parts = path.split(".")
-        current = data
-
-        for part in parts:
-            if current is None:
-                return None
-
-            if isinstance(current, dict):
-                current = current.get(part)
-            elif isinstance(current, list):
-                if part.isdigit():
-                    idx = int(part)
-                    if 0 <= idx < len(current):
-                        current = current[idx]
-                    else:
-                        return None
-                else:
-                    return None
-            else:
-                return None
-
-        return current
+        return extract_json_value(data, path)
 
     def _extract_error_message(self, data: Any) -> Optional[str]:
         if isinstance(data, dict):

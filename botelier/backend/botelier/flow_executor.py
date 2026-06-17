@@ -211,6 +211,22 @@ class FlowState:
         self.retry_count = 0
 
 
+def _format_variable_value(value: Any) -> str:
+    """Render a variable value for prompt/message interpolation.
+
+    Lists of scalars become a comma-separated string; lists/dicts containing
+    objects become compact JSON the downstream LLM can read. Everything else
+    falls back to ``str()``.
+    """
+    if isinstance(value, list):
+        if all(not isinstance(v, (list, dict)) for v in value):
+            return ", ".join(str(v) for v in value)
+        return json.dumps(value, separators=(",", ":"), default=str)
+    if isinstance(value, dict):
+        return json.dumps(value, separators=(",", ":"), default=str)
+    return str(value)
+
+
 def substitute_variables(template: str, variables: dict[str, Any]) -> str:
     """Replace {{variable_name}} placeholders with actual values."""
 
@@ -219,7 +235,7 @@ def substitute_variables(template: str, variables: dict[str, Any]) -> str:
         value = variables.get(var_name)
         if value is None:
             return match.group(0)
-        return str(value)
+        return _format_variable_value(value)
 
     return re.sub(r"\{\{(\w+)\}\}", replace_var, template)
 
@@ -1495,6 +1511,20 @@ You are executing a structured conversation flow. Follow these guidelines:
                     default_value=rv.get("defaultValue"),
                 )
             )
+        # Newer flow nodes store extraction as a responseMapping dict
+        # ({variable_key: jsonPath}). Merge it into the response variables so a
+        # single extraction path (IntegrationClient, which also applies seed
+        # precedence) maps API output into flow variables. Explicit
+        # responseVariables win on key collisions.
+        explicit_keys = {rv.variable_key for rv in response_vars}
+        for variable_key, json_path in (api_config.get("responseMapping") or {}).items():
+            if variable_key and json_path and variable_key not in explicit_keys:
+                response_vars.append(
+                    ResponseVariable(
+                        variable_key=variable_key,
+                        json_path=json_path,
+                    )
+                )
 
         raw_body_template = api_config.get("bodyTemplate")
         resolved_body_template = (
@@ -1550,14 +1580,10 @@ You are executing a structured conversation flow. Follow these guidelines:
         )
 
         if response.success:
+            # responseMapping is merged into response_vars above, so all
+            # extraction (and seed precedence) happens once in IntegrationClient.
             for var_key, value in response.extracted_variables.items():
                 self.state.set_variable(var_key, value)
-
-            if api_config.get("responseMapping"):
-                for var_key, json_path in api_config["responseMapping"].items():
-                    value = self._extract_json_value(response.data, json_path)
-                    if value is not None:
-                        self.state.set_variable(var_key, value)
 
             next_node = self.state.get_next_node(node_id)
             if next_node:
@@ -1814,21 +1840,14 @@ You are executing a structured conversation flow. Follow these guidelines:
             }
 
     def _extract_json_value(self, data: dict, path: str) -> Any:
-        """Extract a value from JSON using dot notation (e.g., 'response.data.id')."""
-        parts = path.split(".")
-        current = data
-        for part in parts:
-            if isinstance(current, dict) and part in current:
-                current = current[part]
-            elif isinstance(current, list) and part.isdigit():
-                idx = int(part)
-                if 0 <= idx < len(current):
-                    current = current[idx]
-                else:
-                    return None
-            else:
-                return None
-        return current
+        """Extract a value from a JSON response.
+
+        Delegates to the shared extractor so flow nodes and IntegrationClient
+        resolve paths identically (``$`` prefix, ``[n]`` index, ``[*]`` wildcard).
+        """
+        from botelier.services.integration_client import extract_json_value
+
+        return extract_json_value(data, path)
 
     async def _handle_router(self, function_name: str, arguments: dict) -> dict:
         """Handle routing based on a choice value."""

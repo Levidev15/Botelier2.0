@@ -1,0 +1,1 @@
+- [Integration response-mapping precedence & OHIP shapes](integration-response-mapping.md) — one shared `extract_json_value` (strips `$.`); node mapping overrides seed, so seed + store.ts template + saved `flow_versions` rows must change in lockstep; OHIP response wrappers.

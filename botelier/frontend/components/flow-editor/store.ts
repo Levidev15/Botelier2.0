@@ -779,12 +779,12 @@ const OPERA_OHIP_BOOKING_TEMPLATE = {
           endpointName: "Check Room Availability",
           thinkingMessage: "Let me check availability for those dates — one moment please.",
           responseMapping: {
-            available_rooms: "$.hotelAvailability.roomTypes",
-            rates:           "$.hotelAvailability.ratePlans",
+            available_rooms: "$.hotelAvailability[*].roomStays[*].roomRates[*].roomType",
+            rates:           "$.hotelAvailability[*].roomStays[*].roomRates[*].ratePlanCode",
           },
           autoMappingSource: {
-            available_rooms: "$.hotelAvailability.roomTypes",
-            rates:           "$.hotelAvailability.ratePlans",
+            available_rooms: "$.hotelAvailability[*].roomStays[*].roomRates[*].roomType",
+            rates:           "$.hotelAvailability[*].roomStays[*].roomRates[*].ratePlanCode",
           },
           responseInstructions:
             "Describe the available room types and their rate plans to the caller. " +
