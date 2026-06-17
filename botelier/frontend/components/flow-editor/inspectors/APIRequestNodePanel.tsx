@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { AlertCircle, CheckCircle2, ChevronDown, ChevronRight, Loader2, Play, Plus, X } from "lucide-react";
-import { useFlowStore, APIRequestNodeData } from "../store";
+import { useFlowStore, APIRequestNodeData, APIRequestConfig } from "../store";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import APIRequestHeadersSection from "./APIRequestHeadersSection";
@@ -109,6 +109,62 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
     fetchSecrets();
   }, [accountId]);
 
+  // Auto-select integration + endpoint when a template pre-wires integrationSlug / endpointId
+  // but leaves integrationId blank (account-specific IDs are unknown at template-author time).
+  useEffect(() => {
+    if (!integrations.length) return;
+    const currentApi = data.api;
+    if (!currentApi || currentApi.integrationId || !currentApi.integrationSlug) return;
+
+    const matches = integrations.filter(
+      (i) => i.integration_type.slug === currentApi.integrationSlug
+    );
+    if (matches.length !== 1) return; // Ambiguous or none — let user choose manually
+
+    const integration = matches[0];
+    const prewiredEndpoint = currentApi.endpointId
+      ? integration.integration_type.endpoints.find((e) => e.id === currentApi.endpointId)
+      : null;
+
+    if (prewiredEndpoint) {
+      let bodyTemplate = currentApi.bodyTemplate ?? "";
+      if (
+        !bodyTemplate &&
+        prewiredEndpoint.request_schema &&
+        ["POST", "PUT", "PATCH"].includes(prewiredEndpoint.method)
+      ) {
+        bodyTemplate = JSON.stringify(prewiredEndpoint.request_schema, null, 2);
+      }
+      const endpointMapping = prewiredEndpoint.response_mapping ?? {};
+      const hasMapping = Object.keys(endpointMapping).length > 0;
+      updateNodeData(nodeId, {
+        api: {
+          ...currentApi,
+          integrationId: integration.id,
+          integrationSlug: integration.integration_type.slug,
+          endpointId: prewiredEndpoint.id,
+          endpointName: prewiredEndpoint.name,
+          method: prewiredEndpoint.method as APIRequestConfig["method"],
+          url: prewiredEndpoint.path,
+          bodyTemplate,
+          responseMapping: hasMapping ? { ...endpointMapping } : (currentApi.responseMapping ?? {}),
+          autoMappingSource: hasMapping ? { ...endpointMapping } : currentApi.autoMappingSource,
+        },
+      });
+      if (hasMapping) setShowResponseMapping(true);
+    } else {
+      updateNodeData(nodeId, {
+        api: {
+          ...currentApi,
+          integrationId: integration.id,
+          integrationSlug: integration.integration_type.slug,
+        },
+      });
+    }
+  // Run only when integrations first populate; intentionally omit api/updateNodeData from deps.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [integrations]);
+
   const updateApi = (updates: Partial<typeof api>) => {
     updateNodeData(nodeId, { api: { ...api, ...updates } });
   };
@@ -129,16 +185,46 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
 
   const handleIntegrationChange = (integrationId: string) => {
     const integration = integrations.find(i => i.id === integrationId);
-    updateApi({
-      integrationId,
-      integrationSlug: integration?.integration_type.slug,
-      endpointId: undefined,
-      endpointName: undefined,
-      url: "",
-      method: "GET" as const,
-      bodyTemplate: "",
-      autoMappingSource: undefined,
-    });
+    // Preserve a pre-wired endpointId if it still exists in the newly selected integration.
+    const prewired = api.endpointId
+      ? integration?.integration_type.endpoints.find((e) => e.id === api.endpointId)
+      : null;
+
+    if (prewired) {
+      let bodyTemplate = api.bodyTemplate ?? "";
+      if (
+        !bodyTemplate &&
+        prewired.request_schema &&
+        ["POST", "PUT", "PATCH"].includes(prewired.method)
+      ) {
+        bodyTemplate = JSON.stringify(prewired.request_schema, null, 2);
+      }
+      const endpointMapping = prewired.response_mapping ?? {};
+      const hasMapping = Object.keys(endpointMapping).length > 0;
+      updateApi({
+        integrationId,
+        integrationSlug: integration?.integration_type.slug,
+        endpointId: prewired.id,
+        endpointName: prewired.name,
+        method: prewired.method as APIRequestConfig["method"],
+        url: prewired.path,
+        bodyTemplate,
+        responseMapping: hasMapping ? { ...endpointMapping } : (api.responseMapping ?? {}),
+        autoMappingSource: hasMapping ? { ...endpointMapping } : api.autoMappingSource,
+      });
+      if (hasMapping) setShowResponseMapping(true);
+    } else {
+      updateApi({
+        integrationId,
+        integrationSlug: integration?.integration_type.slug,
+        endpointId: undefined,
+        endpointName: undefined,
+        url: "",
+        method: "GET" as const,
+        bodyTemplate: "",
+        autoMappingSource: undefined,
+      });
+    }
   };
 
   const handleEndpointChange = (endpointId: string) => {
@@ -378,6 +464,11 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
             {integrations.length === 0 && !loadingIntegrations && (
               <p className="text-xs text-gray-500 mt-1">
                 Connect integrations in the Integrations page to use them here.
+              </p>
+            )}
+            {!api.integrationId && api.endpointName && !loadingIntegrations && (
+              <p className="text-xs text-gray-500 mt-1">
+                Will bind to: <span className="text-orange-400">{api.endpointName}</span>
               </p>
             )}
           </div>
