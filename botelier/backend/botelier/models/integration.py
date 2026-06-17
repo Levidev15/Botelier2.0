@@ -12,38 +12,17 @@ Models:
 
 import enum
 import json
-import os
 import uuid
 from datetime import datetime
 
-from cryptography.fernet import Fernet, InvalidToken
+from cryptography.fernet import InvalidToken
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
+from botelier.crypto import get_cipher as _get_platform_cipher
 from botelier.database import Base
-
-
-def get_encryption_key():
-    """Get encryption key for credential storage.
-
-    Production must provide a stable key.  Local/dev keeps the historical
-    generated fallback so tests and developer machines do not need secrets.
-    """
-    key = os.environ.get("INTEGRATION_ENCRYPTION_KEY")
-    if not key:
-        env = (
-            os.environ.get("BOTELIER_ENV")
-            or os.environ.get("APP_ENV")
-            or os.environ.get("ENVIRONMENT")
-            or ""
-        ).lower()
-        if env in {"prod", "production"}:
-            raise RuntimeError("INTEGRATION_ENCRYPTION_KEY is required in production")
-        key = Fernet.generate_key().decode()
-        os.environ["INTEGRATION_ENCRYPTION_KEY"] = key
-    return key.encode() if isinstance(key, str) else key
 
 
 class IntegrationStatus(str, enum.Enum):
@@ -205,8 +184,8 @@ class AccountIntegration(Base):
     integration_type = relationship("IntegrationType", back_populates="account_integrations")
 
     def _get_cipher(self):
-        """Get Fernet cipher for encryption/decryption."""
-        return Fernet(get_encryption_key())
+        """Get the platform-wide credential cipher."""
+        return _get_platform_cipher()
 
     def set_credentials(self, credentials: dict):
         """Encrypt and store credentials."""
@@ -337,7 +316,7 @@ class AccountSecret(Base):
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
 
     def _get_cipher(self):
-        return Fernet(get_encryption_key())
+        return _get_platform_cipher()
 
     def set_value(self, value: str):
         """Encrypt and store the secret value."""

@@ -1,2 +1,3 @@
 - [Integration response-mapping precedence & OHIP shapes](integration-response-mapping.md) — one shared `extract_json_value` (strips `$.`); node mapping overrides seed, so seed + store.ts template + saved `flow_versions` rows must change in lockstep; OHIP response wrappers.
 - [Simulator API node stall](simulator-api-node-stall.md) — API_REQUEST nodes require forced tool_choice in simulation.py; "auto" lets LLM return text and stall.
+- [Credential encryption architecture](credential-encryption.md) — all models use botelier/crypto.py; MultiFernet with comma-separated key list supports zero-downtime rotation.

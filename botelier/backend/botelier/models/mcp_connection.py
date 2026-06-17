@@ -6,37 +6,16 @@ for their assistants. This follows the named collections pattern (like Knowledge
 
 import enum
 import json
-import os
 import uuid
 from datetime import datetime
 
-from cryptography.fernet import Fernet
+from cryptography.fernet import InvalidToken
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
+from botelier.crypto import get_cipher as _get_platform_cipher
 from botelier.database import Base
-
-
-def get_mcp_encryption_key():
-    """Get encryption key for MCP credential storage."""
-    key = os.environ.get("MCP_ENCRYPTION_KEY")
-    if not key:
-        key = os.environ.get("INTEGRATION_ENCRYPTION_KEY")
-    if not key:
-        env = (
-            os.environ.get("BOTELIER_ENV")
-            or os.environ.get("APP_ENV")
-            or os.environ.get("ENVIRONMENT")
-            or ""
-        ).lower()
-        if env in {"prod", "production"}:
-            raise RuntimeError(
-                "MCP_ENCRYPTION_KEY or INTEGRATION_ENCRYPTION_KEY is required in production"
-            )
-        key = Fernet.generate_key().decode()
-        os.environ["MCP_ENCRYPTION_KEY"] = key
-    return key.encode() if isinstance(key, str) else key
 
 
 class MCPConnectionStatus(str, enum.Enum):
@@ -118,8 +97,8 @@ class MCPConnection(Base):
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
 
     def _get_cipher(self):
-        """Get Fernet cipher for encryption/decryption."""
-        return Fernet(get_mcp_encryption_key())
+        """Get the platform-wide credential cipher."""
+        return _get_platform_cipher()
 
     def set_credentials(self, credentials: dict):
         """Encrypt and store credentials."""
@@ -131,12 +110,25 @@ class MCPConnection(Base):
         self.credentials_encrypted = cipher.encrypt(data).decode()
 
     def get_credentials(self) -> dict:
-        """Decrypt and return credentials."""
+        """Decrypt and return credentials.
+
+        Returns {} on decryption failure so callers treat the connection as
+        needing re-authentication rather than crashing.
+        """
         if not self.credentials_encrypted:
             return {}
-        cipher = self._get_cipher()
-        data = cipher.decrypt(self.credentials_encrypted.encode())
-        return json.loads(data.decode())
+        try:
+            cipher = self._get_cipher()
+            data = cipher.decrypt(self.credentials_encrypted.encode())
+            return json.loads(data.decode())
+        except (InvalidToken, Exception):
+            import logging
+            logging.getLogger(__name__).warning(
+                "get_credentials: decryption failed for MCPConnection %s — "
+                "key may have rotated; returning empty dict",
+                self.id,
+            )
+            return {}
 
     def get_discovered_tools(self) -> list:
         """Get list of discovered tools from the MCP server."""
