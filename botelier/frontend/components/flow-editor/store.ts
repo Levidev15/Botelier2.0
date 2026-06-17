@@ -670,10 +670,281 @@ const ROOM_SERVICE_TEMPLATE = {
   ],
 };
 
+const OPERA_OHIP_BOOKING_TEMPLATE = {
+  variables: [
+    { key: "check_in_date",      type: "date"   as SlotType, description: "Check-in date",                          required: true  },
+    { key: "check_out_date",     type: "date"   as SlotType, description: "Check-out date",                         required: true  },
+    { key: "guest_count",        type: "number" as SlotType, description: "Number of adult guests",                 required: true  },
+    { key: "room_type_code",     type: "text"   as SlotType, description: "Selected room type code from availability", required: true },
+    { key: "guest_name",         type: "text"   as SlotType, description: "Guest full name",                        required: true  },
+    { key: "phone_number",       type: "phone"  as SlotType, description: "Contact phone number",                   required: true  },
+    { key: "confirmation_number",type: "text"   as SlotType, description: "Reservation confirmation number (from Opera)", required: false },
+    { key: "booking_id",         type: "text"   as SlotType, description: "Internal booking ID (from Opera)",       required: false },
+  ],
+  nodes: [
+    {
+      id: "start_1",
+      type: "initial",
+      position: { x: 250, y: 0 },
+      data: {
+        name: "Greeting",
+        systemPrompt:
+          "You are a reservations agent for a property using Oracle Opera OHIP. " +
+          "Help callers check room availability and complete a booking. " +
+          "Collect dates and guest count first, then check live availability before asking for a room preference. " +
+          "Always confirm full booking details with the caller before submitting the reservation.",
+        greeting:
+          "Thank you for calling. I'd be happy to help you make a reservation. " +
+          "Could I start with your desired check-in and check-out dates?",
+      } as InitialNodeData,
+    },
+    {
+      id: "collect_checkin",
+      type: "collect_slot",
+      position: { x: 250, y: 150 },
+      data: {
+        name: "Check-in Date",
+        slot: {
+          variableKey: "check_in_date",
+          prompt: "What date would you like to check in?",
+          type: "date",
+          validation: { requireFuture: true },
+          retryPrompt: "Please provide a future date — for example, the 15th of December.",
+          maxRetries: 3,
+          useBuiltInValidator: true,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "collect_checkout",
+      type: "collect_slot",
+      position: { x: 250, y: 300 },
+      data: {
+        name: "Check-out Date",
+        slot: {
+          variableKey: "check_out_date",
+          prompt: "And what date will you be checking out?",
+          type: "date",
+          validation: {
+            requireFuture: true,
+            crossFieldCheck: {
+              compareWith: "check_in_date",
+              operator: "after",
+              errorMessage: "Check-out must be after your check-in date.",
+            },
+          },
+          retryPrompt: "Your check-out date must be after your check-in date. Could you repeat it?",
+          maxRetries: 3,
+          useBuiltInValidator: true,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "collect_guests",
+      type: "collect_slot",
+      position: { x: 250, y: 450 },
+      data: {
+        name: "Guest Count",
+        slot: {
+          variableKey: "guest_count",
+          prompt: "How many adult guests will be staying?",
+          type: "number",
+          validation: { min: 1, max: 20 },
+          retryPrompt: "Please give me a number between 1 and 20.",
+          maxRetries: 2,
+          useBuiltInValidator: true,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "check_availability",
+      type: "api_request",
+      position: { x: 250, y: 600 },
+      data: {
+        name: "Check Availability (Opera OHIP)",
+        instructions:
+          "After this node completes, read out the available room types and their rates to the caller. " +
+          "If no rooms are available, apologise and offer to try different dates.",
+        api: {
+          method: "GET",
+          url: "",
+          apiSource: "integration",
+          integrationId: "",
+          integrationSlug: "",
+          endpointId: "",
+          endpointName: "",
+          thinkingMessage: "Let me check availability for those dates — one moment please.",
+          responseMapping: {
+            available_rooms:  "$.roomTypes",
+            prices:           "$.rates",
+            room_type_codes:  "$.roomTypeCodes",
+            currency:         "$.currency",
+          },
+          autoMappingSource: {
+            available_rooms:  "$.roomTypes",
+            prices:           "$.rates",
+            room_type_codes:  "$.roomTypeCodes",
+            currency:         "$.currency",
+          },
+          responseInstructions:
+            "Describe each available room type to the caller: its name, nightly rate, and any key highlights. " +
+            "Then ask which room type they would like to book.",
+          timeout: 15,
+          retryCount: 1,
+        } as APIRequestConfig,
+      } as APIRequestNodeData,
+    },
+    {
+      id: "collect_room",
+      type: "collect_slot",
+      position: { x: 250, y: 750 },
+      data: {
+        name: "Room Type Selection",
+        slot: {
+          variableKey: "room_type_code",
+          prompt:
+            "Which room type would you like? Please tell me the room type code or name — " +
+            "for example, {{room_type_codes}}.",
+          type: "text",
+          retryPrompt: "Could you repeat the room type code you'd like?",
+          maxRetries: 3,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "collect_name",
+      type: "collect_slot",
+      position: { x: 250, y: 900 },
+      data: {
+        name: "Guest Name",
+        slot: {
+          variableKey: "guest_name",
+          prompt: "May I have the full name the reservation should be made under?",
+          type: "text",
+          retryPrompt: "Could you spell your name for me?",
+          maxRetries: 3,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "collect_phone",
+      type: "collect_slot",
+      position: { x: 250, y: 1050 },
+      data: {
+        name: "Phone Number",
+        slot: {
+          variableKey: "phone_number",
+          prompt: "What phone number can we reach you on?",
+          type: "phone",
+          retryPrompt: "Could you repeat that phone number?",
+          maxRetries: 2,
+          useBuiltInValidator: true,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "confirm_details",
+      type: "confirmation",
+      position: { x: 250, y: 1200 },
+      data: {
+        name: "Confirm Booking Details",
+        confirmation: {
+          summaryTemplate:
+            "Just to confirm before I submit: a {{room_type_code}} room for {{guest_count}} guest(s), " +
+            "checking in on {{check_in_date}} and checking out on {{check_out_date}}, " +
+            "under {{guest_name}} — contact number {{phone_number}}.",
+          confirmPrompt: "Shall I go ahead and create this reservation?",
+          editPrompt: "No problem — what would you like to change?",
+          variablesToConfirm: [
+            "check_in_date",
+            "check_out_date",
+            "guest_count",
+            "room_type_code",
+            "guest_name",
+            "phone_number",
+          ],
+          allowEdit: true,
+          deliveryMode: "guided",
+        },
+      } as ConfirmationNodeData,
+    },
+    {
+      id: "create_booking",
+      type: "api_request",
+      position: { x: 250, y: 1350 },
+      data: {
+        name: "Create Reservation (Opera OHIP)",
+        instructions:
+          "After this node completes, read the confirmation number back to the caller clearly, " +
+          "spelling it out if needed.",
+        api: {
+          method: "POST",
+          url: "",
+          apiSource: "integration",
+          integrationId: "",
+          integrationSlug: "",
+          endpointId: "",
+          endpointName: "",
+          thinkingMessage: "Creating your reservation now — just a moment.",
+          bodyTemplate: JSON.stringify(
+            {
+              checkInDate:   "{{check_in_date}}",
+              checkOutDate:  "{{check_out_date}}",
+              adults:        "{{guest_count}}",
+              roomTypeCode:  "{{room_type_code}}",
+              guestName:     "{{guest_name}}",
+              phoneNumber:   "{{phone_number}}",
+            },
+            null,
+            2
+          ),
+          responseMapping: {
+            confirmation_number: "$.confirmationNumber",
+            booking_id:          "$.reservationId",
+          },
+          autoMappingSource: {
+            confirmation_number: "$.confirmationNumber",
+            booking_id:          "$.reservationId",
+          },
+          responseInstructions:
+            "Tell the caller their booking is confirmed and read out their confirmation number: {{confirmation_number}}. " +
+            "Offer to repeat it if needed.",
+          timeout: 20,
+          retryCount: 1,
+        } as APIRequestConfig,
+      } as APIRequestNodeData,
+    },
+    {
+      id: "end_success",
+      type: "end",
+      position: { x: 250, y: 1500 },
+      data: {
+        name: "Booking Confirmed",
+        closingMessage:
+          "Your reservation is all set! Your confirmation number is {{confirmation_number}}. " +
+          "We look forward to welcoming you. Is there anything else I can help you with?",
+      } as EndNodeData,
+    },
+  ],
+  edges: [
+    { id: "e1",  source: "start_1",          target: "collect_checkin"   },
+    { id: "e2",  source: "collect_checkin",   target: "collect_checkout"  },
+    { id: "e3",  source: "collect_checkout",  target: "collect_guests"    },
+    { id: "e4",  source: "collect_guests",    target: "check_availability"},
+    { id: "e5",  source: "check_availability",target: "collect_room"      },
+    { id: "e6",  source: "collect_room",      target: "collect_name"      },
+    { id: "e7",  source: "collect_name",      target: "collect_phone"     },
+    { id: "e8",  source: "collect_phone",     target: "confirm_details"   },
+    { id: "e9",  source: "confirm_details",   target: "create_booking"    },
+    { id: "e10", source: "create_booking",    target: "end_success"       },
+  ],
+};
+
 const TEMPLATES: Record<string, typeof ROOM_BOOKING_TEMPLATE> = {
-  "room-booking": ROOM_BOOKING_TEMPLATE,
-  "concierge": CONCIERGE_TEMPLATE,
-  "room-service": ROOM_SERVICE_TEMPLATE,
+  "room-booking":          ROOM_BOOKING_TEMPLATE,
+  "concierge":             CONCIERGE_TEMPLATE,
+  "room-service":          ROOM_SERVICE_TEMPLATE,
+  "opera-ohip-booking":    OPERA_OHIP_BOOKING_TEMPLATE,
 };
 
 export const useFlowStore = create<FlowState>((set, get) => ({
@@ -1113,7 +1384,8 @@ export const useFlowStore = create<FlowState>((set, get) => ({
 }));
 
 export const AVAILABLE_TEMPLATES = [
-  { id: "room-booking", name: "Room Booking", description: "Complete room reservation flow with guest details collection" },
-  { id: "concierge", name: "Concierge Services", description: "Help guests with dining, spa, and activity requests" },
-  { id: "room-service", name: "Room Service", description: "Take food and beverage orders with special dietary requirements" },
+  { id: "room-booking",       name: "Room Booking",             description: "Complete room reservation flow with guest details collection" },
+  { id: "concierge",          name: "Concierge Services",        description: "Help guests with dining, spa, and activity requests" },
+  { id: "room-service",       name: "Room Service",              description: "Take food and beverage orders with special dietary requirements" },
+  { id: "opera-ohip-booking", name: "Opera OHIP Booking",        description: "Check availability and create a reservation via Oracle Opera OHIP — includes two pre-wired API Request nodes" },
 ];
