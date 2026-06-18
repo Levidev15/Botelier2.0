@@ -946,7 +946,12 @@ const OPERA_OHIP_BOOKING_TEMPLATE = {
   ],
 };
 
-const TEMPLATES: Record<string, typeof ROOM_BOOKING_TEMPLATE> = {
+interface FlowTemplate {
+  variables: FlowVariable[];
+  nodes: unknown[];
+  edges: unknown[];
+}
+const TEMPLATES: Record<string, FlowTemplate> = {
   "room-booking":       ROOM_BOOKING_TEMPLATE,
   "concierge":          CONCIERGE_TEMPLATE,
   "room-service":       ROOM_SERVICE_TEMPLATE,
