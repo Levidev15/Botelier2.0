@@ -7,9 +7,10 @@ This is critical for multi-tenant isolation in the SaaS platform.
 import asyncio
 import csv
 import io
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone as dt_timezone
 from typing import List, Optional
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
@@ -317,30 +318,88 @@ async def export_call_logs(
     ),
     tz: Optional[str] = Query(  # noqa: A002 — short query name kept to match dashboard
         None,
-        description="IANA timezone name. Reserved for future per-row local timestamp column; not used today.",
+        description=(
+            "IANA timezone name (e.g. America/New_York). When provided: "
+            "(1) date_from/date_to are re-interpreted as wall-clock times in this zone "
+            "so the exported row set matches the day shown on the analytics screen; "
+            "(2) the Date/Time column shows local time in this zone; "
+            "(3) a Date/Time (UTC) companion column is appended after Date/Time."
+        ),
     ),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Export call logs as CSV file.
 
-    Task #129 — additive: existing columns and order are preserved so any
-    external consumer keeps working. New columns appended on the right:
-    Reference ID, Bucket (MECE), Greeted, Caller Spoke, Disposition,
-    ACW Resolution, ACW Quality Score, ACW Skip Reason.
+    Additive contract: existing columns and their order are preserved so
+    external consumers keep working. New columns are appended on the right.
 
-    Note on the `tz` parameter: accepted today only for forward
-    compatibility with the dashboard, which already passes the active
-    user timezone. The current CSV emits `Date/Time` in raw UTC ISO and
-    `tz` does NOT yet shift date boundaries or row timestamps. A future
-    task (see follow-up #131) will add a `Date/Time (Local)` column and
-    apply `tz` to the `date_from` / `date_to` boundary interpretation;
-    until then, callers should treat `tz` as a no-op on the detailed
-    export. The Summary export (`/api/analytics/calls/export-summary`)
-    already honors `tz` for per-day grouping.
+    Columns (in order):
+      Date/Time, [Date/Time (UTC) — only when tz is provided],
+      Total Duration (seconds), AI Duration (seconds),
+      Transfer Duration (seconds), Caller, To Number, Assistant,
+      Status, Outcome, Has Transfer, Transfer Mode, Leg Count,
+      Reference ID, Bucket (MECE), Greeted, Caller Spoke, Disposition,
+      ACW Resolution, ACW Quality Score, ACW Skip Reason, Transcript.
+
+    Timezone behaviour (tz parameter):
+      - date_from / date_to are treated as naïve wall-clock datetimes in
+        the given zone and converted to UTC before the started_at filter.
+        This ensures the exported rows exactly match the day the user is
+        viewing on the analytics dashboard.
+      - The Date/Time column emits local time formatted as
+        "YYYY-MM-DD HH:MM:SS <tz>" instead of a raw UTC ISO string.
+      - A Date/Time (UTC) column is inserted immediately after Date/Time
+        so downstream consumers that need UTC still have it.
+      - Without tz (or with tz=UTC), Date/Time is a UTC ISO string and
+        no Date/Time (UTC) companion is emitted.
+
+    Transcript:
+      - Present only when the requesting user has call_logs.view_transcripts.
+      - Formatted as "AI: <text>\\nCaller: <text>\\n…" with one turn per line.
+      - Empty string when transcript is null or permission is absent.
     """
     check_account_permission(user, str(account_id), "call_logs.export", db)
+
+    # Validate and resolve the timezone once up-front. An unrecognised IANA
+    # name raises 400, consistent with the analytics endpoint.
+    tz_info: Optional[ZoneInfo] = None
+    if tz:
+        try:
+            tz_info = ZoneInfo(tz)
+        except (ZoneInfoNotFoundError, KeyError):
+            raise HTTPException(status_code=400, detail=f"Invalid timezone: {tz!r}")
+
+    # Check transcript permission once for the whole request rather than
+    # per-row so it doesn't add N extra queries to a large export.
+    can_view_transcripts = _can_view_transcripts(user, str(account_id), db)
+
     try:
+        # ── Timezone-aware date boundary conversion ───────────────────────
+        # The frontend sends date_from/date_to as UTC ISO strings of
+        # browser-local midnight (e.g. 2026-06-17T00:00:00.000Z). When tz is
+        # provided we re-interpret the wall-clock portion of those datetimes
+        # as midnight in the analytics timezone, then convert to UTC so the
+        # started_at WHERE clause matches the day shown on screen.
+        effective_date_from: Optional[datetime] = None
+        effective_date_to: Optional[datetime] = None
+        if date_from is not None:
+            if tz_info is not None:
+                wall = date_from.replace(tzinfo=None)
+                effective_date_from = wall.replace(tzinfo=tz_info).astimezone(
+                    dt_timezone.utc
+                ).replace(tzinfo=None)
+            else:
+                effective_date_from = date_from.replace(tzinfo=None) if date_from.tzinfo else date_from
+        if date_to is not None:
+            if tz_info is not None:
+                wall = date_to.replace(tzinfo=None)
+                effective_date_to = wall.replace(tzinfo=tz_info).astimezone(
+                    dt_timezone.utc
+                ).replace(tzinfo=None)
+            else:
+                effective_date_to = date_to.replace(tzinfo=None) if date_to.tzinfo else date_to
+
         query = db.query(CallLog).filter(CallLog.account_id == account_id)
 
         if status:
@@ -349,10 +408,10 @@ async def export_call_logs(
             query = query.filter(CallLog.assistant_id == assistant_id)
         if assistant_ids:
             query = query.filter(CallLog.assistant_id.in_(assistant_ids))
-        if date_from:
-            query = query.filter(CallLog.started_at >= date_from)
-        if date_to:
-            query = query.filter(CallLog.started_at <= date_to)
+        if effective_date_from is not None:
+            query = query.filter(CallLog.started_at >= effective_date_from)
+        if effective_date_to is not None:
+            query = query.filter(CallLog.started_at <= effective_date_to)
 
         # Task #129 — bucket filter shares the canonical predicate with the
         # analytics endpoint so the CSV row count under "Bucket = X"
@@ -416,32 +475,41 @@ async def export_call_logs(
         output = io.StringIO()
         writer = csv.writer(output)
 
-        writer.writerow(
-            [
-                # Original 12 columns — order preserved (additive contract).
-                "Date/Time",
-                "Total Duration (seconds)",
-                "AI Duration (seconds)",
-                "Transfer Duration (seconds)",
-                "Caller",
-                "To Number",
-                "Assistant",
-                "Status",
-                "Outcome",
-                "Has Transfer",
-                "Transfer Mode",
-                "Leg Count",
-                # Task #129 — new columns appended on the right.
-                "Reference ID",
-                "Bucket (MECE)",
-                "Greeted",
-                "Caller Spoke",
-                "Disposition",
-                "ACW Resolution",
-                "ACW Quality Score",
-                "ACW Skip Reason",
-            ]
-        )
+        # Build header — Date/Time (UTC) companion is only present when tz
+        # was supplied so consumers without tz still see the same column layout.
+        header = [
+            "Date/Time" if tz_info is None else "Date/Time (Local)",
+        ]
+        if tz_info is not None:
+            header.append("Date/Time (UTC)")
+        header += [
+            # Original columns (positions shift right by 1 when tz present).
+            "Total Duration (seconds)",
+            "AI Duration (seconds)",
+            "Transfer Duration (seconds)",
+            "Caller",
+            "To Number",
+            "Assistant",
+            "Status",
+            "Outcome",
+            "Has Transfer",
+            "Transfer Mode",
+            "Leg Count",
+            # Task #129 columns.
+            "Reference ID",
+            "Bucket (MECE)",
+            "Greeted",
+            "Caller Spoke",
+            "Disposition",
+            "ACW Resolution",
+            "ACW Quality Score",
+            "ACW Skip Reason",
+            # Task #253 — transcript (last, so it doesn't shift prior columns).
+            "Transcript",
+        ]
+        writer.writerow(header)
+
+        _utc = dt_timezone.utc
 
         for log in call_logs:
             legs = log.legs or []
@@ -470,31 +538,58 @@ async def export_call_logs(
                 "" if log.caller_spoke is None else ("Yes" if log.caller_spoke else "No")
             )
 
-            writer.writerow(
-                [
-                    log.started_at.isoformat() if log.started_at else "",
-                    log.duration_seconds or 0,
-                    ai_duration,
-                    transfer_duration,
-                    log.caller_number or "",
-                    log.to_number or "",
-                    assistants.get(str(log.assistant_id), "") if log.assistant_id else "",
-                    log.status or "",
-                    log.outcome or "",
-                    "Yes" if log.has_transfer else "No",
-                    log.transfer_mode or "",
-                    leg_count,
-                    # New (additive) columns:
-                    log.reference_id or "",
-                    bucket_label,
-                    "Yes" if log.ai_greeting_completed else "No",
-                    caller_spoke_cell,
-                    disp_map.get(str(log.disposition_id), "") if log.disposition_id else "",
-                    log.acw_resolution or "",
-                    "" if log.acw_quality_score is None else log.acw_quality_score,
-                    log.acw_skip_reason or "",
-                ]
-            )
+            # ── Date/Time columns ─────────────────────────────────────────
+            # started_at is stored as a naïve UTC datetime in the database.
+            utc_iso = log.started_at.isoformat() if log.started_at else ""
+            if tz_info is not None and log.started_at:
+                local_dt = log.started_at.replace(tzinfo=_utc).astimezone(tz_info)
+                dt_cell = local_dt.strftime("%Y-%m-%d %H:%M:%S") + f" {tz}"
+            else:
+                dt_cell = utc_iso
+
+            # ── Transcript ────────────────────────────────────────────────
+            # Format as "AI: …\nCaller: …" so each turn is human-readable in
+            # a spreadsheet cell. Empty when absent or permission is missing.
+            transcript_cell = ""
+            if can_view_transcripts and log.transcript:
+                lines = []
+                for msg in log.transcript:
+                    role = msg.get("role", "")
+                    content = msg.get("content", "")
+                    if role == "assistant":
+                        lines.append(f"AI: {content}")
+                    elif role == "user":
+                        lines.append(f"Caller: {content}")
+                transcript_cell = "\n".join(lines)
+
+            row = [dt_cell]
+            if tz_info is not None:
+                row.append(utc_iso)
+            row += [
+                log.duration_seconds or 0,
+                ai_duration,
+                transfer_duration,
+                log.caller_number or "",
+                log.to_number or "",
+                assistants.get(str(log.assistant_id), "") if log.assistant_id else "",
+                log.status or "",
+                log.outcome or "",
+                "Yes" if log.has_transfer else "No",
+                log.transfer_mode or "",
+                leg_count,
+                # Task #129 columns:
+                log.reference_id or "",
+                bucket_label,
+                "Yes" if log.ai_greeting_completed else "No",
+                caller_spoke_cell,
+                disp_map.get(str(log.disposition_id), "") if log.disposition_id else "",
+                log.acw_resolution or "",
+                "" if log.acw_quality_score is None else log.acw_quality_score,
+                log.acw_skip_reason or "",
+                # Task #253 — transcript:
+                transcript_cell,
+            ]
+            writer.writerow(row)
 
         output.seek(0)
 
@@ -507,7 +602,7 @@ async def export_call_logs(
         )
 
     except HTTPException:
-        # Preserve intentional 4xx responses (invalid bucket token).
+        # Preserve intentional 4xx responses (invalid bucket / tz token).
         raise
     except Exception as e:
         logger.exception(f"Error exporting call logs: {e}")
