@@ -162,6 +162,22 @@ class FlowConfig:
     global_prompt: Optional[str] = None
 
 
+_PLACEHOLDER_PATTERNS = frozenset(
+    {"[not provided]", "not provided", "n/a", "none", "unknown", ""}
+)
+
+
+def _is_valid_new_value(value: Any) -> bool:
+    """Return True only when *value* is a real replacement the caller stated.
+
+    Rejects falsy values and common LLM placeholder strings that indicate the
+    caller flagged a field for correction without actually supplying a new value.
+    """
+    if not value and value != 0:
+        return False
+    return str(value).strip().lower() not in _PLACEHOLDER_PATTERNS
+
+
 class FlowState:
     """Tracks the state of a conversation flow execution."""
 
@@ -2042,7 +2058,7 @@ You are executing a structured conversation flow. Follow these guidelines:
             field_to_change = arguments.get("field_to_change")
             new_value = arguments.get("new_value")
 
-            if field_to_change and new_value is not None:
+            if field_to_change and _is_valid_new_value(new_value):
                 self.state.collected_slots[field_to_change] = new_value
                 updated_summary = (
                     substitute_variables(summary_template, self.state.collected_slots)
@@ -2066,6 +2082,14 @@ You are executing a structured conversation flow. Follow these guidelines:
                     "current_node_id": node_id,
                     "message": message,
                 }
+            elif field_to_change:
+                return {
+                    "success": True,
+                    "action": None,
+                    "confirmed": False,
+                    "current_node_id": node_id,
+                    "message": self._targeted_field_question(field_to_change),
+                }
 
             next_node = self.state.get_next_node(node_id, handle="edit")
             next_node_id = next_node.id if next_node else node_id
@@ -2081,6 +2105,17 @@ You are executing a structured conversation flow. Follow these guidelines:
             }
 
             return result
+
+    def _targeted_field_question(self, field_key: str) -> str:
+        """Return a targeted correction prompt for *field_key*.
+
+        Looks up the variable's description so the AI can ask specifically for
+        the right piece of information instead of a generic fallback.
+        """
+        for var in self.flow_config.variables:
+            if var.key == field_key:
+                return f"May I have your correct {var.description}?"
+        return "What is the correct value?"
 
     def _get_next_node_configured_message(
         self, node: Optional[FlowNode]
@@ -2339,7 +2374,7 @@ You are executing a structured conversation flow. Follow these guidelines:
                 field_to_change = arguments.get("field_to_change")
                 new_value = arguments.get("new_value")
 
-                if field_to_change and new_value is not None:
+                if field_to_change and _is_valid_new_value(new_value):
                     self.state.collected_slots[field_to_change] = new_value
                     summary_template = confirmation_data.get(
                         "summaryTemplate", confirmation_data.get("summary_template", "")
@@ -2369,6 +2404,14 @@ You are executing a structured conversation flow. Follow these guidelines:
                         "current_node_id": confirmation_node.id,
                         "message": message,
                     }
+                elif field_to_change:
+                    return {
+                        "success": True,
+                        "action": None,
+                        "confirmed": False,
+                        "current_node_id": confirmation_node.id,
+                        "message": self._targeted_field_question(field_to_change),
+                    }
 
                 next_node = self.state.get_next_node(confirmation_node.id, handle="edit")
                 next_node_id = next_node.id if next_node else confirmation_node.id
@@ -2396,11 +2439,18 @@ You are executing a structured conversation flow. Follow these guidelines:
         else:
             field_to_change = arguments.get("field_to_change")
             new_value = arguments.get("new_value")
-            if field_to_change and new_value is not None:
+            if field_to_change and _is_valid_new_value(new_value):
                 self.state.collected_slots[field_to_change] = new_value
                 return {
                     "success": True,
                     "message": "Got it, I've updated that. Is everything else correct?",
+                    "action": None,
+                    "current_node_id": self.state.current_node_id,
+                }
+            if field_to_change:
+                return {
+                    "success": True,
+                    "message": self._targeted_field_question(field_to_change),
                     "action": None,
                     "current_node_id": self.state.current_node_id,
                 }
