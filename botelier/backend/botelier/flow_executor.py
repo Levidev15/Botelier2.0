@@ -395,6 +395,26 @@ class FlowExecutor:
 
         return ordered_variables
 
+    def _has_any_past_date_slot(self) -> bool:
+        """Return True if any date slot in the flow has requireFuture explicitly set to False."""
+        for node in self.flow_config.nodes:
+            node_type = node.type.value if hasattr(node.type, "value") else str(node.type)
+            if node_type == "collect_slot":
+                slot = node.data.get("slot") or {}
+                if slot.get("type") == "date":
+                    validation = slot.get("validation") or {}
+                    rf = validation.get("requireFuture", validation.get("require_future", True))
+                    if not rf:
+                        return True
+            elif node_type == "collect_form":
+                for slot in node.data.get("slots") or []:
+                    if slot.get("type") == "date":
+                        validation = slot.get("validation") or {}
+                        rf = validation.get("requireFuture", validation.get("require_future", True))
+                        if not rf:
+                            return True
+        return False
+
     def get_system_prompt(self) -> str:
         """Generate the system prompt including flow context."""
         initial_node = None
@@ -423,6 +443,20 @@ FLOW-LEVEL INSTRUCTIONS (apply to entire conversation):
 {global_prompt.strip()}
 """
 
+        has_past_date_slot = self._has_any_past_date_slot()
+        if has_past_date_slot:
+            date_year_rule = (
+                f"6. When a caller provides a date without a year (e.g., \"Dec 12th\"), "
+                f"interpret it based on the constraint for that specific field. "
+                f"If the field requires future dates, use the next occurrence after today ({current_date}). "
+                f"If the field allows past dates, interpret it as the most recent past occurrence that makes contextual sense."
+            )
+        else:
+            date_year_rule = (
+                f"6. When a guest provides a date without a year (e.g., \"Dec 12th\"), "
+                f"interpret it as the next occurrence after today ({current_date}). Never assume a past year."
+            )
+
         return f"""{base_prompt}
 
 Current date/time: {current_date} {current_time} UTC ({current_date_human})
@@ -433,7 +467,7 @@ You are executing a structured conversation flow. Follow these guidelines:
 3. Follow the CURRENT NODE instructions - they tell you what to say or ask
 4. When instructions say "Say exactly", speak that text verbatim. When they say "Guidance" or "naturally", you may phrase it in your own words while keeping the meaning.
 5. If the guest provides information proactively, acknowledge and record it
-6. When a guest provides a date without a year (e.g., "Dec 12th"), interpret it as the next occurrence after today ({current_date}). Never assume a past year.
+{date_year_rule}
 7. For number fields, respect the minimum and maximum limits specified.
 8. IMPORTANT: Never use markdown formatting (no asterisks, bold, bullets, etc). This is a voice conversation - speak naturally without any special formatting.
 9. When a function returns a "speak_exactly" field, speak that text verbatim without paraphrasing.
