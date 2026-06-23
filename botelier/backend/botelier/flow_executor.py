@@ -944,8 +944,16 @@ You are executing a structured conversation flow. Follow these guidelines:
                             "properties": {
                                 "confirmed": {
                                     "type": "boolean",
-                                    "description": "Whether the guest confirmed the booking details",
-                                }
+                                    "description": "True if the guest confirms all details are correct. False if they want a change — also populate field_to_change and new_value if the guest specified what to correct in the same message.",
+                                },
+                                "field_to_change": {
+                                    "type": "string",
+                                    "description": "When confirmed is False and the guest specified which field to correct, the variable key of that field (e.g. 'name', 'room_number'). Omit if the guest did not specify.",
+                                },
+                                "new_value": {
+                                    "type": "string",
+                                    "description": "The corrected value for field_to_change. Only set when field_to_change is also set.",
+                                },
                             },
                             "required": ["confirmed"],
                         },
@@ -1004,8 +1012,16 @@ You are executing a structured conversation flow. Follow these guidelines:
                             "properties": {
                                 "confirmed": {
                                     "type": "boolean",
-                                    "description": "Whether the guest confirmed the booking details",
-                                }
+                                    "description": "True if the guest confirms all details are correct. False if they want a change — also populate field_to_change and new_value if the guest specified what to correct in the same message.",
+                                },
+                                "field_to_change": {
+                                    "type": "string",
+                                    "description": "When confirmed is False and the guest specified which field to correct, the variable key of that field (e.g. 'name', 'room_number'). Omit if the guest did not specify.",
+                                },
+                                "new_value": {
+                                    "type": "string",
+                                    "description": "The corrected value for field_to_change. Only set when field_to_change is also set.",
+                                },
                             },
                             "required": ["confirmed"],
                         },
@@ -1230,8 +1246,16 @@ You are executing a structured conversation flow. Follow these guidelines:
                     "properties": {
                         "confirmed": {
                             "type": "boolean",
-                            "description": "True if the guest confirms the details are correct, False if they want to make changes",
-                        }
+                            "description": "True if the guest confirms all details are correct. False if they want a change — also populate field_to_change and new_value if the guest specified what to correct in the same message.",
+                        },
+                        "field_to_change": {
+                            "type": "string",
+                            "description": "When confirmed is False and the guest specified which field to correct, the variable key of that field (e.g. 'name', 'room_number'). Omit if the guest did not specify.",
+                        },
+                        "new_value": {
+                            "type": "string",
+                            "description": "The corrected value for field_to_change. Only set when field_to_change is also set.",
+                        },
                     },
                     "required": ["confirmed"],
                 },
@@ -2015,6 +2039,34 @@ You are executing a structured conversation flow. Follow these guidelines:
 
             return result
         else:
+            field_to_change = arguments.get("field_to_change")
+            new_value = arguments.get("new_value")
+
+            if field_to_change and new_value is not None:
+                self.state.collected_slots[field_to_change] = new_value
+                updated_summary = (
+                    substitute_variables(summary_template, self.state.collected_slots)
+                    if summary_template
+                    else ""
+                )
+                updated_confirm = (
+                    substitute_variables(confirm_prompt, self.state.collected_slots)
+                    if confirm_prompt
+                    else "Is everything else correct?"
+                )
+                message = (
+                    f"{updated_summary} {updated_confirm}".strip()
+                    if updated_summary
+                    else updated_confirm
+                )
+                return {
+                    "success": True,
+                    "action": None,
+                    "confirmed": False,
+                    "current_node_id": node_id,
+                    "message": message,
+                }
+
             next_node = self.state.get_next_node(node_id, handle="edit")
             next_node_id = next_node.id if next_node else node_id
             if next_node:
@@ -2284,6 +2336,40 @@ You are executing a structured conversation flow. Follow these guidelines:
 
                 return result
             else:
+                field_to_change = arguments.get("field_to_change")
+                new_value = arguments.get("new_value")
+
+                if field_to_change and new_value is not None:
+                    self.state.collected_slots[field_to_change] = new_value
+                    summary_template = confirmation_data.get(
+                        "summaryTemplate", confirmation_data.get("summary_template", "")
+                    )
+                    confirm_prompt = confirmation_data.get(
+                        "confirmPrompt", confirmation_data.get("confirm_prompt", "")
+                    )
+                    updated_summary = (
+                        substitute_variables(summary_template, self.state.collected_slots)
+                        if summary_template
+                        else ""
+                    )
+                    updated_confirm = (
+                        substitute_variables(confirm_prompt, self.state.collected_slots)
+                        if confirm_prompt
+                        else "Is everything else correct?"
+                    )
+                    message = (
+                        f"{updated_summary} {updated_confirm}".strip()
+                        if updated_summary
+                        else updated_confirm
+                    )
+                    return {
+                        "success": True,
+                        "action": None,
+                        "confirmed": False,
+                        "current_node_id": confirmation_node.id,
+                        "message": message,
+                    }
+
                 next_node = self.state.get_next_node(confirmation_node.id, handle="edit")
                 next_node_id = next_node.id if next_node else confirmation_node.id
                 if next_node:
@@ -2308,6 +2394,16 @@ You are executing a structured conversation flow. Follow these guidelines:
                 "current_node_id": self.state.current_node_id,
             }
         else:
+            field_to_change = arguments.get("field_to_change")
+            new_value = arguments.get("new_value")
+            if field_to_change and new_value is not None:
+                self.state.collected_slots[field_to_change] = new_value
+                return {
+                    "success": True,
+                    "message": "Got it, I've updated that. Is everything else correct?",
+                    "action": None,
+                    "current_node_id": self.state.current_node_id,
+                }
             return {
                 "success": True,
                 "message": "What would you like to change?",
