@@ -202,6 +202,7 @@ def create_tool(
 
 
 @router.put("/{tool_id}")
+@router.patch("/{tool_id}")
 def update_tool(
     tool_id: str,
     tool_data: ToolUpdate,
