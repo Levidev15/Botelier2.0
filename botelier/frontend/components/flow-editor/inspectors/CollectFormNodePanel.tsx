@@ -11,7 +11,7 @@ interface Props {
 }
 
 export default function CollectFormNodePanel({ data, nodeId }: Props) {
-  const { updateNodeData, addVariable, variables } = useFlowStore();
+  const { updateNodeData, addVariable, updateVariable, variables } = useFlowStore();
   const slots = data.slots || [];
   const [expandedSlot, setExpandedSlot] = useState<string | null>(null);
   const [draggedSlot, setDraggedSlot] = useState<string | null>(null);
@@ -43,6 +43,13 @@ export default function CollectFormNodePanel({ data, nodeId }: Props) {
       return updated;
     });
     updateNodeData(nodeId, { slots: newSlots });
+
+    if (updates.type) {
+      const slot = slots.find((s) => s.id === slotId);
+      if (slot?.variableKey) {
+        updateVariable(slot.variableKey, { type: updates.type });
+      }
+    }
   };
 
   const removeSlot = (slotId: string) => {
