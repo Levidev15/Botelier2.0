@@ -802,6 +802,11 @@ You are executing a structured conversation flow. Follow these guidelines:
 
         elif var_info.type == SlotType.DATE:
             after_date_var = None
+            require_future = (
+                validation.get("requireFuture", validation.get("require_future", True))
+                if validation
+                else True
+            )
             if validation:
                 after_date_var = validation.get("afterDateVariable") or validation.get(
                     "after_date_variable"
@@ -810,10 +815,14 @@ You are executing a structured conversation flow. Follow these guidelines:
                 after_date_str = self.state.get_variable(after_date_var)
                 if after_date_str:
                     constraints.append(f"must be after {after_date_str}")
-                else:
+                elif require_future:
                     constraints.append("must be today or later")
-            else:
+                else:
+                    constraints.append("may be any date including past dates")
+            elif require_future:
                 constraints.append("must be today or later")
+            else:
+                constraints.append("may be any date including past dates")
 
         instructions = current_node.data.get("instructions")
         if instructions:
@@ -1147,10 +1156,15 @@ You are executing a structured conversation flow. Follow these guidelines:
             if after_date_var and hasattr(self, "state"):
                 after_date_str = self.state.get_variable(after_date_var)
 
+            require_future = validation.get(
+                "requireFuture", validation.get("require_future", True)
+            )
             if after_date_str:
                 date_constraint = f"must be after {after_date_str}"
-            else:
+            elif require_future:
                 date_constraint = f"must be today ({current_date}) or later"
+            else:
+                date_constraint = "may be any date including past dates"
 
             return {
                 "type": "function",
