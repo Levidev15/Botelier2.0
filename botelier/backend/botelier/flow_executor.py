@@ -1381,6 +1381,22 @@ You are executing a structured conversation flow. Follow these guidelines:
                     collecting_node_id = next_collect_node.id
                     self.state.advance_to(next_collect_node.id)
 
+            if not _is_valid_new_value(value):
+                retry_prompt_template = slot_config.get("retryPrompt", "") if slot_config else ""
+                if retry_prompt_template:
+                    reprompt = substitute_variables(
+                        retry_prompt_template, self.state.collected_slots
+                    )
+                else:
+                    var_desc = var_info.description if var_info else var_key
+                    reprompt = f"Could you please provide your {var_desc}?"
+                return {
+                    "success": False,
+                    "message": reprompt,
+                    "action": None,
+                    "current_node_id": collecting_node_id or self.state.current_node_id,
+                }
+
             validation_error = self._validate_slot_value(var_info, slot_config, value)
             if validation_error:
                 retry_prompt_template = slot_config.get("retryPrompt", "") if slot_config else ""
