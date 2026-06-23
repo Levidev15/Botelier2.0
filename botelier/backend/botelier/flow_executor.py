@@ -473,8 +473,17 @@ You are executing a structured conversation flow. Follow these guidelines:
                         if after_date_str:
                             constraints.append(f"must be after {after_date_str}")
 
-                if var.type == SlotType.DATE and not any("after" in c for c in constraints):
-                    constraints.append("must be today or later")
+                if var.type == SlotType.DATE:
+                    require_future = (
+                        validation.get("requireFuture", validation.get("require_future", True))
+                        if validation
+                        else True
+                    )
+                    if not any("after" in c for c in constraints):
+                        if require_future:
+                            constraints.append("must be today or later")
+                        else:
+                            constraints.append("may be any date including past dates")
 
                 if constraints:
                     slot_info += f" [{', '.join(constraints)}]"
@@ -1508,7 +1517,10 @@ You are executing a structured conversation flow. Follow these guidelines:
                 try:
                     date_value = datetime.strptime(value, "%Y-%m-%d").date()
                     today = datetime.now(timezone.utc).date()
-                    if date_value < today:
+                    require_future = validation.get(
+                        "requireFuture", validation.get("require_future", True)
+                    )
+                    if require_future and date_value < today:
                         return f"Date must be today or in the future (on or after {today})."
 
                     after_date_var = validation.get("afterDateVariable") or validation.get(

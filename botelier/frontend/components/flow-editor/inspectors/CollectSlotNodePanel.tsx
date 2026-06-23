@@ -155,6 +155,34 @@ export default function CollectSlotNodePanel({ data, nodeId }: Props) {
           />
         </div>
       )}
+
+      {slot.type === "date" && (
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={slot.validation?.requireFuture === false}
+            onChange={(e) => updateSlot({
+              validation: { ...slot.validation, requireFuture: e.target.checked ? false : undefined }
+            })}
+            className="rounded border-gray-600 bg-[#1a1a1a] text-purple-500 focus:ring-purple-500 focus:ring-offset-0"
+          />
+          <span className="text-sm text-gray-400">Allow past dates</span>
+        </label>
+      )}
+
+      <div>
+        <label className="block text-sm font-medium text-gray-400 mb-1">
+          AI Instructions
+          <span className="text-xs text-gray-500 ml-2">(optional)</span>
+        </label>
+        <textarea
+          value={data.instructions || ""}
+          onChange={(e) => updateNodeData(nodeId, { instructions: e.target.value })}
+          rows={2}
+          className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-purple-500 focus:outline-none resize-none"
+          placeholder="e.g. Spell the name back letter by letter after collecting it"
+        />
+      </div>
     </div>
   );
 }
