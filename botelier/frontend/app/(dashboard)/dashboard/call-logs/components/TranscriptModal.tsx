@@ -155,7 +155,7 @@ export default function TranscriptModal({ log, onClose, onLogUpdated, onViewEven
                     )}
                   </>
                 ) : (
-                  formatDuration(log.duration_seconds)
+                  formatDuration(log.has_transfer ? 0 : log.duration_seconds)
                 )}
               </p>
             </div>

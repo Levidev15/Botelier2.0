@@ -318,16 +318,6 @@ async def get_call_analytics(
 
         transferred = _base().filter(CallLog.has_transfer == True).count()
 
-        dur_row = (
-            _base()
-            .filter(CallLog.duration_source.in_(["twilio_webhook", "twilio_api"]))
-            .with_entities(
-                func.coalesce(func.avg(CallLog.duration_seconds), 0).label("avg"),
-                func.coalesce(func.sum(CallLog.duration_seconds), 0).label("total"),
-            )
-            .one()
-        )
-
         call_ids_subq = _base().with_entities(CallLog.id).subquery()
 
         ai_dur = (
@@ -392,8 +382,11 @@ async def get_call_analytics(
             "ai_handled_rate": round(ai_handled_count / total * 100, 1) if total else 0,
             "completion_rate": round(completed / total * 100, 1) if total else 0,
             "transfer_rate": round(transferred / total * 100, 1) if total else 0,
-            "avg_duration_seconds": round(float(dur_row.avg), 1),
-            "total_duration_seconds": int(dur_row.total),
+            # Legacy keys preserved for backward compat, but now sourced from
+            # AI-conversation legs (not the Twilio parent total) so they equal
+            # avg_ai/total_ai and include transferred calls (incl. cold).
+            "avg_duration_seconds": avg_ai_duration,
+            "total_duration_seconds": total_ai_duration,
             "avg_ai_duration_seconds": avg_ai_duration,
             "total_ai_duration_seconds": total_ai_duration,
             "avg_outbound_duration_seconds": avg_outbound_duration,

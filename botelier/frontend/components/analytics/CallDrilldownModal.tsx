@@ -168,7 +168,7 @@ function RecordingCell({
     return (
       <span className="inline-flex items-center gap-1 text-gray-600 text-xs">
         <Clock className="h-3 w-3" />
-        {fmtDuration(aiDurationSeconds > 0 ? aiDurationSeconds : durationSeconds)}
+        {fmtDuration(aiDurationSeconds > 0 ? aiDurationSeconds : (hasTransfer ? 0 : durationSeconds))}
         {hasTransfer && transferDurationSeconds > 0 && (
           <span className="opacity-50">+{fmtDuration(transferDurationSeconds)}</span>
         )}
@@ -192,7 +192,7 @@ function RecordingCell({
         ) : (
           <Play className="h-3 w-3 fill-current" />
         )}
-        {fmtDuration(aiDurationSeconds > 0 ? aiDurationSeconds : durationSeconds)}
+        {fmtDuration(aiDurationSeconds > 0 ? aiDurationSeconds : (hasTransfer ? 0 : durationSeconds))}
         {hasTransfer && transferDurationSeconds > 0 && (
           <span className="opacity-50">+{fmtDuration(transferDurationSeconds)}</span>
         )}
