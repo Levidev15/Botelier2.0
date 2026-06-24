@@ -22,9 +22,9 @@ function Nav({ scrolled }: { scrolled: boolean }) {
       <div className="max-w-7xl mx-auto px-6 py-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
           <div className="w-8 h-8 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center shadow-lg">
-            <span className="text-sm font-bold text-white" style={{ fontFamily: "'Syne', sans-serif" }}>B</span>
+            <span className="text-sm font-bold text-white font-syne">B</span>
           </div>
-          <span className="text-white font-semibold tracking-tight" style={{ fontFamily: "'Syne', sans-serif" }}>
+          <span className="text-white font-semibold tracking-tight font-syne">
             Botelier
           </span>
         </div>
@@ -79,17 +79,14 @@ function Hero() {
       </div>
 
       <div className="relative z-10 max-w-5xl mx-auto px-6 text-center">
-        <div
-          className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-blue-500/25 bg-blue-500/10 text-blue-400 text-xs font-semibold mb-10 tracking-widest uppercase"
-          style={{ fontFamily: "'Syne', sans-serif" }}
-        >
+        <div className="inline-flex items-center gap-2 px-3 py-1.5 rounded-full border border-blue-500/25 bg-blue-500/10 text-blue-400 text-xs font-semibold mb-10 tracking-widest uppercase font-syne">
           <span className="w-1.5 h-1.5 rounded-full bg-blue-400 animate-pulse" />
           AI-Powered Hospitality Communications
         </div>
 
         <h1
-          className="text-[clamp(3rem,9vw,6.5rem)] font-semibold text-white mb-7 tracking-tight"
-          style={{ fontFamily: "'Cormorant Garamond', serif", lineHeight: 1.04 }}
+          className="text-[clamp(3rem,9vw,6.5rem)] font-semibold text-white mb-7 tracking-tight font-cormorant"
+          style={{ lineHeight: 1.04 }}
         >
           Turn Every Guest{" "}
           <span
@@ -105,10 +102,7 @@ function Hero() {
           Into Excellence
         </h1>
 
-        <p
-          className="text-lg text-gray-400 max-w-2xl mx-auto mb-12 leading-relaxed"
-          style={{ fontFamily: "'DM Sans', sans-serif" }}
-        >
+        <p className="text-lg text-gray-400 max-w-2xl mx-auto mb-12 leading-relaxed font-dm-sans">
           Botelier is a multichannel AI platform that handles voice calls and SMS
           across every stage of the guest journey — so your team can focus on
           delivering exceptional hospitality.
@@ -117,25 +111,20 @@ function Hero() {
         <div className="flex items-center justify-center gap-4 flex-wrap">
           <a
             href="mailto:sales@botelier.ai"
-            className="inline-flex items-center gap-2 px-7 py-3.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-medium transition-all hover:scale-[1.03] shadow-xl shadow-blue-900/40"
-            style={{ fontFamily: "'DM Sans', sans-serif" }}
+            className="inline-flex items-center gap-2 px-7 py-3.5 bg-blue-600 hover:bg-blue-500 text-white rounded-xl font-medium transition-all hover:scale-[1.03] shadow-xl shadow-blue-900/40 font-dm-sans"
           >
             Contact Sales
             <ArrowRight className="h-4 w-4" />
           </a>
           <a
             href="/login"
-            className="inline-flex items-center gap-2 px-7 py-3.5 border border-white/10 hover:border-white/20 text-gray-300 hover:text-white rounded-xl font-medium transition-all"
-            style={{ fontFamily: "'DM Sans', sans-serif" }}
+            className="inline-flex items-center gap-2 px-7 py-3.5 border border-white/10 hover:border-white/20 text-gray-300 hover:text-white rounded-xl font-medium transition-all font-dm-sans"
           >
             Log In
           </a>
         </div>
 
-        <div
-          className="mt-20 flex items-center justify-center gap-10 flex-wrap"
-          style={{ fontFamily: "'DM Sans', sans-serif" }}
-        >
+        <div className="mt-20 flex items-center justify-center gap-10 flex-wrap font-dm-sans">
           {[
             { label: "Available", value: "24 / 7" },
             { label: "Response Time", value: "< 1s" },
@@ -143,10 +132,7 @@ function Hero() {
             { label: "Departments", value: "10+" },
           ].map((s) => (
             <div key={s.label} className="text-center">
-              <div
-                className="text-3xl font-bold text-white mb-0.5"
-                style={{ fontFamily: "'Syne', sans-serif" }}
-              >
+              <div className="text-3xl font-bold text-white mb-0.5 font-syne">
                 {s.value}
               </div>
               <div className="text-xs text-gray-600 tracking-wide">{s.label}</div>
@@ -225,18 +211,15 @@ function GuestJourney() {
   ];
 
   return (
-    <section className="py-32 px-6" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+    <section className="py-32 px-6 font-dm-sans">
       <div className="max-w-7xl mx-auto">
         <div className="text-center mb-16">
-          <p
-            className="text-xs font-semibold tracking-[0.2em] uppercase text-blue-400 mb-4"
-            style={{ fontFamily: "'Syne', sans-serif" }}
-          >
+          <p className="text-xs font-semibold tracking-[0.2em] uppercase text-blue-400 mb-4 font-syne">
             Guest Journey
           </p>
           <h2
-            className="text-4xl md:text-5xl font-semibold text-white mb-4"
-            style={{ fontFamily: "'Cormorant Garamond', serif", lineHeight: 1.1 }}
+            className="text-4xl md:text-5xl font-semibold text-white mb-4 font-cormorant"
+            style={{ lineHeight: 1.1 }}
           >
             Every touchpoint,
             <br />
@@ -258,17 +241,11 @@ function GuestJourney() {
                 <div className={`w-10 h-10 rounded-xl flex items-center justify-center ${phase.iconBg}`}>
                   <phase.icon className="h-5 w-5" />
                 </div>
-                <span
-                  className="text-5xl font-bold text-white/[0.06] select-none"
-                  style={{ fontFamily: "'Syne', sans-serif" }}
-                >
+                <span className="text-5xl font-bold text-white/[0.06] select-none font-syne">
                   {phase.num}
                 </span>
               </div>
-              <h3
-                className="text-base font-semibold text-white mb-4"
-                style={{ fontFamily: "'Syne', sans-serif" }}
-              >
+              <h3 className="text-base font-semibold text-white mb-4 font-syne">
                 {phase.label}
               </h3>
               <ul className="space-y-2.5">
@@ -330,10 +307,7 @@ function UseCases() {
   ];
 
   return (
-    <section
-      className="py-32 px-6 relative"
-      style={{ fontFamily: "'DM Sans', sans-serif" }}
-    >
+    <section className="py-32 px-6 relative font-dm-sans">
       <div
         className="absolute inset-0 pointer-events-none"
         style={{
@@ -343,15 +317,12 @@ function UseCases() {
       />
       <div className="relative max-w-7xl mx-auto">
         <div className="text-center mb-16">
-          <p
-            className="text-xs font-semibold tracking-[0.2em] uppercase text-blue-400 mb-4"
-            style={{ fontFamily: "'Syne', sans-serif" }}
-          >
+          <p className="text-xs font-semibold tracking-[0.2em] uppercase text-blue-400 mb-4 font-syne">
             Use Cases
           </p>
           <h2
-            className="text-4xl md:text-5xl font-semibold text-white mb-4"
-            style={{ fontFamily: "'Cormorant Garamond', serif", lineHeight: 1.1 }}
+            className="text-4xl md:text-5xl font-semibold text-white mb-4 font-cormorant"
+            style={{ lineHeight: 1.1 }}
           >
             One platform.
             <br />
@@ -372,10 +343,7 @@ function UseCases() {
               <div className="w-10 h-10 rounded-xl bg-blue-500/10 flex items-center justify-center mb-5">
                 <c.icon className="h-5 w-5 text-blue-400" />
               </div>
-              <h3
-                className="text-base font-semibold text-white mb-2"
-                style={{ fontFamily: "'Syne', sans-serif" }}
-              >
+              <h3 className="text-base font-semibold text-white mb-2 font-syne">
                 {c.title}
               </h3>
               <p className="text-sm text-gray-400 leading-relaxed mb-5">{c.desc}</p>
@@ -416,10 +384,7 @@ function Departments() {
   ];
 
   return (
-    <section
-      className="py-32 px-6 relative overflow-hidden"
-      style={{ fontFamily: "'DM Sans', sans-serif" }}
-    >
+    <section className="py-32 px-6 relative overflow-hidden font-dm-sans">
       <div
         className="absolute inset-0 pointer-events-none"
         style={{
@@ -429,15 +394,12 @@ function Departments() {
       />
       <div className="relative max-w-7xl mx-auto">
         <div className="text-center mb-14">
-          <p
-            className="text-xs font-semibold tracking-[0.2em] uppercase text-blue-400 mb-4"
-            style={{ fontFamily: "'Syne', sans-serif" }}
-          >
+          <p className="text-xs font-semibold tracking-[0.2em] uppercase text-blue-400 mb-4 font-syne">
             Departments Supported
           </p>
           <h2
-            className="text-4xl md:text-5xl font-semibold text-white mb-4"
-            style={{ fontFamily: "'Cormorant Garamond', serif", lineHeight: 1.1 }}
+            className="text-4xl md:text-5xl font-semibold text-white mb-4 font-cormorant"
+            style={{ lineHeight: 1.1 }}
           >
             Built for every team
             <br />
@@ -495,20 +457,17 @@ function Analytics() {
   ];
 
   return (
-    <section className="py-32 px-6" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+    <section className="py-32 px-6 font-dm-sans">
       <div className="max-w-7xl mx-auto">
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-16 items-center">
           {/* Copy */}
           <div>
-            <p
-              className="text-xs font-semibold tracking-[0.2em] uppercase text-blue-400 mb-4"
-              style={{ fontFamily: "'Syne', sans-serif" }}
-            >
+            <p className="text-xs font-semibold tracking-[0.2em] uppercase text-blue-400 mb-4 font-syne">
               Analytics &amp; Dashboard
             </p>
             <h2
-              className="text-4xl md:text-5xl font-semibold text-white mb-5"
-              style={{ fontFamily: "'Cormorant Garamond', serif", lineHeight: 1.1 }}
+              className="text-4xl md:text-5xl font-semibold text-white mb-5 font-cormorant"
+              style={{ lineHeight: 1.1 }}
             >
               See everything.
               <br />
@@ -527,10 +486,7 @@ function Analytics() {
                     <div className="w-1.5 h-1.5 rounded-full bg-blue-400" />
                   </div>
                   <div>
-                    <div
-                      className="text-sm font-semibold text-white mb-0.5"
-                      style={{ fontFamily: "'Syne', sans-serif" }}
-                    >
+                    <div className="text-sm font-semibold text-white mb-0.5 font-syne">
                       {f.title}
                     </div>
                     <div className="text-sm text-gray-500">{f.desc}</div>
@@ -565,10 +521,7 @@ function Analytics() {
                       key={s.label}
                       className="rounded-xl bg-white/[0.03] border border-white/[0.04] p-3"
                     >
-                      <div
-                        className="text-xl font-bold text-white"
-                        style={{ fontFamily: "'Syne', sans-serif" }}
-                      >
+                      <div className="text-xl font-bold text-white font-syne">
                         {s.value}
                       </div>
                       <div className="text-[11px] text-gray-500 mt-0.5">{s.label}</div>
@@ -703,10 +656,7 @@ function ProjectPhases() {
   ];
 
   return (
-    <section
-      className="py-32 px-6 relative"
-      style={{ fontFamily: "'DM Sans', sans-serif" }}
-    >
+    <section className="py-32 px-6 relative font-dm-sans">
       <div
         className="absolute inset-0 border-y border-white/[0.04] pointer-events-none"
         style={{
@@ -716,15 +666,12 @@ function ProjectPhases() {
       />
       <div className="relative max-w-7xl mx-auto">
         <div className="text-center mb-16">
-          <p
-            className="text-xs font-semibold tracking-[0.2em] uppercase text-blue-400 mb-4"
-            style={{ fontFamily: "'Syne', sans-serif" }}
-          >
+          <p className="text-xs font-semibold tracking-[0.2em] uppercase text-blue-400 mb-4 font-syne">
             Implementation
           </p>
           <h2
-            className="text-4xl md:text-5xl font-semibold text-white mb-4"
-            style={{ fontFamily: "'Cormorant Garamond', serif", lineHeight: 1.1 }}
+            className="text-4xl md:text-5xl font-semibold text-white mb-4 font-cormorant"
+            style={{ lineHeight: 1.1 }}
           >
             From signed to live
             <br />
@@ -743,23 +690,14 @@ function ProjectPhases() {
               className="rounded-2xl border border-white/[0.06] bg-white/[0.02] p-6 hover:border-white/[0.10] hover:bg-white/[0.03] transition-all"
             >
               <div className="flex items-start justify-between mb-5">
-                <span
-                  className="text-4xl font-bold text-white/[0.07] select-none"
-                  style={{ fontFamily: "'Syne', sans-serif" }}
-                >
+                <span className="text-4xl font-bold text-white/[0.07] select-none font-syne">
                   {phase.num}
                 </span>
-                <span
-                  className="text-xs text-blue-400 border border-blue-500/20 bg-blue-500/10 px-2.5 py-0.5 rounded-full"
-                  style={{ fontFamily: "'Syne', sans-serif" }}
-                >
+                <span className="text-xs text-blue-400 border border-blue-500/20 bg-blue-500/10 px-2.5 py-0.5 rounded-full font-syne">
                   {phase.duration}
                 </span>
               </div>
-              <h3
-                className="text-base font-semibold text-white mb-2"
-                style={{ fontFamily: "'Syne', sans-serif" }}
-              >
+              <h3 className="text-base font-semibold text-white mb-2 font-syne">
                 {phase.title}
               </h3>
               <p className="text-sm text-gray-500 leading-relaxed mb-5">{phase.desc}</p>
@@ -783,7 +721,7 @@ function ProjectPhases() {
 
 function CTABanner() {
   return (
-    <section className="py-32 px-6" style={{ fontFamily: "'DM Sans', sans-serif" }}>
+    <section className="py-32 px-6 font-dm-sans">
       <div className="max-w-4xl mx-auto text-center relative">
         <div
           className="absolute inset-0 rounded-3xl pointer-events-none"
@@ -793,15 +731,12 @@ function CTABanner() {
           }}
         />
         <div className="relative">
-          <p
-            className="text-xs font-semibold tracking-[0.2em] uppercase text-blue-400 mb-6"
-            style={{ fontFamily: "'Syne', sans-serif" }}
-          >
+          <p className="text-xs font-semibold tracking-[0.2em] uppercase text-blue-400 mb-6 font-syne">
             Get Started
           </p>
           <h2
-            className="text-4xl md:text-6xl font-semibold text-white mb-6"
-            style={{ fontFamily: "'Cormorant Garamond', serif", lineHeight: 1.08 }}
+            className="text-4xl md:text-6xl font-semibold text-white mb-6 font-cormorant"
+            style={{ lineHeight: 1.08 }}
           >
             Ready to transform
             <br />
@@ -828,26 +763,13 @@ function CTABanner() {
 
 function Footer() {
   return (
-    <footer
-      className="border-t border-white/[0.05] py-10 px-6"
-      style={{ fontFamily: "'DM Sans', sans-serif" }}
-    >
+    <footer className="border-t border-white/[0.05] py-10 px-6 font-dm-sans">
       <div className="max-w-7xl mx-auto flex flex-col md:flex-row items-center justify-between gap-6">
         <div className="flex items-center gap-3">
           <div className="w-7 h-7 rounded-lg bg-gradient-to-br from-blue-500 to-indigo-600 flex items-center justify-center">
-            <span
-              className="text-xs font-bold text-white"
-              style={{ fontFamily: "'Syne', sans-serif" }}
-            >
-              B
-            </span>
+            <span className="text-xs font-bold text-white font-syne">B</span>
           </div>
-          <span
-            className="text-white font-semibold text-sm"
-            style={{ fontFamily: "'Syne', sans-serif" }}
-          >
-            Botelier
-          </span>
+          <span className="text-white font-semibold text-sm font-syne">Botelier</span>
           <span className="text-gray-700 text-sm hidden md:inline">
             · AI Communications Platform
           </span>

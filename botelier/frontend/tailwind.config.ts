@@ -8,6 +8,11 @@ const config: Config = {
   ],
   theme: {
     extend: {
+      fontFamily: {
+        syne: ["var(--font-syne)", "sans-serif"],
+        cormorant: ["var(--font-cormorant)", "serif"],
+        "dm-sans": ["var(--font-dm-sans)", "sans-serif"],
+      },
       colors: {
         border: "hsl(var(--border))",
         background: "hsl(var(--background))",
