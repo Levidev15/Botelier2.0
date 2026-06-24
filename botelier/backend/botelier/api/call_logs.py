@@ -234,6 +234,29 @@ async def get_call_logs(
         raise HTTPException(status_code=500, detail="Failed to fetch call logs")
 
 
+def _sum_leg_duration(db: Session, call_ids_subq, *, leg_types, sources):
+    """Sum ``CallLeg.duration_seconds`` and count distinct calls for the given
+    leg types / authoritative duration sources, scoped to a set of call ids.
+
+    Mirrors the analytics overview's AI/transfer aggregation so the call-stats
+    card, analytics overview, drilldown modal, call-log table, and CSV export
+    all report the same Duration. Returns ``(total_seconds, distinct_call_count)``.
+    """
+    row = (
+        db.query(
+            func.coalesce(func.sum(CallLeg.duration_seconds), 0).label("total"),
+            func.count(func.distinct(CallLeg.call_log_id)).label("calls"),
+        )
+        .filter(
+            CallLeg.call_log_id.in_(call_ids_subq),
+            CallLeg.leg_type.in_(list(leg_types)),
+            CallLeg.duration_source.in_(list(sources)),
+        )
+        .one()
+    )
+    return int(row.total), int(row.calls)
+
+
 @router.get("/stats")
 async def get_call_stats(
     account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
@@ -254,30 +277,56 @@ async def get_call_stats(
         completed_calls = base_query.filter(CallLog.status == CallStatus.COMPLETED.value).count()
         transferred_calls = base_query.filter(CallLog.has_transfer == True).count()
 
-        total_duration = (
-            db.query(func.sum(CallLog.duration_seconds))
-            .filter(
-                CallLog.account_id == account_id,
-                CallLog.started_at >= since,
-                CallLog.duration_source.in_(("twilio_webhook", "twilio_api")),
-            )
-            .scalar()
-            or 0
+        # Duration reflects the caller's AI-conversation time (the canonical
+        # "Duration" across all surfaces), aggregated from the AI legs. Doing it
+        # leg-side means transferred calls — including cold transfers whose
+        # parent duration_source is not Twilio — are included rather than
+        # filtered out, and the bridged transfer span is never folded in.
+        # Transfer (outbound) time is reported separately.
+        call_ids_subq = (
+            db.query(CallLog.id)
+            .filter(CallLog.account_id == account_id, CallLog.started_at >= since)
+            .subquery()
         )
-        duration_call_count = base_query.filter(
-            CallLog.duration_source.in_(("twilio_webhook", "twilio_api"))
-        ).count()
 
-        avg_duration = (
-            total_duration / duration_call_count if duration_call_count > 0 else 0
+        total_ai_duration, ai_calls = _sum_leg_duration(
+            db,
+            call_ids_subq,
+            leg_types=("ai_conversation",),
+            sources=("pipecat",),
+        )
+        avg_ai_duration = round(total_ai_duration / ai_calls, 1) if ai_calls else 0
+
+        total_transfer_duration, transfer_dur_calls = _sum_leg_duration(
+            db,
+            call_ids_subq,
+            leg_types=(
+                "transfer_external",
+                "transfer_sip",
+                "transfer_internal",
+                "transfer_cold",
+            ),
+            sources=("twilio_webhook", "twilio_api"),
+        )
+        avg_transfer_duration = (
+            round(total_transfer_duration / transfer_dur_calls, 1)
+            if transfer_dur_calls
+            else 0
         )
 
         return {
             "total_calls": total_calls,
             "completed_calls": completed_calls,
             "transferred_calls": transferred_calls,
-            "total_duration_seconds": total_duration,
-            "avg_duration_seconds": round(avg_duration, 1),
+            # total/avg duration now mean AI-conversation time. The original
+            # keys are preserved (now sourced from AI legs) for backward compat,
+            # with explicit AI/transfer fields alongside.
+            "total_duration_seconds": total_ai_duration,
+            "avg_duration_seconds": avg_ai_duration,
+            "total_ai_duration_seconds": total_ai_duration,
+            "avg_ai_duration_seconds": avg_ai_duration,
+            "total_transfer_duration_seconds": total_transfer_duration,
+            "avg_transfer_duration_seconds": avg_transfer_duration,
             "period_days": days,
         }
 

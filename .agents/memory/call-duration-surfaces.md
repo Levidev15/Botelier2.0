@@ -17,6 +17,6 @@ Every Duration surface must apply the SAME `duration_source` filters:
 - AI duration = sum of `ai_conversation` legs WHERE `duration_source == "pipecat"`
 - Transfer duration = sum of transfer legs (external/sip/internal/cold) WHERE `duration_source in ("twilio_webhook", "twilio_api")`
 
-Surfaces that must stay in sync: `CallLog.to_dict()`, analytics drilldown + overview (analytics.py), CSV export (api/call_logs.py), and the frontend (CallLogRow / CallDrilldownModal / TranscriptModal). The drilldown `ai_duration_seconds` must fall back to `0` (NOT the Twilio parent total) for `has_transfer` calls, or it re-introduces the AI+transfer double-count.
+Surfaces that must stay in sync: `CallLog.to_dict()`, analytics drilldown + overview (analytics.py), the call-stats card endpoint `GET /api/call-logs/stats` (`get_call_stats` in api/call_logs.py — aggregate from `CallLeg`, NOT `CallLog.duration_seconds`), CSV export (api/call_logs.py, via `_sum_leg_duration`), and the frontend (CallLogRow / CallDrilldownModal / TranscriptModal). The drilldown `ai_duration_seconds` must fall back to `0` (NOT the Twilio parent total) for `has_transfer` calls, or it re-introduces the AI+transfer double-count.
 
 **How to apply:** any change to one Duration surface (a new transfer leg type, a new source value, fallback logic) must be mirrored across all of the above in the same change.

@@ -20,6 +20,7 @@ from botelier.services.call_duration_reconciliation import (
     _resolve_item_rate,
 )
 from botelier.services.call_logger import CallLogger
+from botelier.api import call_logs as call_logs_api
 
 
 def _query(first=None, scalar=None):
@@ -438,3 +439,81 @@ def test_update_status_recovers_ai_duration_when_terminal_webhook_finalized_firs
     assert ai_leg.duration_seconds == 83
     assert ai_leg.duration_source == "pipecat"
     assert call.duration_seconds == 0
+
+
+def _stats_db(*, total_calls, completed, transferred):
+    """Mock Session for get_call_stats: routes CallLog count queries and the
+    CallLog.id subquery; the leg aggregation is patched separately."""
+    base_query = MagicMock()
+    base_query.count.return_value = total_calls
+    base_query.filter.return_value.count.side_effect = [completed, transferred]
+
+    query_callog = MagicMock()
+    query_callog.filter.return_value = base_query
+
+    subq_query = MagicMock()
+    subq_query.filter.return_value.subquery.return_value = "CALL_IDS_SUBQ"
+
+    db = MagicMock()
+    db.query.side_effect = lambda *cols: (
+        query_callog if cols and cols[0] is CallLog else subq_query
+    )
+    return db
+
+
+@pytest.mark.asyncio
+async def test_get_call_stats_duration_is_ai_conversation_time_not_twilio_total():
+    """The call-stats card reports AI-conversation time (from pipecat AI legs),
+    not CallLog.duration_seconds, and reports transfer time separately — the
+    same definition used by the table, overview, drilldown, and CSV."""
+    db = _stats_db(total_calls=10, completed=7, transferred=3)
+
+    captured = []
+
+    def _fake_sum(_db, _subq, *, leg_types, sources):
+        captured.append((tuple(leg_types), tuple(sources)))
+        if tuple(leg_types) == ("ai_conversation",):
+            return (415, 5)  # 5 AI calls, 415s total -> avg 83.0
+        return (90, 2)  # transfer: 2 calls, 90s -> avg 45.0
+
+    with patch.object(call_logs_api, "_sum_leg_duration", side_effect=_fake_sum), patch.object(
+        call_logs_api, "check_account_permission"
+    ):
+        result = await call_logs_api.get_call_stats(
+            account_id=uuid.uuid4(), days=7, db=db, user=MagicMock()
+        )
+
+    assert result["total_duration_seconds"] == 415
+    assert result["avg_duration_seconds"] == 83.0
+    assert result["total_ai_duration_seconds"] == 415
+    assert result["avg_ai_duration_seconds"] == 83.0
+    assert result["total_transfer_duration_seconds"] == 90
+    assert result["avg_transfer_duration_seconds"] == 45.0
+    assert result["transferred_calls"] == 3
+    # AI aggregate keys on the pipecat leg source (so cold transfers, whose
+    # parent duration_source is NOT Twilio, are still counted); transfer
+    # aggregate keys on Twilio sources only — parity with to_dict/drilldown/CSV.
+    assert (("ai_conversation",), ("pipecat",)) in captured
+    assert (
+        ("transfer_external", "transfer_sip", "transfer_internal", "transfer_cold"),
+        ("twilio_webhook", "twilio_api"),
+    ) in captured
+
+
+@pytest.mark.asyncio
+async def test_get_call_stats_handles_calls_without_durations():
+    """No AI/transfer durations must not raise ZeroDivisionError; avgs are 0."""
+    db = _stats_db(total_calls=4, completed=0, transferred=0)
+
+    with patch.object(call_logs_api, "_sum_leg_duration", return_value=(0, 0)), patch.object(
+        call_logs_api, "check_account_permission"
+    ):
+        result = await call_logs_api.get_call_stats(
+            account_id=uuid.uuid4(), days=30, db=db, user=MagicMock()
+        )
+
+    assert result["total_duration_seconds"] == 0
+    assert result["avg_duration_seconds"] == 0
+    assert result["total_transfer_duration_seconds"] == 0
+    assert result["avg_transfer_duration_seconds"] == 0
+    assert result["period_days"] == 30
