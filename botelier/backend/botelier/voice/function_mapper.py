@@ -296,21 +296,11 @@ class FunctionMapper:
 
             function_schema_objects = []
 
-            # 1. Always include knowledge base
-            knowledge_schema = FunctionSchema(
-                name="query_hotel_knowledge",
-                description="Query the hotel's knowledge base to answer guest questions about the hotel, amenities, policies, services, and local information.",
-                properties={
-                    "question": {
-                        "type": "string",
-                        "description": "The guest's question to look up in the knowledge base",
-                    },
-                },
-                required=["question"],
-            )
-            function_schema_objects.append(knowledge_schema)
-
-            # 2. Include non-flow tools (transfer, end call, etc.)
+            # 1. Include non-flow tools (transfer, end call, etc.)
+            # Note: query_hotel_knowledge is intentionally omitted — the knowledge
+            # base is injected directly into the system prompt, and the function
+            # handler is no longer registered.  Exposing an unregistered function
+            # here would cause LLM call errors if the model tried to invoke it.
             for non_flow_schema in self._non_flow_tool_schemas:
                 func_schema = FunctionSchema(
                     name=non_flow_schema["name"],
@@ -320,7 +310,7 @@ class FunctionMapper:
                 )
                 function_schema_objects.append(func_schema)
 
-            # 3. Include flow trigger function
+            # 2. Include flow trigger function
             trigger_schema = FunctionSchema(
                 name=f"start_{sanitize_function_name(tool_name)}",
                 description=f"Start the {tool_name} conversation flow",
@@ -329,7 +319,7 @@ class FunctionMapper:
             )
             function_schema_objects.append(trigger_schema)
 
-            # 4. Include current flow functions (only current slot due to get_function_schemas logic)
+            # 3. Include current flow functions (only current slot due to get_function_schemas logic)
             for schema in flow_schemas:
                 func_def = schema.get("function", schema)
                 func_schema = FunctionSchema(
@@ -1452,27 +1442,43 @@ class FunctionMapper:
                 await params.result_callback({"status": "error", "message": "Flow not initialized"})
                 return
 
-            greeting = executor.get_greeting()
-            progress = executor.get_progress()
+            # get_initial_messages() honours waitForResponse=false on the initial
+            # node: it returns the greeting plus the first slot prompt and advances
+            # the flow state to the first COLLECT node in a single call.  Speak
+            # every returned message directly via TTSSpeakFrame so both the
+            # greeting and the first question are delivered in one bot turn —
+            # the caller hears them back-to-back without the LLM waiting for
+            # input between them.
+            initial_messages = executor.get_initial_messages()
+            for message in initial_messages:
+                if message:
+                    await params.llm.push_frame(TTSSpeakFrame(message))
 
-            # Update LLM tools to only expose the first slot's function
-            # This ensures strict flow order from the start
+            # State is now advanced to the first COLLECT node.  Updating tools
+            # here exposes the correct collect_* functions for that node.
             self.update_llm_tools_for_flow(tool_name)
 
-            # Get list of variables to collect for context
+            # Give the LLM the remaining variable list for context so it knows
+            # what to collect, but omit the greeting — it has already been spoken.
             variables_to_collect = [
                 {"key": v.key, "type": v.type.value, "description": v.description}
                 for v in executor.flow_config.variables
                 if v.key not in executor.state.collected_slots
             ]
 
+            progress = executor.get_progress()
+
             await params.result_callback(
                 {
                     "status": "flow_started",
-                    "greeting": greeting,
                     "progress": progress,
                     "variables_to_collect": variables_to_collect,
-                    "instructions": "Collect the required information by calling the collect_* functions as you gather data from the guest. Ask for each piece of information naturally in conversation.",
+                    "instructions": (
+                        "The greeting has already been spoken to the caller. "
+                        "Collect the required information by calling the collect_* functions "
+                        "as you gather each value from the caller. "
+                        "Ask for each piece of information naturally in conversation."
+                    ),
                 }
             )
 
