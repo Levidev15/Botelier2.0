@@ -1123,6 +1123,89 @@ def _backfill_smart_turn_stop_secs_default():
         db.close()
 
 
+def _backfill_billing_tool_data():
+    """Idempotent data fix: set account_id and tighten description on any FLOW
+    tool named 'billing' that still has account_id=NULL.
+
+    WHY THIS EXISTS
+    The billing FLOW tool was created without an account_id, leaving it as an
+    apparent platform-level tool with a vague description ("Double charge for
+    room service.").  That vagueness caused the LLM to invoke start_billing
+    speculatively on every call before the caller mentioned any billing issue.
+
+    HOW IT WORKS
+    Finds every Tool row where name='billing', tool_type='FLOW', and
+    account_id IS NULL.  For each such row it resolves the owning account via
+    the tool's tool_set and sets:
+      - account_id  = tool_set.account_id
+      - description = guard-railed trigger language
+    Idempotent: once account_id is set the row is skipped on subsequent runs.
+    """
+    db = SessionLocal()
+    try:
+        from botelier.models.tool import Tool
+
+        orphaned = (
+            db.query(Tool)
+            .filter(Tool.name == "billing", Tool.tool_type == "FLOW", Tool.account_id.is_(None))
+            .all()
+        )
+
+        if not orphaned:
+            logger.debug("Billing tool data fix — no orphaned billing tools found, skipping")
+            return
+
+        updated = []
+        for tool in orphaned:
+            if not tool.tool_set_id:
+                logger.warning(
+                    f"Billing tool data fix — tool {tool.id} has no tool_set_id, skipping"
+                )
+                continue
+
+            result = db.execute(
+                __import__("sqlalchemy").text(
+                    "SELECT account_id FROM tool_sets WHERE id = :id"
+                ),
+                {"id": str(tool.tool_set_id)},
+            ).fetchone()
+
+            if not result or not result[0]:
+                logger.warning(
+                    f"Billing tool data fix — tool_set {tool.tool_set_id} "
+                    "has no account_id, skipping"
+                )
+                continue
+
+            tool.account_id = result[0]
+            tool.description = (
+                "Handle a caller complaint about being charged twice for room service "
+                "or an incorrect billing charge on their account. "
+                "Only invoke this flow when the caller explicitly mentions a duplicate charge, "
+                "an incorrect charge, or a billing dispute — "
+                "do not invoke for general questions, complaints about other matters, "
+                "or requests unrelated to billing."
+            )
+            updated.append(str(tool.id))
+            logger.info(
+                f"Billing tool data fix — set account_id={result[0]} "
+                f"and updated description for tool {tool.id}"
+            )
+
+        if updated:
+            db.commit()
+            logger.info(
+                f"Billing tool data fix complete — updated {len(updated)} tool(s): "
+                + ", ".join(updated)
+            )
+
+    except Exception as e:
+        logger.error(f"Billing tool data fix failed (non-fatal): {e}")
+        db.rollback()
+    finally:
+        db.close()
+
+
 def run_stuck_call_sweeper(skip_call_sids: Optional[set] = None, age_minutes: int = 30) -> dict:
     """Task #96: periodic safety-net that finalizes CallLog rows abandoned in any
     non-terminal status (``initiated`` / ``ringing`` / ``in_progress``).
@@ -1400,7 +1483,8 @@ def init_db():
        the voice engine never falls back to misconfigured hardcoded values.
 
     6. ``_backfill_smart_turn_stop_secs_default`` — updates legacy Silero assistants that still store ``smart_turn_stop_secs=1.0`` from historical defaults to ``0.5`` while preserving explicit custom values.
-    7. ``run_stuck_call_sweeper`` — unified safety-net that reclassifies any
+    7. ``_backfill_billing_tool_data`` — one-time idempotent fix: sets account_id and tightens the LLM trigger description on any FLOW tool named ``billing`` that was created without an account_id.
+    8. ``run_stuck_call_sweeper`` — unified safety-net that reclassifies any
        CallLog rows left in a non-terminal status (initiated / ringing /
        in_progress) with no active pipeline. Emits a ``finalization_forced``
        CallEvent per closed row for leak-rate observability. Supersedes the
@@ -1435,6 +1519,7 @@ def init_db():
     _sync_system_role_permissions()
     _backfill_silero_vad_config()
     _backfill_smart_turn_stop_secs_default()
+    _backfill_billing_tool_data()
     # Task #96: the unified stuck-call sweeper supersedes the legacy
     # _backfill_stuck_initiated_calls. It covers initiated, ringing and
     # in_progress (not just initiated) AND emits finalization_forced
