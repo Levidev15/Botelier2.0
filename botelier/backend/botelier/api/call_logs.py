@@ -102,7 +102,14 @@ async def get_call_logs(
     quality_min: Optional[int] = Query(None, ge=0, le=100, description="Minimum ACW quality score"),
     quality_max: Optional[int] = Query(None, ge=0, le=100, description="Maximum ACW quality score"),
     hour: Optional[int] = Query(
-        None, ge=0, le=23, description="Hour of day (0-23) in UTC to filter by"
+        None,
+        ge=0,
+        le=23,
+        description=(
+            "Hour of day (0-23) to filter by. When `tz` is also provided the "
+            "hour is matched in that timezone (e.g. hour=14 with tz=America/Los_Angeles "
+            "returns 2 PM Pacific calls). Without `tz` the hour is matched in UTC."
+        ),
     ),
     bucket: Optional[str] = Query(
         None,
@@ -191,7 +198,23 @@ async def get_call_logs(
             query = query.filter(CallLog.acw_quality_score <= quality_max)
 
         if hour is not None:
-            query = query.filter(func.extract("hour", CallLog.started_at) == hour)
+            if tz_info is not None:
+                # started_at is stored as UTC-naive (timestamp without time zone).
+                # timezone(tz, timestamp_naive) in PostgreSQL treats the input as
+                # LOCAL time and converts to UTC — the wrong direction here.
+                # The correct double-call idiom:
+                #   timezone('UTC', started_at)  →  timestamptz (UTC instant)
+                #   timezone(tz,   <timestamptz>) →  timestamp in target zone
+                # Then extract the hour from that local-zone timestamp.
+                query = query.filter(
+                    func.extract(
+                        "hour",
+                        func.timezone(tz, func.timezone("UTC", CallLog.started_at)),
+                    )
+                    == hour
+                )
+            else:
+                query = query.filter(func.extract("hour", CallLog.started_at) == hour)
 
         if bucket:
             tok = bucket.strip()

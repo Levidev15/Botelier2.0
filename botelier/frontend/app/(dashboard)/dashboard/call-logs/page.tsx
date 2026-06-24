@@ -392,7 +392,7 @@ export default function CallLogsPage() {
   if (acwResolutionFilter) filterChips.push({ key: "acw_resolution", label: `Resolution: ${acwResolutionFilter}`, onClear: () => { setAcwResolutionFilter(""); setPage(1); } });
   if (qualityMin !== null) filterChips.push({ key: "quality_min", label: `Quality ≥ ${qualityMin}`, onClear: () => { setQualityMin(null); setPage(1); } });
   if (qualityMax !== null) filterChips.push({ key: "quality_max", label: `Quality ≤ ${qualityMax}`, onClear: () => { setQualityMax(null); setPage(1); } });
-  if (hourFilter !== null) filterChips.push({ key: "hour", label: `Hour: ${String(hourFilter).padStart(2, "0")}:00`, onClear: () => { setHourFilter(null); setPage(1); } });
+  if (hourFilter !== null) filterChips.push({ key: "hour", label: `Hour: ${String(hourFilter).padStart(2, "0")}:00 (${timezone})`, onClear: () => { setHourFilter(null); setPage(1); } });
 
   if (!permLoading && !hasAccess) {
     return <AccessDeniedPage message="You don't have permission to view call logs." />;
