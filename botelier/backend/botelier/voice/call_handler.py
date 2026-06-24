@@ -528,33 +528,6 @@ class CallHandler:
                 twilio_auth_token=hotel_twilio_token,
             )
 
-            # 3b. If a flow tool is active, check whether its initial node has a
-            # custom greeting that should override the assistant's first_message.
-            # The FunctionMapper already created the FlowExecutor by this point.
-            if call_sid in self.call_mappers:
-                _flow_greeting: str | None = None
-                for _executor in self.call_mappers[call_sid]._flow_executors.values():
-                    for _fnode in _executor.flow_config.nodes:
-                        if _fnode.type.value == "initial":
-                            _fg = (_fnode.data.get("greeting") or "").strip()
-                            if _fg:
-                                _flow_greeting = _fg
-                            break
-                    if _flow_greeting:
-                        break
-                if _flow_greeting and _flow_greeting != config.greeting_message:
-                    logger.info(
-                        f"🎙️ Using flow initial-node greeting for {call_sid} "
-                        f"(was: {config.greeting_message[:40]!r})"
-                    )
-                    config.greeting_message = _flow_greeting
-                    # Invalidate pre-warm PCM — it was generated from assistant.first_message
-                    if prewarm_bundle is not None and prewarm_bundle.greeting_pcm is not None:
-                        prewarm_bundle.greeting_pcm = None
-                        logger.info(
-                            f"🎙️ Pre-warm greeting PCM invalidated — flow greeting differs from assistant.first_message"
-                        )
-
             # 4. Create TwilioFrameSerializer (Pipecat pattern)
             #
             # auto_hang_up=False: disables the automatic REST hangup that
