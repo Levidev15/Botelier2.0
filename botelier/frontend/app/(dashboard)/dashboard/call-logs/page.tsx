@@ -95,6 +95,7 @@ export default function CallLogsPage() {
       if (assistantFilter) params.append("assistant_id", assistantFilter);
       if (dateFrom) params.append("date_from", new Date(dateFrom).toISOString());
       if (dateTo) params.append("date_to", new Date(dateTo).toISOString());
+      params.append("tz", timezone);
       if (hasTransferFilter !== null) params.append("has_transfer", String(hasTransferFilter));
       if (dispositionIdFilter) params.append("disposition_id", dispositionIdFilter);
       if (acwResolutionFilter) params.append("acw_resolution", acwResolutionFilter);
@@ -117,7 +118,7 @@ export default function CallLogsPage() {
     } finally {
       setLoading(false);
     }
-  }, [accountId, page, search, statusFilter, assistantFilter, dateFrom, dateTo,
+  }, [accountId, page, search, statusFilter, assistantFilter, dateFrom, dateTo, timezone,
       hasTransferFilter, dispositionIdFilter, acwResolutionFilter, acwCompletedFilter, qualityMin, qualityMax, hourFilter, bucketFilter]);
 
   const fetchFilterOptions = useCallback(async () => {
@@ -187,6 +188,7 @@ export default function CallLogsPage() {
       if (assistantFilter) params.append("assistant_id", assistantFilter);
       if (dateFrom) params.append("date_from", new Date(dateFrom).toISOString());
       if (dateTo) params.append("date_to", new Date(dateTo).toISOString());
+      params.append("tz", timezone);
 
       const response = await authFetch(`/api/call-logs/export?${params}`);
       if (!response.ok) throw new Error("Export failed");

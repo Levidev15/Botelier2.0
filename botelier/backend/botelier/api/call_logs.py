@@ -81,6 +81,15 @@ async def get_call_logs(
     phone_number_id: Optional[UUID] = Query(None, description="Filter by phone number"),
     date_from: Optional[datetime] = Query(None, description="Filter calls from this date"),
     date_to: Optional[datetime] = Query(None, description="Filter calls until this date"),
+    tz: Optional[str] = Query(
+        None,
+        description=(
+            "IANA timezone name (e.g. America/Los_Angeles). When provided, "
+            "date_from/date_to are re-interpreted as wall-clock times in this "
+            "zone so the listed rows match the day shown on screen, consistent "
+            "with the /export endpoint."
+        ),
+    ),
     search: Optional[str] = Query(None, description="Search caller number or transcript"),
     has_transfer: Optional[bool] = Query(
         None, description="If true, only return calls with transfers"
@@ -110,6 +119,38 @@ async def get_call_logs(
 ):
     """Get paginated call logs for a hotel."""
     check_account_permission(user, str(account_id), "call_logs.view", db)
+
+    # Resolve timezone once — mirrors the export endpoint's behaviour so the
+    # on-screen list and the downloaded CSV always slice on the same boundaries.
+    tz_info: Optional[ZoneInfo] = None
+    if tz:
+        try:
+            tz_info = ZoneInfo(tz)
+        except (ZoneInfoNotFoundError, KeyError):
+            raise HTTPException(status_code=400, detail=f"Invalid timezone: {tz!r}")
+
+    # Re-interpret date_from / date_to as wall-clock midnight in the selected
+    # zone, then convert to UTC, so "yesterday in Pacific" filters Pacific
+    # day boundaries rather than UTC ones.
+    effective_date_from: Optional[datetime] = None
+    effective_date_to: Optional[datetime] = None
+    if date_from is not None:
+        if tz_info is not None:
+            wall = date_from.replace(tzinfo=None)
+            effective_date_from = (
+                wall.replace(tzinfo=tz_info).astimezone(dt_timezone.utc).replace(tzinfo=None)
+            )
+        else:
+            effective_date_from = date_from.replace(tzinfo=None) if date_from.tzinfo else date_from
+    if date_to is not None:
+        if tz_info is not None:
+            wall = date_to.replace(tzinfo=None)
+            effective_date_to = (
+                wall.replace(tzinfo=tz_info).astimezone(dt_timezone.utc).replace(tzinfo=None)
+            )
+        else:
+            effective_date_to = date_to.replace(tzinfo=None) if date_to.tzinfo else date_to
+
     try:
         query = db.query(CallLog).filter(CallLog.account_id == account_id)
 
@@ -125,11 +166,11 @@ async def get_call_logs(
         if phone_number_id:
             query = query.filter(CallLog.phone_number_id == phone_number_id)
 
-        if date_from:
-            query = query.filter(CallLog.started_at >= date_from)
+        if effective_date_from is not None:
+            query = query.filter(CallLog.started_at >= effective_date_from)
 
-        if date_to:
-            query = query.filter(CallLog.started_at <= date_to)
+        if effective_date_to is not None:
+            query = query.filter(CallLog.started_at <= effective_date_to)
 
         if has_transfer is not None:
             query = query.filter(CallLog.has_transfer == has_transfer)
