@@ -321,21 +321,36 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
 
     try:
         for iteration in range(max_iterations):
-            # Force the specific API function when the current node is an API
-            # Request and it has not been called yet this turn.  Using "auto"
-            # here lets the LLM return a plain thinking-message text response
-            # and stall the conversation waiting for the next user input.
+            # Force the specific function when the current node requires it.
+            # Using "auto" lets the LLM return a plain text reply and stall
+            # the conversation waiting for the next user input instead of
+            # progressing the flow.
+            #
+            # Rules:
+            #   API_REQUEST  → force execute_{node.id} (existing behaviour)
+            #   COLLECT_SLOT → force collect_{var_key} for the single pending slot
+            #   COLLECT_FORM → require *any* tool call so the LLM must pick one
+            #                  of the exposed collect_* functions (flexible within form)
             current_node = state.executor.state.get_current_node()
-            if (
-                tools
-                and current_node
-                and current_node.type == NodeType.API_REQUEST
-                and f"execute_{current_node.id}" not in all_functions_called
-            ):
+            if tools and current_node and current_node.type == NodeType.API_REQUEST and f"execute_{current_node.id}" not in all_functions_called:
                 tool_choice = {
                     "type": "function",
                     "function": {"name": f"execute_{current_node.id}"},
                 }
+            elif tools and current_node and current_node.type == NodeType.COLLECT_SLOT:
+                slot = current_node.data.get("slot", {})
+                var_key = slot.get("variableKey")
+                if var_key and f"collect_{var_key}" not in all_functions_called:
+                    tool_choice = {
+                        "type": "function",
+                        "function": {"name": f"collect_{var_key}"},
+                    }
+                else:
+                    tool_choice = "auto"
+            elif tools and current_node and current_node.type == NodeType.COLLECT_FORM:
+                # Multiple collect_* functions are exposed for the form; require
+                # *any* tool call so the LLM cannot return plain text.
+                tool_choice = "required"
             else:
                 tool_choice = "auto" if tools else None
 
