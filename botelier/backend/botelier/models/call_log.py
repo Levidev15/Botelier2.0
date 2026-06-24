@@ -230,6 +230,8 @@ class CallLog(Base):
                 in (
                     LegType.TRANSFER_EXTERNAL.value,
                     LegType.TRANSFER_SIP.value,
+                    LegType.TRANSFER_INTERNAL.value,
+                    LegType.TRANSFER_COLD.value,
                 )
                 and leg.duration_source in ("twilio_webhook", "twilio_api")
             )

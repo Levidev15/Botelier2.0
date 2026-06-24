@@ -147,10 +147,10 @@ export default function TranscriptModal({ log, onClose, onLogUpdated, onViewEven
               </div>
               <p className="text-xs text-gray-400">
                 {formatDateTime(log.started_at)} •{" "}
-                {log.has_transfer && (log.ai_duration_seconds ?? 0) > 0 ? (
+                {(log.ai_duration_seconds ?? 0) > 0 ? (
                   <>
-                    {formatDuration(log.ai_duration_seconds!)} AI
-                    {(log.transfer_duration_seconds ?? 0) > 0 && (
+                    {formatDuration(log.ai_duration_seconds!)}{log.has_transfer ? " AI" : ""}
+                    {log.has_transfer && (log.transfer_duration_seconds ?? 0) > 0 && (
                       <span className="text-gray-500"> + {formatDuration(log.transfer_duration_seconds!)} transfer</span>
                     )}
                   </>

@@ -776,7 +776,12 @@ async def get_calls_drilldown(
                 cid = str(_leg.call_log_id)
                 if _leg.leg_type == "ai_conversation" and _leg.duration_source == "pipecat":
                     ai_dur_map[cid] = ai_dur_map.get(cid, 0) + (_leg.duration_seconds or 0)
-                elif _leg.leg_type in ("transfer_external", "transfer_sip") and _leg.duration_source in (
+                elif _leg.leg_type in (
+                    "transfer_external",
+                    "transfer_sip",
+                    "transfer_internal",
+                    "transfer_cold",
+                ) and _leg.duration_source in (
                     "twilio_webhook",
                     "twilio_api",
                 ):
@@ -829,7 +834,13 @@ async def get_calls_drilldown(
                     "to_number": log.to_number,
                     "status": log.status,
                     "duration_seconds": log.duration_seconds,
-                    "ai_duration_seconds": ai_dur_map.get(str(log.id), log.duration_seconds),
+                    # Fall back to the Twilio total ONLY for non-transferred
+                    # calls — for a transfer that total is the combined
+                    # AI+transfer span, so falling back to it would re-introduce
+                    # the double-count the AI/transfer split exists to fix.
+                    "ai_duration_seconds": ai_dur_map.get(
+                        str(log.id), 0 if log.has_transfer else log.duration_seconds
+                    ),
                     "transfer_duration_seconds": transfer_dur_map.get(str(log.id), 0),
                     "has_transfer": log.has_transfer,
                     "assistant_id": str(log.assistant_id) if log.assistant_id else None,

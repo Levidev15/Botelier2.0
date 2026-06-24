@@ -1,6 +1,7 @@
 """Regression coverage for canonical provider/Pipecat duration ownership."""
 
 import uuid
+from datetime import datetime
 from decimal import Decimal
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
@@ -333,3 +334,107 @@ def test_approved_state_comparison_is_order_independent():
     }
 
     assert _normalized_old_values(left) == _normalized_old_values(right)
+
+
+def _ai_leg(call, *, ended_at=None, started_at=None, duration_seconds=0, duration_source="unknown"):
+    leg = CallLeg()
+    leg.id = uuid.uuid4()
+    leg.call_log_id = call.id
+    leg.leg_number = 1
+    leg.leg_type = LegType.AI_CONVERSATION.value
+    leg.call_sid = call.call_sid
+    leg.status = CallStatus.IN_PROGRESS.value
+    leg.started_at = started_at
+    leg.ended_at = ended_at
+    leg.duration_seconds = duration_seconds
+    leg.duration_source = duration_source
+    return leg
+
+
+def test_ensure_ai_leg_duration_recovers_pipecat_span_from_timestamps():
+    """A transferred call whose pipeline never reported a pipecat duration must
+    recover the caller's AI-only time from ``answered_at -> ai_leg.ended_at`` —
+    the later parent call-end (transfer hangup) is deliberately ignored so the
+    transfer span is not folded into the AI duration."""
+    call = _call_log(duration=0)
+    call.has_transfer = True
+    call.answered_at = datetime(2026, 6, 24, 10, 0, 0)
+    call.ended_at = datetime(2026, 6, 24, 10, 5, 0)
+    ai_leg = _ai_leg(
+        call,
+        ended_at=datetime(2026, 6, 24, 10, 0, 47),
+        duration_seconds=0,
+        duration_source="unknown",
+    )
+
+    CallLogger(MagicMock())._ensure_ai_leg_duration(call, ai_leg)
+
+    assert ai_leg.duration_seconds == 47
+    assert ai_leg.duration_source == "pipecat"
+    assert call.duration_seconds == 0
+
+
+def test_ensure_ai_leg_duration_never_overwrites_existing_pipecat():
+    """Recovery is idempotent: a real pipecat measurement always wins."""
+    call = _call_log(duration=0)
+    call.answered_at = datetime(2026, 6, 24, 10, 0, 0)
+    ai_leg = _ai_leg(
+        call,
+        ended_at=datetime(2026, 6, 24, 10, 10, 0),
+        duration_seconds=40,
+        duration_source="pipecat",
+    )
+
+    CallLogger(MagicMock())._ensure_ai_leg_duration(call, ai_leg)
+
+    assert ai_leg.duration_seconds == 40
+    assert ai_leg.duration_source == "pipecat"
+
+
+def test_ensure_ai_leg_duration_skips_when_call_never_answered():
+    """No fabricated duration when the call was never answered."""
+    call = _call_log(duration=0)
+    call.answered_at = None
+    call.ended_at = datetime(2026, 6, 24, 10, 5, 0)
+    ai_leg = _ai_leg(
+        call,
+        started_at=datetime(2026, 6, 24, 10, 0, 0),
+        ended_at=datetime(2026, 6, 24, 10, 5, 0),
+        duration_seconds=0,
+        duration_source="unknown",
+    )
+
+    CallLogger(MagicMock())._ensure_ai_leg_duration(call, ai_leg)
+
+    assert ai_leg.duration_seconds == 0
+    assert ai_leg.duration_source == "unknown"
+
+
+def test_update_status_recovers_ai_duration_when_terminal_webhook_finalized_first():
+    """Documented bug: when the terminal Twilio webhook arrives before the
+    pipeline finalizes its leg, the AI leg already has ``ended_at`` but no
+    pipecat duration. ``update_status`` must recover the caller's AI time so a
+    transferred call never shows 0:00, while the parent (billing) total stays
+    owned by the Twilio webhook and is never touched by AI-leg recovery."""
+    call = _call_log(duration=0)
+    call.has_transfer = True
+    call.status = CallStatus.IN_PROGRESS.value
+    call.answered_at = datetime(2026, 6, 24, 10, 0, 0)
+    ai_leg = _ai_leg(
+        call,
+        ended_at=datetime(2026, 6, 24, 10, 1, 23),
+        duration_seconds=0,
+        duration_source="unknown",
+    )
+    db = MagicMock()
+    call_query = _query(first=call)
+    leg_query = _query(first=ai_leg)
+    db.query.side_effect = lambda entity: call_query if entity is CallLog else leg_query
+
+    with patch.object(CallLogger, "_upsert_inbound_billing") as upsert:
+        assert CallLogger(db).update_status(call.call_sid, "completed", 300)
+
+    upsert.assert_called_once_with(call, 300, source="twilio_webhook")
+    assert ai_leg.duration_seconds == 83
+    assert ai_leg.duration_source == "pipecat"
+    assert call.duration_seconds == 0

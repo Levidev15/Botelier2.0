@@ -71,6 +71,42 @@ class CallLogger:
             source=leg.duration_source or "twilio_webhook",
         )
 
+    def _ensure_ai_leg_duration(self, call_log, ai_leg) -> None:
+        """Guarantee the AI-conversation leg carries a pipecat-sourced duration.
+
+        The AI leg duration is the canonical "caller's time with the AI" and is
+        what every Duration surface (call-log table, analytics, drilldown, CSV)
+        shows for transferred calls. On transferred or early-terminated calls a
+        terminal Twilio webhook can stamp the AI leg's ``ended_at`` before the
+        pipeline reports its own duration, leaving the leg with
+        ``duration_source != "pipecat"`` and a 0 duration. When that happens the
+        display falls back to the Twilio parent total — which is 0 on warm
+        transfers, or the combined AI+transfer span in the drilldown — so a real
+        conversation shows as 0:00 or double-counts transfer time.
+
+        This recovers the conversation duration from timestamps
+        (``ended_at - answered_at``) whenever the pipeline did not supply one.
+        ``record_transfer()`` stamps the AI leg ``ended_at`` *before* the transfer
+        leg begins, so this span excludes bridged transfer time. It is
+        idempotent (never overwrites an authoritative pipecat duration), never
+        touches ``CallLog.duration_seconds``, and never writes a billing item.
+        """
+        if ai_leg is None or ai_leg.leg_type != LegType.AI_CONVERSATION.value:
+            return
+        if ai_leg.duration_source == "pipecat":
+            return
+        # The AI conversation only exists once the call was answered; without an
+        # answer time there is no caller-with-AI span to recover.
+        anchor = call_log.answered_at
+        end = ai_leg.ended_at or call_log.ended_at
+        if anchor is None or end is None:
+            return
+        self._duration_billing().finalize_ai_leg(
+            ai_leg,
+            max(0, int((end - anchor).total_seconds())),
+            source="pipecat",
+        )
+
     def get_call_log(self, call_sid: str) -> Optional[CallLog]:
         """Get a call log by call SID."""
         return self.db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
@@ -220,8 +256,11 @@ class CallLogger:
                 if status in ("completed", "busy", "failed", "no-answer", "canceled"):
                     if not ai_leg.ended_at:
                         ai_leg.ended_at = datetime.utcnow()
-                    if ai_leg.duration_source != "pipecat":
-                        ai_leg.duration_source = ai_leg.duration_source or "unknown"
+                    # Recover a pipecat conversation duration from timestamps if
+                    # the pipeline never supplied one (e.g. this terminal webhook
+                    # arrived first), so transferred / early-terminated calls
+                    # still show the caller's AI time instead of 0:00.
+                    self._ensure_ai_leg_duration(call_log, ai_leg)
 
             self.db.commit()
             logger.info(f"Updated call {call_sid} status to {new_status}")
@@ -525,18 +564,14 @@ class CallLogger:
                     continue
                 if not leg.ended_at:
                     leg.ended_at = call_log.ended_at or datetime.utcnow()
-                    if (
-                        leg.leg_type == LegType.AI_CONVERSATION.value
-                        and duration_seconds is None
-                        and not _skip_sweeper_duration
-                    ):
-                        anchor = call_log.answered_at or leg.started_at
-                        if anchor:
-                            self._duration_billing().finalize_ai_leg(
-                                leg,
-                                max(0, int((leg.ended_at - anchor).total_seconds())),
-                                source="pipecat",
-                            )
+
+            # Guarantee the AI leg carries a pipecat conversation duration even
+            # when a terminal Twilio webhook already stamped its ``ended_at``
+            # before this finalize ran (the inline ``if not leg.ended_at`` path
+            # above would otherwise skip it). No-op when the pipeline already
+            # supplied a duration above, or for never-answered sweeper calls.
+            if not _skip_sweeper_duration:
+                self._ensure_ai_leg_duration(call_log, ai_leg)
 
             if ai_leg and ai_leg.duration_seconds is not None:
                 call_log.stt_seconds = float(max(0, ai_leg.duration_seconds))

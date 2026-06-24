@@ -514,14 +514,21 @@ async def export_call_logs(
         for log in call_logs:
             legs = log.legs or []
             leg_count = len(legs)
+            # Match CallLog.to_dict() / analytics drilldown exactly: only
+            # authoritative Pipecat AI legs and Twilio-sourced transfer legs
+            # count, so the CSV's Duration columns stay in lockstep with the
+            # table, overview cards, and drilldown modal.
             ai_duration = sum(
-                leg.duration_seconds or 0 for leg in legs if leg.leg_type == "ai_conversation"
+                leg.duration_seconds or 0
+                for leg in legs
+                if leg.leg_type == "ai_conversation" and leg.duration_source == "pipecat"
             )
             transfer_duration = sum(
                 leg.duration_seconds or 0
                 for leg in legs
                 if leg.leg_type
                 in ("transfer_external", "transfer_sip", "transfer_internal", "transfer_cold")
+                and leg.duration_source in ("twilio_webhook", "twilio_api")
             )
 
             # Task #129 — derive Bucket via the analytics classifier so the
