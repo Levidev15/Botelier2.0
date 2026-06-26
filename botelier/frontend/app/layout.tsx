@@ -1,7 +1,6 @@
 import type { Metadata } from "next";
 import { Inter, Cormorant_Garamond, Syne, DM_Sans } from "next/font/google";
 import { Toaster } from "sonner";
-import { SessionProvider } from "@/components/providers/SessionProvider";
 import { ThemeProvider } from "@/lib/theme/ThemeContext";
 import "./globals.css";
 
@@ -47,10 +46,8 @@ export default function RootLayout({
     >
       <body className={inter.className}>
         <ThemeProvider>
-          <SessionProvider>
-            {children}
-            <Toaster position="top-right" richColors closeButton />
-          </SessionProvider>
+          {children}
+          <Toaster position="top-right" richColors closeButton />
         </ThemeProvider>
       </body>
     </html>
