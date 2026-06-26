@@ -159,22 +159,16 @@ export default function CallLogRow({
               ) : (
                 <Play className="h-3 w-3 fill-current" />
               )}
-              <span title={log.has_transfer ? "AI leg duration" : "Call duration"}>
-                {formatDuration(log.ai_duration_seconds > 0 ? log.ai_duration_seconds : (log.has_transfer ? 0 : log.duration_seconds))}
+              <span title="Call duration">
+                {formatDuration(log.duration_seconds)}
               </span>
-              {log.has_transfer && log.transfer_duration_seconds > 0 && (
-                <span className="opacity-50" title="Transfer leg duration">+{formatDuration(log.transfer_duration_seconds)}</span>
-              )}
             </button>
           ) : (
             <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-gray-800 border border-gray-700 text-gray-400">
               <Clock className="h-3 w-3" />
-              <span title={log.has_transfer ? "AI leg duration" : "Call duration"}>
-                {formatDuration(log.ai_duration_seconds > 0 ? log.ai_duration_seconds : (log.has_transfer ? 0 : log.duration_seconds))}
+              <span title="Call duration">
+                {formatDuration(log.duration_seconds)}
               </span>
-              {log.has_transfer && log.transfer_duration_seconds > 0 && (
-                <span className="text-gray-500" title="Transfer leg duration">+{formatDuration(log.transfer_duration_seconds)}</span>
-              )}
             </span>
           )}
         </td>

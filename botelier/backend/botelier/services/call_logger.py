@@ -72,38 +72,56 @@ class CallLogger:
         )
 
     def _ensure_ai_leg_duration(self, call_log, ai_leg) -> None:
-        """Guarantee the AI-conversation leg carries a pipecat-sourced duration.
+        """Clamp the AI-conversation leg duration to the caller-with-AI span.
 
         The AI leg duration is the canonical "caller's time with the AI" and is
-        what every Duration surface (call-log table, analytics, drilldown, CSV)
-        shows for transferred calls. On transferred or early-terminated calls a
-        terminal Twilio webhook can stamp the AI leg's ``ended_at`` before the
-        pipeline reports its own duration, leaving the leg with
-        ``duration_source != "pipecat"`` and a 0 duration. When that happens the
-        display falls back to the Twilio parent total — which is 0 on warm
-        transfers, or the combined AI+transfer span in the drilldown — so a real
-        conversation shows as 0:00 or double-counts transfer time.
+        what every Duration surface (analytics, drilldown, CSV, billing
+        ``stt_seconds``) derives from. The authoritative span is
+        ``ai_leg.ended_at - call_log.answered_at``: both timestamps are stamped
+        by Twilio status webhooks at the real call boundaries, independent of
+        pipeline execution, so they are the ground-truth ceiling for how long
+        the caller was actually on the line with the AI. ``record_transfer()``
+        stamps the AI leg ``ended_at`` *before* the transfer leg begins, so this
+        span correctly excludes bridged transfer time.
 
-        This recovers the conversation duration from timestamps
-        (``ended_at - answered_at``) whenever the pipeline did not supply one.
-        ``record_transfer()`` stamps the AI leg ``ended_at`` *before* the transfer
-        leg begins, so this span excludes bridged transfer time. It is
-        idempotent (never overwrites an authoritative pipecat duration), never
-        touches ``CallLog.duration_seconds``, and never writes a billing item.
+        The pipeline's own wall-clock duration (``source="pipecat"``) is only
+        trustworthy when the pipeline tears down promptly. If the caller hangs
+        up mid-LLM-request the pipeline can linger until its SSE read timeout
+        (~300s) before finalizing, reporting a duration inflated by ~5 minutes.
+        We therefore:
+          * recover the duration from timestamps when the pipeline supplied
+            none (``duration_source != "pipecat"``, e.g. a terminal webhook
+            arrived first and left the leg at 0), and
+          * clamp an existing pipecat duration down to the timestamp span when
+            it exceeds it (the lingering-pipeline case).
+        A pipecat duration already within the span is left untouched. This never
+        touches ``CallLog.duration_seconds`` and never writes a billing item.
         """
         if ai_leg is None or ai_leg.leg_type != LegType.AI_CONVERSATION.value:
             return
-        if ai_leg.duration_source == "pipecat":
-            return
         # The AI conversation only exists once the call was answered; without an
-        # answer time there is no caller-with-AI span to recover.
+        # answer time there is no caller-with-AI span to recover or clamp to.
         anchor = call_log.answered_at
         end = ai_leg.ended_at or call_log.ended_at
         if anchor is None or end is None:
             return
+        span = max(0, int((end - anchor).total_seconds()))
+        current = ai_leg.duration_seconds
+        # A pipeline-supplied duration is trusted when it fits inside the real
+        # call span; anything materially larger is lingering-pipeline inflation
+        # and is clamped back down to the authoritative timestamp span. The 2s
+        # tolerance absorbs sub-second clock/rounding skew (``span`` is floored)
+        # so a normally-finalized call is never shaved by a second.
+        _CLAMP_TOLERANCE_SECS = 2
+        if (
+            ai_leg.duration_source == "pipecat"
+            and current is not None
+            and current <= span + _CLAMP_TOLERANCE_SECS
+        ):
+            return
         self._duration_billing().finalize_ai_leg(
             ai_leg,
-            max(0, int((end - anchor).total_seconds())),
+            span,
             source="pipecat",
         )
 
