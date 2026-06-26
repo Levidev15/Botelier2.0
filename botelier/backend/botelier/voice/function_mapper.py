@@ -67,6 +67,7 @@ class FunctionMapper:
         call_handler: "CallHandler" = None,
         db_session=None,
         account_id: str = None,
+        account_name: str = None,
     ):
         """Initialize function mapper with call context and Twilio credentials.
 
@@ -80,6 +81,7 @@ class FunctionMapper:
             call_handler: Reference to CallHandler for transcript saving
             db_session: SQLAlchemy database session for integration API calls
             account_id: Account ID for multi-tenant integration access
+            account_name: Human-readable account name for SMS template interpolation
         """
         self.call_sid = call_sid
         self.stream_sid = stream_sid
@@ -88,6 +90,7 @@ class FunctionMapper:
         self.call_handler = call_handler
         self.db_session = db_session
         self.account_id = account_id
+        self.account_name = account_name or ""
 
         # Store flow executors by tool name for state persistence across turns
         self._flow_executors: Dict[str, FlowExecutor] = {}
@@ -960,9 +963,69 @@ class FunctionMapper:
         return function_schema, end_call_handler
 
     def _map_send_sms(self, tool: Tool) -> tuple[Dict[str, Any], Callable]:
-        """Map send SMS tool to Pipecat function."""
-        # Placeholder - implement when SMS integration is ready
-        raise NotImplementedError("SMS sending not yet implemented")
+        """Map send SMS tool to Pipecat function.
+
+        Sends an SMS to the caller's number using the account's Twilio
+        sub-account credentials (or platform defaults as fallback).  The
+        configured ``message_body`` is interpolated at send-time with:
+          {caller_number}  — the inbound caller's E.164 number
+          {caller_name}    — caller name if available, otherwise "Caller"
+          {account_name}   — the business name from the account record
+        """
+        message_body_template: str = (tool.config or {}).get("message_body", "")
+
+        function_schema = {
+            "name": sanitize_function_name(tool.name),
+            "description": tool.description or "Send an SMS to the caller",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        }
+
+        mapper = self
+
+        async def send_sms_handler(params: FunctionCallParams):
+            mapper.track_tool_usage(tool.name)
+
+            caller_number = mapper.from_number or ""
+            business_number = mapper.to_number or ""
+
+            if not caller_number:
+                logger.warning(
+                    f"[send_sms] No caller number available for call {mapper.call_sid}; skipping send"
+                )
+                await params.result_callback({"status": "skipped", "reason": "no caller number"})
+                return
+
+            if not mapper.twilio_client:
+                logger.warning(
+                    f"[send_sms] No Twilio client available for call {mapper.call_sid}; skipping send"
+                )
+                await params.result_callback({"status": "skipped", "reason": "no twilio credentials"})
+                return
+
+            account_name = mapper.account_name or "Business"
+
+            body = message_body_template.replace("{caller_number}", caller_number)
+            body = body.replace("{caller_name}", "Caller")
+            body = body.replace("{account_name}", account_name)
+
+            try:
+                message = mapper.twilio_client.messages.create(
+                    body=body,
+                    from_=business_number,
+                    to=caller_number,
+                )
+                logger.info(
+                    f"[send_sms] Sent SMS {message.sid} from {business_number} to {caller_number} "
+                    f"on call {mapper.call_sid}"
+                )
+                await params.result_callback({"status": "sent", "message_sid": message.sid})
+            except Exception as exc:
+                logger.exception(
+                    f"[send_sms] Failed to send SMS on call {mapper.call_sid}: {exc}"
+                )
+                await params.result_callback({"status": "failed", "reason": str(exc)})
+
+        return function_schema, send_sms_handler
 
     def _map_send_email(self, tool: Tool) -> tuple[Dict[str, Any], Callable]:
         """Map send email tool to Pipecat function."""

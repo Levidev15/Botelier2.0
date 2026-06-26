@@ -253,6 +253,7 @@ class CallHandler:
             _prewarm_state: str = "missing"
             _prewarm_wait_ms: int = 0
             _prewarm_error_class: str | None = None
+            _call_acct = None  # set only in the cold path; safe-guarded here
             # Task #122 — pop_and_wait now returns a PopResult that
             # distinguishes ready-before-wait (zero-cost cache hit),
             # ready-during-wait (we blocked for ``wait_ms``), timeout,
@@ -526,6 +527,11 @@ class CallHandler:
                 to_number=to_number,
                 twilio_account_sid=hotel_twilio_sid,
                 twilio_auth_token=hotel_twilio_token,
+                account_name=(
+                    prewarm_bundle.account_name
+                    if (prewarm_bundle and prewarm_bundle.assistant)
+                    else (_call_acct.name if _call_acct else None)
+                ),
             )
 
             # 4. Create TwilioFrameSerializer (Pipecat pattern)
@@ -1619,6 +1625,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
         to_number: str = None,
         twilio_account_sid: str = None,
         twilio_auth_token: str = None,
+        account_name: str = None,
     ) -> tuple[list, dict[str, Any]]:
         """Build FunctionSchema objects and handlers for platform tools.
 
@@ -1665,6 +1672,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
                     twilio_auth_token=twilio_auth_token,
                     call_handler=self,
                     account_id=str(assistant.account_id),
+                    account_name=account_name,
                 )
                 self.call_mappers[call_sid] = mapper
                 logger.info(f"Created FunctionMapper for call {call_sid}")

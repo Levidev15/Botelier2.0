@@ -88,6 +88,7 @@ class PreWarmBundle:
     mcp_enabled_tools: List[str] = field(default_factory=list)
     hotel_twilio_sid: Optional[str] = None
     hotel_twilio_token: Optional[str] = None
+    account_name: Optional[str] = None
     should_record_call: bool = False
     greeting_pcm: Optional[bytes] = None
     greeting_error: Optional[str] = None  # populated if greeting pre-fetch failed
@@ -392,10 +393,12 @@ async def _build_bundle(
 
             hotel_sid = None
             hotel_token = None
+            hotel_account_name = None
             should_record = False
             if account is not None:
                 hotel_sid = account.twilio_sub_account_sid
                 hotel_token = account.twilio_sub_auth_token
+                hotel_account_name = account.name
                 _features = get_account_features(
                     subscription_tier=(getattr(account, "subscription_tier", None) or "free"),
                     feature_flags_override=(account.feature_flags or {}),
@@ -431,6 +434,7 @@ async def _build_bundle(
                 "mcp_enabled": mcp_enabled,
                 "hotel_sid": hotel_sid,
                 "hotel_token": hotel_token,
+                "hotel_account_name": hotel_account_name,
                 "should_record": should_record,
             }
         finally:
@@ -447,6 +451,7 @@ async def _build_bundle(
     bundle.mcp_enabled_tools = reads["mcp_enabled"]
     bundle.hotel_twilio_sid = reads["hotel_sid"]
     bundle.hotel_twilio_token = reads["hotel_token"]
+    bundle.account_name = reads["hotel_account_name"]
     bundle.should_record_call = reads["should_record"]
 
     # Build VoiceAgentConfig from the detached ORM assistant. Reuse the
