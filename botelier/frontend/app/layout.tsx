@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Inter, Cormorant_Garamond, Syne, DM_Sans } from "next/font/google";
 import { Toaster } from "sonner";
 import { ThemeProvider } from "@/lib/theme/ThemeContext";
+import { SessionProvider } from "@/components/providers/SessionProvider";
 import "./globals.css";
 
 const inter = Inter({ subsets: ["latin"] });
@@ -45,10 +46,12 @@ export default function RootLayout({
       className={`${cormorant.variable} ${syne.variable} ${dmSans.variable}`}
     >
       <body className={inter.className}>
-        <ThemeProvider>
-          {children}
-          <Toaster position="top-right" richColors closeButton />
-        </ThemeProvider>
+        <SessionProvider>
+          <ThemeProvider>
+            {children}
+            <Toaster position="top-right" richColors closeButton />
+          </ThemeProvider>
+        </SessionProvider>
       </body>
     </html>
   );
