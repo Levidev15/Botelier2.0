@@ -948,17 +948,29 @@ class FunctionMapper:
         }
 
         async def end_call_handler(params: FunctionCallParams):
-            """End the call gracefully."""
-            # Track tool usage
+            """End the call gracefully.
+
+            IMPORTANT: Do NOT call result_callback here.  Calling it feeds the
+            function result back into the LLM, triggering a new generation cycle.
+            On that extra cycle the LLM sees remaining tools (e.g. Transfer) and
+            can call them after the goodbye has already been spoken — exactly the
+            "transfer after goodbye" bug.  See transfer_handler for the same
+            reasoning and the authoritative comment.
+            """
+            import asyncio as _asyncio
+
             self.track_tool_usage(tool.name)
 
-            # Say goodbye
+            # Yield to let FunctionCallInProgressFrame clear the TTS context
+            # before we push TTSSpeakFrame.  Without this sleep, that frame
+            # arrives ~67 ms after this handler runs and wipes the context we
+            # just opened — the goodbye audio is dropped before it reaches the
+            # caller.  Same timing fix as transfer_handler (see comment there).
+            await _asyncio.sleep(0)
+            await _asyncio.sleep(0.25)
+
             await params.llm.push_frame(TTSSpeakFrame(goodbye_message))
-
-            # End session
             await params.llm.push_frame(EndFrame())
-
-            await params.result_callback({"status": "call_ended"})
 
         return function_schema, end_call_handler
 
