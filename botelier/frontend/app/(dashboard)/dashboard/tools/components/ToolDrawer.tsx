@@ -8,6 +8,7 @@ import FlowForm from "./tool-types/FlowForm";
 import FlowEditForm from "./tool-types/FlowEditForm";
 import ApiRequestForm from "./tool-types/ApiRequestForm";
 import EndCallForm from "./tool-types/EndCallForm";
+import SendSmsForm from "./tool-types/SendSmsForm";
 
 interface Tool {
   id: string;
@@ -139,9 +140,13 @@ export default function ToolDrawer({ isOpen, onClose, onToolCreated, onToolUpdat
             )}
 
             {selectedType === "SEND_SMS" && (
-              <div className="text-center py-12 text-gray-400">
-                Send SMS form coming soon...
-              </div>
+              <SendSmsForm
+                onSuccess={handleToolSaved}
+                onCancel={handleReset}
+                tool={editTool || undefined}
+                accountId={accountId}
+                toolSetId={toolSetId}
+              />
             )}
 
             {selectedType === "SEND_EMAIL" && (

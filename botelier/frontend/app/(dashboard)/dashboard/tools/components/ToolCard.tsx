@@ -84,6 +84,7 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit
     if (isFlowTool) return "text-cyan-500";
     if (tool.tool_type === "END_CALL") return "text-red-500";
     if (tool.tool_type === "API_REQUEST") return "text-purple-500";
+    if (tool.tool_type === "SEND_SMS") return "text-green-500";
     return "text-blue-500";
   };
 
@@ -91,6 +92,7 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit
     if (isFlowTool) return "bg-cyan-600/10";
     if (tool.tool_type === "END_CALL") return "bg-red-600/10";
     if (tool.tool_type === "API_REQUEST") return "bg-purple-600/10";
+    if (tool.tool_type === "SEND_SMS") return "bg-green-600/10";
     return "bg-blue-600/10";
   };
 
@@ -132,6 +134,12 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit
             <span className="text-gray-500 truncate">
               &ldquo;{tool.config?.goodbye_message || "Thank you for calling. Goodbye!"}&rdquo;
             </span>
+          </div>
+        )}
+        {tool.tool_type === "SEND_SMS" && (
+          <div className="bg-[#0a0a0a] rounded p-2 text-gray-400 truncate">
+            <span className="mr-1">💬</span>
+            <span className="font-mono">{tool.config?.message_body || "No message configured"}</span>
           </div>
         )}
         {tool.tool_type === "FLOW" && (
