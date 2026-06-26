@@ -7,6 +7,7 @@ import TransferCallForm from "./tool-types/TransferCallForm";
 import FlowForm from "./tool-types/FlowForm";
 import FlowEditForm from "./tool-types/FlowEditForm";
 import ApiRequestForm from "./tool-types/ApiRequestForm";
+import EndCallForm from "./tool-types/EndCallForm";
 
 interface Tool {
   id: string;
@@ -128,9 +129,13 @@ export default function ToolDrawer({ isOpen, onClose, onToolCreated, onToolUpdat
             )}
 
             {selectedType === "END_CALL" && (
-              <div className="text-center py-12 text-gray-400">
-                End Call form coming soon...
-              </div>
+              <EndCallForm
+                onSuccess={handleToolSaved}
+                onCancel={handleReset}
+                tool={editTool || undefined}
+                accountId={accountId}
+                toolSetId={toolSetId}
+              />
             )}
 
             {selectedType === "SEND_SMS" && (

@@ -82,11 +82,15 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit
 
   const getIconColor = () => {
     if (isFlowTool) return "text-cyan-500";
+    if (tool.tool_type === "END_CALL") return "text-red-500";
+    if (tool.tool_type === "API_REQUEST") return "text-purple-500";
     return "text-blue-500";
   };
 
   const getIconBgColor = () => {
     if (isFlowTool) return "bg-cyan-600/10";
+    if (tool.tool_type === "END_CALL") return "bg-red-600/10";
+    if (tool.tool_type === "API_REQUEST") return "bg-purple-600/10";
     return "bg-blue-600/10";
   };
 
@@ -121,6 +125,13 @@ export default function ToolCard({ tool, icon: Icon, typeLabel, onDelete, onEdit
         {tool.tool_type === "API_REQUEST" && (
           <div className="bg-[#0a0a0a] rounded p-2">
             <span className="font-mono">{tool.config.method || "GET"}</span> {tool.config.url?.substring(0, 40)}...
+          </div>
+        )}
+        {tool.tool_type === "END_CALL" && (
+          <div className="bg-[#0a0a0a] rounded p-2 flex items-center gap-2">
+            <span className="text-gray-500 truncate">
+              &ldquo;{tool.config?.goodbye_message || "Thank you for calling. Goodbye!"}&rdquo;
+            </span>
           </div>
         )}
         {tool.tool_type === "FLOW" && (
