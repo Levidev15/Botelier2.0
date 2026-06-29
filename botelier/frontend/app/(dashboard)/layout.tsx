@@ -24,7 +24,6 @@ export default function DashboardLayout({
   const router = useRouter();
   const pathname = usePathname();
   const [userInfo, setUserInfo] = useState<any>(null);
-  const [authChecked, setAuthChecked] = useState(false);
   const [pendingHandoffs, setPendingHandoffs] = useState(0);
   const handoffPollRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -39,26 +38,24 @@ export default function DashboardLayout({
     router.push("/login");
   };
 
+  // Redirect unauthenticated users once localStorage has been read.
+  // Firing this in useEffect (not render) keeps navigation out of the render
+  // phase. The render gate below shows the spinner while the redirect is in
+  // flight, preventing any flash of dashboard content.
   useEffect(() => {
-    if (tokenLoading || accountLoading) {
-      return;
-    }
-    
-    const hasAdminSupportSession = !!token && isAdminSession;
-    const hasRegularSession = !!token && !isAdminSession;
-    
-    if (!hasAdminSupportSession && !hasRegularSession) {
+    if (tokenLoading || accountLoading) return;
+    if (!token) {
       router.push("/login?callbackUrl=/dashboard");
-    } else {
-      setAuthChecked(true);
     }
-  }, [token, tokenLoading, accountLoading, isAdminSession, router]);
+  }, [tokenLoading, accountLoading, token, router]);
 
+  // Fetch user info as soon as the token is confirmed — no longer gated on
+  // the intermediate authChecked state, which previously added one extra
+  // render cycle before this fetch could start.
   useEffect(() => {
-    if (token && authChecked) {
-      fetchUserInfo();
-    }
-  }, [token, authChecked]);
+    if (tokenLoading || accountLoading || !token) return;
+    fetchUserInfo();
+  }, [tokenLoading, accountLoading, token]);
 
   const fetchUserInfo = async () => {
     if (!token) return;
@@ -67,7 +64,7 @@ export default function DashboardLayout({
       if (res.ok) {
         const data = await res.json();
         setUserInfo(data);
-        
+
         if (!isAdminSession && data.memberships?.length > 0) {
           const firstMembership = data.memberships[0];
           if (!accountId) {
@@ -97,8 +94,11 @@ export default function DashboardLayout({
     } catch {}
   };
 
+  // Pending handoffs poll — starts immediately alongside fetchUserInfo once
+  // the token and account context are both available. Cleans up on accountId
+  // change (account switch) or auth loss.
   useEffect(() => {
-    if (!accountId || !authChecked) return;
+    if (!accountId || tokenLoading || accountLoading || !token) return;
 
     fetchPendingHandoffs(accountId);
 
@@ -109,9 +109,11 @@ export default function DashboardLayout({
     return () => {
       if (handoffPollRef.current) clearInterval(handoffPollRef.current);
     };
-  }, [accountId, authChecked]);
+  }, [accountId, tokenLoading, accountLoading, token]);
 
-  if (tokenLoading || accountLoading || !authChecked) {
+  // Show spinner while localStorage is being read, or while a redirect to
+  // /login is in flight. Both conditions resolve quickly (no network call).
+  if (tokenLoading || accountLoading || !token) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="flex flex-col items-center gap-6">
@@ -165,7 +167,7 @@ export default function DashboardLayout({
             <span className="text-xl font-bold text-foreground">Botelier</span>
           </Link>
         </div>
-        
+
         <nav className="flex-1 p-4 space-y-1 overflow-y-auto">
           <NavItem href="/dashboard/assistants" icon={<Bot className="h-5 w-5" />} active={isActive("/dashboard/assistants")}>
             Assistants
@@ -185,7 +187,7 @@ export default function DashboardLayout({
           <NavItem href="/dashboard/messages" icon={<MessageSquare className="h-5 w-5" />} active={isActive("/dashboard/messages")} badge={pendingHandoffs}>
             Messages
           </NavItem>
-          
+
           <div className="pt-4 pb-2">
             <div className="px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
               Analytics
@@ -203,13 +205,13 @@ export default function DashboardLayout({
               Usage
             </NavItem>
           )}
-          
+
           <div className="pt-4 pb-2">
             <div className="px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">
               Configuration
             </div>
           </div>
-          
+
           <NavItem href="/dashboard/sms-compliance" icon={<Shield className="h-5 w-5" />} active={isActive("/dashboard/sms-compliance")}>
             SMS Compliance
           </NavItem>
