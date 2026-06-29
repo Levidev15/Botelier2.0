@@ -126,7 +126,7 @@ LOG_PROMPTS = "false"
 [deployment]
 deploymentTarget = "vm"
 run = ["bash", "start.sh"]
-build = ["npm", "run", "build", "--prefix", "botelier/frontend"]
+build = ["bash", "scripts/build.sh"]
 
 [postMerge]
 path = "scripts/post-merge.sh"

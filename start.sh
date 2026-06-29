@@ -4,11 +4,17 @@ set -e
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 echo "=== Starting Botelier (repo root: $REPO_ROOT) ==="
 
-# Install Python backend dependencies using uv (avoids Nix store restriction)
-echo "=== Installing Python dependencies ==="
-uv venv "$REPO_ROOT/.venv"
-uv pip install --python "$REPO_ROOT/.venv/bin/python" \
-  -r "$REPO_ROOT/botelier/backend/requirements-replit.txt"
+# In production the build step (scripts/build.sh) pre-installs Python
+# dependencies into .venv, so we only install here when that venv is absent
+# (e.g. local dev, or a first-run edge case).
+if [ -f "$REPO_ROOT/.venv/bin/activate" ]; then
+  echo "=== Using pre-built Python venv ==="
+else
+  echo "=== Installing Python dependencies (no pre-built venv found) ==="
+  uv venv "$REPO_ROOT/.venv"
+  uv pip install --python "$REPO_ROOT/.venv/bin/python" \
+    -r "$REPO_ROOT/botelier/backend/requirements-replit.txt"
+fi
 
 # Activate the venv for all subsequent python commands
 source "$REPO_ROOT/.venv/bin/activate"
