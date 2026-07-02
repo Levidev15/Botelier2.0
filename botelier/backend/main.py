@@ -121,6 +121,14 @@ async def startup_event():
     init_db()
     print("✅ Database initialized")
 
+    # Fail fast: resolve the credential master key (Azure Key Vault or env var)
+    # at boot so a misconfigured / unreachable Key Vault stops the container
+    # here rather than on the first encrypt/decrypt. Result is cached process-wide.
+    from botelier.crypto import get_cipher
+
+    get_cipher()
+    print("✅ Credential encryption key loaded")
+
     from botelier.seeds import seed_all_integrations
 
     db = SessionLocal()

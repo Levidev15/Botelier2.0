@@ -17,6 +17,9 @@
 #   export DEEPGRAM_API_KEY="..."
 #   export OPENAI_API_KEY="..."
 #   export STREAM_TOKEN_SECRET=""    ← optional, leave empty string if not set
+#   export INTEGRATION_ENCRYPTION_KEY="..."  ← value of INTEGRATION_ENCRYPTION_KEY
+#                                              in Replit. One-time only: used to
+#                                              seed the Azure Key Vault secret.
 # ─────────────────────────────────────────────────────────────────────────────
 set -euo pipefail
 
@@ -27,6 +30,9 @@ ACR_NAME="boteliervoiceacr"
 ACA_ENV="botelier-voice-env"
 ACA_APP="botelier-voice"
 CUSTOM_DOMAIN="voice.botelier.ai"
+# Credential master key (Fernet) is kept in Key Vault, not as a container secret.
+KEY_VAULT_NAME="botelier-voice-kv"
+KV_SECRET_NAME="integration-encryption-key"
 
 # ── Validate required secrets ─────────────────────────────────────────────────
 : "${DATABASE_URL:?DATABASE_URL must be set (use NEON_DATABASE_URL value from Replit)}"
@@ -151,6 +157,93 @@ else
 fi
 
 echo ""
+echo "=== Step 5b: Azure Key Vault + managed identity (credential master key) ==="
+# The Fernet master key that encrypts every stored integration credential is
+# kept in Key Vault and read at boot via the container's managed identity — it
+# is NOT baked into the container as an env-var secret. See
+# botelier/backend/botelier/crypto.py for the resolution + rotation runbook.
+#
+# Ordering matters: BOTELIER_ENV=production is added ONLY together with
+# AZURE_KEY_VAULT_URL (at the end of this step), so the app is never left in a
+# "production, no key source" state that would fail-fast on boot.
+
+if az keyvault show --name "$KEY_VAULT_NAME" &>/dev/null; then
+  echo "Key Vault $KEY_VAULT_NAME already exists, skipping create."
+else
+  az keyvault create \
+    --name "$KEY_VAULT_NAME" \
+    --resource-group "$RESOURCE_GROUP" \
+    --location "$LOCATION" \
+    --enable-rbac-authorization true
+  echo "Key Vault created (RBAC authorization)."
+fi
+
+KEY_VAULT_URL=$(az keyvault show --name "$KEY_VAULT_NAME" --query "properties.vaultUri" -o tsv)
+KV_ID=$(az keyvault show --name "$KEY_VAULT_NAME" --query id -o tsv)
+
+# Seed the secret. On an RBAC vault the operator needs data-plane access to
+# write it, so grant the signed-in user "Key Vault Secrets Officer" first.
+if [ -n "${INTEGRATION_ENCRYPTION_KEY:-}" ]; then
+  CURRENT_USER_ID=$(az ad signed-in-user show --query id -o tsv 2>/dev/null || echo "")
+  if [ -n "$CURRENT_USER_ID" ]; then
+    az role assignment create \
+      --assignee-object-id "$CURRENT_USER_ID" \
+      --assignee-principal-type User \
+      --role "Key Vault Secrets Officer" \
+      --scope "$KV_ID" &>/dev/null || true
+    echo "Waiting 20s for RBAC to propagate before writing the secret..."
+    sleep 20
+  fi
+  az keyvault secret set \
+    --vault-name "$KEY_VAULT_NAME" \
+    --name "$KV_SECRET_NAME" \
+    --value "$INTEGRATION_ENCRYPTION_KEY" >/dev/null
+  echo "Seeded secret '$KV_SECRET_NAME' from exported INTEGRATION_ENCRYPTION_KEY."
+elif az keyvault secret show --vault-name "$KEY_VAULT_NAME" --name "$KV_SECRET_NAME" &>/dev/null; then
+  echo "Secret '$KV_SECRET_NAME' already present in Key Vault, keeping it."
+else
+  echo "!! Secret '$KV_SECRET_NAME' is not in Key Vault and INTEGRATION_ENCRYPTION_KEY"
+  echo "!! was not exported. NOT wiring AZURE_KEY_VAULT_URL yet (would fail boot)."
+  echo "!! Seed it, then re-run this script:"
+  echo "!!   az keyvault secret set --vault-name $KEY_VAULT_NAME \\"
+  echo "!!     --name $KV_SECRET_NAME --value '<your INTEGRATION_ENCRYPTION_KEY>'"
+  SKIP_KV_WIRING=1
+fi
+
+if [ "${SKIP_KV_WIRING:-0}" != "1" ]; then
+  # Give the container a system-assigned managed identity and let it READ secrets.
+  az containerapp identity assign \
+    --name "$ACA_APP" \
+    --resource-group "$RESOURCE_GROUP" \
+    --system-assigned >/dev/null
+  PRINCIPAL_ID=$(az containerapp identity show \
+    --name "$ACA_APP" \
+    --resource-group "$RESOURCE_GROUP" \
+    --query principalId -o tsv)
+  az role assignment create \
+    --assignee-object-id "$PRINCIPAL_ID" \
+    --assignee-principal-type ServicePrincipal \
+    --role "Key Vault Secrets User" \
+    --scope "$KV_ID" &>/dev/null || true
+  echo "Granted the container identity 'Key Vault Secrets User'."
+  echo "Waiting 30s for the role assignment to propagate..."
+  sleep 30
+
+  # Add env vars ATOMICALLY: BOTELIER_ENV=production only lands together with
+  # AZURE_KEY_VAULT_URL, so the app never boots as "production with no key".
+  az containerapp update \
+    --name "$ACA_APP" \
+    --resource-group "$RESOURCE_GROUP" \
+    --set-env-vars \
+      "AZURE_KEY_VAULT_URL=$KEY_VAULT_URL" \
+      "INTEGRATION_ENCRYPTION_KEY_SECRET_NAME=$KV_SECRET_NAME" \
+      "BOTELIER_ENV=production"
+  echo "Container App now reads the master key from Key Vault at $KEY_VAULT_URL"
+  echo "(If the new revision is unhealthy, RBAC may still be propagating —"
+  echo " restart it: az containerapp revision restart --revision <name> ...)"
+fi
+
+echo ""
 echo "=== Step 6: Ingress — WebSocket requires transport=http ==="
 # CRITICAL: 'auto' defaults to HTTP/2 which lacks the HTTP/1.1 Upgrade
 # mechanism required for WebSocket handshakes — Twilio media streams break.
@@ -221,3 +314,6 @@ echo "       Voice URL: https://$CUSTOM_DOMAIN/api/calls/incoming"
 echo "  4. Update Twilio webhook for +1 725 444 6079 (AVA-PV):"
 echo "       Voice URL: https://$CUSTOM_DOMAIN/api/calls/incoming"
 echo "  5. Make a test production call and confirm no audio choppiness."
+echo "  6. Confirm the master key loaded from Key Vault (boot log line:"
+echo "       '✅ Credential encryption key loaded'). To rotate it later, add a"
+echo "       new version of the '$KV_SECRET_NAME' secret and roll the revision."

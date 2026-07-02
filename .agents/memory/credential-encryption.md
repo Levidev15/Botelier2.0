@@ -28,20 +28,41 @@ class MyModel(Base):
 All encrypt/decrypt calls go through `self._get_cipher()` as before — nothing else changes.
 Add the new model's encrypted fields to `crypto.re_encrypt_all()` alongside the existing ones.
 
-## Key format (INTEGRATION_ENCRYPTION_KEY env var)
+## Master-key sources (resolved ONCE per process, then cached)
+`get_cipher()` resolves the master key material in this order and caches the built
+MultiFernet for the process lifetime (guarded by a lock; Fernet is immutable/thread-safe):
+1. **Azure Key Vault** — when `AZURE_KEY_VAULT_URL` is set. Secret name from
+   `INTEGRATION_ENCRYPTION_KEY_SECRET_NAME` (default `integration-encryption-key`).
+   Auth via managed identity (`DefaultAzureCredential`) — no bootstrap secret on the container.
+   **Fails closed:** a configured-but-unreachable vault (or empty/missing secret) RAISES;
+   it must NEVER fall back to an ephemeral key (that would orphan every stored credential).
+2. `INTEGRATION_ENCRYPTION_KEY` env var (dev / non-Azure).
+3. Dev-only ephemeral key (only when not production).
+
+**Why fail-fast at startup:** `main.py` startup calls `get_cipher()` right after DB init so a
+misconfigured Key Vault stops the boot (log line `✅ Credential encryption key loaded`),
+not the first encrypt/decrypt mid-call.
+
+## Key format (comma-separated Fernet list, both sources)
 - Single key:   `<fernet-key>`
 - Multi-key:    `<new-primary>,<old-fallback1>,<old-fallback2>`
-
 First key encrypts new values; all keys tried for decryption.
 
 ## Zero-downtime rotation
-1. Generate `NEW_KEY`: `python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"`
-2. Set `INTEGRATION_ENCRYPTION_KEY = NEW_KEY,CURRENT_KEY` and restart.
-3. Call `re_encrypt_all(db)` (admin endpoint or management script).
-4. Set `INTEGRATION_ENCRYPTION_KEY = NEW_KEY` and restart.
+- **Env-var (Replit dev):** set `INTEGRATION_ENCRYPTION_KEY = NEW_KEY,CURRENT_KEY` → restart
+  → `re_encrypt_all(db)` → set `= NEW_KEY` → restart.
+- **Key Vault (prod voice):** add a new secret VERSION `NEW_KEY,CURRENT_KEY` → roll ALL revisions
+  → only THEN `re_encrypt_all(db)` (running it mid-rollout breaks old replicas that lack NEW_KEY)
+  → add final version `NEW_KEY` → roll again. Restart re-reads the key (cache is process-lifetime).
+
+## Prod wiring (Azure Container Apps)
+`scripts/azure-voice-setup.sh` Step 5b creates the RBAC Key Vault, seeds the secret from the
+exported `INTEGRATION_ENCRYPTION_KEY`, assigns the app a system managed identity, grants it
+"Key Vault Secrets User", then adds `AZURE_KEY_VAULT_URL` + `BOTELIER_ENV=production` together
+(atomic — never "production with no key source"). Requires `azure-identity` +
+`azure-keyvault-secrets` (lazy-imported in crypto.py, only when the vault URL is set).
 
 ## Dev environment
-`INTEGRATION_ENCRYPTION_KEY` is set as a stable shared env var in Replit.
-Without it the backend generates an ephemeral key per process restart — all credentials
-become unreadable after restart. If decryption failures appear after a restart, check
-that the env var is still present and has not been accidentally deleted.
+`INTEGRATION_ENCRYPTION_KEY` is a stable shared env var in Replit (no Key Vault in dev).
+Without it the backend generates an ephemeral key per restart — credentials become unreadable
+after restart. If decryption failures appear post-restart, check the env var is still present.

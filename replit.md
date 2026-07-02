@@ -13,6 +13,12 @@ Botelier is a multi-tenant, multichannel AI platform that provides businesses wi
 - **`voice.botelier.ai`** runs the same full FastAPI codebase as Replit
 - Both connect to the same Neon PostgreSQL database
 - Only difference: `PUBLIC_BASE_URL=https://voice.botelier.ai` on the Azure container
+- **Credential master key in Azure Key Vault:** the Fernet key that encrypts all integration
+  credentials is stored in Key Vault (secret `integration-encryption-key`), read once at boot
+  via the container's managed identity, and cached in-memory. Configured by `AZURE_KEY_VAULT_URL`
+  + `BOTELIER_ENV=production` (never a container env-var secret). Fails closed if the vault is
+  unreachable. Dev keeps using the `INTEGRATION_ENCRYPTION_KEY` env var. Rotation runbook lives
+  in `botelier/backend/botelier/crypto.py`; one-time wiring in `scripts/azure-voice-setup.sh` (Step 5b).
 - Dockerfile: `botelier/backend/Dockerfile` (build context = repo root)
 - CI/CD: `.github/workflows/deploy-voice.yml` (triggers on push to `botelier/backend/**` or `src/pipecat/**`)
 - One-time infrastructure setup: `scripts/azure-voice-setup.sh`

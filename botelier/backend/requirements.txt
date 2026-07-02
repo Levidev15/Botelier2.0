@@ -18,3 +18,5 @@ bcrypt>=4.0.0
 sse-starlette>=2.1.0
 openai>=1.0.0
 requests>=2.31.0
+azure-identity>=1.19.0
+azure-keyvault-secrets>=4.9.0

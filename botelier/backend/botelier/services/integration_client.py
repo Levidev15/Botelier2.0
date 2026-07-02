@@ -1,4 +1,6 @@
+import asyncio
 import base64
+import hashlib
 import ipaddress
 import json
 import re
@@ -208,6 +210,44 @@ def extract_json_value(data: Any, path: str) -> Any:
     return results[0] if results else None
 
 
+def _advisory_lock_key(integration_id) -> int:
+    """Derive a stable signed 64-bit Postgres advisory-lock key for a connection.
+
+    Python's built-in hash() is randomized per process (PYTHONHASHSEED), so it
+    would produce a different key on every replica and the lock would serialize
+    nothing.  We use a namespaced BLAKE2b digest of the integration UUID so the
+    key is identical across all workers, and reserve the namespace prefix in
+    case advisory locks are used for other purposes later.
+    """
+    if isinstance(integration_id, uuid.UUID):
+        id_bytes = integration_id.bytes
+    else:
+        id_bytes = uuid.UUID(str(integration_id)).bytes
+    digest = hashlib.blake2b(
+        b"integ-token-refresh:" + id_bytes, digest_size=8
+    ).digest()
+    return int.from_bytes(digest, "big", signed=True)
+
+
+def _safe_close(conn) -> None:
+    """Return a raw connection to the pool, swallowing any close error."""
+    try:
+        conn.close()
+    except Exception:
+        pass
+
+
+# Proactively refresh a token this many seconds BEFORE its hard expiry so a
+# request never races the expiry boundary and comes back 401 mid-call.
+_TOKEN_REFRESH_SKEW_S = 60
+
+# Waiter (non-holder) settings for the cross-worker refresh lock. The timeout
+# comfortably exceeds a normal provider login while a burst of waiters poll the
+# row (rather than each pinning a DB connection) until the holder finishes.
+_REFRESH_WAIT_TIMEOUT_S = 45.0
+_REFRESH_POLL_INTERVAL_S = 0.2
+
+
 class IntegrationClient:
     def __init__(self, account_id: str, db: Session = None):
         self.account_id = account_id
@@ -269,8 +309,8 @@ class IntegrationClient:
 
         needs_token = not (auth_type == "basic_or_jwt" and auth_method == "basic_auth")
 
-        if needs_token and integration.is_token_expired():
-            refresh_success = await self._refresh_token(integration)
+        if needs_token and self._token_needs_refresh(integration):
+            refresh_success = await self._refresh_token_with_lock(integration)
             if not refresh_success:
                 self._write_call_log(
                     integration_id=str(integration.id),
@@ -456,6 +496,168 @@ class IntegrationClient:
             if not self._external_db:
                 db.close()
 
+    def _token_needs_refresh(self, integration: AccountIntegration) -> bool:
+        """True when the access token is expired or within the proactive skew.
+
+        Refreshing slightly before hard expiry avoids issuing a request that
+        races the expiry boundary and comes back 401 mid-call.
+        """
+        if integration.token_expires_at is None:
+            return True
+        return datetime.utcnow() >= integration.token_expires_at - timedelta(
+            seconds=_TOKEN_REFRESH_SKEW_S
+        )
+
+    def _read_integration_fresh(self, integration_id) -> Optional[AccountIntegration]:
+        """Read the integration row in its own short-lived session.
+
+        Always uses a fresh SessionLocal() (never the cached object or an
+        external session) so it observes token updates committed by another
+        worker under READ COMMITTED. integration_type is eager-loaded so the
+        returned (detached) object is safe to read after the session closes.
+        """
+        from botelier.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            return (
+                db.query(AccountIntegration)
+                .options(joinedload(AccountIntegration.integration_type))
+                .filter(
+                    AccountIntegration.id == integration_id,
+                    AccountIntegration.account_id == self.account_id,
+                )
+                .first()
+            )
+        finally:
+            db.close()
+
+    def _sync_cached_integration(
+        self, cached: AccountIntegration, fresh: AccountIntegration
+    ) -> None:
+        """Copy refreshed token state from a fresh row onto the cached object.
+
+        Only scalar token columns are copied — never the integration_type
+        relationship — so the eagerly-loaded relationship on the cached object
+        is preserved and no lazy load fires on a detached instance. Without
+        this, execute_request would keep sending the stale cached token.
+        """
+        cached.access_token_encrypted = fresh.access_token_encrypted
+        cached.refresh_token_encrypted = fresh.refresh_token_encrypted
+        cached.token_expires_at = fresh.token_expires_at
+        cached.status = fresh.status
+
+    async def _refresh_token_with_lock(self, integration: AccountIntegration) -> bool:
+        """Refresh an expired/expiring token, serialized across all workers.
+
+        A single expired token under concurrent load would otherwise trigger one
+        provider login per in-flight request — wasteful, and unsafe for providers
+        that rotate the refresh_token on use. We serialize per AccountIntegration
+        row with a Postgres advisory lock shared across every stateless replica:
+
+          • Holder  — the worker that wins pg_try_advisory_lock re-reads the row
+                      (another worker may have refreshed while it contended) and,
+                      if still stale, performs the actual refresh.
+          • Waiters — every other worker polls the row until the token is fresh
+                      or the refresh is seen to have failed, WITHOUT holding a DB
+                      connection while it waits (avoids pool exhaustion under a
+                      burst; the provider HTTP call can take tens of seconds).
+
+        The lock is held on a dedicated raw connection — never on the refresh's
+        ORM session, whose commit would return its connection to the pool and
+        strand a session-level lock. Any lock-infrastructure failure degrades
+        gracefully to an unlocked refresh (the pre-existing behavior).
+        """
+        from sqlalchemy import text as _sql_text
+
+        from botelier.database import engine
+
+        lock_key = _advisory_lock_key(integration.id)
+
+        try:
+            conn = engine.connect()
+        except Exception as exc:
+            logger.warning(
+                f"Token refresh: could not open lock connection for integration "
+                f"{integration.id} ({exc}); refreshing without cross-worker lock."
+            )
+            return await self._refresh_token(integration)
+
+        try:
+            acquired = conn.execute(
+                _sql_text("SELECT pg_try_advisory_lock(:k)"), {"k": lock_key}
+            ).scalar()
+        except Exception as exc:
+            logger.warning(
+                f"Token refresh: advisory-lock acquire failed for integration "
+                f"{integration.id} ({exc}); refreshing without cross-worker lock."
+            )
+            _safe_close(conn)
+            return await self._refresh_token(integration)
+
+        if acquired:
+            try:
+                fresh = self._read_integration_fresh(integration.id)
+                if fresh is not None:
+                    if (
+                        fresh.status == IntegrationStatus.CONNECTED
+                        and not self._token_needs_refresh(fresh)
+                    ):
+                        # Another worker refreshed while we contended for the lock.
+                        self._sync_cached_integration(integration, fresh)
+                        return True
+                    # Adopt the freshest row before refreshing so a rotate-on-use
+                    # provider doesn't reuse a refresh token already spent by
+                    # another worker since this client cached the integration.
+                    self._sync_cached_integration(integration, fresh)
+                return await self._refresh_token(integration)
+            finally:
+                try:
+                    conn.execute(
+                        _sql_text("SELECT pg_advisory_unlock(:k)"), {"k": lock_key}
+                    )
+                except Exception as exc:
+                    # A stranded lock would block ALL future refreshes for this
+                    # connection until the pooled conn recycles — hard-drop it.
+                    logger.error(
+                        f"Token refresh: advisory-unlock failed for integration "
+                        f"{integration.id} ({exc}); invalidating connection."
+                    )
+                    conn.invalidate()
+                finally:
+                    _safe_close(conn)
+
+        # Waiter path — release the connection immediately, then poll the row.
+        _safe_close(conn)
+
+        deadline = time.monotonic() + _REFRESH_WAIT_TIMEOUT_S
+        while time.monotonic() < deadline:
+            await asyncio.sleep(_REFRESH_POLL_INTERVAL_S)
+            fresh = self._read_integration_fresh(integration.id)
+            if fresh is None:
+                continue
+            if (
+                fresh.status == IntegrationStatus.CONNECTED
+                and not self._token_needs_refresh(fresh)
+            ):
+                self._sync_cached_integration(integration, fresh)
+                return True
+            if fresh.status in (
+                IntegrationStatus.TOKEN_EXPIRED,
+                IntegrationStatus.ERROR,
+            ):
+                logger.warning(
+                    f"Token refresh: holder failed to refresh integration "
+                    f"{integration.id} (status={fresh.status.value})."
+                )
+                return False
+
+        logger.warning(
+            f"Token refresh: timed out waiting for another worker to refresh "
+            f"integration {integration.id}."
+        )
+        return False
+
     async def _refresh_token(self, integration: AccountIntegration) -> bool:
         credentials = integration.get_credentials()
         integration_type = integration.integration_type
@@ -583,6 +785,7 @@ class IntegrationClient:
                         return False
             except Exception as e:
                 logger.error(f"JWT login exception: {e}")
+                integration.status = IntegrationStatus.ERROR
                 integration.last_error = str(e)
                 db.add(integration)
                 db.commit()
@@ -671,6 +874,7 @@ class IntegrationClient:
 
         except Exception as e:
             logger.error(f"Token refresh exception: {e}")
+            integration.status = IntegrationStatus.ERROR
             integration.last_error = str(e)
             db.add(integration)
             db.commit()
