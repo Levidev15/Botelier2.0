@@ -11,10 +11,9 @@ The GuestCentric integration connects Botelier to the GuestCentric Central Reser
 ## Prerequisites
 
 - A GuestCentric account with API access enabled
+- A **Username** and **Password** issued by GuestCentric — required for both auth methods (sent directly in the HTTP Basic Authorization header for Basic Auth, or exchanged for a token via GuestCentric's `/authentication/login` endpoint for JWT)
 - An **API key** issued by GuestCentric's integrations team (required for every request)
-- API credentials, depending on the auth method you plan to use:
-  - **Basic Auth**: a **Hotel ID** provided by GuestCentric (scopes every request to a single property)
-  - **JWT**: a **Username** and **Password** used to obtain a token from GuestCentric's `/authentication/login` endpoint (JWT auth can span multiple hotels)
+- For **Basic Auth** only: a **Hotel ID** provided by GuestCentric, sent alongside the API key as a query parameter (scopes every request to a single property — JWT auth can span multiple hotels and doesn't need it)
 
 ## Setup in Botelier
 
@@ -26,12 +25,12 @@ The GuestCentric integration connects Botelier to the GuestCentric Central Reser
 |---|---|
 | **Connection Name** | Internal label (e.g. "GuestCentric - Property A") |
 | **Auth Method** | `basic_auth` or `jwt` |
+| **Username** | Your GuestCentric API username (required for both auth methods) |
+| **Password** | Your GuestCentric API password (required for both auth methods) |
 | **API Key** | API key provided by GuestCentric's integrations team (always required) |
-| **Hotel ID** | Your GuestCentric hotel ID (required for Basic Auth, optional for JWT) |
-| **Username** | Your GuestCentric API username (JWT auth only) |
-| **Password** | Your GuestCentric API password (JWT auth only) |
+| **Hotel ID** | Your GuestCentric hotel ID (required for Basic Auth only; not shown for JWT) |
 
-4. Click **Connect**. Botelier validates the credentials and stores them encrypted. For JWT auth, Botelier exchanges the username/password for an access token immediately and on every subsequent refresh — no raw token needs to be entered manually.
+4. Click **Connect**. Botelier validates the credentials and stores them encrypted. For Basic Auth, your username and password are sent directly in the HTTP Basic Authorization header on every request. For JWT auth, Botelier exchanges the username/password for an access token immediately and on every subsequent refresh — no raw token needs to be entered manually.
 
 ## Available Actions
 
