@@ -13,12 +13,32 @@ import os
 import subprocess
 import sys
 import uuid
+from unittest.mock import MagicMock
 
+import httpx
 import pytest
 from cryptography.fernet import Fernet
 
 from botelier import crypto
-from botelier.services.integration_client import _advisory_lock_key
+from botelier.models.integration import AccountIntegration, IntegrationStatus
+from botelier.services.integration_client import IntegrationClient, _advisory_lock_key
+
+
+class _RaisingAsyncClient:
+    """Stand-in for httpx.AsyncClient whose POST always fails transiently."""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+    async def post(self, *args, **kwargs):
+        raise httpx.ConnectError("transient network blip")
+
 
 _TEST_KEY = Fernet.generate_key().decode()
 
@@ -225,3 +245,56 @@ def test_advisory_lock_key_is_stable_across_pythonhashseed():
         results.append(int(out.strip()))
 
     assert results[0] == results[1] == results[2] == expected
+
+
+# ── Transient refresh-failure recovery ────────────────────────────────────────
+# execute_request() blocks any integration whose status != CONNECTED BEFORE it
+# attempts a refresh. So a transient network error during refresh must NOT write
+# a terminal status — otherwise the connection is permanently stuck and can never
+# auto-recover. The definitive-rejection (non-200) path stays terminal; only the
+# generic exception paths must remain retryable.
+
+
+@pytest.mark.asyncio
+async def test_oauth_transient_exception_keeps_integration_connected(monkeypatch):
+    monkeypatch.setattr(httpx, "AsyncClient", _RaisingAsyncClient)
+
+    integration = AccountIntegration()
+    integration.id = uuid.uuid4()
+    integration.status = IntegrationStatus.CONNECTED
+    integration.refresh_token_encrypted = None  # -> client_credentials grant
+
+    client = IntegrationClient(account_id="acct-1", db=MagicMock())
+    credentials = {
+        "gateway_url": "https://sandbox.ocs.oc-test.com",
+        "client_id": "cid",
+        "client_secret": "csecret",
+        "enterprise_id": "ent",
+    }
+    auth_config = {"token_endpoint_path": "/oauth/v1/tokens"}
+
+    ok = await client._refresh_oauth_token(integration, credentials, auth_config)
+
+    assert ok is False
+    assert integration.status == IntegrationStatus.CONNECTED  # still retryable
+    assert integration.last_error  # recorded for observability
+
+
+@pytest.mark.asyncio
+async def test_jwt_login_transient_exception_keeps_integration_connected(monkeypatch):
+    monkeypatch.setattr(httpx, "AsyncClient", _RaisingAsyncClient)
+
+    integration = AccountIntegration()
+    integration.id = uuid.uuid4()
+    integration.status = IntegrationStatus.CONNECTED
+    integration.refresh_token_encrypted = None  # skip refresh branch -> login
+
+    client = IntegrationClient(account_id="acct-1", db=MagicMock())
+    credentials = {"username": "u", "password": "p"}
+    auth_config = {"base_url": "https://example.test"}
+
+    ok = await client._refresh_jwt_token(integration, credentials, auth_config)
+
+    assert ok is False
+    assert integration.status == IntegrationStatus.CONNECTED  # still retryable
+    assert integration.last_error

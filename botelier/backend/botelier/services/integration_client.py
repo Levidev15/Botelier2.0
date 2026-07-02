@@ -784,8 +784,13 @@ class IntegrationClient:
                         db.commit()
                         return False
             except Exception as e:
+                # Transient failure (network blip, timeout): keep the integration
+                # CONNECTED so the NEXT request retries the refresh automatically.
+                # Persisting ERROR here would trip the status gate at the top of
+                # execute_request() and permanently disable auto-refresh until a
+                # manual reconnect. Only a definitive provider rejection (the
+                # non-200 branch above) is terminal (TOKEN_EXPIRED).
                 logger.error(f"JWT login exception: {e}")
-                integration.status = IntegrationStatus.ERROR
                 integration.last_error = str(e)
                 db.add(integration)
                 db.commit()
@@ -873,8 +878,13 @@ class IntegrationClient:
                     return False
 
         except Exception as e:
+            # Transient failure (network blip, timeout): keep the integration
+            # CONNECTED so the NEXT request retries the refresh automatically.
+            # Persisting ERROR here would trip the status gate at the top of
+            # execute_request() and permanently disable auto-refresh until a
+            # manual reconnect. Only a definitive provider rejection (the
+            # non-200 branch above) is terminal (TOKEN_EXPIRED).
             logger.error(f"Token refresh exception: {e}")
-            integration.status = IntegrationStatus.ERROR
             integration.last_error = str(e)
             db.add(integration)
             db.commit()
