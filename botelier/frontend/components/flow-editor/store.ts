@@ -946,16 +946,349 @@ const OPERA_OHIP_BOOKING_TEMPLATE = {
   ],
 };
 
+const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
+  variables: [
+    { key: "hotel_id",               type: "text"   as SlotType, description: "GuestCentric hotel ID for this property",                       required: true,  defaultValue: "" },
+    { key: "hotel_name",             type: "text"   as SlotType, description: "Hotel name as registered in GuestCentric (used in booking payload)", required: true, defaultValue: "" },
+    { key: "hotel_reservations_email", type: "text" as SlotType, description: "Hotel reservations email GuestCentric will notify",                required: true,  defaultValue: "" },
+    { key: "check_in_date",          type: "date"   as SlotType, description: "Check-in date",                                                    required: true  },
+    { key: "check_out_date",         type: "date"   as SlotType, description: "Check-out date",                                                   required: true  },
+    { key: "guest_count",            type: "number" as SlotType, description: "Number of adult guests",                                           required: true  },
+    { key: "available_rooms",        type: "text"   as SlotType, description: "Available room names (from GuestCentric hotel rooms)",             required: false },
+    { key: "rates",                  type: "text"   as SlotType, description: "Available rate plan names (from GuestCentric hotel rooms)",        required: false },
+    { key: "room_type_code",         type: "text"   as SlotType, description: "Selected room type code",                                          required: true  },
+    { key: "rate_plan_code",         type: "text"   as SlotType, description: "Selected rate plan code",                                          required: true  },
+    { key: "room_rate_code",         type: "text"   as SlotType, description: "Room + rate combination code — set to match your property's rate quote", required: false, defaultValue: "" },
+    { key: "total_price",            type: "number" as SlotType, description: "Total stay price for the selected room/rate — set to match your property's rate quote", required: false, defaultValue: "0" },
+    { key: "number_of_rooms",        type: "number" as SlotType, description: "Number of rooms to book",                                          required: false, defaultValue: "1" },
+    { key: "number_of_children",     type: "number" as SlotType, description: "Number of children",                                               required: false, defaultValue: "0" },
+    { key: "guest_first_name",       type: "text"   as SlotType, description: "Guest first name",                                                 required: true  },
+    { key: "guest_last_name",        type: "text"   as SlotType, description: "Guest last name",                                                  required: true  },
+    { key: "guest_email",            type: "text"   as SlotType, description: "Guest email address",                                              required: true  },
+    { key: "guest_phone",            type: "text"   as SlotType, description: "Guest phone number",                                               required: true  },
+    { key: "guest_address",          type: "text"   as SlotType, description: "Guest mailing address (required by GuestCentric)",                 required: false, defaultValue: "" },
+    { key: "guest_city",             type: "text"   as SlotType, description: "Guest city (required by GuestCentric)",                            required: false, defaultValue: "" },
+    { key: "guest_postal_code",      type: "text"   as SlotType, description: "Guest postal code (required by GuestCentric)",                     required: false, defaultValue: "" },
+    { key: "guest_country",          type: "text"   as SlotType, description: "Guest country (required by GuestCentric)",                         required: false, defaultValue: "" },
+    { key: "cancellation_policy_id", type: "text"   as SlotType, description: "Cancellation policy ID for this property — set from the Cancellation Policies endpoint", required: false, defaultValue: "" },
+    { key: "meal_plan_id",           type: "text"   as SlotType, description: "Meal plan ID for this property",                                   required: false, defaultValue: "" },
+    { key: "meal_plan_net",          type: "number" as SlotType, description: "Meal plan net price",                                              required: false, defaultValue: "0" },
+    { key: "meal_plan_tax",          type: "number" as SlotType, description: "Meal plan tax",                                                    required: false, defaultValue: "0" },
+    { key: "meal_plan_total",        type: "number" as SlotType, description: "Meal plan total price",                                            required: false, defaultValue: "0" },
+    { key: "crs_reservation_code",   type: "text"   as SlotType, description: "CRS reservation code (from GuestCentric)",                         required: false },
+    { key: "hotel_reservation_code", type: "text"   as SlotType, description: "Hotel-side reservation code (from GuestCentric)",                  required: false },
+    { key: "booking_status",         type: "text"   as SlotType, description: "Reservation status (from GuestCentric)",                           required: false },
+  ],
+  nodes: [
+    {
+      id: "start_1",
+      type: "initial",
+      position: { x: 250, y: 0 },
+      data: {
+        name: "Greeting",
+        systemPrompt:
+          "You are a reservations agent for a property using the GuestCentric CRS. " +
+          "Help callers check room availability and complete a booking. " +
+          "Collect check-in and check-out dates and guest count first, then check live availability via the integration. " +
+          "Present the available room types and rate plans clearly, ask the caller to choose one of each, " +
+          "then collect their name, email, and phone. Always confirm the full booking summary before submitting to GuestCentric.",
+        greeting:
+          "Thank you for calling. I'd be happy to help you check availability and book a room. " +
+          "Could I start with your desired check-in and check-out dates?",
+      } as InitialNodeData,
+    },
+    {
+      id: "collect_checkin",
+      type: "collect_slot",
+      position: { x: 250, y: 150 },
+      data: {
+        name: "Check-in Date",
+        slot: {
+          variableKey: "check_in_date",
+          prompt: "What date would you like to check in?",
+          type: "date",
+          validation: { requireFuture: true },
+          retryPrompt: "Please provide a future date — for example, the 15th of December.",
+          maxRetries: 3,
+          useBuiltInValidator: true,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "collect_checkout",
+      type: "collect_slot",
+      position: { x: 250, y: 300 },
+      data: {
+        name: "Check-out Date",
+        slot: {
+          variableKey: "check_out_date",
+          prompt: "And what date will you be checking out?",
+          type: "date",
+          validation: {
+            requireFuture: true,
+            crossFieldCheck: {
+              compareWith: "check_in_date",
+              operator: "after",
+              errorMessage: "Check-out must be after your check-in date.",
+            },
+          },
+          retryPrompt: "Your check-out date must be after your check-in date. Could you repeat it?",
+          maxRetries: 3,
+          useBuiltInValidator: true,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "collect_guests",
+      type: "collect_slot",
+      position: { x: 250, y: 450 },
+      data: {
+        name: "Guest Count",
+        slot: {
+          variableKey: "guest_count",
+          prompt: "How many adults will be staying?",
+          type: "number",
+          validation: { min: 1, max: 10 },
+          retryPrompt: "Please give me a number between 1 and 10.",
+          maxRetries: 2,
+          useBuiltInValidator: true,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "check_availability",
+      type: "api_request",
+      position: { x: 250, y: 600 },
+      data: {
+        name: "Check Availability (GuestCentric)",
+        instructions:
+          "After this node completes, present the available room types and rate plans to the caller. " +
+          "If no rooms are available, apologise and offer to try different dates.",
+        api: {
+          method: "GET",
+          url: "",
+          apiSource: "integration",
+          integrationId: "",
+          integrationSlug: "guestcentric-crs",
+          endpointId: "hotel_rooms",
+          endpointName: "Hotel Rooms & Rates",
+          thinkingMessage: "Let me check room availability for those dates — one moment please.",
+          responseMapping: {
+            available_rooms: "$.rooms[*].name",
+            rates:           "$.rates[*].name",
+          },
+          autoMappingSource: {
+            available_rooms: "$.rooms[*].name",
+            rates:           "$.rates[*].name",
+          },
+          responseInstructions:
+            "Describe the available room types and their rate plans to the caller. " +
+            "Ask which room type and rate plan they would like.",
+          timeout: 15,
+          retryCount: 1,
+        } as APIRequestConfig,
+      } as APIRequestNodeData,
+    },
+    {
+      id: "collect_room",
+      type: "collect_slot",
+      position: { x: 250, y: 750 },
+      data: {
+        name: "Room Type Selection",
+        slot: {
+          variableKey: "room_type_code",
+          prompt:
+            "Which room type would you prefer? The available options are: {{available_rooms}}. " +
+            "Please tell me the room type code or name.",
+          type: "text",
+          retryPrompt: "Could you repeat which room type you'd like?",
+          maxRetries: 3,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "collect_rate",
+      type: "collect_slot",
+      position: { x: 250, y: 900 },
+      data: {
+        name: "Rate Plan Selection",
+        slot: {
+          variableKey: "rate_plan_code",
+          prompt:
+            "And which rate plan would you like? The available plans are: {{rates}}. " +
+            "Please tell me the rate plan code or name.",
+          type: "text",
+          retryPrompt: "Could you repeat which rate plan you'd like?",
+          maxRetries: 3,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "collect_first_name",
+      type: "collect_slot",
+      position: { x: 250, y: 1050 },
+      data: {
+        name: "Guest First Name",
+        slot: {
+          variableKey: "guest_first_name",
+          prompt: "May I have the guest's first name for the reservation?",
+          type: "text",
+          retryPrompt: "Could you spell the first name for me?",
+          maxRetries: 3,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "collect_last_name",
+      type: "collect_slot",
+      position: { x: 250, y: 1200 },
+      data: {
+        name: "Guest Last Name",
+        slot: {
+          variableKey: "guest_last_name",
+          prompt: "And the last name?",
+          type: "text",
+          retryPrompt: "Could you spell the last name for me?",
+          maxRetries: 3,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "collect_email",
+      type: "collect_slot",
+      position: { x: 250, y: 1350 },
+      data: {
+        name: "Guest Email",
+        slot: {
+          variableKey: "guest_email",
+          prompt: "What's the best email address for the booking confirmation?",
+          type: "text",
+          retryPrompt: "Could you repeat the email address?",
+          maxRetries: 3,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "collect_phone",
+      type: "collect_slot",
+      position: { x: 250, y: 1500 },
+      data: {
+        name: "Guest Phone",
+        slot: {
+          variableKey: "guest_phone",
+          prompt: "And a good contact phone number?",
+          type: "text",
+          retryPrompt: "Could you repeat the phone number?",
+          maxRetries: 3,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "confirm_details",
+      type: "confirmation",
+      position: { x: 250, y: 1650 },
+      data: {
+        name: "Confirm Booking Details",
+        confirmation: {
+          summaryTemplate:
+            "Just to confirm: a {{room_type_code}} room on the {{rate_plan_code}} rate plan, " +
+            "for {{guest_count}} adult(s), checking in {{check_in_date}} and checking out {{check_out_date}}, " +
+            "under {{guest_first_name}} {{guest_last_name}}.",
+          confirmPrompt: "Shall I go ahead and book this reservation with GuestCentric?",
+          editPrompt: "No problem — what would you like to change?",
+          variablesToConfirm: [
+            "check_in_date",
+            "check_out_date",
+            "guest_count",
+            "room_type_code",
+            "rate_plan_code",
+            "guest_first_name",
+            "guest_last_name",
+          ],
+          allowEdit: true,
+          deliveryMode: "guided",
+        },
+      } as ConfirmationNodeData,
+    },
+    {
+      id: "create_booking",
+      type: "api_request",
+      position: { x: 250, y: 1800 },
+      data: {
+        name: "Book Reservation (GuestCentric)",
+        instructions:
+          "Submits the reservation to GuestCentric. This request also requires several property-specific fields " +
+          "(hotel_name, hotel_reservations_email, room_rate_code, total_price, cancellation_policy_id, meal_plan_id, " +
+          "and guest address/city/postal_code/country) — set sensible defaults for these flow variables to match your " +
+          "property's GuestCentric configuration before using this template in production. " +
+          "After this node completes, read the confirmation code back to the caller clearly, spelling it out if needed.",
+        api: {
+          method: "POST",
+          url: "",
+          apiSource: "integration",
+          integrationId: "",
+          integrationSlug: "guestcentric-crs",
+          endpointId: "book_reservation",
+          endpointName: "Book Reservation",
+          thinkingMessage: "Creating your reservation in GuestCentric now — just a moment.",
+          responseMapping: {
+            crs_reservation_code:   "$.reservations[0].crs_reservation_code",
+            hotel_reservation_code: "$.reservations[0].hotel_reservation_code",
+            booking_status:         "$.reservations[0].status",
+          },
+          autoMappingSource: {
+            crs_reservation_code:   "$.reservations[0].crs_reservation_code",
+            hotel_reservation_code: "$.reservations[0].hotel_reservation_code",
+            booking_status:         "$.reservations[0].status",
+          },
+          responseInstructions:
+            "Tell the caller their reservation is confirmed with GuestCentric and read out their confirmation code: " +
+            "{{crs_reservation_code}}. Offer to repeat it if needed.",
+          timeout: 20,
+          retryCount: 1,
+        } as APIRequestConfig,
+      } as APIRequestNodeData,
+    },
+    {
+      id: "end_success",
+      type: "end",
+      position: { x: 250, y: 1950 },
+      data: {
+        name: "Booking Confirmed",
+        closingMessage:
+          "Your reservation is confirmed! Your confirmation code is {{crs_reservation_code}}. " +
+          "We look forward to welcoming you. Is there anything else I can help you with?",
+      } as EndNodeData,
+    },
+  ],
+  edges: [
+    { id: "e1",  source: "start_1",           target: "collect_checkin"    },
+    { id: "e2",  source: "collect_checkin",    target: "collect_checkout"   },
+    { id: "e3",  source: "collect_checkout",   target: "collect_guests"     },
+    { id: "e4",  source: "collect_guests",     target: "check_availability" },
+    { id: "e5",  source: "check_availability", target: "collect_room"       },
+    { id: "e6",  source: "collect_room",       target: "collect_rate"       },
+    { id: "e7",  source: "collect_rate",       target: "collect_first_name" },
+    { id: "e8",  source: "collect_first_name", target: "collect_last_name"  },
+    { id: "e9",  source: "collect_last_name",  target: "collect_email"      },
+    { id: "e10", source: "collect_email",      target: "collect_phone"      },
+    { id: "e11", source: "collect_phone",      target: "confirm_details"    },
+    { id: "e12", source: "confirm_details",    target: "create_booking"     },
+    { id: "e13", source: "create_booking",     target: "end_success"        },
+  ],
+};
+
 interface FlowTemplate {
   variables: FlowVariable[];
   nodes: unknown[];
   edges: unknown[];
 }
 const TEMPLATES: Record<string, FlowTemplate> = {
-  "room-booking":       ROOM_BOOKING_TEMPLATE,
-  "concierge":          CONCIERGE_TEMPLATE,
-  "room-service":       ROOM_SERVICE_TEMPLATE,
-  "opera-ohip-booking": OPERA_OHIP_BOOKING_TEMPLATE,
+  "room-booking":         ROOM_BOOKING_TEMPLATE,
+  "concierge":            CONCIERGE_TEMPLATE,
+  "room-service":         ROOM_SERVICE_TEMPLATE,
+  "opera-ohip-booking":   OPERA_OHIP_BOOKING_TEMPLATE,
+  "guestcentric-booking": GUESTCENTRIC_CRS_BOOKING_TEMPLATE,
 };
 
 export const useFlowStore = create<FlowState>((set, get) => ({
@@ -1399,4 +1732,5 @@ export const AVAILABLE_TEMPLATES = [
   { id: "concierge",          name: "Concierge Services",   description: "Help guests with dining, spa, and activity requests" },
   { id: "room-service",       name: "Room Service",         description: "Take food and beverage orders with special dietary requirements" },
   { id: "opera-ohip-booking", name: "Opera OHIP Booking",   description: "Check availability and create a reservation via Oracle Opera OHIP — includes two pre-wired integration API nodes", complexity: "medium" },
+  { id: "guestcentric-booking", name: "GuestCentric CRS Booking", description: "Check hotel room availability and book a reservation via GuestCentric CRS — includes two pre-wired integration API nodes", complexity: "medium" },
 ];

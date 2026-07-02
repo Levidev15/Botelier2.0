@@ -43,3 +43,15 @@ concrete value when no caller value is supplied. Caller-supplied values still wi
 - Single profile (CRM `/crm/v1/profiles/{id}`): wrapper `profileDetails`.
 - Room types (LOV `/lov/v1/listOfValues/hotels/{id}/roomTypes`): `listOfValues.items`.
 - Rate plans (RTP `/rtp/v1/hotels/{id}/ratePlans`): top-level `ratePlans` array.
+
+## GuestCentric CRS quirks (from its swagger.yaml)
+- Several "hotel-scoped" GET endpoints are NOT under `/hotels/{hotelId}/...` — cancellation/guarantee
+  policies and both live at plain `/hotels/cancellation_policies` / `/hotels/guarantee_policies` with a
+  **required `hotels` query param** (JSON array of hotel IDs), not a path segment. `view_reservation` is
+  `GET /reservations/view?crs_reservation_code=...` (query params), not a path segment either.
+- `book`/`update`/`modify`/`cancel` all share one request shape: `{"reservations": [Reservation, ...]}`.
+  `resendemail` is the one exception — flat body `{crs_reservation_code, hotel_reservation_code,
+  send_to_guest, send_to_hotel}`, response `{message}` (`SuccessResponse`), not the reservations wrapper.
+  Don't assume every "reservation mutation" endpoint in a CRS-style API shares one envelope — check each.
+- Cancellation/guarantee-policy and addons/currency responses are RAW top-level arrays (no `{key:[...]}`
+  wrapper), so their JSONPath mappings must start at `$` / `$[0].field`, not `$.something[0].field`.
