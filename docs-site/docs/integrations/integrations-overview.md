@@ -25,6 +25,8 @@ Botelier ships with pre-configured integration types:
 | **Oracle Opera Cloud (OHIP)** | OAuth2 Client Credentials | Hotel PMS; see [Oracle Opera OHIP](./oracle-opera-ohip) |
 | **GuestCentric CRS** | Basic Auth or JWT | Hotel CRS; see [GuestCentric CRS](./guestcentric-crs) |
 
+Adding a new pre-built integration (a new row in this table)? See [Adding a New Integration](./adding-a-new-integration) for the complete, worked-example-driven guide covering the seed definition, auth/runtime behavior, flow-editor wiring, docs, and testing.
+
 ## How Integrations Surface in Flows and Tools
 
 Once connected, an integration's endpoints appear in:

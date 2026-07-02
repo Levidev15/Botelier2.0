@@ -82,6 +82,7 @@ const sidebars = {
         'integrations/guestcentric-crs',
         'integrations/mcp-server',
         'integrations/custom-api-via-flow',
+        'integrations/adding-a-new-integration',
       ],
     },
     {
