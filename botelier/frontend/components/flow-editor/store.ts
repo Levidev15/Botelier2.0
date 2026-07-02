@@ -951,9 +951,10 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     { key: "hotel_id",               type: "text"   as SlotType, description: "GuestCentric hotel ID for this property",                       required: true,  defaultValue: "" },
     { key: "hotel_name",             type: "text"   as SlotType, description: "Hotel name as registered in GuestCentric (used in booking payload)", required: true, defaultValue: "" },
     { key: "hotel_reservations_email", type: "text" as SlotType, description: "Hotel reservations email GuestCentric will notify",                required: true,  defaultValue: "" },
-    { key: "check_in_date",          type: "date"   as SlotType, description: "Check-in date",                                                    required: true  },
-    { key: "check_out_date",         type: "date"   as SlotType, description: "Check-out date",                                                   required: true  },
-    { key: "guest_count",            type: "number" as SlotType, description: "Number of adult guests",                                           required: true  },
+    { key: "checkin",                type: "date"   as SlotType, description: "Check-in date (GuestCentric `checkin` param)",                     required: true  },
+    { key: "checkout",               type: "date"   as SlotType, description: "Check-out date (GuestCentric `checkout` param)",                   required: true  },
+    { key: "adults",                 type: "number" as SlotType, description: "Number of adult guests (GuestCentric `adults` query param for availability)", required: true  },
+    { key: "number_of_adults",       type: "number" as SlotType, description: "Number of adult guests (GuestCentric `number_of_adults` body field for booking — auto-copied from `adults`)", required: false, defaultValue: "1" },
     { key: "available_rooms",        type: "text"   as SlotType, description: "Available room names (from GuestCentric hotel rooms)",             required: false },
     { key: "rates",                  type: "text"   as SlotType, description: "Available rate plan names (from GuestCentric hotel rooms)",        required: false },
     { key: "room_type_code",         type: "text"   as SlotType, description: "Selected room type code",                                          required: true  },
@@ -1004,7 +1005,7 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
       data: {
         name: "Check-in Date",
         slot: {
-          variableKey: "check_in_date",
+          variableKey: "checkin",
           prompt: "What date would you like to check in?",
           type: "date",
           validation: { requireFuture: true },
@@ -1021,13 +1022,13 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
       data: {
         name: "Check-out Date",
         slot: {
-          variableKey: "check_out_date",
+          variableKey: "checkout",
           prompt: "And what date will you be checking out?",
           type: "date",
           validation: {
             requireFuture: true,
             crossFieldCheck: {
-              compareWith: "check_in_date",
+              compareWith: "checkin",
               operator: "after",
               errorMessage: "Check-out must be after your check-in date.",
             },
@@ -1045,7 +1046,7 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
       data: {
         name: "Guest Count",
         slot: {
-          variableKey: "guest_count",
+          variableKey: "adults",
           prompt: "How many adults will be staying?",
           type: "number",
           validation: { min: 1, max: 10 },
@@ -1054,6 +1055,19 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
           useBuiltInValidator: true,
         },
       } as CollectSlotNodeData,
+    },
+    {
+      id: "sync_number_of_adults",
+      type: "set_variable",
+      position: { x: 250, y: 525 },
+      data: {
+        name: "Sync Adults for Booking",
+        setVariable: {
+          variableKey: "number_of_adults",
+          valueType: "template",
+          value: "{{adults}}",
+        },
+      } as SetVariableNodeData,
     },
     {
       id: "check_availability",
@@ -1192,14 +1206,14 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
         confirmation: {
           summaryTemplate:
             "Just to confirm: a {{room_type_code}} room on the {{rate_plan_code}} rate plan, " +
-            "for {{guest_count}} adult(s), checking in {{check_in_date}} and checking out {{check_out_date}}, " +
+            "for {{adults}} adult(s), checking in {{checkin}} and checking out {{checkout}}, " +
             "under {{guest_first_name}} {{guest_last_name}}.",
           confirmPrompt: "Shall I go ahead and book this reservation with GuestCentric?",
           editPrompt: "No problem — what would you like to change?",
           variablesToConfirm: [
-            "check_in_date",
-            "check_out_date",
-            "guest_count",
+            "checkin",
+            "checkout",
+            "adults",
             "room_type_code",
             "rate_plan_code",
             "guest_first_name",
@@ -1262,19 +1276,20 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     },
   ],
   edges: [
-    { id: "e1",  source: "start_1",           target: "collect_checkin"    },
-    { id: "e2",  source: "collect_checkin",    target: "collect_checkout"   },
-    { id: "e3",  source: "collect_checkout",   target: "collect_guests"     },
-    { id: "e4",  source: "collect_guests",     target: "check_availability" },
-    { id: "e5",  source: "check_availability", target: "collect_room"       },
-    { id: "e6",  source: "collect_room",       target: "collect_rate"       },
-    { id: "e7",  source: "collect_rate",       target: "collect_first_name" },
-    { id: "e8",  source: "collect_first_name", target: "collect_last_name"  },
-    { id: "e9",  source: "collect_last_name",  target: "collect_email"      },
-    { id: "e10", source: "collect_email",      target: "collect_phone"      },
-    { id: "e11", source: "collect_phone",      target: "confirm_details"    },
-    { id: "e12", source: "confirm_details",    target: "create_booking"     },
-    { id: "e13", source: "create_booking",     target: "end_success"        },
+    { id: "e1",  source: "start_1",              target: "collect_checkin"       },
+    { id: "e2",  source: "collect_checkin",       target: "collect_checkout"      },
+    { id: "e3",  source: "collect_checkout",      target: "collect_guests"        },
+    { id: "e3b", source: "collect_guests",        target: "sync_number_of_adults" },
+    { id: "e4",  source: "sync_number_of_adults", target: "check_availability"    },
+    { id: "e5",  source: "check_availability",    target: "collect_room"          },
+    { id: "e6",  source: "collect_room",          target: "collect_rate"          },
+    { id: "e7",  source: "collect_rate",          target: "collect_first_name"    },
+    { id: "e8",  source: "collect_first_name",    target: "collect_last_name"     },
+    { id: "e9",  source: "collect_last_name",     target: "collect_email"         },
+    { id: "e10", source: "collect_email",         target: "collect_phone"         },
+    { id: "e11", source: "collect_phone",         target: "confirm_details"       },
+    { id: "e12", source: "confirm_details",       target: "create_booking"        },
+    { id: "e13", source: "create_booking",        target: "end_success"           },
   ],
 };
 
