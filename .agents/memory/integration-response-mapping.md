@@ -55,3 +55,15 @@ concrete value when no caller value is supplied. Caller-supplied values still wi
   Don't assume every "reservation mutation" endpoint in a CRS-style API shares one envelope — check each.
 - Cancellation/guarantee-policy and addons/currency responses are RAW top-level arrays (no `{key:[...]}`
   wrapper), so their JSONPath mappings must start at `$` / `$[0].field`, not `$.something[0].field`.
+
+## Booking flow templates: names ≠ bookable codes
+When a template's availability lookup only maps human-readable NAMEs (e.g. room/rate name) for the
+caller to choose from, but the booking endpoint requires codes/price/policy IDs (e.g. `room_rate_code`,
+`total_price`, `meal_plan_id`, `cancellation_policy_id`), don't assume the LLM can infer those from the
+name alone in the tool-call context — add a second, filtered API call after selection (query params
+substitute generically from already-collected flow variables by `{{key}}` name, so adding the
+selection fields — e.g. `room_type_code`/`rate_plan_code` — as optional query params on the SAME
+availability endpoint and re-invoking it returns just the one matching combo) to deterministically
+capture the required IDs before confirmation/booking. This was flagged as a blocking review issue on
+GuestCentric even though an equivalent "raw API response is visible to the LLM" pattern was accepted
+elsewhere (OHIP) — treat required-for-booking fields as needing explicit mapping, not LLM inference.

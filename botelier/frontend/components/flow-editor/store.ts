@@ -959,20 +959,21 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     { key: "rates",                  type: "text"   as SlotType, description: "Available rate plan names (from GuestCentric hotel rooms)",        required: false },
     { key: "room_type_code",         type: "text"   as SlotType, description: "Selected room type code",                                          required: true  },
     { key: "rate_plan_code",         type: "text"   as SlotType, description: "Selected rate plan code",                                          required: true  },
-    { key: "room_rate_code",         type: "text"   as SlotType, description: "Room + rate combination code — set to match your property's rate quote", required: false, defaultValue: "" },
-    { key: "total_price",            type: "number" as SlotType, description: "Total stay price for the selected room/rate — set to match your property's rate quote", required: false, defaultValue: "0" },
+    { key: "room_rate_code",         type: "text"   as SlotType, description: "Room + rate combination code (auto-derived by re-checking availability for the selected room + rate)", required: true },
+    { key: "total_price",            type: "number" as SlotType, description: "Total stay price for the selected room/rate (auto-derived by re-checking availability)", required: true },
     { key: "number_of_rooms",        type: "number" as SlotType, description: "Number of rooms to book",                                          required: false, defaultValue: "1" },
     { key: "number_of_children",     type: "number" as SlotType, description: "Number of children",                                               required: false, defaultValue: "0" },
     { key: "guest_first_name",       type: "text"   as SlotType, description: "Guest first name",                                                 required: true  },
     { key: "guest_last_name",        type: "text"   as SlotType, description: "Guest last name",                                                  required: true  },
     { key: "guest_email",            type: "text"   as SlotType, description: "Guest email address",                                              required: true  },
     { key: "guest_phone",            type: "text"   as SlotType, description: "Guest phone number",                                               required: true  },
-    { key: "guest_address",          type: "text"   as SlotType, description: "Guest mailing address (required by GuestCentric)",                 required: false, defaultValue: "" },
-    { key: "guest_city",             type: "text"   as SlotType, description: "Guest city (required by GuestCentric)",                            required: false, defaultValue: "" },
-    { key: "guest_postal_code",      type: "text"   as SlotType, description: "Guest postal code (required by GuestCentric)",                     required: false, defaultValue: "" },
-    { key: "guest_country",          type: "text"   as SlotType, description: "Guest country (required by GuestCentric)",                         required: false, defaultValue: "" },
-    { key: "cancellation_policy_id", type: "text"   as SlotType, description: "Cancellation policy ID for this property — set from the Cancellation Policies endpoint", required: false, defaultValue: "" },
-    { key: "meal_plan_id",           type: "text"   as SlotType, description: "Meal plan ID for this property",                                   required: false, defaultValue: "" },
+    { key: "guest_address",          type: "text"   as SlotType, description: "Guest mailing address (required by GuestCentric)",                 required: true  },
+    { key: "guest_city",             type: "text"   as SlotType, description: "Guest city (required by GuestCentric)",                            required: true  },
+    { key: "guest_postal_code",      type: "text"   as SlotType, description: "Guest postal code (required by GuestCentric)",                     required: true  },
+    { key: "guest_country",          type: "text"   as SlotType, description: "Guest country (required by GuestCentric)",                         required: true  },
+    { key: "hotels",                 type: "text"   as SlotType, description: "JSON array of hotel IDs for the Cancellation Policies lookup (auto-built from hotel_id)", required: false },
+    { key: "cancellation_policy_id", type: "text"   as SlotType, description: "Cancellation policy ID for this property (auto-derived from the Cancellation Policies endpoint)", required: true },
+    { key: "meal_plan_id",           type: "text"   as SlotType, description: "Included meal plan ID for the selected room/rate (auto-derived by re-checking availability)", required: true },
     { key: "meal_plan_net",          type: "number" as SlotType, description: "Meal plan net price",                                              required: false, defaultValue: "0" },
     { key: "meal_plan_tax",          type: "number" as SlotType, description: "Meal plan tax",                                                    required: false, defaultValue: "0" },
     { key: "meal_plan_total",        type: "number" as SlotType, description: "Meal plan total price",                                            required: false, defaultValue: "0" },
@@ -1138,9 +1139,89 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
       } as CollectSlotNodeData,
     },
     {
+      id: "confirm_room_rate",
+      type: "api_request",
+      position: { x: 250, y: 1050 },
+      data: {
+        name: "Confirm Room Rate (GuestCentric)",
+        instructions:
+          "Re-checks availability filtered to the caller's selected room type and rate plan codes to capture the " +
+          "exact room_rate_code, total_price, and included meal_plan_id needed to book. This should return a single " +
+          "matching room + rate combination. Do not narrate this step to the caller — proceed silently.",
+        api: {
+          method: "GET",
+          url: "",
+          apiSource: "integration",
+          integrationId: "",
+          integrationSlug: "guestcentric-crs",
+          endpointId: "hotel_rooms",
+          endpointName: "Hotel Rooms & Rates",
+          thinkingMessage: "",
+          responseMapping: {
+            room_rate_code: "$.room_rates[0].room_rate_code",
+            total_price:    "$.room_rates[0].total_price",
+            meal_plan_id:   "$.room_rates[0].meal_plan_prices.included.id",
+          },
+          autoMappingSource: {
+            room_rate_code: "$.room_rates[0].room_rate_code",
+            total_price:    "$.room_rates[0].total_price",
+            meal_plan_id:   "$.room_rates[0].meal_plan_prices.included.id",
+          },
+          responseInstructions:
+            "Do not mention this lookup to the caller. If no matching room rate is returned, apologise and offer " +
+            "to pick a different room type or rate plan.",
+          timeout: 15,
+          retryCount: 1,
+        } as APIRequestConfig,
+      } as APIRequestNodeData,
+    },
+    {
+      id: "build_hotels_array",
+      type: "set_variable",
+      position: { x: 250, y: 1200 },
+      data: {
+        name: "Build Hotels Array",
+        setVariable: {
+          variableKey: "hotels",
+          valueType: "template",
+          value: '["{{hotel_id}}"]',
+        },
+      } as SetVariableNodeData,
+    },
+    {
+      id: "check_cancellation_policy",
+      type: "api_request",
+      position: { x: 250, y: 1350 },
+      data: {
+        name: "Get Cancellation Policy (GuestCentric)",
+        instructions:
+          "Looks up the property's cancellation policy ID required by the booking endpoint. Do not narrate this " +
+          "step to the caller — proceed silently to collecting their contact details.",
+        api: {
+          method: "GET",
+          url: "",
+          apiSource: "integration",
+          integrationId: "",
+          integrationSlug: "guestcentric-crs",
+          endpointId: "hotel_cancellation_policies",
+          endpointName: "Cancellation Policies",
+          thinkingMessage: "",
+          responseMapping: {
+            cancellation_policy_id: "$[0].id",
+          },
+          autoMappingSource: {
+            cancellation_policy_id: "$[0].id",
+          },
+          responseInstructions: "Do not mention this lookup to the caller.",
+          timeout: 15,
+          retryCount: 1,
+        } as APIRequestConfig,
+      } as APIRequestNodeData,
+    },
+    {
       id: "collect_first_name",
       type: "collect_slot",
-      position: { x: 250, y: 1050 },
+      position: { x: 250, y: 1500 },
       data: {
         name: "Guest First Name",
         slot: {
@@ -1155,7 +1236,7 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     {
       id: "collect_last_name",
       type: "collect_slot",
-      position: { x: 250, y: 1200 },
+      position: { x: 250, y: 1650 },
       data: {
         name: "Guest Last Name",
         slot: {
@@ -1170,7 +1251,7 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     {
       id: "collect_email",
       type: "collect_slot",
-      position: { x: 250, y: 1350 },
+      position: { x: 250, y: 1800 },
       data: {
         name: "Guest Email",
         slot: {
@@ -1185,7 +1266,7 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     {
       id: "collect_phone",
       type: "collect_slot",
-      position: { x: 250, y: 1500 },
+      position: { x: 250, y: 1950 },
       data: {
         name: "Guest Phone",
         slot: {
@@ -1198,15 +1279,75 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
       } as CollectSlotNodeData,
     },
     {
+      id: "collect_guest_address",
+      type: "collect_slot",
+      position: { x: 250, y: 2100 },
+      data: {
+        name: "Guest Address",
+        slot: {
+          variableKey: "guest_address",
+          prompt: "Could I get your mailing address for the reservation?",
+          type: "text",
+          retryPrompt: "Could you repeat your street address?",
+          maxRetries: 3,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "collect_guest_city",
+      type: "collect_slot",
+      position: { x: 250, y: 2250 },
+      data: {
+        name: "Guest City",
+        slot: {
+          variableKey: "guest_city",
+          prompt: "And what city is that in?",
+          type: "text",
+          retryPrompt: "Could you repeat the city?",
+          maxRetries: 3,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "collect_guest_postal_code",
+      type: "collect_slot",
+      position: { x: 250, y: 2400 },
+      data: {
+        name: "Guest Postal Code",
+        slot: {
+          variableKey: "guest_postal_code",
+          prompt: "What's the postal or zip code?",
+          type: "text",
+          retryPrompt: "Could you repeat the postal code?",
+          maxRetries: 3,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "collect_guest_country",
+      type: "collect_slot",
+      position: { x: 250, y: 2550 },
+      data: {
+        name: "Guest Country",
+        slot: {
+          variableKey: "guest_country",
+          prompt: "And lastly, what country are you writing from?",
+          type: "text",
+          retryPrompt: "Could you repeat your country?",
+          maxRetries: 3,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
       id: "confirm_details",
       type: "confirmation",
-      position: { x: 250, y: 1650 },
+      position: { x: 250, y: 2700 },
       data: {
         name: "Confirm Booking Details",
         confirmation: {
           summaryTemplate:
-            "Just to confirm: a {{room_type_code}} room on the {{rate_plan_code}} rate plan, " +
-            "for {{adults}} adult(s), checking in {{checkin}} and checking out {{checkout}}, " +
+            "Just to confirm: a {{room_type_code}} room on the {{rate_plan_code}} rate plan, total price " +
+            "{{total_price}}, for {{adults}} adult(s), checking in {{checkin}} and checking out {{checkout}}, " +
             "under {{guest_first_name}} {{guest_last_name}}.",
           confirmPrompt: "Shall I go ahead and book this reservation with GuestCentric?",
           editPrompt: "No problem — what would you like to change?",
@@ -1216,6 +1357,7 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
             "adults",
             "room_type_code",
             "rate_plan_code",
+            "total_price",
             "guest_first_name",
             "guest_last_name",
           ],
@@ -1227,14 +1369,14 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     {
       id: "create_booking",
       type: "api_request",
-      position: { x: 250, y: 1800 },
+      position: { x: 250, y: 2850 },
       data: {
         name: "Book Reservation (GuestCentric)",
         instructions:
-          "Submits the reservation to GuestCentric. This request also requires several property-specific fields " +
-          "(hotel_name, hotel_reservations_email, room_rate_code, total_price, cancellation_policy_id, meal_plan_id, " +
-          "and guest address/city/postal_code/country) — set sensible defaults for these flow variables to match your " +
-          "property's GuestCentric configuration before using this template in production. " +
+          "Submits the reservation to GuestCentric. Guest contact/address details, the room rate, meal plan, and " +
+          "cancellation policy are all collected or derived earlier in this flow. This request still requires " +
+          "hotel_name and hotel_reservations_email — set these flow variables to match your property's " +
+          "GuestCentric configuration before using this template in production. " +
           "After this node completes, read the confirmation code back to the caller clearly, spelling it out if needed.",
         api: {
           method: "POST",
@@ -1266,7 +1408,7 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     {
       id: "end_success",
       type: "end",
-      position: { x: 250, y: 1950 },
+      position: { x: 250, y: 3000 },
       data: {
         name: "Booking Confirmed",
         closingMessage:
@@ -1276,20 +1418,27 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     },
   ],
   edges: [
-    { id: "e1",  source: "start_1",              target: "collect_checkin"       },
-    { id: "e2",  source: "collect_checkin",       target: "collect_checkout"      },
-    { id: "e3",  source: "collect_checkout",      target: "collect_guests"        },
-    { id: "e3b", source: "collect_guests",        target: "sync_number_of_adults" },
-    { id: "e4",  source: "sync_number_of_adults", target: "check_availability"    },
-    { id: "e5",  source: "check_availability",    target: "collect_room"          },
-    { id: "e6",  source: "collect_room",          target: "collect_rate"          },
-    { id: "e7",  source: "collect_rate",          target: "collect_first_name"    },
-    { id: "e8",  source: "collect_first_name",    target: "collect_last_name"     },
-    { id: "e9",  source: "collect_last_name",     target: "collect_email"         },
-    { id: "e10", source: "collect_email",         target: "collect_phone"         },
-    { id: "e11", source: "collect_phone",         target: "confirm_details"       },
-    { id: "e12", source: "confirm_details",       target: "create_booking"        },
-    { id: "e13", source: "create_booking",        target: "end_success"           },
+    { id: "e1",  source: "start_1",                    target: "collect_checkin"            },
+    { id: "e2",  source: "collect_checkin",             target: "collect_checkout"           },
+    { id: "e3",  source: "collect_checkout",            target: "collect_guests"             },
+    { id: "e3b", source: "collect_guests",              target: "sync_number_of_adults"      },
+    { id: "e4",  source: "sync_number_of_adults",       target: "check_availability"         },
+    { id: "e5",  source: "check_availability",          target: "collect_room"               },
+    { id: "e6",  source: "collect_room",                target: "collect_rate"               },
+    { id: "e6b", source: "collect_rate",                target: "confirm_room_rate"          },
+    { id: "e6c", source: "confirm_room_rate",           target: "build_hotels_array"         },
+    { id: "e6d", source: "build_hotels_array",          target: "check_cancellation_policy"  },
+    { id: "e7",  source: "check_cancellation_policy",   target: "collect_first_name"         },
+    { id: "e8",  source: "collect_first_name",          target: "collect_last_name"          },
+    { id: "e9",  source: "collect_last_name",           target: "collect_email"              },
+    { id: "e10", source: "collect_email",               target: "collect_phone"              },
+    { id: "e10b",source: "collect_phone",               target: "collect_guest_address"      },
+    { id: "e10c",source: "collect_guest_address",       target: "collect_guest_city"         },
+    { id: "e10d",source: "collect_guest_city",          target: "collect_guest_postal_code"  },
+    { id: "e10e",source: "collect_guest_postal_code",   target: "collect_guest_country"       },
+    { id: "e11", source: "collect_guest_country",       target: "confirm_details"            },
+    { id: "e12", source: "confirm_details",             target: "create_booking"             },
+    { id: "e13", source: "create_booking",              target: "end_success"                },
   ],
 };
 
