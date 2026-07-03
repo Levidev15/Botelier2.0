@@ -21,6 +21,7 @@ from botelier.models.integration import (
     IntegrationStatus,
     IntegrationType,
 )
+from botelier.services.integration_client import build_auth_request_query_params
 from botelier.services.ssrf_safe_transport import SSRFSafeTransport
 
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
@@ -1186,6 +1187,11 @@ async def obtain_jwt_token(integration_type: IntegrationType, credentials: dict)
 
     login_url = f"{base_url}{login_endpoint}"
 
+    try:
+        auth_query_params = build_auth_request_query_params(auth_config, credentials)
+    except ValueError as e:
+        return {"success": False, "error": str(e)}
+
     expired_time = (datetime.utcnow() + timedelta(hours=max_lifetime_hours)).strftime(
         "%Y-%m-%d %H:%M:%S"
     )
@@ -1194,6 +1200,7 @@ async def obtain_jwt_token(integration_type: IntegrationType, credentials: dict)
         async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
             response = await client.post(
                 login_url,
+                params=auth_query_params or None,
                 json={"username": username, "password": password, "expired_time": expired_time},
                 headers={"Content-Type": "application/json", "Accept": "application/json"},
                 timeout=30.0,
@@ -1287,11 +1294,17 @@ async def refresh_oauth_token(
             "%Y-%m-%d %H:%M:%S"
         )
 
+        try:
+            auth_query_params = build_auth_request_query_params(auth_config, credentials)
+        except ValueError as e:
+            return {"success": False, "error": str(e)}
+
         if refresh_token:
             try:
                 async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
                     response = await client.post(
                         f"{base_url}{refresh_endpoint}",
+                        params=auth_query_params or None,
                         json={"refresh_token": refresh_token, "expired_time": expired_time},
                         headers={"Content-Type": "application/json", "Accept": "application/json"},
                         timeout=30.0,

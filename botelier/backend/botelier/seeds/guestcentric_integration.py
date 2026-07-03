@@ -18,6 +18,7 @@ GUESTCENTRIC_INTEGRATION = {
         "jwt_check_endpoint": "/authentication/check_token",
         "jwt_max_lifetime_hours": 3,
         "basic_auth_query_params": ["apikey", "hotelId"],
+        "auth_request_query_params": ["apikey"],
     },
     "required_fields": [
         {

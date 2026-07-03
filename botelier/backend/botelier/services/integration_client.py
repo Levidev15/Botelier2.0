@@ -83,6 +83,35 @@ def _sanitize_endpoint_for_log(endpoint: Optional[str]) -> Optional[str]:
     return sanitized[:500]
 
 
+def build_auth_request_query_params(auth_config: dict, credentials: dict) -> dict:
+    """Build query params that must be attached to JWT auth (login/refresh) requests.
+
+    Some providers (e.g. GuestCentric) require credentials such as an API key on
+    every request, including the token login/refresh calls — not just data
+    requests. The credential keys to attach are declared per provider via
+    ``auth_config['auth_request_query_params']`` so this stays provider-agnostic
+    instead of hardcoding a specific field name.
+
+    Raises ValueError when a declared param has no value in ``credentials`` so the
+    caller fails clearly rather than sending an auth request the provider is
+    guaranteed to reject.
+    """
+    declared = auth_config.get("auth_request_query_params") or []
+    params: dict[str, str] = {}
+    missing: list[str] = []
+    for key in declared:
+        value = credentials.get(key)
+        if value:
+            params[key] = str(value)
+        else:
+            missing.append(key)
+    if missing:
+        raise ValueError(
+            "Missing required credential(s) for authentication: " + ", ".join(missing)
+        )
+    return params
+
+
 class _MissingRequiredVariables(Exception):
     """Raised when a required endpoint query param cannot be resolved from variables."""
 
@@ -700,11 +729,22 @@ class IntegrationClient:
 
         db = self._get_db_session()
         try:
+            try:
+                auth_query_params = build_auth_request_query_params(auth_config, credentials)
+            except ValueError as e:
+                logger.error(f"JWT auth misconfigured for integration {integration.id}: {e}")
+                integration.status = IntegrationStatus.TOKEN_EXPIRED
+                integration.last_error = str(e)
+                db.add(integration)
+                db.commit()
+                return False
+
             if refresh_token:
                 try:
                     async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
                         response = await client.post(
                             f"{base_url}{refresh_endpoint}",
+                            params=auth_query_params or None,
                             json={"refresh_token": refresh_token, "expired_time": expired_time},
                             headers={
                                 "Content-Type": "application/json",
@@ -748,6 +788,7 @@ class IntegrationClient:
                 async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
                     response = await client.post(
                         f"{base_url}{login_endpoint}",
+                        params=auth_query_params or None,
                         json={
                             "username": username,
                             "password": password,

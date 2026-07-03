@@ -8,10 +8,11 @@ Botelier is a multi-tenant, multichannel AI platform that provides businesses wi
 - `botelier-backend` workflow: `uvicorn main:app --host 0.0.0.0 --port 3001`
 - `botelier-dashboard` workflow: `npm run dev` (Next.js, port 5000)
 - Dev Twilio number (+1 702 707 4036) points to `riker.replit.dev`
+- Uses a **separate** development database, isolated from production — integrations, credentials, and test data created in dev never reach the production database
 
 ### Production voice (Azure Container Apps)
 - **`voice.botelier.ai`** runs the same full FastAPI codebase as Replit
-- Both connect to the same Neon PostgreSQL database
+- The Azure voice container and the Replit **production** deployment connect to the same **production** Neon PostgreSQL database
 - Only difference: `PUBLIC_BASE_URL=https://voice.botelier.ai` on the Azure container
 - **Credential master key in Azure Key Vault:** the Fernet key that encrypts all integration
   credentials is stored in Key Vault (secret `integration-encryption-key`), read once at boot
