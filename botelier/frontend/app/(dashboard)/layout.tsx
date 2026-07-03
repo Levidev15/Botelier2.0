@@ -1,6 +1,6 @@
 "use client";
 
-import { Bot, Phone, BarChart, Key, Users, Wrench, BookOpen, Shield, LogOut, ArrowLeft, Building2, Plug, MessageSquare, TrendingUp, MessageCircle, Sun, Moon, DollarSign } from "lucide-react";
+import { Bot, Phone, BarChart, Key, Users, Wrench, BookOpen, Shield, LogOut, ArrowLeft, Building2, Plug, MessageSquare, TrendingUp, MessageCircle, Sun, Moon, DollarSign, ClipboardList } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRouter } from "next/navigation";
@@ -187,6 +187,11 @@ export default function DashboardLayout({
           <NavItem href="/dashboard/messages" icon={<MessageSquare className="h-5 w-5" />} active={isActive("/dashboard/messages")} badge={pendingHandoffs}>
             Messages
           </NavItem>
+          {(isPlatformAdmin || can("records", "view")) && (
+            <NavItem href="/dashboard/records" icon={<ClipboardList className="h-5 w-5" />} active={isActive("/dashboard/records")}>
+              Records
+            </NavItem>
+          )}
 
           <div className="pt-4 pb-2">
             <div className="px-3 text-xs font-semibold text-muted-foreground uppercase tracking-wider">

@@ -105,6 +105,15 @@ export interface SetVariableConfig {
   value: string;
 }
 
+export interface SaveRecordConfig {
+  recordTypeId: string;
+  recordTypeName?: string;
+  // Map of record-type field key -> template string (supports {{variable}}).
+  mapping: Record<string, string>;
+  // Optional static/template status; validated against the type's status_options.
+  status?: string;
+}
+
 export interface ConditionConfig {
   variable: string;
   operator: "equals" | "not_equals" | "contains" | "greater_than" | "less_than" | "is_empty" | "is_not_empty";
@@ -141,6 +150,7 @@ export type NodeType =
   | "router"
   | "confirmation"
   | "set_variable"
+  | "save_record"
   | "transfer" 
   | "end";
 
@@ -197,6 +207,10 @@ export interface ConfirmationNodeData extends BaseNodeData {
 
 export interface SetVariableNodeData extends BaseNodeData {
   setVariable: SetVariableConfig;
+}
+
+export interface SaveRecordNodeData extends BaseNodeData {
+  saveRecord: SaveRecordConfig;
 }
 
 export interface TransferNodeData extends BaseNodeData {
@@ -378,6 +392,17 @@ const getDefaultNodeData = (type: NodeType): NodeData => {
           value: "",
         },
       } as SetVariableNodeData;
+
+    case "save_record":
+      return {
+        name: "Save Record",
+        saveRecord: {
+          recordTypeId: "",
+          recordTypeName: "",
+          mapping: {},
+          status: "",
+        },
+      } as SaveRecordNodeData;
     
     case "transfer":
       return {

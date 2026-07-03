@@ -4,6 +4,7 @@ import { useState } from "react";
 import { X, Bot, User, Clock, Phone, PhoneForwarded, Sparkles, Tag, Wrench, BarChart3, ClipboardCheck, Loader2 } from "lucide-react";
 import { notify } from "@/lib/notifications";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
+import SourceRecords from "@/app/(dashboard)/dashboard/records/components/SourceRecords";
 
 interface TranscriptEntry {
   role: string;
@@ -262,6 +263,8 @@ export default function TranscriptModal({ log, onClose, onLogUpdated, onViewEven
               )}
             </div>
           )}
+
+          <SourceRecords accountId={log.account_id} sourceCallLogId={log.id} />
 
           {transcript.length === 0 ? (
             <div className="flex flex-col items-center justify-center py-12 text-gray-500">

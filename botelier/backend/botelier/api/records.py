@@ -42,6 +42,8 @@ async def list_records(
     record_type_id: Optional[UUID] = Query(None),
     status_filter: Optional[str] = Query(None, alias="status"),
     source_channel: Optional[str] = Query(None),
+    source_call_log_id: Optional[UUID] = Query(None),
+    source_conversation_id: Optional[UUID] = Query(None),
     date_from: Optional[datetime] = Query(None),
     date_to: Optional[datetime] = Query(None),
     limit: int = Query(50, ge=1, le=200),
@@ -59,6 +61,10 @@ async def list_records(
         query = query.filter(Record.status == status_filter)
     if source_channel:
         query = query.filter(Record.source_channel == source_channel)
+    if source_call_log_id:
+        query = query.filter(Record.source_call_log_id == source_call_log_id)
+    if source_conversation_id:
+        query = query.filter(Record.source_conversation_id == source_conversation_id)
     if date_from:
         query = query.filter(Record.created_at >= date_from.replace(tzinfo=None))
     if date_to:

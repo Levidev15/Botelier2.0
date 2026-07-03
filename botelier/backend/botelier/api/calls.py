@@ -24,6 +24,10 @@ from ..models import CallLeg, CallLog, CallStatus, LegType, PhoneNumber
 from ..models.call_event import CallEvent
 from ..models.user import User
 from ..services.acw_service import run_acw_background, should_auto_run_acw
+from ..services.record_extraction_service import (
+    has_active_extraction_types,
+    run_record_extraction_for_call_background,
+)
 from ..services.billing_alert_service import run_billing_alert_background
 from ..services.call_logger import CallLogger
 from ._twilio_auth import (
@@ -743,6 +747,28 @@ def _maybe_enqueue_acw(call_sid: str, db: Session, background_tasks: BackgroundT
         background_tasks.add_task(run_acw_background, call_log.id)
 
 
+def _maybe_enqueue_record_extraction(
+    call_sid: str, db: Session, background_tasks: BackgroundTasks
+):
+    """Enqueue structured-record auto-extraction for a completed call.
+
+    Runs independently of ACW as a background task so the Twilio webhook path is
+    never blocked. The runner polls for transcript readiness and is idempotent
+    (at most one auto-extracted record per type per call).
+    """
+    call_log = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
+    if not call_log or not call_log.account_id:
+        return
+    try:
+        if not has_active_extraction_types(call_log.account_id, call_log.assistant_id, db):
+            return
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(f"Record extraction gate check failed for call {call_sid}: {exc}")
+        return
+    logger.info(f"Enqueueing record extraction background task for call {call_sid}")
+    background_tasks.add_task(run_record_extraction_for_call_background, call_log.id)
+
+
 def _maybe_enqueue_billing_alert(call_sid: str, db: Session, background_tasks: BackgroundTasks):
     """Enqueue a billing threshold check for the account that owns this call.
 
@@ -806,6 +832,7 @@ async def connect_complete(
                 call_logger.complete_cold_transfer(call_sid)
                 logger.info(f"Cold transfer call {call_sid} finalized at connect-complete")
                 _maybe_enqueue_acw(call_sid, db, background_tasks)
+                _maybe_enqueue_record_extraction(call_sid, db, background_tasks)
                 _maybe_enqueue_billing_alert(call_sid, db, background_tasks)
             else:
                 # Warm transfer: Twilio is still bridging. Keep call alive and wait
@@ -850,6 +877,7 @@ async def connect_complete(
             )
 
         _maybe_enqueue_acw(call_sid, db, background_tasks)
+        _maybe_enqueue_record_extraction(call_sid, db, background_tasks)
         _maybe_enqueue_billing_alert(call_sid, db, background_tasks)
 
         hangup_twiml = """<?xml version="1.0" encoding="UTF-8"?>
@@ -972,6 +1000,7 @@ async def transfer_status_callback(
                     f"Transfer leg {call_sid} ended ({call_status}) — enqueueing ACW for parent call {parent_call_sid}"
                 )
                 _maybe_enqueue_acw(parent_call_sid, db, background_tasks)
+                _maybe_enqueue_record_extraction(parent_call_sid, db, background_tasks)
                 _maybe_enqueue_billing_alert(parent_call_sid, db, background_tasks)
 
         return {"status": "received"}

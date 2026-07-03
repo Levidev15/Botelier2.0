@@ -213,7 +213,63 @@ def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str]]:
                     f"Set Variable node '{node_name}' uses the expression type, which is not permitted"
                 )
 
+        elif node_type == "save_record":
+            save_rec = node_data.get("saveRecord", node_data.get("save_record", {}))
+            if not save_rec.get("recordTypeId") and not save_rec.get("record_type_id"):
+                errors.append(f"Save Record node '{node_name}' has no record type selected")
+
     return len(errors) == 0, errors
+
+
+def validate_record_type_references(
+    db: Session, account_id: str, flow_config: dict
+) -> List[str]:
+    """Ensure every SAVE_RECORD node references a record type owned by this account.
+
+    This is a tenant-isolation guard: a flow must never be able to write records
+    into another account's record type. Enforced here at save/publish time and
+    again at execution time in the flow executor.
+    """
+    errors: List[str] = []
+    nodes = flow_config.get("nodes", []) if isinstance(flow_config, dict) else []
+    referenced: dict[str, str] = {}
+    for node in nodes:
+        if node.get("type") != "save_record":
+            continue
+        node_data = node.get("data", {})
+        node_name = node_data.get("name", node.get("id"))
+        save_rec = node_data.get("saveRecord", node_data.get("save_record", {}))
+        rt_id = save_rec.get("recordTypeId") or save_rec.get("record_type_id")
+        if rt_id:
+            referenced[str(rt_id)] = node_name
+
+    if not referenced:
+        return errors
+
+    from botelier.models.record_type import RecordType
+
+    valid_ids = set()
+    try:
+        rows = (
+            db.query(RecordType.id)
+            .filter(
+                RecordType.account_id == account_id,
+                RecordType.id.in_(list(referenced.keys())),
+            )
+            .all()
+        )
+        valid_ids = {str(r[0]) for r in rows}
+    except Exception:
+        # Malformed UUIDs etc. — treat all as invalid below.
+        valid_ids = set()
+
+    for rt_id, node_name in referenced.items():
+        if rt_id not in valid_ids:
+            errors.append(
+                f"Save Record node '{node_name}' references a record type that does "
+                "not exist in this account"
+            )
+    return errors
 
 
 @router.get("/{tool_id}/flow")
@@ -346,6 +402,15 @@ def save_flow_draft(
                     "errors": expression_errors,
                 },
             )
+        record_ref_errors = validate_record_type_references(db, account_id, flow_config)
+        if record_ref_errors:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail={
+                    "message": "Flow references an invalid record type",
+                    "errors": record_ref_errors,
+                },
+            )
 
     next_version = (tool.published_version_number or 0) + 1
 
@@ -413,7 +478,9 @@ def publish_flow(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft version not found")
 
     is_valid, validation_errors = validate_flow_config(draft.flow_config or {})
-    if not is_valid:
+    record_ref_errors = validate_record_type_references(db, account_id, draft.flow_config or {})
+    validation_errors = list(validation_errors) + record_ref_errors
+    if validation_errors:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
             detail={"message": "Flow validation failed", "errors": validation_errors},

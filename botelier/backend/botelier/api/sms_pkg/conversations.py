@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query
 from loguru import logger
 from openai import OpenAI
 from pydantic import BaseModel
@@ -306,6 +306,7 @@ class CloseConversationRequest(BaseModel):
 async def close_conversation(
     conversation_id: UUID,
     request: CloseConversationRequest,
+    background_tasks: BackgroundTasks,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -326,6 +327,26 @@ async def close_conversation(
         conversation.status = ConversationStatus.CLOSED.value
         conversation.closed_at = datetime.utcnow()
         db.commit()
+
+        # Structured-record auto-extraction runs after a conversation is closed.
+        # It is idempotent and channel-agnostic; enqueued as a background task so
+        # closing the conversation never blocks on the LLM call. The runner owns
+        # its own DB session and gates on whether the account has any active
+        # auto_extract record types.
+        try:
+            from botelier.services.record_extraction_service import (
+                has_active_extraction_types,
+                run_record_extraction_for_conversation_in_thread,
+            )
+
+            if has_active_extraction_types(
+                conversation.account_id, conversation.assistant_id, db
+            ):
+                background_tasks.add_task(
+                    run_record_extraction_for_conversation_in_thread, conversation.id
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(f"Record extraction enqueue failed (non-fatal): {exc}")
 
         return {"success": True, "conversation": conversation.to_dict()}
 

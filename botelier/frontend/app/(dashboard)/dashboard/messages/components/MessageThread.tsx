@@ -14,6 +14,7 @@ import {
   isImageUrl,
   formatFullTime,
 } from "../hooks/useSMSData";
+import SourceRecords from "@/app/(dashboard)/dashboard/records/components/SourceRecords";
 
 interface Props {
   selectedConv: ConversationDetail | null;
@@ -173,6 +174,7 @@ export function MessageThread({
 
       {/* Messages */}
       <div className="flex-1 overflow-y-auto p-4 space-y-3">
+        <SourceRecords sourceConversationId={selectedConv.id} variant="compact" />
         {selectedConv.messages.map((msg) => (
           <div key={msg.id}>
             {msg.session_boundary && (

@@ -17,6 +17,7 @@ from enum import Enum
 from typing import Any, Awaitable, Callable, Optional
 
 import httpx
+from loguru import logger
 
 from botelier.services.ssrf_safe_transport import SSRFSafeTransport
 
@@ -31,6 +32,7 @@ class NodeType(str, Enum):
     ROUTER = "router"
     CONFIRMATION = "confirmation"
     SET_VARIABLE = "set_variable"
+    SAVE_RECORD = "save_record"
     TRANSFER = "transfer"
     END = "end"
 
@@ -990,6 +992,9 @@ You are executing a structured conversation flow. Follow these guidelines:
             elif node.type == NodeType.SET_VARIABLE:
                 func_schema = self._create_set_variable_function(node)
                 functions.append(func_schema)
+            elif node.type == NodeType.SAVE_RECORD:
+                func_schema = self._create_save_record_function(node)
+                functions.append(func_schema)
             elif node.type == NodeType.TRANSFER:
                 func_schema = self._create_transfer_function(node)
                 functions.append(func_schema)
@@ -1057,6 +1062,9 @@ You are executing a structured conversation flow. Follow these guidelines:
                 functions.append(func_schema)
             elif node.type == NodeType.SET_VARIABLE:
                 func_schema = self._create_set_variable_function(node)
+                functions.append(func_schema)
+            elif node.type == NodeType.SAVE_RECORD:
+                func_schema = self._create_save_record_function(node)
                 functions.append(func_schema)
             elif node.type == NodeType.TRANSFER:
                 func_schema = self._create_transfer_function(node)
@@ -1349,6 +1357,22 @@ You are executing a structured conversation flow. Follow these guidelines:
             },
         }
 
+    def _create_save_record_function(self, node: FlowNode) -> dict:
+        """Create a function schema for a save record node (voice-only)."""
+        save_data = node.data.get("saveRecord", node.data.get("save_record", {}))
+        record_type_name = save_data.get("recordTypeName") or node.data.get("name") or "record"
+        return {
+            "type": "function",
+            "function": {
+                "name": f"save_record_{node.id}",
+                "description": (
+                    f"Save the collected information as a '{record_type_name}' record. "
+                    "Call this once the details for this record have been gathered."
+                ),
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        }
+
     async def handle_function_call(self, function_name: str, arguments: dict) -> dict:
         """Handle a function call from the LLM.
 
@@ -1369,6 +1393,8 @@ You are executing a structured conversation flow. Follow these guidelines:
             return await self._handle_confirmation(function_name, arguments)
         elif function_name.startswith("set_var_"):
             return await self._handle_set_variable(function_name, arguments)
+        elif function_name.startswith("save_record_"):
+            return await self._handle_save_record(function_name, arguments)
         elif function_name.startswith("transfer_"):
             return await self._handle_transfer(function_name, arguments)
         elif function_name.startswith("end_call_"):
@@ -2312,6 +2338,163 @@ You are executing a structured conversation flow. Follow these guidelines:
             "set_variable": {var_key: final_value},
             "current_node_id": next_node_id,
         }
+
+    async def _handle_save_record(self, function_name: str, arguments: dict) -> dict:
+        """Handle a SAVE_RECORD flow node (voice-only).
+
+        Persists the collected flow variables as a structured Record for the
+        node's configured RecordType. The RecordType MUST belong to the same
+        account as the executor (validated here as well as at flow-save time).
+
+        Failures are logged and swallowed: a persistence problem must never
+        derail a live call, so we always advance to the next node.
+        """
+        node_id = function_name.replace("save_record_", "")
+        node = None
+        for n in self.flow_config.nodes:
+            if n.id == node_id:
+                node = n
+                break
+
+        # Always compute the next node up front so a failure still advances.
+        next_node = self.state.get_next_node(node_id) if node else None
+        next_node_id = next_node.id if next_node else node_id
+        if next_node:
+            self.state.advance_to(next_node.id)
+
+        def _result(saved: bool, message: str) -> dict:
+            return {
+                "success": True,
+                "message": message,
+                "action": None,
+                "record_saved": saved,
+                "current_node_id": next_node_id,
+            }
+
+        if not node:
+            return _result(False, "Save record node not found")
+
+        if not self.account_id:
+            logger.warning("SAVE_RECORD skipped: no account_id on executor")
+            return _result(False, "Record could not be saved")
+
+        save_data = node.data.get("saveRecord", node.data.get("save_record", {}))
+        record_type_id = save_data.get("recordTypeId", save_data.get("record_type_id"))
+        if not record_type_id:
+            logger.warning(f"SAVE_RECORD node {node_id} has no recordTypeId configured")
+            return _result(False, "Record type not configured")
+
+        # Use a dedicated short-lived session so the record write is fully
+        # decoupled from any business/observability writes: on a live voice call
+        # the executor has no shared session at all, and even when one exists we
+        # must never commit/rollback unrelated pending work on it.
+        from botelier.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            import uuid as _uuid
+
+            from botelier.models.call_log import CallLog
+            from botelier.models.record import CaptureMethod, Record, SourceChannel
+            from botelier.models.record_type import RecordType
+
+            try:
+                account_uuid = _uuid.UUID(str(self.account_id))
+                record_type_uuid = _uuid.UUID(str(record_type_id))
+            except (ValueError, TypeError):
+                logger.warning(f"SAVE_RECORD node {node_id}: invalid account/record_type id")
+                return _result(False, "Record could not be saved")
+
+            # Tenant isolation: the record type must belong to this account.
+            record_type = (
+                db.query(RecordType)
+                .filter(
+                    RecordType.id == record_type_uuid,
+                    RecordType.account_id == account_uuid,
+                )
+                .first()
+            )
+            if record_type is None:
+                logger.warning(
+                    f"SAVE_RECORD node {node_id} references record_type "
+                    f"{record_type_id} not owned by account {self.account_id}"
+                )
+                return _result(False, "Record type not available")
+
+            # Resolve each mapped field as a template against collected slots.
+            mapping = save_data.get("mapping", save_data.get("fieldMapping", {})) or {}
+            valid_keys = {
+                f.get("key") for f in (record_type.fields or []) if isinstance(f, dict)
+            }
+            data: dict[str, Any] = {}
+            for field_key, template in mapping.items():
+                if field_key not in valid_keys:
+                    continue
+                if not isinstance(template, str):
+                    data[field_key] = template
+                    continue
+                resolved = substitute_variables(template, self.state.collected_slots).strip()
+                if resolved:
+                    data[field_key] = resolved
+
+            # Optional static/template status, validated against status_options.
+            status = None
+            status_raw = save_data.get("status")
+            if isinstance(status_raw, str) and status_raw.strip():
+                candidate = substitute_variables(
+                    status_raw, self.state.collected_slots
+                ).strip()
+                allowed = {
+                    o.get("value")
+                    for o in (record_type.status_options or [])
+                    if isinstance(o, dict)
+                }
+                if not allowed or candidate in allowed:
+                    status = candidate or None
+
+            # Link back to the originating call (best-effort).
+            source_call_log_id = None
+            assistant_id = None
+            if self.call_sid:
+                call_log = (
+                    db.query(CallLog)
+                    .filter(CallLog.call_sid == self.call_sid)
+                    .first()
+                )
+                if call_log is not None:
+                    source_call_log_id = call_log.id
+                    assistant_id = call_log.assistant_id
+
+            record = Record(
+                account_id=account_uuid,
+                record_type_id=record_type_uuid,
+                status=status,
+                data=data,
+                source_channel=SourceChannel.VOICE.value,
+                capture_method=CaptureMethod.FLOW_NODE.value,
+                source_call_log_id=source_call_log_id,
+                assistant_id=assistant_id,
+            )
+            record_type_name = record_type.name
+            db.add(record)
+            db.commit()
+            logger.info(
+                f"SAVE_RECORD: saved {record_type_name} record for type "
+                f"{record_type_id} (call_sid={self.call_sid})"
+            )
+            return _result(True, f"Saved {record_type_name} record")
+        except Exception as exc:  # noqa: BLE001 - never break a live call
+            logger.error(f"SAVE_RECORD node {node_id} failed: {exc}", exc_info=True)
+            try:
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            return _result(False, "Record could not be saved")
+        finally:
+            try:
+                db.close()
+            except Exception:  # noqa: BLE001
+                pass
 
     async def _handle_transfer(self, function_name: str, arguments: dict) -> dict:
         """Handle a call transfer request."""

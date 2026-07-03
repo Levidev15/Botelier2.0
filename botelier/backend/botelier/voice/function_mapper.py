@@ -691,6 +691,39 @@ class FunctionMapper:
                                             logger.error(
                                                 f"Failed to start ACW thread after cold transfer: {_acw_e}"
                                             )
+                                        # Twilio also skips /connect-complete for record
+                                        # auto-extraction, so trigger it here too.
+                                        try:
+                                            from ..services.record_extraction_service import (
+                                                has_active_extraction_types as _has_extract,
+                                                run_record_extraction_for_call_in_thread as _run_extract,
+                                            )
+
+                                            _rec_call_log = call_logger.get_call_log(_call_sid_cap)
+                                            if (
+                                                _rec_call_log
+                                                and _rec_call_log.account_id
+                                                and _has_extract(
+                                                    _rec_call_log.account_id,
+                                                    _rec_call_log.assistant_id,
+                                                    db,
+                                                )
+                                            ):
+                                                import threading
+
+                                                _rec_log_id = _rec_call_log.id
+                                                threading.Thread(
+                                                    target=_run_extract,
+                                                    args=(_rec_log_id,),
+                                                    daemon=True,
+                                                ).start()
+                                                logger.info(
+                                                    f"Record extraction thread started for cold transfer call {_call_sid_cap}"
+                                                )
+                                        except Exception as _rec_e:
+                                            logger.error(
+                                                f"Failed to start record extraction thread after cold transfer: {_rec_e}"
+                                            )
                                     else:
                                         call_logger.record_transfer(
                                             call_sid=_call_sid_cap,
@@ -1431,6 +1464,39 @@ class FunctionMapper:
                                         except Exception as _acw_e2:
                                             logger.error(
                                                 f"Failed to start ACW thread after cold flow transfer: {_acw_e2}"
+                                            )
+                                        # Trigger record auto-extraction too — Twilio
+                                        # skips /connect-complete for REST <Refer> updates.
+                                        try:
+                                            from ..services.record_extraction_service import (
+                                                has_active_extraction_types as _has_extract2,
+                                                run_record_extraction_for_call_in_thread as _run_extract2,
+                                            )
+
+                                            _rec_flow_log = _cl.get_call_log(_cap_call_sid)
+                                            if (
+                                                _rec_flow_log
+                                                and _rec_flow_log.account_id
+                                                and _has_extract2(
+                                                    _rec_flow_log.account_id,
+                                                    _rec_flow_log.assistant_id,
+                                                    _db,
+                                                )
+                                            ):
+                                                import threading
+
+                                                _rec_flow_log_id = _rec_flow_log.id
+                                                threading.Thread(
+                                                    target=_run_extract2,
+                                                    args=(_rec_flow_log_id,),
+                                                    daemon=True,
+                                                ).start()
+                                                logger.info(
+                                                    f"Record extraction thread started for cold flow transfer call {_cap_call_sid}"
+                                                )
+                                        except Exception as _rec_e2:
+                                            logger.error(
+                                                f"Failed to start record extraction thread after cold flow transfer: {_rec_e2}"
                                             )
                                 finally:
                                     _db.close()

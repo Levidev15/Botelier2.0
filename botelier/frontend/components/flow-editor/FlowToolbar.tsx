@@ -134,6 +134,15 @@ const nodeTypeConfig: NodeInfo[] = [
     whenToUse: "Use to prepare data for APIs, combine fields, or set default values.",
     example: "Combining first and last name into full_name, or calculating total nights from dates."
   },
+  {
+    type: "save_record",
+    label: "Save Record",
+    icon: <ClipboardList className="h-3 w-3" />,
+    color: "bg-rose-500",
+    description: "Saves a structured record (like a booking or request) to a record type. Voice calls only.",
+    whenToUse: "Use to explicitly capture a record at a specific step, mapping collected variables to the record type's fields.",
+    example: "Saving a Booking record with the guest name, dates, and room type collected earlier in the call."
+  },
   { 
     type: "transfer", 
     label: "Transfer Call", 

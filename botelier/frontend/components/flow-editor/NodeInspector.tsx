@@ -13,6 +13,7 @@ import {
   RouterNodeData,
   ConfirmationNodeData,
   SetVariableNodeData,
+  SaveRecordNodeData,
   TransferNodeData,
   EndNodeData,
   NodeType,
@@ -28,6 +29,7 @@ import ConditionNodePanel from "./inspectors/ConditionNodePanel";
 import RouterNodePanel from "./inspectors/RouterNodePanel";
 import ConfirmationNodePanel from "./inspectors/ConfirmationNodePanel";
 import SetVariableNodePanel from "./inspectors/SetVariableNodePanel";
+import SaveRecordNodePanel from "./inspectors/SaveRecordNodePanel";
 import TransferNodePanel from "./inspectors/TransferNodePanel";
 import EndNodePanel from "./inspectors/EndNodePanel";
 
@@ -80,6 +82,8 @@ export default function NodeInspector({ assistantId, assistantTtsProvider }: Nod
         return <ConfirmationNodePanel data={data as ConfirmationNodeData} nodeId={selectedNode.id} />;
       case "set_variable":
         return <SetVariableNodePanel data={data as SetVariableNodeData} nodeId={selectedNode.id} />;
+      case "save_record":
+        return <SaveRecordNodePanel data={data as SaveRecordNodeData} nodeId={selectedNode.id} />;
       case "transfer":
         return <TransferNodePanel data={data as TransferNodeData} nodeId={selectedNode.id} />;
       case "end":
@@ -99,6 +103,7 @@ export default function NodeInspector({ assistantId, assistantTtsProvider }: Nod
     router: "border-indigo-500",
     confirmation: "border-emerald-500",
     set_variable: "border-teal-500",
+    save_record: "border-rose-500",
     transfer: "border-cyan-500",
     end: "border-red-500",
   };
