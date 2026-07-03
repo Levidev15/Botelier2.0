@@ -569,6 +569,26 @@ WHERE answered_at IS NULL
     # SMS AI configuration on assistants — added after initial table creation.
     # Keys: enabled, llm_model, max_response_length, welcome_message, etc.
     "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS sms_config JSONB DEFAULT '{}'",
+    # ── Structured output records (record_types + records) ──────────────────
+    # Tables are created by Base.metadata.create_all; these statements ensure the
+    # indexes and idempotency constraints exist even on pre-existing deployments
+    # that ran create_all before these models were added.
+    "CREATE UNIQUE INDEX IF NOT EXISTS uq_record_types_account_slug ON record_types(account_id, slug)",
+    "CREATE INDEX IF NOT EXISTS ix_record_types_account_active ON record_types(account_id, is_active)",
+    "CREATE INDEX IF NOT EXISTS ix_records_account_type_created ON records(account_id, record_type_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS ix_records_account_created ON records(account_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS ix_records_source_call_log ON records(source_call_log_id)",
+    "CREATE INDEX IF NOT EXISTS ix_records_source_conversation ON records(source_conversation_id)",
+    # Idempotency backstop for automatic extraction: at most one auto-extracted
+    # record per (record_type, source conversation). Partial so manual and
+    # flow_node records (which may legitimately repeat) are unconstrained. These
+    # are the ON CONFLICT arbiters used by the extraction service.
+    """CREATE UNIQUE INDEX IF NOT EXISTS uq_records_autoextract_call
+       ON records(record_type_id, source_call_log_id)
+       WHERE capture_method = 'auto_extract' AND source_call_log_id IS NOT NULL""",
+    """CREATE UNIQUE INDEX IF NOT EXISTS uq_records_autoextract_conversation
+       ON records(record_type_id, source_conversation_id)
+       WHERE capture_method = 'auto_extract' AND source_conversation_id IS NOT NULL""",
 ]
 
 
@@ -1502,6 +1522,8 @@ def init_db():
         knowledge_entry,  # noqa: F401
         mcp_connection,  # noqa: F401
         phone_number,  # noqa: F401
+        record,  # noqa: F401
+        record_type,  # noqa: F401
         resolution_option,  # noqa: F401
         role,  # noqa: F401
         tool,  # noqa: F401

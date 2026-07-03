@@ -27,6 +27,8 @@ from botelier.models.mcp_connection import (
     MCPTransportType,
 )
 from botelier.models.phone_number import PhoneNumber
+from botelier.models.record import CaptureMethod, Record, SourceChannel
+from botelier.models.record_type import RecordType
 from botelier.models.resolution_option import AssistantResolutionOption
 from botelier.models.role import AccountMembership, Role
 from botelier.models.sms_compliance import (
@@ -74,6 +76,10 @@ __all__ = [
     "LegType",
     "AssistantDisposition",
     "AssistantResolutionOption",
+    "RecordType",
+    "Record",
+    "SourceChannel",
+    "CaptureMethod",
     "MCPConnection",
     "MCPConnectionStatus",
     "MCPAuthType",

@@ -104,6 +104,14 @@ PERMISSIONS = {
         "view": "View the account's current billing rates",
         "manage": "Update per-account billing rates (platform admin only)",
     },
+    "records": {
+        "view": "View structured output records",
+        "create": "Manually create records",
+        "edit": "Edit record data and status",
+        "delete": "Delete records",
+        "export": "Export records to CSV",
+        "manage_types": "Create, edit, and delete record types (table definitions)",
+    },
 }
 
 
@@ -149,6 +157,14 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
             },
             "usage": {"view": True, "export": True},
             "billing_rates": {"view": True, "manage": False},
+            "records": {
+                "view": True,
+                "create": True,
+                "edit": True,
+                "delete": True,
+                "export": True,
+                "manage_types": True,
+            },
         },
     },
     "staff": {
@@ -197,6 +213,14 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
             },
             "usage": {"view": True, "export": True},
             "billing_rates": {"view": False, "manage": False},
+            "records": {
+                "view": True,
+                "create": True,
+                "edit": True,
+                "delete": False,
+                "export": True,
+                "manage_types": False,
+            },
         },
     },
     "viewer": {
@@ -245,6 +269,14 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
             },
             "usage": {"view": True, "export": False},
             "billing_rates": {"view": False, "manage": False},
+            "records": {
+                "view": True,
+                "create": False,
+                "edit": False,
+                "delete": False,
+                "export": True,
+                "manage_types": False,
+            },
         },
     },
 }
