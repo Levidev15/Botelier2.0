@@ -37,17 +37,29 @@ function slugKey(label: string): string {
     .replace(/^_+|_+$/g, "");
 }
 
+// Local editing shapes: `locked` is a transient, per-row flag (never persisted)
+// marking a column/status whose identifier must stay frozen to protect data.
+type EditableField = FieldDef & { locked?: boolean };
+type EditableStatus = StatusOption & { locked?: boolean };
+
 export default function RecordTypeModal({ accountId, recordType, onClose, onSaved }: Props) {
   const { authFetch } = useAuthToken();
   const isEdit = !!recordType;
+  // Column keys / status values auto-derive from their labels. Once a record
+  // type has captured data, freeze the identifiers of already-saved columns and
+  // statuses (via a per-row flag) so renaming a label can't orphan stored
+  // records; brand-new rows (and types with no data yet) keep tracking labels.
+  const lockExistingKeys = (recordType?.record_count ?? 0) > 0;
 
   const [name, setName] = useState(recordType?.name || "");
   const [description, setDescription] = useState(recordType?.description || "");
   const [color, setColor] = useState(recordType?.color || COLORS[0]);
   const [isActive, setIsActive] = useState(recordType?.is_active ?? true);
-  const [fields, setFields] = useState<FieldDef[]>(recordType?.fields || []);
-  const [statusOptions, setStatusOptions] = useState<StatusOption[]>(
-    recordType?.status_options || []
+  const [fields, setFields] = useState<EditableField[]>(
+    (recordType?.fields || []).map((f) => ({ ...f, locked: lockExistingKeys }))
+  );
+  const [statusOptions, setStatusOptions] = useState<EditableStatus[]>(
+    (recordType?.status_options || []).map((s) => ({ ...s, locked: lockExistingKeys }))
   );
   const [autoExtract, setAutoExtract] = useState(recordType?.auto_extract ?? false);
   const [extractionInstructions, setExtractionInstructions] = useState(
@@ -74,9 +86,12 @@ export default function RecordTypeModal({ accountId, recordType, onClose, onSave
   }, [accountId]);
 
   const addField = () =>
-    setFields((prev) => [...prev, { key: "", label: "", type: "text", required: false }]);
+    setFields((prev) => [
+      ...prev,
+      { key: "", label: "", type: "text", required: false, locked: false },
+    ]);
 
-  const updateField = (idx: number, patch: Partial<FieldDef>) =>
+  const updateField = (idx: number, patch: Partial<EditableField>) =>
     setFields((prev) => prev.map((f, i) => (i === idx ? { ...f, ...patch } : f)));
 
   const removeField = (idx: number) =>
@@ -92,9 +107,12 @@ export default function RecordTypeModal({ accountId, recordType, onClose, onSave
     });
 
   const addStatus = () =>
-    setStatusOptions((prev) => [...prev, { value: "", label: "", color: "#6b7280" }]);
+    setStatusOptions((prev) => [
+      ...prev,
+      { value: "", label: "", color: "#6b7280", locked: false },
+    ]);
 
-  const updateStatus = (idx: number, patch: Partial<StatusOption>) =>
+  const updateStatus = (idx: number, patch: Partial<EditableStatus>) =>
     setStatusOptions((prev) => prev.map((s, i) => (i === idx ? { ...s, ...patch } : s)));
 
   const removeStatus = (idx: number) =>
@@ -278,12 +296,13 @@ export default function RecordTypeModal({ accountId, recordType, onClose, onSave
                     </div>
                     <input
                       value={f.label}
-                      onChange={(e) =>
-                        updateField(idx, {
-                          label: e.target.value,
-                          key: f.key || slugKey(e.target.value),
-                        })
-                      }
+                      onChange={(e) => {
+                        const label = e.target.value;
+                        updateField(
+                          idx,
+                          f.locked ? { label } : { label, key: slugKey(label) }
+                        );
+                      }}
                       placeholder="Column label (e.g. Guest name)"
                       className={inputCls}
                     />
@@ -318,7 +337,7 @@ export default function RecordTypeModal({ accountId, recordType, onClose, onSave
                     </label>
                     <span
                       className="text-xs text-gray-600"
-                      title="Internal field name used to store this column's data and to map values during AI extraction. Auto-generated from the label and stays fixed even if you rename the label."
+                      title="Internal field name used to store this column's data and to map values during AI extraction. Auto-generated from the label. Once this record type has captured records, the key locks so renaming a column won't orphan existing data."
                     >
                       key: {f.key || slugKey(f.label)}
                     </span>
@@ -366,12 +385,13 @@ export default function RecordTypeModal({ accountId, recordType, onClose, onSave
                   />
                   <input
                     value={s.label}
-                    onChange={(e) =>
-                      updateStatus(idx, {
-                        label: e.target.value,
-                        value: s.value || slugKey(e.target.value),
-                      })
-                    }
+                    onChange={(e) => {
+                      const label = e.target.value;
+                      updateStatus(
+                        idx,
+                        s.locked ? { label } : { label, value: slugKey(label) }
+                      );
+                    }}
                     placeholder="Status label (e.g. Open)"
                     className={inputCls}
                   />
