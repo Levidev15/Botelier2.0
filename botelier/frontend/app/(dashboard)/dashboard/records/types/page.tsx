@@ -10,6 +10,8 @@ import {
   Sparkles,
   Loader2,
   Settings2,
+  ChevronUp,
+  ChevronDown,
 } from "lucide-react";
 import { notify, confirmAction } from "@/lib/notifications";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
@@ -73,6 +75,31 @@ export default function RecordTypesPage() {
     }
   };
 
+  const handleMove = async (index: number, direction: -1 | 1) => {
+    const target = index + direction;
+    if (target < 0 || target >= recordTypes.length) return;
+    // Optimistically swap, then persist the full order to the backend.
+    const reordered = [...recordTypes];
+    const [moved] = reordered.splice(index, 1);
+    reordered.splice(target, 0, moved);
+    const previous = recordTypes;
+    setRecordTypes(reordered);
+    try {
+      const res = await authFetch(`/api/record-types/reorder?account_id=${accountId}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ordered_ids: reordered.map((t) => t.id) }),
+      });
+      if (!res.ok) {
+        setRecordTypes(previous);
+        notify.error("Failed to reorder record types");
+      }
+    } catch {
+      setRecordTypes(previous);
+      notify.error("Failed to reorder record types");
+    }
+  };
+
   if (!permLoading && !hasAccess) {
     return <AccessDeniedPage message="You don't have permission to view records." />;
   }
@@ -124,7 +151,7 @@ export default function RecordTypesPage() {
           </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
-            {recordTypes.map((rt) => (
+            {recordTypes.map((rt, idx) => (
               <div
                 key={rt.id}
                 className="rounded-xl border border-gray-800 bg-[#0d0d0d] p-5 flex flex-col"
@@ -139,6 +166,22 @@ export default function RecordTypesPage() {
                   </div>
                   {canManageTypes && (
                     <div className="flex items-center gap-1">
+                      <button
+                        onClick={() => handleMove(idx, -1)}
+                        disabled={idx === 0}
+                        className="p-1.5 rounded hover:bg-gray-800 text-gray-400 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+                        title="Move up"
+                      >
+                        <ChevronUp className="h-4 w-4" />
+                      </button>
+                      <button
+                        onClick={() => handleMove(idx, 1)}
+                        disabled={idx === recordTypes.length - 1}
+                        className="p-1.5 rounded hover:bg-gray-800 text-gray-400 hover:text-white disabled:opacity-30 disabled:hover:bg-transparent disabled:cursor-not-allowed"
+                        title="Move down"
+                      >
+                        <ChevronDown className="h-4 w-4" />
+                      </button>
                       <button
                         onClick={() => {
                           setEditing(rt);

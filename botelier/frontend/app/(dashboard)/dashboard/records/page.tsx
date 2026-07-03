@@ -45,6 +45,12 @@ export default function RecordsPage() {
 
   const [statusFilter, setStatusFilter] = useState("");
   const [sourceFilter, setSourceFilter] = useState("");
+  const [assistantFilter, setAssistantFilter] = useState("");
+  const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
+  const [assistants, setAssistants] = useState<{ id: string; name: string }[]>([]);
   const [offset, setOffset] = useState(0);
   const limit = 50;
 
@@ -57,14 +63,23 @@ export default function RecordsPage() {
   );
 
   useEffect(() => {
-    if (!contextLoading && accountId) fetchTypes();
+    if (!contextLoading && accountId) {
+      fetchTypes();
+      fetchAssistants();
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId, contextLoading]);
+
+  // Debounce the free-text search so we don't fire a request per keystroke.
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(search), 300);
+    return () => clearTimeout(t);
+  }, [search]);
 
   useEffect(() => {
     if (accountId && selectedTypeId) fetchRecords();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountId, selectedTypeId, statusFilter, sourceFilter, offset]);
+  }, [accountId, selectedTypeId, statusFilter, sourceFilter, assistantFilter, debouncedSearch, dateFrom, dateTo, offset]);
 
   const fetchTypes = async () => {
     if (!accountId) return;
@@ -82,6 +97,23 @@ export default function RecordsPage() {
     }
   };
 
+  const fetchAssistants = async () => {
+    if (!accountId) return;
+    try {
+      const res = await authFetch(
+        `/api/assistants?account_id=${accountId}&is_active=true`
+      );
+      const data = await res.json();
+      setAssistants(
+        Array.isArray(data?.assistants)
+          ? data.assistants.map((a: any) => ({ id: a.id, name: a.name }))
+          : []
+      );
+    } catch (e) {
+      console.error("Failed to load assistants", e);
+    }
+  };
+
   const fetchRecords = async () => {
     if (!accountId || !selectedTypeId) return;
     try {
@@ -94,6 +126,10 @@ export default function RecordsPage() {
       });
       if (statusFilter) params.set("status", statusFilter);
       if (sourceFilter) params.set("source_channel", sourceFilter);
+      if (assistantFilter) params.set("assistant_id", assistantFilter);
+      if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
+      if (dateFrom) params.set("date_from", new Date(dateFrom).toISOString());
+      if (dateTo) params.set("date_to", new Date(`${dateTo}T23:59:59.999Z`).toISOString());
       const res = await authFetch(`/api/records?${params.toString()}`);
       const data = await res.json();
       setRecords(data.records || []);
@@ -110,6 +146,11 @@ export default function RecordsPage() {
     setOffset(0);
     setStatusFilter("");
     setSourceFilter("");
+    setAssistantFilter("");
+    setSearch("");
+    setDebouncedSearch("");
+    setDateFrom("");
+    setDateTo("");
   };
 
   const handleDelete = async (row: RecordRow) => {
@@ -140,6 +181,10 @@ export default function RecordsPage() {
     });
     if (statusFilter) params.set("status", statusFilter);
     if (sourceFilter) params.set("source_channel", sourceFilter);
+    if (assistantFilter) params.set("assistant_id", assistantFilter);
+    if (debouncedSearch.trim()) params.set("search", debouncedSearch.trim());
+    if (dateFrom) params.set("date_from", new Date(dateFrom).toISOString());
+    if (dateTo) params.set("date_to", new Date(`${dateTo}T23:59:59.999Z`).toISOString());
     // Stream via authFetch to include the bearer token, then trigger a download.
     (async () => {
       try {
@@ -286,6 +331,51 @@ export default function RecordsPage() {
                 <option value="sms">SMS</option>
                 <option value="manual">Manual</option>
               </select>
+              <select
+                value={assistantFilter}
+                onChange={(e) => {
+                  setAssistantFilter(e.target.value);
+                  setOffset(0);
+                }}
+                className="bg-[#111] border border-gray-800 rounded-lg px-3 py-2 text-sm"
+              >
+                <option value="">All assistants</option>
+                {assistants.map((a) => (
+                  <option key={a.id} value={a.id}>
+                    {a.name}
+                  </option>
+                ))}
+              </select>
+              <input
+                type="date"
+                value={dateFrom}
+                onChange={(e) => {
+                  setDateFrom(e.target.value);
+                  setOffset(0);
+                }}
+                title="From date"
+                className="bg-[#111] border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-300"
+              />
+              <input
+                type="date"
+                value={dateTo}
+                onChange={(e) => {
+                  setDateTo(e.target.value);
+                  setOffset(0);
+                }}
+                title="To date"
+                className="bg-[#111] border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-300"
+              />
+              <input
+                type="text"
+                value={search}
+                onChange={(e) => {
+                  setSearch(e.target.value);
+                  setOffset(0);
+                }}
+                placeholder="Search records…"
+                className="bg-[#111] border border-gray-800 rounded-lg px-3 py-2 text-sm min-w-[200px]"
+              />
               <div className="text-sm text-gray-500 ml-auto">{total} records</div>
             </div>
 
@@ -334,6 +424,12 @@ export default function RecordsPage() {
                       records.map((r) => {
                         const sm = sourceMeta(r.source_channel);
                         const st = statusMeta(r.status);
+                        const sourceHref =
+                          r.source_channel === "voice" && r.source_call_log_id
+                            ? `/dashboard/call-logs?call=${r.source_call_log_id}`
+                            : r.source_channel === "sms" && r.source_conversation_id
+                            ? `/dashboard/messages?conversation=${r.source_conversation_id}`
+                            : null;
                         return (
                           <tr
                             key={r.id}
@@ -343,13 +439,24 @@ export default function RecordsPage() {
                               {formatDateTime(r.created_at)}
                             </td>
                             <td className="px-4 py-3 whitespace-nowrap">
-                              <span
-                                className="inline-flex items-center gap-1.5 text-xs text-gray-300"
-                                title={r.capture_method}
-                              >
-                                <SourceIcon channel={r.source_channel} />
-                                {sm.label}
-                              </span>
+                              {sourceHref ? (
+                                <Link
+                                  href={sourceHref}
+                                  className="inline-flex items-center gap-1.5 text-xs text-indigo-400 hover:text-indigo-300 hover:underline"
+                                  title={`View ${sm.label} source`}
+                                >
+                                  <SourceIcon channel={r.source_channel} />
+                                  {sm.label}
+                                </Link>
+                              ) : (
+                                <span
+                                  className="inline-flex items-center gap-1.5 text-xs text-gray-300"
+                                  title={r.capture_method}
+                                >
+                                  <SourceIcon channel={r.source_channel} />
+                                  {sm.label}
+                                </span>
+                              )}
                             </td>
                             {(selectedType?.status_options?.length ?? 0) > 0 && (
                               <td className="px-4 py-3 whitespace-nowrap">

@@ -65,6 +65,10 @@ class RecordTypeCreate(BaseModel):
     display_order: Optional[int] = None
 
 
+class ReorderRequest(BaseModel):
+    ordered_ids: List[UUID]
+
+
 class RecordTypeUpdate(BaseModel):
     name: Optional[str] = None
     slug: Optional[str] = None
@@ -185,6 +189,48 @@ async def create_record_type(
 
     logger.info(f"Created record type '{record_type.name}' for account {account_id}")
     return record_type.to_dict()
+
+
+@router.post("/reorder")
+async def reorder_record_types(
+    data: ReorderRequest,
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Persist a new display order for the account's record types.
+
+    Accepts the full ordered list of record-type ids and stamps
+    ``display_order`` = position. Ids not owned by the account are ignored
+    (tenant isolation), and any account types missing from the payload keep a
+    stable order after the supplied ones.
+    """
+    check_account_permission(user, str(account_id), "records.manage_types", db)
+
+    types = db.query(RecordType).filter(RecordType.account_id == account_id).all()
+    by_id: Dict[UUID, RecordType] = {rt.id: rt for rt in types}
+
+    order = 0
+    seen: set = set()
+    for rid in data.ordered_ids:
+        rt = by_id.get(rid)
+        if rt is None:
+            continue  # not owned by this account — skip silently
+        rt.display_order = order
+        seen.add(rid)
+        order += 1
+
+    # Any account types not included in the payload keep a deterministic order
+    # after the explicitly ordered ones (sorted by their previous order/name).
+    remaining = [rt for rt in types if rt.id not in seen]
+    remaining.sort(key=lambda r: (r.display_order or 0, r.name or ""))
+    for rt in remaining:
+        rt.display_order = order
+        order += 1
+
+    db.commit()
+    logger.info(f"Reordered {order} record types for account {account_id}")
+    return {"success": True}
 
 
 @router.get("/{record_type_id}")

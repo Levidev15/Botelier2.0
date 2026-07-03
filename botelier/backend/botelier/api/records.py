@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
+from sqlalchemy import String, cast, or_
 from sqlalchemy.orm import Session
 
 from ..auth.middleware import check_account_permission, get_current_user
@@ -36,31 +37,32 @@ class RecordUpdate(BaseModel):
     status: Optional[str] = None
 
 
-@router.get("")
-async def list_records(
-    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
-    record_type_id: Optional[UUID] = Query(None),
-    status_filter: Optional[str] = Query(None, alias="status"),
-    source_channel: Optional[str] = Query(None),
-    source_call_log_id: Optional[UUID] = Query(None),
-    source_conversation_id: Optional[UUID] = Query(None),
-    date_from: Optional[datetime] = Query(None),
-    date_to: Optional[datetime] = Query(None),
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0),
-    db: Session = Depends(get_db),
-    user: User = Depends(get_current_user),
+def _apply_record_filters(
+    query,
+    *,
+    record_type_id: Optional[UUID] = None,
+    status_filter: Optional[str] = None,
+    source_channel: Optional[str] = None,
+    assistant_id: Optional[UUID] = None,
+    source_call_log_id: Optional[UUID] = None,
+    source_conversation_id: Optional[UUID] = None,
+    date_from: Optional[datetime] = None,
+    date_to: Optional[datetime] = None,
+    search: Optional[str] = None,
 ):
-    """List records for an account with optional filters (paginated)."""
-    check_account_permission(user, str(account_id), "records.view", db)
+    """Apply the shared record list/export filters to a ``Record`` query.
 
-    query = db.query(Record).filter(Record.account_id == account_id)
+    Every filter is ANDed with the caller's mandatory ``account_id`` predicate,
+    so none of these can widen the result set beyond the tenant.
+    """
     if record_type_id:
         query = query.filter(Record.record_type_id == record_type_id)
     if status_filter:
         query = query.filter(Record.status == status_filter)
     if source_channel:
         query = query.filter(Record.source_channel == source_channel)
+    if assistant_id:
+        query = query.filter(Record.assistant_id == assistant_id)
     if source_call_log_id:
         query = query.filter(Record.source_call_log_id == source_call_log_id)
     if source_conversation_id:
@@ -69,6 +71,49 @@ async def list_records(
         query = query.filter(Record.created_at >= date_from.replace(tzinfo=None))
     if date_to:
         query = query.filter(Record.created_at <= date_to.replace(tzinfo=None))
+    if search and search.strip():
+        term = f"%{search.strip()}%"
+        query = query.filter(
+            or_(
+                cast(Record.data, String).ilike(term),
+                Record.status.ilike(term),
+            )
+        )
+    return query
+
+
+@router.get("")
+async def list_records(
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
+    record_type_id: Optional[UUID] = Query(None),
+    status_filter: Optional[str] = Query(None, alias="status"),
+    source_channel: Optional[str] = Query(None),
+    assistant_id: Optional[UUID] = Query(None),
+    source_call_log_id: Optional[UUID] = Query(None),
+    source_conversation_id: Optional[UUID] = Query(None),
+    date_from: Optional[datetime] = Query(None),
+    date_to: Optional[datetime] = Query(None),
+    search: Optional[str] = Query(None),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """List records for an account with optional filters (paginated)."""
+    check_account_permission(user, str(account_id), "records.view", db)
+
+    query = _apply_record_filters(
+        db.query(Record).filter(Record.account_id == account_id),
+        record_type_id=record_type_id,
+        status_filter=status_filter,
+        source_channel=source_channel,
+        assistant_id=assistant_id,
+        source_call_log_id=source_call_log_id,
+        source_conversation_id=source_conversation_id,
+        date_from=date_from,
+        date_to=date_to,
+        search=search,
+    )
 
     total = query.count()
     rows = (
@@ -91,15 +136,18 @@ async def export_records(
     ),
     status_filter: Optional[str] = Query(None, alias="status"),
     source_channel: Optional[str] = Query(None),
+    assistant_id: Optional[UUID] = Query(None),
     date_from: Optional[datetime] = Query(None),
     date_to: Optional[datetime] = Query(None),
+    search: Optional[str] = Query(None),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
     """Export records to CSV.
 
     When ``record_type_id`` is provided, one column is emitted per field of that
-    record type. Otherwise a generic ``Data (JSON)`` column is used.
+    record type. Otherwise a generic ``Data (JSON)`` column is used. The filter
+    set mirrors :func:`list_records` so the export matches the on-screen view.
     """
     check_account_permission(user, str(account_id), "records.export", db)
 
@@ -113,17 +161,16 @@ async def export_records(
         if not record_type:
             raise HTTPException(status_code=404, detail="Record type not found")
 
-    query = db.query(Record).filter(Record.account_id == account_id)
-    if record_type_id:
-        query = query.filter(Record.record_type_id == record_type_id)
-    if status_filter:
-        query = query.filter(Record.status == status_filter)
-    if source_channel:
-        query = query.filter(Record.source_channel == source_channel)
-    if date_from:
-        query = query.filter(Record.created_at >= date_from.replace(tzinfo=None))
-    if date_to:
-        query = query.filter(Record.created_at <= date_to.replace(tzinfo=None))
+    query = _apply_record_filters(
+        db.query(Record).filter(Record.account_id == account_id),
+        record_type_id=record_type_id,
+        status_filter=status_filter,
+        source_channel=source_channel,
+        assistant_id=assistant_id,
+        date_from=date_from,
+        date_to=date_to,
+        search=search,
+    )
 
     rows = query.order_by(Record.created_at.desc()).all()
 

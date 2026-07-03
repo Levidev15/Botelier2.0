@@ -72,6 +72,30 @@ export default function CallLogsPage() {
     if (s || a || df || dt || ht || did || ar || acw || qmin || qmax || hr !== null || bk) setShowFilters(true);
   }, []);
 
+  // Deep link from a captured record's source: /dashboard/call-logs?call=<id>
+  // fetches that single call and opens its transcript once the account context
+  // is available.
+  useEffect(() => {
+    if (!accountId || typeof window === "undefined") return;
+    const callId = new URLSearchParams(window.location.search).get("call");
+    if (!callId) return;
+    (async () => {
+      try {
+        const res = await authFetch(`/api/call-logs/${callId}?account_id=${accountId}`);
+        if (res.ok) {
+          const fullLog = await res.json();
+          setSelectedLog(fullLog);
+          setShowTranscript(true);
+        } else {
+          notify.error("Call not found");
+        }
+      } catch {
+        notify.error("Failed to load call");
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId]);
+
   const [timezone, setTimezone] = useState<string>("UTC");
   useEffect(() => { setTimezone(loadTimezone()); }, []);
   const [showFilters, setShowFilters] = useState(false);

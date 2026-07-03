@@ -1,14 +1,32 @@
 "use client";
 
+import { useEffect, useRef } from "react";
 import { useSMSData } from "./hooks/useSMSData";
 import { ConversationList } from "./components/ConversationList";
 import { MessageThread } from "./components/MessageThread";
 import { SMSSettingsPanel } from "./components/SMSSettingsPanel";
 import { usePagePermission, AccessDeniedPage } from "@/components/ui/PermissionGate";
+import { useAccountContext } from "@/lib/auth/useAccountContext";
 
 export default function MessagesPage() {
   const { hasAccess, loading: permLoading } = usePagePermission("messages", "view");
+  const { accountId } = useAccountContext();
   const data = useSMSData();
+
+  // Deep link from a captured record's source: /dashboard/messages?conversation=<id>
+  // opens that conversation once. fetchConversation no-ops until the account
+  // context resolves, so we must not consume the one-shot guard until accountId
+  // is truthy — otherwise the guard burns on the initial no-op call and the
+  // conversation never opens.
+  const deepLinkedRef = useRef(false);
+  const { fetchConversation } = data;
+  useEffect(() => {
+    if (!accountId || deepLinkedRef.current || typeof window === "undefined") return;
+    const convId = new URLSearchParams(window.location.search).get("conversation");
+    if (!convId) return;
+    deepLinkedRef.current = true;
+    fetchConversation(convId);
+  }, [accountId, fetchConversation]);
 
   if (permLoading) return null;
   if (!hasAccess) return <AccessDeniedPage />;

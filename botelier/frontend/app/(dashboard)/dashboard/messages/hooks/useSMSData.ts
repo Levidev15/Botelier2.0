@@ -291,6 +291,10 @@ export function useSMSData() {
     try {
       setLoadingConv(true);
       const res = await authFetch(`/api/sms/conversations/${id}?account_id=${accountId}`);
+      if (!res.ok) {
+        notify.error("Conversation not found");
+        return;
+      }
       const data = await res.json();
       setSelectedConv(data);
       setTimeout(() => messagesEndRef.current?.scrollIntoView({ behavior: "smooth" }), 100);
