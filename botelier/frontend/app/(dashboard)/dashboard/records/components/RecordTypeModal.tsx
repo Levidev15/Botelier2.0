@@ -188,7 +188,7 @@ export default function RecordTypeModal({ accountId, recordType, onClose, onSave
   };
 
   const inputCls =
-    "w-full bg-[#111] border border-gray-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500";
+    "w-full bg-[#111111] border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500";
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4">
@@ -290,7 +290,7 @@ export default function RecordTypeModal({ accountId, recordType, onClose, onSave
                     <select
                       value={f.type}
                       onChange={(e) => updateField(idx, { type: e.target.value as FieldType })}
-                      className="bg-[#111] border border-gray-800 rounded-lg px-2 py-2 text-sm"
+                      className="bg-[#111111] border border-gray-800 rounded-lg px-2 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
                     >
                       {FIELD_TYPES.map((t) => (
                         <option key={t.value} value={t.value}>
@@ -316,7 +316,12 @@ export default function RecordTypeModal({ accountId, recordType, onClose, onSave
                       />
                       Required
                     </label>
-                    <span className="text-xs text-gray-600">key: {f.key || slugKey(f.label)}</span>
+                    <span
+                      className="text-xs text-gray-600"
+                      title="Internal field name used to store this column's data and to map values during AI extraction. Auto-generated from the label and stays fixed even if you rename the label."
+                    >
+                      key: {f.key || slugKey(f.label)}
+                    </span>
                   </div>
                   {f.type === "select" && (
                     <div className="pl-8">

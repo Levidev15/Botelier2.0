@@ -102,7 +102,7 @@ export default function RecordFormModal({
               <select
                 value={statusValue}
                 onChange={(e) => setStatusValue(e.target.value)}
-                className="w-full bg-[#111] border border-gray-800 rounded-lg px-3 py-2 text-sm"
+                className="w-full bg-[#111111] border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
               >
                 <option value="">—</option>
                 {recordType.status_options.map((s) => (
@@ -158,7 +158,7 @@ function FieldInput({
     </label>
   );
   const cls =
-    "w-full bg-[#111] border border-gray-800 rounded-lg px-3 py-2 text-sm focus:outline-none focus:border-indigo-500";
+    "w-full bg-[#111111] border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 focus:outline-none focus:border-indigo-500";
 
   if (field.type === "boolean") {
     return (

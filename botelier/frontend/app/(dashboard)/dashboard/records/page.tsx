@@ -308,7 +308,7 @@ export default function RecordsPage() {
                     setStatusFilter(e.target.value);
                     setOffset(0);
                   }}
-                  className="bg-[#111] border border-gray-800 rounded-lg px-3 py-2 text-sm"
+                  className="bg-[#111111] border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
                 >
                   <option value="">All statuses</option>
                   {selectedType!.status_options.map((s) => (
@@ -324,7 +324,7 @@ export default function RecordsPage() {
                   setSourceFilter(e.target.value);
                   setOffset(0);
                 }}
-                className="bg-[#111] border border-gray-800 rounded-lg px-3 py-2 text-sm"
+                className="bg-[#111111] border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
               >
                 <option value="">All sources</option>
                 <option value="voice">Voice</option>
@@ -337,7 +337,7 @@ export default function RecordsPage() {
                   setAssistantFilter(e.target.value);
                   setOffset(0);
                 }}
-                className="bg-[#111] border border-gray-800 rounded-lg px-3 py-2 text-sm"
+                className="bg-[#111111] border border-gray-800 rounded-lg px-3 py-2 text-sm text-white focus:outline-none focus:border-indigo-500"
               >
                 <option value="">All assistants</option>
                 {assistants.map((a) => (
@@ -354,7 +354,7 @@ export default function RecordsPage() {
                   setOffset(0);
                 }}
                 title="From date"
-                className="bg-[#111] border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-300"
+                className="bg-[#111111] border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-300"
               />
               <input
                 type="date"
@@ -364,7 +364,7 @@ export default function RecordsPage() {
                   setOffset(0);
                 }}
                 title="To date"
-                className="bg-[#111] border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-300"
+                className="bg-[#111111] border border-gray-800 rounded-lg px-3 py-2 text-sm text-gray-300"
               />
               <input
                 type="text"
@@ -374,7 +374,7 @@ export default function RecordsPage() {
                   setOffset(0);
                 }}
                 placeholder="Search records…"
-                className="bg-[#111] border border-gray-800 rounded-lg px-3 py-2 text-sm min-w-[200px]"
+                className="bg-[#111111] border border-gray-800 rounded-lg px-3 py-2 text-sm text-white placeholder-gray-500 min-w-[200px] focus:outline-none focus:border-indigo-500"
               />
               <div className="text-sm text-gray-500 ml-auto">{total} records</div>
             </div>
@@ -383,7 +383,7 @@ export default function RecordsPage() {
             <div className="border border-gray-800 rounded-xl overflow-hidden">
               <div className="overflow-x-auto">
                 <table className="w-full text-sm">
-                  <thead className="bg-[#111] text-gray-400">
+                  <thead className="bg-[#111111] text-gray-400">
                     <tr>
                       <th className="text-left font-medium px-4 py-3 whitespace-nowrap">Captured</th>
                       <th className="text-left font-medium px-4 py-3 whitespace-nowrap">Source</th>
