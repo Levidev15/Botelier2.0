@@ -20,6 +20,7 @@ interface EndpointVariable {
 interface APIAccountIntegration {
   id: string;
   integration_type_id: string;
+  connection_name?: string | null;
   integration_type: {
     id: string;
     name: string;
@@ -453,13 +454,30 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
               disabled={loadingIntegrations}
             >
               <option value="">
-                {loadingIntegrations ? "Loading..." : integrations.length === 0 ? "No integrations connected" : "Select integration..."}
+                {loadingIntegrations ? "Loading..." : integrations.length === 0 ? "No integrations connected" : "Select connection..."}
               </option>
-              {integrations.map((integration) => (
-                <option key={integration.id} value={integration.id}>
-                  {integration.integration_type.name}
-                </option>
-              ))}
+              {Object.entries(
+                integrations.reduce((acc, i) => {
+                  const key = i.integration_type.name;
+                  if (!acc[key]) acc[key] = [];
+                  acc[key].push(i);
+                  return acc;
+                }, {} as Record<string, APIAccountIntegration[]>)
+              ).map(([typeName, conns]) =>
+                conns.length === 1 && !conns[0].connection_name ? (
+                  <option key={conns[0].id} value={conns[0].id}>
+                    {typeName}
+                  </option>
+                ) : (
+                  <optgroup key={typeName} label={typeName}>
+                    {conns.map((integration) => (
+                      <option key={integration.id} value={integration.id}>
+                        {integration.connection_name || typeName}
+                      </option>
+                    ))}
+                  </optgroup>
+                )
+              )}
             </select>
             {integrations.length === 0 && !loadingIntegrations && (
               <p className="text-xs text-gray-500 mt-1">
