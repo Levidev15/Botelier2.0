@@ -19,15 +19,21 @@ from sqlalchemy.orm import Session
 from ..auth.middleware import check_account_permission, get_current_user
 from ..database import get_db
 from ..flow_executor import FlowExecutor, NodeType, parse_flow_config
+from ..models.assistant import Assistant
 from ..models.tool import Tool
 from ..models.user import User
 from ..services.ssrf_safe_transport import _BLOCKED_LITERAL_HOSTS, SSRFSafeTransport
 
 router = APIRouter(prefix="/api/simulate", tags=["Simulation"])
 
-# the newest OpenAI model is "gpt-5" which was released August 7, 2025.
-# do not change this unless explicitly requested by the user
-OPENAI_MODEL = "gpt-4o-mini"
+# Simulator↔live parity: the preview must run the SAME LLM the assistant is
+# configured with, so what a user tests in the simulator matches what callers
+# get on a live call. The resolved assistant's `llm_model` is used per session
+# (see SimulationState.model). This default applies only when no backing
+# assistant can be resolved, and it mirrors the new-assistant default so even
+# the fallback matches live. Do not hardcode a stronger model here — a preview
+# on a better model than production would hide real production behavior.
+DEFAULT_SIM_MODEL = "gpt-4o-mini"
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
@@ -48,11 +54,22 @@ class SimulationState:
         executor: FlowExecutor,
         tool_name: str = "",
         account_id: Optional[str] = None,
+        kb_prompt_block: str = "",
+        escalation_target: Optional[str] = None,
+        model: str = DEFAULT_SIM_MODEL,
     ):
         self.tool_id = tool_id
         self.tool_name = tool_name
         self.account_id = account_id
         self.executor = executor
+        # LLM model for this session — mirrors the backing assistant's llm_model
+        # so the simulator runs the exact model a live call would use.
+        self.model = model or DEFAULT_SIM_MODEL
+        # Assistant-level knowledge base block + escalation number, resolved once
+        # at session start so the simulator mirrors live: it can answer mid-flow
+        # questions from the KB and offer "talk to a human".
+        self.kb_prompt_block = kb_prompt_block or ""
+        self.escalation_target = escalation_target
         self.messages: list[dict] = []
         self.llm_messages: list[dict] = []
         self.is_ended = False
@@ -60,7 +77,7 @@ class SimulationState:
 
     def _init_llm_context(self):
         """Initialize LLM conversation context with system prompt."""
-        system_prompt = self.executor.get_system_prompt()
+        system_prompt = self.executor.get_system_prompt() + self.kb_prompt_block
         initial_messages = self.executor.get_initial_messages()
         combined_greeting = " ".join(initial_messages)
 
@@ -89,6 +106,10 @@ class SimulationState:
 
 class StartSimulationRequest(BaseModel):
     tool_id: str
+    # Optional: the assistant whose knowledge base + escalation number back this
+    # flow. When omitted, the simulator falls back to an assistant sharing the
+    # tool's tool_set so KB parity still works without a frontend change.
+    assistant_id: Optional[str] = None
 
 
 class StartSimulationResponse(BaseModel):
@@ -136,6 +157,69 @@ class TestAPIResponse(BaseModel):
     error: Optional[str] = None
 
 
+def _build_kb_prompt_block(knowledge_base_id: Optional[Any]) -> str:
+    """Load the assistant's knowledge base and format the exact block that live
+    calls inject (see call_handler `_create_agent_config`), so the simulator can
+    answer mid-flow questions from the KB just like production.
+
+    Returns "" when there is no KB or it fails to load — the simulator then
+    behaves as a flow-only preview, never a hard error.
+    """
+    if not knowledge_base_id:
+        return ""
+    try:
+        from ..voice.knowledge_handler import load_knowledge_for_prompt
+
+        kb_content = load_knowledge_for_prompt(str(knowledge_base_id))
+    except Exception as e:
+        logger.error(f"Simulator failed to load KB {knowledge_base_id}: {e}")
+        return ""
+    if not kb_content:
+        return ""
+    return f"""
+
+## KNOWLEDGE BASE
+You have access to the following Q&A knowledge base. Use this information to answer customer questions directly and confidently. Do NOT transfer the call or say you don't have information if the answer is in this knowledge base.
+
+{kb_content}"""
+
+
+def _resolve_flow_assistant(
+    db: Session, tool: Tool, assistant_id: Optional[str], user: User
+) -> Optional[Assistant]:
+    """Resolve the assistant whose config (KB + escalation number) should back
+    this flow simulation.
+
+    An explicit ``assistant_id`` wins — it is permission-checked and bound to the
+    tool's account to prevent cross-tenant KB/escalation injection. Otherwise we
+    fall back to the most recent assistant sharing the tool's ``tool_set`` so KB
+    parity works even without a frontend change. Returns ``None`` when nothing
+    can be resolved.
+    """
+    if assistant_id:
+        assistant = db.query(Assistant).filter(Assistant.id == assistant_id).first()
+        if not assistant:
+            raise HTTPException(status_code=404, detail="Assistant not found")
+        if tool.account_id and str(assistant.account_id) != str(tool.account_id):
+            raise HTTPException(
+                status_code=403, detail="Assistant does not belong to this account"
+            )
+        check_account_permission(user, str(assistant.account_id), "assistants.view", db)
+        return assistant
+
+    if tool.tool_set_id and tool.account_id:
+        return (
+            db.query(Assistant)
+            .filter(
+                Assistant.tool_set_id == tool.tool_set_id,
+                Assistant.account_id == tool.account_id,
+            )
+            .order_by(Assistant.created_at.desc())
+            .first()
+        )
+    return None
+
+
 @router.post("/start", response_model=StartSimulationResponse)
 async def start_simulation(
     request: StartSimulationRequest,
@@ -162,6 +246,20 @@ async def start_simulation(
     if not flow_config_dict.get("nodes"):
         raise HTTPException(status_code=400, detail="Flow has no configured nodes")
 
+    # Resolve the backing assistant so the simulator mirrors live behavior:
+    # inject the same knowledge base block and expose the same "talk to a human"
+    # escalation. Explicit assistant_id wins; otherwise fall back to an assistant
+    # sharing the tool's tool_set.
+    assistant = _resolve_flow_assistant(db, tool, request.assistant_id, user)
+    kb_prompt_block = _build_kb_prompt_block(
+        assistant.knowledge_base_id if assistant else None
+    )
+    escalation_target = None
+    sim_model = DEFAULT_SIM_MODEL
+    if assistant:
+        escalation_target = (assistant.call_settings or {}).get("escalation_number") or None
+        sim_model = assistant.llm_model or DEFAULT_SIM_MODEL
+
     try:
         flow_config = parse_flow_config(flow_config_dict)
         executor = FlowExecutor(
@@ -169,6 +267,7 @@ async def start_simulation(
             db_session=db,
             account_id=str(tool.account_id) if tool.account_id else None,
             flow_tool_id=str(tool.id),
+            escalation_target=escalation_target,
         )
     except Exception as e:
         logger.error(f"Failed to parse flow config: {e}")
@@ -180,6 +279,9 @@ async def start_simulation(
         executor=executor,
         tool_name=tool.name,
         account_id=str(tool.account_id) if tool.account_id else None,
+        kb_prompt_block=kb_prompt_block,
+        escalation_target=escalation_target,
+        model=sim_model,
     )
 
     initial_messages = executor.get_initial_messages()
@@ -310,7 +412,7 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
 
     state.add_llm_message("user", user_message)
 
-    updated_system_prompt = state.executor.get_system_prompt()
+    updated_system_prompt = state.executor.get_system_prompt() + state.kb_prompt_block
     if state.llm_messages and state.llm_messages[0]["role"] == "system":
         state.llm_messages[0]["content"] = updated_system_prompt
 
@@ -334,6 +436,28 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                 {"type": "function", "function": schema.get("function", schema)}
                 for schema in function_schemas
             ]
+            # Mirror the always-on live "request_human" escalation tool so the
+            # simulator can preview a caller asking for a person mid-flow. Handled
+            # with a mocked transfer result below (no real Twilio call).
+            if state.escalation_target:
+                tools.append(
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "request_human",
+                            "description": (
+                                "Connect the caller to a human agent. Call this ONLY "
+                                "when the caller explicitly asks to speak with a person, "
+                                "human, agent, representative, or a live staff member."
+                            ),
+                            "parameters": {
+                                "type": "object",
+                                "properties": {},
+                                "required": [],
+                            },
+                        },
+                    }
+                )
             exposed_names = {
                 t["function"]["name"]
                 for t in tools
@@ -347,33 +471,30 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
             # built tool list — forcing a gated-out/absent name is exactly what
             # triggered the OpenAI 400.
             #
-            # Rules:
-            #   API_REQUEST  → force execute_{node.id}
-            #   COLLECT_SLOT → force collect_{var_key} for the single pending slot
-            #   COLLECT_FORM → require *any* tool call so the LLM must pick one of
-            #                  the exposed collect_* functions (flexible within form)
+            # Only API_REQUEST forces a tool call. We used to also force
+            # collect_{var_key} for COLLECT_SLOT and require *any* call for
+            # COLLECT_FORM, but that prevented the model from answering a
+            # mid-flow question — it was compelled to call the collect function
+            # instead of replying from the knowledge base. Live calls never force
+            # tool_choice, so leaving collect nodes on "auto" here makes the
+            # simulator mirror production: the model can answer a question, then
+            # resume collection on the next turn. API_REQUEST still forces
+            # because "auto" lets the model narrate instead of firing the request
+            # (see memory: simulator-api-node-stall).
             current_node = state.executor.state.get_current_node()
             forced_name = None
             if current_node and current_node.type == NodeType.API_REQUEST:
                 candidate = f"execute_{current_node.id}"
                 if candidate not in all_functions_called:
                     forced_name = candidate
-            elif current_node and current_node.type == NodeType.COLLECT_SLOT:
-                var_key = current_node.data.get("slot", {}).get("variableKey")
-                if var_key and f"collect_{var_key}" not in all_functions_called:
-                    forced_name = f"collect_{var_key}"
 
             if forced_name and forced_name in exposed_names:
                 tool_choice = {"type": "function", "function": {"name": forced_name}}
-            elif tools and current_node and current_node.type == NodeType.COLLECT_FORM:
-                # Multiple collect_* functions are exposed for the form; require
-                # *any* tool call so the LLM cannot return plain text.
-                tool_choice = "required"
             else:
                 tool_choice = "auto" if tools else None
 
             response = openai_client.chat.completions.create(
-                model=OPENAI_MODEL,
+                model=state.model,
                 messages=state.llm_messages,
                 tools=tools if tools else None,
                 tool_choice=tool_choice,
@@ -415,7 +536,22 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                     except json.JSONDecodeError:
                         function_args = {}
 
-                    result = await state.executor.handle_function_call(function_name, function_args)
+                    if function_name == "request_human":
+                        # Escalation is a non-flow tool; mock the transfer so the
+                        # simulator shows the outcome without a real Twilio call.
+                        result = {
+                            "success": True,
+                            "action": "transfer",
+                            "target": state.escalation_target,
+                            "message": (
+                                "[Simulation] Would connect the caller to a human "
+                                f"at {state.escalation_target}."
+                            ),
+                        }
+                    else:
+                        result = await state.executor.handle_function_call(
+                            function_name, function_args
+                        )
 
                     all_functions_called.append(function_name)
                     all_function_results.append(result)

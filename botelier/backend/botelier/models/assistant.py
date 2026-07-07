@@ -59,7 +59,7 @@ class Assistant(Base):
     tts_voice = Column(String(100), nullable=True)
 
     # Behavior
-    system_prompt = Column(Text, nullable=False, default="You are a helpful hotel assistant.")
+    system_prompt = Column(Text, nullable=False, default="You are a helpful assistant.")
     first_message = Column(Text, nullable=True)
     language = Column(String(10), nullable=False, default="en")
 

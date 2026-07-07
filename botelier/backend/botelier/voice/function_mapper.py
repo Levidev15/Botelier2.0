@@ -68,6 +68,7 @@ class FunctionMapper:
         db_session=None,
         account_id: str = None,
         account_name: str = None,
+        escalation_target: str = None,
     ):
         """Initialize function mapper with call context and Twilio credentials.
 
@@ -91,6 +92,10 @@ class FunctionMapper:
         self.db_session = db_session
         self.account_id = account_id
         self.account_name = account_name or ""
+        # Assistant-level "talk to a human" number. Powers both the always-on
+        # request_human tool and the maxRetries escalation fallback inside
+        # FlowExecutor. None → escalation disabled (fail closed).
+        self.escalation_target = escalation_target
 
         # Store flow executors by tool name for state persistence across turns
         self._flow_executors: Dict[str, FlowExecutor] = {}
@@ -379,6 +384,40 @@ class FunctionMapper:
             return self._map_flow(tool)
         else:
             raise ValueError(f"Unknown tool type: {tool.tool_type}")
+
+    def build_escalation_tool(self) -> Optional[tuple[Dict[str, Any], Callable]]:
+        """Build the always-on ``request_human`` tool from the assistant-level
+        escalation number.
+
+        Returns ``None`` when no escalation number is configured — fail-closed,
+        so the tool is simply never offered and the LLM can never attempt a
+        transfer to a number that does not exist. When configured, it reuses the
+        exact same Twilio transfer machinery as a normal Transfer Call tool by
+        mapping a transient, in-memory transfer ``Tool`` (never persisted).
+        """
+        if not self.escalation_target:
+            return None
+
+        escalation_tool = Tool(
+            name="request_human",
+            tool_type=ToolType.TRANSFER_CALL,
+            description=(
+                "Connect the caller to a human agent. Call this ONLY when the "
+                "caller explicitly asks to speak with a person, human, agent, "
+                "representative, or a live staff member — or clearly no longer "
+                "wants to talk to the automated assistant. Do not call it for "
+                "ordinary questions you can answer yourself."
+            ),
+            config={
+                "phone_number": self.escalation_target,
+                "transfer_mode": "warm",
+                "pre_transfer_message": (
+                    "Sure — let me connect you with someone who can help. "
+                    "One moment please."
+                ),
+            },
+        )
+        return self._map_transfer_call(escalation_tool)
 
     def _map_transfer_call(self, tool: Tool) -> tuple[Dict[str, Any], Callable]:
         """Map transfer call tool to Pipecat function.
@@ -1208,6 +1247,7 @@ class FunctionMapper:
                 account_id=self.account_id,
                 flow_tool_id=str(tool.id),
                 call_sid=self.call_sid,
+                escalation_target=self.escalation_target,
             )
             self._flow_executors[tool_name] = executor
             logger.info(f"Created new FlowExecutor for {tool_name}")
@@ -1230,7 +1270,7 @@ class FunctionMapper:
             "type": "function",
             "function": {
                 "name": f"start_{safe_tool_name}",
-                "description": f"Start the {tool_name} conversation flow when the guest wants to {tool.description or 'complete this task'}",
+                "description": f"Start the {tool_name} conversation flow when the customer wants to {tool.description or 'complete this task'}",
                 "parameters": {"type": "object", "properties": {}, "required": []},
             },
         }

@@ -1482,7 +1482,7 @@ class CallHandler:
 
         status = AgentStatus.ACTIVE if assistant.is_active else AgentStatus.PAUSED
 
-        base_prompt = assistant.system_prompt or "You are a friendly hotel assistant."
+        base_prompt = assistant.system_prompt or "You are a friendly assistant."
 
         kb_content = ""
         if assistant.knowledge_base_id:
@@ -1519,9 +1519,10 @@ class CallHandler:
 - Keep responses concise (under 50 words) since this is a phone call
 - Only transfer to a human if: (1) the caller explicitly requests to speak with someone, OR (2) the question requires information NOT in the knowledge base AND the caller needs urgent assistance
 - For general questions covered by the knowledge base, answer directly without offering to transfer
+- If the caller asks a question in the middle of a task, answer it briefly, then continue where you left off — do not lose your place or restart
 
 ## KNOWLEDGE BASE
-You have access to the following Q&A knowledge base. Use this information to answer guest questions directly and confidently. Do NOT transfer the call or say you don't have information if the answer is in this knowledge base.
+You have access to the following Q&A knowledge base. Use this information to answer customer questions directly and confidently. Do NOT transfer the call or say you don't have information if the answer is in this knowledge base.
 
 {kb_content}"""
             logger.info(
@@ -1655,8 +1656,12 @@ You have access to the following Q&A knowledge base. Use this information to ans
         # in _create_agent_config() for faster response times and prompt caching.
         # The query_hotel_knowledge tool is no longer registered here.
 
-        # Add database tools
-        if tools:
+        # Add database tools (plus the always-on "talk to a human" escalation
+        # tool, which must be available even when the assistant has no other
+        # tools). Opt-in per assistant via call_settings.escalation_number;
+        # fail-closed (not offered) when unset.
+        _escalation_number = (assistant.call_settings or {}).get("escalation_number") or None
+        if tools or _escalation_number:
             # Get or create FunctionMapper for this call session
             # This ensures FlowExecutor state persists across function calls
             if call_sid in self.call_mappers:
@@ -1673,11 +1678,12 @@ You have access to the following Q&A knowledge base. Use this information to ans
                     call_handler=self,
                     account_id=str(assistant.account_id),
                     account_name=account_name,
+                    escalation_target=_escalation_number,
                 )
                 self.call_mappers[call_sid] = mapper
                 logger.info(f"Created FunctionMapper for call {call_sid}")
 
-            for tool in tools:
+            for tool in (tools or []):
                 try:
                     # Check if this is a FLOW type tool - requires special handling
                     if tool.tool_type.value == "FLOW":
@@ -1722,6 +1728,24 @@ You have access to the following Q&A knowledge base. Use this information to ans
                         logger.info(f"✅ Built function schema for tool: {tool.name}")
                 except Exception as e:
                     logger.error(f"Failed to build schema for tool {tool.name}: {e}")
+
+            # Always-on "talk to a human" escalation tool. Registered as a
+            # non-flow tool so it stays available even during flow execution;
+            # returns None (and is skipped) when no escalation number is set.
+            escalation_mapping = mapper.build_escalation_tool()
+            if escalation_mapping:
+                esc_schema_dict, esc_handler = escalation_mapping
+                mapper.register_non_flow_tool_schema(esc_schema_dict)
+                function_schemas.append(
+                    FunctionSchema(
+                        name=esc_schema_dict["name"],
+                        description=esc_schema_dict["description"],
+                        properties=esc_schema_dict.get("parameters", {}).get("properties", {}),
+                        required=esc_schema_dict.get("parameters", {}).get("required", []),
+                    )
+                )
+                function_handlers[esc_schema_dict["name"]] = esc_handler
+                logger.info("✅ Registered always-on request_human escalation tool")
 
         # Note: MCP tools are registered separately after pipeline creation using Pipecat's MCPClient.register_tools()
         logger.info(f"📋 Built {len(function_schemas)} platform function schemas")

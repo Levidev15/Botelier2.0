@@ -240,10 +240,37 @@ class FlowState:
         return None
 
     def advance_to(self, node_id: str) -> None:
-        """Move to a specific node."""
+        """Move to a specific node.
+
+        After moving, immediately resolve any CONDITION node landed on so the
+        flow never *sits* on a decision node: it evaluates the condition against
+        collected variables and follows the matching branch. CONDITION nodes
+        expose no tool, so the tool-call-driven engine would otherwise stall
+        here. Resolution is deterministic and identical in live calls and the
+        simulator.
+        """
         self.current_node_id = node_id
         self.pending_slot = None
         self.retry_count = 0
+        self._resolve_conditions()
+
+    def _resolve_conditions(self) -> None:
+        """Follow CONDITION branches until landing on a non-condition node.
+
+        Deterministic, server-side evaluation (no LLM, no tool). Guards against
+        cycles with a hop cap of the node count.
+        """
+        max_hops = len(self.flow_config.nodes) + 1
+        for _ in range(max_hops):
+            node = self.get_current_node()
+            if not node or node.type != NodeType.CONDITION:
+                return
+            target = _condition_target_id(
+                self.flow_config, node, self.collected_slots
+            )
+            if not target or target == self.current_node_id:
+                return
+            self.current_node_id = target
 
 
 def _format_variable_value(value: Any) -> str:
@@ -273,6 +300,92 @@ def substitute_variables(template: str, variables: dict[str, Any]) -> str:
         return _format_variable_value(value)
 
     return re.sub(r"\{\{(\w+)\}\}", replace_var, template)
+
+
+def _coerce_number(value: Any) -> Optional[float]:
+    """Best-effort numeric coercion for comparison operators."""
+    try:
+        return float(str(value).strip())
+    except (ValueError, TypeError, AttributeError):
+        return None
+
+
+def _evaluate_condition(operator: str, actual: Any, expected: Any) -> bool:
+    """Evaluate a CONDITION node's operator against collected data.
+
+    Deterministic and safe — a fixed whitelist of operators, never ``eval``.
+    Unknown operators evaluate to False (the 'false' branch) so a misconfigured
+    node fails closed rather than branching unpredictably.
+    """
+    op = (operator or "").strip().lower()
+
+    def _is_empty(v: Any) -> bool:
+        return v is None or str(v).strip() == ""
+
+    if op == "is_empty":
+        return _is_empty(actual)
+    if op == "is_not_empty":
+        return not _is_empty(actual)
+
+    if op in ("greater_than", "less_than"):
+        a_num = _coerce_number(actual)
+        e_num = _coerce_number(expected)
+        if a_num is None or e_num is None:
+            a_str = "" if actual is None else str(actual).strip()
+            e_str = "" if expected is None else str(expected).strip()
+            return a_str > e_str if op == "greater_than" else a_str < e_str
+        return a_num > e_num if op == "greater_than" else a_num < e_num
+
+    a_low = ("" if actual is None else str(actual).strip()).lower()
+    e_low = ("" if expected is None else str(expected).strip()).lower()
+    if op == "equals":
+        return a_low == e_low
+    if op == "not_equals":
+        return a_low != e_low
+    if op == "contains":
+        return e_low in a_low
+
+    return False
+
+
+def _condition_target_id(
+    flow_config: "FlowConfig", node: "FlowNode", collected_slots: dict
+) -> Optional[str]:
+    """Resolve which node a CONDITION node branches to.
+
+    Evaluates the condition against ``collected_slots`` and returns the target
+    node id of the matching branch. Branch wiring is resolved via the editor's
+    ``sourceHandle`` ("true"/"false") first, then the config's
+    ``trueTarget``/``falseTarget``, then a single unlabelled edge as a last
+    resort. Returns ``None`` when no branch is wired.
+    """
+    cond = node.data.get("condition", {}) or {}
+    variable = cond.get("variable")
+    operator = cond.get("operator", "equals")
+    expected_raw = cond.get("value", "")
+    expected = (
+        substitute_variables(str(expected_raw), collected_slots)
+        if expected_raw
+        else expected_raw
+    )
+    actual = collected_slots.get(variable) if variable else None
+
+    result = _evaluate_condition(operator, actual, expected)
+    handle = "true" if result else "false"
+
+    for edge in flow_config.edges:
+        if edge.source == node.id and edge.source_handle == handle:
+            return edge.target
+
+    target = cond.get("trueTarget") if result else cond.get("falseTarget")
+    if target:
+        return target
+
+    for edge in flow_config.edges:
+        if edge.source == node.id and not edge.source_handle:
+            return edge.target
+
+    return None
 
 
 def parse_flow_config(config_dict: dict) -> FlowConfig:
@@ -339,6 +452,7 @@ class FlowExecutor:
         account_id: Optional[str] = None,
         flow_tool_id: Optional[str] = None,
         call_sid: Optional[str] = None,
+        escalation_target: Optional[str] = None,
     ):
         self.flow_config = flow_config
         self.state = FlowState(flow_config)
@@ -349,6 +463,10 @@ class FlowExecutor:
         self.account_id = account_id
         self.flow_tool_id = flow_tool_id
         self.call_sid = call_sid
+        # Assistant-level "talk to a human" fallback number. When set, a slot that
+        # exhausts its retries (with no wired fallback branch) escalates here
+        # instead of dead-ending. None → escalation disabled (fail closed).
+        self.escalation_target = escalation_target
 
     def get_variables_in_flow_order(self) -> list[FlowVariable]:
         """Get variables in the order they appear in the flow traversal.
@@ -472,7 +590,7 @@ FLOW-LEVEL INSTRUCTIONS (apply to entire conversation):
             )
         else:
             date_year_rule = (
-                f"6. When a guest provides a date without a year (e.g., \"Dec 12th\"), "
+                f"6. When a customer provides a date without a year (e.g., \"Dec 12th\"), "
                 f"interpret it as the next occurrence after today ({current_date}). Never assume a past year."
             )
 
@@ -485,11 +603,12 @@ You are executing a structured conversation flow. Follow these guidelines:
 2. Use the provided functions to progress through the flow
 3. Follow the CURRENT NODE instructions - they tell you what to say or ask
 4. When instructions say "Say exactly", speak that text verbatim. When they say "Guidance" or "naturally", you may phrase it in your own words while keeping the meaning.
-5. If the guest provides information proactively, acknowledge and record it
+5. If the customer provides information proactively, acknowledge and record it
 {date_year_rule}
 7. For number fields, respect the minimum and maximum limits specified.
 8. IMPORTANT: Never use markdown formatting (no asterisks, bold, bullets, etc). This is a voice conversation - speak naturally without any special formatting.
 9. When a function returns a "speak_exactly" field, speak that text verbatim without paraphrasing.
+10. If the caller asks a question mid-flow, answer it briefly (use the knowledge base if one is available), then continue collecting where you left off. Do not restart the flow or lose your place.
 
 {flow_context}"""
 
@@ -596,7 +715,7 @@ You are executing a structured conversation flow. Follow these guidelines:
             if prompt:
                 resolved = substitute_variables(prompt, self.state.collected_slots)
                 context_lines.append(
-                    f'CURRENT NODE: Ask the guest (you may phrase naturally): "{resolved}"'
+                    f'CURRENT NODE: Ask the customer (you may phrase naturally): "{resolved}"'
                 )
 
         elif current_node.type == NodeType.COLLECT_FORM:
@@ -672,7 +791,7 @@ You are executing a structured conversation flow. Follow these guidelines:
                 f'CURRENT NODE: API Request — call `{fn_name}` to execute "{node_name}".'
             )
             if thinking_message:
-                context_lines.append(f'Say to the guest: "{thinking_message}"')
+                context_lines.append(f'Say to the customer: "{thinking_message}"')
             if response_instructions:
                 context_lines.append(
                     f"After the API responds, follow these instructions: {response_instructions}"
@@ -764,9 +883,9 @@ You are executing a structured conversation flow. Follow these guidelines:
                     if var_key and var_key not in self.state.collected_slots:
                         return (node, var_key)
 
-            for edge in self.flow_config.edges:
-                if edge.source == node_id and edge.target not in visited:
-                    queue.append(edge.target)
+            for target in self._bfs_next_targets(node):
+                if target not in visited:
+                    queue.append(target)
 
         return (None, None)
 
@@ -781,6 +900,30 @@ You are executing a structured conversation flow. Follow these guidelines:
                 if var_key and var_key not in self.state.collected_slots:
                     return True
         return False
+
+    def _bfs_next_targets(self, node: FlowNode) -> list:
+        """Outgoing target ids to follow when walking the flow graph.
+
+        For a CONDITION node whose variable is already known, follow ONLY the
+        branch it currently evaluates to — otherwise a lookahead would wrongly
+        expose action nodes (end_call / transfer / api) on the branch that will
+        never be taken. When the variable is not yet collected the condition
+        stays transparent (all branches) so no reachable path is prematurely
+        gated out.
+        """
+        if node.type == NodeType.CONDITION:
+            cond = node.data.get("condition", {}) or {}
+            variable = cond.get("variable")
+            if variable and variable in self.state.collected_slots:
+                target = _condition_target_id(
+                    self.flow_config, node, self.state.collected_slots
+                )
+                return [target] if target else []
+        return [
+            edge.target
+            for edge in self.flow_config.edges
+            if edge.source == node.id
+        ]
 
     def _get_reachable_action_node_ids(self) -> set:
         """Return ids of action nodes whose functions may be exposed right now.
@@ -836,9 +979,9 @@ You are executing a structured conversation flow. Follow these guidelines:
                 # Do not traverse past an action node (it must fire first).
                 continue
 
-            for edge in self.flow_config.edges:
-                if edge.source == node_id and edge.target not in visited:
-                    queue.append(edge.target)
+            for target in self._bfs_next_targets(node):
+                if target not in visited:
+                    queue.append(target)
 
         return reachable
 
@@ -1101,18 +1244,18 @@ You are executing a structured conversation flow. Follow these guidelines:
                 {
                     "type": "function",
                     "function": {
-                        "name": "confirm_booking",
-                        "description": "Confirm the booking details with the guest after all information is collected. Summarize all collected information in plain text (no markdown or special formatting) and ask the guest to confirm.",
+                        "name": "confirm_details",
+                        "description": "Confirm the collected details with the customer after all information is gathered. Summarize all collected information in plain text (no markdown or special formatting) and ask the customer to confirm.",
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "confirmed": {
                                     "type": "boolean",
-                                    "description": "True if the guest confirms all details are correct. False if they want a change — also populate field_to_change and new_value if the guest specified what to correct in the same message.",
+                                    "description": "True if the customer confirms all details are correct. False if they want a change — also populate field_to_change and new_value if the customer specified what to correct in the same message.",
                                 },
                                 "field_to_change": {
                                     "type": "string",
-                                    "description": "When confirmed is False and the guest specified which field to correct, the variable key of that field (e.g. 'name', 'room_number'). Omit if the guest did not specify.",
+                                    "description": "When confirmed is False and the customer specified which field to correct, the variable key of that field (e.g. 'name', 'room_number'). Omit if the customer did not specify.",
                                 },
                                 "new_value": {
                                     "type": "string",
@@ -1172,18 +1315,18 @@ You are executing a structured conversation flow. Follow these guidelines:
                 {
                     "type": "function",
                     "function": {
-                        "name": "confirm_booking",
-                        "description": "Confirm the booking details with the guest after all information is collected.",
+                        "name": "confirm_details",
+                        "description": "Confirm the collected details with the customer after all information is gathered.",
                         "parameters": {
                             "type": "object",
                             "properties": {
                                 "confirmed": {
                                     "type": "boolean",
-                                    "description": "True if the guest confirms all details are correct. False if they want a change — also populate field_to_change and new_value if the guest specified what to correct in the same message.",
+                                    "description": "True if the customer confirms all details are correct. False if they want a change — also populate field_to_change and new_value if the customer specified what to correct in the same message.",
                                 },
                                 "field_to_change": {
                                     "type": "string",
-                                    "description": "When confirmed is False and the guest specified which field to correct, the variable key of that field (e.g. 'name', 'room_number'). Omit if the guest did not specify.",
+                                    "description": "When confirmed is False and the customer specified which field to correct, the variable key of that field (e.g. 'name', 'room_number'). Omit if the customer did not specify.",
                                 },
                                 "new_value": {
                                     "type": "string",
@@ -1303,7 +1446,7 @@ You are executing a structured conversation flow. Follow these guidelines:
         node_name = node.data.get("name", node.id)
         description = f"Execute the '{node_name}' API call."
         if thinking_message:
-            description += f' While executing, say to the guest: "{thinking_message}".'
+            description += f' While executing, say to the customer: "{thinking_message}".'
         return {
             "type": "function",
             "function": {
@@ -1418,11 +1561,11 @@ You are executing a structured conversation flow. Follow these guidelines:
                     "properties": {
                         "confirmed": {
                             "type": "boolean",
-                            "description": "True if the guest confirms all details are correct. False if they want a change — also populate field_to_change and new_value if the guest specified what to correct in the same message.",
+                            "description": "True if the customer confirms all details are correct. False if they want a change — also populate field_to_change and new_value if the customer specified what to correct in the same message.",
                         },
                         "field_to_change": {
                             "type": "string",
-                            "description": "When confirmed is False and the guest specified which field to correct, the variable key of that field (e.g. 'name', 'room_number'). Omit if the guest did not specify.",
+                            "description": "When confirmed is False and the customer specified which field to correct, the variable key of that field (e.g. 'name', 'room_number'). Omit if the customer did not specify.",
                         },
                         "new_value": {
                             "type": "string",
@@ -1469,7 +1612,7 @@ You are executing a structured conversation flow. Follow these guidelines:
 
         Returns a result dict with:
         - success: bool
-        - message: str (to speak to the guest)
+        - message: str (to speak to the customer)
         - action: Optional action type (transfer, end, etc.)
         """
         if function_name.startswith("collect_"):
@@ -1478,8 +1621,8 @@ You are executing a structured conversation flow. Follow these guidelines:
             return await self._handle_api_request(function_name, arguments)
         elif function_name.startswith("route_"):
             return await self._handle_router(function_name, arguments)
-        elif function_name == "confirm_booking":
-            return await self._handle_confirm_booking(arguments)
+        elif function_name == "confirm_details":
+            return await self._handle_confirm_details(arguments)
         elif function_name.startswith("confirm_"):
             return await self._handle_confirmation(function_name, arguments)
         elif function_name.startswith("set_var_"):
@@ -1556,6 +1699,11 @@ You are executing a structured conversation flow. Follow these guidelines:
                     self.state.advance_to(next_collect_node.id)
 
             if not _is_valid_new_value(value):
+                self.state.retry_count += 1
+                if self.state.retry_count >= self._slot_max_retries(slot_config):
+                    return self._handle_retry_exhaustion(
+                        collecting_node_id, var_key, var_info
+                    )
                 retry_prompt_template = slot_config.get("retryPrompt", "") if slot_config else ""
                 if retry_prompt_template:
                     reprompt = substitute_variables(
@@ -1573,6 +1721,11 @@ You are executing a structured conversation flow. Follow these guidelines:
 
             validation_error = self._validate_slot_value(var_info, slot_config, value)
             if validation_error:
+                self.state.retry_count += 1
+                if self.state.retry_count >= self._slot_max_retries(slot_config):
+                    return self._handle_retry_exhaustion(
+                        collecting_node_id, var_key, var_info
+                    )
                 retry_prompt_template = slot_config.get("retryPrompt", "") if slot_config else ""
                 if retry_prompt_template:
                     retry_prompt = substitute_variables(
@@ -1656,6 +1809,76 @@ You are executing a structured conversation flow. Follow these guidelines:
             "message": f"Missing value for {var_key}",
             "action": None,
             "current_node_id": self.state.current_node_id,
+        }
+
+    @staticmethod
+    def _slot_max_retries(slot_config: Optional[dict]) -> int:
+        """Resolve the retry budget for a slot (editor ``maxRetries``, default 3)."""
+        if slot_config:
+            raw = slot_config.get("maxRetries")
+            if isinstance(raw, int) and raw > 0:
+                return raw
+        return 3
+
+    def _handle_retry_exhaustion(
+        self,
+        collecting_node_id: Optional[str],
+        var_key: str,
+        var_info: Optional[FlowVariable],
+    ) -> dict:
+        """Give up on a slot after ``maxRetries`` failed attempts.
+
+        Exhaustion path, in priority order:
+          1. A ``fallback`` branch wired from the collect node in the editor.
+          2. Escalation to a human (assistant-level target), if configured.
+          3. Graceful end of the flow.
+
+        This runs identically in live calls and the simulator.
+        """
+        var_desc = var_info.description if var_info else var_key
+        node_id = collecting_node_id or self.state.current_node_id
+
+        fallback_target = None
+        if node_id:
+            for edge in self.flow_config.edges:
+                if edge.source == node_id and edge.source_handle == "fallback":
+                    fallback_target = edge.target
+                    break
+
+        if fallback_target:
+            self.state.advance_to(fallback_target)
+            return {
+                "success": False,
+                "action": None,
+                "retry_exhausted": True,
+                "current_node_id": self.state.current_node_id,
+                "message": f"I'm having trouble getting your {var_desc}. Let's move on.",
+            }
+
+        if self.escalation_target:
+            self.state.transfer_requested = True
+            self.state.transfer_target = self.escalation_target
+            return {
+                "success": False,
+                "action": "transfer",
+                "target": self.escalation_target,
+                "transfer_mode": "warm",
+                "retry_exhausted": True,
+                "message": (
+                    f"I'm having trouble getting your {var_desc}. "
+                    "Let me connect you with someone who can help."
+                ),
+            }
+
+        self.state.is_complete = True
+        return {
+            "success": False,
+            "action": "end",
+            "retry_exhausted": True,
+            "message": (
+                f"I'm sorry, I wasn't able to get your {var_desc}. "
+                "Please try again later or reach out to us for help."
+            ),
         }
 
     def _validate_slot_value(
@@ -2171,7 +2394,7 @@ You are executing a structured conversation flow. Follow these guidelines:
         }
 
     async def _handle_confirmation(self, function_name: str, arguments: dict) -> dict:
-        """Handle a confirmation node - guest confirms or requests edit."""
+        """Handle a confirmation node - customer confirms or requests edit."""
         node_id = function_name.replace("confirm_", "")
         node = None
         for n in self.flow_config.nodes:
@@ -2655,8 +2878,8 @@ You are executing a structured conversation flow. Follow these guidelines:
             "current_node_id": node_id,
         }
 
-    async def _handle_confirm_booking(self, arguments: dict) -> dict:
-        """Handle booking confirmation - tries to find a CONFIRMATION node in the flow."""
+    async def _handle_confirm_details(self, arguments: dict) -> dict:
+        """Handle confirmation - tries to find a CONFIRMATION node in the flow."""
         confirmed = arguments.get("confirmed", False)
 
         confirmation_node = None
@@ -2703,7 +2926,7 @@ You are executing a structured conversation flow. Follow these guidelines:
                 result = {
                     "success": True,
                     "action": "confirmed",
-                    "booking_data": self.state.collected_slots.copy(),
+                    "collected_data": self.state.collected_slots.copy(),
                     "current_node_id": next_node_id,
                 }
 
@@ -2783,7 +3006,7 @@ You are executing a structured conversation flow. Follow these guidelines:
                 "success": True,
                 "message": "Great, confirmed.",
                 "action": "confirmed",
-                "booking_data": self.state.collected_slots.copy(),
+                "collected_data": self.state.collected_slots.copy(),
                 "current_node_id": self.state.current_node_id,
             }
         else:

@@ -70,7 +70,7 @@ Botelier is a multi-tenant, multichannel AI platform that provides businesses wi
 ## Product
 
 - **Multichannel AI Agent:** Configurable AI agent handling voice calls and SMS, with web chat on the roadmap.
-- **Visual Flow Editor:** Drag-and-drop interface for creating and managing AI conversation flows with versioning and simulation.
+- **Visual Flow Editor:** Drag-and-drop interface for creating and managing AI conversation flows with versioning and simulation. Supports CONDITION nodes (branch on collected variables), per-collect `maxRetries` with a fallback branch (reprompt → fallback → escalate → graceful end), a global "talk to a human" escalation (`call_settings.escalation_number`), and mid-flow knowledge-base Q&A (answer a question, then resume slot collection). Every editor-exposed node field reaches the LLM via `_get_current_node_context`.
 - **Pluggable AI Providers:** Supports various STT, LLM, and TTS providers.
 - **Twilio Integration:** Manages phone numbers, call handling, sub-account isolation, and call transfers.
 - **Role-Based Access Control (RBAC):** Granular permissions for users and administrators.
@@ -95,6 +95,9 @@ Botelier is a multi-tenant, multichannel AI platform that provides businesses wi
 - **Backend Workflow Reloads:** The `botelier-backend` workflow (uvicorn) does not use `--reload`. Manual restart is required after code changes, as reloads would terminate long-lived WebSockets for voice calls.
 - **`call_events.offset_ms`:** This column must be `BIGINT`. The app will refuse to start if it drifts to `int4` to prevent silent overflow in long-lived calls.
 - **Silent Caller Detection:** `caller_spoke` is a tri-state boolean. `NULL` and `TRUE` are considered eligible for `ai_handled` in analytics; `FALSE` (no caller audio) reclassifies calls into `unresolved`.
+- **Simulator↔live parity:** The flow simulator (`api/simulation.py`) must mirror a real call. It runs the *resolved assistant's* `llm_model` per session (fallback `gpt-4o-mini`, matching the new-assistant default) — never hardcode a stronger model, as a better-than-production preview hides real behavior. It resolves the backing assistant (explicit `assistant_id`, permission-checked; else fallback by `tool_set_id` **scoped to `tool.account_id`**, fails closed with no account) to inject the same KB block + escalation number. `tool_set_id` ownership is not validated on assistant create/update, so any assistant lookup by `tool_set_id` must also filter `account_id`. COLLECT_SLOT/COLLECT_FORM nodes do not force `tool_choice` (matching live); API_REQUEST nodes still force it (see engine).
+- **Flow escalation function:** The global "talk to a human" tool is a transient in-memory `request_human` tool built by `FunctionMapper.build_escalation_tool()` from `call_settings.escalation_number`; it drives a real Twilio transfer via the `action="transfer"` result path. No DB row / no migration.
+- **Generic flow naming:** Built-in confirmation dispatch is `confirm_details` (renamed from `confirm_booking`); the result key is `collected_data` (renamed from `booking_data`). Exact-name dispatch runs before the `confirm_` prefix match, so keep that ordering when adding handlers.
 
 ## Pointers
 

@@ -45,7 +45,7 @@ class AssistantCreate(BaseModel):
     llm_model: str = "gpt-4o-mini"
     tts_model: Optional[str] = None
     tts_voice: Optional[str] = None
-    system_prompt: str = "You are a helpful hotel assistant."
+    system_prompt: str = "You are a helpful assistant."
     first_message: Optional[str] = None
     language: str = "en"
     temperature: Optional[float] = 0.7

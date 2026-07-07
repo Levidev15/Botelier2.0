@@ -45,7 +45,7 @@ class VoiceAgentConfig(BaseModel):
     tts_speed: float = 1.0
     tts_config: Dict[str, Any] = Field(default_factory=dict)
 
-    system_prompt: str = "You are a friendly hotel concierge assistant."
+    system_prompt: str = "You are a friendly assistant."
     greeting_message: str = "Hello! How can I help you today?"
 
     enable_function_calling: bool = False

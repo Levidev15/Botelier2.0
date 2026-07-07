@@ -1225,6 +1225,29 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
             </FormField>
 
             <FormField
+              label="Escalation Phone Number"
+              tooltip="Global 'talk to a human' fallback. When set, the assistant can transfer the caller to this number from anywhere in the conversation if they ask for a person. Leave blank to disable. Use E.164 format, e.g. +17025551234."
+            >
+              <input
+                type="tel"
+                value={formData.call_settings?.escalation_number ?? ""}
+                onChange={(e) => {
+                  const val = e.target.value.trim();
+                  setFormData(prev => ({
+                    ...prev,
+                    call_settings: {
+                      ...(prev.call_settings || {}),
+                      escalation_number: val === "" ? undefined : val,
+                    }
+                  }));
+                  setIsDirty(true);
+                }}
+                placeholder="+17025551234"
+                className="w-full px-3 py-2 bg-[#1a1a1a] border border-[#333] rounded-lg text-sm text-white focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
+              />
+            </FormField>
+
+            <FormField
               label="No-Response Timeout (seconds)"
               tooltip="Reserved for future use: seconds of silence before the assistant ends the call. Default: 10 seconds."
             >

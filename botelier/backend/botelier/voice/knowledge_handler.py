@@ -275,7 +275,7 @@ async def query_with_rag(knowledge_content: str, question: str) -> str:
     client = AsyncOpenAI(api_key=api_key)
 
     rag_prompt = f"""
-You are a helpful hotel assistant answering guest questions based on the hotel's FAQ knowledge base.
+You are a helpful assistant answering customer questions based on the account's FAQ knowledge base.
 
 **Instructions:**
 1. Answer questions ONLY using information from the Q&A Knowledge Base below
