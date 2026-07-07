@@ -8,3 +8,4 @@
 - [Deep-link mount effects vs account-context](frontend-deeplink-account-context.md) — one-shot ?param deep links must gate on accountId (hydrated async in mount effect) before burning their ref guard; mirror call-logs pattern.
 - [SAVE_RECORD & live-call sessions](save-record-live-session.md) — live-call FlowExecutor has db_session=None; DB-writing flow handlers must open own SessionLocal; cold transfers skip /connect-complete; flow_executor logger caveats.
 - [JWT auth query params](jwt-auth-query-params.md) — creds like apikey must ride JWT login/refresh too; declared via auth_config['auth_request_query_params']; 3 JWT paths change in lockstep.
+- [Integration connection_config variable injection](integration-connection-config-vars.md) — property-level constants (hotel_id, hotel_name, currency) belong in connection_config; 3 code layers now read it in priority order.

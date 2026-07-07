@@ -2045,6 +2045,15 @@ You are executing a structured conversation flow. Follow these guidelines:
             ),
         )
 
+        # Inject integration connection_config into flow state before calling the
+        # API.  This makes property-level constants (hotel_id, hotel_name,
+        # hotel_reservations_email, currency, …) available as flow variables, so
+        # downstream SET_VARIABLE nodes (e.g. building the hotels array for
+        # cancellation-policy lookups) can resolve {{hotel_id}} without requiring
+        # those values to be collected from callers each turn.  Never overwrites a
+        # variable that the flow has already set.
+        self._inject_connection_config_to_slots(api_config.get("integrationId", ""))
+
         response = await ActionExecutor(self.db_session).execute_and_log(
             ActionExecutionRequest(
                 context=ActionContext(
@@ -2133,6 +2142,44 @@ You are executing a structured conversation flow. Follow these guidelines:
             return m.group(0)
 
         return _re.sub(r"\{\{secrets\.(\w+)\}\}", replace_secret, text)
+
+    def _inject_connection_config_to_slots(self, integration_id: str) -> None:
+        """Merge integration connection_config into collected_slots (non-destructive).
+
+        Loads the ``connection_config`` JSON from the matching ``account_integrations``
+        row and copies each key into ``collected_slots`` only when that key is not
+        already present.  This lets property-level constants (hotel_id, hotel_name,
+        hotel_reservations_email, default currency, …) be stored once per connection
+        and automatically flow into SET_VARIABLE templates and downstream API calls
+        without manual collection from the caller every turn.
+
+        Failures are logged at DEBUG and never bubble up — a missing or malformed
+        connection_config is not a blocking error for the flow.
+        """
+        if not integration_id or not self.account_id or not self.db_session:
+            return
+        try:
+            from botelier.models.integration import AccountIntegration
+
+            integration = (
+                self.db_session.query(AccountIntegration)
+                .filter(
+                    AccountIntegration.id == integration_id,
+                    AccountIntegration.account_id == self.account_id,
+                )
+                .first()
+            )
+            if not integration:
+                return
+            conn_config = integration.get_connection_config() or {}
+            for key, value in conn_config.items():
+                if key not in self.state.collected_slots and value is not None:
+                    self.state.set_variable(key, value)
+        except Exception as exc:
+            logger.debug(
+                f"Non-fatal: could not inject connection_config into flow slots "
+                f"for integration {integration_id}: {exc}"
+            )
 
     def _write_custom_call_log(
         self,

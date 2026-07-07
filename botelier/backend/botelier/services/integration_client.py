@@ -359,7 +359,7 @@ class IntegrationClient:
                 )
 
         endpoint_def = self._resolve_endpoint(integration, config)
-        effective_vars = self._apply_endpoint_defaults(variables, endpoint_def)
+        effective_vars = self._apply_endpoint_defaults(variables, endpoint_def, integration)
         try:
             url = self._build_url(integration, config, effective_vars, endpoint_def)
         except _MissingRequiredVariables as exc:
@@ -950,13 +950,31 @@ class IntegrationClient:
         return None
 
     def _apply_endpoint_defaults(
-        self, variables: dict[str, Any], endpoint_def: Optional[dict]
+        self,
+        variables: dict[str, Any],
+        endpoint_def: Optional[dict],
+        integration: Optional["AccountIntegration"] = None,
     ) -> dict[str, Any]:
-        """Merge certified-endpoint variable defaults under caller-provided values."""
-        if not endpoint_def:
-            return variables
+        """Merge certified-endpoint variable defaults under caller-provided values.
+
+        Priority (lowest → highest):
+        1. Integration connection_config — property-level constants set once per
+           connection (e.g. hotel_id, hotel_name, hotel_reservations_email,
+           default currency). Stored by the operator when connecting the integration;
+           eliminates the need to collect static values from callers each turn.
+        2. Endpoint variable defaults (e.g. ``today`` sentinel for arrival dates).
+        3. Caller-provided variables (``collected_slots`` from the live flow).
+        """
         merged: dict[str, Any] = {}
-        for var in endpoint_def.get("variables") or []:
+        # 1. Integration connection_config — lowest priority so any explicit value wins
+        if integration:
+            try:
+                conn_config = integration.get_connection_config() or {}
+                merged.update(conn_config)
+            except Exception:
+                pass
+        # 2. Endpoint-declared variable defaults
+        for var in (endpoint_def or {}).get("variables") or []:
             key = var.get("key")
             default = var.get("default")
             if not key or default is None:
@@ -968,6 +986,7 @@ class IntegrationClient:
                 merged[key] = datetime.utcnow().date().isoformat()
             else:
                 merged[key] = default
+        # 3. Caller-provided variables are highest priority
         merged.update(variables or {})
         return merged
 
@@ -1015,6 +1034,15 @@ class IntegrationClient:
             path = path.replace("{{hotelId}}", hotel_id)
             path = path.replace("{hotel_id}", hotel_id)
             path = path.replace("{{hotel_id}}", hotel_id)
+
+        # Fail fast: any {{var}} still in the path after all substitutions means a
+        # required value (e.g. hotel_id) was never resolved — either missing from
+        # credentials/connection_config or not collected by the flow.  Raising here
+        # surfaces a clear "Missing required variables: hotel_id" error instead of
+        # forwarding a malformed URL to the upstream API and getting a cryptic 422.
+        unresolved_in_path = re.findall(r"\{\{(\w+)\}\}", path)
+        if unresolved_in_path:
+            raise _MissingRequiredVariables(unresolved_in_path)
 
         url = f"{base_url}{path}"
 
