@@ -37,6 +37,23 @@ class NodeType(str, Enum):
     END = "end"
 
 
+# Action-node types whose LLM functions must be gated to the reachable flow
+# position (the same way slot functions are). Exposing these on every turn —
+# especially end_call_<id> and transfer_<id> — lets the model end or branch the
+# call mid-collection, which is the root cause of premature hang-ups.
+_ACTION_NODE_TYPES = frozenset(
+    {
+        NodeType.API_REQUEST,
+        NodeType.ROUTER,
+        NodeType.CONFIRMATION,
+        NodeType.SET_VARIABLE,
+        NodeType.SAVE_RECORD,
+        NodeType.TRANSFER,
+        NodeType.END,
+    }
+)
+
+
 class SlotType(str, Enum):
     TEXT = "text"
     DATE = "date"
@@ -753,6 +770,78 @@ You are executing a structured conversation flow. Follow these guidelines:
 
         return (None, None)
 
+    def _node_has_uncollected_slot(self, node: FlowNode) -> bool:
+        """True if a collect node still has at least one uncollected slot."""
+        if node.type == NodeType.COLLECT_SLOT:
+            var_key = node.data.get("slot", {}).get("variableKey")
+            return bool(var_key) and var_key not in self.state.collected_slots
+        if node.type == NodeType.COLLECT_FORM:
+            for slot in node.data.get("slots", []):
+                var_key = slot.get("variableKey")
+                if var_key and var_key not in self.state.collected_slots:
+                    return True
+        return False
+
+    def _get_reachable_action_node_ids(self) -> set:
+        """Return ids of action nodes whose functions may be exposed right now.
+
+        Mirrors the slot-function gating: an action node's function is only
+        offered to the LLM when the flow is AT that node, or can reach it from
+        the current position without first crossing an unsatisfied collect node
+        or another action node (which must fire first). This stops the model from
+        calling end_call / transfer / api / router / etc. out of flow order — the
+        root cause of premature hang-ups mid-collection.
+
+        The same forward-BFS precedent as ``_find_next_reachable_collect_slot`` is
+        used: INITIAL / MESSAGE / CONDITION nodes and already-satisfied collect
+        nodes are transparent (traversed through); unsatisfied collect nodes and
+        action nodes are gates (traversal stops there).
+        """
+        current = self.state.get_current_node()
+        if not current:
+            return set()
+
+        # Still collecting on the current node → no action nodes are reachable yet.
+        if self._node_has_uncollected_slot(current):
+            return set()
+
+        # Sitting on an action node → expose only it; do not look past it so each
+        # action fires in strict order.
+        if current.type in _ACTION_NODE_TYPES:
+            return {current.id}
+
+        # Otherwise walk forward, stopping at the first gate on each branch.
+        node_by_id = {n.id: n for n in self.flow_config.nodes}
+        reachable: set = set()
+        visited: set = set()
+        queue = [edge.target for edge in self.flow_config.edges if edge.source == current.id]
+
+        while queue:
+            node_id = queue.pop(0)
+            if node_id in visited:
+                continue
+            visited.add(node_id)
+
+            node = node_by_id.get(node_id)
+            if not node:
+                continue
+
+            if node.type in (NodeType.COLLECT_SLOT, NodeType.COLLECT_FORM):
+                if self._node_has_uncollected_slot(node):
+                    # Unsatisfied collect gate — stop this branch.
+                    continue
+                # Already satisfied — fall through and keep traversing.
+            elif node.type in _ACTION_NODE_TYPES:
+                reachable.add(node.id)
+                # Do not traverse past an action node (it must fire first).
+                continue
+
+            for edge in self.flow_config.edges:
+                if edge.source == node_id and edge.target not in visited:
+                    queue.append(edge.target)
+
+        return reachable
+
     def _get_next_slot_instructions(self) -> Optional[dict]:
         """Get instructions for the next slot to collect, with dynamic constraints based on collected values."""
         current_node = self.state.get_current_node()
@@ -979,28 +1068,30 @@ You are executing a structured conversation flow. Follow these guidelines:
                 func_schema = self._create_slot_function(var)
                 functions.append(func_schema)
 
+        # Gate action-node functions to the reachable flow position, mirroring the
+        # slot-function gating above. Without this, end_call_<id> / transfer_<id>
+        # (and every api/router/confirmation/set_var/save_record function) would be
+        # callable on every turn, letting the LLM end or branch the call mid-
+        # collection — the root cause of premature hang-ups.
+        reachable_action_ids = self._get_reachable_action_node_ids()
+
         for node in self.flow_config.nodes:
+            if node.id not in reachable_action_ids:
+                continue
             if node.type == NodeType.API_REQUEST:
-                func_schema = self._create_api_function(node)
-                functions.append(func_schema)
+                functions.append(self._create_api_function(node))
             elif node.type == NodeType.ROUTER:
-                func_schema = self._create_router_function(node)
-                functions.append(func_schema)
+                functions.append(self._create_router_function(node))
             elif node.type == NodeType.CONFIRMATION:
-                func_schema = self._create_confirmation_function(node)
-                functions.append(func_schema)
+                functions.append(self._create_confirmation_function(node))
             elif node.type == NodeType.SET_VARIABLE:
-                func_schema = self._create_set_variable_function(node)
-                functions.append(func_schema)
+                functions.append(self._create_set_variable_function(node))
             elif node.type == NodeType.SAVE_RECORD:
-                func_schema = self._create_save_record_function(node)
-                functions.append(func_schema)
+                functions.append(self._create_save_record_function(node))
             elif node.type == NodeType.TRANSFER:
-                func_schema = self._create_transfer_function(node)
-                functions.append(func_schema)
+                functions.append(self._create_transfer_function(node))
             elif node.type == NodeType.END:
-                func_schema = self._create_end_function(node)
-                functions.append(func_schema)
+                functions.append(self._create_end_function(node))
 
         has_confirmation_node = any(
             node.type == NodeType.CONFIRMATION for node in self.flow_config.nodes

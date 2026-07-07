@@ -113,6 +113,10 @@ class SimulateMessageResponse(BaseModel):
     state: dict
     messages: list[dict]
     suggested_functions: list[dict]
+    # Populated only when LLM processing raised — surfaces the real cause
+    # (exception type + one-line message) to the simulator UI instead of
+    # hiding flow-config bugs behind a generic apology. Never a traceback.
+    error: Optional[str] = None
 
 
 class TestAPIRequest(BaseModel):
@@ -229,6 +233,7 @@ async def simulate_message(
     response_text = ""
     function_called = None
     function_result = None
+    error_detail = None
 
     state.add_message("user", request.message)
 
@@ -263,6 +268,7 @@ async def simulate_message(
         response_text = llm_response["response"]
         function_called = llm_response.get("function_called")
         function_result = llm_response.get("function_result")
+        error_detail = llm_response.get("error")
 
         if llm_response.get("is_ended"):
             state.is_ended = True
@@ -282,6 +288,7 @@ async def simulate_message(
         state=state.get_state_snapshot(),
         messages=state.messages,
         suggested_functions=suggested_functions,
+        error=error_detail,
     )
 
 
@@ -307,12 +314,6 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
     if state.llm_messages and state.llm_messages[0]["role"] == "system":
         state.llm_messages[0]["content"] = updated_system_prompt
 
-    function_schemas = state.executor.get_function_schemas()
-    tools = [
-        {"type": "function", "function": schema.get("function", schema)}
-        for schema in function_schemas
-    ]
-
     all_functions_called = []
     all_function_results = []
     is_ended = False
@@ -321,32 +322,49 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
 
     try:
         for iteration in range(max_iterations):
+            # Rebuild the exposed tools at the top of EACH iteration. A previous
+            # handle_function_call may have advanced the flow (collect → set_var →
+            # api → ...), and get_function_schemas() now gates functions to the
+            # reachable node. Building tools once before the loop left a stale list,
+            # so a later forced tool_choice could name a function no longer present
+            # → OpenAI 400 (previously swallowed into a generic apology). Rebuilding
+            # keeps `tools` and `tool_choice` in lockstep with the live flow state.
+            function_schemas = state.executor.get_function_schemas()
+            tools = [
+                {"type": "function", "function": schema.get("function", schema)}
+                for schema in function_schemas
+            ]
+            exposed_names = {
+                t["function"]["name"]
+                for t in tools
+                if t.get("function", {}).get("name")
+            }
+
             # Force the specific function when the current node requires it.
-            # Using "auto" lets the LLM return a plain text reply and stall
-            # the conversation waiting for the next user input instead of
-            # progressing the flow.
+            # Using "auto" lets the LLM return a plain text reply and stall the
+            # conversation waiting for the next user input instead of progressing
+            # the flow. Only force a name that is actually present in the freshly
+            # built tool list — forcing a gated-out/absent name is exactly what
+            # triggered the OpenAI 400.
             #
             # Rules:
-            #   API_REQUEST  → force execute_{node.id} (existing behaviour)
+            #   API_REQUEST  → force execute_{node.id}
             #   COLLECT_SLOT → force collect_{var_key} for the single pending slot
-            #   COLLECT_FORM → require *any* tool call so the LLM must pick one
-            #                  of the exposed collect_* functions (flexible within form)
+            #   COLLECT_FORM → require *any* tool call so the LLM must pick one of
+            #                  the exposed collect_* functions (flexible within form)
             current_node = state.executor.state.get_current_node()
-            if tools and current_node and current_node.type == NodeType.API_REQUEST and f"execute_{current_node.id}" not in all_functions_called:
-                tool_choice = {
-                    "type": "function",
-                    "function": {"name": f"execute_{current_node.id}"},
-                }
-            elif tools and current_node and current_node.type == NodeType.COLLECT_SLOT:
-                slot = current_node.data.get("slot", {})
-                var_key = slot.get("variableKey")
+            forced_name = None
+            if current_node and current_node.type == NodeType.API_REQUEST:
+                candidate = f"execute_{current_node.id}"
+                if candidate not in all_functions_called:
+                    forced_name = candidate
+            elif current_node and current_node.type == NodeType.COLLECT_SLOT:
+                var_key = current_node.data.get("slot", {}).get("variableKey")
                 if var_key and f"collect_{var_key}" not in all_functions_called:
-                    tool_choice = {
-                        "type": "function",
-                        "function": {"name": f"collect_{var_key}"},
-                    }
-                else:
-                    tool_choice = "auto"
+                    forced_name = f"collect_{var_key}"
+
+            if forced_name and forced_name in exposed_names:
+                tool_choice = {"type": "function", "function": {"name": forced_name}}
             elif tools and current_node and current_node.type == NodeType.COLLECT_FORM:
                 # Multiple collect_* functions are exposed for the form; require
                 # *any* tool call so the LLM cannot return plain text.
@@ -444,12 +462,20 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
         }
 
     except Exception as e:
-        logger.error(f"LLM processing error: {e}")
+        # Log the full traceback server-side for debugging.
+        logger.exception("LLM processing error during simulation")
+        # Surface the real cause to the simulator UI so flow-config bugs are
+        # visible instead of hidden behind a generic apology. Expose ONLY the
+        # exception type and a single line of its message — never a traceback or
+        # request headers, which can carry integration credentials.
+        _msg = str(e).splitlines()[0] if str(e) else ""
+        error_summary = f"{type(e).__name__}: {_msg}".strip().rstrip(":").strip()
         return {
             "response": "I apologize, I'm having trouble processing that. Could you please repeat?",
-            "function_called": None,
-            "function_result": None,
+            "function_called": all_functions_called[-1] if all_functions_called else None,
+            "function_result": all_function_results[-1] if all_function_results else None,
             "is_ended": False,
+            "error": error_summary,
         }
 
 

@@ -1254,6 +1254,10 @@ class FunctionMapper:
                 await params.result_callback({"status": "error", "message": "Flow not initialized"})
                 return
 
+            # Remember the flow position before the call so we can detect whether
+            # this function advanced the flow and therefore requires a tool refresh.
+            _prev_node_id = executor.state.current_node_id
+
             # Start API execution as a task so TTS can fire while it runs.
             api_task = asyncio.create_task(
                 executor.handle_function_call(function_name, dict(params.arguments))
@@ -1283,8 +1287,20 @@ class FunctionMapper:
             if result.get("collected"):
                 logger.info(f"Flow {tool_name} collected: {result['collected']}")
 
-                # CRITICAL: Update LLM tools to only expose the next slot's function
-                # This enforces strict flow order by dynamically updating available tools
+            # CRITICAL: Refresh the LLM's exposed tools whenever this call advanced
+            # the flow position. Slot collection is not the only thing that advances
+            # the flow — set_variable / api_request / router / confirmation /
+            # save_record action nodes also move `current` forward WITHOUT returning
+            # "collected". Since get_function_schemas() now gates action functions to
+            # the reachable node, refreshing only on "collected" would strand the
+            # call on a stale tool list (e.g. after a set_var advances to an api
+            # node, execute_<api> would never be exposed and the call would hang).
+            # Terminal actions (transfer/end) are handled below and return before
+            # reaching the result_callback, so we skip the refresh for them.
+            if (
+                result.get("action") not in ("transfer", "end")
+                and executor.state.current_node_id != _prev_node_id
+            ):
                 self.update_llm_tools_for_flow(tool_name)
 
             # Handle special actions
