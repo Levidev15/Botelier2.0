@@ -492,7 +492,11 @@ async def incoming_call_webhook(request: Request, db: Session = Depends(get_db))
 
 
 @router.post("/status")
-async def call_status_callback(request: Request, db: Session = Depends(get_db)):
+async def call_status_callback(
+    request: Request,
+    db: Session = Depends(get_db),
+    background_tasks: BackgroundTasks = BackgroundTasks(),
+):
     """Twilio callback for call status updates.
 
     Twilio POSTs here when call status changes:
@@ -719,6 +723,66 @@ async def call_status_callback(request: Request, db: Session = Depends(get_db)):
                             },
                             call_started_at=call_log.started_at,
                         )
+
+            # Task #295: A plain caller hangup usually triggers ONLY this
+            # /status callback — Twilio does not reliably request
+            # /connect-complete, which is the only other path that cancels the
+            # Pipecat pipeline. Left uncancelled, the pipeline lingers as a
+            # "zombie" until Pipecat's own 300s idle auto-cancel fires, emitting
+            # idle_timeout / caller_silence_detected events every 30s (~18 ghost
+            # events/call) and — worse — never enqueuing after-call work (ACW,
+            # record extraction, billing alert), which otherwise only runs from
+            # the connect-complete / transfer-status paths.
+            #
+            # When a terminal status arrives while the pipeline is STILL active
+            # and the call has no transfer, tear it down here. Ordering matters:
+            #   1. Stop the idle tracker FIRST (synchronous, idempotent) so no
+            #      further ghost events can be queued across the awaits below.
+            #   2. Persist the live transcript so ACW / record extraction have it
+            #      (best-effort; handle_call also re-saves on teardown).
+            #   3. Cancel the pipeline (idempotent; records a pending-cancel if
+            #      the task has not registered yet).
+            # This runs AFTER update_status(completed) / call_ended above, so the
+            # row is already terminal when handle_call's defensive finalization
+            # runs in its finally block — it no-ops and emits no spurious
+            # finalization_forced event. _pipeline_was_active was captured before
+            # this teardown, so the Task #96 safety-net gate is unchanged.
+            # Transfer calls are deliberately excluded: they are torn down by the
+            # /transfer-status (warm) or connect-complete cold path and must not
+            # be cancelled while a bridge is live.
+            if (
+                call_status in _TERMINAL_TWILIO
+                and _pipeline_was_active
+                and call_log is not None
+                and not call_log.has_transfer
+            ):
+                try:
+                    _handler = _get_call_handler()
+                    _handler.cancel_idle_tracker(call_sid)
+                    try:
+                        await _handler.save_transcript_for_call(call_sid)
+                    except Exception as _tx_err:
+                        logger.warning(
+                            f"save_transcript_for_call failed for {call_sid} "
+                            f"from /status: {_tx_err}"
+                        )
+                    await _handler.cancel_call_pipeline(call_sid)
+                    logger.info(
+                        f"Cancelled lingering pipeline for {call_sid} from /status "
+                        f"terminal callback (no connect-complete received)"
+                    )
+                except Exception as _zombie_err:
+                    logger.warning(
+                        f"Zombie-pipeline teardown from /status failed for "
+                        f"{call_sid}: {_zombie_err}"
+                    )
+                # After-call work is normally enqueued from connect-complete;
+                # when that webhook never arrives these calls silently skip QA.
+                # All three helpers are idempotent, so a late connect-complete
+                # re-enqueue is safe.
+                _maybe_enqueue_acw(call_sid, db, background_tasks)
+                _maybe_enqueue_record_extraction(call_sid, db, background_tasks)
+                _maybe_enqueue_billing_alert(call_sid, db, background_tasks)
 
         return {"status": "received"}
 

@@ -21,7 +21,7 @@ from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pytest
-from botelier.api.calls import incoming_call_webhook
+from botelier.api.calls import call_status_callback, incoming_call_webhook
 from botelier.models import CallLeg, CallLog, CallStatus, LegType, PhoneNumber
 from botelier.models.call_event import CallEvent
 from botelier.services import shutdown_finalizer
@@ -516,3 +516,185 @@ class TestShutdownFinalizer:
         # (The to_thread-bound query keeps running in its thread, but the
         # awaiter must unblock by the total timeout.)
         assert elapsed < 1.5, f"shutdown finalizer overran its total timeout: {elapsed:.2f}s"
+
+
+# ---------------------------------------------------------------------------
+# Task #295 — zombie-pipeline teardown from the /status terminal callback
+# ---------------------------------------------------------------------------
+def _make_zombie_handler():
+    """Fake in-process call handler whose pipeline is STILL active — i.e.
+    the connect-complete cancel path never ran, so the pipeline would linger
+    until Pipecat's 300s idle auto-cancel unless /status tears it down.
+    """
+    calls = {"idle": [], "transcript": [], "pipeline": []}
+    handler = MagicMock()
+    handler.is_pipeline_active.return_value = True
+
+    def _cancel_idle(sid):
+        calls["idle"].append(sid)
+
+    handler.cancel_idle_tracker.side_effect = _cancel_idle
+
+    async def _save_transcript(sid):
+        calls["transcript"].append(sid)
+
+    handler.save_transcript_for_call = _save_transcript
+
+    async def _cancel_pipeline(sid):
+        calls["pipeline"].append(sid)
+
+    handler.cancel_call_pipeline = _cancel_pipeline
+    return handler, calls
+
+
+def _status_form(call_sid, status="completed", duration="42"):
+    return {
+        "CallSid": call_sid,
+        "CallStatus": status,
+        "CallDuration": duration,
+        "To": "+15551234567",
+    }
+
+
+class TestZombiePipelineTeardownOnHangup:
+    """Task #295: a plain caller hangup usually delivers ONLY /status. When
+    the pipeline is still active and the call has no transfer, /status must
+    stop the idle tracker, save the transcript, cancel the pipeline, and
+    enqueue after-call work — without triggering a forced finalization.
+    """
+
+    async def _run(self, call_log, call_sid, status="completed"):
+        handler, calls = _make_zombie_handler()
+        fake_logger = MagicMock()
+        fake_logger.get_call_log.return_value = call_log
+        enqueued = {"acw": [], "extract": [], "billing": []}
+
+        req = _FakeRequest(_status_form(call_sid, status=status))
+        req.headers = {}
+        db = MagicMock()
+
+        with (
+            patch(
+                "botelier.api.calls.validate_twilio_signature",
+                return_value=(True, "http://test"),
+            ),
+            patch("botelier.api.calls.get_call_auth_token", return_value="tok"),
+            patch("botelier.api.calls.CallLogger", return_value=fake_logger),
+            patch("botelier.api.calls._get_call_handler", return_value=handler),
+            patch("botelier.api.calls._event_exists", return_value=True),
+            patch(
+                "botelier.api.calls._maybe_enqueue_acw",
+                side_effect=lambda s, d, b: enqueued["acw"].append(s),
+            ),
+            patch(
+                "botelier.api.calls._maybe_enqueue_record_extraction",
+                side_effect=lambda s, d, b: enqueued["extract"].append(s),
+            ),
+            patch(
+                "botelier.api.calls._maybe_enqueue_billing_alert",
+                side_effect=lambda s, d, b: enqueued["billing"].append(s),
+            ),
+        ):
+            resp = await call_status_callback(req, db)
+
+        return resp, handler, calls, fake_logger, enqueued
+
+    @pytest.mark.asyncio
+    async def test_active_pipeline_no_transfer_is_torn_down_and_enqueues_acw(self):
+        call_sid = "CA-zombie-hangup"
+        call_log = _make_call_log(answered=True)
+        call_log.call_sid = call_sid
+        call_log.has_transfer = False
+
+        resp, handler, calls, fake_logger, enqueued = await self._run(call_log, call_sid)
+
+        assert resp == {"status": "received"}
+        # Idle tracker stopped, transcript saved, pipeline cancelled — once each.
+        assert calls["idle"] == [call_sid]
+        assert calls["transcript"] == [call_sid]
+        assert calls["pipeline"] == [call_sid]
+        # After-call work enqueued exactly once each (previously skipped on zombies).
+        assert enqueued["acw"] == [call_sid]
+        assert enqueued["extract"] == [call_sid]
+        assert enqueued["billing"] == [call_sid]
+        # No forced finalization: the Task #96 safety net is gated on the
+        # pipeline being INACTIVE, so an active-pipeline hangup must NOT invoke
+        # complete_call and must NOT emit a spurious finalization_forced event.
+        fake_logger.complete_call.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_transfer_call_is_not_torn_down(self):
+        """Transfer calls are excluded — they are finalized by the
+        transfer-status / connect-complete paths and must not be cancelled
+        while a bridge is live.
+        """
+        call_sid = "CA-transfer-hangup"
+        call_log = _make_call_log(answered=True)
+        call_log.call_sid = call_sid
+        call_log.has_transfer = True
+
+        resp, handler, calls, fake_logger, enqueued = await self._run(call_log, call_sid)
+
+        assert resp == {"status": "received"}
+        assert calls["pipeline"] == []
+        assert calls["idle"] == []
+        assert calls["transcript"] == []
+        assert enqueued["acw"] == []
+        assert enqueued["extract"] == []
+        assert enqueued["billing"] == []
+
+    @pytest.mark.asyncio
+    async def test_inactive_pipeline_already_finalized_is_left_alone(self):
+        """Healthy path: connect-complete already cancelled the pipeline and
+        finalized the row before Twilio's terminal /status arrives. The row is
+        terminal and the pipeline is gone, so /status must not re-tear-down or
+        re-enqueue after-call work.
+        """
+        call_sid = "CA-healthy-hangup"
+        call_log = _make_call_log(answered=True)
+        call_log.call_sid = call_sid
+        call_log.has_transfer = False
+        call_log.status = CallStatus.COMPLETED.value
+
+        # Override the fake handler so the pipeline reports INACTIVE.
+        handler, calls = _make_zombie_handler()
+        handler.is_pipeline_active.return_value = False
+        fake_logger = MagicMock()
+        fake_logger.get_call_log.return_value = call_log
+        enqueued = {"acw": [], "extract": [], "billing": []}
+
+        req = _FakeRequest(_status_form(call_sid))
+        req.headers = {}
+        db = MagicMock()
+
+        with (
+            patch(
+                "botelier.api.calls.validate_twilio_signature",
+                return_value=(True, "http://test"),
+            ),
+            patch("botelier.api.calls.get_call_auth_token", return_value="tok"),
+            patch("botelier.api.calls.CallLogger", return_value=fake_logger),
+            patch("botelier.api.calls._get_call_handler", return_value=handler),
+            patch("botelier.api.calls._event_exists", return_value=True),
+            patch(
+                "botelier.api.calls._maybe_enqueue_acw",
+                side_effect=lambda s, d, b: enqueued["acw"].append(s),
+            ),
+            patch(
+                "botelier.api.calls._maybe_enqueue_record_extraction",
+                side_effect=lambda s, d, b: enqueued["extract"].append(s),
+            ),
+            patch(
+                "botelier.api.calls._maybe_enqueue_billing_alert",
+                side_effect=lambda s, d, b: enqueued["billing"].append(s),
+            ),
+        ):
+            resp = await call_status_callback(req, db)
+
+        assert resp == {"status": "received"}
+        assert calls["pipeline"] == []
+        assert enqueued["acw"] == []
+        assert enqueued["extract"] == []
+        assert enqueued["billing"] == []
+        # Row was already terminal → the safety net must not force-finalize it.
+        fake_logger.complete_call.assert_not_called()
