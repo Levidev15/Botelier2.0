@@ -61,6 +61,7 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
   const [showResponseMessages, setShowResponseMessages] = useState(
     !!(api.onSuccess || api.onError || api.onNotFound || api.onAuthError)
   );
+  const [showQueryParams, setShowQueryParams] = useState(true);
   const [integrations, setIntegrations] = useState<APIAccountIntegration[]>([]);
   const [loadingIntegrations, setLoadingIntegrations] = useState(false);
   const [availableSecrets, setAvailableSecrets] = useState<Array<{ key: string; name: string }>>([]);
@@ -174,6 +175,29 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
   const selectedEndpoint = selectedIntegration?.integration_type.endpoints.find(e => e.id === api.endpointId);
   const testableVariables = variables.filter(v => v.key);
 
+  const setQueryParamOverride = (key: string, value: string) => {
+    updateApi({ queryParamOverrides: { ...(api.queryParamOverrides ?? {}), [key]: value } });
+  };
+
+  const resetQueryParamOverride = (key: string) => {
+    const next = { ...(api.queryParamOverrides ?? {}) };
+    delete next[key];
+    updateApi({ queryParamOverrides: Object.keys(next).length ? next : undefined });
+  };
+
+  // Resolve the label/description for a query param from the endpoint's variable
+  // metadata: match on the param key first, then fall back to the {{var}} name
+  // embedded in the seed default value.
+  const findQueryParamMeta = (
+    qp: { key: string; value: string }
+  ): EndpointVariable | undefined => {
+    const byKey = selectedEndpoint?.variables?.find((v) => v.key === qp.key);
+    if (byKey) return byKey;
+    const match = /\{\{(\w+)\}\}/.exec(qp.value || "");
+    if (match) return selectedEndpoint?.variables?.find((v) => v.key === match![1]);
+    return undefined;
+  };
+
   const areMappingsEqual = (a: Record<string, string>, b: Record<string, string>): boolean => {
     const aKeys = Object.keys(a);
     const bKeys = Object.keys(b);
@@ -224,6 +248,7 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
         method: "GET" as const,
         bodyTemplate: "",
         autoMappingSource: undefined,
+        queryParamOverrides: undefined,
       });
     }
   };
@@ -290,6 +315,8 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
       bodyTemplate,
       responseMapping: newResponseMapping,
       autoMappingSource: newAutoMappingSource,
+      // Query-param overrides are keyed per endpoint; drop them when the endpoint changes.
+      queryParamOverrides: undefined,
     });
   };
 
@@ -350,6 +377,14 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
     if (apiSource === "integration") {
       if (!api.integrationId) return "Select a connected integration first";
       if (!api.endpointId) return "Select an integration endpoint first";
+      const overrides = api.queryParamOverrides ?? {};
+      for (const qp of selectedEndpoint?.query_params ?? []) {
+        if (!qp.required) continue;
+        const effective = qp.key in overrides ? overrides[qp.key] : qp.value;
+        if (!effective || !effective.trim()) {
+          return `Required query parameter "${qp.key}" cannot be blank`;
+        }
+      }
     } else if (!api.url?.trim()) {
       return "URL is required";
     }
@@ -397,6 +432,7 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
           apiSource,
           integrationId: api.integrationId,
           endpointId: api.endpointId,
+          queryParamOverrides: api.queryParamOverrides || undefined,
           endpointName: api.endpointName,
           nodeId,
           flowToolId: toolId,
@@ -524,6 +560,77 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
               </div>
               {selectedEndpoint.description && (
                 <p className="text-xs text-gray-500">{selectedEndpoint.description}</p>
+              )}
+            </div>
+          )}
+
+          {selectedEndpoint && (selectedEndpoint.query_params?.length ?? 0) > 0 && (
+            <div>
+              <button
+                type="button"
+                onClick={() => setShowQueryParams(!showQueryParams)}
+                className="flex items-center gap-2 text-sm font-medium text-gray-400 hover:text-gray-300"
+              >
+                {showQueryParams ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                Query Parameters
+                <span className="text-xs text-gray-500">({selectedEndpoint.query_params!.length})</span>
+              </button>
+              {showQueryParams && (
+                <div className="mt-2 space-y-2">
+                  <p className="text-xs text-gray-500">
+                    Override the value sent for each query parameter. Untouched parameters use the
+                    integration&apos;s default. Use {"{{variable}}"} to insert a collected value, or type a literal.
+                  </p>
+                  {selectedEndpoint.query_params!.map((qp) => {
+                    const overrides = api.queryParamOverrides ?? {};
+                    const isOverridden = qp.key in overrides;
+                    const effectiveValue = isOverridden ? overrides[qp.key] : qp.value;
+                    const meta = findQueryParamMeta(qp);
+                    const label = meta?.label;
+                    const description = meta?.description;
+                    const blankRequired = !!qp.required && effectiveValue.trim() === "";
+                    return (
+                      <div key={qp.key} className="bg-[#1a1a1a] rounded-lg p-2.5 border border-gray-700">
+                        <div className="flex items-center gap-2 mb-1 flex-wrap">
+                          <code className="text-xs text-orange-400 font-mono">{qp.key}</code>
+                          <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium ${
+                            qp.required ? "bg-red-900/40 text-red-400" : "bg-gray-800 text-gray-400"
+                          }`}>
+                            {qp.required ? "Required" : "Optional"}
+                          </span>
+                          {isOverridden && (
+                            <span className="text-[10px] text-orange-400 bg-orange-900/30 rounded px-1.5 py-0.5">
+                              Overridden
+                            </span>
+                          )}
+                          {label && <span className="text-xs text-gray-400">{label}</span>}
+                          {isOverridden && (
+                            <button
+                              type="button"
+                              onClick={() => resetQueryParamOverride(qp.key)}
+                              className="ml-auto text-[10px] text-gray-400 hover:text-orange-400"
+                            >
+                              Reset to default
+                            </button>
+                          )}
+                        </div>
+                        {description && <p className="text-xs text-gray-500 mb-1.5">{description}</p>}
+                        <input
+                          type="text"
+                          value={effectiveValue}
+                          onChange={(e) => setQueryParamOverride(qp.key, e.target.value)}
+                          className="w-full bg-[#111] border border-gray-700 rounded px-2 py-1 text-white text-xs focus:border-orange-500 focus:outline-none font-mono"
+                          placeholder={qp.value || "value"}
+                        />
+                        {blankRequired && (
+                          <p className="text-xs text-red-400 mt-1 flex items-center gap-1">
+                            <AlertCircle className="w-3 h-3" /> Required parameter is blank — the call will fail until it is set.
+                          </p>
+                        )}
+                      </div>
+                    );
+                  })}
+                </div>
               )}
             </div>
           )}

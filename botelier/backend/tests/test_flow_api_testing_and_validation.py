@@ -7,7 +7,12 @@ os.environ.setdefault("NEXTAUTH_SECRET", "test-nextauth-secret")
 from botelier.api import api_tester
 from botelier.api.api_tester import ApiTestRequest
 from botelier.api.flow_versions import validate_flow_config
-from botelier.services.integration_client import APIErrorType
+from botelier.services.integration_client import (
+    APIErrorType,
+    IntegrationAPIConfig,
+    IntegrationClient,
+    _MissingRequiredVariables,
+)
 
 
 ACCOUNT_ID = "00000000-0000-0000-0000-000000000001"
@@ -127,3 +132,95 @@ def test_flow_validation_rejects_invalid_api_node_config():
     assert any("timeout must be 1-60 seconds" in error for error in errors)
     assert any("retry count must be 0-3" in error for error in errors)
     assert any("incomplete response mapping" in error for error in errors)
+
+
+class _FakeIntegrationType:
+    auth_type = "basic_or_jwt"
+
+    def get_auth_config(self):
+        return {
+            "base_url": "https://api.example.com",
+            "basic_auth_query_params": [],
+        }
+
+
+class _FakeIntegration:
+    def __init__(self, credentials=None):
+        self.integration_type = _FakeIntegrationType()
+        self._credentials = credentials or {}
+
+    def get_credentials(self):
+        return self._credentials
+
+
+def _endpoint_def(query_params):
+    return {"path": "/hotel_rooms", "query_params": query_params}
+
+
+def _build_url(query_param_overrides, variables, query_params):
+    client = IntegrationClient(ACCOUNT_ID, db=None)
+    config = IntegrationAPIConfig(
+        integration_id="int_1",
+        endpoint_id="hotel_rooms",
+        method="GET",
+        path="/hotel_rooms",
+        query_param_overrides=query_param_overrides,
+    )
+    return client._build_url(
+        _FakeIntegration(),
+        config,
+        variables,
+        endpoint_def=_endpoint_def(query_params),
+    )
+
+
+def test_query_param_override_replaces_seed_default():
+    url = _build_url(
+        query_param_overrides={"checkin": "2026-01-01"},
+        variables={},
+        query_params=[{"key": "checkin", "value": "{{checkin}}", "required": True}],
+    )
+    assert "checkin=2026-01-01" in url
+
+
+def test_query_param_seed_default_used_when_no_override():
+    url = _build_url(
+        query_param_overrides={},
+        variables={"checkin": "2026-02-02"},
+        query_params=[{"key": "checkin", "value": "{{checkin}}", "required": True}],
+    )
+    assert "checkin=2026-02-02" in url
+
+
+def test_empty_override_on_required_param_fails_fast():
+    with pytest.raises(_MissingRequiredVariables) as exc:
+        _build_url(
+            query_param_overrides={"checkin": ""},
+            variables={"checkin": "2026-02-02"},
+            query_params=[{"key": "checkin", "value": "{{checkin}}", "required": True}],
+        )
+    assert "checkin" in str(exc.value)
+
+
+def test_empty_override_on_optional_param_is_omitted():
+    url = _build_url(
+        query_param_overrides={"promo": ""},
+        variables={"checkin": "2026-02-02"},
+        query_params=[
+            {"key": "checkin", "value": "{{checkin}}", "required": True},
+            {"key": "promo", "value": "{{promo}}", "required": False},
+        ],
+    )
+    assert "checkin=2026-02-02" in url
+    assert "promo" not in url
+
+
+def test_override_for_unknown_param_key_is_ignored():
+    url = _build_url(
+        query_param_overrides={"nonexistent": "ignored"},
+        variables={"checkin": "2026-02-02"},
+        query_params=[{"key": "checkin", "value": "{{checkin}}", "required": True}],
+    )
+    assert "checkin=2026-02-02" in url
+    assert "nonexistent" not in url
+    assert "ignored" not in url

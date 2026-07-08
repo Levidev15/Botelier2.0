@@ -44,6 +44,7 @@ class ApiTestRequest(BaseModel):
     apiSource: Optional[str] = Field(default=None)
     integrationId: Optional[str] = Field(default=None)
     endpointId: Optional[str] = Field(default=None)
+    queryParamOverrides: Optional[Dict[str, str]] = Field(default=None)
     endpointName: Optional[str] = Field(default=None)
     nodeId: Optional[str] = Field(default=None)
     flowToolId: Optional[str] = Field(default=None)
@@ -114,6 +115,7 @@ async def test_api_request(
                 body_template=request.bodyTemplate or request.body,
                 timeout=min(int(request.timeout or 8), 30),
                 retry_count=int(request.retryCount or 0),
+                query_param_overrides=request.queryParamOverrides or {},
                 response_variables=[
                     ResponseVariable(variable_key=key, json_path=path)
                     for key, path in mapping.items()

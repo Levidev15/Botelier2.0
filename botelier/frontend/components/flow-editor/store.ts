@@ -88,6 +88,7 @@ export interface APIRequestConfig {
   endpointId?: string;
   endpointName?: string;
   autoMappingSource?: Record<string, string>;
+  queryParamOverrides?: Record<string, string>;
 }
 
 export interface ConfirmationConfig {

@@ -160,6 +160,7 @@ class IntegrationAPIConfig:
     body_template: Optional[str] = None
     timeout: int = 30
     retry_count: int = 2
+    query_param_overrides: dict[str, str] = field(default_factory=dict)
     response_variables: list[ResponseVariable] = field(default_factory=list)
     on_success_message: str = "Request completed successfully"
     on_error_message: str = "There was an issue processing your request"
@@ -1052,11 +1053,16 @@ class IntegrationClient:
         if endpoint_def:
             rendered_params: dict[str, str] = {}
             missing_required: list[str] = []
+            overrides = config.query_param_overrides or {}
             for qp in endpoint_def.get("query_params") or []:
                 key = qp.get("key")
                 if not key:
                     continue
-                rendered = self._substitute_variables(str(qp.get("value", "")), variables)
+                # Node-level override wins over the seed default template. An
+                # empty-string override intentionally blanks the param; for a
+                # required param that still fails fast below (fails closed).
+                template = overrides[key] if key in overrides else qp.get("value", "")
+                rendered = self._substitute_variables(str(template), variables)
                 if rendered == "" or "{{" in rendered:
                     if qp.get("required"):
                         missing_required.append(key)

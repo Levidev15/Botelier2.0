@@ -2022,6 +2022,14 @@ You are executing a structured conversation flow. Follow these guidelines:
         raw_path = api_config.get("path", api_config.get("url", ""))
         resolved_path = self._substitute_secrets(raw_path) if raw_path else raw_path
 
+        # Node-level query-param overrides: resolve {{secrets.*}} for parity with
+        # headers/body/path so an operator can reference a secret in an override.
+        raw_query_param_overrides = api_config.get("queryParamOverrides") or {}
+        resolved_query_param_overrides = {
+            k: self._substitute_secrets(v) if isinstance(v, str) else v
+            for k, v in raw_query_param_overrides.items()
+        }
+
         config = IntegrationAPIConfig(
             integration_id=api_config.get("integrationId", ""),
             endpoint_id=api_config.get("endpointId"),
@@ -2032,6 +2040,7 @@ You are executing a structured conversation flow. Follow these guidelines:
             body_template=resolved_body_template,
             timeout=api_config.get("timeout", 30),
             retry_count=api_config.get("retryCount", 2),
+            query_param_overrides=resolved_query_param_overrides,
             response_variables=response_vars,
             on_success_message=api_config.get("onSuccess", "Request completed successfully"),
             on_error_message=api_config.get(
