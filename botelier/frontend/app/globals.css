@@ -67,9 +67,17 @@
  */
 
 /* Background overrides */
+/* NOTE: every hardcoded bg-[#xxx] used inside .themed-app MUST have an entry
+ * in this block or it will appear black in light mode. Always use the 6-digit
+ * form (#111111 not #111) in component code — shorthands generate a different
+ * Tailwind class name and won't match the 6-digit entry below. When you add a
+ * new dark hex to any component, add its light-mode override here immediately.
+ * Preferred default for flow-editor inputs/cards: bg-[#1a1a1a] (already registered). */
 [data-theme="light"] .themed-app .bg-\[\#0a0a0a\],
+[data-theme="light"] .themed-app .bg-\[\#0b0b0b\],
 [data-theme="light"] .themed-app .bg-\[\#0d0d0d\],
 [data-theme="light"] .themed-app .bg-\[\#0f0f0f\],
+[data-theme="light"] .themed-app .bg-\[\#111\],
 [data-theme="light"] .themed-app .bg-\[\#111111\] {
   background-color: hsl(210, 40%, 98%);
 }

@@ -619,7 +619,7 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
                           type="text"
                           value={effectiveValue}
                           onChange={(e) => setQueryParamOverride(qp.key, e.target.value)}
-                          className="w-full bg-[#111] border border-gray-700 rounded px-2 py-1 text-white text-xs focus:border-orange-500 focus:outline-none font-mono"
+                          className="w-full bg-[#1a1a1a] border border-gray-700 rounded px-2 py-1 text-white text-xs focus:border-orange-500 focus:outline-none font-mono"
                           placeholder={qp.value || "value"}
                         />
                         {blankRequired && (
