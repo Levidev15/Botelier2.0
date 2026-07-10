@@ -7,6 +7,7 @@ This module handles:
 4. Executing slot collection, API calls, and conditions
 """
 
+import asyncio
 import json
 import re
 import time
@@ -467,6 +468,17 @@ class FlowExecutor:
         # exhausts its retries (with no wired fallback branch) escalates here
         # instead of dead-ending. None → escalation disabled (fail closed).
         self.escalation_target = escalation_target
+        # Non-GET idempotency guard: prevents two concurrent requests (e.g. two
+        # simultaneous POST /api/simulate/message or two voice pipeline turns) from
+        # executing the same mutating API node (POST/PUT/PATCH/DELETE) twice in the
+        # same session.  GET nodes are skipped — they are safe to repeat.
+        #
+        # _non_get_results: node_id → cached result dict for already-completed nodes.
+        #   A second call returns this immediately without re-firing the endpoint.
+        # _non_get_locks: node_id → asyncio.Lock that serialises concurrent callers.
+        #   The winner executes; every waiter picks up the cached result afterward.
+        self._non_get_results: dict[str, dict] = {}
+        self._non_get_locks: dict[str, asyncio.Lock] = {}
 
     def get_variables_in_flow_order(self) -> list[FlowVariable]:
         """Get variables in the order they appear in the flow traversal.
@@ -1950,11 +1962,51 @@ You are executing a structured conversation flow. Follow these guidelines:
         api_config = node.data.get("api", {})
         api_source = api_config.get("apiSource", "custom")
         thinking_message = (api_config.get("thinkingMessage") or "").strip()
+        method = (api_config.get("method", "GET") or "GET").upper()
 
-        if api_source == "integration" and api_config.get("integrationId"):
-            result = await self._handle_integration_api_request(node_id, node, api_config)
+        # Non-GET idempotency guard: POST/PUT/PATCH/DELETE nodes must fire at most
+        # once per session even when two requests arrive concurrently (e.g. two
+        # simultaneous POST /api/simulate/message or a voice pipeline race).
+        # GET nodes are inherently idempotent and bypass the guard entirely.
+        if method != "GET":
+            if node_id in self._non_get_results:
+                cached = self._non_get_results[node_id]
+                logger.info(
+                    f"API node {node_id} ({method}) already executed this session — "
+                    "returning cached result to prevent duplicate request"
+                )
+                cached_copy = dict(cached)
+                cached_copy["thinking_message"] = thinking_message
+                return cached_copy
+
+            if node_id not in self._non_get_locks:
+                self._non_get_locks[node_id] = asyncio.Lock()
+            lock = self._non_get_locks[node_id]
+
+            async with lock:
+                if node_id in self._non_get_results:
+                    cached = self._non_get_results[node_id]
+                    logger.info(
+                        f"API node {node_id} ({method}) executed by concurrent request — "
+                        "returning cached result to prevent duplicate request"
+                    )
+                    cached_copy = dict(cached)
+                    cached_copy["thinking_message"] = thinking_message
+                    return cached_copy
+
+                if api_source == "integration" and api_config.get("integrationId"):
+                    result = await self._handle_integration_api_request(node_id, node, api_config)
+                else:
+                    result = await self._handle_custom_api_request(node_id, node, api_config)
+
+                if result.get("success"):
+                    self._non_get_results[node_id] = result
+
         else:
-            result = await self._handle_custom_api_request(node_id, node, api_config)
+            if api_source == "integration" and api_config.get("integrationId"):
+                result = await self._handle_integration_api_request(node_id, node, api_config)
+            else:
+                result = await self._handle_custom_api_request(node_id, node, api_config)
 
         result["thinking_message"] = thinking_message
 
