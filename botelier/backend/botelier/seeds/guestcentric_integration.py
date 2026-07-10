@@ -59,9 +59,9 @@ GUESTCENTRIC_INTEGRATION = {
             "label": "Hotel ID",
             "type": "text",
             "placeholder": "Hotel ID",
-            "description": "Hotel ID provided by GuestCentric for this property. Required for Basic Auth (sent as a query parameter alongside the API key to scope requests to a single hotel); not used for JWT auth, which can span multiple hotels.",
+            "description": "Hotel ID GuestCentric assigned to this property. Stored as a connection setting (not a secret) and automatically added to every API request that needs it — it resolves {{hotel_id}} in endpoint paths and scopes Basic Auth requests to this hotel. Recommended for single-property connections on either auth method; leave blank only for JWT connections that intentionally span multiple hotels.",
             "required": False,
-            "show_when": {"auth_method": "basic_auth"},
+            "storage": "connection_config",
         },
     ],
     "endpoints": [

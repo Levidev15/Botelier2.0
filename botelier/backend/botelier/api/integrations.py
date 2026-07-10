@@ -393,6 +393,27 @@ async def get_integration_endpoints(
     return result
 
 
+def _split_fields_by_storage(
+    integration_type: IntegrationType, values: dict
+) -> tuple[dict, dict]:
+    """Partition submitted field values into (credentials, connection_config).
+
+    Any ``required_field`` flagged ``"storage": "connection_config"`` is a
+    non-secret, property-level constant (e.g. a hotel id) and belongs on the
+    connection's plaintext ``connection_config`` JSON instead of the encrypted
+    credentials blob. Everything else stays in credentials. Keys not declared on
+    the type default to credentials so unknown/legacy values are never dropped.
+    """
+    config_keys = {
+        f["key"]
+        for f in (integration_type.get_required_fields() or [])
+        if f.get("storage") == "connection_config"
+    }
+    credentials_part = {k: v for k, v in values.items() if k not in config_keys}
+    connection_config_part = {k: v for k, v in values.items() if k in config_keys}
+    return credentials_part, connection_config_part
+
+
 @router.post("/account/{account_id}/connect", response_model=AccountIntegrationResponse)
 async def connect_integration(
     account_id: str,
@@ -420,7 +441,12 @@ async def connect_integration(
         connection_name=request.connection_name or integration_type.name,
         status=IntegrationStatus.CONNECTING,
     )
-    integration.set_credentials(request.credentials)
+    cred_part, conn_config_part = _split_fields_by_storage(
+        integration_type, request.credentials
+    )
+    integration.set_credentials(cred_part)
+    if conn_config_part:
+        integration.set_connection_config(conn_config_part)
     db.add(integration)
     db.commit()
 
@@ -558,6 +584,7 @@ async def get_integration_credentials(
         raise HTTPException(status_code=404, detail="Integration not found")
 
     credentials = integration.get_credentials()
+    conn_config = integration.get_connection_config()
     required_fields = integration.integration_type.get_required_fields()
 
     safe_credentials: dict = {}
@@ -565,6 +592,10 @@ async def get_integration_credentials(
         key = field["key"]
         if field.get("type") == "password":
             safe_credentials[key] = ""
+        elif field.get("storage") == "connection_config":
+            # Non-secret; prefer connection_config, fall back to any legacy copy
+            # still living in the credentials blob so the edit form pre-fills it.
+            safe_credentials[key] = conn_config.get(key, credentials.get(key, ""))
         else:
             safe_credentials[key] = credentials.get(key, "")
 
@@ -606,16 +637,31 @@ async def update_integration_credentials(
 
     integration_type = integration.integration_type
     existing_credentials = integration.get_credentials()
+    existing_conn_config = integration.get_connection_config()
     required_fields = integration_type.get_required_fields()
+    config_keys = {
+        f["key"] for f in required_fields if f.get("storage") == "connection_config"
+    }
 
     merged = dict(existing_credentials)
+    merged_conn_config = dict(existing_conn_config)
     for field in required_fields:
         key = field["key"]
         incoming = request.credentials.get(key)
         if field.get("type") == "password" and not incoming:
             continue
-        if incoming is not None:
+        if incoming is None:
+            continue
+        if key in config_keys:
+            merged_conn_config[key] = incoming
+        else:
             merged[key] = incoming
+
+    # Lazily migrate legacy values: once a field is stored in connection_config,
+    # drop any stale copy from the encrypted credentials blob so the two stores
+    # cannot diverge (connection_config is the source of truth for these keys).
+    for key in config_keys:
+        merged.pop(key, None)
 
     if integration_type.auth_type == "oauth2_client_credentials":
         gateway_url = merged.get("gateway_url", "")
@@ -625,6 +671,10 @@ async def update_integration_credentials(
         integration.connection_name = request.connection_name or integration.connection_name
 
     integration.set_credentials(merged)
+    integration.set_connection_config(merged_conn_config)
+    # Validation/token calls read from a combined view so a connection_config
+    # field (e.g. hotelId used to scope a Basic Auth test) is still visible.
+    auth_input = {**merged_conn_config, **merged}
     integration.status = IntegrationStatus.CONNECTING
     integration.last_error = None
     db.commit()
@@ -633,7 +683,7 @@ async def update_integration_credentials(
         auth_type = integration_type.auth_type
 
         if auth_type == "oauth2_client_credentials":
-            token_result = await obtain_oauth_token(integration_type, merged)
+            token_result = await obtain_oauth_token(integration_type, auth_input)
             if token_result.get("success"):
                 integration.set_access_token(token_result["access_token"])
                 if token_result.get("refresh_token"):
@@ -657,7 +707,7 @@ async def update_integration_credentials(
         elif auth_type == "basic_or_jwt":
             auth_method = merged.get("auth_method", "basic_auth")
             if auth_method == "basic_auth":
-                validation_result = await validate_basic_auth(integration_type, merged)
+                validation_result = await validate_basic_auth(integration_type, auth_input)
                 if validation_result.get("success"):
                     integration.status = IntegrationStatus.CONNECTED
                     integration.last_error = None
@@ -665,7 +715,7 @@ async def update_integration_credentials(
                     integration.status = IntegrationStatus.ERROR
                     integration.last_error = validation_result.get("error", "Auth validation failed")
             elif auth_method == "jwt":
-                token_result = await obtain_jwt_token(integration_type, merged)
+                token_result = await obtain_jwt_token(integration_type, auth_input)
                 if token_result.get("success"):
                     integration.set_access_token(token_result["access_token"])
                     if token_result.get("refresh_token"):

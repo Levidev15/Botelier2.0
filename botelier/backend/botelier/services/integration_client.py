@@ -1013,6 +1013,10 @@ class IntegrationClient:
         endpoint_def: Optional[dict] = None,
     ) -> str:
         credentials = integration.get_credentials()
+        try:
+            conn_config = integration.get_connection_config() or {}
+        except Exception:
+            conn_config = {}
         auth_type = integration.integration_type.auth_type
         auth_config = integration.integration_type.get_auth_config()
 
@@ -1029,12 +1033,26 @@ class IntegrationClient:
 
         path = self._substitute_variables(path, variables)
 
-        hotel_id = credentials.get("hotel_id") or credentials.get("hotelId")
+        # Resolve the property-level hotel id for path templates. Prefer the
+        # non-secret connection_config (where connections now store it) and fall
+        # back to the encrypted credentials blob for legacy connections that saved
+        # it there. Both snake_case and camelCase keys are accepted so the seed
+        # field key "hotelId" bridges to the "{{hotel_id}}" path placeholder.
+        hotel_id = (
+            conn_config.get("hotel_id")
+            or conn_config.get("hotelId")
+            or credentials.get("hotel_id")
+            or credentials.get("hotelId")
+        )
         if hotel_id:
-            path = path.replace("{hotelId}", hotel_id)
+            # Double-brace forms MUST be replaced before single-brace forms:
+            # "{{hotel_id}}" contains "{hotel_id}" as a substring, so a single-
+            # brace replace run first would corrupt it to "{value}" (leaving the
+            # outer braces). Order double → single so whole placeholders resolve.
             path = path.replace("{{hotelId}}", hotel_id)
-            path = path.replace("{hotel_id}", hotel_id)
             path = path.replace("{{hotel_id}}", hotel_id)
+            path = path.replace("{hotelId}", hotel_id)
+            path = path.replace("{hotel_id}", hotel_id)
 
         # Fail fast: any {{var}} still in the path after all substitutions means a
         # required value (e.g. hotel_id) was never resolved — either missing from
@@ -1079,7 +1097,13 @@ class IntegrationClient:
             if basic_auth_query_params:
                 params = {}
                 for param_key in basic_auth_query_params:
-                    param_value = credentials.get(param_key)
+                    # Non-secret scoping params (e.g. hotelId) now live in
+                    # connection_config. Source it FIRST — same precedence as the
+                    # path substitution above — so a stale credentials copy can't
+                    # make the query param disagree with the resolved path. Secret
+                    # params (e.g. apikey) are never in connection_config and fall
+                    # through to credentials.
+                    param_value = conn_config.get(param_key) or credentials.get(param_key)
                     if param_value:
                         params[param_key] = param_value
                 if params:
