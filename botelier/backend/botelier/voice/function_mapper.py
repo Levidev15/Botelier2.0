@@ -1616,7 +1616,14 @@ class FunctionMapper:
             # Add current progress to result for LLM context (non-terminal actions only)
             result["progress"] = executor.get_progress()
 
-            await params.result_callback(result)
+            # Build a clean, voice-friendly result for the LLM — omit internal
+            # routing fields and raw response blobs that confuse the model.
+            llm_result = {
+                "result": result.get("voice_result") or result.get("message", "Done"),
+                "success": result.get("success", True),
+                "progress": result["progress"],
+            }
+            await params.result_callback(llm_result)
 
         return handler
 

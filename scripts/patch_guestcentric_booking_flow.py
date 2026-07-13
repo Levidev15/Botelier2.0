@@ -246,8 +246,13 @@ def build_corrected_config(existing_config: dict) -> dict:
                         "room_rates":      "$.room_rates",
                     },
                     response_instructions=(
-                        "List the available room types by name. Then list the available rate "
-                        "plans. Ask which room type and rate plan they would like."
+                        "The available room and rate options are: {{room_rates}}\n\n"
+                        "Each item has: room_type_name (say this) and room_type_code (store this when the caller picks it), "
+                        "plus rate_plan_name (say this) and rate_plan_code (store this when the caller picks it), and total_price.\n\n"
+                        "List the unique room types by their room_type_name. Then list the unique rate plans by their rate_plan_name. "
+                        "Ask the caller which room type they prefer. "
+                        "When they choose by name, look up the matching room_type_code and store it as room_type_code — never store the display name.\n\n"
+                        "If the list is empty or {{room_rates}} is not set, apologise and offer to try different dates."
                     ),
                     on_error=(
                         "I wasn't able to retrieve available rooms right now. Would you like "
@@ -268,9 +273,10 @@ def build_corrected_config(existing_config: dict) -> dict:
             "data": {
                 "name": "Room Type Selection",
                 "instructions": (
-                    "Present the available room types from {{available_rooms}} to the caller. "
-                    "When the caller picks one, identify the matching room_type_code from the "
-                    "availability data and store that exact code as room_type_code."
+                    "Present the unique room types by name (from {{available_rooms}}). "
+                    "The {{room_rates}} data contains the full name→code mapping: each item has room_type_name and room_type_code. "
+                    "When the caller picks a room type by name, find the matching room_type_code in {{room_rates}} and store "
+                    "THAT CODE as room_type_code — never store the display name."
                 ),
                 "slot": {
                     "variableKey": "room_type_code",
@@ -292,11 +298,10 @@ def build_corrected_config(existing_config: dict) -> dict:
             "data": {
                 "name": "Rate Plan Selection",
                 "instructions": (
-                    "Present the available rate plans from {{rates}} to the caller. "
-                    "When the caller picks one, identify the matching rate_plan_code from "
-                    "the availability data and store that exact code as rate_plan_code. "
-                    "If {{rates}} is empty or unavailable, use the rate plan codes from "
-                    "{{room_rates}} instead."
+                    "Present the unique rate plans by name (from {{rates}}). "
+                    "The {{room_rates}} data contains the full name→code mapping: each item has rate_plan_name and rate_plan_code. "
+                    "When the caller picks a rate plan by name, find the matching rate_plan_code in {{room_rates}} and store "
+                    "THAT CODE as rate_plan_code — never store the display name."
                 ),
                 "slot": {
                     "variableKey": "rate_plan_code",

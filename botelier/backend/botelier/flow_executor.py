@@ -2147,12 +2147,17 @@ You are executing a structured conversation flow. Follow these guidelines:
             success_msg = config.on_success_message
             success_msg = substitute_variables(success_msg, self.state.collected_slots)
 
+            response_instructions = (api_config.get("responseInstructions") or "").strip()
+            if response_instructions:
+                voice_result = substitute_variables(response_instructions, self.state.collected_slots)
+            else:
+                voice_result = success_msg
+
             return {
                 "success": True,
                 "message": success_msg,
                 "action": None,
-                "response": response.data,
-                "extracted_variables": response.extracted_variables,
+                "voice_result": voice_result,
                 "current_node_id": next_node_id,
             }
         else:
@@ -2312,12 +2317,18 @@ You are executing a structured conversation flow. Follow these guidelines:
 
             success_msg = api_config.get("onSuccess", "Request completed successfully")
             success_msg = substitute_variables(success_msg, self.state.collected_slots)
+
+            response_instructions = (api_config.get("responseInstructions") or "").strip()
+            if response_instructions:
+                voice_result = substitute_variables(response_instructions, self.state.collected_slots)
+            else:
+                voice_result = success_msg
+
             return {
                 "success": True,
                 "message": success_msg,
                 "action": None,
-                "data": response.data,
-                "extracted_variables": response.extracted_variables,
+                "voice_result": voice_result,
                 "current_node_id": next_node.id if next_node else node_id,
             }
 
@@ -2326,7 +2337,6 @@ You are executing a structured conversation flow. Follow these guidelines:
             "message": response.error_message
             or api_config.get("onError", "There was an issue processing your request"),
             "action": None,
-            "error": response.error_message,
             "error_type": response.error_type.value,
             "status_code": response.status_code,
             "current_node_id": node_id,
@@ -2372,19 +2382,19 @@ You are executing a structured conversation flow. Follow these guidelines:
             success_msg = api_config.get("onSuccess", "Request completed successfully")
             success_msg = substitute_variables(success_msg, self.state.collected_slots)
 
-            response_instructions = api_config.get("responseInstructions", "")
+            response_instructions = (api_config.get("responseInstructions") or "").strip()
+            if response_instructions:
+                voice_result = substitute_variables(response_instructions, self.state.collected_slots)
+            else:
+                voice_result = success_msg
 
-            result = {
+            return {
                 "success": True,
                 "message": success_msg,
                 "action": None,
-                "response": response_data,
+                "voice_result": voice_result,
                 "current_node_id": next_node_id,
             }
-            if response_instructions:
-                result["response_instructions"] = response_instructions
-
-            return result
 
         elif status_code == 401 or status_code == 403:
             return {

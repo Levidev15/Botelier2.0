@@ -945,19 +945,19 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
 
       <div>
         <label className="block text-sm font-medium text-gray-400 mb-1">
-          Response Instructions
+          Voice result script
         </label>
         <textarea
           value={api.responseInstructions || ""}
           onChange={(e) => updateApi({ responseInstructions: e.target.value })}
-          rows={3}
+          rows={4}
           className={`${inputCls} resize-none text-xs`}
           placeholder={selectedEndpoint
-            ? `For "${selectedEndpoint.name}": tell the AI how to present the results — e.g., "Mention the top 3 options by name and price, then ask which one the caller prefers."`
-            : "Tell the AI how to present the API response to the caller — e.g., 'Summarize the reservation details including room type, dates, and price.'"}
+            ? `For "${selectedEndpoint.name}": this text (with {{variables}} filled in) becomes the tool result the AI reads — e.g., "The available rooms are: {{available_rooms}}. Ask which one the caller prefers."`
+            : "This text (with {{variables}} filled in) is exactly what the AI reads as the tool result. Use {{variable_name}} to embed extracted data — e.g., 'Booking confirmed. Reservation code: {{crs_reservation_code}}.'"}
         />
         <p className="text-xs text-gray-500 mt-1">
-          Instructions for how the AI should format and present the response to the caller
+          Becomes the tool result the AI reads after the API call — use {"{{variable}}"}  placeholders to embed extracted values. Leave blank to use the "On success" message.
         </p>
       </div>
 
