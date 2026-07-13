@@ -6,6 +6,7 @@ import { useFlowStore, APIRequestNodeData, APIRequestConfig } from "../store";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import APIRequestHeadersSection from "./APIRequestHeadersSection";
+import VariableReferencePills from "./VariableReferencePills";
 
 interface EndpointVariable {
   key: string;
@@ -681,6 +682,7 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
         <p className="text-xs text-gray-500 mt-1">
           Spoken aloud during the API call so callers don&apos;t hear silence
         </p>
+        <VariableReferencePills text={api.thinkingMessage || ""} variables={variables} />
       </div>
 
       <div className="grid grid-cols-2 gap-3">
@@ -957,8 +959,9 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
             : "This text (with {{variables}} filled in) is exactly what the AI reads as the tool result. Use {{variable_name}} to embed extracted data — e.g., 'Booking confirmed. Reservation code: {{crs_reservation_code}}.'"}
         />
         <p className="text-xs text-gray-500 mt-1">
-          Becomes the tool result the AI reads after the API call — use {"{{variable}}"}  placeholders to embed extracted values. Leave blank to use the "On success" message.
+          Becomes the tool result the AI reads after the API call — use {"{{variable}}"} placeholders to embed extracted values. Leave blank to use the "On success" message.
         </p>
+        <VariableReferencePills text={api.responseInstructions || ""} variables={variables} />
       </div>
 
       <div>
