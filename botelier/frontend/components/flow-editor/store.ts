@@ -1145,6 +1145,10 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
       position: { x: 250, y: 750 },
       data: {
         name: "Room Type Selection",
+        instructions:
+          "Present the available room types from {{available_rooms}} to the caller. " +
+          "When the caller picks one, identify the matching room_type_code from the availability data " +
+          "and store that exact code as room_type_code.",
         slot: {
           variableKey: "room_type_code",
           prompt:
@@ -1162,6 +1166,11 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
       position: { x: 250, y: 900 },
       data: {
         name: "Rate Plan Selection",
+        instructions:
+          "Present the available rate plans from {{rates}} to the caller. " +
+          "When the caller picks one, identify the matching rate_plan_code from the availability data " +
+          "and store that exact code as rate_plan_code. " +
+          "If {{rates}} is empty or not available, use the rate plan codes from {{room_rates}} instead.",
         slot: {
           variableKey: "rate_plan_code",
           prompt:
