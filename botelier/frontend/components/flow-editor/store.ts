@@ -1034,10 +1034,11 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
         name: "Check-in Date",
         slot: {
           variableKey: "checkin",
-          prompt: "What date would you like to check in? Please provide the date as day, month, and year — for example, the fifteenth of July.",
+          prompt: "What date would you like to check in?",
+          instructions: "Once the caller provides the date, store it in YYYY-MM-DD format (e.g. 2025-12-15). The date must be today or a future date.",
           type: "date",
           validation: { requireFuture: true },
-          retryPrompt: "Please provide a future date — for example, the 15th of December.",
+          retryPrompt: "Please provide a future check-in date.",
           maxRetries: 3,
           useBuiltInValidator: true,
         },
@@ -1051,7 +1052,8 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
         name: "Check-out Date",
         slot: {
           variableKey: "checkout",
-          prompt: "And what date will you be checking out? Please give me the day, month, and year.",
+          prompt: "And what date will you be checking out?",
+          instructions: "Once the caller provides the date, store it in YYYY-MM-DD format (e.g. 2025-12-18). The date must be after the check-in date.",
           type: "date",
           validation: {
             requireFuture: true,
@@ -1119,12 +1121,12 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
           thinkingMessage: "Let me check room availability for those dates — one moment please.",
           responseMapping: {
             available_rooms: "$.rooms[*].name",
-            rates:           "$.rates[*].rate_plan_code",
+            rates:           "$.rates[*].rate_plan_name",
             room_rates:      "$.room_rates",
           },
           autoMappingSource: {
             available_rooms: "$.rooms[*].name",
-            rates:           "$.rates[*].rate_plan_code",
+            rates:           "$.rates[*].rate_plan_name",
             room_rates:      "$.room_rates",
           },
           responseInstructions:
