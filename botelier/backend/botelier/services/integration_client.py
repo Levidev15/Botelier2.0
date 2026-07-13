@@ -374,11 +374,15 @@ class IntegrationClient:
                 error_type=APIErrorType.VALIDATION_ERROR.value,
                 error_message=str(exc)[:500],
             )
+            missing_names = ", ".join(exc.names) if exc.names else str(exc)
             return APIResponse(
                 success=False,
                 status_code=0,
                 error_type=APIErrorType.VALIDATION_ERROR,
-                error_message=config.on_error_message,
+                error_message=(
+                    f"Required information not yet collected: {missing_names}. "
+                    "Ask the caller to provide this information, then try again."
+                ),
             )
         headers = self._build_headers(integration, config)
         body = self._build_body(config, effective_vars, endpoint_def)

@@ -1103,8 +1103,10 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
       data: {
         name: "Check Availability (GuestCentric)",
         instructions:
-          "After this node completes, present the available room types and rate plans to the caller. " +
-          "If no rooms are available, apologise and offer to try different dates.",
+          "After this node completes, present the available room types clearly by name, then present the available " +
+          "rate plans. Ask the caller to choose one of each. " +
+          "If no rooms are available or this call fails, apologise and ask if they would like to try different " +
+          "dates — do NOT transfer the call.",
         api: {
           method: "GET",
           url: "",
@@ -1116,15 +1118,17 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
           thinkingMessage: "Let me check room availability for those dates — one moment please.",
           responseMapping: {
             available_rooms: "$.rooms[*].name",
-            rates:           "$.rates[*].name",
+            rates:           "$.rates",
           },
           autoMappingSource: {
             available_rooms: "$.rooms[*].name",
-            rates:           "$.rates[*].name",
+            rates:           "$.rates",
           },
           responseInstructions:
-            "Describe the available room types and their rate plans to the caller. " +
+            "List the available room types by name. Then list the available rate plans. " +
             "Ask which room type and rate plan they would like.",
+          onError:
+            "I wasn't able to retrieve available rooms right now. Would you like to try different check-in or check-out dates?",
           timeout: 15,
           retryCount: 1,
         } as APIRequestConfig,
@@ -1196,6 +1200,8 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
           responseInstructions:
             "Do not mention this lookup to the caller. If no matching room rate is returned, apologise and offer " +
             "to pick a different room type or rate plan.",
+          onError:
+            "I wasn't able to confirm that room and rate combination. Please choose a different room type or rate plan.",
           timeout: 15,
           retryCount: 1,
         } as APIRequestConfig,
@@ -1239,6 +1245,8 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
             cancellation_policy_id: "$[0].id",
           },
           responseInstructions: "Do not mention this lookup to the caller.",
+          onError:
+            "I had a technical issue retrieving the cancellation policy. I will proceed with the booking and note that the policy should be confirmed.",
           timeout: 15,
           retryCount: 1,
         } as APIRequestConfig,
@@ -1426,6 +1434,8 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
           responseInstructions:
             "Tell the caller their reservation is confirmed with GuestCentric and read out their confirmation code: " +
             "{{crs_reservation_code}}. Offer to repeat it if needed.",
+          onError:
+            "I'm sorry, there was a problem submitting your reservation. Could you confirm your details are correct and I will try once more?",
           timeout: 20,
           retryCount: 1,
         } as APIRequestConfig,
