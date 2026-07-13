@@ -982,7 +982,8 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     { key: "adults",                 type: "number" as SlotType, description: "Number of adult guests (GuestCentric `adults` query param for availability)", required: true  },
     { key: "number_of_adults",       type: "number" as SlotType, description: "Number of adult guests (GuestCentric `number_of_adults` body field for booking — auto-copied from `adults`)", required: false, defaultValue: "1" },
     { key: "available_rooms",        type: "text"   as SlotType, description: "Available room names (from GuestCentric hotel rooms)",             required: false },
-    { key: "rates",                  type: "text"   as SlotType, description: "Available rate plan names (from GuestCentric hotel rooms)",        required: false },
+    { key: "rates",                  type: "text"   as SlotType, description: "Available rate plan codes (from GuestCentric hotel rooms)",         required: false },
+    { key: "room_rates",             type: "text"   as SlotType, description: "Full room+rate combinations JSON (from GuestCentric hotel rooms)", required: false },
     { key: "room_type_code",         type: "text"   as SlotType, description: "Selected room type code",                                          required: true  },
     { key: "rate_plan_code",         type: "text"   as SlotType, description: "Selected rate plan code",                                          required: true  },
     { key: "room_rate_code",         type: "text"   as SlotType, description: "Room + rate combination code (auto-derived by re-checking availability for the selected room + rate)", required: true },
@@ -1033,7 +1034,7 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
         name: "Check-in Date",
         slot: {
           variableKey: "checkin",
-          prompt: "What date would you like to check in?",
+          prompt: "What date would you like to check in? Please provide the date as day, month, and year — for example, the fifteenth of July.",
           type: "date",
           validation: { requireFuture: true },
           retryPrompt: "Please provide a future date — for example, the 15th of December.",
@@ -1050,7 +1051,7 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
         name: "Check-out Date",
         slot: {
           variableKey: "checkout",
-          prompt: "And what date will you be checking out?",
+          prompt: "And what date will you be checking out? Please give me the day, month, and year.",
           type: "date",
           validation: {
             requireFuture: true,
@@ -1118,11 +1119,13 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
           thinkingMessage: "Let me check room availability for those dates — one moment please.",
           responseMapping: {
             available_rooms: "$.rooms[*].name",
-            rates:           "$.rates",
+            rates:           "$.rates[*].rate_plan_code",
+            room_rates:      "$.room_rates",
           },
           autoMappingSource: {
             available_rooms: "$.rooms[*].name",
-            rates:           "$.rates",
+            rates:           "$.rates[*].rate_plan_code",
+            room_rates:      "$.room_rates",
           },
           responseInstructions:
             "List the available room types by name. Then list the available rate plans. " +
@@ -1144,7 +1147,7 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
           variableKey: "room_type_code",
           prompt:
             "Which room type would you prefer? The available options are: {{available_rooms}}. " +
-            "Please tell me the room type code or name.",
+            "I will record the exact room type code for your selection.",
           type: "text",
           retryPrompt: "Could you repeat which room type you'd like?",
           maxRetries: 3,
@@ -1161,7 +1164,7 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
           variableKey: "rate_plan_code",
           prompt:
             "And which rate plan would you like? The available plans are: {{rates}}. " +
-            "Please tell me the rate plan code or name.",
+            "I will record the exact rate plan code for your selection.",
           type: "text",
           retryPrompt: "Could you repeat which rate plan you'd like?",
           maxRetries: 3,
@@ -1196,6 +1199,10 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
             room_rate_code: "$.room_rates[0].room_rate_code",
             total_price:    "$.room_rates[0].total_price",
             meal_plan_id:   "$.room_rates[0].meal_plan_prices.included.id",
+          },
+          queryParamOverrides: {
+            room_type_code: "{{room_type_code}}",
+            rate_plan_code: "{{rate_plan_code}}",
           },
           responseInstructions:
             "Do not mention this lookup to the caller. If no matching room rate is returned, apologise and offer " +
