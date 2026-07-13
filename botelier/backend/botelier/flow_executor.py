@@ -303,6 +303,25 @@ def substitute_variables(template: str, variables: dict[str, Any]) -> str:
     return re.sub(r"\{\{(\w+)\}\}", replace_var, template)
 
 
+def _build_api_voice_result(success_msg: str, extracted_vars: dict[str, Any]) -> str:
+    """Fallback voice result for API nodes whose ``responseInstructions`` is blank.
+
+    Returns *success_msg* plus a compact, bounded summary of every extracted
+    variable so the LLM has the data it needs without seeing the raw API
+    response body.  At most 6 variables are included; values longer than 200
+    characters are truncated with an ellipsis.
+    """
+    if not extracted_vars:
+        return success_msg
+    lines: list[str] = []
+    for key, value in list(extracted_vars.items())[:6]:
+        formatted = _format_variable_value(value)
+        if len(formatted) > 200:
+            formatted = formatted[:197] + "..."
+        lines.append(f"{key}: {formatted}")
+    return f"{success_msg}. Extracted data — {'; '.join(lines)}"
+
+
 def _coerce_number(value: Any) -> Optional[float]:
     """Best-effort numeric coercion for comparison operators."""
     try:
@@ -2015,7 +2034,19 @@ You are executing a structured conversation flow. Follow these guidelines:
     async def _handle_integration_api_request(
         self, node_id: str, node: FlowNode, api_config: dict
     ) -> dict:
-        """Handle API request using IntegrationClient for connected integrations."""
+        """Handle API request using IntegrationClient for connected integrations.
+
+        Returns a dict with the following contract:
+        - ``success`` (bool) — whether the API call succeeded.
+        - ``action`` (None | "transfer" | "end") — terminal action to take.
+        - ``voice_result`` (str, success only) — rendered ``responseInstructions``
+          (with ``{{variables}}`` substituted) **or** a compact extracted-data
+          summary when ``responseInstructions`` is blank.  This is what the LLM
+          reads as the tool result after ``FunctionMapper`` promotes it to ``result``.
+        - ``message`` (str) — human-readable status (onSuccess / onError text).
+        - ``current_node_id`` (str) — node the flow advanced to.
+        - Error-only keys: ``error_type``, ``status_code``.
+        """
         from botelier.services.action_executor import (
             ActionContext,
             ActionExecutionRequest,
@@ -2151,7 +2182,7 @@ You are executing a structured conversation flow. Follow these guidelines:
             if response_instructions:
                 voice_result = substitute_variables(response_instructions, self.state.collected_slots)
             else:
-                voice_result = success_msg
+                voice_result = _build_api_voice_result(success_msg, response.extracted_variables)
 
             return {
                 "success": True,
@@ -2285,7 +2316,12 @@ You are executing a structured conversation flow. Follow these guidelines:
     async def _handle_custom_api_request(
         self, node_id: str, node: FlowNode, api_config: dict
     ) -> dict:
-        """Handle direct custom URL API request through ActionExecutor."""
+        """Handle direct custom URL API request through ActionExecutor.
+
+        Returns the same dict contract as ``_handle_integration_api_request``:
+        ``success``, ``action``, ``voice_result`` (success) or ``error_type`` /
+        ``status_code`` (failure), ``message``, ``current_node_id``.
+        """
         from botelier.services.action_executor import (
             ActionContext,
             ActionExecutionRequest,
@@ -2322,7 +2358,7 @@ You are executing a structured conversation flow. Follow these guidelines:
             if response_instructions:
                 voice_result = substitute_variables(response_instructions, self.state.collected_slots)
             else:
-                voice_result = success_msg
+                voice_result = _build_api_voice_result(success_msg, response.extracted_variables)
 
             return {
                 "success": True,
@@ -2354,6 +2390,8 @@ You are executing a structured conversation flow. Follow these guidelines:
             response_data = response.text
 
         if 200 <= status_code < 300:
+            newly_extracted: dict[str, Any] = {}
+
             if api_config.get("responseVariables"):
                 for rv in api_config["responseVariables"]:
                     var_key = rv.get("variableKey")
@@ -2362,14 +2400,17 @@ You are executing a structured conversation flow. Follow these guidelines:
                         value = self._extract_json_value(response_data, json_path)
                         if value is not None:
                             self.state.set_variable(var_key, value)
+                            newly_extracted[var_key] = value
                         elif rv.get("defaultValue") is not None:
                             self.state.set_variable(var_key, rv["defaultValue"])
+                            newly_extracted[var_key] = rv["defaultValue"]
 
             if api_config.get("responseMapping"):
                 for var_key, json_path in api_config["responseMapping"].items():
                     value = self._extract_json_value(response_data, json_path)
                     if value is not None:
                         self.state.set_variable(var_key, value)
+                        newly_extracted[var_key] = value
 
             next_node = self.state.get_next_node(node_id)
             if next_node:
@@ -2386,7 +2427,7 @@ You are executing a structured conversation flow. Follow these guidelines:
             if response_instructions:
                 voice_result = substitute_variables(response_instructions, self.state.collected_slots)
             else:
-                voice_result = success_msg
+                voice_result = _build_api_voice_result(success_msg, newly_extracted)
 
             return {
                 "success": True,

@@ -1130,13 +1130,20 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
             room_rates:      "$.room_rates",
           },
           responseInstructions:
-            "The available room and rate options are: {{room_rates}}\n\n" +
-            "Each item has: room_type_name (say this) and room_type_code (store this when the caller picks it), " +
-            "plus rate_plan_name (say this) and rate_plan_code (store this when the caller picks it), and total_price.\n\n" +
-            "List the unique room types by their room_type_name. Then list the unique rate plans by their rate_plan_name. " +
-            "Ask the caller which room type they prefer. " +
-            "When they choose by name, look up the matching room_type_code and store it as room_type_code — never store the display name.\n\n" +
-            "If the list is empty or {{room_rates}} is not set, apologise and offer to try different dates.",
+            "Availability results: {{room_rates}}\n\n" +
+            "Each JSON object in this list contains:\n" +
+            "- room_type_name: display name to speak to the caller (e.g. \"Superior Room\")\n" +
+            "- room_type_code: internal code to store as room_type_code when that room is chosen (e.g. \"SUP\")\n" +
+            "- rate_plan_name: rate plan display name (e.g. \"Best Available Rate\")\n" +
+            "- rate_plan_code: internal code to store as rate_plan_code when that plan is chosen\n" +
+            "- total_price: total stay price\n\n" +
+            "Steps:\n" +
+            "1. Extract unique room types (deduplicate by room_type_code). List each by its room_type_name.\n" +
+            "2. Extract unique rate plans (deduplicate by rate_plan_code). List each by its rate_plan_name.\n" +
+            "3. Ask the caller which room type they prefer.\n" +
+            "4. When they choose by name, find the matching room_type_code and store it — never store the display name.\n" +
+            "5. Then ask which rate plan they prefer; find and store the matching rate_plan_code.\n\n" +
+            "If the list is empty, apologise and offer to try different dates.",
           onError:
             "I wasn't able to retrieve available rooms right now. Would you like to try different check-in or check-out dates?",
           timeout: 15,

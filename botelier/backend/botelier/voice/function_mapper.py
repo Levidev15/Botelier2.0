@@ -1616,14 +1616,17 @@ class FunctionMapper:
             # Add current progress to result for LLM context (non-terminal actions only)
             result["progress"] = executor.get_progress()
 
-            # Build a clean, voice-friendly result for the LLM — omit internal
-            # routing fields and raw response blobs that confuse the model.
-            llm_result = {
-                "result": result.get("voice_result") or result.get("message", "Done"),
-                "success": result.get("success", True),
-                "progress": result["progress"],
-            }
-            await params.result_callback(llm_result)
+            # Clean the result for the LLM — remove raw API response blobs that
+            # add noise, promote voice_result → result, but preserve all control
+            # fields (speak_exactly, next_slot, out_of_order, etc.) that
+            # slot-collection handlers set and the LLM needs to read.
+            for _blob_key in ("response", "data", "extracted_variables", "response_instructions"):
+                result.pop(_blob_key, None)
+            if "voice_result" in result:
+                result["result"] = result.pop("voice_result")
+            elif "result" not in result:
+                result["result"] = result.get("message", "Done")
+            await params.result_callback(result)
 
         return handler
 
