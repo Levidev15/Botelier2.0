@@ -1,7 +1,6 @@
 import base64
 from datetime import datetime, timedelta
 from typing import List, Optional
-from urllib.parse import urlparse
 from uuid import UUID
 
 import httpx
@@ -21,47 +20,26 @@ from botelier.models.integration import (
     IntegrationStatus,
     IntegrationType,
 )
-from botelier.services.integration_client import build_auth_request_query_params
+from botelier.services.integration_client import (
+    _validate_opera_gateway_url as _validate_opera_gateway_url_shared,
+    build_auth_request_query_params,
+)
 from botelier.services.ssrf_safe_transport import SSRFSafeTransport
 
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
 
-# Accepted Oracle hostname suffixes for the OHIP gateway URL.
-# Production environments end in .oraclecloud.com or .oracle.com.
-# Oracle's self-service sandbox environments end in .ocs.oc-test.com
-# (e.g. *.hospitality-api.<region>.ocs.oc-test.com).
-_ORACLE_ALLOWED_SUFFIXES = (
-    ".oraclecloud.com",
-    ".oracle.com",
-    ".ocs.oc-test.com",
-)
-
-
 def _validate_opera_gateway_url(gateway_url: str) -> None:
-    """Reject any gateway_url that does not point to an Oracle-controlled host.
+    """API-edge wrapper around the single shared Oracle gateway-URL validator.
 
-    Only https:// URLs whose hostname ends with a known Oracle domain suffix
-    are accepted.  This prevents SSRF via attacker-controlled gateway_url
-    values that could redirect outbound OAuth / API calls to internal hosts
-    or attacker-controlled servers.
+    The allow-list and validation logic live once in the integration runtime's
+    Opera adapter (re-exported via ``integration_client``); this wrapper only
+    translates the ValueError it raises into an HTTP 400 for connect-flow
+    callers, keeping a single source of truth for the SSRF allow-list.
     """
-    if not gateway_url:
-        raise HTTPException(status_code=400, detail="gateway_url is required")
     try:
-        parsed = urlparse(gateway_url)
-    except Exception:
-        raise HTTPException(status_code=400, detail="Invalid gateway_url")
-    if parsed.scheme != "https":
-        raise HTTPException(status_code=400, detail="gateway_url must use HTTPS")
-    hostname = (parsed.hostname or "").lower()
-    if not any(hostname.endswith(suffix) for suffix in _ORACLE_ALLOWED_SUFFIXES):
-        raise HTTPException(
-            status_code=400,
-            detail=(
-                "gateway_url must be an Oracle Cloud hostname "
-                "(*.oraclecloud.com, *.oracle.com, or *.ocs.oc-test.com for sandbox)"
-            ),
-        )
+        _validate_opera_gateway_url_shared(gateway_url)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
 
 
 def _assert_account_access(

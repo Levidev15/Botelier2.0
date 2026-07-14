@@ -12,6 +12,7 @@ Read `opera_integration.py` (`auth_type: "oauth2_client_credentials"`) and `gues
 - `auth_type` today is one of `"oauth2_client_credentials"` or `"basic_or_jwt"` — not `"oauth2"`, `"api_key"`, or `"basic_auth"`.
 - The seed function queries `IntegrationType` by `slug`, updates it in place if found, otherwise constructs and inserts a new row — there is no `INSERT ... ON CONFLICT` upsert and no hardcoded `id`.
 - `IntegrationType` fields are `slug`, `name`, `description`, `logo_url`, `provider`, `auth_type`, `documentation_url`, `auth_config`, `required_fields`, `endpoints` (set via `set_auth_config` / `set_required_fields` / `set_endpoints`). There is no top-level `category`, `base_url`, or `config_schema` field.
+- Runtime engine now lives in `services/integration_runtime/`; `services/integration_client.py` is a re-export facade. Provider-specific auth/refresh/header logic lives in `integration_runtime/adapters/`. Reusing an existing `auth_type` needs no runtime code; a brand-new auth model means a new adapter plus a `registry.py` entry.
 
 ## Registration
 

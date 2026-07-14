@@ -25,7 +25,7 @@ This guide is documentation only. It does not change seed data, runtime behavior
 |---|---|---|
 | `IntegrationType` | `botelier/backend/botelier/models/integration.py`, one row per integration **kind** (Opera, GuestCentric, …) | The platform-level catalog entry: auth shape, credential form fields, and the certified endpoint catalog. Seeded at startup, shared by every account. |
 | `AccountIntegration` | Same file, one row per **account's connection** to an `IntegrationType` | Encrypted credentials, access/refresh tokens, connection status. Created when a user fills in the Connect form. |
-| `IntegrationClient` | `botelier/backend/botelier/services/integration_client.py` | Runtime engine: resolves credentials, refreshes tokens, builds the URL/headers/body for a given endpoint, executes the HTTP call, and extracts response variables. |
+| `IntegrationClient` | `botelier/backend/botelier/services/integration_runtime/` (re-exported by the `integration_client.py` facade) | Runtime engine: resolves credentials, refreshes tokens, builds the URL/headers/body for a given endpoint, executes the HTTP call, and extracts response variables. Provider-specific auth/refresh/header logic is delegated to per-vendor **adapters** in `integration_runtime/adapters/`, resolved per integration by slug → `auth_type` → generic default. |
 | API Request node | `botelier/frontend/components/flow-editor/inspectors/APIRequestNodePanel.tsx` | Where a flow author picks a connected integration + one of its endpoints, and maps its response into flow variables. |
 
 The lifecycle: **seed defines the shape → account connects (fills `required_fields`, some conditionally shown) → `IntegrationClient` handles auth/refresh/request-building → the endpoint's `response_mapping` surfaces as suggested flow variables → the flow's AI logic uses those variables.**
@@ -37,7 +37,7 @@ The lifecycle: **seed defines the shape → account connects (fills `required_fi
 | `oauth2_client_credentials` | OAuth2 client-credentials grant, access token refreshed automatically before expiry | `client_id` / `client_secret` (HTTP Basic on the token endpoint) + a user-supplied `gateway_url` | Oracle Opera OHIP |
 | `basic_or_jwt` | Either static HTTP Basic (no token) **or** a JWT obtained via login/refresh endpoints, chosen per-account via a `select` field | `username` / `password` (+ provider API key/hotel params) | GuestCentric CRS |
 
-There is no generic "API key" or "no-auth" `auth_type` today — model one of the two above, or extend `integration_client.py` first (out of scope for this guide).
+There is no generic "API key" or "no-auth" `auth_type` today — model one of the two above. Both existing auth types already have adapters, so a new integration that reuses one needs no runtime code; a genuinely new auth model means adding a per-vendor adapter under `integration_runtime/adapters/` and registering it in `adapters/registry.py` (out of scope for this guide).
 
 ## Step 1 — Write the seed module
 
@@ -280,7 +280,7 @@ except ImportError as exc:
 
 ## Step 3 — Auth and runtime behavior (what `IntegrationClient` actually does)
 
-All of this lives in `botelier/backend/botelier/services/integration_client.py`. You don't need to write any of it for a new integration — read this section so you can predict how your seed's fields will be used, and debug when something doesn't resolve as expected.
+All of this lives in the `botelier/backend/botelier/services/integration_runtime/` package — the top-level `integration_client.py` is a thin re-export facade, and provider-specific auth/refresh/URL/header logic is delegated to per-vendor **adapters** in `integration_runtime/adapters/` (resolved per integration by slug → `auth_type` → generic default). You don't need to write any of it for a new integration that reuses an existing `auth_type` — read this section so you can predict how your seed's fields will be used, and debug when something doesn't resolve as expected.
 
 **Per-request flow (`execute_request`):**
 1. Loads the `AccountIntegration` (scoped to `account_id` — cross-tenant lookups are impossible by construction) and rejects if not `CONNECTED`.
@@ -399,6 +399,7 @@ Do both before considering the integration done. A green API Tester result only 
 
 - [ ] `botelier/backend/botelier/seeds/<name>_integration.py` — new seed module (`IntegrationType` dict + `seed_<name>_integration`)
 - [ ] `botelier/backend/botelier/seeds/__init__.py` — register the seed in `seed_all_integrations`
+- [ ] *(only for a brand-new `auth_type`)* `botelier/backend/botelier/services/integration_runtime/adapters/` — add a vendor adapter and register it in `registry.py` (the two existing auth types already have adapters, so reusing one needs no runtime code)
 - [ ] Restart the `botelier-backend` workflow so the new seed runs (no `--reload`, per the backend gotcha in `replit.md`)
 - [ ] *(optional)* `botelier/frontend/components/flow-editor/store.ts` — add a `TEMPLATE` object, register it in the `TEMPLATES` map, and add an entry to `AVAILABLE_TEMPLATES`
 - [ ] `docs-site/docs/integrations/<your-page>.md` — new docs page (copy `oracle-opera-ohip.md` or `guestcentric-crs.md` as a starting point)
