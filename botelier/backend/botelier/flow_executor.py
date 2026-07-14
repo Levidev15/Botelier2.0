@@ -455,6 +455,49 @@ def parse_flow_config(config_dict: dict) -> FlowConfig:
     )
 
 
+def build_flow_behavioral_rules(current_date: str, has_past_date_slot: bool) -> str:
+    """Build the shared, flow-execution behavioural rules block.
+
+    This is the channel-agnostic guidance that applies whenever a structured
+    conversation flow is active: date handling, no-markdown (voice), speak
+    verbatim, collect-in-order, and answer-KB-mid-flow-then-resume.
+
+    ``current_date`` is date-only (no wall-clock time) on purpose: the only
+    consumer is the year-inference rule below, and keeping it date-stable lets
+    the whole live system prompt stay prompt-cacheable within a calendar day
+    (see call_handler `_create_agent_config` Task #106 caching note).
+
+    Injected exactly once per call even when several flow tools are present, so
+    it lives at module scope rather than being duplicated per flow.
+    """
+    if has_past_date_slot:
+        date_year_rule = (
+            "6. When a caller provides a date without a year (e.g., \"Dec 12th\"), "
+            "interpret it based on the constraint for that specific field. "
+            f"If the field requires future dates, use the next occurrence after today ({current_date}). "
+            "If the field allows past dates, interpret it as the most recent past occurrence that makes contextual sense."
+        )
+    else:
+        date_year_rule = (
+            "6. When a customer provides a date without a year (e.g., \"Dec 12th\"), "
+            f"interpret it as the next occurrence after today ({current_date}). Never assume a past year."
+        )
+
+    return f"""Current date: {current_date}
+
+You have access to a structured conversation flow (started when the caller wants to complete the corresponding task). Once a flow is active, follow these guidelines:
+1. Collect information in the order specified by the flow
+2. Use the provided functions to progress through the flow
+3. Follow the CURRENT NODE instructions - they tell you what to say or ask
+4. When instructions say "Say exactly", speak that text verbatim. When they say "Guidance" or "naturally", you may phrase it in your own words while keeping the meaning.
+5. If the customer provides information proactively, acknowledge and record it
+{date_year_rule}
+7. For number fields, respect the minimum and maximum limits specified.
+8. IMPORTANT: Never use markdown formatting (no asterisks, bold, bullets, etc). This is a voice conversation - speak naturally without any special formatting.
+9. When a function returns a "speak_exactly" field, speak that text verbatim without paraphrasing.
+10. If the caller asks a question mid-flow, answer it briefly (use the knowledge base if one is available), then continue collecting where you left off. Do not restart the flow or lose your place."""
+
+
 class FlowExecutor:
     """Executes a conversation flow during a Pipecat call.
 
@@ -583,8 +626,18 @@ class FlowExecutor:
                             return True
         return False
 
-    def get_system_prompt(self) -> str:
-        """Generate the system prompt including flow context."""
+    def get_flow_persona_section(self) -> str:
+        """Return the static, per-flow persona block for this flow.
+
+        Includes the Initial node's ``systemPrompt`` and the flow-level
+        ``global_prompt`` (labelled so it augments, rather than silently
+        overrides, the assistant's own persona). Returns "" when the flow
+        configures neither.
+
+        This is the flow-specific portion that must be injected once *per flow*
+        into a live call (a single assistant can host multiple flow tools),
+        separate from the shared behavioural rules which are injected only once.
+        """
         initial_node = None
         for node in self.flow_config.nodes:
             if node.type == NodeType.INITIAL:
@@ -593,55 +646,59 @@ class FlowExecutor:
 
         base_prompt = ""
         if initial_node and initial_node.data.get("systemPrompt"):
-            base_prompt = initial_node.data["systemPrompt"]
+            base_prompt = str(initial_node.data["systemPrompt"]).strip()
 
-        global_prompt = self.flow_config.global_prompt or ""
+        global_prompt = (self.flow_config.global_prompt or "").strip()
 
-        flow_context = self._generate_flow_context()
-
-        now = datetime.now(timezone.utc)
-        current_date = now.strftime("%Y-%m-%d")
-        current_time = now.strftime("%H:%M")
-        current_date_human = now.strftime("%B %d, %Y")
-
-        global_section = ""
-        if global_prompt.strip():
-            global_section = f"""
-FLOW-LEVEL INSTRUCTIONS (apply to entire conversation):
-{global_prompt.strip()}
-"""
-
-        has_past_date_slot = self._has_any_past_date_slot()
-        if has_past_date_slot:
-            date_year_rule = (
-                f"6. When a caller provides a date without a year (e.g., \"Dec 12th\"), "
-                f"interpret it based on the constraint for that specific field. "
-                f"If the field requires future dates, use the next occurrence after today ({current_date}). "
-                f"If the field allows past dates, interpret it as the most recent past occurrence that makes contextual sense."
+        parts = []
+        if base_prompt:
+            parts.append(base_prompt)
+        if global_prompt:
+            parts.append(
+                "FLOW-LEVEL INSTRUCTIONS (apply to entire conversation):\n"
+                f"{global_prompt}"
             )
-        else:
-            date_year_rule = (
-                f"6. When a customer provides a date without a year (e.g., \"Dec 12th\"), "
-                f"interpret it as the next occurrence after today ({current_date}). Never assume a past year."
-            )
+        if not parts:
+            return ""
+        return "## FLOW INSTRUCTIONS\n" + "\n\n".join(parts)
 
-        return f"""{base_prompt}
+    def has_past_date_slot(self) -> bool:
+        """Public accessor: True if any date slot in the flow allows past dates.
 
-Current date/time: {current_date} {current_time} UTC ({current_date_human})
-{global_section}
-You are executing a structured conversation flow. Follow these guidelines:
-1. Collect information in the order specified by the flow
-2. Use the provided functions to progress through the flow
-3. Follow the CURRENT NODE instructions - they tell you what to say or ask
-4. When instructions say "Say exactly", speak that text verbatim. When they say "Guidance" or "naturally", you may phrase it in your own words while keeping the meaning.
-5. If the customer provides information proactively, acknowledge and record it
-{date_year_rule}
-7. For number fields, respect the minimum and maximum limits specified.
-8. IMPORTANT: Never use markdown formatting (no asterisks, bold, bullets, etc). This is a voice conversation - speak naturally without any special formatting.
-9. When a function returns a "speak_exactly" field, speak that text verbatim without paraphrasing.
-10. If the caller asks a question mid-flow, answer it briefly (use the knowledge base if one is available), then continue collecting where you left off. Do not restart the flow or lose your place.
+        Used by the live-call system-prompt injector to pick the right
+        date-interpretation rule across one or more flows on an assistant.
+        """
+        return self._has_any_past_date_slot()
 
-{flow_context}"""
+    def get_static_system_prompt_additions(self) -> str:
+        """The call-invariant portion of the flow system prompt.
+
+        Composes the per-flow persona section (``get_flow_persona_section``)
+        with the shared behavioural rules (``build_flow_behavioral_rules``).
+        Deliberately excludes ``_generate_flow_context()`` — that is the dynamic
+        current-node context, which live calls deliver through tool gating and
+        function-result messages rather than the system prompt.
+
+        Both the simulator (via ``get_system_prompt``) and live calls (via
+        ``call_handler``) build on these same pieces, so the two paths stay in
+        lockstep.
+        """
+        current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        rules = build_flow_behavioral_rules(current_date, self._has_any_past_date_slot())
+        persona = self.get_flow_persona_section()
+        if persona:
+            return f"{persona}\n\n{rules}"
+        return rules
+
+    def get_system_prompt(self) -> str:
+        """Generate the full simulator system prompt.
+
+        Static additions (persona + behavioural rules) plus the dynamic flow
+        context. Kept as ``static + "\\n\\n" + flow_context`` so it stays in
+        lockstep with the live-call injection, which reuses the same static
+        pieces (enforced by a unit test).
+        """
+        return f"{self.get_static_system_prompt_additions()}\n\n{self._generate_flow_context()}"
 
     def _generate_flow_context(self) -> str:
         """Generate context about what information needs to be collected and current node instructions."""

@@ -178,6 +178,13 @@ def _build_kb_prompt_block(knowledge_base_id: Optional[Any]) -> str:
         return ""
     return f"""
 
+## RESPONSE GUIDELINES
+- Answer questions from the knowledge base naturally and conversationally
+- Keep responses concise (under 50 words) since this is a phone call
+- Only transfer to a human if: (1) the caller explicitly requests to speak with someone, OR (2) the question requires information NOT in the knowledge base AND the caller needs urgent assistance
+- For general questions covered by the knowledge base, answer directly without offering to transfer
+- If the caller asks a question in the middle of a task, answer it briefly, then continue where you left off — do not lose your place or restart
+
 ## KNOWLEDGE BASE
 You have access to the following Q&A knowledge base. Use this information to answer customer questions directly and confidently. Do NOT transfer the call or say you don't have information if the answer is in this knowledge base.
 

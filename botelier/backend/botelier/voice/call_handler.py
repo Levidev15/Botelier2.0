@@ -8,7 +8,7 @@ import asyncio
 import json
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from fastapi import WebSocket
@@ -533,6 +533,45 @@ class CallHandler:
                     else (_call_acct.name if _call_acct else None)
                 ),
             )
+
+            # 3.5 Inject each flow tool's static system-prompt additions into the
+            # live LLM system prompt. FlowExecutor.get_system_prompt() is otherwise
+            # only exercised by the simulator, so without this the flow's Initial-
+            # node systemPrompt, global_prompt, and the behavioural rules
+            # (no-markdown/voice, speak_exactly verbatim, collect-in-order, date
+            # handling, answer-KB-mid-flow-then-resume) never reach a real call.
+            #
+            # This runs after _build_function_schemas_and_handlers() (so the
+            # FunctionMapper + FlowExecutors exist) but before create_pipeline()
+            # reads config.system_prompt — the live LLMContext does not exist yet,
+            # so we mutate config.system_prompt rather than the context. Additions
+            # are appended AFTER the KB block to preserve the Task #106 prompt-cache
+            # prefix (base + guidelines + KB); the block is date-only, so it stays
+            # cacheable within a calendar day. The shared behavioural rules are
+            # appended exactly once even when several flow tools are present.
+            _flow_mapper = self.call_mappers.get(call_sid)
+            _flow_executors = _flow_mapper.get_flow_executors() if _flow_mapper else []
+            if _flow_executors:
+                from botelier.flow_executor import build_flow_behavioral_rules
+
+                _persona_sections = []
+                for _ex in _flow_executors:
+                    _persona = _ex.get_flow_persona_section()
+                    if _persona:
+                        _persona_sections.append(_persona)
+
+                _has_past_date = any(_ex.has_past_date_slot() for _ex in _flow_executors)
+                _current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+                _flow_additions = _persona_sections + [
+                    build_flow_behavioral_rules(_current_date, _has_past_date)
+                ]
+                config.system_prompt = (
+                    f"{config.system_prompt}\n\n" + "\n\n".join(_flow_additions)
+                )
+                logger.info(
+                    f"🧩 Injected static flow system-prompt additions from "
+                    f"{len(_flow_executors)} flow tool(s) into live prompt for call {call_sid}"
+                )
 
             # 4. Create TwilioFrameSerializer (Pipecat pattern)
             #

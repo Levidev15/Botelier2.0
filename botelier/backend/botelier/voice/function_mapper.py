@@ -276,6 +276,15 @@ class FunctionMapper:
         """
         self._non_flow_tool_schemas.append(schema_dict)
 
+    def get_flow_executors(self) -> list:
+        """Return the FlowExecutors created for this call's flow tools.
+
+        Used by call_handler to inject each flow's static system-prompt
+        additions into the live LLM system prompt before the pipeline is built.
+        Empty when the assistant has no flow tools (or only empty flows).
+        """
+        return list(self._flow_executors.values())
+
     def update_llm_tools_for_flow(self, tool_name: str):
         """Update the LLM context tools to only expose the current/next slot function.
 
