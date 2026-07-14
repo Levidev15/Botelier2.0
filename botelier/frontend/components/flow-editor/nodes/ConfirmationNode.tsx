@@ -17,6 +17,7 @@ function ConfirmationNode({ data, selected }: ConfirmationNodeProps) {
     confirmPrompt: "Is this correct?",
     variablesToConfirm: [] 
   };
+  const variablesToConfirm = confirmation.variablesToConfirm || [];
 
   return (
     <div
@@ -47,12 +48,12 @@ function ConfirmationNode({ data, selected }: ConfirmationNodeProps) {
           {data.name || "Confirm Details"}
         </div>
         
-        {confirmation.variablesToConfirm.length > 0 && (
+        {variablesToConfirm.length > 0 && (
           <div className="text-xs bg-gray-800/50 rounded px-2 py-1.5">
             <span className="text-gray-400">Confirming: </span>
             <span className="text-emerald-400">
-              {confirmation.variablesToConfirm.slice(0, 3).map(v => `{{${v}}}`).join(", ")}
-              {confirmation.variablesToConfirm.length > 3 && ` +${confirmation.variablesToConfirm.length - 3} more`}
+              {variablesToConfirm.slice(0, 3).map(v => `{{${v}}}`).join(", ")}
+              {variablesToConfirm.length > 3 && ` +${variablesToConfirm.length - 3} more`}
             </span>
           </div>
         )}
