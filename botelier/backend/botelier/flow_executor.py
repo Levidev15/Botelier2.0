@@ -2609,6 +2609,31 @@ class FlowExecutor:
             "current_node_id": next_node_id,
         }
 
+    def _confirmed_branch_next_node(self, node_id: str) -> Optional[FlowNode]:
+        """Resolve the node a confirmation node advances to when confirmed.
+
+        Prefers the explicit ``confirmed`` source handle. If no such edge
+        exists, falls back to any outgoing edge that is NOT the explicit
+        ``edit`` branch. Confirmation edges that were seeded/imported without a
+        ``sourceHandle`` (e.g. template flows using simple edge ids like
+        ``e12``) would otherwise never match ``handle="confirmed"``, leaving the
+        flow stuck on the confirmation node — the customer confirms, but the
+        engine never advances to the next action (such as the booking API POST),
+        so the LLM just narrates "one moment" indefinitely. Only the strict
+        ``edit`` handle is excluded from the fallback so a "no" answer can never
+        be routed to the confirmed path.
+        """
+        next_node = self.state.get_next_node(node_id, handle="confirmed")
+        if next_node:
+            return next_node
+        node_by_id = {n.id: n for n in self.flow_config.nodes}
+        for edge in self.flow_config.edges:
+            if edge.source == node_id and edge.source_handle != "edit":
+                target = node_by_id.get(edge.target)
+                if target:
+                    return target
+        return None
+
     async def _handle_confirmation(self, function_name: str, arguments: dict) -> dict:
         """Handle a confirmation node - customer confirms or requests edit."""
         node_id = function_name.replace("confirm_", "")
@@ -2657,7 +2682,7 @@ class FlowExecutor:
         is_static = delivery_mode == "static"
 
         if confirmed:
-            next_node = self.state.get_next_node(node_id, handle="confirmed")
+            next_node = self._confirmed_branch_next_node(node_id)
             next_node_id = next_node.id if next_node else node_id
             if next_node:
                 self.state.advance_to(next_node.id)
