@@ -1,6 +1,6 @@
 "use client";
 
-import { Phone, Globe, PhoneOff, Mail, MessageSquare, GitBranch, LucideIcon } from "lucide-react";
+import { Phone, Globe, PhoneOff, Mail, MessageSquare, GitBranch, Sparkles, LucideIcon } from "lucide-react";
 import { ToolType } from "./ToolDrawer";
 
 interface ToolTypeSelectorProps {
@@ -37,6 +37,13 @@ const toolTypes: ToolTypeOption[] = [
     icon: Globe,
     color: "bg-purple-600",
     description: "Call external APIs"
+  },
+  {
+    type: "CAPABILITY",
+    label: "Capability",
+    icon: Sparkles,
+    color: "bg-fuchsia-600",
+    description: "Vendor-neutral action (availability, reservations, payment)"
   },
   {
     type: "END_CALL",

@@ -39,6 +39,7 @@ def test_registry_has_expected_capabilities():
         "lookup_reservation",
         "book_reservation",
         "cancel_reservation",
+        "collect_payment",
     }
 
 
@@ -47,6 +48,7 @@ def test_registry_mutating_and_canonical_flags():
     lookup = get_capability("lookup_reservation")
     book = get_capability("book_reservation")
     cancel = get_capability("cancel_reservation")
+    payment = get_capability("collect_payment")
 
     # Reads are non-mutating and carry a canonical entity (Task #328 is reads-only).
     assert search.mutating is False and search.canonical_entity == "availability"
@@ -54,6 +56,9 @@ def test_registry_mutating_and_canonical_flags():
     # Writes are mutating and are NOT canonicalized in v1.
     assert book.mutating is True and book.canonical_entity is None
     assert cancel.mutating is True and cancel.canonical_entity is None
+    # collect_payment is a mutating, service-backed capability (not a raw vendor call).
+    assert payment.mutating is True and payment.canonical_entity is None
+    assert payment.service_backed is True
 
 
 def test_build_capability_schema_is_bare_shape():

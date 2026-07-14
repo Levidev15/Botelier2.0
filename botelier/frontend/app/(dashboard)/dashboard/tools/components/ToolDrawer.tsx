@@ -9,6 +9,7 @@ import FlowEditForm from "./tool-types/FlowEditForm";
 import ApiRequestForm from "./tool-types/ApiRequestForm";
 import EndCallForm from "./tool-types/EndCallForm";
 import SendSmsForm from "./tool-types/SendSmsForm";
+import CapabilityForm from "./tool-types/CapabilityForm";
 
 interface Tool {
   id: string;
@@ -32,6 +33,7 @@ interface ToolDrawerProps {
 export type ToolType =
   | "TRANSFER_CALL"
   | "API_REQUEST"
+  | "CAPABILITY"
   | "END_CALL"
   | "SEND_SMS"
   | "SEND_EMAIL"
@@ -121,6 +123,16 @@ export default function ToolDrawer({ isOpen, onClose, onToolCreated, onToolUpdat
 
             {selectedType === "API_REQUEST" && (
               <ApiRequestForm
+                onSuccess={handleToolSaved}
+                onCancel={handleReset}
+                tool={editTool || undefined}
+                accountId={accountId}
+                toolSetId={toolSetId}
+              />
+            )}
+
+            {selectedType === "CAPABILITY" && (
+              <CapabilityForm
                 onSuccess={handleToolSaved}
                 onCancel={handleReset}
                 tool={editTool || undefined}

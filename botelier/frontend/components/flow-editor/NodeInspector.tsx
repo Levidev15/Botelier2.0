@@ -15,6 +15,7 @@ import {
   SetVariableNodeData,
   SaveRecordNodeData,
   TransferNodeData,
+  CapabilityNodeData,
   EndNodeData,
   NodeType,
 } from "./store";
@@ -31,6 +32,7 @@ import ConfirmationNodePanel from "./inspectors/ConfirmationNodePanel";
 import SetVariableNodePanel from "./inspectors/SetVariableNodePanel";
 import SaveRecordNodePanel from "./inspectors/SaveRecordNodePanel";
 import TransferNodePanel from "./inspectors/TransferNodePanel";
+import CapabilityNodePanel from "./inspectors/CapabilityNodePanel";
 import EndNodePanel from "./inspectors/EndNodePanel";
 
 interface NodeInspectorProps {
@@ -86,6 +88,8 @@ export default function NodeInspector({ assistantId, assistantTtsProvider }: Nod
         return <SaveRecordNodePanel data={data as SaveRecordNodeData} nodeId={selectedNode.id} />;
       case "transfer":
         return <TransferNodePanel data={data as TransferNodeData} nodeId={selectedNode.id} />;
+      case "capability":
+        return <CapabilityNodePanel data={data as CapabilityNodeData} nodeId={selectedNode.id} />;
       case "end":
         return <EndNodePanel data={data as EndNodeData} nodeId={selectedNode.id} />;
       default:
@@ -105,6 +109,7 @@ export default function NodeInspector({ assistantId, assistantTtsProvider }: Nod
     set_variable: "border-teal-500",
     save_record: "border-rose-500",
     transfer: "border-cyan-500",
+    capability: "border-purple-500",
     end: "border-red-500",
   };
 

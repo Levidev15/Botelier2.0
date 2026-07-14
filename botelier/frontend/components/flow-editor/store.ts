@@ -82,7 +82,8 @@ export interface APIRequestConfig {
   onError?: string;
   onNotFound?: string;
   onAuthError?: string;
-  apiSource?: "custom" | "integration";
+  apiSource?: "custom" | "integration" | "capability";
+  capability?: string;
   integrationId?: string;
   integrationSlug?: string;
   endpointId?: string;
@@ -153,6 +154,7 @@ export type NodeType =
   | "set_variable"
   | "save_record"
   | "transfer" 
+  | "capability"
   | "end";
 
 export interface BaseNodeData {
@@ -191,6 +193,12 @@ export interface CollectFormNodeData extends BaseNodeData {
 }
 
 export interface APIRequestNodeData extends BaseNodeData {
+  api: APIRequestConfig;
+}
+
+// A Capability node reuses the `api` sub-object shape (apiSource: "capability")
+// so the backend executor handles it via the same _handle_api_request path.
+export interface CapabilityNodeData extends BaseNodeData {
   api: APIRequestConfig;
 }
 
@@ -421,7 +429,19 @@ const getDefaultNodeData = (type: NodeType): NodeData => {
         name: "End Call",
         closingMessage: "",
       } as EndNodeData;
-    
+
+    case "capability":
+      return {
+        name: "Capability",
+        api: {
+          method: "GET",
+          url: "",
+          apiSource: "capability",
+          capability: "",
+          responseMapping: {},
+        },
+      } as CapabilityNodeData;
+
     default:
       return { name: "Node" };
   }
@@ -433,6 +453,8 @@ const getNodeStyle = (type: NodeType) => {
       return { stroke: "#f59e0b", strokeWidth: 2 };
     case "router":
       return { stroke: "#6366f1", strokeWidth: 2 };
+    case "capability":
+      return { stroke: "#a855f7", strokeWidth: 2 };
     default:
       return { stroke: "#3b82f6", strokeWidth: 2 };
   }

@@ -28,6 +28,7 @@ from botelier.schemas.tool_schemas import (
     ToolType,
     ToolUpdate,
 )
+from botelier.services.capabilities.registry import capability_names
 
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
@@ -45,6 +46,21 @@ def _flow_config_has_expression_nodes(config: dict) -> bool:
             ):
                 return True
     return False
+
+
+def _validate_capability_tool_config(config) -> None:
+    """Fail closed if a CAPABILITY tool's config lacks a known capability name."""
+    capability = (config or {}).get("capability") if isinstance(config, dict) else None
+    if not capability:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="Capability tool config must include a 'capability' name",
+        )
+    if capability not in capability_names():
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unknown capability '{capability}'",
+        )
 
 
 def _scope_query_by_account(query, db, tool_set_id: str = None, account_id: str = None):
@@ -184,6 +200,9 @@ def create_tool(
     tool_id = str(uuid.uuid4())
     db_tool_type = DBToolType(tool_data.tool_type.value)
 
+    if db_tool_type == DBToolType.CAPABILITY:
+        _validate_capability_tool_config(tool_data.config)
+
     new_tool = Tool(
         id=tool_id,
         name=tool_data.name,
@@ -237,6 +256,8 @@ def update_tool(
                     status_code=status.HTTP_400_BAD_REQUEST,
                     detail="Flow configuration contains disallowed expression nodes",
                 )
+        if tool.tool_type == DBToolType.CAPABILITY:
+            _validate_capability_tool_config(tool_data.config)
         tool.config = tool_data.config
     if tool_data.is_active is not None:
         tool.is_active = "true" if tool_data.is_active else "false"

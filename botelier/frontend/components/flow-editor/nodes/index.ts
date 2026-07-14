@@ -9,6 +9,7 @@ export { default as ConfirmationNode } from "./ConfirmationNode";
 export { default as SetVariableNode } from "./SetVariableNode";
 export { default as SaveRecordNode } from "./SaveRecordNode";
 export { default as TransferNode } from "./TransferNode";
+export { default as CapabilityNode } from "./CapabilityNode";
 export { default as EndNode } from "./EndNode";
 
 import InitialNode from "./InitialNode";
@@ -22,6 +23,7 @@ import ConfirmationNode from "./ConfirmationNode";
 import SetVariableNode from "./SetVariableNode";
 import SaveRecordNode from "./SaveRecordNode";
 import TransferNode from "./TransferNode";
+import CapabilityNode from "./CapabilityNode";
 import EndNode from "./EndNode";
 
 export const nodeTypes = {
@@ -36,5 +38,6 @@ export const nodeTypes = {
   set_variable: SetVariableNode,
   save_record: SaveRecordNode,
   transfer: TransferNode,
+  capability: CapabilityNode,
   end: EndNode,
 };

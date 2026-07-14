@@ -26,6 +26,7 @@ from botelier.models.tool import Tool
 from botelier.models.tool import ToolType as DBToolType
 from botelier.models.tool_set import ToolSet
 from botelier.models.user import User
+from botelier.services.capabilities.registry import capability_names
 
 router = APIRouter(prefix="/api/tools", tags=["flow-versions"])
 
@@ -218,6 +219,17 @@ def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str]]:
             save_rec = node_data.get("saveRecord", node_data.get("save_record", {}))
             if not save_rec.get("recordTypeId") and not save_rec.get("record_type_id"):
                 errors.append(f"Save Record node '{node_name}' has no record type selected")
+
+        elif node_type == "capability":
+            api_cfg = node_data.get("api", {})
+            capability = api_cfg.get("capability")
+            if not capability:
+                errors.append(f"Capability node '{node_name}' has no capability selected")
+            elif capability not in capability_names():
+                errors.append(
+                    f"Capability node '{node_name}' references an unknown capability "
+                    f"'{capability}'"
+                )
 
     return len(errors) == 0, errors
 

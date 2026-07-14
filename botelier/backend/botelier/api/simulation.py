@@ -561,7 +561,10 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
             # (see memory: simulator-api-node-stall).
             current_node = state.executor.state.get_current_node()
             forced_name = None
-            if current_node and current_node.type == NodeType.API_REQUEST:
+            if current_node and current_node.type in (
+                NodeType.API_REQUEST,
+                NodeType.CAPABILITY,
+            ):
                 candidate = f"execute_{current_node.id}"
                 if candidate not in all_functions_called:
                     forced_name = candidate

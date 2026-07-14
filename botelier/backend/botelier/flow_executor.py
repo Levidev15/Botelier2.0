@@ -29,6 +29,7 @@ class NodeType(str, Enum):
     COLLECT_SLOT = "collect_slot"
     COLLECT_FORM = "collect_form"
     API_REQUEST = "api_request"
+    CAPABILITY = "capability"
     CONDITION = "condition"
     ROUTER = "router"
     CONFIRMATION = "confirmation"
@@ -45,6 +46,7 @@ class NodeType(str, Enum):
 _ACTION_NODE_TYPES = frozenset(
     {
         NodeType.API_REQUEST,
+        NodeType.CAPABILITY,
         NodeType.ROUTER,
         NodeType.CONFIRMATION,
         NodeType.SET_VARIABLE,
@@ -1008,15 +1010,19 @@ class FlowExecutor:
                 resolved = substitute_variables(pre_message, self.state.collected_slots)
                 context_lines.append(f'CURRENT NODE: Before transfer, say: "{resolved}"')
 
-        elif current_node.type == NodeType.API_REQUEST:
+        elif current_node.type in (NodeType.API_REQUEST, NodeType.CAPABILITY):
             api_config = current_node.data.get("api", {})
-            node_name = current_node.data.get("name", "API call")
+            is_capability = current_node.type == NodeType.CAPABILITY
+            node_name = current_node.data.get(
+                "name", "Capability" if is_capability else "API call"
+            )
             thinking_message = (api_config.get("thinkingMessage") or "").strip()
             response_instructions = (api_config.get("responseInstructions") or "").strip()
             node_instructions = (current_node.data.get("instructions") or "").strip()
             fn_name = f"execute_{current_node.id}"
+            label = "Capability" if is_capability else "API Request"
             context_lines.append(
-                f'CURRENT NODE: API Request — call `{fn_name}` to execute "{node_name}".'
+                f'CURRENT NODE: {label} — call `{fn_name}` to execute "{node_name}".'
             )
             if thinking_message:
                 context_lines.append(f'Say to the customer: "{thinking_message}"')
@@ -1449,7 +1455,7 @@ class FlowExecutor:
         for node in self.flow_config.nodes:
             if node.id not in reachable_action_ids:
                 continue
-            if node.type == NodeType.API_REQUEST:
+            if node.type in (NodeType.API_REQUEST, NodeType.CAPABILITY):
                 functions.append(self._create_api_function(node))
             elif node.type == NodeType.ROUTER:
                 functions.append(self._create_router_function(node))
@@ -1513,7 +1519,7 @@ class FlowExecutor:
             functions.append(func_schema)
 
         for node in self.flow_config.nodes:
-            if node.type == NodeType.API_REQUEST:
+            if node.type in (NodeType.API_REQUEST, NodeType.CAPABILITY):
                 func_schema = self._create_api_function(node)
                 functions.append(func_schema)
             elif node.type == NodeType.ROUTER:
@@ -3178,7 +3184,7 @@ class FlowExecutor:
                 substitute_variables(message, self.state.collected_slots) if message else None
             )
             return (resolved, False)
-        elif node.type == NodeType.API_REQUEST:
+        elif node.type in (NodeType.API_REQUEST, NodeType.CAPABILITY):
             api_config = node.data.get("api", {})
             return (api_config.get("onSuccess", None), False)
 

@@ -179,3 +179,74 @@ def test_bug2_forced_tool_choice_always_present_in_fresh_schemas():
     forced = forced_name_for_current()
     assert forced == "execute_api"
     assert forced in _fn_names(ex.get_function_schemas())
+
+
+def _capability_flow():
+    """start → collect_a → capability → end.
+
+    A CAPABILITY node is an action node aliased to API_REQUEST: it emits an
+    ``execute_<id>`` function and is gated to the reachable flow position exactly
+    like an api_request node.
+    """
+    config = {
+        "initial_node": "start",
+        "variables": [
+            {"key": "a", "type": "text", "description": "A"},
+        ],
+        "nodes": [
+            {"id": "start", "type": "initial", "data": {}},
+            {"id": "collect_a", "type": "collect_slot",
+             "data": {"slot": {"variableKey": "a", "prompt": "A?"}}},
+            {"id": "cap", "type": "capability",
+             "data": {"name": "Search",
+                      "api": {"apiSource": "capability",
+                              "capability": "search_availability"}}},
+            {"id": "end", "type": "end", "data": {}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "start", "target": "collect_a"},
+            {"id": "e2", "source": "collect_a", "target": "cap"},
+            {"id": "e3", "source": "cap", "target": "end"},
+        ],
+    }
+    return FlowExecutor(parse_flow_config(config))
+
+
+def test_capability_node_gated_like_api_request():
+    """A capability node is hidden while collecting and exposed only when current.
+
+    (``confirm_details`` is an always-on built-in appended whenever the flow has
+    no confirmation node, so we assert the specific gating property rather than
+    exact set equality.)
+    """
+    ex = _capability_flow()
+
+    # At the start, only the first slot is offered — the capability is hidden.
+    names = _fn_names(ex.get_function_schemas())
+    assert "collect_a" in names
+    assert "execute_cap" not in names
+    assert "end_call_end" not in names
+    assert ex._get_reachable_action_node_ids() == set()
+
+    # Once the slot is collected and we sit on the capability node, it's exposed
+    # as execute_<id> — and nothing downstream (end) leaks.
+    ex.state.collected_slots["a"] = "yes"
+    ex.state.current_node_id = "cap"
+    names = _fn_names(ex.get_function_schemas())
+    assert "execute_cap" in names
+    assert "end_call_end" not in names
+    assert ex._get_reachable_action_node_ids() == {"cap"}
+
+
+def test_capability_node_is_action_node_type():
+    """CAPABILITY resolves to a real NodeType and counts as an action node."""
+    ex = _capability_flow()
+    ex.state.current_node_id = "cap"
+    node = ex.state.get_current_node()
+    assert node is not None
+    assert node.type == NodeType.CAPABILITY
+    # Parity with the simulator's forced-tool-choice rule: a capability node,
+    # like API_REQUEST, forces execute_<id>, which must be in the fresh schemas.
+    ex.state.collected_slots["a"] = "yes"
+    forced = f"execute_{node.id}"
+    assert forced in _fn_names(ex.get_function_schemas())

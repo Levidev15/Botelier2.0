@@ -22,6 +22,7 @@ class ToolType(str, Enum):
     send_sms = "SEND_SMS"
     send_email = "SEND_EMAIL"
     flow = "FLOW"  # Conversation flow for structured multi-step interactions
+    capability = "CAPABILITY"  # Vendor-neutral capability (search/lookup/book/cancel/payment)
 
 
 # Configuration schemas for each tool type
