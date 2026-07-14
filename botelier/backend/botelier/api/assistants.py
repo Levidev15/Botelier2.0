@@ -24,6 +24,7 @@ from botelier.auth.middleware import (
 from botelier.database import get_db
 from botelier.models.assistant import Assistant
 from botelier.models.user import User, UserType
+from botelier.services.property_scope import property_belongs_to_account
 
 router = APIRouter(prefix="/api/assistants", tags=["assistants"])
 
@@ -32,6 +33,7 @@ class AssistantCreate(BaseModel):
     """Assistant creation model."""
 
     account_id: str
+    property_id: Optional[str] = None
     knowledge_base_id: Optional[str] = None
     tool_set_id: Optional[str] = None
     mcp_connection_id: Optional[str] = None
@@ -63,6 +65,7 @@ class AssistantCreate(BaseModel):
 class AssistantUpdate(BaseModel):
     """Assistant update model."""
 
+    property_id: Optional[str] = None
     knowledge_base_id: Optional[str] = None
     tool_set_id: Optional[str] = None
     mcp_connection_id: Optional[str] = None
@@ -104,6 +107,7 @@ class AssistantResponse(BaseModel):
 
     id: str
     account_id: str
+    property_id: Optional[str] = None
     knowledge_base_id: Optional[str] = None
     tool_set_id: Optional[str] = None
     mcp_connection_id: Optional[str] = None
@@ -189,8 +193,13 @@ async def create_assistant(
 ):
     """Create a new assistant."""
     check_account_permission(user, data.account_id, "assistants.create", db)
+    if data.property_id is not None and not property_belongs_to_account(
+        db, data.account_id, data.property_id
+    ):
+        raise HTTPException(status_code=400, detail="Property not found for this account")
     assistant = Assistant(
         account_id=data.account_id,
+        property_id=data.property_id,
         knowledge_base_id=data.knowledge_base_id,
         tool_set_id=data.tool_set_id,
         name=data.name,
@@ -239,6 +248,12 @@ async def update_assistant(
 
     # Update only fields that are provided
     update_data = data.dict(exclude_unset=True)
+    # Property binding must belong to the assistant's account (a None value
+    # clears the binding, making the assistant account-global / shared).
+    if update_data.get("property_id") is not None and not property_belongs_to_account(
+        db, str(assistant.account_id), update_data["property_id"]
+    ):
+        raise HTTPException(status_code=400, detail="Property not found for this account")
     for field, value in update_data.items():
         setattr(assistant, field, value)
 

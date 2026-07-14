@@ -38,7 +38,7 @@ Opera OAuth path. This is safe **only because** the connect/reconnect routes in
 `api/integrations.py` fail closed with "Unsupported auth type" — no connected integration
 can carry an unknown auth_type today.
 
-**How to apply:** when adding a NEW `auth_type` (Task #327+ / future integrations), you
+**How to apply:** when adding a NEW `auth_type` (future integrations), you
 MUST add a matching adapter + `registry.py` entry, or connected integrations of that type
 will silently run token-less. Reusing an existing auth_type (`oauth2_client_credentials`,
 `basic_or_jwt`) needs no runtime code.

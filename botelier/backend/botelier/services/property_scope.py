@@ -67,3 +67,24 @@ def resolve_session_property_id(
         return str(assistant.property_id)
 
     return None
+
+
+def property_belongs_to_account(
+    db: Session, account_id: Any, property_id: Any
+) -> bool:
+    """Return True if ``property_id`` exists AND belongs to ``account_id``.
+
+    Used by the binding APIs (phone number / assistant / integration) to reject
+    assigning a resource to a property from another account — a would-be
+    cross-tenant / cross-property escalation. A ``None`` ``property_id`` means
+    "account-global / shared" and is the caller's decision to allow, so it is not
+    validated here.
+    """
+    from botelier.models.property import Property
+
+    return (
+        db.query(Property)
+        .filter(Property.id == property_id, Property.account_id == account_id)
+        .first()
+        is not None
+    )

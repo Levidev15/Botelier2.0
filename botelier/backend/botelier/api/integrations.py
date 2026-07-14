@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from botelier.auth.middleware import check_account_permission, get_current_user
 from botelier.database import get_db
+from botelier.services.property_scope import property_belongs_to_account
 from botelier.models.integration import (
     AccountIntegration,
     IntegrationAction,
@@ -100,6 +101,7 @@ class AccountIntegrationResponse(BaseModel):
     connected_at: Optional[datetime]
     last_sync_at: Optional[datetime]
     last_error: Optional[str]
+    property_id: Optional[str] = None
 
     class Config:
         from_attributes = True
@@ -109,6 +111,7 @@ class ConnectIntegrationRequest(BaseModel):
     integration_type_id: str
     credentials: dict
     connection_name: Optional[str] = None
+    property_id: Optional[str] = None
 
 
 class UpdateCredentialsRequest(BaseModel):
@@ -288,6 +291,7 @@ async def list_account_integrations(
                 connected_at=i.connected_at,
                 last_sync_at=i.last_sync_at,
                 last_error=i.last_error,
+                property_id=str(i.property_id) if i.property_id else None,
             )
         )
 
@@ -321,6 +325,7 @@ async def list_connected_integrations(
                 connected_at=i.connected_at,
                 last_sync_at=i.last_sync_at,
                 last_error=i.last_error,
+                property_id=str(i.property_id) if i.property_id else None,
             )
         )
 
@@ -413,8 +418,14 @@ async def connect_integration(
 
     user_id = getattr(current_user, "id", None)
 
+    if request.property_id is not None and not property_belongs_to_account(
+        db, account_id, request.property_id
+    ):
+        raise HTTPException(status_code=400, detail="Property not found for this account")
+
     integration = AccountIntegration(
         account_id=account_id,
+        property_id=request.property_id,
         integration_type_id=request.integration_type_id,
         connection_name=request.connection_name or integration_type.name,
         status=IntegrationStatus.CONNECTING,
@@ -533,6 +544,7 @@ async def connect_integration(
         connected_at=integration.connected_at,
         last_sync_at=integration.last_sync_at,
         last_error=integration.last_error,
+        property_id=str(integration.property_id) if integration.property_id else None,
     )
 
 
@@ -733,6 +745,63 @@ async def update_integration_credentials(
         connected_at=integration.connected_at,
         last_sync_at=integration.last_sync_at,
         last_error=integration.last_error,
+        property_id=str(integration.property_id) if integration.property_id else None,
+    )
+
+
+class UpdateIntegrationPropertyRequest(BaseModel):
+    property_id: Optional[str] = None
+
+
+@router.patch(
+    "/account/{account_id}/integration/{integration_id}/property",
+    response_model=AccountIntegrationResponse,
+)
+async def update_integration_property(
+    account_id: str,
+    integration_id: str,
+    request: UpdateIntegrationPropertyRequest,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Bind an integration connection to a property (or null for account-global).
+
+    Per-property data isolation: this is the operator-facing way to scope a
+    certified integration connection to a single property. ``IntegrationClient``
+    then fails closed on any cross-property use at runtime.
+    """
+    _assert_account_access(current_user, account_id, db, permission="integrations.manage")
+    integration = (
+        db.query(AccountIntegration)
+        .filter(
+            AccountIntegration.id == integration_id,
+            AccountIntegration.account_id == account_id,
+        )
+        .first()
+    )
+    if not integration:
+        raise HTTPException(status_code=404, detail="Integration not found")
+
+    if request.property_id is not None and not property_belongs_to_account(
+        db, account_id, request.property_id
+    ):
+        raise HTTPException(status_code=400, detail="Property not found for this account")
+
+    integration.property_id = request.property_id
+    db.commit()
+    db.refresh(integration)
+
+    return AccountIntegrationResponse(
+        id=str(integration.id),
+        integration_type_id=str(integration.integration_type_id),
+        integration_slug=integration.integration_type.slug,
+        integration_name=integration.integration_type.name,
+        connection_name=integration.connection_name,
+        status=integration.status.value,
+        connected_at=integration.connected_at,
+        last_sync_at=integration.last_sync_at,
+        last_error=integration.last_error,
+        property_id=str(integration.property_id) if integration.property_id else None,
     )
 
 

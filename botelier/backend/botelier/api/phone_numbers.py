@@ -28,6 +28,7 @@ from botelier.config.domain import get_voice_webhook_base_url
 from botelier.database import get_db
 from botelier.integrations.twilio.phone_numbers import PhoneNumberManager
 from botelier.models.account import Account
+from botelier.services.property_scope import property_belongs_to_account
 from botelier.models.assistant import Assistant
 from botelier.models.phone_number import PhoneNumber
 from botelier.models.user import User
@@ -73,6 +74,7 @@ class PhoneNumberResponse(BaseModel):
     country_code: str
     twilio_sid: str
     account_id: str
+    property_id: Optional[str] = None
     assistant_id: Optional[str]
     is_active: bool
     created_at: Optional[str]
@@ -270,6 +272,44 @@ async def assign_to_assistant(
 
     # Recording is handled per-call via the in-call Recordings REST API
     # (start_in_call_recording in call_handler.py). No VoiceRecord sync needed on assignment.
+
+    return phone_number.to_dict()
+
+
+class AssignPropertyRequest(BaseModel):
+    """Request to bind a phone number to a property (or null for account-global)."""
+
+    property_id: Optional[str] = Field(
+        None, description="Property UUID, or null to make the number account-global"
+    )
+
+
+@router.put("/{phone_number_id}/property", response_model=PhoneNumberResponse)
+async def assign_to_property(
+    phone_number_id: str,
+    request: AssignPropertyRequest,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Bind a phone number to a property, or null to make it account-global.
+
+    Per-property data isolation: the dialed number is the most authoritative
+    property signal (``resolve_session_property_id`` checks it first), so this
+    binding is what drives per-property scoping for inbound calls and SMS.
+    """
+    phone_number = db.query(PhoneNumber).filter(PhoneNumber.id == phone_number_id).first()
+    if not phone_number:
+        raise HTTPException(status_code=404, detail="Phone number not found")
+    check_account_permission(user, str(phone_number.account_id), "phone_numbers.configure", db)
+
+    if request.property_id is not None and not property_belongs_to_account(
+        db, str(phone_number.account_id), request.property_id
+    ):
+        raise HTTPException(status_code=400, detail="Property not found for this account")
+
+    phone_number.property_id = request.property_id
+    db.commit()
+    db.refresh(phone_number)
 
     return phone_number.to_dict()
 

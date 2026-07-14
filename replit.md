@@ -61,6 +61,7 @@ Botelier is a multi-tenant, multichannel AI platform that provides businesses wi
 - **Property model:** `botelier/backend/botelier/models/property.py` — `Property` (per-account location); nullable `property_id` FKs on `phone_number`, `assistant`, `AccountIntegration`.
 - **Property scope resolver:** `botelier/backend/botelier/services/property_scope.py` — `resolve_session_property_id(dialed_number, assistant, db)` (precedence: phone → assistant → None).
 - **Properties API:** `botelier/backend/botelier/api/properties.py` — `/api/properties` CRUD. Permissions: `properties.view`, `properties.manage`.
+- **Property binding routes:** assign/clear a resource's `property_id` (NULL = account-global). Assistant: `property_id` on create/update (`api/assistants.py`). Phone number: `PUT /api/phone-numbers/{id}/property` (`api/phone_numbers.py`). Integration: `property_id` on connect + `PATCH /api/integrations/account/{account_id}/integration/{integration_id}/property` (`api/integrations.py`). All three validate the property belongs to the resource's account via `property_scope.property_belongs_to_account` (fail closed / HTTP 400 on cross-account).
 - **Per-property isolation chokepoint:** `botelier/backend/botelier/services/integration_runtime/client.py` — `IntegrationClient(property_id=...)`, `_is_property_allowed()`, `PROPERTY_IDENTITY_KEYS` forcing in `_apply_endpoint_defaults`.
 
 ## Architecture decisions
