@@ -52,12 +52,53 @@ from .types import (
     _MissingRequiredVariables,
 )
 
+# Per-property isolation (Task #327). These keys identify which property a request
+# is scoped to. Their value is authoritative from the connection's own
+# connection_config and must never be overridden by caller/LLM-supplied variables,
+# which could otherwise redirect a request to a different property's data. Only the
+# singular identity keys are listed — multi-hotel selectors (e.g. a plural
+# ``hotels`` array) are intentionally excluded so account-global connections can
+# still let a flow choose among hotels.
+PROPERTY_IDENTITY_KEYS = frozenset(
+    {
+        "hotel_id",
+        "hotelId",
+        "property_id",
+        "propertyId",
+        "hotel_code",
+        "property_code",
+    }
+)
+
 
 class IntegrationClient:
-    def __init__(self, account_id: str, db: Session = None):
+    def __init__(
+        self, account_id: str, db: Session = None, property_id: Optional[str] = None
+    ):
         self.account_id = account_id
         self._external_db = db
+        # Per-property isolation (Task #327). Resolved once at contact start from
+        # the dialed number / assistant and carried through the whole session.
+        #   None  → legacy / no-property session: account-only scoping (allow all).
+        #   set   → allow integrations bound to this property OR account-global
+        #           (property_id NULL); fail closed on any other property.
+        self.property_id = str(property_id) if property_id else None
         self._integration_cache: dict[str, AccountIntegration] = {}
+
+    def _is_property_allowed(self, integration: AccountIntegration) -> bool:
+        """Fail-closed per-property authorization for a resolved integration.
+
+        Allowed when the session has no property (legacy), or the integration is
+        account-global (property_id NULL), or the integration's property matches
+        the session property. Any other case is a cross-property access and is
+        rejected without issuing the outbound HTTP request.
+        """
+        if self.property_id is None:
+            return True
+        integ_property = getattr(integration, "property_id", None)
+        if integ_property is None:
+            return True
+        return str(integ_property) == self.property_id
 
     def _get_db_session(self) -> Session:
         if self._external_db:
@@ -88,6 +129,33 @@ class IntegrationClient:
                 status_code=0,
                 error_type=APIErrorType.AUTH_ERROR,
                 error_message="Integration not found or not connected",
+            )
+
+        # Per-property isolation (Task #327) — fail closed BEFORE any outbound
+        # request or credential use if this integration belongs to a different
+        # property than the one resolved for this session.
+        if not self._is_property_allowed(integration):
+            logger.warning(
+                "cross-property access rejected: integration "
+                f"{integration.id} (property {getattr(integration, 'property_id', None)}) "
+                f"requested by session property {self.property_id} "
+                f"(account {self.account_id})"
+            )
+            self._write_call_log(
+                integration_id=str(integration.id),
+                endpoint_called=config.path,
+                method=config.method,
+                status_code=0,
+                success=False,
+                latency_ms=0,
+                error_type=APIErrorType.AUTH_ERROR.value,
+                error_message="Cross-property access rejected",
+            )
+            return APIResponse(
+                success=False,
+                status_code=0,
+                error_type=APIErrorType.AUTH_ERROR,
+                error_message="Cross-property access rejected",
             )
 
         if integration.status != IntegrationStatus.CONNECTED:
@@ -539,15 +607,19 @@ class IntegrationClient:
            eliminates the need to collect static values from callers each turn.
         2. Endpoint variable defaults (e.g. ``today`` sentinel for arrival dates).
         3. Caller-provided variables (``collected_slots`` from the live flow).
+        4. Per-property identity keys (Task #327) — re-forced from connection_config
+           ON TOP of caller values so a caller/LLM cannot redirect the request to a
+           different property by supplying its own hotel_id/property_id.
         """
         merged: dict[str, Any] = {}
+        conn_config: dict[str, Any] = {}
         # 1. Integration connection_config — lowest priority so any explicit value wins
         if integration:
             try:
                 conn_config = integration.get_connection_config() or {}
                 merged.update(conn_config)
             except Exception:
-                pass
+                conn_config = {}
         # 2. Endpoint-declared variable defaults
         for var in (endpoint_def or {}).get("variables") or []:
             key = var.get("key")
@@ -563,6 +635,16 @@ class IntegrationClient:
                 merged[key] = default
         # 3. Caller-provided variables are highest priority
         merged.update(variables or {})
+        # 4. Per-property isolation (Task #327): property-identity keys are
+        #    authoritative from this connection's connection_config and must NOT be
+        #    overridable by caller/LLM-supplied values. Force them back on top so a
+        #    supplied hotel_id/property_id can never redirect the call to another
+        #    property's data. Only keys actually present in connection_config are
+        #    forced, so account-global connections that legitimately let the flow
+        #    choose a hotel are unaffected.
+        for key in PROPERTY_IDENTITY_KEYS:
+            if conn_config.get(key) is not None:
+                merged[key] = conn_config[key]
         return merged
 
     def _effective_response_variables(

@@ -69,6 +69,7 @@ class FunctionMapper:
         account_id: str = None,
         account_name: str = None,
         escalation_target: str = None,
+        property_id: str = None,
     ):
         """Initialize function mapper with call context and Twilio credentials.
 
@@ -96,6 +97,11 @@ class FunctionMapper:
         # request_human tool and the maxRetries escalation fallback inside
         # FlowExecutor. None → escalation disabled (fail closed).
         self.escalation_target = escalation_target
+        # Per-property isolation (Task #327). Resolved once at contact start from
+        # the dialed number / assistant and threaded into every FlowExecutor and
+        # ActionContext so integration resolution is scoped to (account, property).
+        # None → legacy account-only scoping.
+        self.property_id = property_id
 
         # Store flow executors by tool name for state persistence across turns
         self._flow_executors: Dict[str, FlowExecutor] = {}
@@ -996,6 +1002,7 @@ class FunctionMapper:
                         channel="voice",
                         call_sid=mapper.call_sid,
                         tool_id=tool.id,
+                        property_id=mapper.property_id,
                     ),
                     variables=arguments,
                     legacy_config=config,
@@ -1160,6 +1167,7 @@ class FunctionMapper:
             account_id=self.account_id,
             flow_tool_id=str(tool.id),
             call_sid=self.call_sid,
+            property_id=self.property_id,
         )
 
         # Store executor for this flow (we might need to access collected data)
@@ -1257,6 +1265,7 @@ class FunctionMapper:
                 flow_tool_id=str(tool.id),
                 call_sid=self.call_sid,
                 escalation_target=self.escalation_target,
+                property_id=self.property_id,
             )
             self._flow_executors[tool_name] = executor
             logger.info(f"Created new FlowExecutor for {tool_name}")

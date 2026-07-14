@@ -33,6 +33,14 @@ class Assistant(Base):
     # Ownership
     account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=False)
 
+    # Per-property scoping (Task #327). NULL = account-global (legacy / shared).
+    property_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("properties.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     # Assigned collections (named KB and ToolSet)
     knowledge_base_id = Column(UUID(as_uuid=True), ForeignKey("knowledge_bases.id"), nullable=True)
     tool_set_id = Column(UUID(as_uuid=True), ForeignKey("tool_sets.id"), nullable=True)
@@ -120,6 +128,7 @@ class Assistant(Base):
         return {
             "id": str(self.id),
             "account_id": str(self.account_id),
+            "property_id": str(self.property_id) if self.property_id else None,
             "knowledge_base_id": str(self.knowledge_base_id) if self.knowledge_base_id else None,
             "tool_set_id": str(self.tool_set_id) if self.tool_set_id else None,
             "mcp_connection_id": str(self.mcp_connection_id) if self.mcp_connection_id else None,

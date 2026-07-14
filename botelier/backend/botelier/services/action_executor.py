@@ -53,6 +53,10 @@ class ActionContext:
     flow_tool_id: Optional[str] = None
     node_id: Optional[str] = None
     source_label: Optional[str] = None
+    # Per-property isolation (Task #327). Resolved once at contact start and
+    # carried through the session; scopes integration resolution to
+    # (account_id, property_id). None = legacy / account-only scoping.
+    property_id: Optional[str] = None
 
 
 @dataclass
@@ -188,7 +192,11 @@ class ActionExecutor:
         self, request: ActionExecutionRequest, config: IntegrationAPIConfig
     ) -> APIResponse:
         self._lock_integration_refresh(config.integration_id)
-        client = IntegrationClient(request.context.account_id, db=self.db)
+        client = IntegrationClient(
+            request.context.account_id,
+            db=self.db,
+            property_id=request.context.property_id,
+        )
         return await client.execute_request(config, request.variables)
 
     async def _execute_custom_http(

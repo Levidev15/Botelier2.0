@@ -589,6 +589,34 @@ WHERE answered_at IS NULL
     """CREATE UNIQUE INDEX IF NOT EXISTS uq_records_autoextract_conversation
        ON records(record_type_id, source_conversation_id)
        WHERE capture_method = 'auto_extract' AND source_conversation_id IS NOT NULL""",
+    # ── Per-property data isolation (Task #327) ─────────────────────────────
+    # New `properties` table + nullable property_id FK on the three resources
+    # that determine or are resolved during a live session. The table is also
+    # created by Base.metadata.create_all; the CREATE TABLE IF NOT EXISTS here
+    # guarantees it exists before the ALTER TABLE ... REFERENCES properties(id)
+    # statements run on a pre-existing deployment. All statements are additive.
+    """
+    CREATE TABLE IF NOT EXISTS properties (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        name VARCHAR(255) NOT NULL,
+        description TEXT,
+        address TEXT,
+        timezone VARCHAR(50),
+        is_default BOOLEAN NOT NULL DEFAULT FALSE,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMP DEFAULT NOW(),
+        updated_at TIMESTAMP
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_properties_account_id ON properties(account_id)",
+    # property_id is nullable everywhere — NULL means account-global / shared.
+    "ALTER TABLE phone_numbers ADD COLUMN IF NOT EXISTS property_id UUID REFERENCES properties(id) ON DELETE SET NULL",
+    "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS property_id UUID REFERENCES properties(id) ON DELETE SET NULL",
+    "ALTER TABLE account_integrations ADD COLUMN IF NOT EXISTS property_id UUID REFERENCES properties(id) ON DELETE SET NULL",
+    "CREATE INDEX IF NOT EXISTS ix_phone_numbers_property_id ON phone_numbers(property_id)",
+    "CREATE INDEX IF NOT EXISTS ix_assistants_property_id ON assistants(property_id)",
+    "CREATE INDEX IF NOT EXISTS ix_account_integrations_property_id ON account_integrations(property_id)",
 ]
 
 
@@ -1423,6 +1451,101 @@ def _backfill_stuck_initiated_calls():
                 pass
 
 
+def _backfill_default_properties():
+    """Task #327 — idempotent per-property isolation backfill.
+
+    WHY THIS EXISTS
+    The properties table and the nullable ``property_id`` FK on phone_numbers,
+    assistants, and account_integrations are added additively. Existing accounts
+    have no property rows and NULL property_ids. To preserve current
+    single-property behavior with zero operator action, every account that owns
+    any of those resources gets exactly one default property, and its existing
+    resources are stamped with that property.
+
+    HOW IT WORKS (all statements idempotent, safe to re-run every startup)
+    1. Create one ``is_default=TRUE`` property for each account that owns
+       resources but has no property yet.
+    2. For accounts whose ONLY property is that single default, stamp NULL
+       property_ids on their resources with that property id.
+
+    Step 2 is deliberately scoped to accounts that have exactly one property.
+    Once an operator adds a second property to an account, that account has
+    opted into multi-property mode and a NULL property_id becomes an
+    intentional "account-global / shared" marker — so we must NOT auto-stamp
+    those NULLs, or we would silently bind a shared connection to one property.
+    For a single-property account, "global" and "the one default property" are
+    functionally identical, so stamping is behavior-preserving.
+    """
+    statements = [
+        # 1. Default property for resource-owning accounts that have none.
+        """
+        INSERT INTO properties (id, account_id, name, is_default, is_active, created_at)
+        SELECT gen_random_uuid(), a.id, 'Default', TRUE, TRUE, NOW()
+        FROM accounts a
+        WHERE NOT EXISTS (SELECT 1 FROM properties p WHERE p.account_id = a.id)
+          AND (
+                EXISTS (SELECT 1 FROM phone_numbers pn WHERE pn.account_id = a.id)
+             OR EXISTS (SELECT 1 FROM assistants asst WHERE asst.account_id = a.id)
+             OR EXISTS (SELECT 1 FROM account_integrations ai WHERE ai.account_id = a.id)
+          )
+        """,
+        # 2. Stamp NULL property_ids for single-(default-)property accounts only.
+        """
+        WITH single_prop AS (
+            SELECT p.account_id, p.id AS property_id
+            FROM properties p
+            WHERE p.is_default = TRUE
+              AND (SELECT COUNT(*) FROM properties p2 WHERE p2.account_id = p.account_id) = 1
+        )
+        UPDATE phone_numbers pn
+        SET property_id = sp.property_id
+        FROM single_prop sp
+        WHERE pn.account_id = sp.account_id AND pn.property_id IS NULL
+        """,
+        """
+        WITH single_prop AS (
+            SELECT p.account_id, p.id AS property_id
+            FROM properties p
+            WHERE p.is_default = TRUE
+              AND (SELECT COUNT(*) FROM properties p2 WHERE p2.account_id = p.account_id) = 1
+        )
+        UPDATE assistants asst
+        SET property_id = sp.property_id
+        FROM single_prop sp
+        WHERE asst.account_id = sp.account_id AND asst.property_id IS NULL
+        """,
+        """
+        WITH single_prop AS (
+            SELECT p.account_id, p.id AS property_id
+            FROM properties p
+            WHERE p.is_default = TRUE
+              AND (SELECT COUNT(*) FROM properties p2 WHERE p2.account_id = p.account_id) = 1
+        )
+        UPDATE account_integrations ai
+        SET property_id = sp.property_id
+        FROM single_prop sp
+        WHERE ai.account_id = sp.account_id AND ai.property_id IS NULL
+        """,
+    ]
+    with engine.connect() as conn:
+        for sql in statements:
+            try:
+                result = conn.execute(text(sql))
+                conn.commit()
+                if result.rowcount and result.rowcount > 0:
+                    logger.info(
+                        f"Default-property backfill: {result.rowcount} row(s) affected"
+                    )
+            except Exception as e:
+                logger.warning(
+                    f"Default-property backfill skipped (non-fatal): {sql[:60]}... — {e}"
+                )
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+
+
 def _assert_call_events_offset_ms_bigint() -> None:
     """Task #123 — fail loudly if ``call_events.offset_ms`` is not BIGINT.
 
@@ -1522,6 +1645,7 @@ def init_db():
         knowledge_entry,  # noqa: F401
         mcp_connection,  # noqa: F401
         phone_number,  # noqa: F401
+        property,  # noqa: F401
         record,  # noqa: F401
         record_type,  # noqa: F401
         resolution_option,  # noqa: F401
@@ -1542,6 +1666,9 @@ def init_db():
     _backfill_silero_vad_config()
     _backfill_smart_turn_stop_secs_default()
     _backfill_billing_tool_data()
+    # Task #327 — one default property per resource-owning account + stamp
+    # existing resources so current single-property behavior is preserved.
+    _backfill_default_properties()
     # Task #96: the unified stuck-call sweeper supersedes the legacy
     # _backfill_stuck_initiated_calls. It covers initiated, ringing and
     # in_progress (not just initiated) AND emits finalization_forced

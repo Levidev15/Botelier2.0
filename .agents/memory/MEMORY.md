@@ -4,6 +4,7 @@
 - [Simulator↔live parity](simulator-live-parity.md) — sim runs the resolved assistant's llm_model (never a hardcoded stronger model); assistant lookup by tool_set_id must also filter account_id (ownership unvalidated).
 - [Credential encryption architecture](credential-encryption.md) — all models use botelier/crypto.py; MultiFernet with comma-separated key list supports zero-downtime rotation.
 - [Call Duration surfaces](call-duration-surfaces.md) — display Duration = AI leg (pipecat), not CallLog.duration_seconds (billing-only); all surfaces (to_dict/analytics/CSV/frontend) must use identical duration_source filters in lockstep.
+- [Per-property data isolation](per-property-isolation.md) — (account,property) scope enforced fail-closed at the IntegrationClient chokepoint (not FlowExecutor init); does NOT cover legacy custom-HTTP tools or MCP.
 - [Integration adapter layer](integration-adapter-layer.md) — per-vendor auth/refresh behind IntegrationClient (integration_runtime/adapters); new auth_types need an adapter+registry entry or silently run token-less.
 - [flow_versions version_number invariant](flow-version-numbering.md) — never reassign a draft's version_number on save; derive new-draft numbers from max(version)+1; save/publish/revert must stay consistent or uq_tool_version 500s.
 - [flow-editor legacy node shapes](flow-editor-legacy-node-shapes.md) — old flow_versions rows have partial node data; node components must default each nested array/object (not just the top-level obj) or loading an old version crashes the editor.

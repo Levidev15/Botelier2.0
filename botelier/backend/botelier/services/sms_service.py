@@ -39,6 +39,7 @@ from botelier.models.sms_conversation import (
 )
 from botelier.models.tool import Tool, ToolType
 from botelier.models.tool_set import ToolSet
+from botelier.services.property_scope import resolve_session_property_id
 from botelier.voice.knowledge_handler import load_knowledge_for_prompt
 
 OPT_OUT_KEYWORDS = {"stop", "cancel", "unsubscribe", "end", "quit"}
@@ -88,6 +89,10 @@ class SMSService:
 
     def __init__(self, db: Session):
         self.db = db
+        # Per-property isolation (Task #327). Resolved once per incoming message in
+        # process_incoming_sms and used to scope integration resolution to
+        # (account, property). None → legacy account-only scoping.
+        self.session_property_id: Optional[str] = None
 
     def process_incoming_sms(
         self,
@@ -143,6 +148,13 @@ class SMSService:
         if not sms_config.get("enabled", False):
             logger.info(f"SMS is disabled on assistant {assistant.id}")
             return None, None, False
+
+        # Per-property isolation (Task #327): resolve the property scope once for
+        # this message from the texted number / assistant, then carry it through
+        # every integration call this turn makes.
+        self.session_property_id = resolve_session_property_id(
+            dialed_number=to_number, assistant=assistant, db=self.db
+        )
 
         normalized_body = body.strip().lower()
 
@@ -607,6 +619,7 @@ class SMSService:
                         account_id=str(assistant.account_id),
                         channel="sms",
                         tool_id=tool.id,
+                        property_id=self.session_property_id,
                     ),
                     variables=arguments,
                     legacy_config=tool.config or {},

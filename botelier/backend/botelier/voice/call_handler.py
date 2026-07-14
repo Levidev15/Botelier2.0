@@ -27,6 +27,7 @@ from ..models.assistant import Assistant
 from ..models.phone_number import PhoneNumber
 from ..services.call_event_queue import CallEventQueue
 from ..services.call_logger import CallLogger
+from ..services.property_scope import resolve_session_property_id
 from .agent import VoiceAgentConfig
 from .engine import VoiceEngineFactory, is_external_vad_effectively_enabled
 from .function_mapper import FunctionMapper
@@ -1707,6 +1708,13 @@ You have access to the following Q&A knowledge base. Use this information to ans
                 mapper = self.call_mappers[call_sid]
                 logger.debug(f"Reusing FunctionMapper for call {call_sid}")
             else:
+                # Per-property isolation (Task #327): resolve the property scope
+                # once at call start from the dialed number / assistant. The DB
+                # session opened for setup was already closed above, so the helper
+                # opens its own short-lived session for the phone lookup.
+                _property_id = resolve_session_property_id(
+                    dialed_number=to_number, assistant=assistant
+                )
                 mapper = FunctionMapper(
                     call_sid=call_sid,
                     stream_sid=stream_sid,
@@ -1718,6 +1726,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
                     account_id=str(assistant.account_id),
                     account_name=account_name,
                     escalation_target=_escalation_number,
+                    property_id=_property_id,
                 )
                 self.call_mappers[call_sid] = mapper
                 logger.info(f"Created FunctionMapper for call {call_sid}")

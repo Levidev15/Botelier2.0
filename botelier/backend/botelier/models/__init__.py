@@ -27,6 +27,7 @@ from botelier.models.mcp_connection import (
     MCPTransportType,
 )
 from botelier.models.phone_number import PhoneNumber
+from botelier.models.property import Property
 from botelier.models.record import CaptureMethod, Record, SourceChannel
 from botelier.models.record_type import RecordType
 from botelier.models.resolution_option import AssistantResolutionOption
@@ -62,6 +63,7 @@ __all__ = [
     "AccountInvitation",
     "InvitationStatus",
     "PhoneNumber",
+    "Property",
     "ToolSet",
     "Tool",
     "Assistant",

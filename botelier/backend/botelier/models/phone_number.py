@@ -42,6 +42,14 @@ class PhoneNumber(Base):
     # Ownership
     account_id = Column(UUID(as_uuid=True), ForeignKey("accounts.id"), nullable=False)
 
+    # Per-property scoping (Task #327). NULL = account-global (legacy / shared).
+    property_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("properties.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     # Assignment to voice assistant
     assistant_id = Column(UUID(as_uuid=True), nullable=True)  # Which assistant handles calls
 
@@ -70,6 +78,7 @@ class PhoneNumber(Base):
             "country_code": self.country_code,
             "twilio_sid": self.twilio_sid,
             "account_id": str(self.account_id),
+            "property_id": str(self.property_id) if self.property_id else None,
             "assistant_id": str(self.assistant_id) if self.assistant_id else None,
             "sms_enabled": self.sms_enabled or False,
             "sms_assistant_id": str(self.sms_assistant_id) if self.sms_assistant_id else None,

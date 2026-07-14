@@ -104,6 +104,10 @@ PERMISSIONS = {
         "view": "View the account's current billing rates",
         "manage": "Update per-account billing rates (platform admin only)",
     },
+    "properties": {
+        "view": "View properties (locations) within the account",
+        "manage": "Create, edit, and delete properties and their phone/assistant bindings",
+    },
     "records": {
         "view": "View structured output records",
         "create": "Manually create records",
@@ -157,6 +161,7 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
             },
             "usage": {"view": True, "export": True},
             "billing_rates": {"view": True, "manage": False},
+            "properties": {"view": True, "manage": True},
             "records": {
                 "view": True,
                 "create": True,
@@ -213,6 +218,7 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
             },
             "usage": {"view": True, "export": True},
             "billing_rates": {"view": False, "manage": False},
+            "properties": {"view": True, "manage": False},
             "records": {
                 "view": True,
                 "create": True,
@@ -269,6 +275,7 @@ DEFAULT_ROLES: Dict[str, Dict[str, Any]] = {
             },
             "usage": {"view": True, "export": False},
             "billing_rates": {"view": False, "manage": False},
+            "properties": {"view": True, "manage": False},
             "records": {
                 "view": True,
                 "create": False,

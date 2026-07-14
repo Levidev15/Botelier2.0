@@ -263,9 +263,14 @@ async def start_simulation(
     )
     escalation_target = None
     sim_model = DEFAULT_SIM_MODEL
+    property_id = None
     if assistant:
         escalation_target = (assistant.call_settings or {}).get("escalation_number") or None
         sim_model = assistant.llm_model or DEFAULT_SIM_MODEL
+        # Per-property isolation (Task #327): the simulator has no dialed number, so
+        # the property scope comes from the resolved backing assistant. This keeps
+        # the preview's integration access identical to a real call on that property.
+        property_id = str(assistant.property_id) if assistant.property_id else None
 
     try:
         flow_config = parse_flow_config(flow_config_dict)
@@ -275,6 +280,7 @@ async def start_simulation(
             account_id=str(tool.account_id) if tool.account_id else None,
             flow_tool_id=str(tool.id),
             escalation_target=escalation_target,
+            property_id=property_id,
         )
     except Exception as e:
         logger.error(f"Failed to parse flow config: {e}")

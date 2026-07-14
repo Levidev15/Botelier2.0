@@ -34,6 +34,7 @@ from botelier.api.call_logs import router as call_logs_router
 from botelier.api.calls import router as calls_router
 from botelier.api.dispositions import router as dispositions_router
 from botelier.api.flow_templates import router as flow_templates_router
+from botelier.api.properties import router as properties_router
 from botelier.api.record_types import router as record_types_router
 from botelier.api.records import router as records_router
 from botelier.api.flow_versions import router as flow_versions_router
@@ -95,6 +96,7 @@ app.include_router(simulation_router)
 app.include_router(invitations_router)  # Public invitation endpoints
 app.include_router(auth_router)  # Email/password auth endpoints
 app.include_router(dispositions_router)  # Assistant dispositions
+app.include_router(properties_router)  # Per-property data isolation (Task #327)
 app.include_router(record_types_router)  # Structured output record type definitions
 app.include_router(records_router)  # Structured output records
 app.include_router(resolution_options_router)  # Resolution status options

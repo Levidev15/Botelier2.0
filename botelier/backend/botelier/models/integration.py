@@ -156,6 +156,17 @@ class AccountIntegration(Base):
         index=True,
     )
 
+    # Per-property scoping (Task #327). NULL = account-global (shared) connection,
+    # usable by any property under the account (e.g. one central reservation
+    # system). A non-NULL value binds the connection to a single property and the
+    # integration-resolution layer fails closed for callers on any other property.
+    property_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("properties.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+
     connection_name = Column(String, nullable=True)
 
     status = Column(

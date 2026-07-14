@@ -516,6 +516,7 @@ class FlowExecutor:
         flow_tool_id: Optional[str] = None,
         call_sid: Optional[str] = None,
         escalation_target: Optional[str] = None,
+        property_id: Optional[str] = None,
     ):
         self.flow_config = flow_config
         self.state = FlowState(flow_config)
@@ -526,6 +527,11 @@ class FlowExecutor:
         self.account_id = account_id
         self.flow_tool_id = flow_tool_id
         self.call_sid = call_sid
+        # Per-property isolation (Task #327). Resolved once at contact start from
+        # the dialed number / assistant and carried through the whole session so
+        # every integration resolution is scoped to (account_id, property_id).
+        # None → legacy / account-only scoping.
+        self.property_id = str(property_id) if property_id else None
         # Assistant-level "talk to a human" fallback number. When set, a slot that
         # exhausts its retries (with no wired fallback branch) escalates here
         # instead of dead-ending. None → escalation disabled (fail closed).
@@ -2212,6 +2218,7 @@ class FlowExecutor:
                     flow_tool_id=self.flow_tool_id,
                     node_id=node_id,
                     source_label=node.data.get("name") or node_id,
+                    property_id=self.property_id,
                 ),
                 variables=self.state.collected_slots,
                 integration_config=config,
@@ -2394,6 +2401,7 @@ class FlowExecutor:
                     flow_tool_id=self.flow_tool_id,
                     node_id=node_id,
                     source_label=node.data.get("name") or node_id,
+                    property_id=self.property_id,
                 ),
                 variables=self.state.collected_slots,
                 legacy_config=api_config,
