@@ -1335,6 +1335,15 @@ class FunctionMapper:
                 escalation_target=self.escalation_target,
                 property_id=self.property_id,
             )
+            # Task #330 — resume a dropped call. If this contact already has a
+            # durable snapshot for this flow (websocket dropout + reconnect on a
+            # fresh worker), restore its node + collected slots so the caller
+            # picks up where they left off instead of starting over.
+            try:
+                if executor.rehydrate_from_snapshot():
+                    logger.info(f"Resumed FlowExecutor for {tool_name} from snapshot")
+            except Exception as exc:  # noqa: BLE001 - resume is best-effort
+                logger.warning(f"Flow resume failed for {tool_name} (non-fatal): {exc}")
             self._flow_executors[tool_name] = executor
             logger.info(f"Created new FlowExecutor for {tool_name}")
 

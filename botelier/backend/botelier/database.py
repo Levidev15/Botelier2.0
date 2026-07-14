@@ -1645,11 +1645,14 @@ def init_db():
         assistant,  # noqa: F401
         call_event,  # noqa: F401
         call_log,  # noqa: F401
+        flow_session,  # noqa: F401
         flow_version,  # noqa: F401
         integration,  # noqa: F401
         invitation,  # noqa: F401
         knowledge_entry,  # noqa: F401
         mcp_connection,  # noqa: F401
+        operation_idempotency,  # noqa: F401
+        payment,  # noqa: F401
         phone_number,  # noqa: F401
         property,  # noqa: F401
         record,  # noqa: F401

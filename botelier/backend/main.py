@@ -26,6 +26,7 @@ from botelier.api.admin import router as admin_router
 from botelier.api.admin_billing import router as admin_billing_router
 from botelier.api.call_duration_admin import router as call_duration_admin_router
 from botelier.api.billing import router as billing_router
+from botelier.api.payments import router as payments_router
 from botelier.api.analytics import router as analytics_router
 from botelier.api.api_tester import router as api_tester_router
 from botelier.api.assistants import router as assistants_router
@@ -112,6 +113,7 @@ app.include_router(analytics_router)  # Analytics dashboards
 app.include_router(team_router)  # Account team management
 app.include_router(account_router)  # Account-level client endpoints (features, etc.)
 app.include_router(billing_router)  # Account usage & billing
+app.include_router(payments_router)  # Durable payments & collect_payment webhook (Task #330)
 app.include_router(admin_billing_router)  # Admin billing — cross-account view and rate config
 app.include_router(call_duration_admin_router)  # Admin — call duration reconciliation
 

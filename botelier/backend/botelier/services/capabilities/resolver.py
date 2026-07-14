@@ -22,6 +22,7 @@ Resolution contract (fail closed):
 
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
@@ -216,6 +217,46 @@ class CapabilityResolver:
             merged.update(arguments)
         return (resolution, self.translate_variables(resolution, merged)), None
 
+    def _idempotency_for(
+        self,
+        capability_name: str,
+        arguments: Optional[Dict[str, Any]],
+        call_sid: Optional[str],
+    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """Derive a durable dedup key for a *mutating* capability (Task #330).
+
+        Only ``mutating`` capabilities (book/cancel/collect_payment) are guarded
+        — reads must stay fresh. ``mutating`` is the single source of truth (a
+        capability node has no HTTP method to key off; the method lives on the
+        resolved vendor endpoint).
+
+        The key binds the operation to its tenant, property, contact, and the
+        *canonical* arguments the caller supplied (not the translated vendor vars
+        or the full slot dump). Including ``call_sid`` when present scopes dedup
+        to the contact so a reconnect/retry within the same call dedups while a
+        genuinely new contact can legitimately repeat the same operation.
+        """
+        import hashlib
+
+        spec = get_capability(capability_name)
+        if spec is None or not spec.mutating:
+            return None, None, None
+
+        args_payload = json.dumps(arguments or {}, sort_keys=True, default=str)
+        args_hash = hashlib.sha256(args_payload.encode("utf-8")).hexdigest()
+        raw = "|".join(
+            [
+                "cap",
+                str(self.account_id or ""),
+                str(self.property_id or ""),
+                str(call_sid or ""),
+                capability_name,
+                args_hash,
+            ]
+        )
+        key = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+        return key, capability_name, args_hash
+
     def _build_request(
         self,
         resolution: Resolution,
@@ -224,6 +265,11 @@ class CapabilityResolver:
         channel: str,
         call_sid: Optional[str],
         source_label: Optional[str],
+        idempotency: tuple[Optional[str], Optional[str], Optional[str]] = (
+            None,
+            None,
+            None,
+        ),
     ):
         from botelier.services.action_executor import ActionContext, ActionExecutionRequest
         from botelier.services.integration_runtime.types import IntegrationAPIConfig
@@ -233,6 +279,7 @@ class CapabilityResolver:
             endpoint_id=resolution.endpoint_id,
             method=resolution.method,
         )
+        idem_key, operation, args_hash = idempotency
         return ActionExecutionRequest(
             context=ActionContext(
                 account_id=self.account_id,
@@ -243,6 +290,40 @@ class CapabilityResolver:
             ),
             variables=vendor_vars,
             integration_config=config,
+            idempotency_key=idem_key,
+            operation=operation,
+            args_hash=args_hash,
+        )
+
+    def _service_backed_payment(
+        self,
+        capability_name: str,
+        arguments: Optional[Dict[str, Any]],
+        channel: str,
+        call_sid: Optional[str],
+    ) -> Dict[str, Any]:
+        """Route ``collect_payment`` to :class:`PaymentService` (Task #330).
+
+        Service-backed capabilities do not resolve to a PMS vendor endpoint, so
+        they bypass ``resolve → IntegrationClient`` entirely. Property scope and
+        durable idempotency are still applied: the payment write is keyed with the
+        same ``_idempotency_for`` key so a reconnect/retry dedups to one charge.
+        """
+        from botelier.services.payments import PaymentService
+
+        args = arguments or {}
+        idem_key, _operation, _args_hash = self._idempotency_for(
+            capability_name, arguments, call_sid
+        )
+        service = PaymentService(self.account_id, self.property_id)
+        return service.collect_payment(
+            amount=args.get("amount"),
+            currency=args.get("currency", "USD"),
+            description=args.get("description"),
+            reference=args.get("reference"),
+            channel=channel,
+            call_sid=call_sid,
+            idempotency_key=idem_key,
         )
 
     async def execute(
@@ -258,12 +339,32 @@ class CapabilityResolver:
         """Resolve + execute a capability (async). Returns the LLM-facing payload."""
         from botelier.services.action_executor import ActionExecutor
 
+        spec = get_capability(capability_name)
+        if spec is not None and spec.service_backed:
+            # Provider calls may block; keep the event loop free.
+            import asyncio
+
+            return await asyncio.to_thread(
+                self._service_backed_payment,
+                capability_name,
+                arguments,
+                channel,
+                call_sid,
+            )
+
         prepared, error = self._prepare(capability_name, arguments, extra_variables)
         if error:
             return error
         resolution, vendor_vars = prepared
+        idempotency = self._idempotency_for(capability_name, arguments, call_sid)
         request = self._build_request(
-            resolution, vendor_vars, capability_name, channel, call_sid, source_label
+            resolution,
+            vendor_vars,
+            capability_name,
+            channel,
+            call_sid,
+            source_label,
+            idempotency,
         )
         result = await ActionExecutor(self.db).execute_and_log(request)
         return format_capability_result(result)
@@ -281,12 +382,25 @@ class CapabilityResolver:
         """Synchronous bridge for the SMS path (no running event loop)."""
         from botelier.services.action_executor import execute_action_sync
 
+        spec = get_capability(capability_name)
+        if spec is not None and spec.service_backed:
+            return self._service_backed_payment(
+                capability_name, arguments, channel, call_sid
+            )
+
         prepared, error = self._prepare(capability_name, arguments, extra_variables)
         if error:
             return error
         resolution, vendor_vars = prepared
+        idempotency = self._idempotency_for(capability_name, arguments, call_sid)
         request = self._build_request(
-            resolution, vendor_vars, capability_name, channel, call_sid, source_label
+            resolution,
+            vendor_vars,
+            capability_name,
+            channel,
+            call_sid,
+            source_label,
+            idempotency,
         )
         result = execute_action_sync(self.db, request)
         return format_capability_result(result)

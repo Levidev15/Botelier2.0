@@ -548,6 +548,140 @@ class FlowExecutor:
         self._non_get_results: dict[str, dict] = {}
         self._non_get_locks: dict[str, asyncio.Lock] = {}
 
+    # -- Durable session state (Task #330) ----------------------------------
+    def _snapshot_key(self) -> Optional[tuple[str, str]]:
+        """Return ``(session_key, tool_id)`` when this executor is snapshottable.
+
+        Durable snapshots require a stable per-contact identifier (``call_sid``)
+        and the flow tool id. Ephemeral contexts (e.g. the simulator, which
+        keeps its own state) have no ``call_sid`` and are intentionally skipped.
+        """
+        if self.call_sid and self.flow_tool_id:
+            return str(self.call_sid), str(self.flow_tool_id)
+        return None
+
+    async def _snapshot_state(self) -> None:
+        """Persist current flow state to ``flow_sessions`` (best-effort).
+
+        Written after every function call in an isolated transaction, decoupled
+        from the business write path (last-write-wins, no locks). A failure here
+        never affects the live call — the caller already has their result.
+        """
+        key = self._snapshot_key()
+        if not key:
+            return
+        session_key, tool_id = key
+        payload = {
+            "account_id": str(self.account_id) if self.account_id else None,
+            "property_id": self.property_id,
+            "session_key": session_key,
+            "tool_id": tool_id,
+            "current_node_id": self.state.current_node_id,
+            "collected_slots": json.dumps(self.state.collected_slots, default=str),
+            "status": "complete" if self.state.is_complete else "active",
+        }
+        try:
+            await asyncio.to_thread(self._write_snapshot, payload)
+        except Exception as exc:  # noqa: BLE001 - snapshot must never break a call
+            logger.warning(f"Flow session snapshot failed (non-fatal): {exc}")
+
+    @staticmethod
+    def _write_snapshot(payload: dict) -> None:
+        """Upsert a single flow-session row in its own short-lived session."""
+        from sqlalchemy import text as _text
+
+        from botelier.database import SessionLocal
+
+        db = SessionLocal()
+        try:
+            db.execute(
+                _text(
+                    """
+                    INSERT INTO flow_sessions (
+                        id, account_id, property_id, channel, session_key,
+                        tool_id, current_node_id, collected_slots, status,
+                        created_at, updated_at
+                    ) VALUES (
+                        gen_random_uuid(),
+                        CAST(:account_id AS UUID),
+                        CAST(:property_id AS UUID),
+                        'voice',
+                        :session_key,
+                        CAST(:tool_id AS UUID),
+                        :current_node_id,
+                        CAST(:collected_slots AS JSONB),
+                        :status,
+                        now(), now()
+                    )
+                    ON CONFLICT (session_key, tool_id) DO UPDATE SET
+                        current_node_id = EXCLUDED.current_node_id,
+                        collected_slots = EXCLUDED.collected_slots,
+                        status = EXCLUDED.status,
+                        property_id = EXCLUDED.property_id,
+                        account_id = EXCLUDED.account_id,
+                        updated_at = now()
+                    """
+                ),
+                payload,
+            )
+            db.commit()
+        except Exception:
+            db.rollback()
+            raise
+        finally:
+            db.close()
+
+    def rehydrate_from_snapshot(self) -> bool:
+        """Restore in-memory state from a durable snapshot, if one exists.
+
+        Called when a fresh executor is created for a reconnecting contact. Saved
+        slots overlay the flow-variable defaults (saved wins) and the flow
+        resumes at the saved node. Read on the shared session; failures are
+        swallowed so a missing/locked snapshot never blocks the call. Returns
+        ``True`` when state was restored.
+        """
+        key = self._snapshot_key()
+        if not key or self.db_session is None:
+            return False
+        session_key, tool_id = key
+        try:
+            from sqlalchemy import text as _text
+
+            row = self.db_session.execute(
+                _text(
+                    """
+                    SELECT current_node_id, collected_slots, status
+                    FROM flow_sessions
+                    WHERE session_key = :session_key
+                      AND tool_id = CAST(:tool_id AS UUID)
+                    """
+                ),
+                {"session_key": session_key, "tool_id": tool_id},
+            ).fetchone()
+        except Exception as exc:  # noqa: BLE001 - resume is best-effort
+            logger.warning(f"Flow session rehydrate query failed (non-fatal): {exc}")
+            return False
+
+        if not row:
+            return False
+
+        saved_node, saved_slots, saved_status = row[0], row[1], row[2]
+        if isinstance(saved_slots, str):
+            try:
+                saved_slots = json.loads(saved_slots)
+            except (ValueError, TypeError):
+                saved_slots = {}
+        if isinstance(saved_slots, dict):
+            self.state.collected_slots.update(saved_slots)
+        if saved_node:
+            self.state.current_node_id = saved_node
+        self.state.is_complete = saved_status == "complete"
+        logger.info(
+            f"Rehydrated flow session {session_key}/{tool_id} at node "
+            f"{self.state.current_node_id} ({len(self.state.collected_slots)} slots)"
+        )
+        return True
+
     def get_variables_in_flow_order(self) -> list[FlowVariable]:
         """Get variables in the order they appear in the flow traversal.
 
@@ -1702,13 +1836,25 @@ class FlowExecutor:
         }
 
     async def handle_function_call(self, function_name: str, arguments: dict) -> dict:
-        """Handle a function call from the LLM.
+        """Handle a function call from the LLM, then durably snapshot state.
+
+        Dispatches to the concrete handler, then persists the resulting flow
+        state (current node + collected slots) to ``flow_sessions`` so a
+        websocket dropout / reconnect can resume where the caller left off
+        (Task #330). The snapshot is best-effort and post-dispatch: a snapshot
+        failure never affects the caller-facing result.
 
         Returns a result dict with:
         - success: bool
         - message: str (to speak to the customer)
         - action: Optional action type (transfer, end, etc.)
         """
+        result = await self._dispatch_function_call(function_name, arguments)
+        await self._snapshot_state()
+        return result
+
+    async def _dispatch_function_call(self, function_name: str, arguments: dict) -> dict:
+        """Route a function call to its concrete handler (no persistence)."""
         if function_name.startswith("collect_"):
             return await self._handle_slot_collection(function_name, arguments)
         elif function_name.startswith("execute_"):
@@ -2134,13 +2280,23 @@ class FlowExecutor:
                 "current_node_id": node_id,
             }
 
-        if get_capability(capability_name) is None:
+        spec = get_capability(capability_name)
+        if spec is None:
             return {
                 "success": False,
                 "message": f"Unknown capability '{capability_name}'.",
                 "action": None,
                 "current_node_id": node_id,
             }
+
+        # Service-backed capabilities (e.g. collect_payment) do not resolve to a
+        # PMS vendor endpoint — route them to their internal service and advance
+        # the node from the AI-safe result. Property scope + durable idempotency
+        # are enforced inside the service (Task #330).
+        if spec.service_backed:
+            return await self._handle_service_backed_capability(
+                node_id, node, api_config, capability_name
+            )
 
         resolver = CapabilityResolver(self.db_session, self.account_id, self.property_id)
         resolution = resolver.resolve(capability_name)
@@ -2171,6 +2327,97 @@ class FlowExecutor:
         return await self._handle_integration_api_request(
             node_id, node, synth_config, variables=translated
         )
+
+    async def _handle_service_backed_capability(
+        self, node_id: str, node: FlowNode, api_config: dict, capability_name: str
+    ) -> dict:
+        """Execute a service-backed capability (collect_payment) in a flow node.
+
+        Reads the vendor-neutral params from flow slots, delegates to the
+        capability's internal service (``PaymentService``), then advances the node
+        like a successful/failed integration node. A durable idempotency key keyed
+        to (call, flow tool, node) dedups a reconnect/retry to a single charge.
+        The AI-safe result (``{status, payment_id, message}``) drives the branch;
+        processor identifiers never enter flow state.
+        """
+        slots = self.state.collected_slots or {}
+
+        idem_key = None
+        if self.call_sid:
+            import hashlib
+
+            raw = "|".join(
+                [
+                    "pay",
+                    "flow",
+                    str(self.account_id or ""),
+                    str(self.property_id or ""),
+                    str(self.call_sid),
+                    str(self.flow_tool_id or ""),
+                    str(node_id),
+                ]
+            )
+            idem_key = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+        def _run() -> dict:
+            from botelier.services.payments import PaymentService
+
+            service = PaymentService(self.account_id, self.property_id)
+            return service.collect_payment(
+                amount=slots.get("amount"),
+                currency=slots.get("currency", "USD"),
+                description=slots.get("description"),
+                reference=slots.get("reference"),
+                channel="flow",
+                call_sid=self.call_sid,
+                idempotency_key=idem_key,
+            )
+
+        import asyncio
+
+        result = await asyncio.to_thread(_run)
+
+        status = (result or {}).get("status")
+        message = (result or {}).get("message", "")
+        # Expose non-sensitive outcome to flow state so downstream CONDITION nodes
+        # can branch on it. payment_id is an opaque internal id (safe); no
+        # processor refs or link tokens are ever written here.
+        self.state.set_variable("payment_status", status)
+        if result and result.get("payment_id"):
+            self.state.set_variable("payment_id", result["payment_id"])
+
+        succeeded = status in ("pending", "authorized", "captured")
+        if succeeded:
+            next_node = self.state.get_next_node(node_id)
+            if next_node:
+                self.state.advance_to(next_node.id)
+                next_node_id = next_node.id
+            else:
+                self.state.advance_to(node_id)
+                next_node_id = node_id
+
+            response_instructions = (api_config.get("responseInstructions") or "").strip()
+            if response_instructions:
+                voice_result = substitute_variables(
+                    response_instructions, self.state.collected_slots
+                )
+            else:
+                voice_result = message
+
+            return {
+                "success": True,
+                "message": api_config.get("onSuccess") or message,
+                "action": None,
+                "voice_result": voice_result,
+                "current_node_id": next_node_id,
+            }
+
+        return {
+            "success": False,
+            "message": api_config.get("onError") or message,
+            "action": None,
+            "current_node_id": node_id,
+        }
 
     async def _handle_integration_api_request(
         self, node_id: str, node: FlowNode, api_config: dict, variables: dict = None

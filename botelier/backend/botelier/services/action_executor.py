@@ -5,6 +5,7 @@ endpoint calls behind one guarded runtime contract.
 """
 
 import asyncio
+import hashlib
 import json
 import re
 import time
@@ -68,6 +69,14 @@ class ActionExecutionRequest:
     legacy_config: Optional[dict[str, Any]] = None
     integration_config: Optional[IntegrationAPIConfig] = None
     test_config: Optional[dict[str, Any]] = None
+    # Cross-session idempotency (Task #330). When set, ``execute_and_log`` runs
+    # the operation through the durable ledger so a reconnect/retry with the same
+    # key returns the stored result instead of firing the write twice. Callers
+    # set this only for mutating operations (the resolver keys it off
+    # ``CapabilitySpec.mutating``); reads leave it None so they stay fresh.
+    idempotency_key: Optional[str] = None
+    operation: Optional[str] = None
+    args_hash: Optional[str] = None
 
 
 @dataclass
@@ -170,7 +179,6 @@ class ActionExecutor:
                 request.action_id,
                 request.action_version_id,
             )
-        result = await self.execute(request)
         config = request.legacy_config or request.test_config or (version.config if version else {})
         if request.integration_config:
             method = request.integration_config.method
@@ -180,6 +188,20 @@ class ActionExecutor:
             method = str(config.get("method", "GET")).upper() if config else None
             endpoint = (config or {}).get("url") or (config or {}).get("path")
             integration_id = (config or {}).get("integration_id")
+
+        # Task #330 — durable cross-session dedup for mutating operations. The
+        # in-memory flow guard only covers a single worker; this makes a booking
+        # or charge fire at most once even after a websocket dropout + reconnect
+        # on a fresh worker. Reads (GET / non-mutating capabilities) never get a
+        # key and always run fresh.
+        idem_key, operation, args_hash = self._resolve_idempotency(request, method)
+        if idem_key:
+            result = await self._execute_with_idempotency(
+                request, idem_key, operation, args_hash
+            )
+        else:
+            result = await self.execute(request)
+
         self._write_logs(
             request=request,
             result=result,
@@ -190,6 +212,157 @@ class ActionExecutor:
             endpoint=endpoint,
         )
         return result
+
+    def _resolve_idempotency(
+        self, request: ActionExecutionRequest, method: Optional[str]
+    ) -> tuple[Optional[str], Optional[str], Optional[str]]:
+        """Decide whether this operation is guarded and under what key.
+
+        Precedence:
+        1. An explicit ``request.idempotency_key`` (set by the capability
+           resolver for mutating capabilities — it knows ``spec.mutating`` and
+           the canonical args).
+        2. Otherwise, auto-derive a stable key for a mutating *flow node* from
+           ``call_sid + flow_tool_id + node_id``. That triple is invariant across
+           a reconnect (flow_sessions is keyed the same way), so the retried node
+           dedups. GETs and simulator/testing runs (no call_sid) are unguarded.
+        """
+        if request.idempotency_key:
+            return (
+                request.idempotency_key,
+                request.operation or "operation",
+                request.args_hash,
+            )
+
+        ctx = request.context
+        if (
+            method
+            and method.upper() not in _SAFE_METHODS
+            and ctx.call_sid
+            and ctx.node_id
+            and ctx.flow_tool_id
+        ):
+            raw = f"flow:{ctx.call_sid}:{ctx.flow_tool_id}:{ctx.node_id}"
+            key = hashlib.sha256(raw.encode("utf-8")).hexdigest()
+            args_hash = hashlib.sha256(
+                json.dumps(request.variables or {}, sort_keys=True, default=str).encode(
+                    "utf-8"
+                )
+            ).hexdigest()
+            return key, f"flow_node:{ctx.node_id}", args_hash
+
+        return None, None, None
+
+    async def _execute_with_idempotency(
+        self,
+        request: ActionExecutionRequest,
+        key: str,
+        operation: Optional[str],
+        args_hash: Optional[str],
+    ) -> ActionExecutionResult:
+        from botelier.services.idempotency import (
+            IN_PROGRESS,
+            RETURN_STORED,
+            IdempotencyLedger,
+        )
+
+        ledger = IdempotencyLedger()
+        request_id = uuid.uuid4().hex
+        start_ms = int(time.time() * 1000)
+        try:
+            claim = ledger.claim(
+                key,
+                request.context.account_id,
+                request.context.property_id,
+                operation,
+                args_hash,
+            )
+        except Exception as exc:  # noqa: BLE001 - ledger must fail closed
+            # A ledger outage must not silently drop to an unguarded double-write
+            # for a booking/charge. Fail closed: refuse rather than risk a dup.
+            logger.error(f"Idempotency claim failed for {operation} — refusing: {exc}")
+            return self._error(
+                request_id,
+                start_ms,
+                APIErrorType.UNKNOWN,
+                "This request could not be safely processed. Please try again.",
+            )
+
+        if claim.outcome == RETURN_STORED:
+            stored = self._deserialize_result(claim.stored_result)
+            if stored is not None:
+                logger.info(f"Idempotent replay ({operation}) — returning stored result")
+                return stored
+            # Row said succeeded but the payload was unreadable — treat as an
+            # in-progress/ambiguous state and refuse rather than re-fire.
+            return self._error(
+                request_id,
+                start_ms,
+                APIErrorType.UNKNOWN,
+                "This request was already processed.",
+            )
+
+        if claim.outcome == IN_PROGRESS:
+            logger.info(f"Idempotent duplicate ({operation}) — already in progress")
+            return self._error(
+                request_id,
+                start_ms,
+                APIErrorType.UNKNOWN,
+                "This request is already being processed.",
+            )
+
+        # We own the key: execute exactly once, then record the outcome.
+        try:
+            result = await self.execute(request)
+        except Exception:
+            ledger.fail(key)
+            raise
+
+        if result.success:
+            ledger.complete(key, self._serialize_result(result))
+        else:
+            ledger.fail(key)
+        return result
+
+    @staticmethod
+    def _serialize_result(result: ActionExecutionResult) -> dict[str, Any]:
+        return {
+            "success": result.success,
+            "status_code": result.status_code,
+            "data": result.data,
+            "error_type": result.error_type.value if result.error_type else None,
+            "error_message": result.error_message,
+            "extracted_variables": result.extracted_variables,
+            "canonical": result.canonical,
+            "latency_ms": result.latency_ms,
+        }
+
+    @staticmethod
+    def _deserialize_result(
+        data: Optional[dict[str, Any]],
+    ) -> Optional[ActionExecutionResult]:
+        if not data:
+            return None
+        error_type_value = data.get("error_type")
+        try:
+            error_type = (
+                APIErrorType(error_type_value)
+                if error_type_value
+                else APIErrorType.SUCCESS
+            )
+        except ValueError:
+            error_type = APIErrorType.UNKNOWN
+        return ActionExecutionResult(
+            success=bool(data.get("success")),
+            status_code=int(data.get("status_code") or 0),
+            data=data.get("data"),
+            error_type=error_type,
+            error_message=data.get("error_message"),
+            extracted_variables=data.get("extracted_variables") or {},
+            request_id=uuid.uuid4().hex,
+            latency_ms=int(data.get("latency_ms") or 0),
+            canonical=data.get("canonical"),
+        )
 
     async def _execute_integration(
         self, request: ActionExecutionRequest, config: IntegrationAPIConfig

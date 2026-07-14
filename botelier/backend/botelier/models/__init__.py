@@ -16,10 +16,16 @@ from botelier.models.assistant import Assistant
 from botelier.models.call_event import CallEvent
 from botelier.models.call_log import CallLeg, CallLog, CallOutcome, CallStatus, LegType
 from botelier.models.disposition import AssistantDisposition
+from botelier.models.flow_session import FlowSession, FlowSessionStatus
 from botelier.models.flow_version import FlowVersion, FlowVersionStatus
 from botelier.models.invitation import AccountInvitation, InvitationStatus
 from botelier.models.knowledge_base import KnowledgeBase
 from botelier.models.knowledge_entry import KnowledgeEntry
+from botelier.models.operation_idempotency import (
+    OperationIdempotency,
+    OperationStatus,
+)
+from botelier.models.payment import Payment, PaymentMethod, PaymentStatus
 from botelier.models.mcp_connection import (
     MCPAuthType,
     MCPConnection,
@@ -69,6 +75,13 @@ __all__ = [
     "Assistant",
     "KnowledgeBase",
     "KnowledgeEntry",
+    "FlowSession",
+    "FlowSessionStatus",
+    "OperationIdempotency",
+    "OperationStatus",
+    "Payment",
+    "PaymentMethod",
+    "PaymentStatus",
     "FlowVersion",
     "FlowVersionStatus",
     "CallLog",

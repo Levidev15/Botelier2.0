@@ -42,6 +42,11 @@ class CapabilitySpec:
             data only (Task #328 canonicalization is reads-only in v1).
         mutating: ``True`` for write capabilities (book / cancel). Drives the
             flow non-GET idempotency guard.
+        service_backed: ``True`` for capabilities that do NOT resolve to a PMS
+            vendor endpoint but are handled by a dedicated internal service
+            (e.g. ``collect_payment`` → ``PaymentService``). The resolver routes
+            these to their service instead of the ``resolve → IntegrationClient``
+            path. Still property-scoped and idempotent like any other capability.
         required_permissions: Reserved for future per-capability RBAC. Empty in
             v1 — runtime capability calls run in an unauthenticated voice / SMS
             context; tool *configuration* is already permission-gated at the API
@@ -54,6 +59,7 @@ class CapabilitySpec:
     required: List[str] = field(default_factory=list)
     canonical_entity: Optional[str] = None
     mutating: bool = False
+    service_backed: bool = False
     required_permissions: List[str] = field(default_factory=list)
 
     def json_schema(self) -> Dict[str, Any]:
@@ -192,6 +198,42 @@ _CAPABILITIES: Dict[str, CapabilitySpec] = {
         required=["confirmation_number"],
         canonical_entity=None,
         mutating=True,
+    ),
+    "collect_payment": CapabilitySpec(
+        name="collect_payment",
+        description=(
+            "Request a payment from the caller by sending them a secure payment "
+            "link (for example by text message). Use when a deposit or payment is "
+            "required — e.g. to hold a reservation. You NEVER handle card numbers "
+            "yourself; the caller enters their card on a secure page. Provide the "
+            "amount to charge."
+        ),
+        parameters={
+            "amount": {
+                "type": "number",
+                "description": (
+                    "The amount to charge in the property's currency, e.g. 149.00."
+                ),
+            },
+            "description": {
+                "type": "string",
+                "description": (
+                    "Short description of what the payment is for, e.g. "
+                    "'Deposit for reservation'."
+                ),
+            },
+            "reference": {
+                "type": "string",
+                "description": (
+                    "Optional booking or confirmation reference to associate with "
+                    "the payment."
+                ),
+            },
+        },
+        required=["amount"],
+        canonical_entity=None,
+        mutating=True,
+        service_backed=True,
     ),
 }
 
