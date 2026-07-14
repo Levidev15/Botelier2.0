@@ -79,6 +79,24 @@ class BaseIntegrationAdapter:
         """Refresh + persist credentials. Generic default is a no-op success."""
         return True
 
+    def normalize(self, entity: str, endpoint_id: Optional[str], raw: object) -> Optional[dict]:
+        """Map a raw vendor response into the canonical envelope for ``entity``.
+
+        ``entity`` is the endpoint's ``canonical_entity`` tag (a
+        :class:`~botelier.services.integration_runtime.canonical.CanonicalEntity`
+        value); ``endpoint_id`` disambiguates vendor endpoints that share an
+        entity but wrap it differently; ``raw`` is the already-parsed JSON body.
+
+        Return the envelope from
+        :func:`~botelier.services.integration_runtime.canonical.build_envelope`,
+        or ``None`` to opt out (no canonicalization). The generic default returns
+        ``None`` so config-only integrations and custom endpoints are untouched.
+
+        Contract: normalizers MUST be total — never raise. Return ``None`` on any
+        unexpected shape so a normalization bug can never fail a live request.
+        """
+        return None
+
 
 class DefaultAdapter(BaseIntegrationAdapter):
     """Generic, config-driven adapter used for any integration without a

@@ -27,6 +27,8 @@ Botelier ships with pre-configured integration types:
 
 Adding a new pre-built integration (a new row in this table)? See [Adding a New Integration](./adding-a-new-integration) for the complete, worked-example-driven guide covering the seed definition, auth/runtime behavior, flow-editor wiring, docs, and testing.
 
+Endpoints that model shared PMS concepts (reservations, guests, rooms, rate plans, availability) can additionally emit a **vendor-neutral** shape so a consumer can't tell which vendor produced the data. See [Canonical Domain Schemas](./canonical-domain-schemas).
+
 ## How Integrations Surface in Flows and Tools
 
 Once connected, an integration's endpoints appear in:

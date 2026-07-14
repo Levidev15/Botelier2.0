@@ -8,6 +8,7 @@ on every data call, and the JWT login/refresh dance (which also carries an
 
 import base64
 from datetime import datetime, timedelta
+from typing import Optional
 
 import httpx
 from loguru import logger
@@ -16,7 +17,37 @@ from botelier.models.integration import IntegrationStatus
 from botelier.services.ssrf_safe_transport import SSRFSafeTransport
 
 from ..authparams import build_auth_request_query_params
+from ..canonical import (
+    CanonicalAvailability,
+    CanonicalEntity,
+    CanonicalReservation,
+    ReservationStatus,
+    build_envelope,
+    coerce_float,
+    coerce_int,
+    coerce_str,
+)
 from .base import BaseIntegrationAdapter, RefreshContext
+
+# GuestCentric status strings mapped onto the vendor-neutral vocabulary.
+_GUESTCENTRIC_RESERVATION_STATUS = {
+    "confirmed": ReservationStatus.CONFIRMED,
+    "booked": ReservationStatus.CONFIRMED,
+    "reserved": ReservationStatus.CONFIRMED,
+    "inhouse": ReservationStatus.IN_HOUSE,
+    "checkedin": ReservationStatus.IN_HOUSE,
+    "checkedout": ReservationStatus.CHECKED_OUT,
+    "departed": ReservationStatus.CHECKED_OUT,
+    "cancelled": ReservationStatus.CANCELLED,
+    "canceled": ReservationStatus.CANCELLED,
+    "noshow": ReservationStatus.NO_SHOW,
+    "waitlisted": ReservationStatus.WAITLISTED,
+}
+
+
+def _guestcentric_status(raw_status) -> str:
+    key = (raw_status or "").strip().lower().replace(" ", "").replace("_", "")
+    return _GUESTCENTRIC_RESERVATION_STATUS.get(key, ReservationStatus.UNKNOWN).value
 
 
 class GuestCentricAdapter(BaseIntegrationAdapter):
@@ -204,3 +235,104 @@ class GuestCentricAdapter(BaseIntegrationAdapter):
         finally:
             if ctx.owns_session:
                 db.close()
+
+    # ------------------------------------------------------------------
+    # Canonical normalization (GuestCentric shapes -> vendor-neutral entities).
+    # Every normalizer is total: it returns None on an unexpected shape and
+    # never raises, so a normalization bug can never fail a live CRS request.
+    # ------------------------------------------------------------------
+    def normalize(self, entity, endpoint_id, raw):
+        if not isinstance(raw, dict):
+            return None
+        try:
+            if entity == CanonicalEntity.RESERVATION.value:
+                items = self._normalize_reservations(raw)
+            elif entity == CanonicalEntity.AVAILABILITY.value:
+                items = self._normalize_availability(raw)
+            else:
+                return None
+        except Exception:  # pragma: no cover - defensive; normalizers are total
+            logger.exception(
+                f"GuestCentric canonical normalization failed "
+                f"(entity={entity}, endpoint={endpoint_id})"
+            )
+            return None
+        # None → expected wrapper key absent (shape we don't recognize, "not
+        # canonicalized"); [] → wrapper present but empty. Keep them distinct.
+        if items is None:
+            return None
+        return build_envelope(entity, items)
+
+    @staticmethod
+    def _reservation_from_record(res: dict) -> CanonicalReservation:
+        # crs_reservation_code is the guest-facing confirmation reference;
+        # hotel_reservation_code is the internal PMS identifier.
+        guest = res.get("guest") if isinstance(res.get("guest"), dict) else {}
+        room_type = res.get("room_type") if isinstance(res.get("room_type"), dict) else {}
+        rate_plan = res.get("rate_plan") if isinstance(res.get("rate_plan"), dict) else {}
+        room_rate = res.get("room_rate") if isinstance(res.get("room_rate"), dict) else {}
+        # Prefer the nested room_rate.total_price, falling back to a top-level
+        # total_price — but only when the nested value is truly absent, so a
+        # legitimate 0.0 (comp/free stay) is preserved rather than coalesced away.
+        total_price = room_rate.get("total_price")
+        if total_price is None:
+            total_price = res.get("total_price")
+        return CanonicalReservation(
+            reservation_id=coerce_str(res.get("hotel_reservation_code")),
+            confirmation_number=coerce_str(res.get("crs_reservation_code")),
+            status=_guestcentric_status(res.get("status")),
+            guest_first_name=guest.get("first_name"),
+            guest_last_name=guest.get("last_name"),
+            arrival_date=res.get("checkin"),
+            departure_date=res.get("checkout"),
+            room_type_code=room_type.get("room_type_code") or res.get("room_type_code"),
+            rate_plan_code=rate_plan.get("rate_plan_code") or res.get("rate_plan_code"),
+            adults=coerce_int(res.get("number_of_adults")),
+            children=coerce_int(res.get("number_of_children")),
+            total_amount=coerce_float(total_price),
+            currency=room_rate.get("currency") or res.get("currency"),
+        )
+
+    def _normalize_reservations(self, raw: dict) -> Optional[list]:
+        if "reservations" not in raw:
+            return None
+        records = raw.get("reservations")
+        if not isinstance(records, list):
+            return []
+        return [self._reservation_from_record(r) for r in records if isinstance(r, dict)]
+
+    def _normalize_availability(self, raw: dict) -> list:
+        # GuestCentric splits availability across parallel arrays: `rooms` holds the
+        # room-type catalog (code -> name), `room_rates` holds the priced room+rate
+        # combinations. The check-in/check-out dates are echoed once at the top
+        # level. Build the name lookup first, then map each room_rate.
+        room_names = {}
+        for room in raw.get("rooms") or []:
+            if isinstance(room, dict) and room.get("room_type_code"):
+                room_names[room["room_type_code"]] = room.get("name")
+        if "room_rates" not in raw:
+            return None
+        checkin = raw.get("checkin")
+        checkout = raw.get("checkout")
+        room_rates = raw.get("room_rates")
+        if not isinstance(room_rates, list):
+            return []
+        items = []
+        for rr in room_rates:
+            if not isinstance(rr, dict):
+                continue
+            room_type_code = rr.get("room_type_code")
+            available = rr.get("available")
+            items.append(
+                CanonicalAvailability(
+                    room_type_code=room_type_code,
+                    room_name=room_names.get(room_type_code),
+                    rate_plan_code=rr.get("rate_plan_code"),
+                    arrival_date=rr.get("checkin") or checkin,
+                    departure_date=rr.get("checkout") or checkout,
+                    available=bool(available) if available is not None else None,
+                    total_amount=coerce_float(rr.get("total_price")),
+                    currency=rr.get("currency"),
+                )
+            )
+        return items

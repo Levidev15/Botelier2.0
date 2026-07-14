@@ -37,6 +37,11 @@ class APIResponse:
     error_message: Optional[str] = None
     extracted_variables: dict = field(default_factory=dict)
     raw_response: Optional[str] = None
+    # Vendor-agnostic canonical envelope (see integration_runtime/canonical.py).
+    # Populated only for endpoints tagged with a ``canonical_entity`` whose adapter
+    # returns a normalization; None otherwise. Additive — never replaces ``data``
+    # or ``extracted_variables``.
+    canonical: Optional[dict] = None
 
 
 @dataclass

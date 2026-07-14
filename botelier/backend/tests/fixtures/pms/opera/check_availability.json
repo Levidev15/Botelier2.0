@@ -1,0 +1,21 @@
+{
+  "hotelAvailability": [
+    {
+      "roomStays": [
+        {
+          "arrivalDate": "2026-08-01",
+          "departureDate": "2026-08-03",
+          "roomRates": [
+            {
+              "roomType": "DLX",
+              "roomTypeName": "Deluxe Room",
+              "ratePlanCode": "BAR",
+              "numberOfUnits": 5,
+              "total": {"amountBeforeTax": 450.0, "currencyCode": "USD"}
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}

@@ -264,6 +264,7 @@ GUESTCENTRIC_INTEGRATION = {
         },
         {
             "id": "hotel_rooms",
+            "canonical_entity": "availability",
             "category": "Hotels",
             "name": "Hotel Rooms & Rates",
             "description": "Get available rooms, rates, promotions, and room-rate combinations for a hotel (check-in, check-out, and adults are mandatory).",
@@ -729,6 +730,7 @@ GUESTCENTRIC_INTEGRATION = {
         },
         {
             "id": "list_reservations",
+            "canonical_entity": "reservation",
             "category": "Reservations",
             "name": "List Reservations",
             "description": "List reservations, most recent first (25 per page by default).",
@@ -807,6 +809,7 @@ GUESTCENTRIC_INTEGRATION = {
         },
         {
             "id": "view_reservation",
+            "canonical_entity": "reservation",
             "category": "Reservations",
             "name": "View Reservation",
             "description": "Look up a reservation by its CRS reservation code.",

@@ -90,6 +90,7 @@ OPERA_CLOUD_INTEGRATION = {
     "endpoints": [
         {
             "id": "get_reservation",
+            "canonical_entity": "reservation",
             "category": "Reservations",
             "name": "Get Reservation by Confirmation Number",
             "description": "Retrieve reservation details by confirmation number",
@@ -125,6 +126,7 @@ OPERA_CLOUD_INTEGRATION = {
         },
         {
             "id": "search_reservations",
+            "canonical_entity": "reservation",
             "category": "Reservations",
             "name": "Search Reservations",
             "description": "Search for reservations by various criteria",
@@ -255,6 +257,7 @@ OPERA_CLOUD_INTEGRATION = {
         },
         {
             "id": "get_guest_profile",
+            "canonical_entity": "guest",
             "category": "Profiles",
             "name": "Get Guest Profile",
             "description": "Retrieve a guest profile by profile ID",
@@ -286,6 +289,7 @@ OPERA_CLOUD_INTEGRATION = {
         },
         {
             "id": "search_profiles",
+            "canonical_entity": "guest",
             "category": "Profiles",
             "name": "Search Guest Profiles",
             "description": "Search for guest profiles by name, email, or phone",
@@ -314,6 +318,7 @@ OPERA_CLOUD_INTEGRATION = {
         },
         {
             "id": "check_availability",
+            "canonical_entity": "availability",
             "category": "Availability",
             "name": "Check Room Availability",
             "description": "Check room availability for given dates",
@@ -344,6 +349,7 @@ OPERA_CLOUD_INTEGRATION = {
         },
         {
             "id": "get_room_types",
+            "canonical_entity": "room",
             "category": "Configuration",
             "name": "Get Room Types",
             "description": "Get list of all room types configured in the property",
@@ -357,6 +363,7 @@ OPERA_CLOUD_INTEGRATION = {
         },
         {
             "id": "get_rate_plans",
+            "canonical_entity": "rate_plan",
             "category": "Configuration",
             "name": "Get Rate Plans",
             "description": "Get list of all rate plans configured in the property",
@@ -370,6 +377,7 @@ OPERA_CLOUD_INTEGRATION = {
         },
         {
             "id": "get_in_house_guests",
+            "canonical_entity": "reservation",
             "category": "Front Desk",
             "name": "Get In-House Guests",
             "description": "Get list of currently checked-in guests",
@@ -388,6 +396,7 @@ OPERA_CLOUD_INTEGRATION = {
         },
         {
             "id": "get_arrivals",
+            "canonical_entity": "reservation",
             "category": "Front Desk",
             "name": "Get Today's Arrivals",
             "description": "Get list of guests arriving today",

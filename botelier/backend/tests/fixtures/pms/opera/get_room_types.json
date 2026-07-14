@@ -1,0 +1,8 @@
+{
+  "listOfValues": {
+    "items": [
+      {"code": "DLX", "description": "Deluxe Room", "maxOccupancy": 3},
+      {"code": "STD", "description": "Standard Room", "maxOccupancy": 2}
+    ]
+  }
+}

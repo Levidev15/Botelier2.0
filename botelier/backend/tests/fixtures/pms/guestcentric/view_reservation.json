@@ -1,0 +1,17 @@
+{
+  "reservations": [
+    {
+      "crs_reservation_code": "CONF987",
+      "hotel_reservation_code": "R-12345",
+      "status": "confirmed",
+      "checkin": "2026-08-01",
+      "checkout": "2026-08-03",
+      "number_of_adults": 2,
+      "number_of_children": 0,
+      "guest": {"first_name": "Jane", "last_name": "Doe"},
+      "room_type": {"room_type_code": "DLX"},
+      "rate_plan": {"rate_plan_code": "BAR"},
+      "room_rate": {"total_price": 450.0, "currency": "USD"}
+    }
+  ]
+}

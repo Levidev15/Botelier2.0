@@ -1,0 +1,10 @@
+{
+  "ratePlans": [
+    {
+      "ratePlanCode": "BAR",
+      "ratePlanName": "Best Available Rate",
+      "description": "Flexible rate, cancel up to 24h before arrival",
+      "currencyCode": "USD"
+    }
+  ]
+}

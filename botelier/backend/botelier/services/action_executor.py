@@ -80,6 +80,9 @@ class ActionExecutionResult:
     extracted_variables: dict[str, Any] = field(default_factory=dict)
     request_id: str = ""
     latency_ms: int = 0
+    # Vendor-agnostic canonical envelope surfaced from the integration runtime.
+    # None for legacy/custom actions and un-tagged endpoints. Additive.
+    canonical: Optional[dict] = None
 
 
 class ActionExecutor:
@@ -336,6 +339,7 @@ class ActionExecutor:
             extracted_variables=response.extracted_variables,
             request_id=request_id,
             latency_ms=int(time.time() * 1000) - start_ms,
+            canonical=response.canonical,
         )
 
     def _build_body(self, config: dict[str, Any], variables: dict[str, Any], account_id: str):

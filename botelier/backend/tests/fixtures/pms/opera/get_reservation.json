@@ -1,0 +1,23 @@
+{
+  "reservations": {
+    "count": 1,
+    "reservationInfo": [
+      {
+        "reservationIdList": [
+          {"type": "Reservation", "id": "R-12345"},
+          {"type": "Confirmation", "id": "CONF987"}
+        ],
+        "reservationStatus": "Reserved",
+        "guestName": {"givenName": "Jane", "surname": "Doe"},
+        "arrivalDate": "2026-08-01",
+        "departureDate": "2026-08-03",
+        "roomStay": {
+          "roomType": "DLX",
+          "ratePlanCode": "BAR",
+          "guestCounts": {"adults": 2, "children": 0},
+          "total": {"amountBeforeTax": 450.0, "currencyCode": "USD"}
+        }
+      }
+    ]
+  }
+}

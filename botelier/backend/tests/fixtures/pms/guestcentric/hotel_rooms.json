@@ -1,0 +1,25 @@
+{
+  "checkin": "2026-08-01",
+  "checkout": "2026-08-03",
+  "rooms": [
+    {
+      "room_type_code": "DLX",
+      "name": "Deluxe Room",
+      "description": "Spacious deluxe room",
+      "max_occupancy": 3
+    }
+  ],
+  "rates": [
+    {"rate_plan_code": "BAR", "name": "Best Available Rate"}
+  ],
+  "room_rates": [
+    {
+      "room_type_code": "DLX",
+      "rate_plan_code": "BAR",
+      "room_rate_code": "DLX-BAR",
+      "available": true,
+      "total_price": 450.0,
+      "currency": "USD"
+    }
+  ]
+}

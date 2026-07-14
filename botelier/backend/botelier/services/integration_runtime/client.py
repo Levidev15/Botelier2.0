@@ -245,6 +245,7 @@ class IntegrationClient:
                 )
 
                 result = self._process_response(response, config, effective_response_vars)
+                self._apply_canonical(result, adapter, endpoint_def)
                 self._write_call_log(
                     integration_id=str(integration.id),
                     endpoint_called=log_endpoint,
@@ -817,6 +818,34 @@ class IntegrationClient:
                 return await client.delete(url, headers=headers, timeout=timeout)
             else:
                 raise ValueError(f"Unsupported HTTP method: {method}")
+
+    def _apply_canonical(
+        self,
+        result: APIResponse,
+        adapter,
+        endpoint_def: Optional[dict],
+    ) -> None:
+        """Attach the vendor-agnostic canonical envelope to a successful result.
+
+        Opt-in: only endpoints tagged with a ``canonical_entity`` in their seed are
+        normalized, and only on success. The adapter owns the vendor-specific
+        mapping. Normalization is best-effort and fully isolated — a normalizer
+        that raises or returns None simply leaves ``result.canonical`` as None; it
+        can never break the underlying request or its per-endpoint mapping.
+        """
+        if not result.success or not endpoint_def:
+            return
+        entity = endpoint_def.get("canonical_entity")
+        if not entity:
+            return
+        try:
+            result.canonical = adapter.normalize(entity, endpoint_def.get("id"), result.data)
+        except Exception:
+            logger.exception(
+                f"Canonical normalization raised for entity={entity} "
+                f"endpoint={endpoint_def.get('id')}; leaving canonical unset"
+            )
+            result.canonical = None
 
     def _process_response(
         self,

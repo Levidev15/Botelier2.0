@@ -1,0 +1,8 @@
+{
+  "profileDetails": {
+    "profileId": {"id": "P-777"},
+    "customer": {"personName": [{"givenName": "Jane", "surname": "Doe"}]},
+    "emails": [{"email": "jane@example.com"}],
+    "phones": [{"phoneNumber": "+15551234567"}]
+  }
+}
