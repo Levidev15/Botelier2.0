@@ -265,6 +265,13 @@ GUESTCENTRIC_INTEGRATION = {
         {
             "id": "hotel_rooms",
             "canonical_entity": "availability",
+            "capability": "search_availability",
+            "capability_params": {
+                "check_in_date": "checkin",
+                "check_out_date": "checkout",
+                "guest_count": "adults",
+                "children": "children",
+            },
             "category": "Hotels",
             "name": "Hotel Rooms & Rates",
             "description": "Get available rooms, rates, promotions, and room-rate combinations for a hotel (check-in, check-out, and adults are mandatory).",
@@ -571,6 +578,17 @@ GUESTCENTRIC_INTEGRATION = {
         },
         {
             "id": "book_reservation",
+            "capability": "book_reservation",
+            "capability_params": {
+                "guest_first_name": "guest_first_name",
+                "guest_last_name": "guest_last_name",
+                "check_in_date": "checkin",
+                "check_out_date": "checkout",
+                "room_type": "room_type_code",
+                "rate_code": "rate_plan_code",
+                "guest_count": "number_of_adults",
+                "children": "number_of_children",
+            },
             "category": "Reservations",
             "name": "Book Reservation",
             "description": "Create a new reservation. Body is an array of reservation objects (one per room/hotel).",
@@ -810,6 +828,8 @@ GUESTCENTRIC_INTEGRATION = {
         {
             "id": "view_reservation",
             "canonical_entity": "reservation",
+            "capability": "lookup_reservation",
+            "capability_params": {"confirmation_number": "crs_reservation_code"},
             "category": "Reservations",
             "name": "View Reservation",
             "description": "Look up a reservation by its CRS reservation code.",
@@ -955,6 +975,8 @@ GUESTCENTRIC_INTEGRATION = {
         },
         {
             "id": "cancel_reservation",
+            "capability": "cancel_reservation",
+            "capability_params": {"confirmation_number": "crs_reservation_code"},
             "category": "Reservations",
             "name": "Cancel Reservation",
             "description": "Cancel a reservation.",

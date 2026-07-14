@@ -29,6 +29,8 @@ Adding a new pre-built integration (a new row in this table)? See [Adding a New 
 
 Endpoints that model shared PMS concepts (reservations, guests, rooms, rate plans, availability) can additionally emit a **vendor-neutral** shape so a consumer can't tell which vendor produced the data. See [Canonical Domain Schemas](./canonical-domain-schemas).
 
+Your AI can also call **abstract, vendor-neutral capabilities** (`search_availability`, `lookup_reservation`, `book_reservation`, `cancel_reservation`) that resolve at runtime to the caller's property-scoped provider — the AI never sees which vendor serves the request. See [Universal Capability Tools](./universal-capability-tools).
+
 ## How Integrations Surface in Flows and Tools
 
 Once connected, an integration's endpoints appear in:

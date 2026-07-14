@@ -20,7 +20,7 @@ from ..auth.middleware import check_account_permission, get_current_user
 from ..database import get_db
 from ..flow_executor import FlowExecutor, NodeType, parse_flow_config
 from ..models.assistant import Assistant
-from ..models.tool import Tool
+from ..models.tool import Tool, ToolType
 from ..models.user import User
 from ..services.ssrf_safe_transport import _BLOCKED_LITERAL_HOSTS, SSRFSafeTransport
 
@@ -57,11 +57,22 @@ class SimulationState:
         kb_prompt_block: str = "",
         escalation_target: Optional[str] = None,
         model: str = DEFAULT_SIM_MODEL,
+        capability_schemas: Optional[list] = None,
     ):
         self.tool_id = tool_id
         self.tool_name = tool_name
         self.account_id = account_id
         self.executor = executor
+        # Standalone universal-capability tools (Task #329) from the backing
+        # assistant's tool_set, mirrored so the simulator previews capability
+        # calls the LLM can make outside a flow — identical to voice/SMS. Flow
+        # capability *nodes* need nothing extra here: the executor handles them.
+        self.capability_schemas = capability_schemas or []
+        self.capability_names = {
+            s["function"]["name"]
+            for s in self.capability_schemas
+            if s.get("function", {}).get("name")
+        }
         # LLM model for this session — mirrors the backing assistant's llm_model
         # so the simulator runs the exact model a live call would use.
         self.model = model or DEFAULT_SIM_MODEL
@@ -191,6 +202,52 @@ You have access to the following Q&A knowledge base. Use this information to ans
 {kb_content}"""
 
 
+def _build_capability_tool_schemas(db: Session, assistant: Optional[Assistant]) -> list:
+    """Mirror the backing assistant's standalone capability tools (Task #329).
+
+    Returns OpenAI tool schemas (deduped by capability) so the simulator can
+    preview capability calls the LLM would make outside a flow — identical to the
+    voice/SMS channels. The LLM only ever sees the abstract capability name and
+    its vendor-neutral parameters; resolution to a concrete vendor happens at
+    execution time. Returns [] when there is no backing assistant / tool_set.
+    """
+    if not assistant or not assistant.tool_set_id:
+        return []
+    from botelier.services.capabilities import build_capability_schema, get_capability
+
+    cap_tools = (
+        db.query(Tool)
+        .filter(
+            Tool.tool_set_id == assistant.tool_set_id,
+            Tool.tool_type == ToolType.CAPABILITY.value,
+            Tool.is_active == "true",
+        )
+        .all()
+    )
+    schemas: list = []
+    seen: set = set()
+    for tool in cap_tools:
+        capability_name = (tool.config or {}).get("capability")
+        if not capability_name or capability_name in seen:
+            continue
+        spec = get_capability(capability_name)
+        schema = build_capability_schema(capability_name) if spec else None
+        if not schema:
+            continue
+        seen.add(capability_name)
+        schemas.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": schema["name"],
+                    "description": schema["description"],
+                    "parameters": schema["parameters"],
+                },
+            }
+        )
+    return schemas
+
+
 def _resolve_flow_assistant(
     db: Session, tool: Tool, assistant_id: Optional[str], user: User
 ) -> Optional[Assistant]:
@@ -261,6 +318,7 @@ async def start_simulation(
     kb_prompt_block = _build_kb_prompt_block(
         assistant.knowledge_base_id if assistant else None
     )
+    capability_schemas = _build_capability_tool_schemas(db, assistant)
     escalation_target = None
     sim_model = DEFAULT_SIM_MODEL
     property_id = None
@@ -295,6 +353,7 @@ async def start_simulation(
         kb_prompt_block=kb_prompt_block,
         escalation_target=escalation_target,
         model=sim_model,
+        capability_schemas=capability_schemas,
     )
 
     initial_messages = executor.get_initial_messages()
@@ -471,6 +530,12 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                         },
                     }
                 )
+            # Mirror the backing assistant's standalone capability tools so the
+            # LLM can preview capability calls outside a flow — identical to
+            # voice/SMS. Capability names never collide with flow function names
+            # (execute_* / collect_*), so no dedup against `tools` is needed.
+            if state.capability_schemas:
+                tools.extend(state.capability_schemas)
             exposed_names = {
                 t["function"]["name"]
                 for t in tools
@@ -561,6 +626,23 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                                 f"at {state.escalation_target}."
                             ),
                         }
+                    elif function_name in state.capability_names:
+                        # Standalone capability tool (Task #329): resolve + execute
+                        # through the shared resolver, so the simulator hits the
+                        # same property-scoped provider a live call would — real
+                        # data, real fail-closed behavior, no vendor exposure.
+                        from botelier.services.capabilities import CapabilityResolver
+
+                        resolver = CapabilityResolver(
+                            state.executor.db_session,
+                            state.account_id,
+                            state.executor.property_id,
+                        )
+                        result = await resolver.execute(
+                            function_name,
+                            channel="test",
+                            arguments=function_args,
+                        )
                     else:
                         result = await state.executor.handle_function_call(
                             function_name, function_args

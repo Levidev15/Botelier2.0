@@ -91,6 +91,8 @@ OPERA_CLOUD_INTEGRATION = {
         {
             "id": "get_reservation",
             "canonical_entity": "reservation",
+            "capability": "lookup_reservation",
+            "capability_params": {"confirmation_number": "confirmation_number"},
             "category": "Reservations",
             "name": "Get Reservation by Confirmation Number",
             "description": "Retrieve reservation details by confirmation number",
@@ -175,6 +177,17 @@ OPERA_CLOUD_INTEGRATION = {
         },
         {
             "id": "create_reservation",
+            "capability": "book_reservation",
+            "capability_params": {
+                "guest_first_name": "guest_first_name",
+                "guest_last_name": "guest_last_name",
+                "check_in_date": "check_in_date",
+                "check_out_date": "check_out_date",
+                "room_type": "room_type",
+                "rate_code": "rate_code",
+                "guest_count": "guest_count",
+                "children": "child_count",
+            },
             "category": "Reservations",
             "name": "Create Reservation",
             "description": "Create a new reservation in OPERA Cloud",
@@ -319,6 +332,13 @@ OPERA_CLOUD_INTEGRATION = {
         {
             "id": "check_availability",
             "canonical_entity": "availability",
+            "capability": "search_availability",
+            "capability_params": {
+                "check_in_date": "check_in_date",
+                "check_out_date": "check_out_date",
+                "guest_count": "guest_count",
+                "children": "children",
+            },
             "category": "Availability",
             "name": "Check Room Availability",
             "description": "Check room availability for given dates",

@@ -167,6 +167,12 @@ _ADDITIVE_MIGRATIONS = [
     # Allow email-registered users (invited members) to have no replit_id.
     # The SQLAlchemy model has nullable=True but the original DB column was NOT NULL.
     "ALTER TABLE users ALTER COLUMN replit_id DROP NOT NULL",
+    # Task #329 — add the CAPABILITY value to the native `tooltype` PG enum so
+    # capability tools can be persisted. SQLAlchemy's create_all never alters an
+    # existing enum, so this is required on every already-provisioned database.
+    # The runner commits each statement in its own transaction and only ADDs the
+    # value here (it is not used until a later transaction), so PG 12+ accepts it.
+    "ALTER TYPE tooltype ADD VALUE IF NOT EXISTS 'CAPABILITY'",
     # call_events — event timeline table for every call.
     # The table itself is created by Base.metadata.create_all, but we ensure the
     # indexes exist here so they are present even on pre-existing deployments that

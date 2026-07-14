@@ -26,6 +26,7 @@ class ToolType(str, enum.Enum):
     SEND_SMS = "SEND_SMS"
     SEND_EMAIL = "SEND_EMAIL"
     FLOW = "FLOW"  # Conversation flow - guides structured multi-step interactions
+    CAPABILITY = "CAPABILITY"  # Abstract, vendor-neutral capability (Task #329)
 
 
 class Tool(Base):

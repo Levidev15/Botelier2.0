@@ -546,13 +546,57 @@ class SMSService:
             return None
 
         schema = []
+        seen_names: set = set()
         for tool in tools:
+            fn_schema = None
             if tool.tool_type == ToolType.API_REQUEST.value:
                 fn_schema = self._build_api_request_schema(tool)
-                if fn_schema:
-                    schema.append(fn_schema)
+            elif tool.tool_type == ToolType.CAPABILITY.value:
+                fn_schema = self._build_capability_schema(tool)
+            if not fn_schema:
+                continue
+            # Skip duplicate function names — e.g. two CAPABILITY tools pointing
+            # at the same capability collapse to one abstract function name.
+            # Registering the same name twice corrupts the LLM tool list. Parity
+            # with the voice mapper + simulator dedup.
+            fn_name = fn_schema["function"]["name"]
+            if fn_name in seen_names:
+                continue
+            seen_names.add(fn_name)
+            schema.append(fn_schema)
 
         return schema if schema else None
+
+    def _build_capability_schema(self, tool: Tool) -> Optional[Dict[str, Any]]:
+        """Build the OpenAI tool schema for a universal capability (Task #329).
+
+        The LLM sees the abstract capability name + vendor-neutral parameters
+        from the registry — identical to the voice channel — never the vendor.
+        """
+        from botelier.services.capabilities import build_capability_schema, get_capability
+
+        capability_name = (tool.config or {}).get("capability")
+        spec = get_capability(capability_name)
+        schema = build_capability_schema(capability_name) if spec else None
+        if not spec or not schema:
+            return None
+
+        description = schema["description"]
+        response_instructions = (tool.config or {}).get("response_instructions", "")
+        if response_instructions:
+            description = (
+                f"{description}\n\nWhen you receive the result, follow these "
+                f"instructions: {response_instructions}"
+            )
+
+        return {
+            "type": "function",
+            "function": {
+                "name": schema["name"],
+                "description": description,
+                "parameters": schema["parameters"],
+            },
+        }
 
     def _build_api_request_schema(self, tool: Tool) -> Optional[Dict[str, Any]]:
         parameters = tool.config.get("parameters", {})
@@ -586,6 +630,8 @@ class SMSService:
         }
 
     def _execute_tool(self, assistant: Assistant, fn_name: str, fn_args: Dict[str, Any]) -> Any:
+        # API_REQUEST tools expose the operator-chosen tool.name as the function
+        # name, so match by name first.
         tool = (
             self.db.query(Tool)
             .filter(
@@ -596,13 +642,52 @@ class SMSService:
             .first()
         )
 
+        if tool and tool.tool_type == ToolType.API_REQUEST.value:
+            return self._execute_api_request(assistant, tool, fn_args)
+
+        # Capability tools expose the abstract capability name (e.g.
+        # "search_availability"), not tool.name — resolve by matching the
+        # capability stored in config.
+        capability_tools = (
+            self.db.query(Tool)
+            .filter(
+                Tool.tool_set_id == assistant.tool_set_id,
+                Tool.tool_type == ToolType.CAPABILITY.value,
+                Tool.is_active == "true",
+            )
+            .all()
+        )
+        for cap_tool in capability_tools:
+            if (cap_tool.config or {}).get("capability") == fn_name:
+                return self._execute_capability(assistant, fn_name, fn_args)
+
         if not tool:
             return {"error": f"Tool '{fn_name}' not found", "status": "failed"}
 
-        if tool.tool_type == ToolType.API_REQUEST.value:
-            return self._execute_api_request(assistant, tool, fn_args)
-
         return {"error": f"Unsupported tool type: {tool.tool_type}", "status": "failed"}
+
+    def _execute_capability(
+        self, assistant: Assistant, capability_name: str, arguments: Dict[str, Any]
+    ) -> Any:
+        """Resolve + execute a universal capability for the SMS channel (Task #329).
+
+        Uses the same CapabilityResolver + property scope as voice, so behavior
+        is identical across channels.
+        """
+        from botelier.services.capabilities import CapabilityResolver
+
+        try:
+            resolver = CapabilityResolver(
+                self.db, str(assistant.account_id), self.session_property_id
+            )
+            return resolver.execute_sync(
+                capability_name,
+                channel="sms",
+                arguments=arguments,
+            )
+        except Exception as e:
+            logger.error(f"Capability tool error: {e}")
+            return {"error": "Capability request failed", "status": "failed"}
 
     def _execute_api_request(self, assistant: Assistant, tool: Tool, arguments: Dict[str, Any]) -> Any:
         from botelier.services.action_executor import (

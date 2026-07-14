@@ -81,6 +81,7 @@ const sidebars = {
         'integrations/oracle-opera-ohip',
         'integrations/guestcentric-crs',
         'integrations/canonical-domain-schemas',
+        'integrations/universal-capability-tools',
         'integrations/mcp-server',
         'integrations/custom-api-via-flow',
         'integrations/adding-a-new-integration',

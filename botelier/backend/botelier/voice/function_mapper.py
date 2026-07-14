@@ -397,6 +397,8 @@ class FunctionMapper:
             return self._map_send_email(tool)
         elif tool.tool_type == ToolType.FLOW:
             return self._map_flow(tool)
+        elif tool.tool_type == ToolType.CAPABILITY:
+            return self._map_capability(tool)
         else:
             raise ValueError(f"Unknown tool type: {tool.tool_type}")
 
@@ -1024,6 +1026,72 @@ class FunctionMapper:
                 )
 
         return function_schema, api_handler
+
+    def _map_capability(self, tool: Tool) -> tuple[Dict[str, Any], Callable]:
+        """Map a universal capability tool to a Pipecat function (Task #329).
+
+        The schema (name/description/parameters) comes from the capability
+        registry, so the LLM sees only the abstract capability — never the
+        vendor. At call time the CapabilityResolver maps it to the caller's
+        property-scoped provider connection and executes through the same
+        ActionExecutor → IntegrationClient path, inheriting Task #327 fail-closed
+        property gating and Task #328 canonical envelopes.
+        """
+        from botelier.services.capabilities import build_capability_schema, get_capability
+
+        capability_name = (tool.config or {}).get("capability")
+        spec = get_capability(capability_name)
+        schema = build_capability_schema(capability_name) if spec else None
+
+        if not spec or not schema:
+            # Misconfigured capability tool — fail closed: expose a stub that
+            # returns an explicit error instead of a callable to a non-existent
+            # capability.
+            fallback_schema = {
+                "name": sanitize_function_name(tool.name),
+                "description": tool.description,
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            }
+
+            async def unknown_handler(params: FunctionCallParams):
+                await params.result_callback(
+                    {"error": f"Unknown capability '{capability_name}'.", "status": "failed"}
+                )
+
+            return fallback_schema, unknown_handler
+
+        response_instructions = (tool.config or {}).get("response_instructions", "")
+        if response_instructions:
+            schema = dict(schema)
+            schema["description"] = (
+                f"{schema['description']}\n\nWhen you receive the result, follow these "
+                f"instructions: {response_instructions}"
+            )
+
+        mapper = self
+
+        async def capability_handler(params: FunctionCallParams):
+            """Resolve + execute the capability through the shared resolver."""
+            from botelier.services.capabilities import CapabilityResolver
+
+            if not mapper.db_session or not mapper.account_id:
+                await params.result_callback(
+                    {"error": "Capability requires account context", "status": "failed"}
+                )
+                return
+
+            resolver = CapabilityResolver(
+                mapper.db_session, mapper.account_id, mapper.property_id
+            )
+            result = await resolver.execute(
+                capability_name,
+                channel="voice",
+                arguments=params.arguments,
+                call_sid=mapper.call_sid,
+            )
+            await params.result_callback(result)
+
+        return schema, capability_handler
 
     def _map_end_call(self, tool: Tool) -> tuple[Dict[str, Any], Callable]:
         """Map end call tool to Pipecat function."""

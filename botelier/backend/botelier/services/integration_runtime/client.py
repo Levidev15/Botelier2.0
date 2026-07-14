@@ -92,13 +92,16 @@ class IntegrationClient:
         account-global (property_id NULL), or the integration's property matches
         the session property. Any other case is a cross-property access and is
         rejected without issuing the outbound HTTP request.
+
+        Delegates to the shared ``property_access_allowed`` predicate so the
+        certified-integration path and the capability resolver enforce one
+        identical fail-closed rule.
         """
-        if self.property_id is None:
-            return True
-        integ_property = getattr(integration, "property_id", None)
-        if integ_property is None:
-            return True
-        return str(integ_property) == self.property_id
+        from botelier.services.property_scope import property_access_allowed
+
+        return property_access_allowed(
+            self.property_id, getattr(integration, "property_id", None)
+        )
 
     def _get_db_session(self) -> Session:
         if self._external_db:

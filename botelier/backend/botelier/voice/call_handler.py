@@ -1731,6 +1731,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
                 self.call_mappers[call_sid] = mapper
                 logger.info(f"Created FunctionMapper for call {call_sid}")
 
+            seen_non_flow_names: set = set()
             for tool in (tools or []):
                 try:
                     # Check if this is a FLOW type tool - requires special handling
@@ -1756,6 +1757,19 @@ You have access to the following Q&A knowledge base. Use this information to ans
                     else:
                         # Regular tool - single function
                         function_schema_dict, handler = mapper.map_tool_to_function(tool)
+
+                        # Skip duplicate function names — e.g. two CAPABILITY
+                        # tools pointing at the same capability collapse to one
+                        # abstract function name. Registering the same name twice
+                        # corrupts the LLM tool list. Parity with SMS + simulator.
+                        fn_name = function_schema_dict["name"]
+                        if fn_name in seen_non_flow_names:
+                            logger.info(
+                                f"Skipping duplicate tool function '{fn_name}' "
+                                f"for tool: {tool.name}"
+                            )
+                            continue
+                        seen_non_flow_names.add(fn_name)
 
                         # Register non-flow tool schema for dynamic tool updates
                         # These tools remain available during flow execution

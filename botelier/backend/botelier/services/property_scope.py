@@ -69,6 +69,29 @@ def resolve_session_property_id(
     return None
 
 
+def property_access_allowed(
+    session_property_id: Any, integration_property_id: Any
+) -> bool:
+    """Fail-closed per-property authorization check (Task #327 / #329).
+
+    Pure, dependency-free predicate shared by every runtime resolution path
+    (certified ``IntegrationClient`` and the capability resolver) so a single
+    definition governs cross-property access. Access is allowed when:
+
+    - the session has no property (``None`` → legacy / account-only scoping), OR
+    - the integration is account-global (``property_id`` NULL / shared), OR
+    - the integration's property matches the session property.
+
+    Any other case is a cross-property access and returns ``False`` — the caller
+    must reject before any outbound HTTP request or credential use.
+    """
+    if session_property_id is None:
+        return True
+    if integration_property_id is None:
+        return True
+    return str(integration_property_id) == str(session_property_id)
+
+
 def property_belongs_to_account(
     db: Session, account_id: Any, property_id: Any
 ) -> bool:

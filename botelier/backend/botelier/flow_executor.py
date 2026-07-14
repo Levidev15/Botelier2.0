@@ -2046,6 +2046,17 @@ class FlowExecutor:
         thinking_message = (api_config.get("thinkingMessage") or "").strip()
         method = (api_config.get("method", "GET") or "GET").upper()
 
+        # Capability nodes (Task #329) carry no HTTP method of their own — it
+        # lives on the vendor endpoint resolved at runtime. Derive an effective
+        # method from the registry `mutating` flag so write capabilities
+        # (book/cancel) get the same non-GET idempotency guard as write
+        # integration nodes, and read capabilities bypass it like GETs.
+        if api_source == "capability":
+            from botelier.services.capabilities import get_capability
+
+            cap_spec = get_capability(api_config.get("capability"))
+            method = "POST" if (cap_spec and cap_spec.mutating) else "GET"
+
         # Non-GET idempotency guard: POST/PUT/PATCH/DELETE nodes must fire at most
         # once per session even when two requests arrive concurrently (e.g. two
         # simultaneous POST /api/simulate/message or a voice pipeline race).
@@ -2076,7 +2087,9 @@ class FlowExecutor:
                     cached_copy["thinking_message"] = thinking_message
                     return cached_copy
 
-                if api_source == "integration" and api_config.get("integrationId"):
+                if api_source == "capability" and api_config.get("capability"):
+                    result = await self._handle_capability_request(node_id, node, api_config)
+                elif api_source == "integration" and api_config.get("integrationId"):
                     result = await self._handle_integration_api_request(node_id, node, api_config)
                 else:
                     result = await self._handle_custom_api_request(node_id, node, api_config)
@@ -2085,7 +2098,9 @@ class FlowExecutor:
                     self._non_get_results[node_id] = result
 
         else:
-            if api_source == "integration" and api_config.get("integrationId"):
+            if api_source == "capability" and api_config.get("capability"):
+                result = await self._handle_capability_request(node_id, node, api_config)
+            elif api_source == "integration" and api_config.get("integrationId"):
                 result = await self._handle_integration_api_request(node_id, node, api_config)
             else:
                 result = await self._handle_custom_api_request(node_id, node, api_config)
@@ -2094,8 +2109,71 @@ class FlowExecutor:
 
         return result
 
-    async def _handle_integration_api_request(
+    async def _handle_capability_request(
         self, node_id: str, node: FlowNode, api_config: dict
+    ) -> dict:
+        """Handle a flow API node that references an abstract capability (Task #329).
+
+        Resolves the capability to the session's property-scoped provider
+        connection (fail-closed — Task #327/#329), translates the flow slots to
+        that vendor's variable keys, then delegates to
+        ``_handle_integration_api_request`` so response mapping, node
+        advancement, and onSuccess/onError rendering are byte-identical to a
+        normal integration node. The AI author picked a capability; the flow
+        never records which vendor served it.
+        """
+        from botelier.services.capabilities import CapabilityResolver, get_capability
+
+        capability_name = api_config.get("capability")
+
+        if not self.account_id:
+            return {
+                "success": False,
+                "message": "Capability calls require account context",
+                "action": None,
+                "current_node_id": node_id,
+            }
+
+        if get_capability(capability_name) is None:
+            return {
+                "success": False,
+                "message": f"Unknown capability '{capability_name}'.",
+                "action": None,
+                "current_node_id": node_id,
+            }
+
+        resolver = CapabilityResolver(self.db_session, self.account_id, self.property_id)
+        resolution = resolver.resolve(capability_name)
+        if resolution is None:
+            return {
+                "success": False,
+                "message": "That capability is not available right now.",
+                "action": None,
+                "current_node_id": node_id,
+            }
+
+        # Inject the resolved connection's config constants (hotel_name, currency,
+        # …) into flow slots BEFORE translating so capability calls that need them
+        # (e.g. GuestCentric booking) resolve them exactly like integration nodes.
+        # Property-identity keys are re-forced from the connection by
+        # IntegrationClient regardless (Task #327).
+        self._inject_connection_config_to_slots(resolution.integration_id)
+        translated = resolver.translate_variables(resolution, self.state.collected_slots)
+
+        # Synthesize an integration api_config from the resolution so the shared
+        # integration path executes the concrete vendor endpoint.
+        synth_config = dict(api_config)
+        synth_config["apiSource"] = "integration"
+        synth_config["integrationId"] = resolution.integration_id
+        synth_config["endpointId"] = resolution.endpoint_id
+        synth_config["method"] = resolution.method
+
+        return await self._handle_integration_api_request(
+            node_id, node, synth_config, variables=translated
+        )
+
+    async def _handle_integration_api_request(
+        self, node_id: str, node: FlowNode, api_config: dict, variables: dict = None
     ) -> dict:
         """Handle API request using IntegrationClient for connected integrations.
 
@@ -2220,7 +2298,7 @@ class FlowExecutor:
                     source_label=node.data.get("name") or node_id,
                     property_id=self.property_id,
                 ),
-                variables=self.state.collected_slots,
+                variables=variables if variables is not None else self.state.collected_slots,
                 integration_config=config,
             )
         )
