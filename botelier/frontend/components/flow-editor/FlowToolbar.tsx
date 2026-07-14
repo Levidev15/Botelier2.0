@@ -190,6 +190,7 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
     publishFlow,
     discardDraft,
     revertToVersion,
+    loadVersion,
     globalPrompt,
     setGlobalPrompt,
   } = useFlowStore();
@@ -280,6 +281,22 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
       setShowVersionMenu(false);
     } catch (error) {
       toast.error("Failed to restore version");
+    }
+  };
+
+  const handleSelectVersion = async (versionNumber: number) => {
+    if (versionNumber === currentVersionNumber) {
+      setShowVersionMenu(false);
+      return;
+    }
+    if (isDirty && !confirm("You have unsaved changes. Loading this version will discard them. Continue?")) {
+      return;
+    }
+    try {
+      await loadVersion(versionNumber);
+      setShowVersionMenu(false);
+    } catch (error) {
+      toast.error("Failed to load version");
     }
   };
 
@@ -414,7 +431,7 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
                 ) : currentSource === "published" ? (
                   <>
                     <span className="text-green-500">Published</span>
-                    <span className="text-gray-500 ml-1">v{publishedVersionNumber}</span>
+                    <span className="text-gray-500 ml-1">v{currentVersionNumber}</span>
                   </>
                 ) : (
                   <span className="text-gray-400">No version</span>
@@ -437,9 +454,11 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
                   versions.map((version) => (
                     <div
                       key={version.id}
-                      className={`px-3 py-2 border-b border-gray-800 last:border-0 ${
+                      onClick={() => handleSelectVersion(version.version_number)}
+                      className={`px-3 py-2 border-b border-gray-800 last:border-0 cursor-pointer hover:bg-gray-800 transition ${
                         version.version_number === currentVersionNumber ? "bg-gray-800/50" : ""
                       }`}
+                      title="Load this version into the editor"
                     >
                       <div className="flex items-center justify-between">
                         <div className="flex items-center gap-2">
@@ -461,11 +480,16 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
                               Live
                             </span>
                           )}
+                          {version.version_number === currentVersionNumber && (
+                            <span className="px-1.5 py-0.5 text-xs bg-blue-500/20 text-blue-400 rounded">
+                              Viewing
+                            </span>
+                          )}
                         </div>
                         
                         {version.status === "published" && version.version_number !== currentVersionNumber && (
                           <button
-                            onClick={() => handleRevert(version.version_number)}
+                            onClick={(e) => { e.stopPropagation(); handleRevert(version.version_number); }}
                             className="p-1 text-gray-400 hover:text-white hover:bg-gray-700 rounded"
                             title="Revert to this version"
                           >

@@ -16,6 +16,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import desc
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from botelier.auth.middleware import check_account_permission, get_current_user
@@ -412,15 +413,34 @@ def save_flow_draft(
                 },
             )
 
-    next_version = (tool.published_version_number or 0) + 1
-
+    draft = None
     if tool.draft_version_id:
-        draft = db.query(FlowVersion).filter(FlowVersion.id == tool.draft_version_id).first()
-        if draft:
-            draft.flow_config = flow_config
-            draft.description = description
-            draft.version_number = next_version
+        draft = (
+            db.query(FlowVersion).filter(FlowVersion.id == tool.draft_version_id).first()
+        )
+
+    if draft:
+        # Update the existing draft in place. Its version_number is assigned
+        # once (at creation) and must stay stable — reassigning it on every
+        # save collided with the uq_tool_version unique constraint and 500ed
+        # the save whenever another version already held that number.
+        draft.flow_config = flow_config
+        draft.description = description
     else:
+        # Create a new draft. Derive the next version number from the highest
+        # existing version for this tool (not just the published one) so it can
+        # never collide with an already-persisted version — mirroring the guard
+        # in revert_to_version.
+        next_version = (tool.published_version_number or 0) + 1
+        max_version = (
+            db.query(FlowVersion)
+            .filter(FlowVersion.tool_id == tool_id)
+            .order_by(desc(FlowVersion.version_number))
+            .first()
+        )
+        if max_version and max_version.version_number >= next_version:
+            next_version = max_version.version_number + 1
+
         draft = FlowVersion(
             id=uuid.uuid4(),
             tool_id=tool_id,
@@ -433,7 +453,17 @@ def save_flow_draft(
         db.flush()
         tool.draft_version_id = draft.id
 
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                "Could not save the draft because its version number conflicts "
+                "with an existing version. Reload the flow and try again."
+            ),
+        )
     db.refresh(draft)
 
     return {

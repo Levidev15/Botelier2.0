@@ -133,7 +133,7 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
       await saveFlow();
       notify.success("Flow saved successfully");
     } catch (error) {
-      notify.error("Failed to save flow");
+      notify.error(error instanceof Error ? error.message : "Failed to save flow");
     } finally {
       setIsSaving(false);
     }

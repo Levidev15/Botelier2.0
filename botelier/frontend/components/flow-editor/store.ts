@@ -278,6 +278,7 @@ export interface FlowState {
   publishFlow: (description?: string) => Promise<void>;
   discardDraft: () => Promise<void>;
   loadVersions: () => Promise<void>;
+  loadVersion: (versionNumber: number) => Promise<void>;
   revertToVersion: (versionNumber: number, publishImmediately?: boolean) => Promise<void>;
   setDraftDescription: (description: string) => void;
   applyTemplate: (templateId: string) => void;
@@ -1721,6 +1722,51 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     }
   },
 
+  loadVersion: async (versionNumber: number) => {
+    const { toolId, accountId } = get();
+    if (!toolId || !accountId) return;
+
+    set({ isLoading: true });
+    try {
+      const response = await fetch(
+        `/api/tools/${toolId}/flow?account_id=${accountId}&version=${versionNumber}`,
+        { headers: { ...getAuthHeaders() } }
+      );
+      if (!response.ok) throw new Error("Failed to load version");
+
+      const data = await response.json();
+
+      if (data.flow_config && data.flow_config.nodes) {
+        const loadedEdges = (data.flow_config.edges || []).map((e: any) => ({
+          ...e,
+          type: "deletable",
+          animated: true,
+          style: { stroke: "#3b82f6", strokeWidth: 2 },
+        }));
+
+        set({
+          nodes: data.flow_config.nodes.map((n: any) => ({
+            id: n.id,
+            type: n.type || "message",
+            position: n.position || { x: 0, y: 0 },
+            data: n.data || { name: n.id },
+          })),
+          edges: loadedEdges,
+          variables: data.flow_config.variables || [],
+          globalPrompt: data.flow_config.globalPrompt || data.flow_config.global_prompt || "",
+          isDirty: false,
+          currentSource: data.source || "legacy",
+          currentVersionNumber: data.version_number || versionNumber,
+        });
+      }
+    } catch (error) {
+      console.error("Failed to load version:", error);
+      throw error;
+    } finally {
+      set({ isLoading: false });
+    }
+  },
+
   saveFlow: async (description?: string) => {
     const { toolId, accountId, nodes, edges, variables, globalPrompt, draftDescription } = get();
     if (!toolId || !accountId) return;
@@ -1757,7 +1803,25 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         }),
       });
 
-      if (!response.ok) throw new Error("Failed to save flow");
+      if (!response.ok) {
+        let message = "Failed to save flow";
+        try {
+          const error = await response.json();
+          if (error?.detail) {
+            if (typeof error.detail === "object" && Array.isArray(error.detail.errors)) {
+              const label = error.detail.message || "Flow validation failed";
+              message = `${label}: ${error.detail.errors.join(", ")}`;
+            } else if (typeof error.detail === "object" && error.detail.message) {
+              message = error.detail.message;
+            } else if (typeof error.detail === "string") {
+              message = error.detail;
+            }
+          }
+        } catch {
+          // Response body wasn't JSON; keep the generic message.
+        }
+        throw new Error(message);
+      }
       
       const result = await response.json();
       
