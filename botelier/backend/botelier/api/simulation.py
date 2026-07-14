@@ -645,6 +645,7 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                             function_name,
                             channel="test",
                             arguments=function_args,
+                            contact_ref=state.session_id,
                         )
                     else:
                         result = await state.executor.handle_function_call(

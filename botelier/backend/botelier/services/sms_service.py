@@ -93,6 +93,11 @@ class SMSService:
         # process_incoming_sms and used to scope integration resolution to
         # (account, property). None → legacy account-only scoping.
         self.session_property_id: Optional[str] = None
+        # Per-conversation scope for durable capability idempotency (Task #330).
+        # Resolved once per incoming message; SMS has no call SID, so this is the
+        # stable contact key that keeps two guests' identical mutating capability
+        # calls (e.g. the same payment amount) from colliding on one dedup key.
+        self._current_conversation_id: Optional[str] = None
 
     def process_incoming_sms(
         self,
@@ -167,6 +172,8 @@ class SMSService:
             from_number, to_number, phone_number, assistant, sms_config
         )
         conv_id = str(conversation.id)
+        # Stable per-conversation dedup scope for mutating capabilities (Task #330).
+        self._current_conversation_id = conv_id
 
         # Opt-in (YES/START/UNSTOP) only triggers re-subscription when the
         # conversation is actually opted-out. In an active conversation these
@@ -684,6 +691,7 @@ class SMSService:
                 capability_name,
                 channel="sms",
                 arguments=arguments,
+                contact_ref=self._current_conversation_id,
             )
         except Exception as e:
             logger.error(f"Capability tool error: {e}")

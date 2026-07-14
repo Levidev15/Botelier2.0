@@ -222,6 +222,7 @@ class CapabilityResolver:
         capability_name: str,
         arguments: Optional[Dict[str, Any]],
         call_sid: Optional[str],
+        contact_ref: Optional[str] = None,
     ) -> tuple[Optional[str], Optional[str], Optional[str]]:
         """Derive a durable dedup key for a *mutating* capability (Task #330).
 
@@ -230,17 +231,38 @@ class CapabilityResolver:
         capability node has no HTTP method to key off; the method lives on the
         resolved vendor endpoint).
 
-        The key binds the operation to its tenant, property, contact, and the
+        The key binds the operation to its tenant, property, *contact*, and the
         *canonical* arguments the caller supplied (not the translated vendor vars
-        or the full slot dump). Including ``call_sid`` when present scopes dedup
-        to the contact so a reconnect/retry within the same call dedups while a
-        genuinely new contact can legitimately repeat the same operation.
+        or the full slot dump). The contact component scopes dedup to a single
+        conversation so a reconnect/retry dedups while a genuinely different
+        contact can legitimately repeat the same operation.
+
+        Voice supplies ``call_sid``. Channels without a call SID (SMS) MUST supply
+        a stable per-conversation ``contact_ref`` (the SMS conversation id). If
+        neither is present the contact component would be empty and two different
+        guests issuing identical arguments (e.g. the same payment amount) would
+        collide on one key — the second, genuinely distinct write would then be
+        silently deduped to a no-op. Keep at least one of ``call_sid`` /
+        ``contact_ref`` populated on every mutating channel.
         """
         import hashlib
 
         spec = get_capability(capability_name)
         if spec is None or not spec.mutating:
             return None, None, None
+
+        if not call_sid and not contact_ref:
+            # Contract guard: with an empty contact component, two different
+            # contacts issuing identical args would collide on one key and the
+            # second write would be silently deduped. Every channel must supply a
+            # call_sid (voice) or contact_ref (SMS conversation id / simulator
+            # session id). Warn loudly rather than fail so an existing single
+            # contact keeps working, but the regression is visible in logs.
+            logger.warning(
+                "capability idempotency: mutating '%s' has no call_sid/contact_ref; "
+                "dedup key is not contact-scoped and may collide across contacts",
+                capability_name,
+            )
 
         args_payload = json.dumps(arguments or {}, sort_keys=True, default=str)
         args_hash = hashlib.sha256(args_payload.encode("utf-8")).hexdigest()
@@ -249,7 +271,7 @@ class CapabilityResolver:
                 "cap",
                 str(self.account_id or ""),
                 str(self.property_id or ""),
-                str(call_sid or ""),
+                str(call_sid or contact_ref or ""),
                 capability_name,
                 args_hash,
             ]
@@ -301,6 +323,7 @@ class CapabilityResolver:
         arguments: Optional[Dict[str, Any]],
         channel: str,
         call_sid: Optional[str],
+        contact_ref: Optional[str] = None,
     ) -> Dict[str, Any]:
         """Route ``collect_payment`` to :class:`PaymentService` (Task #330).
 
@@ -308,12 +331,14 @@ class CapabilityResolver:
         they bypass ``resolve → IntegrationClient`` entirely. Property scope and
         durable idempotency are still applied: the payment write is keyed with the
         same ``_idempotency_for`` key so a reconnect/retry dedups to one charge.
+        On SMS the per-conversation ``contact_ref`` keeps two guests' identical
+        payments from colliding on one dedup key.
         """
         from botelier.services.payments import PaymentService
 
         args = arguments or {}
         idem_key, _operation, _args_hash = self._idempotency_for(
-            capability_name, arguments, call_sid
+            capability_name, arguments, call_sid, contact_ref
         )
         service = PaymentService(self.account_id, self.property_id)
         return service.collect_payment(
@@ -334,9 +359,15 @@ class CapabilityResolver:
         arguments: Optional[Dict[str, Any]] = None,
         extra_variables: Optional[Dict[str, Any]] = None,
         call_sid: Optional[str] = None,
+        contact_ref: Optional[str] = None,
         source_label: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Resolve + execute a capability (async). Returns the LLM-facing payload."""
+        """Resolve + execute a capability (async). Returns the LLM-facing payload.
+
+        ``contact_ref`` is the per-conversation dedup scope for channels without a
+        ``call_sid`` (SMS conversation id, simulator session id); see
+        :meth:`_idempotency_for`.
+        """
         from botelier.services.action_executor import ActionExecutor
 
         spec = get_capability(capability_name)
@@ -350,13 +381,16 @@ class CapabilityResolver:
                 arguments,
                 channel,
                 call_sid,
+                contact_ref,
             )
 
         prepared, error = self._prepare(capability_name, arguments, extra_variables)
         if error:
             return error
         resolution, vendor_vars = prepared
-        idempotency = self._idempotency_for(capability_name, arguments, call_sid)
+        idempotency = self._idempotency_for(
+            capability_name, arguments, call_sid, contact_ref
+        )
         request = self._build_request(
             resolution,
             vendor_vars,
@@ -377,22 +411,30 @@ class CapabilityResolver:
         arguments: Optional[Dict[str, Any]] = None,
         extra_variables: Optional[Dict[str, Any]] = None,
         call_sid: Optional[str] = None,
+        contact_ref: Optional[str] = None,
         source_label: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Synchronous bridge for the SMS path (no running event loop)."""
+        """Synchronous bridge for the SMS path (no running event loop).
+
+        SMS has no ``call_sid``; callers MUST pass the SMS conversation id as
+        ``contact_ref`` so mutating capabilities dedup per conversation rather than
+        colliding across guests (see :meth:`_idempotency_for`).
+        """
         from botelier.services.action_executor import execute_action_sync
 
         spec = get_capability(capability_name)
         if spec is not None and spec.service_backed:
             return self._service_backed_payment(
-                capability_name, arguments, channel, call_sid
+                capability_name, arguments, channel, call_sid, contact_ref
             )
 
         prepared, error = self._prepare(capability_name, arguments, extra_variables)
         if error:
             return error
         resolution, vendor_vars = prepared
-        idempotency = self._idempotency_for(capability_name, arguments, call_sid)
+        idempotency = self._idempotency_for(
+            capability_name, arguments, call_sid, contact_ref
+        )
         request = self._build_request(
             resolution,
             vendor_vars,

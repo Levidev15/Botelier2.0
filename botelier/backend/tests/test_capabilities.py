@@ -61,6 +61,62 @@ def test_registry_mutating_and_canonical_flags():
     assert payment.service_backed is True
 
 
+# ── Idempotency key derivation (pure) ────────────────────────────────────────
+#
+# Regression for the SMS cross-conversation collision (Task #330): the dedup key
+# for a *mutating* capability must be scoped to the contact. Voice supplies a
+# ``call_sid``; SMS/simulator have none and pass a per-conversation
+# ``contact_ref``. Without it, two different guests issuing identical arguments
+# (e.g. the same payment amount) would collide on one key and the second,
+# genuinely distinct write would be silently deduped to a no-op.
+
+
+def test_idempotency_scopes_to_contact_ref_no_cross_conversation_collision():
+    resolver = CapabilityResolver(None, "acct-1", "prop-1")
+    args = {"amount": 100, "currency": "USD", "reference": "res-1"}
+
+    key_a, op_a, hash_a = resolver._idempotency_for(
+        "collect_payment", args, None, contact_ref="conv-A"
+    )
+    key_b, op_b, hash_b = resolver._idempotency_for(
+        "collect_payment", args, None, contact_ref="conv-B"
+    )
+
+    # Distinct conversations with identical args must NOT share a key.
+    assert key_a and key_b and key_a != key_b
+    # Operation + args-hash are stable regardless of contact.
+    assert op_a == op_b == "collect_payment"
+    assert hash_a == hash_b
+
+    # Same conversation + same args → same key (a legitimate reconnect/retry dedups).
+    key_a2, _, _ = resolver._idempotency_for(
+        "collect_payment", args, None, contact_ref="conv-A"
+    )
+    assert key_a2 == key_a
+
+
+def test_idempotency_call_sid_takes_precedence_over_contact_ref():
+    resolver = CapabilityResolver(None, "acct-1", "prop-1")
+    args = {"confirmation_number": "ABC123"}
+
+    # With a call_sid present, contact_ref must not influence the key (voice path).
+    with_ref, _, _ = resolver._idempotency_for(
+        "cancel_reservation", args, "CA_call_sid", contact_ref="conv-A"
+    )
+    without_ref, _, _ = resolver._idempotency_for(
+        "cancel_reservation", args, "CA_call_sid", contact_ref=None
+    )
+    assert with_ref == without_ref
+
+
+def test_idempotency_none_for_non_mutating_reads():
+    resolver = CapabilityResolver(None, "acct-1", "prop-1")
+    key, op, args_hash = resolver._idempotency_for(
+        "search_availability", {"check_in_date": "2026-07-14"}, None, contact_ref="conv-A"
+    )
+    assert key is None and op is None and args_hash is None
+
+
 def test_build_capability_schema_is_bare_shape():
     schema = build_capability_schema("search_availability")
     assert set(schema.keys()) == {"name", "description", "parameters"}
