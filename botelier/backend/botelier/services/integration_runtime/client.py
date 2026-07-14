@@ -36,6 +36,15 @@ from .adapters import (
     resolve_adapter,
 )
 from .jsonpath import extract_json_value
+from .resilience import (
+    ResilienceConfig,
+    circuit_allow,
+    circuit_record_failure,
+    circuit_record_success,
+    compute_backoff_delay,
+    parse_retry_after,
+    rate_limit_acquire,
+)
 from .locks import (
     _REFRESH_POLL_INTERVAL_S,
     _REFRESH_WAIT_TIMEOUT_S,
@@ -69,6 +78,12 @@ PROPERTY_IDENTITY_KEYS = frozenset(
         "property_code",
     }
 )
+
+# Task #331 — only idempotent (safe) HTTP methods are retried on a 429/5xx
+# response. Non-safe methods (POST/PUT/PATCH/DELETE) keep the historical
+# retry-on-transport-error-only behavior so a write is never silently
+# re-attempted after the server may have already applied it.
+_SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 
 
 class IntegrationClient:
@@ -234,8 +249,58 @@ class IntegrationClient:
         effective_response_vars = self._effective_response_variables(config, endpoint_def)
         log_endpoint = config.endpoint_template or config.path
 
+        # --- Task #331: cross-worker resilience gates ------------------------
+        # Resolved from the integration's auth_config / connection_config, with
+        # generous defaults so a healthy single connection is never throttled.
+        # Both gates run AFTER property/status/token checks and after _build_url
+        # so a rejected (cross-property, unconnected, malformed) request never
+        # touches the shared breaker/limiter state.
+        rconf = ResilienceConfig.from_integration(integration)
+
+        # Circuit breaker: short-circuit a provider we already know is failing so
+        # the caller gets a fast, LLM-friendly "temporarily unavailable" instead
+        # of waiting on a request that is almost certain to fail.
+        allowed, _cstate = circuit_allow(integration.id, self.account_id, rconf)
+        if not allowed:
+            self._write_call_log(
+                integration_id=str(integration.id),
+                endpoint_called=log_endpoint,
+                method=config.method,
+                status_code=0,
+                success=False,
+                latency_ms=int(time.time() * 1000) - start_ms,
+                error_type=APIErrorType.CIRCUIT_OPEN.value,
+                error_message="Circuit open: provider temporarily unavailable",
+            )
+            return APIResponse(
+                success=False,
+                status_code=0,
+                error_type=APIErrorType.CIRCUIT_OPEN,
+                error_message="Circuit open: provider temporarily unavailable",
+            )
+
+        # Rate limiter: consume one token from this integration's bucket.
+        if not rate_limit_acquire(integration.id, self.account_id, rconf):
+            self._write_call_log(
+                integration_id=str(integration.id),
+                endpoint_called=log_endpoint,
+                method=config.method,
+                status_code=0,
+                success=False,
+                latency_ms=int(time.time() * 1000) - start_ms,
+                error_type=APIErrorType.RATE_LIMITED.value,
+                error_message="Rate limit exceeded for this integration",
+            )
+            return APIResponse(
+                success=False,
+                status_code=0,
+                error_type=APIErrorType.RATE_LIMITED,
+                error_message="Rate limit exceeded for this integration",
+            )
+
         attempt = 0
         last_error: Optional[Exception] = None
+        safe_method = config.method.upper() in _SAFE_METHODS
 
         while attempt <= config.retry_count:
             try:
@@ -248,6 +313,22 @@ class IntegrationClient:
                 )
 
                 result = self._process_response(response, config, effective_response_vars)
+
+                # Retry throttling (429) and transient server errors (5xx), but
+                # only for idempotent methods so a write is never re-applied.
+                retryable_status = result.status_code == 429 or result.status_code >= 500
+                if retryable_status and safe_method and attempt < config.retry_count:
+                    retry_after = parse_retry_after(response.headers.get("Retry-After"))
+                    delay = compute_backoff_delay(attempt, rconf, retry_after=retry_after)
+                    logger.warning(
+                        f"Retryable status {result.status_code} "
+                        f"(attempt {attempt + 1}/{config.retry_count + 1}); "
+                        f"backing off {delay:.2f}s: {log_endpoint}"
+                    )
+                    await asyncio.sleep(delay)
+                    attempt += 1
+                    continue
+
                 self._apply_canonical(result, adapter, endpoint_def)
                 self._write_call_log(
                     integration_id=str(integration.id),
@@ -259,6 +340,15 @@ class IntegrationClient:
                     error_type=None if result.success else result.error_type.value,
                     error_message=None if result.success else (result.error_message or "")[:500],
                 )
+                # One logical execute_request == one breaker outcome. A 429/5xx
+                # (even after exhausting retries) is a provider failure; any
+                # response the provider actually produced (2xx, or a 4xx client
+                # error like auth/not-found/validation) proves the vendor is up
+                # and resets the breaker.
+                if retryable_status:
+                    circuit_record_failure(integration.id, self.account_id, rconf)
+                else:
+                    circuit_record_success(integration.id, self.account_id, rconf)
                 return result
 
             except httpx.TimeoutException:
@@ -267,6 +357,8 @@ class IntegrationClient:
                 )
                 last_error = httpx.TimeoutException(f"Request timed out after {config.timeout}s")
                 attempt += 1
+                if attempt <= config.retry_count:
+                    await asyncio.sleep(compute_backoff_delay(attempt - 1, rconf))
 
             except httpx.NetworkError as e:
                 logger.warning(
@@ -274,8 +366,12 @@ class IntegrationClient:
                 )
                 last_error = e
                 attempt += 1
+                if attempt <= config.retry_count:
+                    await asyncio.sleep(compute_backoff_delay(attempt - 1, rconf))
 
             except Exception as e:
+                # An unexpected error here is almost certainly our own bug, not a
+                # vendor outage — do NOT trip the breaker on it.
                 logger.error(f"Unexpected error during API request: {e}")
                 self._write_call_log(
                     integration_id=str(integration.id),
@@ -294,6 +390,8 @@ class IntegrationClient:
                     error_message=str(e),
                 )
 
+        # Exhausted retries on transport failure — this is a provider outage.
+        circuit_record_failure(integration.id, self.account_id, rconf)
         error_type = (
             APIErrorType.TIMEOUT
             if isinstance(last_error, httpx.TimeoutException)

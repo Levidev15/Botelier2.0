@@ -21,6 +21,11 @@ from botelier.models.flow_version import FlowVersion, FlowVersionStatus
 from botelier.models.invitation import AccountInvitation, InvitationStatus
 from botelier.models.knowledge_base import KnowledgeBase
 from botelier.models.knowledge_entry import KnowledgeEntry
+from botelier.models.integration_resilience import (
+    CircuitState,
+    IntegrationCircuitBreaker,
+    IntegrationRateLimit,
+)
 from botelier.models.operation_idempotency import (
     OperationIdempotency,
     OperationStatus,

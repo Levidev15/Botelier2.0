@@ -12,10 +12,12 @@ from typing import Optional
 
 from .base import BaseIntegrationAdapter, DefaultAdapter
 from .guestcentric import GuestCentricAdapter
+from .oauth2 import OAuth2AuthorizationCodeAdapter
 from .opera_cloud import OperaCloudAdapter
 
 OPERA_ADAPTER = OperaCloudAdapter()
 GUESTCENTRIC_ADAPTER = GuestCentricAdapter()
+OAUTH2_AUTHCODE_ADAPTER = OAuth2AuthorizationCodeAdapter()
 DEFAULT_ADAPTER = DefaultAdapter()
 
 _SLUG_REGISTRY: dict[str, BaseIntegrationAdapter] = {
@@ -26,6 +28,7 @@ _SLUG_REGISTRY: dict[str, BaseIntegrationAdapter] = {
 _AUTH_TYPE_REGISTRY: dict[str, BaseIntegrationAdapter] = {
     "oauth2_client_credentials": OPERA_ADAPTER,
     "basic_or_jwt": GUESTCENTRIC_ADAPTER,
+    "oauth2_authorization_code": OAUTH2_AUTHCODE_ADAPTER,
 }
 
 

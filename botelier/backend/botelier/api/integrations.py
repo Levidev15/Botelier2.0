@@ -1,17 +1,22 @@
 import base64
+import secrets
 from datetime import datetime, timedelta
 from typing import List, Optional
+from urllib.parse import urlencode
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.responses import RedirectResponse
 from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy import Integer, func as sqlfunc
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from botelier.auth.middleware import check_account_permission, get_current_user
+from botelier.config.domain import get_public_base_url
 from botelier.database import get_db
+from botelier.services.integration_runtime.adapters.oauth2 import resolve_token_endpoint
 from botelier.services.property_scope import property_belongs_to_account
 from botelier.models.integration import (
     AccountIntegration,
@@ -26,6 +31,11 @@ from botelier.services.integration_client import (
     build_auth_request_query_params,
 )
 from botelier.services.ssrf_safe_transport import SSRFSafeTransport
+
+# Reserved connection_config keys for the in-flight 3-legged OAuth2 flow.
+# ``_oauth_state_nonce`` is the CSRF nonce compared on callback; it is cleared
+# once the exchange completes so a state value can't be replayed.
+_OAUTH_STATE_NONCE_KEY = "_oauth_state_nonce"
 
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
 
@@ -1188,6 +1198,277 @@ async def get_account_api_logs(
             "last_error": last_failed.error_message if last_failed else None,
         },
     }
+
+
+# ── 3-legged OAuth2 (authorization_code) connect flow (Task #331) ─────────────
+
+
+class OAuthAuthorizeRequest(BaseModel):
+    integration_type_id: str
+    credentials: dict
+    connection_name: Optional[str] = None
+    property_id: Optional[str] = None
+
+
+def _oauth_redirect_uri() -> str:
+    """The redirect_uri the provider calls back to after user consent.
+
+    Must match what is registered with the provider and be identical on both the
+    authorize request and the token exchange (the OAuth2 spec requires it).
+    """
+    return f"{get_public_base_url()}/api/integrations/oauth/callback"
+
+
+def _dashboard_integrations_url() -> str:
+    return f"{get_public_base_url()}/integrations"
+
+
+def _build_authorization_url(
+    auth_config: dict, credentials: dict, redirect_uri: str, state: str
+) -> str:
+    authorize_url = (auth_config.get("authorization_endpoint") or "").strip()
+    if not authorize_url:
+        raise HTTPException(
+            status_code=400,
+            detail="Integration type has no authorization_endpoint configured",
+        )
+    params = {
+        "response_type": "code",
+        "client_id": credentials.get("client_id"),
+        "redirect_uri": redirect_uri,
+        "state": state,
+    }
+    scope = credentials.get("scope") or auth_config.get("scope")
+    if scope:
+        params["scope"] = scope
+    separator = "&" if "?" in authorize_url else "?"
+    return f"{authorize_url}{separator}{urlencode(params)}"
+
+
+async def exchange_authorization_code(
+    integration_type: IntegrationType, credentials: dict, code: str, redirect_uri: str
+) -> dict:
+    """Exchange an authorization code for access + refresh tokens."""
+    auth_config = integration_type.get_auth_config()
+    token_url = resolve_token_endpoint(auth_config)
+    client_id = credentials.get("client_id")
+    client_secret = credentials.get("client_secret")
+
+    form = {
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": redirect_uri,
+    }
+    if client_id:
+        form["client_id"] = client_id
+    # Confidential clients use HTTP Basic; public clients send only client_id.
+    basic_auth = (client_id, client_secret) if client_secret else None
+
+    try:
+        async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
+            response = await client.post(
+                token_url,
+                data=form,
+                auth=basic_auth,
+                headers={
+                    "Content-Type": "application/x-www-form-urlencoded",
+                    "Accept": "application/json",
+                },
+                timeout=30.0,
+            )
+    except Exception as exc:
+        logger.error(f"OAuth2 code exchange network error: {exc}")
+        return {"success": False, "error": str(exc)}
+
+    if response.status_code == 200:
+        token_data = response.json()
+        access_token = token_data.get("access_token")
+        if not access_token:
+            return {"success": False, "error": "Token response missing access_token"}
+        return {
+            "success": True,
+            "access_token": access_token,
+            "refresh_token": token_data.get("refresh_token"),
+            "expires_in": token_data.get("expires_in", 3600),
+        }
+    logger.error(
+        f"OAuth2 code exchange failed: {response.status_code} - {response.text[:300]}"
+    )
+    return {
+        "success": False,
+        "error": f"Token exchange failed: {response.status_code}",
+    }
+
+
+@router.post("/account/{account_id}/oauth/authorize")
+async def start_oauth_authorization(
+    account_id: str,
+    request: OAuthAuthorizeRequest,
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Begin a 3-legged OAuth2 connection: create the (CONNECTING) integration
+    and return the provider consent URL the operator's browser must visit.
+
+    The encrypted credentials (client_id/secret/scope) are persisted now; the
+    access/refresh tokens are stored later by the callback after the user grants
+    consent. A random CSRF nonce is stashed in connection_config and encoded
+    into the OAuth ``state`` so the public callback can bind the response back to
+    this exact pending integration.
+    """
+    _assert_account_access(current_user, account_id, db, permission="integrations.manage")
+
+    integration_type = (
+        db.query(IntegrationType)
+        .filter(IntegrationType.id == request.integration_type_id)
+        .first()
+    )
+    if not integration_type:
+        raise HTTPException(status_code=404, detail="Integration type not found")
+    if integration_type.auth_type != "oauth2_authorization_code":
+        raise HTTPException(
+            status_code=400,
+            detail="Integration type does not use authorization_code OAuth2",
+        )
+    if not request.credentials.get("client_id"):
+        raise HTTPException(status_code=400, detail="Missing client_id")
+
+    if request.property_id is not None and not property_belongs_to_account(
+        db, account_id, request.property_id
+    ):
+        raise HTTPException(status_code=400, detail="Property not found for this account")
+
+    auth_config = integration_type.get_auth_config()
+
+    integration = AccountIntegration(
+        account_id=account_id,
+        property_id=request.property_id,
+        integration_type_id=request.integration_type_id,
+        connection_name=request.connection_name or integration_type.name,
+        status=IntegrationStatus.CONNECTING,
+    )
+    cred_part, conn_config_part = _split_fields_by_storage(
+        integration_type, request.credentials
+    )
+    integration.set_credentials(cred_part)
+
+    nonce = secrets.token_urlsafe(24)
+    conn_config = conn_config_part or {}
+    conn_config[_OAUTH_STATE_NONCE_KEY] = nonce
+    integration.set_connection_config(conn_config)
+
+    db.add(integration)
+    db.commit()
+
+    state = f"{integration.id}:{nonce}"
+    redirect_uri = _oauth_redirect_uri()
+    authorization_url = _build_authorization_url(
+        auth_config, request.credentials, redirect_uri, state
+    )
+
+    logger.info(
+        f"Started OAuth2 authorization for integration {integration.id} "
+        f"({integration_type.slug}) account {account_id}"
+    )
+    return {
+        "integration_id": str(integration.id),
+        "authorization_url": authorization_url,
+    }
+
+
+@router.get("/oauth/callback")
+async def oauth_callback(
+    request: Request,
+    code: Optional[str] = None,
+    state: Optional[str] = None,
+    error: Optional[str] = None,
+    db: Session = Depends(get_db),
+):
+    """Public OAuth2 redirect target — the provider sends the browser here after
+    consent. Validates the CSRF nonce, exchanges the code for tokens, stores them
+    encrypted, and redirects back to the dashboard.
+
+    This route is intentionally unauthenticated (the consenting user's session
+    lives with the provider, not us); the security binding is the unguessable
+    nonce carried in ``state`` and matched against the pending integration.
+    """
+    dashboard_url = _dashboard_integrations_url()
+
+    def _fail(reason: str) -> RedirectResponse:
+        return RedirectResponse(url=f"{dashboard_url}?integration_error={reason}")
+
+    if not state or ":" not in state:
+        return _fail("invalid_state")
+
+    integration_id, _, nonce = state.partition(":")
+    try:
+        UUID(integration_id)
+    except (ValueError, TypeError):
+        return _fail("invalid_state")
+
+    integration = (
+        db.query(AccountIntegration)
+        .options(joinedload(AccountIntegration.integration_type))
+        .filter(AccountIntegration.id == integration_id)
+        .first()
+    )
+    if not integration:
+        return _fail("invalid_state")
+
+    conn_config = integration.get_connection_config() or {}
+    expected_nonce = conn_config.get(_OAUTH_STATE_NONCE_KEY)
+    # Fail closed: an absent or mismatched nonce means the state was forged or
+    # already consumed. secrets.compare_digest avoids a timing side-channel.
+    if not expected_nonce or not nonce or not secrets.compare_digest(
+        str(expected_nonce), str(nonce)
+    ):
+        return _fail("invalid_state")
+
+    # From here the state is authentic — always clear the one-time nonce so it
+    # cannot be replayed, regardless of the outcome.
+    conn_config.pop(_OAUTH_STATE_NONCE_KEY, None)
+
+    if error:
+        integration.status = IntegrationStatus.ERROR
+        integration.last_error = f"Authorization denied: {error}"[:500]
+        integration.set_connection_config(conn_config)
+        db.commit()
+        return _fail("access_denied")
+
+    if not code:
+        integration.status = IntegrationStatus.ERROR
+        integration.last_error = "Authorization callback missing code"
+        integration.set_connection_config(conn_config)
+        db.commit()
+        return _fail("missing_code")
+
+    credentials = integration.get_credentials()
+    redirect_uri = _oauth_redirect_uri()
+    result = await exchange_authorization_code(
+        integration.integration_type, credentials, code, redirect_uri
+    )
+
+    if result.get("success"):
+        integration.set_access_token(result["access_token"])
+        if result.get("refresh_token"):
+            integration.set_refresh_token(result["refresh_token"])
+        integration.token_expires_at = datetime.utcnow() + timedelta(
+            seconds=result.get("expires_in", 3600)
+        )
+        integration.status = IntegrationStatus.CONNECTED
+        integration.connected_at = datetime.utcnow()
+        integration.last_error = None
+        integration.set_connection_config(conn_config)
+        db.commit()
+        slug = integration.integration_type.slug if integration.integration_type else ""
+        logger.info(f"Completed OAuth2 connection for integration {integration.id}")
+        return RedirectResponse(url=f"{dashboard_url}?integration_connected={slug}")
+
+    integration.status = IntegrationStatus.ERROR
+    integration.last_error = result.get("error", "Token exchange failed")[:500]
+    integration.set_connection_config(conn_config)
+    db.commit()
+    return _fail("token_exchange_failed")
 
 
 async def obtain_oauth_token(integration_type: IntegrationType, credentials: dict) -> dict:

@@ -623,6 +623,32 @@ WHERE answered_at IS NULL
     "CREATE INDEX IF NOT EXISTS ix_phone_numbers_property_id ON phone_numbers(property_id)",
     "CREATE INDEX IF NOT EXISTS ix_assistants_property_id ON assistants(property_id)",
     "CREATE INDEX IF NOT EXISTS ix_account_integrations_property_id ON account_integrations(property_id)",
+    # Task #331 — cross-worker integration resilience state (rate limiter +
+    # circuit breaker). Keyed by integration_id; deliberately NO foreign keys so
+    # these ephemeral operational counters remain writable even for detached
+    # (test-injected) integrations and never block an integration delete. Also
+    # created by Base.metadata.create_all; the IF NOT EXISTS keeps pre-existing
+    # deployments in sync. account_id is stored for observability only.
+    """
+    CREATE TABLE IF NOT EXISTS integration_rate_limits (
+        integration_id UUID PRIMARY KEY,
+        account_id UUID,
+        tokens DOUBLE PRECISION NOT NULL DEFAULT 0,
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_integration_rate_limits_account_id ON integration_rate_limits(account_id)",
+    """
+    CREATE TABLE IF NOT EXISTS integration_circuit_breakers (
+        integration_id UUID PRIMARY KEY,
+        account_id UUID,
+        state VARCHAR(16) NOT NULL DEFAULT 'closed',
+        failure_count INTEGER NOT NULL DEFAULT 0,
+        opened_at TIMESTAMP,
+        updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_integration_circuit_breakers_account_id ON integration_circuit_breakers(account_id)",
 ]
 
 
@@ -1648,6 +1674,7 @@ def init_db():
         flow_session,  # noqa: F401
         flow_version,  # noqa: F401
         integration,  # noqa: F401
+        integration_resilience,  # noqa: F401
         invitation,  # noqa: F401
         knowledge_entry,  # noqa: F401
         mcp_connection,  # noqa: F401

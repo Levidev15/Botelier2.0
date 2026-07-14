@@ -25,6 +25,8 @@ class APIErrorType(str, Enum):
     SERVER_ERROR = "server_error"
     TIMEOUT = "timeout"
     NETWORK_ERROR = "network_error"
+    RATE_LIMITED = "rate_limited"
+    CIRCUIT_OPEN = "circuit_open"
     UNKNOWN = "unknown"
 
 
