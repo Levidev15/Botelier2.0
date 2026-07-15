@@ -1126,6 +1126,15 @@ class FunctionMapper:
         def _load_schema_and_config(db_session):
             if not action_id or not db_session:
                 return None, None, None
+            # Skip tools from connections that are no longer CONNECTED so they
+            # never appear in the LLM's tool list.
+            if connection_id:
+                from botelier.models.integration import AccountIntegration, IntegrationStatus
+                conn = db_session.query(AccountIntegration).filter(
+                    AccountIntegration.id == connection_id
+                ).first()
+                if not conn or conn.status != IntegrationStatus.CONNECTED:
+                    return None, None, None
             action = db_session.query(IntegrationAction).filter(IntegrationAction.id == action_id).first()
             if not action or not action.published_version_id:
                 return None, None, None
@@ -1184,6 +1193,7 @@ class FunctionMapper:
                     ),
                     variables=params.arguments,
                     integration_config=config,
+                    response_policy=_exec_config.get("response_policy") if _exec_config else None,
                 )
             )
 

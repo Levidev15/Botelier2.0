@@ -379,7 +379,35 @@ class ActionExecutor:
             db=self.db,
             property_id=request.context.property_id,
         )
-        return await client.execute_request(config, request.variables)
+        response = await client.execute_request(config, request.variables)
+
+        # Apply response bounding + field-level redaction for IMPORTED (Universal
+        # Adapter) operations.  The policy is forwarded by callers that load it from
+        # ConnectionOperationPolicy or IntegrationAction.response_policy.  For
+        # certified adapters (Opera, GuestCentric) request.response_policy is None,
+        # so this block is a no-op for them.
+        if request.response_policy is not None and response.data is not None:
+            from botelier.services.integration_runtime.redaction import bound_and_redact_response
+
+            bounded_data, warnings = bound_and_redact_response(response.data, request.response_policy)
+            for w in warnings:
+                logger.warning(
+                    "Response policy applied (integration=%s endpoint=%s): %s",
+                    config.integration_id,
+                    config.endpoint_id,
+                    w,
+                )
+            response = APIResponse(
+                success=response.success,
+                status_code=response.status_code,
+                data=bounded_data,
+                error_type=response.error_type,
+                error_message=response.error_message,
+                extracted_variables=response.extracted_variables,
+                canonical=getattr(response, "canonical", None),
+            )
+
+        return response
 
     async def _execute_custom_http(
         self,

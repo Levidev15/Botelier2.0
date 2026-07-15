@@ -741,14 +741,29 @@ class SMSService:
 
         The schema comes from the published IntegrationActionVersion's
         ``input_schema``, which contains only LLM-owned parameters — identical to
-        the voice channel.
+        the voice channel.  Returns None (skip) when the backing connection is not
+        CONNECTED, so disconnected tools never appear in the LLM's tool list.
         """
-        from botelier.models.integration import IntegrationAction, IntegrationActionVersion
+        from botelier.models.integration import (
+            AccountIntegration,
+            IntegrationAction,
+            IntegrationActionVersion,
+            IntegrationStatus,
+        )
 
         tool_config = tool.config or {}
         action_id = tool_config.get("integration_action_id")
         if not action_id:
             return None
+
+        # Connection-scoped filter: skip tool if backing integration is not CONNECTED.
+        connection_id = tool_config.get("connection_id")
+        if connection_id:
+            conn = self.db.query(AccountIntegration).filter(
+                AccountIntegration.id == connection_id
+            ).first()
+            if not conn or conn.status != IntegrationStatus.CONNECTED:
+                return None
 
         action = self.db.query(IntegrationAction).filter(IntegrationAction.id == action_id).first()
         if not action or not action.published_version_id:
@@ -819,6 +834,7 @@ class SMSService:
                     ),
                     variables=arguments,
                     integration_config=config,
+                    response_policy=exec_config.get("response_policy"),
                 ),
             )
             if result.success:

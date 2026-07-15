@@ -532,7 +532,7 @@ def _validate_spec_url(url: str) -> None:
     if hostname in blocked_names:
         raise HTTPException(status_code=400, detail="spec_url hostname is not allowed")
 
-    # Block private/loopback IP ranges
+    # Block private/loopback IP ranges by literal IP address
     try:
         addr = ipaddress.ip_address(hostname)
         if (
@@ -545,7 +545,36 @@ def _validate_spec_url(url: str) -> None:
         ):
             raise HTTPException(status_code=400, detail="spec_url hostname is not allowed")
     except ValueError:
-        pass  # Not an IP address — hostname is fine
+        pass  # Not a literal IP — DNS hostname; resolve and check below
+
+    # DNS-rebinding protection: resolve the hostname NOW and validate every resolved
+    # IP before the fetch.  A hostname like evil.example.com could resolve to
+    # 192.168.1.1 even though the literal hostname passed the string check above.
+    import socket
+
+    try:
+        addr_infos = socket.getaddrinfo(hostname, None, type=socket.SOCK_STREAM)
+    except OSError:
+        raise HTTPException(status_code=400, detail="spec_url hostname could not be resolved")
+
+    for _family, _type, _proto, _canonname, sockaddr in addr_infos:
+        resolved_ip = sockaddr[0]
+        try:
+            resolved_addr = ipaddress.ip_address(resolved_ip)
+        except ValueError:
+            continue
+        if (
+            resolved_addr.is_loopback
+            or resolved_addr.is_private
+            or resolved_addr.is_link_local
+            or resolved_addr.is_reserved
+            or resolved_addr.is_multicast
+            or resolved_addr.is_unspecified
+        ):
+            raise HTTPException(
+                status_code=400,
+                detail="spec_url resolves to a disallowed address",
+            )
 
 
 def _get_connection(db: Session, account_id: str, connection_id: str) -> AccountIntegration:

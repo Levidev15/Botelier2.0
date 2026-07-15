@@ -77,6 +77,11 @@ class SimulationState:
         # Standalone DYNAMIC_OPERATION tools from the Universal Adapter (Task #356).
         # Mirrored identically to capability_schemas above.
         self.dynamic_operation_schemas = dynamic_operation_schemas or []
+        self.dynamic_operation_names = {
+            s["function"]["name"]
+            for s in self.dynamic_operation_schemas
+            if s.get("function", {}).get("name")
+        }
         # LLM model for this session — mirrors the backing assistant's llm_model
         # so the simulator runs the exact model a live call would use.
         self.model = model or DEFAULT_SIM_MODEL
@@ -259,10 +264,18 @@ def _build_dynamic_operation_tool_schemas(db: Session, assistant: Optional[Assis
     calls the LLM would make outside a flow — identical to the voice/SMS channels.
     The LLM sees only LLM-owned parameters from the published action version.
     Returns [] when there is no backing assistant / tool_set.
+
+    Only tools whose backing AccountIntegration is CONNECTED are included;
+    disconnected connections are filtered out so the LLM never sees unavailable tools.
     """
     if not assistant or not assistant.tool_set_id:
         return []
-    from botelier.models.integration import IntegrationAction, IntegrationActionVersion
+    from botelier.models.integration import (
+        AccountIntegration,
+        IntegrationAction,
+        IntegrationActionVersion,
+        IntegrationStatus,
+    )
 
     dyn_tools = (
         db.query(Tool)
@@ -276,9 +289,20 @@ def _build_dynamic_operation_tool_schemas(db: Session, assistant: Optional[Assis
     schemas: list = []
     seen: set = set()
     for tool in dyn_tools:
-        action_id = (tool.config or {}).get("integration_action_id")
+        tool_config = tool.config or {}
+        action_id = tool_config.get("integration_action_id")
         if not action_id or action_id in seen:
             continue
+
+        # Connection-scoped filter: skip tool if backing integration is not CONNECTED.
+        connection_id = tool_config.get("connection_id")
+        if connection_id:
+            conn = db.query(AccountIntegration).filter(
+                AccountIntegration.id == connection_id
+            ).first()
+            if not conn or conn.status != IntegrationStatus.CONNECTED:
+                continue
+
         action = db.query(IntegrationAction).filter(IntegrationAction.id == action_id).first()
         if not action or not action.published_version_id:
             continue
@@ -300,6 +324,89 @@ def _build_dynamic_operation_tool_schemas(db: Session, assistant: Optional[Assis
             }
         )
     return schemas
+
+
+async def _execute_sim_dynamic_operation(
+    state: "SimulationState",
+    function_name: str,
+    function_args: dict,
+    db: Session,
+) -> dict:
+    """Execute a DYNAMIC_OPERATION tool through the certified integration runtime.
+
+    Mirrors voice/SMS channels exactly: ActionExecutor → IntegrationClient pipeline
+    (property isolation, rate-limiting, circuit-breaker, credential encryption,
+    response bounding + redaction).  Same certified path, no shortcuts.
+    """
+    from botelier.models.integration import IntegrationAction, IntegrationActionVersion
+    from botelier.models.tool import Tool, ToolType
+    from botelier.services.action_executor import (
+        ActionContext,
+        ActionExecutionRequest,
+        ActionExecutor,
+    )
+    from botelier.services.integration_client import IntegrationAPIConfig
+
+    tool = (
+        db.query(Tool)
+        .filter(
+            Tool.name == function_name,
+            Tool.tool_type == ToolType.DYNAMIC_OPERATION.value,
+            Tool.account_id == state.account_id,
+            Tool.is_active == "true",
+        )
+        .first()
+    )
+    if not tool:
+        return {"error": f"Dynamic operation {function_name!r} not found", "status": "failed"}
+
+    tool_config = tool.config or {}
+    action_id = tool_config.get("integration_action_id")
+    connection_id = tool_config.get("connection_id")
+    operation_id = tool_config.get("operation_id")
+
+    action = (
+        db.query(IntegrationAction).filter(IntegrationAction.id == action_id).first()
+        if action_id else None
+    )
+    if not action or not action.published_version_id:
+        return {"error": "Dynamic operation has no published version", "status": "failed"}
+
+    version = db.query(IntegrationActionVersion).filter(
+        IntegrationActionVersion.id == action.published_version_id
+    ).first()
+    if not version or not version.config:
+        return {"error": "Dynamic operation version config missing", "status": "failed"}
+
+    exec_config = version.config
+    api_config = IntegrationAPIConfig(
+        integration_id=exec_config.get("integration_id") or connection_id or "",
+        method=exec_config.get("method", "GET"),
+        path=exec_config.get("path", "/"),
+        endpoint_id=exec_config.get("endpoint_id") or operation_id or "",
+        query_param_overrides={},
+    )
+
+    exec_result = await ActionExecutor(db).execute_and_log(
+        ActionExecutionRequest(
+            context=ActionContext(
+                account_id=state.account_id,
+                channel="test",
+                tool_id=str(tool.id),
+                property_id=getattr(state.executor, "property_id", None),
+            ),
+            variables=function_args,
+            integration_config=api_config,
+            response_policy=exec_config.get("response_policy"),
+        )
+    )
+    if exec_result.success:
+        return exec_result.data or {"status": "ok"}
+    return {
+        "error": exec_result.error_message or "Dynamic operation failed",
+        "status": "failed",
+        "error_type": exec_result.error_type.value if exec_result.error_type else "unknown",
+    }
 
 
 def _resolve_flow_assistant(
@@ -704,6 +811,14 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                             channel="test",
                             arguments=function_args,
                             contact_ref=state.session_id,
+                        )
+                    elif function_name in state.dynamic_operation_names:
+                        # Universal Adapter DYNAMIC_OPERATION tool (Task #356):
+                        # execute through the same certified ActionExecutor →
+                        # IntegrationClient pipeline as voice/SMS — full property
+                        # isolation, resilience gates, response redaction.
+                        result = await _execute_sim_dynamic_operation(
+                            state, function_name, function_args, db
                         )
                     else:
                         result = await state.executor.handle_function_call(

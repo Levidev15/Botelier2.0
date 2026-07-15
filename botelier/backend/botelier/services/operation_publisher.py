@@ -263,7 +263,7 @@ def publish_operation(
         tool = Tool(id=uuid.uuid4())
         db.add(tool)
 
-    tool.name = fn_name[:255]
+    tool.name = tool_slug  # Namespaced slug prevents collision across connections
     tool.description = description
     tool.tool_type = ToolType.DYNAMIC_OPERATION.value
     tool.is_active = "true"
