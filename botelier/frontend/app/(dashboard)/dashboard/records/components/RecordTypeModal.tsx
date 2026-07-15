@@ -128,6 +128,10 @@ export default function RecordTypeModal({ accountId, recordType, onClose, onSave
       notify.error("Name is required");
       return;
     }
+    if (autoExtract && !scopeAll && assistantIds.length === 0) {
+      notify.error("Select at least one assistant, or switch to All assistants");
+      return;
+    }
     // Normalise + validate fields.
     const cleanFields: FieldDef[] = [];
     const seenKeys = new Set<string>();
