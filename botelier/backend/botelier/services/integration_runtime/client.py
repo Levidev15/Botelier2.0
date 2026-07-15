@@ -890,7 +890,14 @@ class IntegrationClient:
         try:
             return json.loads(body_str)
         except json.JSONDecodeError:
-            logger.error(f"Failed to parse body template as JSON: {body_str}")
+            # NEVER log the rendered body — it may contain card data or other
+            # secrets substituted from variables (Task #339). Log only the safe
+            # endpoint identity so the failure is still diagnosable.
+            logger.error(
+                "Failed to parse rendered request body as JSON "
+                f"(integration={getattr(config, 'integration_id', '?')} "
+                f"endpoint={getattr(config, 'endpoint_id', '?')})"
+            )
             return None
 
     def _substitute_variables(self, template: str, variables: dict[str, Any]) -> str:

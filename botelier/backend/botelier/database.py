@@ -122,6 +122,10 @@ _ADDITIVE_MIGRATIONS = [
     """CREATE UNIQUE INDEX IF NOT EXISTS uq_call_billing_transfer_per_leg
        ON call_billing_items(call_leg_id)
        WHERE item_type = 'outbound_transfer' AND call_leg_id IS NOT NULL""",
+    # Task #339 — PMS-native review+pay: link a payment back to its durable flow
+    # session (for page pre-fill) and keep the raw session key for late resolve.
+    "ALTER TABLE payments ADD COLUMN IF NOT EXISTS flow_session_id UUID REFERENCES flow_sessions(id) ON DELETE SET NULL",
+    "ALTER TABLE payments ADD COLUMN IF NOT EXISTS source_session_key VARCHAR(255)",
     # Indexes (CREATE INDEX IF NOT EXISTS is idempotent)
     "CREATE INDEX IF NOT EXISTS ix_sms_conv_account_started_at ON sms_conversations(account_id, started_at DESC)",
     # --- Pricing columns (deferred — uncomment when ready to capture Twilio costs) ---
@@ -1680,6 +1684,7 @@ def init_db():
         mcp_connection,  # noqa: F401
         operation_idempotency,  # noqa: F401
         payment,  # noqa: F401
+        payment_page_template,  # noqa: F401
         phone_number,  # noqa: F401
         property,  # noqa: F401
         record,  # noqa: F401

@@ -747,6 +747,110 @@ GUESTCENTRIC_INTEGRATION = {
             },
         },
         {
+            # Task #339 — combined booking + card capture for GuestCentric.
+            # NOT tagged with `capability` so it never competes with
+            # `book_reservation` resolution. `supports_card_capture` is the marker
+            # the capability resolver uses to detect a PMS-native payment path.
+            # GuestCentric booking is NOT perfectly vendor-neutral: it requires
+            # rate/cancellation-policy/meal-plan ids that only exist after an
+            # availability lookup — these are marked required so a submit that
+            # lacks them fails loudly rather than silently creating an unpaid or
+            # broken reservation. Card values are forwarded to GuestCentric's
+            # PCI-certified gateway and NEVER written to a Botelier log or DB row.
+            "id": "book_reservation_with_payment",
+            "supports_card_capture": True,
+            "category": "Reservations",
+            "name": "Book Reservation with Payment",
+            "description": (
+                "Create a reservation AND attach the guest's credit card in one "
+                "call so GuestCentric's gateway can charge the deposit. Requires "
+                "the rate/cancellation-policy/meal-plan ids from a prior "
+                "availability lookup. Card details are forwarded to GuestCentric "
+                "and are never stored by Botelier."
+            ),
+            "method": "POST",
+            "path": "/reservations/book",
+            "body_template": {
+                "reservations": [
+                    {
+                        "action": "new",
+                        "status": "confirmed",
+                        "checkin": "{{checkin}}",
+                        "checkout": "{{checkout}}",
+                        "number_of_rooms": "{{number_of_rooms}}",
+                        "number_of_adults": "{{number_of_adults}}",
+                        "number_of_children": "{{number_of_children}}",
+                        "hotel": {
+                            "id": "{{hotel_id}}",
+                            "name": "{{hotel_name}}",
+                            "hotel_reservations_email": "{{hotel_reservations_email}}",
+                        },
+                        "guest": {
+                            "first_name": "{{guest_first_name}}",
+                            "last_name": "{{guest_last_name}}",
+                            "email": "{{guest_email}}",
+                            "phone": "{{guest_phone}}",
+                        },
+                        "room_type": {"room_type_code": "{{room_type_code}}"},
+                        "rate_plan": {"rate_plan_code": "{{rate_plan_code}}"},
+                        "room_rate": {
+                            "rate_plan_code": "{{rate_plan_code}}",
+                            "room_rate_code": "{{room_rate_code}}",
+                            "total_price": "{{total_price}}",
+                            "daily_rates": [{"day": "{{checkin}}", "rate": "{{total_price}}"}],
+                        },
+                        "cancellation_policy": {"id": "{{cancellation_policy_id}}"},
+                        "meal_plan": {"id": "{{meal_plan_id}}"},
+                        "payment": {
+                            "type": "credit_card",
+                            "credit_card": {
+                                "holder_name": "{{card_holder}}",
+                                "number": "{{card_number}}",
+                                "expiry": "{{card_expiry}}",
+                                "cvv": "{{card_cvv}}",
+                            },
+                        },
+                    }
+                ]
+            },
+            "variables": [
+                {"key": "hotel_id", "type": "text", "label": "Hotel ID", "required": True},
+                {"key": "hotel_name", "type": "text", "label": "Hotel Name", "required": True},
+                {"key": "hotel_reservations_email", "type": "text", "label": "Hotel Reservations Email", "required": True},
+                {"key": "checkin", "type": "date", "label": "Check-in Date", "required": True},
+                {"key": "checkout", "type": "date", "label": "Check-out Date", "required": True},
+                {"key": "number_of_rooms", "type": "number", "label": "Number of Rooms", "default": 1, "required": True},
+                {"key": "number_of_adults", "type": "number", "label": "Adults", "default": 1, "required": True},
+                {"key": "number_of_children", "type": "number", "label": "Children", "default": 0},
+                {"key": "guest_first_name", "type": "text", "label": "Guest First Name", "required": True},
+                {"key": "guest_last_name", "type": "text", "label": "Guest Last Name", "required": True},
+                {"key": "guest_email", "type": "text", "label": "Guest Email", "required": True},
+                {"key": "guest_phone", "type": "text", "label": "Guest Phone", "required": True},
+                {"key": "room_type_code", "type": "text", "label": "Room Type Code", "required": True},
+                {"key": "rate_plan_code", "type": "text", "label": "Rate Plan Code", "required": True},
+                {"key": "room_rate_code", "type": "text", "label": "Room Rate Code", "required": True},
+                {"key": "total_price", "type": "number", "label": "Total Price", "required": True},
+                {"key": "cancellation_policy_id", "type": "text", "label": "Cancellation Policy ID", "required": True},
+                {"key": "meal_plan_id", "type": "text", "label": "Meal Plan ID", "required": True},
+                {"key": "card_holder", "type": "text", "label": "Card Holder Name", "required": True},
+                {"key": "card_number", "type": "text", "label": "Card Number", "required": True},
+                {"key": "card_expiry", "type": "text", "label": "Card Expiry (MM/YY)", "required": True},
+                {"key": "card_cvv", "type": "text", "label": "Card CVV", "required": True},
+            ],
+            "response_mapping": {
+                "reservations": "$.reservations",
+                "crs_reservation_code": "$.reservations[0].crs_reservation_code",
+                "hotel_reservation_code": "$.reservations[0].hotel_reservation_code",
+                "status": "$.reservations[0].status",
+            },
+            "response_mapping_labels": {
+                "reservations": "Array of created reservation objects",
+                "crs_reservation_code": "CRS reservation code (primary confirmation reference)",
+                "hotel_reservation_code": "Hotel-side reservation code",
+                "status": "Reservation status (confirmed/cancelled)",
+            },
+        },
+        {
             "id": "list_reservations",
             "canonical_entity": "reservation",
             "category": "Reservations",

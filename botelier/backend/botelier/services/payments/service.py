@@ -171,6 +171,123 @@ class PaymentService:
         finally:
             db.close()
 
+    def collect_payment_pms_native(
+        self,
+        *,
+        amount: Any,
+        currency: str = "USD",
+        description: Optional[str] = None,
+        reference: Optional[str] = None,
+        channel: str = "voice",
+        call_sid: Optional[str] = None,
+        conversation_id: Optional[str] = None,
+        idempotency_key: Optional[str] = None,
+        pms_integration_id: str,
+        pms_endpoint_id: str,
+        pms_vendor_slug: Optional[str] = None,
+        session_key: Optional[str] = None,
+    ) -> dict:
+        """Create (or replay) a PMS-native review+pay request (Task #339).
+
+        Unlike :meth:`collect_payment` (Stripe hosted checkout), this mints a link
+        to Botelier's own review+pay page. The card is captured there and, on
+        submit, forwarded in-memory to the property's PCI-certified PMS in ONE
+        combined booking+payment call — Botelier never stores or logs the card.
+
+        ``provider_refs`` records only the SERVER-ONLY PMS endpoint binding needed
+        to execute the combined call at submit time; it never holds card data.
+        """
+        if not self.account_id:
+            return {"status": "failed", "message": "Payment requires account context."}
+
+        amt = self._coerce_amount(amount)
+        if amt is None or amt <= 0:
+            return {
+                "status": "failed",
+                "message": "I couldn't process that amount. Please provide a valid amount.",
+            }
+
+        db = self._session()
+        try:
+            if idempotency_key:
+                existing = (
+                    db.query(Payment)
+                    .filter(Payment.idempotency_key == idempotency_key)
+                    .one_or_none()
+                )
+                if existing is not None:
+                    return existing.ai_result(self._spoken(existing))
+
+            flow_session_id = self._resolve_flow_session_id(db, session_key)
+
+            link_token = secrets.token_urlsafe(32)
+            payment = Payment(
+                account_id=self.account_id,
+                property_id=self.property_id,
+                idempotency_key=idempotency_key or secrets.token_urlsafe(24),
+                status=PaymentStatus.PENDING,
+                method=PaymentMethod.PMS_NATIVE,
+                amount=amt,
+                currency=(currency or "USD").upper()[:3],
+                description=(description or None),
+                reference=(reference or None),
+                link_token=link_token,
+                flow_session_id=flow_session_id,
+                source_session_key=(session_key or None),
+                # SERVER-ONLY: which PMS endpoint the combined submit calls. No card.
+                provider_refs={
+                    "provider": "pms_native",
+                    "pms_integration_id": str(pms_integration_id),
+                    "pms_endpoint_id": str(pms_endpoint_id),
+                    "pms_vendor_slug": pms_vendor_slug or None,
+                },
+                expires_at=datetime.utcnow()
+                + timedelta(seconds=self.LINK_TTL_SECONDS),
+            )
+            db.add(payment)
+            try:
+                db.commit()
+            except IntegrityError:
+                db.rollback()
+                existing = (
+                    db.query(Payment)
+                    .filter(Payment.idempotency_key == idempotency_key)
+                    .one_or_none()
+                    if idempotency_key
+                    else None
+                )
+                if existing is not None:
+                    return existing.ai_result(self._spoken(existing))
+                return {
+                    "status": "failed",
+                    "message": "I'm not able to take a payment right now.",
+                }
+            return payment.ai_result(self._spoken(payment))
+        finally:
+            db.close()
+
+    def _resolve_flow_session_id(self, db, session_key: Optional[str]):
+        """Best-effort link the payment to the caller's live flow session.
+
+        Scoped to this account (never cross-tenant). Returns None when there is no
+        session yet — the renderer can still resolve later via
+        ``source_session_key``.
+        """
+        if not session_key or not self.account_id:
+            return None
+        try:
+            from botelier.models.flow_session import FlowSession
+
+            q = db.query(FlowSession).filter(
+                FlowSession.account_id == self.account_id,
+                FlowSession.session_key == session_key,
+            )
+            row = q.order_by(FlowSession.updated_at.desc()).first()
+            return row.id if row is not None else None
+        except Exception as exc:  # noqa: BLE001 - linkage is best-effort
+            logger.warning("pms-native: could not resolve flow session: %s", exc)
+            return None
+
     # -- webhook completion --------------------------------------------------
     def apply_event(self, provider_ref: str, status: str) -> bool:
         """Apply a *verified* processor event to its payment row.

@@ -79,6 +79,37 @@ class BaseIntegrationAdapter:
         """Refresh + persist credentials. Generic default is a no-op success."""
         return True
 
+    #: Canonical card variable keys the combined booking+payment endpoints expect
+    #: (Task #339). These are forwarded in-memory to the vendor's PCI-certified
+    #: gateway and must never be persisted or logged by Botelier.
+    CARD_FIELDS: tuple = (
+        "card_holder",
+        "card_number",
+        "card_expiry",
+        "card_cvv",
+    )
+
+    def validate_card_capture(self, variables: dict) -> None:
+        """Fail loudly (ValueError) if any required card field is missing/blank.
+
+        Called by the combined review+pay submit path before a PMS-native
+        booking+charge request is issued. Vendor adapters may override to add
+        their own required fields (e.g. GuestCentric's rate/policy ids), but the
+        base contract guarantees a booking is never sent to a gateway with an
+        incomplete card — silently creating an unpaid reservation is worse than a
+        clear error.
+        """
+        missing = [
+            key
+            for key in self.CARD_FIELDS
+            if not str((variables or {}).get(key) or "").strip()
+        ]
+        if missing:
+            raise ValueError(
+                "Cannot capture payment: missing card field(s): "
+                + ", ".join(missing)
+            )
+
     def normalize(self, entity: str, endpoint_id: Optional[str], raw: object) -> Optional[dict]:
         """Map a raw vendor response into the canonical envelope for ``entity``.
 

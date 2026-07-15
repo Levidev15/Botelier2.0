@@ -1,6 +1,6 @@
 "use client";
 
-import { Bot, Phone, BarChart, Key, Users, Wrench, BookOpen, Shield, LogOut, ArrowLeft, Building2, Plug, MessageSquare, TrendingUp, MessageCircle, Sun, Moon, DollarSign, ClipboardList } from "lucide-react";
+import { Bot, Phone, BarChart, Key, Users, Wrench, BookOpen, Shield, LogOut, ArrowLeft, Building2, Plug, MessageSquare, TrendingUp, MessageCircle, Sun, Moon, DollarSign, ClipboardList, CreditCard } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRouter } from "next/navigation";
@@ -222,6 +222,9 @@ export default function DashboardLayout({
           </NavItem>
           <NavItem href="/dashboard/integrations" icon={<Plug className="h-5 w-5" />} active={isActive("/dashboard/integrations")}>
             Integrations
+          </NavItem>
+          <NavItem href="/dashboard/settings/payment-page" icon={<CreditCard className="h-5 w-5" />} active={isActive("/dashboard/settings/payment-page")}>
+            Payment Page
           </NavItem>
           <NavItem href="/dashboard/api-keys" icon={<Key className="h-5 w-5" />} active={isActive("/dashboard/api-keys")}>
             API Keys

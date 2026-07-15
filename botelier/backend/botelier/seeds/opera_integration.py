@@ -269,6 +269,98 @@ OPERA_CLOUD_INTEGRATION = {
             },
         },
         {
+            # Task #339 — combined booking + card capture. Deliberately NOT tagged
+            # with a `capability` so it never competes with `create_reservation`
+            # for `book_reservation` resolution (that would fail closed as
+            # ambiguous). `supports_card_capture` is the marker the capability
+            # resolver uses to detect a PMS-native payment path for the property,
+            # and the combined-submit endpoint calls this endpoint id directly.
+            # Card values (number/expiry/cvv) are forwarded in-memory to OPERA's
+            # PCI-certified gateway and NEVER written to a Botelier log or DB row.
+            "id": "create_reservation_with_payment",
+            "supports_card_capture": True,
+            "category": "Reservations",
+            "name": "Create Reservation with Payment",
+            "description": (
+                "Create a reservation AND attach the guest's credit card in one "
+                "call so OPERA's own payment gateway can charge the deposit. Card "
+                "details are forwarded to OPERA and are never stored by Botelier."
+            ),
+            "method": "POST",
+            "path": "/rsv/v1/hotels/{{hotel_id}}/reservations",
+            "body_template": {
+                "reservations": {
+                    "reservation": [
+                        {
+                            "hotelId": "{{hotel_id}}",
+                            "reservationGuests": {
+                                "profileInfo": [
+                                    {
+                                        "profile": {
+                                            "profileType": "Guest",
+                                            "customer": {
+                                                "personName": [
+                                                    {
+                                                        "givenName": "{{guest_first_name}}",
+                                                        "surname": "{{guest_last_name}}",
+                                                    }
+                                                ]
+                                            },
+                                        }
+                                    }
+                                ]
+                            },
+                            "roomStay": {
+                                "arrivalDate": "{{check_in_date}}",
+                                "departureDate": "{{check_out_date}}",
+                                "roomTypes": [{"roomTypeCode": "{{room_type}}"}],
+                                "ratePlanCodes": [{"ratePlanCode": "{{rate_code}}"}],
+                                "guestCounts": {
+                                    "adults": "{{guest_count}}",
+                                    "children": "{{child_count}}",
+                                },
+                                "guarantee": {"guaranteeCode": "CC"},
+                            },
+                            "reservationPaymentMethods": [
+                                {
+                                    "paymentMethod": "CC",
+                                    "folioView": "Room",
+                                    "paymentCard": {
+                                        "cardHolderName": "{{card_holder}}",
+                                        "cardNumber": "{{card_number}}",
+                                        "expirationDate": "{{card_expiry}}",
+                                        "cardSecurityCode": "{{card_cvv}}",
+                                    },
+                                }
+                            ],
+                        }
+                    ]
+                }
+            },
+            "variables": [
+                {"key": "guest_first_name", "type": "text", "label": "Guest First Name", "required": True},
+                {"key": "guest_last_name", "type": "text", "label": "Guest Last Name", "required": True},
+                {"key": "check_in_date", "type": "date", "label": "Arrival Date", "required": True},
+                {"key": "check_out_date", "type": "date", "label": "Departure Date", "required": True},
+                {"key": "room_type", "type": "text", "label": "Room Type Code", "required": True},
+                {"key": "rate_code", "type": "text", "label": "Rate Plan Code", "required": True},
+                {"key": "guest_count", "type": "number", "label": "Number of Adults", "default": 1},
+                {"key": "child_count", "type": "number", "label": "Number of Children", "default": 0},
+                {"key": "card_holder", "type": "text", "label": "Card Holder Name", "required": True},
+                {"key": "card_number", "type": "text", "label": "Card Number", "required": True},
+                {"key": "card_expiry", "type": "text", "label": "Card Expiry (MM/YY)", "required": True},
+                {"key": "card_cvv", "type": "text", "label": "Card CVV", "required": True},
+            ],
+            "response_mapping": {
+                "confirmation_number": "$.reservationId.id",
+                "booking_url": "$.links[0].href",
+            },
+            "response_mapping_labels": {
+                "confirmation_number": "Opera reservation ID / confirmation number",
+                "booking_url": "HATEOAS self-link for the new reservation",
+            },
+        },
+        {
             "id": "get_guest_profile",
             "canonical_entity": "guest",
             "category": "Profiles",

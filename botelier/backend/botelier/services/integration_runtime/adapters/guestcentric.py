@@ -53,6 +53,32 @@ def _guestcentric_status(raw_status) -> str:
 class GuestCentricAdapter(BaseIntegrationAdapter):
     slug = "guestcentric-crs"
 
+    #: GuestCentric booking is not perfectly vendor-neutral (Task #339): a paid
+    #: booking needs the rate/cancellation-policy/meal-plan ids that only exist
+    #: after an availability lookup. A combined submit lacking them must fail
+    #: loudly, never silently create a broken/unpaid reservation.
+    EXTRA_BOOKING_FIELDS: tuple = (
+        "room_type_code",
+        "rate_plan_code",
+        "room_rate_code",
+        "total_price",
+        "cancellation_policy_id",
+        "meal_plan_id",
+    )
+
+    def validate_card_capture(self, variables: dict) -> None:
+        super().validate_card_capture(variables)
+        missing = [
+            key
+            for key in self.EXTRA_BOOKING_FIELDS
+            if not str((variables or {}).get(key) or "").strip()
+        ]
+        if missing:
+            raise ValueError(
+                "Cannot book with payment: GuestCentric requires field(s) from a "
+                "prior availability lookup: " + ", ".join(missing)
+            )
+
     def needs_token(self, credentials: dict) -> bool:
         # Basic auth carries the credential on every request, so no token dance.
         return credentials.get("auth_method", "") != "basic_auth"

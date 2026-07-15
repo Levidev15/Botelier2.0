@@ -82,6 +82,7 @@ const sidebars = {
         'integrations/guestcentric-crs',
         'integrations/canonical-domain-schemas',
         'integrations/universal-capability-tools',
+        'integrations/designable-payment-page',
         'integrations/mcp-server',
         'integrations/custom-api-via-flow',
         'integrations/adding-a-new-integration',

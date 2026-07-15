@@ -48,8 +48,15 @@ class PaymentMethod(str):
     # Pipecat media-stream, not a TwiML ``<Pay>`` session) — kept for the schema
     # so the capability can fail closed *to* the SMS link without a migration.
     TWILIO_PAY = "twilio_pay"
-    # The live v1 method: text the caller a secure hosted-checkout link.
+    # Text the caller a secure hosted-checkout link (Stripe fallback path).
     SMS_LINK = "sms_link"
+    # Task #339: text the caller a secure review+pay link that captures the card
+    # and forwards it, in one combined booking+payment call, to the property's
+    # PCI-certified PMS (Opera OHIP / GuestCentric). Botelier never stores the
+    # card — it is forwarded in-memory to the PMS as an authorised booking
+    # channel. Selected when the caller's property has a payment-capable PMS
+    # connection; otherwise the capability falls back to ``SMS_LINK``.
+    PMS_NATIVE = "pms_native"
 
 
 class Payment(Base):
@@ -96,6 +103,18 @@ class Payment(Base):
         nullable=True,
     )
     source_conversation_id = Column(UUID(as_uuid=True), nullable=True)
+
+    # Task #339: link back to the durable flow session whose collected slots the
+    # AI captured, so the review+pay page can pre-fill the reservation. NULL for
+    # legacy / Stripe-fallback payments. ``source_session_key`` is the channel's
+    # stable contact id (call_sid / conversation id) used to resolve the session
+    # at page-render time when the row was created before the session finalised.
+    flow_session_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("flow_sessions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
+    source_session_key = Column(String(255), nullable=True)
 
     created_at = Column(DateTime, nullable=False, default=datetime.utcnow)
     updated_at = Column(

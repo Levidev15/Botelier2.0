@@ -126,6 +126,84 @@ class CapabilityResolver:
                 )
         return candidates
 
+    def _card_capture_candidates(self) -> List[Resolution]:
+        """Discover connected endpoints tagged ``supports_card_capture`` (#339).
+
+        These are the combined booking+payment endpoints (Opera
+        ``create_reservation_with_payment`` / GuestCentric
+        ``book_reservation_with_payment``). Deliberately NOT keyed off a
+        ``capability`` tag so they never compete with ``book_reservation``.
+        """
+        from botelier.models.integration import AccountIntegration, IntegrationStatus
+
+        if not self.account_id:
+            return []
+
+        integrations = (
+            self.db.query(AccountIntegration)
+            .filter(
+                AccountIntegration.account_id == self.account_id,
+                AccountIntegration.status == IntegrationStatus.CONNECTED,
+            )
+            .all()
+        )
+        out: List[Resolution] = []
+        for integ in integrations:
+            itype = integ.integration_type
+            if itype is None:
+                continue
+            try:
+                endpoints = itype.get_endpoints()
+            except Exception:  # noqa: BLE001
+                continue
+            for endpoint in endpoints:
+                if not endpoint.get("supports_card_capture"):
+                    continue
+                out.append(
+                    Resolution(
+                        integration_id=str(integ.id),
+                        integration_property_id=str(integ.property_id)
+                        if integ.property_id
+                        else None,
+                        endpoint_id=endpoint.get("id"),
+                        method=(endpoint.get("method") or "POST").upper(),
+                        capability_params=endpoint.get("capability_params") or {},
+                    )
+                )
+        return out
+
+    def resolve_pms_native_payment(self) -> Optional[Resolution]:
+        """Select the single PMS-native review+pay endpoint, or ``None`` (#339).
+
+        Same fail-closed, property-scoped, ambiguity-refusing selection as
+        :meth:`resolve`. ``None`` means the property has no unambiguous
+        payment-capable PMS connection, so ``collect_payment`` falls back to the
+        Stripe SMS link.
+        """
+        candidates = self._card_capture_candidates()
+        allowed = [
+            c
+            for c in candidates
+            if property_access_allowed(self.property_id, c.integration_property_id)
+        ]
+        if not allowed:
+            return None
+        if self.property_id is not None:
+            bound = [c for c in allowed if c.integration_property_id == self.property_id]
+            tier = bound if bound else [c for c in allowed if c.integration_property_id is None]
+        else:
+            tier = allowed
+        if len(tier) > 1:
+            logger.warning(
+                "capability resolver: ambiguous PMS-native payment provider — %d "
+                "candidates (account=%s, property=%s). Falling back to link.",
+                len(tier),
+                self.account_id,
+                self.property_id,
+            )
+            return None
+        return tier[0]
+
     # -- selection -----------------------------------------------------------
     def resolve(self, capability_name: str) -> Optional[Resolution]:
         """Select the single provider binding for a capability, or ``None``.
@@ -341,6 +419,33 @@ class CapabilityResolver:
             capability_name, arguments, call_sid, contact_ref
         )
         service = PaymentService(self.account_id, self.property_id)
+
+        # Task #339: prefer a PMS-native review+pay link when the caller's property
+        # has an unambiguous payment-capable PMS connection; otherwise fall back to
+        # the Stripe hosted-checkout SMS link. Fail-closed detection reuses the same
+        # per-property scoping/ambiguity rules as capability resolution.
+        session_key = call_sid or contact_ref
+        try:
+            pms = self.resolve_pms_native_payment()
+        except Exception as exc:  # noqa: BLE001 - detection must never break the charge
+            logger.warning("pms-native detection failed, using link fallback: %s", exc)
+            pms = None
+        if pms is not None:
+            vendor_slug = self._integration_slug(pms.integration_id)
+            return service.collect_payment_pms_native(
+                amount=args.get("amount"),
+                currency=args.get("currency", "USD"),
+                description=args.get("description"),
+                reference=args.get("reference"),
+                channel=channel,
+                call_sid=call_sid,
+                idempotency_key=idem_key,
+                pms_integration_id=pms.integration_id,
+                pms_endpoint_id=pms.endpoint_id,
+                pms_vendor_slug=vendor_slug,
+                session_key=session_key,
+            )
+
         return service.collect_payment(
             amount=args.get("amount"),
             currency=args.get("currency", "USD"),
@@ -350,6 +455,21 @@ class CapabilityResolver:
             call_sid=call_sid,
             idempotency_key=idem_key,
         )
+
+    def _integration_slug(self, integration_id: str) -> Optional[str]:
+        """Best-effort vendor slug for a resolved integration (for provenance)."""
+        try:
+            from botelier.models.integration import AccountIntegration
+
+            integ = (
+                self.db.query(AccountIntegration)
+                .filter(AccountIntegration.id == integration_id)
+                .one_or_none()
+            )
+            itype = integ.integration_type if integ is not None else None
+            return getattr(itype, "slug", None)
+        except Exception:  # noqa: BLE001
+            return None
 
     async def execute(
         self,
