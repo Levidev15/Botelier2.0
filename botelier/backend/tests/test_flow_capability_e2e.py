@@ -180,6 +180,7 @@ from botelier.models.integration import (  # noqa: E402
     IntegrationType,
 )
 from botelier.models.property import Property  # noqa: E402
+from botelier.services.capabilities.resolver import CapabilityResolver  # noqa: E402
 
 # Capability-tagged endpoint fixtures used to build IntegrationTypes.
 _SEARCH_ENDPOINT = {
@@ -533,3 +534,213 @@ async def test_mutating_capability_concurrent_requests_deduped(db_env):
         f"Integration fired {call_count} times under concurrent execution — "
         "idempotency lock did not serialise correctly"
     )
+
+
+# ── SMS path: execute_sync + contact_ref ─────────────────────────────────────
+#
+# The SMS service does NOT use FlowExecutor. It calls
+# ``CapabilityResolver.execute_sync()`` directly, supplying the SMS
+# conversation id as ``contact_ref`` (no call_sid). These tests drive that
+# code path end-to-end to verify:
+#   1. Fail-closed: no provider or unknown capability → structured error dict.
+#   2. Connected provider: correct integration + endpoint resolution, canonical
+#      → vendor variable translation, and no idempotency key on reads.
+#   3. Mutating capability: idempotency key is scoped to contact_ref so two
+#      different SMS conversations with identical arguments produce distinct
+#      keys, while a retry within the same conversation gets the same key.
+
+
+def test_sms_execute_sync_fail_closed_no_provider(db_env):
+    """No connected provider → execute_sync returns an unavailable error dict."""
+    db, acct, prop = db_env
+    resolver = CapabilityResolver(db, str(acct.id), str(prop.id))
+    result = resolver.execute_sync(
+        "search_availability",
+        channel="sms",
+        arguments={"check_in_date": "2026-08-01"},
+        contact_ref="sms-conv-001",
+    )
+    assert result.get("status") in ("unavailable", "failed"), (
+        f"Expected unavailable/failed status, got: {result}"
+    )
+    error_text = (result.get("error") or "").lower()
+    assert "available" in error_text, (
+        f"Expected 'available' in error message, got: {result}"
+    )
+
+
+def test_sms_execute_sync_unknown_capability_fail_closed(db_env):
+    """Unknown capability → execute_sync returns a failed error dict."""
+    db, acct, prop = db_env
+    resolver = CapabilityResolver(db, str(acct.id), str(prop.id))
+    result = resolver.execute_sync(
+        "teleport_guest",
+        channel="sms",
+        arguments={},
+        contact_ref="sms-conv-002",
+    )
+    assert result.get("status") == "failed"
+    assert "unknown" in (result.get("error") or "").lower()
+
+
+def test_sms_execute_sync_read_capability_translates_variables(db_env):
+    """execute_sync with a connected provider dispatches execute_action_sync
+    with translated vendor variables and no idempotency key (read = non-mutating).
+    """
+    from unittest.mock import MagicMock, patch
+
+    from botelier.services.action_executor import ActionExecutionResult
+
+    db, acct, prop = db_env
+    itype = _make_itype(db, [_SEARCH_ENDPOINT])
+    integration = _make_integration(db, acct.id, itype.id, property_id=prop.id)
+
+    captured: list = []
+
+    def _fake_execute_sync(db_arg, request):
+        captured.append(request)
+        mock_result = MagicMock(spec=ActionExecutionResult)
+        mock_result.success = True
+        mock_result.canonical = None
+        mock_result.extracted_variables = {"rooms": [{"id": "101"}]}
+        mock_result.data = None
+        mock_result.error_type = None
+        mock_result.error_message = None
+        mock_result.status_code = 200
+        return mock_result
+
+    resolver = CapabilityResolver(db, str(acct.id), str(prop.id))
+    with patch(
+        "botelier.services.action_executor.execute_action_sync",
+        side_effect=_fake_execute_sync,
+    ):
+        result = resolver.execute_sync(
+            "search_availability",
+            channel="sms",
+            arguments={"check_in_date": "2026-08-15", "guest_count": 2},
+            contact_ref="sms-conv-003",
+        )
+
+    assert len(captured) == 1, "Expected exactly one execute_action_sync call"
+    req = captured[0]
+
+    # Must resolve to the correct integration and endpoint.
+    assert req.integration_config.integration_id == str(integration.id)
+    assert req.integration_config.endpoint_id == "search"
+
+    # Canonical → vendor variable translation:
+    #   check_in_date → checkin, guest_count → adults (from _SEARCH_ENDPOINT capability_params).
+    assert req.variables.get("checkin") == "2026-08-15", (
+        f"Expected 'checkin' in translated vars; got: {req.variables}"
+    )
+    assert req.variables.get("adults") == 2, (
+        f"Expected 'adults'=2 in translated vars; got: {req.variables}"
+    )
+
+    # Non-mutating capability → no idempotency key.
+    assert req.idempotency_key is None, (
+        f"Read capability must not carry an idempotency key; got: {req.idempotency_key}"
+    )
+
+    # Result is surfaced correctly.
+    assert result.get("data") is not None
+
+
+def test_sms_execute_sync_mutating_idempotency_scoped_to_contact_ref(db_env):
+    """book_reservation via execute_sync (SMS path):
+
+    Captures the ActionExecutionRequest that execute_sync passes to
+    execute_action_sync and asserts directly on its idempotency_key:
+
+    - Two different SMS conversations with identical arguments produce distinct
+      idempotency keys (no cross-conversation collision).
+    - A retry from the same conversation produces the same key (dedup).
+    - Mutating capability always carries an idempotency key (never None).
+    - Channel is "sms" and call_sid is None on every request.
+    """
+    from unittest.mock import MagicMock, patch
+
+    from botelier.services.action_executor import ActionExecutionResult
+
+    db, acct, prop = db_env
+    itype = _make_itype(db, [_BOOK_ENDPOINT])
+    _make_integration(db, acct.id, itype.id, property_id=prop.id)
+
+    args = {"check_in_date": "2026-09-01", "guest_count": 2}
+    captured_requests: list = []
+
+    def _fake_execute(db_arg, request):
+        captured_requests.append(request)
+        mock_result = MagicMock(spec=ActionExecutionResult)
+        mock_result.success = True
+        mock_result.canonical = None
+        mock_result.extracted_variables = None
+        mock_result.data = {"reservation_id": "res-xyz"}
+        mock_result.error_type = None
+        mock_result.error_message = None
+        mock_result.status_code = 200
+        return mock_result
+
+    with patch(
+        "botelier.services.action_executor.execute_action_sync",
+        side_effect=_fake_execute,
+    ):
+        # Conversation A — first call.
+        CapabilityResolver(db, str(acct.id), str(prop.id)).execute_sync(
+            "book_reservation",
+            channel="sms",
+            arguments=args,
+            contact_ref="sms-conv-A",
+        )
+
+        # Conversation B — different contact, identical args.
+        CapabilityResolver(db, str(acct.id), str(prop.id)).execute_sync(
+            "book_reservation",
+            channel="sms",
+            arguments=args,
+            contact_ref="sms-conv-B",
+        )
+
+        # Retry from conversation A — same contact, same args.
+        CapabilityResolver(db, str(acct.id), str(prop.id)).execute_sync(
+            "book_reservation",
+            channel="sms",
+            arguments=args,
+            contact_ref="sms-conv-A",
+        )
+
+    assert len(captured_requests) == 3, (
+        f"Expected 3 execute_action_sync calls, got {len(captured_requests)}"
+    )
+    req_a, req_b, req_retry = captured_requests
+
+    # Mutating → every request must carry a non-None idempotency key.
+    assert req_a.idempotency_key is not None, (
+        "Conversation A: mutating capability must carry an idempotency key"
+    )
+    assert req_b.idempotency_key is not None, (
+        "Conversation B: mutating capability must carry an idempotency key"
+    )
+    assert req_retry.idempotency_key is not None, (
+        "Conversation A retry: mutating capability must carry an idempotency key"
+    )
+
+    # Different conversations with identical args → distinct keys (no collision).
+    assert req_a.idempotency_key != req_b.idempotency_key, (
+        "Cross-conversation collision: identical args in different SMS conversations "
+        "produced the same idempotency key"
+    )
+
+    # Same conversation, same args → same key (retry/reconnect dedups to one write).
+    assert req_retry.idempotency_key == req_a.idempotency_key, (
+        "Retry from the same conversation must reproduce the original idempotency key"
+    )
+
+    # SMS semantics: no call_sid, channel is "sms" on all requests.
+    for req in captured_requests:
+        assert req.context.call_sid is None, (
+            f"SMS capability must not set call_sid; got: {req.context.call_sid}"
+        )
+        assert req.context.channel == "sms", (
+            f"SMS capability must use channel='sms'; got: {req.context.channel}"
+        )
