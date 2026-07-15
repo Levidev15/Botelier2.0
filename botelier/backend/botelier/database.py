@@ -653,6 +653,71 @@ WHERE answered_at IS NULL
     )
     """,
     "CREATE INDEX IF NOT EXISTS ix_integration_circuit_breakers_account_id ON integration_circuit_breakers(account_id)",
+    # Universal API Adapter (Task #356) — DYNAMIC_OPERATION ToolType enum value
+    "ALTER TYPE tooltype ADD VALUE IF NOT EXISTS 'DYNAMIC_OPERATION'",
+    # IntegrationActionKind.IMPORTED enum value
+    "ALTER TYPE integrationactionkind ADD VALUE IF NOT EXISTS 'IMPORTED'",
+    # IntegrationType new columns for imported specs
+    "ALTER TABLE integration_types ADD COLUMN IF NOT EXISTS origin VARCHAR(32) NOT NULL DEFAULT 'botelier_certified'",
+    "ALTER TABLE integration_types ADD COLUMN IF NOT EXISTS source_type VARCHAR(32)",
+    "ALTER TABLE integration_types ADD COLUMN IF NOT EXISTS raw_spec JSONB",
+    "ALTER TABLE integration_types ADD COLUMN IF NOT EXISTS spec_version VARCHAR(64)",
+    "ALTER TABLE integration_types ADD COLUMN IF NOT EXISTS spec_url VARCHAR(2048)",
+    # AccountIntegration new columns
+    "ALTER TABLE account_integrations ADD COLUMN IF NOT EXISTS environment VARCHAR(32) NOT NULL DEFAULT 'production'",
+    "ALTER TABLE account_integrations ADD COLUMN IF NOT EXISTS allowed_base_domains JSONB NOT NULL DEFAULT '[]'",
+    # IntegrationAction new columns
+    "ALTER TABLE integration_actions ADD COLUMN IF NOT EXISTS connection_id UUID REFERENCES account_integrations(id) ON DELETE SET NULL",
+    "ALTER TABLE integration_actions ADD COLUMN IF NOT EXISTS source_endpoint_id VARCHAR(255)",
+    "ALTER TABLE integration_actions ADD COLUMN IF NOT EXISTS param_ownership JSONB",
+    "ALTER TABLE integration_actions ADD COLUMN IF NOT EXISTS response_policy JSONB",
+    "CREATE INDEX IF NOT EXISTS ix_integration_actions_connection ON integration_actions(connection_id)",
+    # connection_operation_policies — per-connection operation control table
+    """
+    CREATE TABLE IF NOT EXISTS connection_operation_policies (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        account_integration_id UUID NOT NULL REFERENCES account_integrations(id) ON DELETE CASCADE,
+        operation_id VARCHAR(255) NOT NULL,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        risk_level VARCHAR(32) NOT NULL DEFAULT 'read',
+        confirm_required BOOLEAN NOT NULL DEFAULT FALSE,
+        approval_required BOOLEAN NOT NULL DEFAULT FALSE,
+        max_amount DOUBLE PRECISION,
+        max_executions_per_conv INTEGER,
+        allowed_channels JSONB NOT NULL DEFAULT '[]',
+        response_size_bytes INTEGER NOT NULL DEFAULT 32768,
+        redact_field_patterns JSONB NOT NULL DEFAULT '[]',
+        test_status VARCHAR(32),
+        tested_at TIMESTAMP,
+        test_passed BOOLEAN,
+        test_error TEXT,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMP,
+        UNIQUE(account_integration_id, operation_id)
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_connection_operation_policies_integration ON connection_operation_policies(account_integration_id)",
+    # approval_requests — pending human approvals for high-risk operations
+    """
+    CREATE TABLE IF NOT EXISTS approval_requests (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        account_integration_id UUID REFERENCES account_integrations(id) ON DELETE SET NULL,
+        operation_id VARCHAR(255) NOT NULL,
+        channel VARCHAR(32) NOT NULL,
+        contact_ref VARCHAR(255),
+        requested_arguments JSONB NOT NULL DEFAULT '{}',
+        status VARCHAR(32) NOT NULL DEFAULT 'pending',
+        requester_id UUID,
+        approver_id UUID,
+        decision_at TIMESTAMP,
+        expires_at TIMESTAMP,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_approval_requests_account_status ON approval_requests(account_id, status)",
+    "ALTER TABLE approval_requests ADD COLUMN IF NOT EXISTS contact_ref VARCHAR(255)",
+    "CREATE INDEX IF NOT EXISTS ix_approval_requests_contact ON approval_requests(contact_ref)",
 ]
 
 

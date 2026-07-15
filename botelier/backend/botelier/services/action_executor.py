@@ -77,6 +77,9 @@ class ActionExecutionRequest:
     idempotency_key: Optional[str] = None
     operation: Optional[str] = None
     args_hash: Optional[str] = None
+    # Universal Adapter — response bounding + redaction policy forwarded from
+    # ConnectionOperationPolicy or IntegrationAction.response_policy.
+    response_policy: Optional[dict[str, Any]] = None
 
 
 @dataclass
@@ -92,6 +95,9 @@ class ActionExecutionResult:
     # Vendor-agnostic canonical envelope surfaced from the integration runtime.
     # None for legacy/custom actions and un-tagged endpoints. Additive.
     canonical: Optional[dict] = None
+    # Human-readable warnings from Universal Adapter response bounding/redaction.
+    # Non-empty only for IMPORTED-kind operations; certified adapters never set this.
+    warnings: list[str] = field(default_factory=list)
 
 
 class ActionExecutor:

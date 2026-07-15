@@ -399,6 +399,8 @@ class FunctionMapper:
             return self._map_flow(tool)
         elif tool.tool_type == ToolType.CAPABILITY:
             return self._map_capability(tool)
+        elif tool.tool_type == ToolType.DYNAMIC_OPERATION:
+            return self._map_dynamic_operation(tool)
         else:
             raise ValueError(f"Unknown tool type: {tool.tool_type}")
 
@@ -1092,6 +1094,112 @@ class FunctionMapper:
             await params.result_callback(result)
 
         return schema, capability_handler
+
+    def _map_dynamic_operation(self, tool: Tool) -> tuple[Dict[str, Any], Callable]:
+        """Map a DYNAMIC_OPERATION tool to a Pipecat function.
+
+        DYNAMIC_OPERATION tools are published operations from an imported
+        spec (OpenAPI / Postman) that have gone through the
+        certified IntegrationClient pipeline (full property isolation,
+        rate-limiting, circuit-breaker, credential encryption, response
+        redaction).  The LLM sees only the LLM-owned parameters from the
+        published action version's ``input_schema``; connection/secret/fixed
+        params are injected at execution time by the runtime and are never
+        visible to the model.
+        """
+        from botelier.models.integration import IntegrationAction, IntegrationActionVersion
+        from botelier.services.action_executor import (
+            ActionContext,
+            ActionExecutionRequest,
+            ActionExecutor,
+        )
+        from botelier.services.integration_client import IntegrationAPIConfig
+
+        tool_config = tool.config or {}
+        action_id = tool_config.get("integration_action_id")
+        connection_id = tool_config.get("connection_id")
+        operation_id = tool_config.get("operation_id")
+
+        # Build the function schema from the published action version's input_schema.
+        # Fall back to an empty schema when the action hasn't been published yet
+        # (fail closed: the tool appears but can never be called with invalid args).
+        def _load_schema_and_config(db_session):
+            if not action_id or not db_session:
+                return None, None, None
+            action = db_session.query(IntegrationAction).filter(IntegrationAction.id == action_id).first()
+            if not action or not action.published_version_id:
+                return None, None, None
+            version = db_session.query(IntegrationActionVersion).filter(
+                IntegrationActionVersion.id == action.published_version_id
+            ).first()
+            return action, version, version.config if version else None
+
+        action, version, exec_config = _load_schema_and_config(self.db_session)
+
+        if version and version.input_schema:
+            input_schema = version.input_schema
+        else:
+            input_schema = {"type": "object", "properties": {}, "required": []}
+
+        function_schema = {
+            "name": sanitize_function_name(tool.name),
+            "description": tool.description or tool.name,
+            "parameters": input_schema,
+        }
+
+        mapper = self
+
+        async def dynamic_operation_handler(params: FunctionCallParams):
+            """Execute a DYNAMIC_OPERATION through the certified integration runtime."""
+            if not mapper.db_session or not mapper.account_id:
+                await params.result_callback(
+                    {"error": "DYNAMIC_OPERATION requires account context", "status": "failed"}
+                )
+                return
+
+            _action, _version, _exec_config = _load_schema_and_config(mapper.db_session)
+
+            if not _version or not _exec_config:
+                await params.result_callback(
+                    {"error": f"Operation {operation_id!r} has no published version", "status": "failed"}
+                )
+                return
+
+            config = IntegrationAPIConfig(
+                integration_id=_exec_config.get("integration_id") or connection_id or "",
+                method=_exec_config.get("method", "GET"),
+                path=_exec_config.get("path", "/"),
+                endpoint_id=_exec_config.get("endpoint_id") or operation_id or "",
+                query_param_overrides={},
+            )
+
+            result = await ActionExecutor(mapper.db_session).execute_and_log(
+                ActionExecutionRequest(
+                    context=ActionContext(
+                        account_id=mapper.account_id,
+                        channel="voice",
+                        call_sid=mapper.call_sid,
+                        tool_id=tool.id,
+                        property_id=mapper.property_id,
+                    ),
+                    variables=params.arguments,
+                    integration_config=config,
+                )
+            )
+
+            if result.success:
+                await params.result_callback(result.data)
+            else:
+                await params.result_callback(
+                    {
+                        "error": result.error_message or "Dynamic operation failed",
+                        "status": "failed",
+                        "error_type": result.error_type.value if result.error_type else "unknown",
+                        "status_code": result.status_code,
+                    }
+                )
+
+        return function_schema, dynamic_operation_handler
 
     def _map_end_call(self, tool: Tool) -> tuple[Dict[str, Any], Callable]:
         """Map end call tool to Pipecat function."""

@@ -41,6 +41,7 @@ from botelier.api.properties import router as properties_router
 from botelier.api.record_types import router as record_types_router
 from botelier.api.records import router as records_router
 from botelier.api.flow_versions import router as flow_versions_router
+from botelier.api.integration_builder import router as integration_builder_router
 from botelier.api.integrations import router as integrations_router
 from botelier.api.invitations import router as invitations_router
 from botelier.api.knowledge_bases import (
@@ -104,6 +105,7 @@ app.include_router(record_types_router)  # Structured output record type definit
 app.include_router(records_router)  # Structured output records
 app.include_router(resolution_options_router)  # Resolution status options
 app.include_router(integrations_router)  # Third-party integrations (Opera Cloud, etc.)
+app.include_router(integration_builder_router)  # Universal API Adapter — spec import + operation catalog (Task #356)
 app.include_router(capabilities_router)  # Universal capability catalog (Task #330 T005)
 app.include_router(actions_router)  # Reusable no-code action library
 app.include_router(secrets_router)  # Account secrets (encrypted API key store)

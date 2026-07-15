@@ -27,6 +27,7 @@ class ToolType(str, enum.Enum):
     SEND_EMAIL = "SEND_EMAIL"
     FLOW = "FLOW"  # Conversation flow - guides structured multi-step interactions
     CAPABILITY = "CAPABILITY"  # Abstract, vendor-neutral capability (Task #329)
+    DYNAMIC_OPERATION = "DYNAMIC_OPERATION"  # Auto-generated from Universal Adapter spec import
 
 
 class Tool(Base):

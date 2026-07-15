@@ -40,6 +40,7 @@ class IntegrationActionKind(str, enum.Enum):
 
     CERTIFIED = "certified"
     CUSTOM_HTTP = "custom_http"
+    IMPORTED = "imported"  # Auto-generated from Universal Adapter spec import
 
 
 class IntegrationActionStatus(str, enum.Enum):
@@ -89,6 +90,17 @@ class IntegrationType(Base):
     is_enabled = Column(Boolean, default=True, nullable=False)
 
     documentation_url = Column(String, nullable=True)
+
+    # Universal Adapter — provenance
+    origin = Column(
+        String(32), nullable=False, default="platform_certified"
+    )  # platform_certified | customer_imported
+    source_type = Column(
+        String(32), nullable=True
+    )  # manual | openapi | swagger | postman
+    raw_spec = Column(JSONB, nullable=True)
+    spec_version = Column(String(32), nullable=True)
+    spec_url = Column(Text, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
@@ -183,6 +195,14 @@ class AccountIntegration(Base):
 
     last_sync_at = Column(DateTime, nullable=True)
     last_error = Column(Text, nullable=True)
+
+    # Universal Adapter — per-connection metadata
+    environment = Column(
+        String(16), nullable=False, default="production"
+    )  # sandbox | production
+    allowed_base_domains = Column(
+        JSONB, nullable=True
+    )  # SSRF allowlist; None = not restricted
 
     connected_at = Column(DateTime, nullable=True)
     connected_by_user_id = Column(
@@ -432,6 +452,19 @@ class IntegrationAction(Base):
     last_tested_at = Column(DateTime, nullable=True)
     last_test_success = Column(Boolean, nullable=True)
     last_error = Column(Text, nullable=True)
+
+    # Universal Adapter — IMPORTED kind links to the specific connection that
+    # owns this operation.  NULL for CERTIFIED / CUSTOM_HTTP kinds.
+    connection_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("account_integrations.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    # Per-parameter ownership map: {param_name: "llm"|"connection"|"secret"|"fixed"|"derived"}
+    param_ownership = Column(JSONB, nullable=True)
+    # Response bounding + redaction policy for IMPORTED operations.
+    response_policy = Column(JSONB, nullable=True)
 
     created_by_user_id = Column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True

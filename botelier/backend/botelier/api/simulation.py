@@ -58,6 +58,7 @@ class SimulationState:
         escalation_target: Optional[str] = None,
         model: str = DEFAULT_SIM_MODEL,
         capability_schemas: Optional[list] = None,
+        dynamic_operation_schemas: Optional[list] = None,
     ):
         self.tool_id = tool_id
         self.tool_name = tool_name
@@ -73,6 +74,9 @@ class SimulationState:
             for s in self.capability_schemas
             if s.get("function", {}).get("name")
         }
+        # Standalone DYNAMIC_OPERATION tools from the Universal Adapter (Task #356).
+        # Mirrored identically to capability_schemas above.
+        self.dynamic_operation_schemas = dynamic_operation_schemas or []
         # LLM model for this session — mirrors the backing assistant's llm_model
         # so the simulator runs the exact model a live call would use.
         self.model = model or DEFAULT_SIM_MODEL
@@ -248,6 +252,56 @@ def _build_capability_tool_schemas(db: Session, assistant: Optional[Assistant]) 
     return schemas
 
 
+def _build_dynamic_operation_tool_schemas(db: Session, assistant: Optional[Assistant]) -> list:
+    """Mirror the backing assistant's DYNAMIC_OPERATION tools (Universal Adapter).
+
+    Returns OpenAI tool schemas so the simulator can preview dynamic-operation
+    calls the LLM would make outside a flow — identical to the voice/SMS channels.
+    The LLM sees only LLM-owned parameters from the published action version.
+    Returns [] when there is no backing assistant / tool_set.
+    """
+    if not assistant or not assistant.tool_set_id:
+        return []
+    from botelier.models.integration import IntegrationAction, IntegrationActionVersion
+
+    dyn_tools = (
+        db.query(Tool)
+        .filter(
+            Tool.tool_set_id == assistant.tool_set_id,
+            Tool.tool_type == ToolType.DYNAMIC_OPERATION.value,
+            Tool.is_active == "true",
+        )
+        .all()
+    )
+    schemas: list = []
+    seen: set = set()
+    for tool in dyn_tools:
+        action_id = (tool.config or {}).get("integration_action_id")
+        if not action_id or action_id in seen:
+            continue
+        action = db.query(IntegrationAction).filter(IntegrationAction.id == action_id).first()
+        if not action or not action.published_version_id:
+            continue
+        version = db.query(IntegrationActionVersion).filter(
+            IntegrationActionVersion.id == action.published_version_id
+        ).first()
+        if not version:
+            continue
+        input_schema = version.input_schema or {"type": "object", "properties": {}, "required": []}
+        seen.add(action_id)
+        schemas.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": tool.name,
+                    "description": tool.description or tool.name,
+                    "parameters": input_schema,
+                },
+            }
+        )
+    return schemas
+
+
 def _resolve_flow_assistant(
     db: Session, tool: Tool, assistant_id: Optional[str], user: User
 ) -> Optional[Assistant]:
@@ -319,6 +373,7 @@ async def start_simulation(
         assistant.knowledge_base_id if assistant else None
     )
     capability_schemas = _build_capability_tool_schemas(db, assistant)
+    dynamic_operation_schemas = _build_dynamic_operation_tool_schemas(db, assistant)
     escalation_target = None
     sim_model = DEFAULT_SIM_MODEL
     property_id = None
@@ -354,6 +409,7 @@ async def start_simulation(
         escalation_target=escalation_target,
         model=sim_model,
         capability_schemas=capability_schemas,
+        dynamic_operation_schemas=dynamic_operation_schemas,
     )
 
     initial_messages = executor.get_initial_messages()
@@ -536,6 +592,8 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
             # (execute_* / collect_*), so no dedup against `tools` is needed.
             if state.capability_schemas:
                 tools.extend(state.capability_schemas)
+            if state.dynamic_operation_schemas:
+                tools.extend(state.dynamic_operation_schemas)
             exposed_names = {
                 t["function"]["name"]
                 for t in tools

@@ -560,6 +560,8 @@ class SMSService:
                 fn_schema = self._build_api_request_schema(tool)
             elif tool.tool_type == ToolType.CAPABILITY.value:
                 fn_schema = self._build_capability_schema(tool)
+            elif tool.tool_type == ToolType.DYNAMIC_OPERATION.value:
+                fn_schema = self._build_dynamic_operation_schema(tool)
             if not fn_schema:
                 continue
             # Skip duplicate function names — e.g. two CAPABILITY tools pointing
@@ -652,6 +654,9 @@ class SMSService:
         if tool and tool.tool_type == ToolType.API_REQUEST.value:
             return self._execute_api_request(assistant, tool, fn_args)
 
+        if tool and tool.tool_type == ToolType.DYNAMIC_OPERATION.value:
+            return self._execute_dynamic_operation(assistant, tool, fn_args)
+
         # Capability tools expose the abstract capability name (e.g.
         # "search_availability"), not tool.name — resolve by matching the
         # capability stored in config.
@@ -730,6 +735,103 @@ class SMSService:
         except Exception as e:
             logger.error(f"API request tool error: {e}")
             return {"error": "API request failed", "status": "failed"}
+
+    def _build_dynamic_operation_schema(self, tool: Tool) -> Optional[Dict[str, Any]]:
+        """Build the OpenAI tool schema for a DYNAMIC_OPERATION tool (Universal Adapter).
+
+        The schema comes from the published IntegrationActionVersion's
+        ``input_schema``, which contains only LLM-owned parameters — identical to
+        the voice channel.
+        """
+        from botelier.models.integration import IntegrationAction, IntegrationActionVersion
+
+        tool_config = tool.config or {}
+        action_id = tool_config.get("integration_action_id")
+        if not action_id:
+            return None
+
+        action = self.db.query(IntegrationAction).filter(IntegrationAction.id == action_id).first()
+        if not action or not action.published_version_id:
+            return None
+        version = self.db.query(IntegrationActionVersion).filter(
+            IntegrationActionVersion.id == action.published_version_id
+        ).first()
+        if not version:
+            return None
+
+        input_schema = version.input_schema or {"type": "object", "properties": {}, "required": []}
+        return {
+            "type": "function",
+            "function": {
+                "name": tool.name,
+                "description": tool.description or tool.name,
+                "parameters": input_schema,
+            },
+        }
+
+    def _execute_dynamic_operation(
+        self, assistant: Assistant, tool: Tool, arguments: Dict[str, Any]
+    ) -> Any:
+        """Execute a DYNAMIC_OPERATION tool through the certified integration runtime (SMS channel)."""
+        from botelier.models.integration import IntegrationAction, IntegrationActionVersion
+        from botelier.services.action_executor import (
+            ActionContext,
+            ActionExecutionRequest,
+            execute_action_sync,
+        )
+        from botelier.services.integration_client import IntegrationAPIConfig
+
+        tool_config = tool.config or {}
+        action_id = tool_config.get("integration_action_id")
+        connection_id = tool_config.get("connection_id")
+
+        if not action_id:
+            return {"error": "DYNAMIC_OPERATION tool missing integration_action_id", "status": "failed"}
+
+        action = self.db.query(IntegrationAction).filter(IntegrationAction.id == action_id).first()
+        if not action or not action.published_version_id:
+            return {"error": "Operation has no published version", "status": "failed"}
+
+        version = self.db.query(IntegrationActionVersion).filter(
+            IntegrationActionVersion.id == action.published_version_id
+        ).first()
+        if not version or not version.config:
+            return {"error": "Operation version missing config", "status": "failed"}
+
+        exec_config = version.config
+        config = IntegrationAPIConfig(
+            integration_id=exec_config.get("integration_id") or connection_id or "",
+            method=exec_config.get("method", "GET"),
+            path=exec_config.get("path", "/"),
+            endpoint_id=exec_config.get("endpoint_id") or tool_config.get("operation_id") or "",
+            query_param_overrides={},
+        )
+
+        try:
+            result = execute_action_sync(
+                self.db,
+                ActionExecutionRequest(
+                    context=ActionContext(
+                        account_id=str(assistant.account_id),
+                        channel="sms",
+                        tool_id=tool.id,
+                        property_id=self.session_property_id,
+                    ),
+                    variables=arguments,
+                    integration_config=config,
+                ),
+            )
+            if result.success:
+                return result.data
+            return {
+                "error": result.error_message or "Dynamic operation failed",
+                "status": "failed",
+                "error_type": result.error_type.value if result.error_type else "unknown",
+                "status_code": result.status_code,
+            }
+        except Exception as e:
+            logger.error(f"DYNAMIC_OPERATION SMS tool error: {e}")
+            return {"error": "Dynamic operation failed", "status": "failed"}
 
     def _apply_response_mapping(
         self, data: Any, response_mapping: Dict[str, str]
