@@ -149,58 +149,54 @@ class DefaultAdapter(BaseIntegrationAdapter):
 
     slug = None
 
-    def prepare_request(
-        self,
-        method: str,
-        url: str,
-        headers: dict,
-        params: dict,
-        body: Optional[dict],
-        credentials: dict,
-        auth_config: dict,
-        connection_config: dict,
-    ) -> tuple[str, dict, dict, Optional[dict]]:
-        """Inject auth credentials according to ``auth_config["auth_strategy"]``."""
+    def build_auth_headers(
+        self, integration: "AccountIntegration", credentials: dict
+    ) -> dict:
+        """Inject auth headers according to ``auth_config["auth_strategy"]``."""
         import base64
 
-        strategy = (auth_config or {}).get("auth_strategy", "bearer")
+        try:
+            auth_config = integration.integration_type.get_auth_config() or {}
+        except Exception:
+            auth_config = {}
+
+        strategy = auth_config.get("auth_strategy", "bearer")
 
         if strategy == "none":
-            return url, headers, params, body
+            return {}
 
         if strategy == "bearer":
             token = credentials.get("access_token") or credentials.get("token") or ""
             if token:
-                headers = dict(headers)
-                headers["Authorization"] = f"Bearer {token}"
-            return url, headers, params, body
+                return {"Authorization": f"Bearer {token}"}
+            return {}
 
         if strategy == "api_key_header":
-            header_name = (auth_config or {}).get("header_name", "X-API-Key")
-            key_field = (auth_config or {}).get("credential_key", "api_key")
+            header_name = auth_config.get("header_name", "X-API-Key")
+            key_field = auth_config.get("credential_key", "api_key")
             key_value = credentials.get(key_field) or credentials.get("api_key") or ""
             if key_value:
-                headers = dict(headers)
-                headers[header_name] = key_value
-            return url, headers, params, body
-
-        if strategy == "api_key_query":
-            param_name = (auth_config or {}).get("param_name", "api_key")
-            key_field = (auth_config or {}).get("credential_key", "api_key")
-            key_value = credentials.get(key_field) or credentials.get("api_key") or ""
-            if key_value:
-                params = dict(params)
-                params[param_name] = key_value
-            return url, headers, params, body
+                return {header_name: key_value}
+            return {}
 
         if strategy == "basic":
             username = credentials.get("username") or credentials.get("client_id") or ""
             password = credentials.get("password") or credentials.get("client_secret") or ""
             token = base64.b64encode(f"{username}:{password}".encode()).decode()
-            headers = dict(headers)
-            headers["Authorization"] = f"Basic {token}"
-            return url, headers, params, body
+            return {"Authorization": f"Basic {token}"}
 
-        # Unknown strategy — fall through with no injection; request fires
-        # without auth so the error is visible to the operator.
-        return url, headers, params, body
+        # api_key_query and unknown strategies — no headers needed
+        return {}
+
+    def build_auth_query_params(
+        self, auth_config: dict, credentials: dict, conn_config: dict
+    ) -> dict:
+        """Inject query-param auth according to ``auth_config["auth_strategy"]``."""
+        strategy = (auth_config or {}).get("auth_strategy", "bearer")
+        if strategy == "api_key_query":
+            param_name = (auth_config or {}).get("param_name", "api_key")
+            key_field = (auth_config or {}).get("credential_key", "api_key")
+            key_value = credentials.get(key_field) or credentials.get("api_key") or ""
+            if key_value:
+                return {param_name: key_value}
+        return {}

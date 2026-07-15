@@ -87,13 +87,20 @@ async def import_integration_spec(
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Invalid spec_file_b64: {exc}")
     elif spec_url:
+        _validate_spec_url(spec_url)
         import httpx
 
         try:
-            async with httpx.AsyncClient(timeout=20.0) as client:
+            async with httpx.AsyncClient(
+                timeout=20.0,
+                follow_redirects=True,
+                max_redirects=3,
+            ) as client:
                 resp = await client.get(spec_url)
                 resp.raise_for_status()
                 spec_data = resp.json()
+        except HTTPException:
+            raise
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Failed to fetch spec from URL: {exc}")
     else:
@@ -460,15 +467,20 @@ def list_published_tools(
 
 @router.get("/api/integrations/types/importable")
 def list_importable_types(
-    account_id: Optional[str] = None,
+    account_id: str,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """List IntegrationTypes with origin=customer_imported."""
-    q = db.query(IntegrationType).filter(IntegrationType.origin == "customer_imported")
-    if account_id:
-        check_account_permission(user, account_id, "integrations.view", db)
-    results = q.all()
+    """List IntegrationTypes with origin=customer_imported for a specific account."""
+    check_account_permission(user, account_id, "integrations.view", db)
+    results = (
+        db.query(IntegrationType)
+        .filter(
+            IntegrationType.origin == "customer_imported",
+            IntegrationType.created_by_account_id == account_id,
+        )
+        .all()
+    )
     return {
         "integration_types": [
             {
@@ -488,6 +500,52 @@ def list_importable_types(
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _validate_spec_url(url: str) -> None:
+    """Raise HTTPException if spec_url is unsafe (SSRF guard).
+
+    Allows only http/https to public hostnames.  Blocks:
+      - Non-http(s) schemes
+      - Localhost / loopback (127.x, ::1)
+      - RFC-1918 private ranges (10.x, 172.16-31.x, 192.168.x)
+      - Link-local (169.254.x)
+      - Metadata endpoints (169.254.169.254)
+    """
+    import ipaddress
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid spec_url")
+
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="spec_url must use http or https")
+
+    hostname = (parsed.hostname or "").lower().strip()
+    if not hostname:
+        raise HTTPException(status_code=400, detail="spec_url missing hostname")
+
+    # Block obvious internal names
+    blocked_names = {"localhost", "localhost.localdomain", "metadata.google.internal"}
+    if hostname in blocked_names:
+        raise HTTPException(status_code=400, detail="spec_url hostname is not allowed")
+
+    # Block private/loopback IP ranges
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if (
+            addr.is_loopback
+            or addr.is_private
+            or addr.is_link_local
+            or addr.is_reserved
+            or addr.is_multicast
+            or addr.is_unspecified
+        ):
+            raise HTTPException(status_code=400, detail="spec_url hostname is not allowed")
+    except ValueError:
+        pass  # Not an IP address — hostname is fine
 
 
 def _get_connection(db: Session, account_id: str, connection_id: str) -> AccountIntegration:

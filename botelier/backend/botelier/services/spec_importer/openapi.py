@@ -5,6 +5,8 @@ Existing rows for the same account + slug are updated in-place so repeated impor
 are idempotent (e.g. re-importing an updated spec).
 """
 
+import json
+import re
 import uuid
 from typing import Any, Optional
 
@@ -259,15 +261,41 @@ def _parse_endpoints(spec_data: dict) -> tuple[list[dict], str, str]:
                     deduped.append(v)
             variables = deduped
 
+            # Normalize path: OpenAPI uses {param} but IntegrationClient expects {{param}}
+            normalized_path = re.sub(r"(?<!\{)\{(\w+)\}(?!\})", r"{{\1}}", path)
+
+            # Build certified query_params format for IntegrationClient._build_url
+            query_params = [
+                {
+                    "key": v["name"],
+                    "value": "{{" + v["name"] + "}}",
+                    "required": bool(v.get("required", False)),
+                }
+                for v in variables
+                if v.get("location") == "query" and v.get("ownership") == "llm"
+            ]
+
+            # Build body_template from body-location LLM variables
+            body_vars = [
+                v for v in variables
+                if v.get("location") == "body" and v.get("ownership") == "llm"
+            ]
+            body_template = (
+                json.dumps({v["name"]: "{{" + v["name"] + "}}" for v in body_vars})
+                if body_vars else None
+            )
+
             endpoint: dict = {
                 "id": f"{method.upper()}_{fn_name}",
                 "method": method.upper(),
-                "path": path,
+                "path": normalized_path,
                 "name": fn_name,
                 "summary": summary[:255] if summary else "",
                 "description": description[:1000] if description else "",
                 "category": tags[0] if tags else "general",
                 "variables": variables,
+                "query_params": query_params,
+                "body_template": body_template,
                 "risk_level": risk_level,
                 "capability": None,
             }
@@ -340,6 +368,7 @@ def import_openapi_spec(
     it.source_type = source_type
     it.spec_version = spec_version
     it.spec_url = spec_url
+    it.created_by_account_id = account_id
     # Store trimmed raw spec (drop paths/components to save space)
     it.raw_spec = {
         "info": spec_data.get("info"),

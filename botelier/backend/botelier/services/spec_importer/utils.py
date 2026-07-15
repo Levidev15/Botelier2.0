@@ -129,7 +129,12 @@ def build_variable_schema(
     param_location: str,
     ownership: str,
 ) -> dict:
-    """Build a Botelier endpoint variable descriptor from an OpenAPI parameter."""
+    """Build a Botelier endpoint variable descriptor from an OpenAPI parameter.
+
+    Note: ``key`` is the canonical lookup field used by IntegrationClient
+    (``_apply_endpoint_defaults`` reads ``var.get("key")``).  ``name`` is kept
+    as an alias for display and backward-compatibility.
+    """
     oai_type = param_schema.get("type", "string")
     type_map = {
         "integer": "integer",
@@ -139,6 +144,7 @@ def build_variable_schema(
         "object": "object",
     }
     return {
+        "key": param_name,
         "name": param_name,
         "type": type_map.get(oai_type, "string"),
         "description": param_schema.get("description") or param_schema.get("title") or "",

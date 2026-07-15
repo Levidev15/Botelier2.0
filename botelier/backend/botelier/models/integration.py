@@ -101,6 +101,13 @@ class IntegrationType(Base):
     raw_spec = Column(JSONB, nullable=True)
     spec_version = Column(String(32), nullable=True)
     spec_url = Column(Text, nullable=True)
+    # Account that imported this spec (NULL = platform-certified type)
+    created_by_account_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("accounts.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)

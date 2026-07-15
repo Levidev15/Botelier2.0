@@ -1,5 +1,7 @@
 """Postman Collection v2.1 spec importer."""
 
+import json
+import re
 import uuid
 from typing import Optional
 
@@ -112,15 +114,31 @@ def import_postman_spec(
             # Can't reliably parse raw body schema — skip variables
             pass
 
+        # Normalize path: convert {param} → {{param}} for IntegrationClient
+        normalized_path = re.sub(r"(?<!\{)\{(\w+)\}(?!\})", r"{{\1}}", path)
+
+        # Certified query_params format for IntegrationClient._build_url
+        query_params = [
+            {
+                "key": v["name"],
+                "value": "{{" + v["name"] + "}}",
+                "required": bool(v.get("required", False)),
+            }
+            for v in variables
+            if v.get("location") == "query" and v.get("ownership") == "llm"
+        ]
+
         endpoints.append({
             "id": f"{method}_{fn_name}",
             "method": method,
-            "path": path,
+            "path": normalized_path,
             "name": fn_name,
             "summary": name_raw[:255],
             "description": description[:1000],
             "category": category,
             "variables": variables,
+            "query_params": query_params,
+            "body_template": None,
             "risk_level": risk_level,
             "capability": None,
         })
@@ -156,6 +174,7 @@ def import_postman_spec(
     it.source_type = "postman"
     it.spec_version = info.get("schema", "unknown")
     it.spec_url = spec_url
+    it.created_by_account_id = account_id
     it.raw_spec = {
         "info": info,
         "endpoint_count": len(endpoints),
