@@ -313,6 +313,128 @@ def get_flat_permissions() -> list:
     return result
 
 
+def _label_from_key(key: str) -> str:
+    """Convert a snake_case key to a human-readable label.
+
+    Examples:
+        phone_numbers  ->  Phone Numbers
+        manage_conversations  ->  Manage Conversations
+        api_keys  ->  API Keys
+        view_transcripts  ->  View Transcripts
+    """
+    special = {"api_keys": "API Keys", "mcp": "MCP"}
+    if key in special:
+        return special[key]
+    return " ".join(word.capitalize() for word in key.split("_"))
+
+
+def build_permission_schema() -> list:
+    """Build a structured, JSON-serializable permission schema from ``PERMISSIONS``.
+
+    Returns a list of feature groups in the form::
+
+        [
+          {
+            "key": "assistants",
+            "label": "Assistants",
+            "description": "",
+            "permissions": [
+              {
+                "key": "view",
+                "full_key": "assistants.view",
+                "label": "View",
+                "description": "View assistants list and details",
+              },
+              ...
+            ]
+          },
+          ...
+        ]
+
+    The description at the feature level is left as an empty string because
+    ``PERMISSIONS`` only stores per-action descriptions.  Callers may enrich
+    it from a separate mapping if desired.
+
+    No hardcoded list is maintained here — the output is derived entirely from
+    the canonical ``PERMISSIONS`` dict, so adding a new key to ``PERMISSIONS``
+    automatically surfaces it in the role editor.
+    """
+    schema = []
+    for feature_key, actions in PERMISSIONS.items():
+        perms = []
+        for action_key, description in actions.items():
+            perms.append(
+                {
+                    "key": action_key,
+                    "full_key": f"{feature_key}.{action_key}",
+                    "label": _label_from_key(action_key),
+                    "description": description,
+                }
+            )
+        schema.append(
+            {
+                "key": feature_key,
+                "label": _label_from_key(feature_key),
+                "description": "",
+                "permissions": perms,
+            }
+        )
+    return schema
+
+
+def build_empty_permission_map() -> dict:
+    """Return a nested ``{feature: {action: False}}`` map for every canonical permission.
+
+    Useful as a starting point when normalising a submitted permissions dict.
+    """
+    return {feature: {action: False for action in actions} for feature, actions in PERMISSIONS.items()}
+
+
+def normalize_permission_map(submitted: dict) -> dict:
+    """Merge *submitted* into a full canonical map, filling missing keys with ``False``.
+
+    * Keys present in *submitted* that are also in ``PERMISSIONS`` keep their
+      submitted boolean value (truthy → True, falsy → False).
+    * Canonical keys absent from *submitted* default to ``False``.
+    * Keys present in *submitted* but absent from ``PERMISSIONS`` are silently
+      dropped (call ``validate_permission_map`` first if you want to reject them).
+    """
+    result = build_empty_permission_map()
+    for feature, actions in PERMISSIONS.items():
+        sub_feature = submitted.get(feature, {})
+        if not isinstance(sub_feature, dict):
+            continue
+        for action in actions:
+            if action in sub_feature:
+                result[feature][action] = bool(sub_feature[action])
+    return result
+
+
+def validate_permission_map(submitted: dict) -> None:
+    """Raise ``ValueError`` if *submitted* contains any key not in ``PERMISSIONS``.
+
+    Checks both feature-level and action-level keys.  Non-boolean action values
+    are also rejected.
+
+    Raises:
+        ValueError: with a message naming the first unknown or invalid key.
+    """
+    for feature, actions in submitted.items():
+        if feature not in PERMISSIONS:
+            raise ValueError(f"Unknown permission feature: '{feature}'")
+        if not isinstance(actions, dict):
+            raise ValueError(
+                f"Permission value for feature '{feature}' must be an object, got {type(actions).__name__}"
+            )
+        for action, value in actions.items():
+            if action not in PERMISSIONS[feature]:
+                raise ValueError(f"Unknown permission action: '{feature}.{action}'")
+            if not isinstance(value, bool):
+                raise ValueError(
+                    f"Permission value for '{feature}.{action}' must be a boolean, got {type(value).__name__}"
+                )
+
+
 def check_permission(user_permissions: dict, permission: str) -> bool:
     """Check if a permission dict grants a specific permission.
 

@@ -15,6 +15,11 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from botelier.auth.middleware import AccountContext, get_account_context
+from botelier.auth.permissions import (
+    build_permission_schema,
+    normalize_permission_map,
+    validate_permission_map,
+)
 from botelier.database import get_db
 from botelier.models.invitation import AccountInvitation, InvitationStatus
 from botelier.models.role import AccountMembership, Role
@@ -395,6 +400,21 @@ async def revoke_invitation(
     return {"success": True, "message": "Invitation revoked"}
 
 
+@router.get("/permission-schema")
+async def get_permission_schema(
+    ctx: AccountContext = Depends(get_account_context("account_id")),
+):
+    """Return the canonical permission schema derived from the backend catalog.
+
+    Requires ``team.manage_roles``.  The response contains every feature group
+    and every action — no hardcoded list is maintained on the frontend.  Adding
+    a new permission to ``PERMISSIONS`` in ``permissions.py`` automatically
+    surfaces it here and therefore in the role editor.
+    """
+    ctx.require_permission("team.manage_roles")
+    return {"features": build_permission_schema()}
+
+
 @router.get("/roles", response_model=List[RoleResponse])
 async def list_roles(
     ctx: AccountContext = Depends(get_account_context("account_id")),
@@ -457,13 +477,20 @@ async def create_role(
             counter += 1
         slug = f"{slug}-{counter}"
 
+    try:
+        validate_permission_map(data.permissions)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    normalized_permissions = normalize_permission_map(data.permissions)
+
     role = Role(
         name=data.name,
         slug=slug,
         description=data.description,
         is_system_role=False,
         account_id=ctx.account.id,
-        permissions=data.permissions,
+        permissions=normalized_permissions,
     )
 
     db.add(role)
@@ -496,7 +523,11 @@ async def update_role(
     if data.description is not None:
         role.description = data.description
     if data.permissions is not None:
-        role.permissions = data.permissions
+        try:
+            validate_permission_map(data.permissions)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        role.permissions = normalize_permission_map(data.permissions)
 
     db.commit()
     db.refresh(role)
