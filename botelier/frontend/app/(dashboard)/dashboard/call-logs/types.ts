@@ -56,6 +56,7 @@ export interface CallLog {
   acw_skip_reason?: string | null;
   caller_spoke?: boolean | null;
   ended_early: boolean;
+  transfer_mode: string | null;
 }
 
 export interface FilterOptions {

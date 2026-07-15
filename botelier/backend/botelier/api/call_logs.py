@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
-from sqlalchemy import Text, desc, func, or_
+from sqlalchemy import Text, asc, desc, func, or_
 from sqlalchemy.orm import Session, joinedload
 
 from botelier.api.analytics import (
@@ -235,6 +235,7 @@ async def get_call_logs(
                     CallLog.caller_number.ilike(search_pattern),
                     CallLog.reference_id.ilike(search_pattern),
                     CallLog.transcript.cast(Text).ilike(search_pattern),
+                    CallLog.ai_summary.ilike(search_pattern),
                 )
             )
 
@@ -429,6 +430,14 @@ async def export_call_logs(
             "silent caller; omit = no filter (NULL legacy rows included)."
         ),
     ),
+    search: Optional[str] = Query(None, description="Search caller number, reference ID, transcript, or summary."),
+    has_transfer: Optional[bool] = Query(None, description="If true, only return calls with transfers."),
+    phone_number_id: Optional[UUID] = Query(None, description="Filter by phone number."),
+    acw_resolution: Optional[str] = Query(None, description="Filter by ACW resolution status."),
+    acw_completed: Optional[bool] = Query(None, description="If true, only return calls with completed ACW."),
+    quality_min: Optional[int] = Query(None, ge=0, le=100, description="Minimum ACW quality score."),
+    quality_max: Optional[int] = Query(None, ge=0, le=100, description="Maximum ACW quality score."),
+    hour: Optional[int] = Query(None, ge=0, le=23, description="Hour of day (0-23). Matches in tz when provided."),
     tz: Optional[str] = Query(  # noqa: A002 — short query name kept to match dashboard
         None,
         description=(
@@ -516,15 +525,51 @@ async def export_call_logs(
         query = db.query(CallLog).filter(CallLog.account_id == account_id)
 
         if status:
-            query = query.filter(CallLog.status == status)
+            if status == "missed":
+                query = query.filter(CallLog.status.in_(_MISSED_STATUSES))
+            else:
+                query = query.filter(CallLog.status == status)
         if assistant_id:
             query = query.filter(CallLog.assistant_id == assistant_id)
         if assistant_ids:
             query = query.filter(CallLog.assistant_id.in_(assistant_ids))
+        if phone_number_id:
+            query = query.filter(CallLog.phone_number_id == phone_number_id)
         if effective_date_from is not None:
             query = query.filter(CallLog.started_at >= effective_date_from)
         if effective_date_to is not None:
             query = query.filter(CallLog.started_at <= effective_date_to)
+        if has_transfer is not None:
+            query = query.filter(CallLog.has_transfer == has_transfer)
+        if acw_resolution:
+            query = query.filter(CallLog.acw_resolution == acw_resolution)
+        if acw_completed:
+            query = query.filter(CallLog.acw_completed_at.isnot(None))
+        if quality_min is not None:
+            query = query.filter(CallLog.acw_quality_score >= quality_min)
+        if quality_max is not None:
+            query = query.filter(CallLog.acw_quality_score <= quality_max)
+        if hour is not None:
+            if tz_info is not None:
+                query = query.filter(
+                    func.extract(
+                        "hour",
+                        func.timezone(tz, func.timezone("UTC", CallLog.started_at)),
+                    )
+                    == hour
+                )
+            else:
+                query = query.filter(func.extract("hour", CallLog.started_at) == hour)
+        if search:
+            search_pattern = f"%{search}%"
+            query = query.filter(
+                or_(
+                    CallLog.caller_number.ilike(search_pattern),
+                    CallLog.reference_id.ilike(search_pattern),
+                    CallLog.transcript.cast(Text).ilike(search_pattern),
+                    CallLog.ai_summary.ilike(search_pattern),
+                )
+            )
 
         # Task #129 — bucket filter shares the canonical predicate with the
         # analytics endpoint so the CSV row count under "Bucket = X"
@@ -555,7 +600,7 @@ async def export_call_logs(
                 joinedload(CallLog.legs),
                 joinedload(CallLog.disposition),
             )
-            .order_by(desc(CallLog.started_at))
+            .order_by(asc(CallLog.started_at))
             .all()
         )
 

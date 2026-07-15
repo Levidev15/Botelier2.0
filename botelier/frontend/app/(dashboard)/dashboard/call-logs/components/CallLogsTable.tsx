@@ -1,9 +1,31 @@
 "use client";
 
-import { Loader2, Globe, Phone } from "lucide-react";
+import { useState, useEffect, useRef } from "react";
+import { Loader2, Globe, Phone, Settings } from "lucide-react";
 import type { CallLog } from "../types";
 import { TIMEZONE_OPTIONS } from "@/components/analytics/TimezonePicker";
 import CallLogRow from "./CallLogRow";
+
+const LS_KEY = "botelier_call_logs_visible_cols";
+
+interface ColumnDef {
+  key: string;
+  label: string;
+}
+
+const TOGGLEABLE_COLS: ColumnDef[] = [
+  { key: "duration",    label: "Duration" },
+  { key: "caller",      label: "Caller" },
+  { key: "assistant",   label: "Assistant" },
+  { key: "tool",        label: "Tool / Flow" },
+  { key: "disposition", label: "Disposition" },
+  { key: "resolution",  label: "Resolution" },
+  { key: "score",       label: "Score" },
+  { key: "transfer",    label: "Transfer" },
+];
+
+const ALL_COL_KEYS = new Set(TOGGLEABLE_COLS.map((c) => c.key));
+const ALWAYS_VISIBLE_COUNT = 5;
 
 interface CallLogsTableProps {
   loading: boolean;
@@ -56,6 +78,48 @@ export default function CallLogsTable({
   totalPages,
   onPageChange,
 }: CallLogsTableProps) {
+  const [visibleColumns, setVisibleColumns] = useState<Set<string>>(ALL_COL_KEYS);
+  const [showColPicker, setShowColPicker] = useState(false);
+  const cogRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    try {
+      const raw = localStorage.getItem(LS_KEY);
+      if (raw) {
+        const saved: string[] = JSON.parse(raw);
+        const valid = saved.filter((k) => ALL_COL_KEYS.has(k));
+        if (valid.length > 0) setVisibleColumns(new Set(valid));
+      }
+    } catch {}
+  }, []);
+
+  const toggleColumn = (key: string) => {
+    setVisibleColumns((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) {
+        next.delete(key);
+      } else {
+        next.add(key);
+      }
+      try { localStorage.setItem(LS_KEY, JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  };
+
+  useEffect(() => {
+    function handleOutside(e: MouseEvent) {
+      if (cogRef.current && !cogRef.current.contains(e.target as Node)) {
+        setShowColPicker(false);
+      }
+    }
+    if (showColPicker) {
+      document.addEventListener("mousedown", handleOutside);
+      return () => document.removeEventListener("mousedown", handleOutside);
+    }
+  }, [showColPicker]);
+
+  const totalCols = ALWAYS_VISIBLE_COUNT + visibleColumns.size;
+
   if (contextLoading || loading) {
     return (
       <div className="flex items-center justify-center py-12">
@@ -93,9 +157,45 @@ export default function CallLogsTable({
     <>
       <div className="mb-4 flex items-center justify-between text-sm text-gray-400">
         <span>Showing {callLogs.length} of {total} calls</span>
-        <div className="flex items-center gap-2">
-          <Globe className="h-4 w-4" />
-          <span>{TIMEZONE_OPTIONS.find((t) => t.value === timezone)?.label || timezone}</span>
+        <div className="flex items-center gap-3">
+          <div className="flex items-center gap-2">
+            <Globe className="h-4 w-4" />
+            <span>{TIMEZONE_OPTIONS.find((t) => t.value === timezone)?.label || timezone}</span>
+          </div>
+          <div ref={cogRef} className="relative">
+            <button
+              onClick={() => setShowColPicker((v) => !v)}
+              className={`p-1.5 rounded-lg transition ${
+                showColPicker
+                  ? "bg-gray-700 text-gray-200"
+                  : "hover:bg-gray-800 text-gray-500 hover:text-gray-300"
+              }`}
+              title="Column visibility"
+            >
+              <Settings className="h-4 w-4" />
+            </button>
+            {showColPicker && (
+              <div className="absolute right-0 mt-1 w-48 bg-[#1c1c1c] border border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden py-1">
+                <div className="px-3 py-1.5 text-xs font-semibold text-gray-500 uppercase tracking-wider border-b border-gray-800 mb-1">
+                  Columns
+                </div>
+                {TOGGLEABLE_COLS.map((col) => (
+                  <label
+                    key={col.key}
+                    className="flex items-center gap-2.5 px-3 py-2 cursor-pointer hover:bg-[#252525] transition-colors"
+                  >
+                    <input
+                      type="checkbox"
+                      checked={visibleColumns.has(col.key)}
+                      onChange={() => toggleColumn(col.key)}
+                      className="rounded border-gray-600 bg-gray-800 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
+                    />
+                    <span className="text-sm text-gray-300">{col.label}</span>
+                  </label>
+                ))}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
@@ -104,9 +204,14 @@ export default function CallLogsTable({
           <thead>
             <tr className="border-b border-gray-800 bg-[#0f0f0f]">
               <th className="w-10 px-4 py-3"></th>
-              {["Ref", "Date", "Duration", "Caller", "Assistant", "Tool / Flow", "Disposition", "Resolution", "Score", "Status"].map((h) => (
-                <th key={h} className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">{h}</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Ref</th>
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Date</th>
+              {TOGGLEABLE_COLS.filter((c) => visibleColumns.has(c.key)).map((col) => (
+                <th key={col.key} className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">
+                  {col.label}
+                </th>
               ))}
+              <th className="px-4 py-3 text-left text-xs font-medium text-gray-400 uppercase tracking-wider">Status</th>
               <th className="px-4 py-3 text-right text-xs font-medium text-gray-400 uppercase tracking-wider">Actions</th>
             </tr>
           </thead>
@@ -128,6 +233,8 @@ export default function CallLogsTable({
                 canEditLogs={canEditLogs}
                 canDeleteLogs={canDeleteLogs}
                 canPlayRecordings={canPlayRecordings}
+                visibleColumns={visibleColumns}
+                totalCols={totalCols}
               />
             ))}
           </tbody>

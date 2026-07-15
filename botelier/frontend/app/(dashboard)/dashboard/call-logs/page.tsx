@@ -208,11 +208,20 @@ export default function CallLogsPage() {
     if (!accountId) return;
     try {
       const params = new URLSearchParams({ account_id: accountId });
+      if (search) params.append("search", search);
       if (statusFilter) params.append("status", statusFilter);
       if (assistantFilter) params.append("assistant_id", assistantFilter);
       if (dateFrom) params.append("date_from", new Date(dateFrom).toISOString());
       if (dateTo) params.append("date_to", new Date(dateTo).toISOString());
       params.append("tz", timezone);
+      if (hasTransferFilter !== null) params.append("has_transfer", String(hasTransferFilter));
+      if (dispositionIdFilter) params.append("disposition_id", dispositionIdFilter);
+      if (acwResolutionFilter) params.append("acw_resolution", acwResolutionFilter);
+      if (acwCompletedFilter !== null) params.append("acw_completed", String(acwCompletedFilter));
+      if (qualityMin !== null) params.append("quality_min", String(qualityMin));
+      if (qualityMax !== null) params.append("quality_max", String(qualityMax));
+      if (hourFilter !== null) params.append("hour", String(hourFilter));
+      if (bucketFilter) params.append("bucket", bucketFilter);
 
       const response = await authFetch(`/api/call-logs/export?${params}`);
       if (!response.ok) throw new Error("Export failed");

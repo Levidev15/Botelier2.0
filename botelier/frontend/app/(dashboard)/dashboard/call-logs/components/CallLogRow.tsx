@@ -28,6 +28,8 @@ interface CallLogRowProps {
   canEditLogs: boolean;
   canDeleteLogs: boolean;
   canPlayRecordings: boolean;
+  visibleColumns: Set<string>;
+  totalCols: number;
 }
 
 export default function CallLogRow({
@@ -45,6 +47,8 @@ export default function CallLogRow({
   canEditLogs,
   canDeleteLogs,
   canPlayRecordings,
+  visibleColumns,
+  totalCols,
 }: CallLogRowProps) {
   const hasLegs = log.legs && log.legs.length > 1;
   const hasTranscript = log.transcript && log.transcript.length > 0;
@@ -103,6 +107,10 @@ export default function CallLogRow({
     (canViewTranscripts && !!log.ai_summary) ||
     canDeleteLogs;
 
+  const firstTransferLeg = log.legs?.find(
+    (l) => l.leg_type !== "ai_conversation"
+  );
+
   return (
     <>
       <tr className="hover:bg-[#1a1a1a] transition">
@@ -143,114 +151,156 @@ export default function CallLogRow({
             </span>
           </div>
         </td>
-        <td className="px-4 py-3 whitespace-nowrap">
-          {hasRecording ? (
-            <button
-              onClick={togglePlayer}
-              className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all ${
-                showPlayer
-                  ? "bg-blue-500/20 border-blue-500/50 text-blue-300"
-                  : "bg-blue-500/10 border-blue-500/30 text-blue-400 hover:bg-blue-500/20 hover:border-blue-500/50 hover:text-blue-300"
-              }`}
-              title={showPlayer ? "Hide recording" : "Play recording"}
-            >
-              {loadingAudio ? (
-                <Loader2 className="h-3 w-3 animate-spin" />
-              ) : (
-                <Play className="h-3 w-3 fill-current" />
-              )}
-              <span title="Call duration">
-                {formatDuration(log.duration_seconds)}
-              </span>
-            </button>
-          ) : (
-            <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-gray-800 border border-gray-700 text-gray-400">
-              <Clock className="h-3 w-3" />
-              <span title="Call duration">
-                {formatDuration(log.duration_seconds)}
-              </span>
-            </span>
-          )}
-        </td>
-        <td className="px-4 py-3">
-          <div className="flex items-center gap-2">
-            <User className="h-4 w-4 text-gray-500" />
-            <span className="text-sm text-gray-300">
-              {formatPhoneNumber(log.caller_number)}
-            </span>
-          </div>
-        </td>
-        <td className="px-4 py-3">
-          <div className="flex items-center gap-2">
-            <Bot className="h-4 w-4 text-gray-500" />
-            <span className="text-sm text-gray-300">
-              {log.assistant_name || "-"}
-            </span>
-          </div>
-        </td>
-        <td className="px-4 py-3">
-          <div className="flex items-center gap-2">
-            {(log.tool_name || log.flow_name) ? (
-              <>
-                <Wrench className="h-4 w-4 text-gray-500" />
-                <span className="text-sm text-gray-300">
-                  {log.tool_name || log.flow_name}
+
+        {visibleColumns.has("duration") && (
+          <td className="px-4 py-3 whitespace-nowrap">
+            {hasRecording ? (
+              <button
+                onClick={togglePlayer}
+                className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border transition-all ${
+                  showPlayer
+                    ? "bg-blue-500/20 border-blue-500/50 text-blue-300"
+                    : "bg-blue-500/10 border-blue-500/30 text-blue-400 hover:bg-blue-500/20 hover:border-blue-500/50 hover:text-blue-300"
+                }`}
+                title={showPlayer ? "Hide recording" : "Play recording"}
+              >
+                {loadingAudio ? (
+                  <Loader2 className="h-3 w-3 animate-spin" />
+                ) : (
+                  <Play className="h-3 w-3 fill-current" />
+                )}
+                <span title="Call duration">
+                  {formatDuration(log.duration_seconds)}
                 </span>
-              </>
+              </button>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium bg-gray-800 border border-gray-700 text-gray-400">
+                <Clock className="h-3 w-3" />
+                <span title="Call duration">
+                  {formatDuration(log.duration_seconds)}
+                </span>
+              </span>
+            )}
+          </td>
+        )}
+
+        {visibleColumns.has("caller") && (
+          <td className="px-4 py-3">
+            <div className="flex items-center gap-2">
+              <User className="h-4 w-4 text-gray-500" />
+              <span className="text-sm text-gray-300">
+                {formatPhoneNumber(log.caller_number)}
+              </span>
+            </div>
+          </td>
+        )}
+
+        {visibleColumns.has("assistant") && (
+          <td className="px-4 py-3">
+            <div className="flex items-center gap-2">
+              <Bot className="h-4 w-4 text-gray-500" />
+              <span className="text-sm text-gray-300">
+                {log.assistant_name || "-"}
+              </span>
+            </div>
+          </td>
+        )}
+
+        {visibleColumns.has("tool") && (
+          <td className="px-4 py-3">
+            <div className="flex items-center gap-2">
+              {(log.tool_name || log.flow_name) ? (
+                <>
+                  <Wrench className="h-4 w-4 text-gray-500" />
+                  <span className="text-sm text-gray-300">
+                    {log.tool_name || log.flow_name}
+                  </span>
+                </>
+              ) : (
+                <span className="text-sm text-gray-500">-</span>
+              )}
+            </div>
+          </td>
+        )}
+
+        {visibleColumns.has("disposition") && (
+          <td className="px-4 py-3">
+            {log.disposition_name ? (
+              <span
+                className="px-2 py-0.5 text-xs rounded-full border"
+                style={{
+                  backgroundColor: `${log.disposition_color || '#6366f1'}15`,
+                  borderColor: `${log.disposition_color || '#6366f1'}40`,
+                  color: log.disposition_color || '#6366f1',
+                }}
+              >
+                {log.disposition_name}
+              </span>
+            ) : log.acw_skip_reason === "no_caller_audio" || log.caller_spoke === false ? (
+              <span
+                className="px-2 py-0.5 text-xs rounded-full border bg-yellow-500/10 border-yellow-500/40 text-yellow-300"
+                title="The AI greeted the caller but no audio was received from the caller. Counted as Unresolved, not AI Handled."
+              >
+                No Caller Audio
+              </span>
             ) : (
               <span className="text-sm text-gray-500">-</span>
             )}
-          </div>
-        </td>
-        <td className="px-4 py-3">
-          {log.disposition_name ? (
-            <span
-              className="px-2 py-0.5 text-xs rounded-full border"
-              style={{
-                backgroundColor: `${log.disposition_color || '#6366f1'}15`,
-                borderColor: `${log.disposition_color || '#6366f1'}40`,
-                color: log.disposition_color || '#6366f1',
-              }}
-            >
-              {log.disposition_name}
-            </span>
-          ) : log.acw_skip_reason === "no_caller_audio" || log.caller_spoke === false ? (
-            <span
-              className="px-2 py-0.5 text-xs rounded-full border bg-yellow-500/10 border-yellow-500/40 text-yellow-300"
-              title="The AI greeted the caller but no audio was received from the caller. Counted as Unresolved, not AI Handled."
-            >
-              No Caller Audio
-            </span>
-          ) : (
-            <span className="text-sm text-gray-500">-</span>
-          )}
-        </td>
-        <td className="px-4 py-3">
-          {log.acw_resolution ? (
-            <span className="px-2 py-0.5 text-xs rounded-full border bg-blue-500/10 border-blue-500/30 text-blue-400">
-              {log.acw_resolution}
-            </span>
-          ) : (
-            <span className="text-sm text-gray-500">-</span>
-          )}
-        </td>
-        <td className="px-4 py-3">
-          {log.acw_quality_score != null ? (
-            <span
-              className={`px-2 py-0.5 text-xs rounded-full border font-medium ${
-                log.acw_quality_score >= 80
-                  ? "bg-green-500/10 border-green-500/30 text-green-400"
-                  : log.acw_quality_score >= 50
-                  ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-400"
-                  : "bg-red-500/10 border-red-500/30 text-red-400"
-              }`}
-            >
-              {log.acw_quality_score}
-            </span>
-          ) : (
-            <span className="px-2 py-0.5 text-xs rounded-full border bg-gray-500/10 border-gray-500/30 text-gray-500">—</span>
-          )}
-        </td>
+          </td>
+        )}
+
+        {visibleColumns.has("resolution") && (
+          <td className="px-4 py-3">
+            {log.acw_resolution ? (
+              <span className="px-2 py-0.5 text-xs rounded-full border bg-blue-500/10 border-blue-500/30 text-blue-400">
+                {log.acw_resolution}
+              </span>
+            ) : (
+              <span className="text-sm text-gray-500">-</span>
+            )}
+          </td>
+        )}
+
+        {visibleColumns.has("score") && (
+          <td className="px-4 py-3">
+            {log.acw_quality_score != null ? (
+              <span
+                className={`px-2 py-0.5 text-xs rounded-full border font-medium ${
+                  log.acw_quality_score >= 80
+                    ? "bg-green-500/10 border-green-500/30 text-green-400"
+                    : log.acw_quality_score >= 50
+                    ? "bg-yellow-500/10 border-yellow-500/30 text-yellow-400"
+                    : "bg-red-500/10 border-red-500/30 text-red-400"
+                }`}
+              >
+                {log.acw_quality_score}
+              </span>
+            ) : (
+              <span className="px-2 py-0.5 text-xs rounded-full border bg-gray-500/10 border-gray-500/30 text-gray-500">—</span>
+            )}
+          </td>
+        )}
+
+        {visibleColumns.has("transfer") && (
+          <td className="px-4 py-3">
+            {log.has_transfer && firstTransferLeg ? (
+              <div className="flex flex-col gap-0.5 min-w-0">
+                <div className="flex items-center gap-1.5">
+                  <PhoneForwarded className="h-3.5 w-3.5 text-purple-400 flex-shrink-0" />
+                  <span className="text-xs font-mono text-gray-200 truncate">
+                    {firstTransferLeg.participant_name || firstTransferLeg.participant || "—"}
+                  </span>
+                </div>
+                <span className="text-xs text-purple-400/70 pl-5">
+                  {getLegTypeLabel(firstTransferLeg.leg_type)}
+                </span>
+              </div>
+            ) : (
+              <span className="text-sm text-gray-600">—</span>
+            )}
+          </td>
+        )}
+
         <td className="px-4 py-3">
           <div className="flex items-center gap-2 flex-wrap">
             <span
@@ -258,7 +308,7 @@ export default function CallLogRow({
             >
               {log.status ? (log.status.charAt(0).toUpperCase() + log.status.slice(1).replace("_", " ")) : "Unknown"}
             </span>
-            {log.has_transfer && (
+            {log.has_transfer && !visibleColumns.has("transfer") && (
               <span className="flex items-center gap-1 text-xs text-purple-400">
                 <PhoneForwarded className="h-3 w-3" />
               </span>
@@ -345,7 +395,7 @@ export default function CallLogRow({
       </tr>
       {showPlayer && hasRecording && (
         <tr>
-          <td colSpan={12} className="bg-[#0f0f0f] px-8 py-3 border-t border-gray-800">
+          <td colSpan={totalCols} className="bg-[#0f0f0f] px-8 py-3 border-t border-gray-800">
             <div className="flex items-center gap-3">
               <Play className="h-4 w-4 text-gray-400 flex-shrink-0" />
               {blobUrl ? (
@@ -375,7 +425,7 @@ export default function CallLogRow({
       )}
       {isExpanded && hasLegs && (
         <tr>
-          <td colSpan={12} className="bg-[#0f0f0f] px-4 py-3">
+          <td colSpan={totalCols} className="bg-[#0f0f0f] px-4 py-3">
             <div className="ml-10">
               <div className="text-xs text-gray-500 mb-2 font-medium uppercase tracking-wider">
                 Call Segments

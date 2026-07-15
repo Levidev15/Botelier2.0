@@ -207,6 +207,7 @@ class CallLog(Base):
             "acw_skip_reason": self.acw_skip_reason,
             "caller_spoke": self.caller_spoke,
             "tool_name": self.tool_name,
+            "transfer_mode": self.transfer_mode,
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
             "updated_at": self.updated_at.isoformat() + "Z" if self.updated_at else None,
         }
