@@ -756,7 +756,9 @@ class SMSService:
         if not action_id:
             return None
 
-        # Connection-scoped filter: skip tool if backing integration is not CONNECTED.
+        # Connection-scoped + property-scope filter: skip tool if backing integration
+        # is not CONNECTED, or if it is property-bound to a different property than
+        # this SMS session.  Account-global connections (property_id NULL) always pass.
         connection_id = tool_config.get("connection_id")
         if connection_id:
             conn = self.db.query(AccountIntegration).filter(
@@ -764,6 +766,10 @@ class SMSService:
             ).first()
             if not conn or conn.status != IntegrationStatus.CONNECTED:
                 return None
+            if conn.property_id is not None:
+                session_prop = self.session_property_id
+                if session_prop is None or str(conn.property_id) != str(session_prop):
+                    return None
 
         action = self.db.query(IntegrationAction).filter(IntegrationAction.id == action_id).first()
         if not action or not action.published_version_id:

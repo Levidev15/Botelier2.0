@@ -389,8 +389,22 @@ class ActionExecutor:
         if request.response_policy is not None and response.data is not None:
             from botelier.services.integration_runtime.redaction import bound_and_redact_response
 
-            bounded_data, warnings = bound_and_redact_response(response.data, request.response_policy)
-            for w in warnings:
+            # Normalize policy field names: ConnectionOperationPolicy.to_dict() uses
+            # `response_size_bytes` + `redact_field_patterns`; bound_and_redact_response
+            # expects `size_limit_bytes` + `redact_patterns`.  Support both shapes so
+            # operator-configured policies are actually applied.
+            raw_policy = request.response_policy
+            normalized_policy = {
+                "size_limit_bytes": (
+                    raw_policy.get("size_limit_bytes") or raw_policy.get("response_size_bytes")
+                ),
+                "redact_patterns": (
+                    raw_policy.get("redact_patterns") or raw_policy.get("redact_field_patterns")
+                ),
+                "strip_secret_keys": raw_policy.get("strip_secret_keys", True),
+            }
+            bounded_data, redact_warnings = bound_and_redact_response(response.data, normalized_policy)
+            for w in redact_warnings:
                 logger.warning(
                     "Response policy applied (integration=%s endpoint=%s): %s",
                     config.integration_id,
@@ -405,6 +419,7 @@ class ActionExecutor:
                 error_message=response.error_message,
                 extracted_variables=response.extracted_variables,
                 canonical=getattr(response, "canonical", None),
+                warnings=redact_warnings,
             )
 
         return response
@@ -547,6 +562,7 @@ class ActionExecutor:
             request_id=request_id,
             latency_ms=int(time.time() * 1000) - start_ms,
             canonical=response.canonical,
+            warnings=list(getattr(response, "warnings", None) or []),
         )
 
     def _build_body(self, config: dict[str, Any], variables: dict[str, Any], account_id: str):

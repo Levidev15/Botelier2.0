@@ -1095,7 +1095,9 @@ class FunctionMapper:
 
         return schema, capability_handler
 
-    def _map_dynamic_operation(self, tool: Tool) -> tuple[Dict[str, Any], Callable]:
+    def _map_dynamic_operation(
+        self, tool: Tool
+    ) -> Optional[tuple[Dict[str, Any], Callable]]:
         """Map a DYNAMIC_OPERATION tool to a Pipecat function.
 
         DYNAMIC_OPERATION tools are published operations from an imported
@@ -1106,8 +1108,18 @@ class FunctionMapper:
         published action version's ``input_schema``; connection/secret/fixed
         params are injected at execution time by the runtime and are never
         visible to the model.
+
+        Returns None when the backing connection is not CONNECTED or is
+        property-scoped to a different property than this session — the tool
+        must not appear in the LLM's schema list at all (3-channel parity with
+        SMS / simulator which both use None returns to skip).
         """
-        from botelier.models.integration import IntegrationAction, IntegrationActionVersion
+        from botelier.models.integration import (
+            AccountIntegration,
+            IntegrationAction,
+            IntegrationActionVersion,
+            IntegrationStatus,
+        )
         from botelier.services.action_executor import (
             ActionContext,
             ActionExecutionRequest,
@@ -1120,21 +1132,28 @@ class FunctionMapper:
         connection_id = tool_config.get("connection_id")
         operation_id = tool_config.get("operation_id")
 
+        # Connection-status + property-scope gate — must happen BEFORE schema
+        # construction so the tool is invisible to the LLM when unavailable.
+        if connection_id and self.db_session:
+            conn = self.db_session.query(AccountIntegration).filter(
+                AccountIntegration.id == connection_id
+            ).first()
+            if not conn or conn.status != IntegrationStatus.CONNECTED:
+                return None  # Disconnected — invisible to LLM
+            # Property scope: account-global connections (property_id is NULL) are
+            # always visible; property-bound connections are only shown for the
+            # matching session property.
+            if conn.property_id is not None:
+                session_prop = self.property_id
+                if session_prop is None or str(conn.property_id) != str(session_prop):
+                    return None  # Wrong property scope — invisible to LLM
+
         # Build the function schema from the published action version's input_schema.
         # Fall back to an empty schema when the action hasn't been published yet
         # (fail closed: the tool appears but can never be called with invalid args).
         def _load_schema_and_config(db_session):
             if not action_id or not db_session:
                 return None, None, None
-            # Skip tools from connections that are no longer CONNECTED so they
-            # never appear in the LLM's tool list.
-            if connection_id:
-                from botelier.models.integration import AccountIntegration, IntegrationStatus
-                conn = db_session.query(AccountIntegration).filter(
-                    AccountIntegration.id == connection_id
-                ).first()
-                if not conn or conn.status != IntegrationStatus.CONNECTED:
-                    return None, None, None
             action = db_session.query(IntegrationAction).filter(IntegrationAction.id == action_id).first()
             if not action or not action.published_version_id:
                 return None, None, None

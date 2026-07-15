@@ -44,6 +44,10 @@ class APIResponse:
     # returns a normalization; None otherwise. Additive — never replaces ``data``
     # or ``extracted_variables``.
     canonical: Optional[dict] = None
+    # Human-readable truncation/redaction warnings from Universal Adapter response
+    # bounding.  Non-empty only for IMPORTED-kind operations; certified adapters
+    # never set this.  Carried forward to ActionExecutionResult.warnings.
+    warnings: list = field(default_factory=list)
 
 
 @dataclass

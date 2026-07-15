@@ -1756,7 +1756,13 @@ You have access to the following Q&A knowledge base. Use this information to ans
                         )
                     else:
                         # Regular tool - single function
-                        function_schema_dict, handler = mapper.map_tool_to_function(tool)
+                        _mapped = mapper.map_tool_to_function(tool)
+                        if _mapped is None:
+                            # DYNAMIC_OPERATION whose backing connection is not
+                            # CONNECTED or is property-scoped to a different
+                            # property — skip exactly as SMS / simulator do.
+                            continue
+                        function_schema_dict, handler = _mapped
 
                         # Skip duplicate function names — e.g. two CAPABILITY
                         # tools pointing at the same capability collapse to one

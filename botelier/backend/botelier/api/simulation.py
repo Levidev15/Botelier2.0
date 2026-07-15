@@ -257,7 +257,11 @@ def _build_capability_tool_schemas(db: Session, assistant: Optional[Assistant]) 
     return schemas
 
 
-def _build_dynamic_operation_tool_schemas(db: Session, assistant: Optional[Assistant]) -> list:
+def _build_dynamic_operation_tool_schemas(
+    db: Session,
+    assistant: Optional[Assistant],
+    session_property_id: Optional[str] = None,
+) -> list:
     """Mirror the backing assistant's DYNAMIC_OPERATION tools (Universal Adapter).
 
     Returns OpenAI tool schemas so the simulator can preview dynamic-operation
@@ -265,8 +269,9 @@ def _build_dynamic_operation_tool_schemas(db: Session, assistant: Optional[Assis
     The LLM sees only LLM-owned parameters from the published action version.
     Returns [] when there is no backing assistant / tool_set.
 
-    Only tools whose backing AccountIntegration is CONNECTED are included;
-    disconnected connections are filtered out so the LLM never sees unavailable tools.
+    Only tools whose backing AccountIntegration is CONNECTED and property-scoped
+    to the session's property (or account-global) are included; disconnected or
+    out-of-scope connections are filtered so the LLM never sees unavailable tools.
     """
     if not assistant or not assistant.tool_set_id:
         return []
@@ -294,7 +299,9 @@ def _build_dynamic_operation_tool_schemas(db: Session, assistant: Optional[Assis
         if not action_id or action_id in seen:
             continue
 
-        # Connection-scoped filter: skip tool if backing integration is not CONNECTED.
+        # Connection-scoped + property-scope filter: skip if not CONNECTED or if
+        # the connection is property-bound to a different property than the session.
+        # Account-global connections (property_id NULL) always pass.
         connection_id = tool_config.get("connection_id")
         if connection_id:
             conn = db.query(AccountIntegration).filter(
@@ -302,6 +309,9 @@ def _build_dynamic_operation_tool_schemas(db: Session, assistant: Optional[Assis
             ).first()
             if not conn or conn.status != IntegrationStatus.CONNECTED:
                 continue
+            if conn.property_id is not None:
+                if session_property_id is None or str(conn.property_id) != str(session_property_id):
+                    continue
 
         action = db.query(IntegrationAction).filter(IntegrationAction.id == action_id).first()
         if not action or not action.published_version_id:
@@ -480,17 +490,17 @@ async def start_simulation(
         assistant.knowledge_base_id if assistant else None
     )
     capability_schemas = _build_capability_tool_schemas(db, assistant)
-    dynamic_operation_schemas = _build_dynamic_operation_tool_schemas(db, assistant)
+    # Resolve property_id first so _build_dynamic_operation_tool_schemas can apply
+    # the same property-scope filter as voice / SMS.
+    property_id = str(assistant.property_id) if assistant and assistant.property_id else None
+    dynamic_operation_schemas = _build_dynamic_operation_tool_schemas(db, assistant, property_id)
     escalation_target = None
     sim_model = DEFAULT_SIM_MODEL
-    property_id = None
     if assistant:
         escalation_target = (assistant.call_settings or {}).get("escalation_number") or None
         sim_model = assistant.llm_model or DEFAULT_SIM_MODEL
-        # Per-property isolation (Task #327): the simulator has no dialed number, so
-        # the property scope comes from the resolved backing assistant. This keeps
-        # the preview's integration access identical to a real call on that property.
-        property_id = str(assistant.property_id) if assistant.property_id else None
+        # property_id resolved above so _build_dynamic_operation_tool_schemas receives
+        # it before this block runs; keep the value consistent for FlowExecutor below.
 
     try:
         flow_config = parse_flow_config(flow_config_dict)
