@@ -93,10 +93,14 @@ async def import_integration_spec(
         try:
             async with httpx.AsyncClient(
                 timeout=20.0,
-                follow_redirects=True,
-                max_redirects=3,
+                follow_redirects=False,  # Redirects bypass the SSRF hostname check
             ) as client:
                 resp = await client.get(spec_url)
+                if resp.is_redirect:
+                    raise HTTPException(
+                        status_code=400,
+                        detail="spec_url returned a redirect; provide the direct URL",
+                    )
                 resp.raise_for_status()
                 spec_data = resp.json()
         except HTTPException:
