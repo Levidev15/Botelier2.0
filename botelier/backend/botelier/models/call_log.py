@@ -236,6 +236,10 @@ class CallLog(Base):
                 )
                 and leg.duration_source in ("twilio_webhook", "twilio_api")
             )
+            _non_ai_legs = [leg for leg in legs if leg.leg_type != LegType.AI_CONVERSATION.value]
+            _first_transfer = _non_ai_legs[0] if _non_ai_legs else None
+            result["transfer_destination"] = _first_transfer.participant if _first_transfer else None
+            result["transfer_reason"] = self.disposition.name if self.disposition else None
 
         return result
 

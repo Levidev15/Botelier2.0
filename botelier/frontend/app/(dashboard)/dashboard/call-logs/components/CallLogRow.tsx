@@ -107,10 +107,6 @@ export default function CallLogRow({
     (canViewTranscripts && !!log.ai_summary) ||
     canDeleteLogs;
 
-  const firstTransferLeg = log.legs?.find(
-    (l) => l.leg_type !== "ai_conversation"
-  );
-
   return (
     <>
       <tr className="hover:bg-[#1a1a1a] transition">
@@ -283,17 +279,19 @@ export default function CallLogRow({
 
         {visibleColumns.has("transfer") && (
           <td className="px-4 py-3">
-            {log.has_transfer && firstTransferLeg ? (
+            {log.has_transfer && log.transfer_destination ? (
               <div className="flex flex-col gap-0.5 min-w-0">
                 <div className="flex items-center gap-1.5">
                   <PhoneForwarded className="h-3.5 w-3.5 text-purple-400 flex-shrink-0" />
                   <span className="text-xs font-mono text-gray-200 truncate">
-                    {firstTransferLeg.participant_name || firstTransferLeg.participant || "—"}
+                    {log.transfer_destination}
                   </span>
                 </div>
-                <span className="text-xs text-purple-400/70 pl-5">
-                  {getLegTypeLabel(firstTransferLeg.leg_type)}
-                </span>
+                {log.transfer_reason && (
+                  <span className="text-xs text-purple-400/70 pl-5 truncate">
+                    {log.transfer_reason}
+                  </span>
+                )}
               </div>
             ) : (
               <span className="text-sm text-gray-600">—</span>

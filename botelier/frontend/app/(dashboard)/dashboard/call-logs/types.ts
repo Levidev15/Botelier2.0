@@ -57,6 +57,8 @@ export interface CallLog {
   caller_spoke?: boolean | null;
   ended_early: boolean;
   transfer_mode: string | null;
+  transfer_destination: string | null;
+  transfer_reason: string | null;
 }
 
 export interface FilterOptions {
