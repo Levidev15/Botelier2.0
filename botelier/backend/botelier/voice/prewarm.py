@@ -51,6 +51,7 @@ class AssistantSnapshot:
     account_id: str
     name: str
     description: Optional[str] = None
+    call_settings: Optional[Dict] = field(default_factory=dict)
 
 
 @dataclass
@@ -420,6 +421,7 @@ async def _build_bundle(
                 account_id=str(assistant.account_id),
                 name=assistant.name,
                 description=getattr(assistant, "description", None),
+                call_settings=dict(assistant.call_settings or {}),
             )
             # Detach everything from the session so the build-time
             # ``_create_agent_config`` read can still touch attributes
