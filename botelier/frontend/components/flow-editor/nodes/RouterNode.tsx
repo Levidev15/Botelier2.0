@@ -6,7 +6,7 @@ import { Route, Grip } from "lucide-react";
 import { RouterNodeData } from "../store";
 
 interface RouterNodeProps {
-  data: RouterNodeData & { isActive?: boolean };
+  data: RouterNodeData & { isActive?: boolean; isError?: boolean };
   selected?: boolean;
 }
 
@@ -23,6 +23,7 @@ const OPTION_COLORS = [
 
 function RouterNode({ data, selected }: RouterNodeProps) {
   const isActive = data.isActive;
+  const isError = data.isError;
   const router = data.router || { variable: "", options: [] };
   const options = router.options || [];
   const optionCount = options.length + 1;
@@ -31,11 +32,13 @@ function RouterNode({ data, selected }: RouterNodeProps) {
     <div
       className={`
         min-w-[240px] max-w-[320px] rounded-lg border-2 bg-[#141414] shadow-lg transition-all duration-300
-        ${isActive 
-          ? "border-cyan-400 ring-4 ring-cyan-400/40 scale-105" 
-          : selected 
-            ? "border-indigo-500 ring-2 ring-indigo-500/20" 
-            : "border-indigo-600/50"
+        ${isError
+          ? "border-red-500 ring-2 ring-red-500/40 node-error-shake"
+          : isActive 
+            ? "border-cyan-400 ring-4 ring-cyan-400/40 scale-105" 
+            : selected 
+              ? "border-indigo-500 ring-2 ring-indigo-500/20" 
+              : "border-indigo-600/50"
         }
       `}
     >

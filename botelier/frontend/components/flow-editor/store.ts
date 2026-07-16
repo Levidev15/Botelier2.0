@@ -292,6 +292,10 @@ export interface FlowState {
   applyTemplate: (templateId: string) => void;
   clearFlow: () => void;
   
+  errorNodeIds: string[];
+  setErrorNodeIds: (ids: string[]) => void;
+  clearErrorNodeIds: () => void;
+
   setIsDirty: (dirty: boolean) => void;
   setToolId: (id: string) => void;
   setHotelId: (id: string) => void;
@@ -1566,13 +1570,19 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   versions: [],
   draftDescription: "",
 
-  setNodes: (nodes) => set({ nodes, isDirty: true }),
-  setEdges: (edges) => set({ edges, isDirty: true }),
+  // Publish validation error highlighting
+  errorNodeIds: [],
+  setErrorNodeIds: (ids) => set({ errorNodeIds: ids }),
+  clearErrorNodeIds: () => set({ errorNodeIds: [] }),
+
+  setNodes: (nodes) => set({ nodes, isDirty: true, errorNodeIds: [] }),
+  setEdges: (edges) => set({ edges, isDirty: true, errorNodeIds: [] }),
 
   onNodesChange: (changes) => {
     set({
       nodes: applyNodeChanges(changes, get().nodes),
       isDirty: true,
+      errorNodeIds: [],
     });
   },
 
@@ -1580,6 +1590,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     set({
       edges: applyEdgeChanges(changes, get().edges),
       isDirty: true,
+      errorNodeIds: [],
     });
   },
 
@@ -1598,6 +1609,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         get().edges
       ),
       isDirty: true,
+      errorNodeIds: [],
     });
   },
 
@@ -1617,6 +1629,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
           ? { ...get().selectedNode!, data: { ...get().selectedNode!.data, ...data } }
           : get().selectedNode,
       isDirty: true,
+      errorNodeIds: [],
     });
   },
 
@@ -1634,6 +1647,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     set({
       nodes: [...get().nodes, newNode],
       isDirty: true,
+      errorNodeIds: [],
     });
   },
 
@@ -1643,6 +1657,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       edges: get().edges.filter((e) => e.source !== nodeId && e.target !== nodeId),
       selectedNode: get().selectedNode?.id === nodeId ? null : get().selectedNode,
       isDirty: true,
+      errorNodeIds: [],
     });
   },
 
@@ -1650,6 +1665,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     set({
       edges: get().edges.filter((e) => e.id !== edgeId),
       isDirty: true,
+      errorNodeIds: [],
     });
   },
 
@@ -1657,6 +1673,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     set({
       variables: [...get().variables, variable],
       isDirty: true,
+      errorNodeIds: [],
     });
   },
 
@@ -1666,6 +1683,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         v.key === key ? { ...v, ...updates } : v
       ),
       isDirty: true,
+      errorNodeIds: [],
     });
   },
 
@@ -1673,6 +1691,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     set({
       variables: get().variables.filter((v) => v.key !== key),
       isDirty: true,
+      errorNodeIds: [],
     });
   },
 
@@ -1680,6 +1699,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     set({
       globalPrompt: prompt,
       isDirty: true,
+      errorNodeIds: [],
     });
   },
 
@@ -1852,6 +1872,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         currentSource: "draft",
         currentVersionNumber: result.version_number,
         hasDraft: true,
+        errorNodeIds: [],
       });
       
       // Refresh versions list
@@ -1882,6 +1903,8 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         let message: string;
         if (detail && typeof detail === "object" && Array.isArray(detail.errors)) {
           message = `Flow validation failed: ${detail.errors.join(", ")}`;
+          const nodeIds: string[] = Array.isArray(detail.error_node_ids) ? detail.error_node_ids : [];
+          set({ errorNodeIds: nodeIds });
         } else if (typeof detail === "string" && detail) {
           message = detail;
         } else {
@@ -2009,6 +2032,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       })),
       variables: template.variables,
       isDirty: true,
+      errorNodeIds: [],
     });
   },
 

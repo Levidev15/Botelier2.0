@@ -100,14 +100,14 @@ def _executor_at_capability(
 
 def test_validator_accepts_known_capability():
     config = _flow_with_capability("search_availability")
-    valid, errors = validate_flow_config(config)
+    valid, errors, _ = validate_flow_config(config)
     assert valid, f"Unexpected validation errors: {errors}"
     assert errors == []
 
 
 def test_validator_accepts_mutating_capability():
     config = _flow_with_capability("book_reservation")
-    valid, errors = validate_flow_config(config)
+    valid, errors, _ = validate_flow_config(config)
     assert valid, f"Unexpected validation errors: {errors}"
 
 
@@ -117,14 +117,14 @@ def test_validator_rejects_capability_node_with_no_capability():
     for node in config["nodes"]:
         if node["type"] == "capability":
             node["data"]["api"].pop("capability")
-    valid, errors = validate_flow_config(config)
+    valid, errors, _ = validate_flow_config(config)
     assert not valid
     assert any("no capability selected" in e for e in errors)
 
 
 def test_validator_rejects_unknown_capability_name():
     config = _flow_with_capability("teleport_guest")
-    valid, errors = validate_flow_config(config)
+    valid, errors, _ = validate_flow_config(config)
     assert not valid
     assert any("unknown capability" in e.lower() for e in errors)
 

@@ -6,12 +6,13 @@ import { ClipboardList, Grip } from "lucide-react";
 import { SaveRecordNodeData } from "../store";
 
 interface SaveRecordNodeProps {
-  data: SaveRecordNodeData & { isActive?: boolean };
+  data: SaveRecordNodeData & { isActive?: boolean; isError?: boolean };
   selected?: boolean;
 }
 
 function SaveRecordNode({ data, selected }: SaveRecordNodeProps) {
   const isActive = data.isActive;
+  const isError = data.isError;
   const saveRecord = data.saveRecord || {
     recordTypeId: "",
     recordTypeName: "",
@@ -25,12 +26,13 @@ function SaveRecordNode({ data, selected }: SaveRecordNodeProps) {
     <div
       className={`
         min-w-[200px] max-w-[280px] rounded-lg border-2 bg-[#141414] shadow-lg transition-all duration-300
-        ${
-          isActive
+        ${isError
+          ? "border-red-500 ring-2 ring-red-500/40 node-error-shake"
+          : isActive
             ? "border-cyan-400 ring-4 ring-cyan-400/40 scale-105"
             : selected
-            ? "border-rose-500 ring-2 ring-rose-500/20"
-            : "border-rose-600/50"
+              ? "border-rose-500 ring-2 ring-rose-500/20"
+              : "border-rose-600/50"
         }
       `}
     >

@@ -6,12 +6,13 @@ import { CheckCircle2, Grip, XCircle } from "lucide-react";
 import { ConfirmationNodeData } from "../store";
 
 interface ConfirmationNodeProps {
-  data: ConfirmationNodeData & { isActive?: boolean };
+  data: ConfirmationNodeData & { isActive?: boolean; isError?: boolean };
   selected?: boolean;
 }
 
 function ConfirmationNode({ data, selected }: ConfirmationNodeProps) {
   const isActive = data.isActive;
+  const isError = data.isError;
   const confirmation = data.confirmation || { 
     summaryTemplate: "", 
     confirmPrompt: "Is this correct?",
@@ -23,11 +24,13 @@ function ConfirmationNode({ data, selected }: ConfirmationNodeProps) {
     <div
       className={`
         min-w-[260px] max-w-[320px] rounded-lg border-2 bg-[#141414] shadow-lg transition-all duration-300
-        ${isActive 
-          ? "border-cyan-400 ring-4 ring-cyan-400/40 scale-105" 
-          : selected 
-            ? "border-emerald-500 ring-2 ring-emerald-500/20" 
-            : "border-emerald-600/50"
+        ${isError
+          ? "border-red-500 ring-2 ring-red-500/40 node-error-shake"
+          : isActive 
+            ? "border-cyan-400 ring-4 ring-cyan-400/40 scale-105" 
+            : selected 
+              ? "border-emerald-500 ring-2 ring-emerald-500/20" 
+              : "border-emerald-600/50"
         }
       `}
     >

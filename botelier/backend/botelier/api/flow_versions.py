@@ -57,19 +57,22 @@ def _get_flow_tool(db: Session, tool_id: str, account_id: str) -> Tool:
     return tool
 
 
-def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str]]:
+def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str], List[str]]:
     """Validate a flow configuration for publishing.
 
-    Returns (is_valid, errors) tuple.
+    Returns (is_valid, errors, error_node_ids) tuple where error_node_ids is the
+    list of node IDs that have validation errors (may contain duplicates; caller
+    should deduplicate if needed).
     """
-    errors = []
+    errors: List[str] = []
+    error_node_ids: List[str] = []
 
     nodes = flow_config.get("nodes", [])
     edges = flow_config.get("edges", [])
 
     if not nodes:
         errors.append("Flow must have at least one node")
-        return False, errors
+        return False, errors, error_node_ids
 
     initial_nodes = [n for n in nodes if n.get("type") == "initial"]
     if len(initial_nodes) == 0:
@@ -125,85 +128,92 @@ def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str]]:
                     errors.append(
                         f"Node '{node.get('data', {}).get('name', node_id)}' is not reachable from Start"
                     )
+                    error_node_ids.append(node_id)
 
     for node in nodes:
         node_type = node.get("type")
         node_data = node.get("data", {})
         node_name = node_data.get("name", node.get("id"))
+        node_id = node.get("id")
+
+        def _node_error(msg: str) -> None:
+            errors.append(msg)
+            if node_id:
+                error_node_ids.append(node_id)
 
         if node_type == "collect_slot":
             slot = node_data.get("slot", {})
             if not slot.get("variableKey"):
-                errors.append(f"Collect Input node '{node_name}' has no variable key")
+                _node_error(f"Collect Input node '{node_name}' has no variable key")
             if not slot.get("prompt"):
-                errors.append(f"Collect Input node '{node_name}' has no prompt")
+                _node_error(f"Collect Input node '{node_name}' has no prompt")
 
         elif node_type == "api_request":
             api = node_data.get("api", {})
             method = str(api.get("method", "GET")).upper()
             api_source = api.get("apiSource") or "custom"
             if method not in _API_METHODS:
-                errors.append(
+                _node_error(
                     f"API Request node '{node_name}' has unsupported method '{method}'"
                 )
             if api_source == "integration":
                 if not api.get("integrationId"):
-                    errors.append(
+                    _node_error(
                         f"API Request node '{node_name}' has no connected integration selected"
                     )
                 if not api.get("endpointId"):
-                    errors.append(f"API Request node '{node_name}' has no endpoint selected")
+                    _node_error(f"API Request node '{node_name}' has no endpoint selected")
             else:
                 url = api.get("url")
                 if not url:
-                    errors.append(f"API Request node '{node_name}' has no URL")
+                    _node_error(f"API Request node '{node_name}' has no URL")
                 else:
                     parsed = urlparse(str(url))
                     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
-                        errors.append(
+                        _node_error(
                             f"API Request node '{node_name}' has an invalid HTTP/HTTPS URL"
                         )
             timeout = api.get("timeout", 8)
             if not isinstance(timeout, int) or timeout < 1 or timeout > 60:
-                errors.append(f"API Request node '{node_name}' timeout must be 1-60 seconds")
+                _node_error(f"API Request node '{node_name}' timeout must be 1-60 seconds")
             retry_count = api.get("retryCount", 0)
             if not isinstance(retry_count, int) or retry_count < 0 or retry_count > 3:
-                errors.append(f"API Request node '{node_name}' retry count must be 0-3")
+                _node_error(f"API Request node '{node_name}' retry count must be 0-3")
             if method in {"POST", "PUT", "PATCH"} and api.get("bodyTemplate"):
                 import json
 
                 try:
                     json.loads(api["bodyTemplate"])
                 except Exception:
-                    errors.append(
+                    _node_error(
                         f"API Request node '{node_name}' request body must be valid JSON"
                     )
             response_mapping = api.get("responseMapping") or {}
             if not isinstance(response_mapping, dict):
-                errors.append(f"API Request node '{node_name}' response mapping is invalid")
+                _node_error(f"API Request node '{node_name}' response mapping is invalid")
             else:
                 for key, path in response_mapping.items():
                     if not str(key).strip() or not str(path).strip():
-                        errors.append(
+                        _node_error(
                             f"API Request node '{node_name}' has an incomplete response mapping"
                         )
 
         elif node_type == "condition":
             condition = node_data.get("condition", {})
             if not condition.get("variable"):
-                errors.append(f"Condition node '{node_name}' has no variable to check")
+                _node_error(f"Condition node '{node_name}' has no variable to check")
 
         elif node_type == "router":
             router_cfg = node_data.get("router", {})
             if not router_cfg.get("variable"):
-                errors.append(f"Router node '{node_name}' has no variable to route on")
+                _node_error(f"Router node '{node_name}' has no variable to route on")
             if not router_cfg.get("options"):
-                errors.append(f"Router node '{node_name}' has no routing options")
+                _node_error(f"Router node '{node_name}' has no routing options")
 
         elif node_type == "transfer":
             transfer = node_data.get("transfer", {})
             if not transfer.get("phoneNumber"):
-                errors.append(f"Transfer node '{node_name}' has no phone number")
+                _node_error(f"Transfer node '{node_name}' has no phone number")
 
         elif node_type == "set_variable":
             set_var = node_data.get("setVariable", node_data.get("set_variable", {}))
@@ -211,53 +221,60 @@ def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str]]:
                 set_var.get("valueType") == "expression"
                 or set_var.get("value_type") == "expression"
             ):
-                errors.append(
+                _node_error(
                     f"Set Variable node '{node_name}' uses the expression type, which is not permitted"
                 )
 
         elif node_type == "save_record":
             save_rec = node_data.get("saveRecord", node_data.get("save_record", {}))
             if not save_rec.get("recordTypeId") and not save_rec.get("record_type_id"):
-                errors.append(f"Save Record node '{node_name}' has no record type selected")
+                _node_error(f"Save Record node '{node_name}' has no record type selected")
 
         elif node_type == "capability":
             api_cfg = node_data.get("api", {})
             capability = api_cfg.get("capability")
             if not capability:
-                errors.append(f"Capability node '{node_name}' has no capability selected")
+                _node_error(f"Capability node '{node_name}' has no capability selected")
             elif capability not in capability_names():
-                errors.append(
+                _node_error(
                     f"Capability node '{node_name}' references an unknown capability "
                     f"'{capability}'"
                 )
 
-    return len(errors) == 0, errors
+    return len(errors) == 0, errors, error_node_ids
 
 
 def validate_record_type_references(
     db: Session, account_id: str, flow_config: dict
-) -> List[str]:
+) -> Tuple[List[str], List[str]]:
     """Ensure every SAVE_RECORD node references a record type owned by this account.
 
     This is a tenant-isolation guard: a flow must never be able to write records
     into another account's record type. Enforced here at save/publish time and
     again at execution time in the flow executor.
+
+    Returns (errors, error_node_ids) tuple.
     """
     errors: List[str] = []
+    error_node_ids: List[str] = []
     nodes = flow_config.get("nodes", []) if isinstance(flow_config, dict) else []
-    referenced: dict[str, str] = {}
+    # Map each referenced record-type ID to ALL nodes that reference it, so that
+    # when two save_record nodes point to the same invalid record type both IDs
+    # are returned (not just the last one that wrote to the dict).
+    referenced: dict[str, list[tuple[str, str]]] = {}
     for node in nodes:
         if node.get("type") != "save_record":
             continue
         node_data = node.get("data", {})
         node_name = node_data.get("name", node.get("id"))
+        node_id = node.get("id", "")
         save_rec = node_data.get("saveRecord", node_data.get("save_record", {}))
         rt_id = save_rec.get("recordTypeId") or save_rec.get("record_type_id")
         if rt_id:
-            referenced[str(rt_id)] = node_name
+            referenced.setdefault(str(rt_id), []).append((node_name, node_id))
 
     if not referenced:
-        return errors
+        return errors, error_node_ids
 
     from botelier.models.record_type import RecordType
 
@@ -276,13 +293,16 @@ def validate_record_type_references(
         # Malformed UUIDs etc. — treat all as invalid below.
         valid_ids = set()
 
-    for rt_id, node_name in referenced.items():
+    for rt_id, node_list in referenced.items():
         if rt_id not in valid_ids:
-            errors.append(
-                f"Save Record node '{node_name}' references a record type that does "
-                "not exist in this account"
-            )
-    return errors
+            for node_name, node_id in node_list:
+                errors.append(
+                    f"Save Record node '{node_name}' references a record type that does "
+                    "not exist in this account"
+                )
+                if node_id:
+                    error_node_ids.append(node_id)
+    return errors, error_node_ids
 
 
 @router.get("/{tool_id}/flow")
@@ -405,7 +425,7 @@ def save_flow_draft(
     description = draft_data.get("description")
 
     if flow_config:
-        _, draft_errors = validate_flow_config(flow_config)
+        _, draft_errors, _ = validate_flow_config(flow_config)
         expression_errors = [e for e in draft_errors if "expression type" in e]
         if expression_errors:
             raise HTTPException(
@@ -415,7 +435,7 @@ def save_flow_draft(
                     "errors": expression_errors,
                 },
             )
-        record_ref_errors = validate_record_type_references(db, account_id, flow_config)
+        record_ref_errors, _ = validate_record_type_references(db, account_id, flow_config)
         if record_ref_errors:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
@@ -519,13 +539,18 @@ def publish_flow(
     if not draft:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Draft version not found")
 
-    is_valid, validation_errors = validate_flow_config(draft.flow_config or {})
-    record_ref_errors = validate_record_type_references(db, account_id, draft.flow_config or {})
+    is_valid, validation_errors, error_node_ids = validate_flow_config(draft.flow_config or {})
+    record_ref_errors, ref_error_node_ids = validate_record_type_references(db, account_id, draft.flow_config or {})
     validation_errors = list(validation_errors) + record_ref_errors
+    all_error_node_ids = list(dict.fromkeys(error_node_ids + ref_error_node_ids))
     if validation_errors:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail={"message": "Flow validation failed", "errors": validation_errors},
+            detail={
+                "message": "Flow validation failed",
+                "errors": validation_errors,
+                "error_node_ids": all_error_node_ids,
+            },
         )
 
     if publish_data and publish_data.get("description"):

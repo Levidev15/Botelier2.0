@@ -94,7 +94,7 @@ def test_flow_validation_accepts_patch_without_requiring_successful_api_test():
         "edges": [{"source": "start", "target": "api"}],
     }
 
-    is_valid, errors = validate_flow_config(valid_flow)
+    is_valid, errors, _ = validate_flow_config(valid_flow)
 
     assert is_valid is True
     assert errors == []
@@ -124,7 +124,7 @@ def test_flow_validation_rejects_invalid_api_node_config():
         "edges": [{"source": "start", "target": "api"}],
     }
 
-    is_valid, errors = validate_flow_config(invalid_flow)
+    is_valid, errors, _ = validate_flow_config(invalid_flow)
 
     assert is_valid is False
     assert any("invalid HTTP/HTTPS URL" in error for error in errors)

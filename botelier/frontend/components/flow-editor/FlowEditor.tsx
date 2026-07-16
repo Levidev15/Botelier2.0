@@ -8,6 +8,7 @@ import {
   MiniMap,
   BackgroundVariant,
   ReactFlowProvider,
+  useReactFlow,
   Edge,
   EdgeProps,
   getBezierPath,
@@ -92,6 +93,7 @@ const edgeTypes = {
 };
 
 function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTtsProvider }: FlowEditorProps) {
+  const { fitView } = useReactFlow();
   const {
     nodes,
     edges,
@@ -106,6 +108,7 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
     isDirty,
     activeNodeId,
     setActiveNodeId,
+    errorNodeIds,
   } = useFlowStore();
 
   const [isSaving, setIsSaving] = useState(false);
@@ -153,6 +156,18 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [isDirty, isSaving]);
 
+  // Scroll to error nodes whenever errorNodeIds changes (publish failure).
+  // Must be before any early return to satisfy Rules of Hooks.
+  useEffect(() => {
+    if (errorNodeIds.length > 0) {
+      fitView({
+        nodes: errorNodeIds.map((id) => ({ id })),
+        duration: 400,
+        padding: 0.6,
+        maxZoom: 1.2,
+      });
+    }
+  }, [errorNodeIds, fitView]);
 
   if (isLoading) {
     return (
@@ -170,6 +185,7 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
     data: {
       ...node.data,
       isActive: node.id === activeNodeId,
+      isError: errorNodeIds.includes(node.id),
     },
   }));
 

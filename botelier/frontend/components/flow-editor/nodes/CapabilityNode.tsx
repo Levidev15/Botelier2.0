@@ -6,7 +6,7 @@ import { Sparkles, Grip, ArrowRightLeft } from "lucide-react";
 import { CapabilityNodeData } from "../store";
 
 interface CapabilityNodeProps {
-  data: CapabilityNodeData & { isActive?: boolean };
+  data: CapabilityNodeData & { isActive?: boolean; isError?: boolean };
   selected?: boolean;
 }
 
@@ -29,6 +29,7 @@ function prettify(name: string): string {
 
 function CapabilityNode({ data, selected }: CapabilityNodeProps) {
   const isActive = data.isActive;
+  const isError = data.isError;
   const api = data.api;
   const capability = api?.capability || "";
   const label = capability
@@ -39,11 +40,13 @@ function CapabilityNode({ data, selected }: CapabilityNodeProps) {
     <div
       className={`
         min-w-[220px] max-w-[280px] rounded-lg border-2 bg-[#141414] shadow-lg transition-all duration-300
-        ${isActive
-          ? "border-cyan-400 ring-4 ring-cyan-400/40 scale-105"
-          : selected
-            ? "border-purple-500 ring-2 ring-purple-500/20"
-            : "border-purple-600/50"
+        ${isError
+          ? "border-red-500 ring-2 ring-red-500/40 node-error-shake"
+          : isActive
+            ? "border-cyan-400 ring-4 ring-cyan-400/40 scale-105"
+            : selected
+              ? "border-purple-500 ring-2 ring-purple-500/20"
+              : "border-purple-600/50"
         }
       `}
     >

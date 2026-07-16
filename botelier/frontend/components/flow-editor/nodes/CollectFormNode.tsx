@@ -6,7 +6,7 @@ import { ClipboardList, Grip, Calendar, Phone, Mail, Hash, List, Type, Clock } f
 import { CollectFormNodeData, SlotType } from "../store";
 
 interface CollectFormNodeProps {
-  data: CollectFormNodeData & { isActive?: boolean };
+  data: CollectFormNodeData & { isActive?: boolean; isError?: boolean };
   selected?: boolean;
 }
 
@@ -32,6 +32,7 @@ const slotTypeLabels: Record<SlotType, string> = {
 
 function CollectFormNode({ data, selected }: CollectFormNodeProps) {
   const isActive = data.isActive;
+  const isError = data.isError;
   const slots = data.slots || [];
   const sortedSlots = [...slots].sort((a, b) => a.order - b.order);
   
@@ -39,11 +40,13 @@ function CollectFormNode({ data, selected }: CollectFormNodeProps) {
     <div
       className={`
         min-w-[240px] max-w-[300px] rounded-lg border-2 bg-[#141414] shadow-lg transition-all duration-300
-        ${isActive 
-          ? "border-violet-400 ring-4 ring-violet-400/40 scale-105" 
-          : selected 
-            ? "border-violet-500 ring-2 ring-violet-500/20" 
-            : "border-violet-600/50"
+        ${isError
+          ? "border-red-500 ring-2 ring-red-500/40 node-error-shake"
+          : isActive 
+            ? "border-violet-400 ring-4 ring-violet-400/40 scale-105" 
+            : selected 
+              ? "border-violet-500 ring-2 ring-violet-500/20" 
+              : "border-violet-600/50"
         }
       `}
     >

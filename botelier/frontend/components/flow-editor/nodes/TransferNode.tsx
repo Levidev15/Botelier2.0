@@ -6,23 +6,26 @@ import { PhoneForwarded, Grip, User } from "lucide-react";
 import { TransferNodeData } from "../store";
 
 interface TransferNodeProps {
-  data: TransferNodeData & { isActive?: boolean };
+  data: TransferNodeData & { isActive?: boolean; isError?: boolean };
   selected?: boolean;
 }
 
 function TransferNode({ data, selected }: TransferNodeProps) {
   const isActive = data.isActive;
+  const isError = data.isError;
   const transfer = data.transfer;
   
   return (
     <div
       className={`
         min-w-[220px] max-w-[280px] rounded-lg border-2 bg-[#141414] shadow-lg transition-all duration-300
-        ${isActive 
-          ? "border-cyan-400 ring-4 ring-cyan-400/40 scale-105" 
-          : selected 
-            ? "border-cyan-500 ring-2 ring-cyan-500/20" 
-            : "border-cyan-600/50"
+        ${isError
+          ? "border-red-500 ring-2 ring-red-500/40 node-error-shake"
+          : isActive 
+            ? "border-cyan-400 ring-4 ring-cyan-400/40 scale-105" 
+            : selected 
+              ? "border-cyan-500 ring-2 ring-cyan-500/20" 
+              : "border-cyan-600/50"
         }
       `}
     >

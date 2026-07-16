@@ -6,7 +6,7 @@ import { Globe, Grip, ArrowRightLeft } from "lucide-react";
 import { APIRequestNodeData } from "../store";
 
 interface APIRequestNodeProps {
-  data: APIRequestNodeData & { isActive?: boolean };
+  data: APIRequestNodeData & { isActive?: boolean; isError?: boolean };
   selected?: boolean;
 }
 
@@ -19,6 +19,7 @@ const methodColors: Record<string, string> = {
 
 function APIRequestNode({ data, selected }: APIRequestNodeProps) {
   const isActive = data.isActive;
+  const isError = data.isError;
   const api = data.api;
   
   const extractDomain = (url: string) => {
@@ -35,11 +36,13 @@ function APIRequestNode({ data, selected }: APIRequestNodeProps) {
     <div
       className={`
         min-w-[220px] max-w-[280px] rounded-lg border-2 bg-[#141414] shadow-lg transition-all duration-300
-        ${isActive 
-          ? "border-cyan-400 ring-4 ring-cyan-400/40 scale-105" 
-          : selected 
-            ? "border-orange-500 ring-2 ring-orange-500/20" 
-            : "border-orange-600/50"
+        ${isError
+          ? "border-red-500 ring-2 ring-red-500/40 node-error-shake"
+          : isActive 
+            ? "border-cyan-400 ring-4 ring-cyan-400/40 scale-105" 
+            : selected 
+              ? "border-orange-500 ring-2 ring-orange-500/20" 
+              : "border-orange-600/50"
         }
       `}
     >
