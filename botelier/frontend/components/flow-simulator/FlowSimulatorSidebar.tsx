@@ -14,11 +14,12 @@ interface FlowSimulatorSidebarProps {
 }
 
 interface Message {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: string;
   metadata?: {
     function_called?: string;
     function_result?: Record<string, unknown>;
+    record_saved?: boolean;
   };
 }
 

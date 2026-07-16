@@ -1,18 +1,41 @@
 "use client";
 
-import { CheckCircle2 } from "lucide-react";
+import { CheckCircle2, AlertTriangle } from "lucide-react";
 
 export interface ChatMessageProps {
-  role: "user" | "assistant";
+  role: "user" | "assistant" | "system";
   content: string;
   metadata?: {
     function_called?: string;
     function_result?: Record<string, unknown>;
+    record_saved?: boolean;
   };
   compact?: boolean;
 }
 
 export default function ChatMessage({ role, content, metadata, compact }: ChatMessageProps) {
+  if (role === "system") {
+    const saved = metadata?.record_saved !== false;
+    return (
+      <div className={`flex justify-center ${compact ? "mb-2" : "mb-3"}`}>
+        <div
+          className={`flex items-start gap-2 max-w-[95%] rounded-lg ${compact ? "px-2.5 py-1.5" : "px-3 py-2"} ${
+            saved
+              ? "bg-green-900/25 border border-green-700/50 text-green-300"
+              : "bg-amber-900/25 border border-amber-700/50 text-amber-300"
+          }`}
+        >
+          {saved ? (
+            <CheckCircle2 className={`${compact ? "w-3 h-3" : "w-3.5 h-3.5"} mt-0.5 shrink-0`} />
+          ) : (
+            <AlertTriangle className={`${compact ? "w-3 h-3" : "w-3.5 h-3.5"} mt-0.5 shrink-0`} />
+          )}
+          <p className={`${compact ? "text-xs" : "text-sm"} leading-snug`}>{content}</p>
+        </div>
+      </div>
+    );
+  }
+
   const isUser = role === "user";
   const functionResult = metadata?.function_result as Record<string, unknown> | undefined;
   const collectedData = functionResult?.collected as Record<string, unknown> | undefined;

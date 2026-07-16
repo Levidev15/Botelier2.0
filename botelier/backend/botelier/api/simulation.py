@@ -581,6 +581,7 @@ async def simulate_message(
     function_called = None
     function_result = None
     error_detail = None
+    save_record_events: list[dict] = []
 
     state.add_message("user", request.message)
 
@@ -591,6 +592,14 @@ async def simulate_message(
             )
             function_called = request.function_call
             function_result = result
+
+            if request.function_call.startswith("save_record_"):
+                save_record_events.append(
+                    {
+                        "record_saved": result.get("record_saved", False),
+                        "message": result.get("message", "Record could not be saved"),
+                    }
+                )
 
             if result.get("action") == "end":
                 state.is_ended = True
@@ -616,6 +625,7 @@ async def simulate_message(
         function_called = llm_response.get("function_called")
         function_result = llm_response.get("function_result")
         error_detail = llm_response.get("error")
+        save_record_events = llm_response.get("save_record_events", [])
 
         if llm_response.get("is_ended"):
             state.is_ended = True
@@ -625,6 +635,13 @@ async def simulate_message(
         response_text,
         {"function_called": function_called, "function_result": function_result},
     )
+
+    for event in save_record_events:
+        state.add_message(
+            "system",
+            event.get("message", "Record could not be saved"),
+            {"record_saved": event.get("record_saved", False)},
+        )
 
     suggested_functions = _get_suggested_functions(executor)
 
@@ -663,6 +680,7 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
 
     all_functions_called = []
     all_function_results = []
+    save_record_events: list[dict] = []
     is_ended = False
     max_iterations = 5
     last_text_content = ""
@@ -838,6 +856,14 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                     all_functions_called.append(function_name)
                     all_function_results.append(result)
 
+                    if function_name.startswith("save_record_"):
+                        save_record_events.append(
+                            {
+                                "record_saved": result.get("record_saved", False),
+                                "message": result.get("message", "Record could not be saved"),
+                            }
+                        )
+
                     if result.get("action") in ["end", "transfer"]:
                         is_ended = True
 
@@ -858,6 +884,7 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                         else None,
                         "function_result": last_result,
                         "is_ended": True,
+                        "save_record_events": save_record_events,
                     }
             else:
                 content = assistant_message.content or ""
@@ -869,6 +896,7 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                     "function_called": all_functions_called[-1] if all_functions_called else None,
                     "function_result": all_function_results[-1] if all_function_results else None,
                     "is_ended": is_ended,
+                    "save_record_events": save_record_events,
                 }
 
         return {
@@ -877,6 +905,7 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
             "function_called": all_functions_called[-1] if all_functions_called else None,
             "function_result": all_function_results[-1] if all_function_results else None,
             "is_ended": is_ended,
+            "save_record_events": save_record_events,
         }
 
     except Exception as e:
@@ -894,6 +923,7 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
             "function_result": all_function_results[-1] if all_function_results else None,
             "is_ended": False,
             "error": error_summary,
+            "save_record_events": save_record_events,
         }
 
 

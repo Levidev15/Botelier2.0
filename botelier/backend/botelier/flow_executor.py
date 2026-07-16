@@ -3383,7 +3383,11 @@ class FlowExecutor:
                 f"SAVE_RECORD: saved {record_type_name} record for type "
                 f"{record_type_id} (call_sid={self.call_sid})"
             )
-            return _result(True, f"Saved {record_type_name} record")
+            field_summary = ", ".join(f"{k}: {v}" for k, v in data.items()) if data else ""
+            success_msg = f"Saved {record_type_name} record"
+            if field_summary:
+                success_msg = f"{success_msg} — {field_summary}"
+            return _result(True, success_msg)
         except Exception as exc:  # noqa: BLE001 - never break a live call
             logger.error(f"SAVE_RECORD node {node_id} failed: {exc}", exc_info=True)
             try:
