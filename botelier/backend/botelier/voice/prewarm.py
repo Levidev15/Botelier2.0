@@ -39,12 +39,22 @@ from loguru import logger
 MAX_GREETING_PCM_BYTES = 1_048_576
 
 
+# HOT-PATH CONTRACT — AssistantSnapshot
+# This dataclass must mirror every attribute the hot call path reads from the
+# assistant object AFTER the pre-warm DB session has been closed. Any feature
+# that adds a new `assistant.<attr>` read inside `_build_function_schemas_and_handlers`,
+# `resolve_session_property_id`, or any other function called with the snapshot
+# must also add the field here AND populate it in the `AssistantSnapshot(...)` call
+# in `prewarm_call_config` below — in the same commit.
 @dataclass
 class AssistantSnapshot:
     """Plain-Python projection of the columns the consumer reads after the
     pre-warm session has been closed. Replaces the detached ORM object on
     :class:`PreWarmBundle` so the hot path never touches SQLAlchemy state
     that may have expired (Task #122).
+
+    Captured fields: ``id``, ``account_id``, ``name``, ``description``,
+    ``call_settings``, ``property_id``.
     """
 
     id: str
@@ -52,14 +62,21 @@ class AssistantSnapshot:
     name: str
     description: Optional[str] = None
     call_settings: Optional[Dict] = field(default_factory=dict)
+    property_id: Optional[str] = None
 
 
+# HOT-PATH CONTRACT — ToolSnapshot
+# This dataclass must mirror every attribute the hot call path reads from tool
+# objects AFTER the pre-warm DB session has been closed. Any feature that adds a
+# new `tool.<attr>` read inside `FunctionMapper` or `_build_function_schemas_and_handlers`
+# must also add the field here AND populate it in the list comprehension below —
+# in the same commit.
 @dataclass
 class ToolSnapshot:
     """Plain-Python projection of the Tool ORM columns consumed on the hot
     path (Task #122). Mirrors the ``Tool`` attribute surface used by
     :class:`FunctionMapper` and ``_build_function_schemas_and_handlers``:
-    ``name``, ``description``, ``tool_type``, ``config``.
+    ``id``, ``name``, ``description``, ``tool_type``, ``config``.
 
     ``tool_type`` is the original Python enum value — enums are immutable
     and session-independent, so they survive ``expunge_all`` cleanly.
@@ -67,6 +84,7 @@ class ToolSnapshot:
     decouple from SQLAlchemy's mutable-tracking proxy.
     """
 
+    id: str
     name: str
     description: Optional[str]
     tool_type: Any
@@ -80,8 +98,9 @@ class PreWarmBundle:
     """
 
     # `assistant` used to be a detached ORM row; it is now an
-    # :class:`AssistantSnapshot` carrying only the scalar columns the hot
-    # path actually reads (id, account_id, name, description).
+    # :class:`AssistantSnapshot` carrying the scalar columns the hot path
+    # actually reads (id, account_id, name, description, call_settings,
+    # property_id). See the HOT-PATH CONTRACT comment above the dataclass.
     assistant: Optional[AssistantSnapshot] = None
     config: Any = None  # VoiceAgentConfig built from the assistant
     tools: List[Any] = field(default_factory=list)
@@ -357,6 +376,7 @@ async def _build_bundle(
                 )
                 tools = [
                     ToolSnapshot(
+                        id=str(_t.id),
                         name=_t.name,
                         description=_t.description,
                         tool_type=_t.tool_type,
@@ -422,6 +442,7 @@ async def _build_bundle(
                 name=assistant.name,
                 description=getattr(assistant, "description", None),
                 call_settings=dict(assistant.call_settings or {}),
+                property_id=str(assistant.property_id) if assistant.property_id else None,
             )
             # Detach everything from the session so the build-time
             # ``_create_agent_config`` read can still touch attributes
