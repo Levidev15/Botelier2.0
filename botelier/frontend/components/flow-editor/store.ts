@@ -28,6 +28,24 @@ function getAuthHeaders(): Record<string, string> {
   return headers;
 }
 
+async function extractErrorMessage(response: Response, fallback: string): Promise<string> {
+  try {
+    const body = await response.json();
+    const detail = body?.detail;
+    if (detail && typeof detail === "object" && Array.isArray(detail.errors)) {
+      const label = detail.message || fallback;
+      return `${label}: ${detail.errors.join(", ")}`;
+    } else if (detail && typeof detail === "object" && detail.message) {
+      return detail.message;
+    } else if (typeof detail === "string" && detail) {
+      return detail;
+    }
+  } catch {
+    // Response body was not JSON; keep the generic fallback.
+  }
+  return fallback;
+}
+
 export type SlotType = "text" | "date" | "number" | "phone" | "email" | "time" | "choice";
 
 export interface FlowVariable {
@@ -1710,7 +1728,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       const response = await fetch(`/api/tools/${toolId}/flow?account_id=${accountId}${sourceParam}`, {
         headers: { ...getAuthHeaders() },
       });
-      if (!response.ok) throw new Error("Failed to load flow");
+      if (!response.ok) throw new Error(await extractErrorMessage(response, "Failed to load flow"));
       
       const data = await response.json();
       
@@ -1774,7 +1792,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         `/api/tools/${toolId}/flow?account_id=${accountId}&version=${versionNumber}`,
         { headers: { ...getAuthHeaders() } }
       );
-      if (!response.ok) throw new Error("Failed to load version");
+      if (!response.ok) throw new Error(await extractErrorMessage(response, "Failed to load version"));
 
       const data = await response.json();
 
@@ -1946,7 +1964,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         headers: { ...getAuthHeaders() },
       });
       
-      if (!response.ok) throw new Error("Failed to discard draft");
+      if (!response.ok) throw new Error(await extractErrorMessage(response, "Failed to discard draft"));
       
       // Reload the published version
       await get().loadFlow(toolId, accountId, "published");
@@ -1994,7 +2012,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         }
       );
       
-      if (!response.ok) throw new Error("Failed to revert to version");
+      if (!response.ok) throw new Error(await extractErrorMessage(response, "Failed to revert to version"));
       
       // Reload the flow
       await get().loadFlow(toolId, accountId);
