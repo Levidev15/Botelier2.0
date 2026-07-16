@@ -1424,6 +1424,13 @@ class FlowExecutor:
                 var_key = slot.get("variableKey")
                 if var_key and var_key not in self.state.collected_slots:
                     slots_to_expose.add(var_key)
+        elif current_node and current_node.type in _ACTION_NODE_TYPES:
+            # Sitting on an action node (SAVE_RECORD, API_REQUEST, ROUTER, etc.) — the
+            # action must fire before any downstream collect slot is reachable.
+            # Exposing a downstream slot here lets the LLM call it first, which advances
+            # the flow state past the action node without it ever executing.
+            # Leave slots_to_expose empty; only the action tool itself will be in the list.
+            pass
         else:
             # Not on a collect node - find next reachable collect node
             next_collect_node, next_var_key = self._find_next_reachable_collect_slot()
