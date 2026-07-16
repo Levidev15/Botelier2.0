@@ -40,10 +40,10 @@ router = APIRouter(prefix="/api/calls", tags=["Calls"])
 
 
 def _get_call_handler():
-    """Lazy import to avoid circular dependencies"""
-    from .websockets import call_handler
+    """Lazy import to avoid circular dependencies."""
+    from .websockets import _get_call_handler as _ws_get
 
-    return call_handler
+    return _ws_get()
 
 
 def _event_exists(db: Session, call_log_id, event_type: str) -> bool:
