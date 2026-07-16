@@ -248,20 +248,7 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
       setPublishDescription("");
     } catch (error: any) {
       const errorMessage = error?.message || "Failed to publish flow";
-      if (errorMessage.includes("validation failed") || errorMessage.includes("errors")) {
-        try {
-          const parsed = JSON.parse(errorMessage.replace("Flow validation failed: ", ""));
-          if (parsed.errors && Array.isArray(parsed.errors)) {
-            toast.error(`Validation failed: ${parsed.errors.join(", ")}`);
-          } else {
-            toast.error(errorMessage);
-          }
-        } catch {
-          toast.error(errorMessage);
-        }
-      } else {
-        toast.error(errorMessage);
-      }
+      toast.error(errorMessage);
     } finally {
       setIsPublishing(false);
     }

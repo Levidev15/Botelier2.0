@@ -1877,11 +1877,17 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       });
       
       if (!response.ok) {
-        const error = await response.json();
-        if (error.detail && typeof error.detail === "object" && error.detail.errors) {
-          throw new Error(`Flow validation failed: ${error.detail.errors.join(", ")}`);
+        const errorBody = await response.json().catch(() => ({}));
+        const detail = errorBody.detail;
+        let message: string;
+        if (detail && typeof detail === "object" && Array.isArray(detail.errors)) {
+          message = `Flow validation failed: ${detail.errors.join(", ")}`;
+        } else if (typeof detail === "string" && detail) {
+          message = detail;
+        } else {
+          message = "Failed to publish flow";
         }
-        throw new Error(error.detail || "Failed to publish flow");
+        throw new Error(message);
       }
       
       const result = await response.json();
