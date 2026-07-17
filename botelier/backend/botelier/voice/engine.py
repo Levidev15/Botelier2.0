@@ -20,6 +20,7 @@ from pipecat.processors.idle_frame_processor import IdleFrameProcessor
 
 from pipecat.frames.frames import (
     AudioRawFrame,
+    BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     CancelFrame,
     EndFrame,
@@ -53,9 +54,13 @@ from pipecat.processors.aggregators.llm_response_universal import (
 )
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 from pipecat.transcriptions.language import Language
+from pipecat.turns.user_mute.always_user_mute_strategy import AlwaysUserMuteStrategy
 from pipecat.turns.user_mute.function_call_user_mute_strategy import FunctionCallUserMuteStrategy
 from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy import (
     MuteUntilFirstBotCompleteUserMuteStrategy,
+)
+from pipecat.turns.user_start.min_words_user_turn_start_strategy import (
+    MinWordsUserTurnStartStrategy,
 )
 from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
@@ -78,33 +83,66 @@ def is_external_vad_effectively_enabled(config: VoiceAgentConfig) -> bool:
 
 
 class InterruptionTracker(FrameProcessor):
-    """Tracks TTS content being spoken and detects when it's interrupted.
+    """Tracks the full response being spoken and detects when it's interrupted.
 
-    Placed before TTS in the pipeline to monitor text frames.
+    Placed before TTS in the pipeline to monitor text frames.  Accumulates the
+    ENTIRE current response (all token/sentence chunks between
+    LLMFullResponseStartFrame and the next response start) rather than only the
+    last chunk — the interruption callback receives the full generated text so
+    transcript extraction can match it against the committed (possibly
+    partially-spoken) context message by prefix.  The buffer is intentionally
+    NOT cleared on LLMFullResponseEndFrame: an interruption can arrive while
+    TTS is still speaking a fully-generated response.
+
     When an InterruptionFrame is detected, calls the callback with the
-    content that was interrupted.
+    accumulated content that was interrupted.
     """
 
     def __init__(self, on_interruption: Callable[[str], None] | None = None, **kwargs):
         super().__init__(**kwargs)
-        self._current_text = ""
+        self._buffer = ""
+        self._bot_speaking = False
         self._on_interruption = on_interruption
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
-        # Track outgoing TTS content (text frames from LLM)
-        if isinstance(frame, (TextFrame, TTSSpeakFrame)):
-            if hasattr(frame, "text") and frame.text:
-                self._current_text = frame.text
-                logger.debug(f"🎤 Tracking TTS: {frame.text[:50]}...")
+        if isinstance(frame, LLMFullResponseStartFrame):
+            # New response starting — previous response finished uninterrupted.
+            self._buffer = ""
 
-        # Detect interruption
+        elif isinstance(frame, TTSSpeakFrame):
+            # Standalone utterance (e.g. greeting) — replaces the buffer.
+            if frame.text:
+                self._buffer = frame.text
+                logger.debug(f"🎤 Tracking TTS (speak): {frame.text[:50]}...")
+
+        elif isinstance(frame, TextFrame):
+            # LLM token/sentence chunks — accumulate the full response.
+            if frame.text:
+                self._buffer += frame.text
+
+        elif isinstance(frame, BotStartedSpeakingFrame):
+            self._bot_speaking = True
+
+        elif isinstance(frame, BotStoppedSpeakingFrame):
+            # Bot finished speaking normally (or an interruption was already
+            # handled) — the buffered response was fully delivered, so it can
+            # never be "interrupted" after this point.
+            self._bot_speaking = False
+            self._buffer = ""
+
+        # Detect interruption.  CRITICAL: Pipecat broadcasts InterruptionFrame
+        # on EVERY user turn start (not only during bot speech), so a normal
+        # caller reply after a fully-spoken response also delivers one here.
+        # Only an interruption that arrives WHILE the bot is speaking actually
+        # cut a response short — gate on bot-speaking state or we would mark
+        # every completed response as interrupted.
         if isinstance(frame, InterruptionFrame):
-            if self._current_text and self._on_interruption:
-                logger.info(f"🛑 Interruption detected for: {self._current_text[:50]}...")
-                self._on_interruption(self._current_text)
-            self._current_text = ""  # Reset after interruption
+            if self._bot_speaking and self._buffer.strip() and self._on_interruption:
+                logger.info(f"🛑 Interruption detected for: {self._buffer[:50]}...")
+                self._on_interruption(self._buffer)
+            self._buffer = ""  # Reset after interruption
 
         # CRITICAL: Always push frames through to next processor
         await self.push_frame(frame, direction)
@@ -1777,25 +1815,68 @@ class VoiceEngineFactory:
                 # while ~0.35–0.45 is the recommended noisy-environment tuning band.
                 min_volume=vad_config.get("min_volume", 0.4),
             )
+            # Barge-in gating — background-noise / echo false-interruption fix.
+            #
+            # Pipecat's DEFAULT user-turn start strategies are
+            # [VADUserTurnStartStrategy, TranscriptionUserTurnStartStrategy]:
+            # raw VAD energy (line noise, background voices, echo of the bot's
+            # own speech) starts a user turn and, while the bot is speaking,
+            # immediately broadcasts an interruption with ZERO transcribed
+            # words.  MinWordsUserTurnStartStrategy instead requires
+            # >= min_words transcribed words to interrupt while the bot is
+            # speaking (1 word when the bot is silent), so noise that STT never
+            # transcribes can no longer cut the bot off mid-word.  Trade-off:
+            # legitimate barge-in waits for the first interim transcription
+            # (~300 ms).  Set vad_config.interrupt_min_words=0 to restore the
+            # legacy raw-VAD start behaviour for an assistant.
+            # Defensive coercion: vad_config is an unvalidated JSONB dict from
+            # the API — bad operator input must never crash call setup.
+            try:
+                interrupt_min_words = max(0, int(float(vad_config.get("interrupt_min_words", 2) or 0)))
+            except (TypeError, ValueError):
+                logger.warning(
+                    f"Invalid vad_config.interrupt_min_words value "
+                    f"{vad_config.get('interrupt_min_words')!r} — falling back to default 2"
+                )
+                interrupt_min_words = 2
+
+            stop_strategies = [
+                TurnAnalyzerUserTurnStopStrategy(
+                    turn_analyzer=LocalSmartTurnAnalyzerV3(
+                        params=SmartTurnParams(
+                            stop_secs=vad_config.get("smart_turn_stop_secs", 0.5),
+                        )
+                    )
+                )
+            ]
+            if interrupt_min_words > 0:
+                turn_strategies = UserTurnStrategies(
+                    start=[MinWordsUserTurnStartStrategy(min_words=interrupt_min_words)],
+                    stop=stop_strategies,
+                )
+            else:
+                turn_strategies = UserTurnStrategies(stop=stop_strategies)
+
+            user_mute_strategies = [
+                MuteUntilFirstBotCompleteUserMuteStrategy(),
+                FunctionCallUserMuteStrategy(),
+            ]
+            if not config.enable_interruptions:
+                # Per-assistant "interruptible" toggle OFF: suppress ALL caller
+                # frames (audio, VAD events, transcriptions, interruptions)
+                # while the bot is speaking — callers cannot barge in at all.
+                user_mute_strategies.insert(0, AlwaysUserMuteStrategy())
+
             user_params = LLMUserAggregatorParams(
                 vad_analyzer=SileroVADAnalyzer(params=vad_params),
-                user_turn_strategies=UserTurnStrategies(
-                    stop=[
-                        TurnAnalyzerUserTurnStopStrategy(
-                            turn_analyzer=LocalSmartTurnAnalyzerV3(
-                                params=SmartTurnParams(
-                                    stop_secs=vad_config.get("smart_turn_stop_secs", 0.5),
-                                )
-                            )
-                        )
-                    ]
-                ),
-                user_mute_strategies=[
-                    MuteUntilFirstBotCompleteUserMuteStrategy(),
-                    FunctionCallUserMuteStrategy(),
-                ],
+                user_turn_strategies=turn_strategies,
+                user_mute_strategies=user_mute_strategies,
             )
-            logger.info(f"Silero VAD + SmartTurn wired into LLMUserAggregator: {vad_params}")
+            logger.info(
+                f"Silero VAD + SmartTurn wired into LLMUserAggregator: {vad_params} | "
+                f"interrupt_min_words={interrupt_min_words} | "
+                f"interruptions={'enabled' if config.enable_interruptions else 'DISABLED (caller muted during bot speech)'}"
+            )
 
         elif is_flux_model(config.stt_model):
             # Flux path: apply mute strategies WITHOUT a VAD analyzer or SmartTurn.
@@ -1818,15 +1899,23 @@ class VoiceEngineFactory:
             # spuriously fire StartOfTurn during bot speech, and broadcast_interruption()
             # is only triggered by genuine caller speech that arrives after the mute
             # window closes.
+            flux_mute_strategies = [
+                MuteUntilFirstBotCompleteUserMuteStrategy(),
+                FunctionCallUserMuteStrategy(),
+            ]
+            if not config.enable_interruptions:
+                # Per-assistant "interruptible" toggle OFF: no caller audio
+                # reaches Flux while the bot is speaking, so Flux can never
+                # fire StartOfTurn → broadcast_interruption() during bot speech.
+                flux_mute_strategies.insert(0, AlwaysUserMuteStrategy())
+
             user_params = LLMUserAggregatorParams(
-                user_mute_strategies=[
-                    MuteUntilFirstBotCompleteUserMuteStrategy(),
-                    FunctionCallUserMuteStrategy(),
-                ],
+                user_mute_strategies=flux_mute_strategies,
             )
             logger.info(
                 f"Deepgram Flux mute strategies wired into LLMUserAggregator "
-                f"(model={config.stt_model!r}); VAD/SmartTurn omitted — Flux owns turn detection"
+                f"(model={config.stt_model!r}); VAD/SmartTurn omitted — Flux owns turn detection | "
+                f"interruptions={'enabled' if config.enable_interruptions else 'DISABLED (caller muted during bot speech)'}"
             )
 
         context_aggregator = LLMContextAggregatorPair(context, user_params=user_params)

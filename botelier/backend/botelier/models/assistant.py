@@ -93,6 +93,10 @@ class Assistant(Base):
         JSONB, nullable=True, default=dict
     )  # VADParams: confidence, start_secs, stop_secs, min_volume, smart_turn_stop_secs
 
+    # Barge-in control: when False, callers cannot interrupt the bot while it
+    # is speaking (caller audio is muted during bot speech on all STT paths).
+    allow_interruptions = Column(Boolean, nullable=False, default=True, server_default="true")
+
     # Status
     is_active = Column(Boolean, default=True)
 
@@ -153,6 +157,7 @@ class Assistant(Base):
             "vad_enabled": self.vad_enabled,
             "vad_provider": self.vad_provider,
             "vad_config": self.vad_config or {},
+            "allow_interruptions": True if self.allow_interruptions is None else self.allow_interruptions,
             "is_active": self.is_active,
             "flow_config": self.flow_config,
             "sms_config": self.sms_config or {},

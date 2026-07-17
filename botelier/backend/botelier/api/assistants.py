@@ -58,6 +58,7 @@ class AssistantCreate(BaseModel):
     vad_enabled: bool = False
     vad_provider: Optional[str] = None
     vad_config: Optional[dict] = None
+    allow_interruptions: bool = True
     is_active: bool = True
     call_settings: Optional[dict] = None
 
@@ -90,6 +91,7 @@ class AssistantUpdate(BaseModel):
     vad_enabled: Optional[bool] = None
     vad_provider: Optional[str] = None
     vad_config: Optional[dict] = None
+    allow_interruptions: Optional[bool] = None
     is_active: Optional[bool] = None
     flow_config: Optional[dict] = None
     sms_config: Optional[dict] = None
@@ -132,6 +134,7 @@ class AssistantResponse(BaseModel):
     vad_enabled: bool
     vad_provider: Optional[str]
     vad_config: Optional[dict]
+    allow_interruptions: bool = True
     is_active: bool
     flow_config: Optional[dict]
     sms_config: Optional[dict] = None
@@ -222,6 +225,7 @@ async def create_assistant(
         vad_enabled=data.vad_enabled,
         vad_provider=data.vad_provider,
         vad_config=data.vad_config or {},
+        allow_interruptions=data.allow_interruptions,
         is_active=data.is_active,
         call_settings=data.call_settings or {},
     )

@@ -757,6 +757,10 @@ WHERE answered_at IS NULL
     "CREATE INDEX IF NOT EXISTS ix_record_activity_account_created ON record_activity(account_id, created_at)",
     # Task #390 — per-user UI preferences (e.g. saved dashboard timezone).
     "ALTER TABLE users ADD COLUMN IF NOT EXISTS ui_preferences JSONB NOT NULL DEFAULT '{}'",
+    # Per-assistant barge-in control: when FALSE, callers cannot interrupt the
+    # bot mid-response (AlwaysUserMuteStrategy suppresses caller audio while
+    # the bot is speaking). Applies to both Silero-VAD and Deepgram Flux paths.
+    "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS allow_interruptions BOOLEAN NOT NULL DEFAULT TRUE",
 ]
 
 

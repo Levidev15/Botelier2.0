@@ -1494,10 +1494,12 @@ class CallHandler:
             self.interrupted_responses[call_sid] = set()
 
         if content and content.strip():
-            # Store first 100 chars as key (enough to match uniquely)
-            key = content.strip()[:100]
-            self.interrupted_responses[call_sid].add(key)
-            logger.debug(f"🛑 Marked interrupted: {key[:50]}...")
+            # Store the FULL generated text. The committed context message may
+            # be only the spoken PREFIX of this text (word-timestamp TTS), so
+            # matching in _extract_transcript is prefix-tolerant in both
+            # directions — a fixed-length key can never match reliably.
+            self.interrupted_responses[call_sid].add(content.strip())
+            logger.debug(f"🛑 Marked interrupted: {content.strip()[:50]}...")
 
     async def _create_agent_config(self, assistant: Assistant) -> VoiceAgentConfig:
         """Convert database Assistant model to VoiceAgentConfig.
@@ -1595,7 +1597,10 @@ You have access to the following Q&A knowledge base. Use this information to ans
             system_prompt=enhanced_prompt,
             greeting_message=assistant.first_message or "Hello! How can I help you today?",
             enable_function_calling=True,
-            enable_interruptions=True,
+            # Per-assistant barge-in toggle. NULL (pre-migration rows) = allowed.
+            enable_interruptions=(
+                True if assistant.allow_interruptions is None else bool(assistant.allow_interruptions)
+            ),
             enable_vad=assistant.vad_enabled,
             vad_provider=assistant.vad_provider,
             vad_config=assistant.vad_config or {},
@@ -1991,6 +1996,32 @@ You have access to the following Q&A knowledge base. Use this information to ans
         tools_used_set = set()
         interrupted_set = self.interrupted_responses.get(call_sid, set())
 
+        def _matches_interrupted(text: str) -> bool:
+            """Prefix-tolerant match of a transcript message against interrupted responses.
+
+            The committed context message may be only the spoken prefix of the
+            generated response (word-timestamp TTS commits spoken words only),
+            or the full generated text (TTS providers without word timestamps).
+            Compare the overlapping prefix (up to 80 chars) in both directions;
+            require at least 12 overlapping chars to avoid false positives on
+            trivially short strings.
+            """
+            if not interrupted_set:
+                return False
+            t = text.strip().lower()
+            if not t:
+                return False
+            for stored in interrupted_set:
+                s = stored.strip().lower()
+                if not s:
+                    continue
+                if s == t:
+                    return True
+                n = min(len(s), len(t), 80)
+                if n >= 12 and s[:n] == t[:n]:
+                    return True
+            return False
+
         try:
             messages = None
 
@@ -2062,11 +2093,9 @@ You have access to the following Q&A knowledge base. Use this information to ans
                 content = content.strip()
 
                 is_interrupted = False
-                if role == "assistant" and interrupted_set:
-                    key = content[:100]
-                    if key in interrupted_set:
-                        is_interrupted = True
-                        logger.debug(f"Marking message as interrupted: {key[:50]}...")
+                if role == "assistant" and _matches_interrupted(content):
+                    is_interrupted = True
+                    logger.debug(f"Marking message as interrupted: {content[:50]}...")
 
                 transcript.append({"role": role, "content": content, "interrupted": is_interrupted})
 
@@ -2133,20 +2162,30 @@ You have access to the following Q&A knowledge base. Use this information to ans
                 )
 
                 if not already_committed:
-                    transcript.append(
-                        {
-                            "role": "assistant",
-                            "content": captured_text,
-                            "interrupted": False,
-                            "incomplete": True,
-                            "timestamp": _fmt_elapsed(last_capture["elapsed_s"]),
-                        }
-                    )
-                    logger.info(
-                        f"📋 Recovered incomplete AI response ({len(captured_text)} chars) "
-                        f"at T+{last_capture['elapsed_s']:.1f}s for call {call_sid} "
-                        f"— caller hung up before LLM context committed"
-                    )
+                    if _matches_interrupted(captured_text):
+                        # The response was generated but interruption cancelled it
+                        # before (or while) it was spoken, and no spoken portion was
+                        # committed to context. Appending it would show the AI
+                        # "saying" something the caller never heard — skip it.
+                        logger.info(
+                            f"📋 Skipping recovery of interrupted, never-spoken response "
+                            f"({len(captured_text)} chars) for call {call_sid}"
+                        )
+                    else:
+                        transcript.append(
+                            {
+                                "role": "assistant",
+                                "content": captured_text,
+                                "interrupted": False,
+                                "incomplete": True,
+                                "timestamp": _fmt_elapsed(last_capture["elapsed_s"]),
+                            }
+                        )
+                        logger.info(
+                            f"📋 Recovered incomplete AI response ({len(captured_text)} chars) "
+                            f"at T+{last_capture['elapsed_s']:.1f}s for call {call_sid} "
+                            f"— caller hung up before LLM context committed"
+                        )
 
         except Exception as e:
             logger.exception(f"Error extracting transcript: {e}")

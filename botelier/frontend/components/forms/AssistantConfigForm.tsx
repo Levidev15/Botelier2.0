@@ -44,6 +44,7 @@ interface Assistant {
   vad_enabled: boolean;
   vad_provider: string | null;
   vad_config: any;
+  allow_interruptions: boolean;
   system_prompt: string | null;
   first_message: string | null;
   language: string;
@@ -128,6 +129,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
     vad_enabled: false,
     vad_provider: null,
     vad_config: {},
+    allow_interruptions: true,
     system_prompt: "You are a helpful hotel concierge assistant. Be friendly, professional, and helpful.",
     first_message: "Hello! Thank you for calling. How may I assist you today?",
     language: "en",
@@ -1014,6 +1016,25 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
                   </FormField>
 
                   <FormField
+                    label="Interrupt Minimum Words"
+                    description="Number of transcribed words required before a caller can interrupt the assistant mid-speech. Prevents background noise, echo, and stray sounds from cutting the assistant off. Set to 0 to allow raw voice-activity (any sound) to interrupt immediately. Default: 2"
+                  >
+                    <input
+                      type="number"
+                      min="0"
+                      max="10"
+                      step="1"
+                      value={formData.vad_config?.interrupt_min_words ?? 2}
+                      onChange={(e) => {
+                        const val = parseInt(e.target.value, 10);
+                        const newConfig = { ...formData.vad_config, interrupt_min_words: isNaN(val) ? 2 : val };
+                        handleFieldChange("vad_config", newConfig);
+                      }}
+                      className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                    />
+                  </FormField>
+
+                  <FormField
                     label="SmartTurn End-of-Turn Silence (seconds)"
                     description="How long silence must persist after speech before SmartTurn concludes the user has finished their turn. Distinct from VAD Stop Delay — this drives the ML turn-completion model. Default: 0.5"
                   >
@@ -1200,6 +1221,28 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
           description="Configure per-assistant call control thresholds used for analytics and future call-lifecycle enforcement"
         >
           <div className="space-y-6">
+            <div className="flex items-start gap-3">
+              <label className="relative inline-flex items-center cursor-pointer mt-0.5">
+                <input
+                  type="checkbox"
+                  checked={formData.allow_interruptions ?? true}
+                  onChange={(e) => handleFieldChange("allow_interruptions", e.target.checked)}
+                  className="sr-only peer"
+                />
+                <div className="w-11 h-6 bg-gray-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-blue-600"></div>
+              </label>
+              <div>
+                <p className="text-sm font-medium text-white">Allow Caller Interruptions (Barge-In)</p>
+                <p className="text-xs text-gray-500 mt-1">
+                  When on, callers can talk over the assistant to interrupt it mid-response.
+                  When off, the caller&apos;s audio is ignored while the assistant is speaking —
+                  the assistant always finishes what it is saying before listening again.
+                  Turn this off for noisy environments (speakerphones, lobbies) where background
+                  voices keep cutting the assistant off.
+                </p>
+              </div>
+            </div>
+
             <FormField
               label="Max Call Duration (seconds)"
               tooltip="Reserved for future use: maximum allowed call length before automatic hang-up. Default: 600 seconds (10 min)."
