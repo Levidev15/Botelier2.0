@@ -876,12 +876,35 @@ class FlowExecutor:
         if current_node_context:
             context_parts.append(current_node_context)
 
+        # Collect the variable keys owned by the current node so we can avoid
+        # emitting their instructions a second time — _get_current_node_context()
+        # already surfaces them as "Node instructions:" in the block above.
+        current_node = self.state.get_current_node()
+        current_node_var_keys: set[str] = set()
+        if current_node:
+            if current_node.type == NodeType.COLLECT_SLOT:
+                slot = current_node.data.get("slot", {})
+                var_key = slot.get("variableKey")
+                if var_key:
+                    current_node_var_keys.add(var_key)
+            elif current_node.type == NodeType.COLLECT_FORM:
+                for s in current_node.data.get("slots", []):
+                    var_key = s.get("variableKey")
+                    if var_key:
+                        current_node_var_keys.add(var_key)
+
         ordered_vars = self.get_variables_in_flow_order()
         slots_to_collect = []
 
         for var in ordered_vars:
             if var.key not in self.state.collected_slots:
-                node_instructions = self._get_instructions_for_variable(var.key)
+                # Only fetch per-slot instructions for future nodes; the current
+                # node's instructions are already in the node-context block above.
+                node_instructions = (
+                    None
+                    if var.key in current_node_var_keys
+                    else self._get_instructions_for_variable(var.key)
+                )
                 validation = self._get_validation_for_variable(var.key)
 
                 slot_info = f"- {var.key}: {var.description} ({var.type.value})"
@@ -3689,6 +3712,11 @@ class FlowExecutor:
 
     async def _handle_end_call(self, function_name: str, arguments: dict) -> dict:
         """Handle ending the call."""
+        # Idempotency guard: if the call is already ending (e.g. a second LLM turn
+        # arrived while EndFrame was propagating), swallow the duplicate silently.
+        if self.state.is_complete:
+            return {"success": True, "message": "", "action": "end"}
+
         node_id = function_name.replace("end_call_", "")
         node = None
         for n in self.flow_config.nodes:

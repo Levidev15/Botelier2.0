@@ -1541,10 +1541,45 @@ class VoiceEngineFactory:
             # start_tts_usage_metrics(), unlike Cartesia.  We call it before
             # delegating so the MetricsFrame is pushed once per synthesis
             # request — the same call path Cartesia uses internally.
+            #
+            # Word substitutions: Deepgram Aura-2 mispronounces certain words
+            # regardless of context (e.g. "washcloths" → "washcloth-es",
+            # "spelled" → "es-pelled").  A substitution pass runs on every
+            # text chunk before it reaches the Deepgram API.  Built-in defaults
+            # cover known Aura-2 bugs; operators can extend or override via
+            # tts_config["word_substitutions"] on the assistant (word → replacement,
+            # case-insensitive whole-word match, preserves original casing of
+            # the replacement string as written).
+            import re as _re
+
+            _default_substitutions: dict[str, str] = {
+                "washcloths": "wash cloths",
+                "washcloth": "wash cloth",
+                "spelled": "spelt",
+                "spells": "spells",
+            }
+            _word_substitutions: dict[str, str] = {
+                **_default_substitutions,
+                **config.tts_config.get("word_substitutions", {}),
+            }
+            # Pre-compile patterns once at call-setup time (not per utterance).
+            _sub_patterns: list[tuple[_re.Pattern, str]] = [
+                (_re.compile(r"\b" + _re.escape(word) + r"\b", _re.IGNORECASE), replacement)
+                for word, replacement in _word_substitutions.items()
+            ]
+
             class _BotelierDeepgramTTSService(DeepgramTTSService):
+                @staticmethod
+                def _apply_substitutions(text: str) -> str:
+                    for pattern, replacement in _sub_patterns:
+                        text = pattern.sub(replacement, text)
+                    return text
+
                 async def run_tts(self, text: str, context_id: str):
                     await self.start_tts_usage_metrics(text)
-                    async for frame in super().run_tts(text, context_id):
+                    async for frame in super().run_tts(
+                        self._apply_substitutions(text), context_id
+                    ):
                         yield frame
 
             from pipecat.services.tts_service import TextAggregationMode
