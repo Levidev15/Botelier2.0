@@ -452,7 +452,7 @@ class CallHandler:
                     # Fetch tools for function calling (if enabled) before closing session
                     tools = []
                     if config.enable_function_calling and assistant.tool_set_id:
-                        from ..models.tool import Tool
+                        from ..models.tool import Tool, ToolType
 
                         tools = (
                             db.query(Tool)
