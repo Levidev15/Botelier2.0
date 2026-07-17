@@ -25,6 +25,7 @@ from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPI
 from ..database import SessionLocal
 from ..models.assistant import Assistant
 from ..models.phone_number import PhoneNumber
+from ..models.tool import ToolType
 from ..services.call_event_queue import CallEventQueue
 from ..services.call_logger import CallLogger
 from ..services.property_scope import resolve_session_property_id
@@ -452,7 +453,7 @@ class CallHandler:
                     # Fetch tools for function calling (if enabled) before closing session
                     tools = []
                     if config.enable_function_calling and assistant.tool_set_id:
-                        from ..models.tool import Tool, ToolType
+                        from ..models.tool import Tool
 
                         tools = (
                             db.query(Tool)
@@ -1805,7 +1806,9 @@ You have access to the following Q&A knowledge base. Use this information to ans
 
                         logger.info(f"✅ Built function schema for tool: {tool.name}")
                 except Exception as e:
-                    logger.error(f"Failed to build schema for tool {tool.name}: {e}")
+                    # A failure here silently drops the tool from the live call —
+                    # log the full traceback so registration failures are loud.
+                    logger.exception(f"Failed to build schema for tool {tool.name}: {e}")
 
             # Always-on "talk to a human" escalation tool. Registered as a
             # non-flow tool so it stays available even during flow execution;
