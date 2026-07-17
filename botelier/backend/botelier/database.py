@@ -737,6 +737,26 @@ WHERE answered_at IS NULL
     "CREATE INDEX IF NOT EXISTS ix_approval_requests_call_sid ON approval_requests(call_sid)",
     "CREATE INDEX IF NOT EXISTS ix_approval_requests_integration ON approval_requests(integration_id)",
     "CREATE INDEX IF NOT EXISTS ix_approval_requests_action ON approval_requests(action_id)",
+    # Task #390 — per-record audit trail. record_id deliberately has NO foreign
+    # key so the "deleted" entry survives the record row's deletion.
+    """
+    CREATE TABLE IF NOT EXISTS record_activity (
+        id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+        account_id UUID NOT NULL REFERENCES accounts(id) ON DELETE CASCADE,
+        record_id UUID NOT NULL,
+        actor_user_id UUID REFERENCES users(id) ON DELETE SET NULL,
+        action VARCHAR(32) NOT NULL,
+        old_status VARCHAR(60),
+        new_status VARCHAR(60),
+        changed_fields JSONB,
+        created_at TIMESTAMP NOT NULL DEFAULT NOW()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ix_record_activity_account_id ON record_activity(account_id)",
+    "CREATE INDEX IF NOT EXISTS ix_record_activity_record_created ON record_activity(record_id, created_at)",
+    "CREATE INDEX IF NOT EXISTS ix_record_activity_account_created ON record_activity(account_id, created_at)",
+    # Task #390 — per-user UI preferences (e.g. saved dashboard timezone).
+    "ALTER TABLE users ADD COLUMN IF NOT EXISTS ui_preferences JSONB NOT NULL DEFAULT '{}'",
 ]
 
 

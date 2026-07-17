@@ -10,7 +10,7 @@ import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { usePagePermission, AccessDeniedPage } from "@/components/ui/PermissionGate";
 import { usePermissions } from "@/lib/auth/usePermissions";
-import { loadTimezone, saveTimezone } from "@/components/analytics/TimezonePicker";
+import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
 
 export default function CallLogsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
@@ -96,13 +96,11 @@ export default function CallLogsPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [accountId]);
 
-  const [timezone, setTimezone] = useState<string>("UTC");
-  useEffect(() => { setTimezone(loadTimezone()); }, []);
+  const { timezone, setTimezone } = useTimezonePreference();
   const [showFilters, setShowFilters] = useState(false);
 
   const handleTimezoneChange = (newTimezone: string) => {
     setTimezone(newTimezone);
-    saveTimezone(newTimezone);
   };
 
   const [page, setPage] = useState(1);

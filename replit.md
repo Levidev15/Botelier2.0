@@ -58,6 +58,8 @@ Botelier is a multi-tenant, multichannel AI platform that provides businesses wi
 - **Billing API (admin):** `botelier/backend/botelier/api/admin_billing.py` — `/api/admin/billing/accounts`, `/{id}/detail`, `/{id}/config`.
 - **Billing alert service:** `botelier/backend/botelier/services/billing_alert_service.py` — threshold check + email dispatch.
 - **Email service:** `botelier/backend/botelier/services/email_service.py` — SMTP delivery wrapper.
+- **Record activity log:** `botelier/backend/botelier/models/record_activity.py` (`record_id` has NO FK so delete entries survive); logging staged in-transaction in `api/records.py` `_log_activity`; `GET /api/records/{id}/activity` synthesizes a created entry when none persisted. Timeline UI in `records/components/RecordFormModal.tsx`.
+- **Per-user UI preferences:** `users.ui_preferences` JSONB; `GET/PATCH /api/auth/preferences` (`api/auth.py`, timezone validated via `zoneinfo`). Frontend: `lib/hooks/useTimezonePreference.ts` (localStorage-first, server-reconciled) shared by records + call-logs pages.
 - **Property model:** `botelier/backend/botelier/models/property.py` — `Property` (per-account location); nullable `property_id` FKs on `phone_number`, `assistant`, `AccountIntegration`.
 - **Property scope resolver:** `botelier/backend/botelier/services/property_scope.py` — `resolve_session_property_id(dialed_number, assistant, db)` (precedence: phone → assistant → None).
 - **Properties API:** `botelier/backend/botelier/api/properties.py` — `/api/properties` CRUD. Permissions: `properties.view`, `properties.manage`.

@@ -1,23 +1,39 @@
 "use client";
 
-import { useState } from "react";
-import { X, Loader2 } from "lucide-react";
+import { useEffect, useState } from "react";
+import { X, Loader2, Plus, Pencil, Trash2, History } from "lucide-react";
 import { notify } from "@/lib/notifications";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import type { RecordType, RecordRow, FieldDef } from "../types";
+import { formatDateTime } from "../types";
 
 interface Props {
   accountId: string;
   recordType: RecordType;
   record: RecordRow | null;
+  timezone?: string;
   onClose: () => void;
   onSaved: () => void;
+}
+
+interface ActivityEntry {
+  id: string;
+  action: string;
+  actor_name: string | null;
+  old_status: string | null;
+  new_status: string | null;
+  changed_fields: string[];
+  created_at: string | null;
+  synthesized?: boolean;
+  source_channel?: string;
+  capture_method?: string;
 }
 
 export default function RecordFormModal({
   accountId,
   recordType,
   record,
+  timezone,
   onClose,
   onSaved,
 }: Props) {
@@ -27,6 +43,44 @@ export default function RecordFormModal({
   const [data, setData] = useState<Record<string, any>>(() => ({ ...(record?.data || {}) }));
   const [statusValue, setStatusValue] = useState<string>(record?.status || "");
   const [saving, setSaving] = useState(false);
+
+  const [activity, setActivity] = useState<ActivityEntry[]>([]);
+  const [loadingActivity, setLoadingActivity] = useState(false);
+
+  useEffect(() => {
+    if (!isEdit || !record) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        setLoadingActivity(true);
+        const res = await authFetch(
+          `/api/records/${record.id}/activity?account_id=${accountId}`
+        );
+        if (!res.ok) return;
+        const json = await res.json();
+        if (!cancelled) setActivity(Array.isArray(json?.activity) ? json.activity : []);
+      } catch {
+        // Timeline is auxiliary — the form still works without it.
+      } finally {
+        if (!cancelled) setLoadingActivity(false);
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isEdit, record?.id, accountId]);
+
+  const statusLabel = (value: string | null) => {
+    if (!value) return null;
+    const opt = (recordType.status_options || []).find((s) => s.value === value);
+    return opt?.label || value;
+  };
+
+  const fieldLabel = (key: string) => {
+    const f = (recordType.fields || []).find((fd) => fd.key === key);
+    return f?.label || key;
+  };
 
   const setField = (key: string, value: any) => {
     setData((prev) => ({ ...prev, [key]: value }));
@@ -119,6 +173,39 @@ export default function RecordFormModal({
               This record type has no fields defined yet. Add fields in Manage Types.
             </p>
           )}
+
+          {isEdit && (
+            <div className="pt-4 border-t border-gray-800">
+              <h3 className="text-sm font-medium text-gray-300 flex items-center gap-2 mb-3">
+                <History className="h-4 w-4 text-gray-500" /> Activity
+              </h3>
+              {loadingActivity ? (
+                <div className="flex items-center gap-2 text-sm text-gray-500 py-2">
+                  <Loader2 className="h-4 w-4 animate-spin" /> Loading activity…
+                </div>
+              ) : activity.length === 0 ? (
+                <p className="text-sm text-gray-500">No activity recorded yet.</p>
+              ) : (
+                <ol className="space-y-3">
+                  {[...activity].reverse().map((entry) => (
+                    <li key={entry.id} className="flex gap-3">
+                      <span className="mt-0.5 flex h-6 w-6 flex-shrink-0 items-center justify-center rounded-full bg-[#1a1a1a] border border-gray-800">
+                        <ActivityIcon action={entry.action} />
+                      </span>
+                      <div className="min-w-0">
+                        <p className="text-sm text-gray-200">
+                          {describeActivity(entry, statusLabel, fieldLabel)}
+                        </p>
+                        <p className="text-xs text-gray-500 mt-0.5">
+                          {formatDateTime(entry.created_at, timezone)}
+                        </p>
+                      </div>
+                    </li>
+                  ))}
+                </ol>
+              )}
+            </div>
+          )}
         </div>
 
         <div className="flex justify-end gap-2 px-6 py-4 border-t border-gray-800 sticky bottom-0 bg-[#0d0d0d]">
@@ -140,6 +227,57 @@ export default function RecordFormModal({
       </div>
     </div>
   );
+}
+
+function ActivityIcon({ action }: { action: string }) {
+  if (action === "created") return <Plus className="h-3 w-3 text-emerald-400" />;
+  if (action === "deleted") return <Trash2 className="h-3 w-3 text-red-400" />;
+  return <Pencil className="h-3 w-3 text-indigo-400" />;
+}
+
+function describeActivity(
+  entry: ActivityEntry,
+  statusLabel: (v: string | null) => string | null,
+  fieldLabel: (k: string) => string
+): string {
+  if (entry.action === "created") {
+    if (entry.synthesized) {
+      const via =
+        entry.source_channel === "voice"
+          ? "a voice call"
+          : entry.source_channel === "sms"
+          ? "an SMS conversation"
+          : null;
+      const by = entry.actor_name ? ` by ${entry.actor_name}` : "";
+      if (via) return `Captured from ${via}${by}`;
+      return `Created${by}`;
+    }
+    const by = entry.actor_name ? ` by ${entry.actor_name}` : "";
+    const withStatus = entry.new_status
+      ? ` with status "${statusLabel(entry.new_status)}"`
+      : "";
+    return `Created${by}${withStatus}`;
+  }
+
+  if (entry.action === "deleted") {
+    const by = entry.actor_name ? ` by ${entry.actor_name}` : "";
+    return `Deleted${by}`;
+  }
+
+  // updated
+  const by = entry.actor_name ? ` by ${entry.actor_name}` : "";
+  const parts: string[] = [];
+  if (entry.old_status !== null || entry.new_status !== null) {
+    const from = statusLabel(entry.old_status) || "—";
+    const to = statusLabel(entry.new_status) || "—";
+    parts.push(`status changed from "${from}" to "${to}"`);
+  }
+  if (entry.changed_fields?.length) {
+    parts.push(`updated ${entry.changed_fields.map(fieldLabel).join(", ")}`);
+  }
+  if (!parts.length) return `Updated${by}`;
+  const desc = parts.join("; ");
+  return `${desc.charAt(0).toUpperCase()}${desc.slice(1)}${by}`;
 }
 
 function FieldInput({

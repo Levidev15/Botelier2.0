@@ -179,7 +179,8 @@
 }
 
 [data-theme="light"] .themed-app .hover\:bg-gray-900:hover,
-[data-theme="light"] .themed-app .hover\:bg-\[\#0a0a0a\]:hover {
+[data-theme="light"] .themed-app .hover\:bg-\[\#0a0a0a\]:hover,
+[data-theme="light"] .themed-app .hover\:bg-\[\#0e0e0e\]:hover {
   background-color: #f1f5f9;
 }
 

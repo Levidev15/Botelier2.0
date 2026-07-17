@@ -84,7 +84,7 @@ export function sourceMeta(channel: string): { label: string } {
   }
 }
 
-export function formatDateTime(iso?: string | null): string {
+export function formatDateTime(iso?: string | null, timezone?: string): string {
   if (!iso) return "—";
   try {
     const d = new Date(iso);
@@ -94,6 +94,7 @@ export function formatDateTime(iso?: string | null): string {
       day: "numeric",
       hour: "2-digit",
       minute: "2-digit",
+      ...(timezone ? { timeZone: timezone } : {}),
     });
   } catch {
     return iso;

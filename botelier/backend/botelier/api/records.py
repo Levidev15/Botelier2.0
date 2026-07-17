@@ -15,11 +15,13 @@ from fastapi.responses import StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy import String, cast, or_
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, joinedload
 
 from ..auth.middleware import check_account_permission, get_current_user
 from ..database import get_db
+from ..models.assistant import Assistant
 from ..models.record import CaptureMethod, Record, SourceChannel
+from ..models.record_activity import RecordActivity, RecordActivityAction
 from ..models.record_type import RecordType
 from ..models.user import User
 
@@ -35,6 +37,41 @@ class RecordCreate(BaseModel):
 class RecordUpdate(BaseModel):
     data: Optional[Dict[str, Any]] = None
     status: Optional[str] = None
+
+
+def _log_activity(
+    db: Session,
+    *,
+    account_id: UUID,
+    record_id: UUID,
+    user: Optional[User],
+    action: str,
+    old_status: Optional[str] = None,
+    new_status: Optional[str] = None,
+    changed_fields: Optional[List[str]] = None,
+) -> None:
+    """Stage a record audit-trail entry (committed with the caller's write).
+
+    The entry rides in the same transaction as the business write so the
+    audit trail can never show an action that was rolled back.
+    """
+    db.add(
+        RecordActivity(
+            account_id=account_id,
+            record_id=record_id,
+            actor_user_id=user.id if user else None,
+            action=action,
+            old_status=old_status,
+            new_status=new_status,
+            changed_fields=changed_fields,
+        )
+    )
+
+
+def _diff_data_keys(old: Dict[str, Any], new: Dict[str, Any]) -> List[str]:
+    """Return the sorted list of field keys whose values differ."""
+    keys = set(old.keys()) | set(new.keys())
+    return sorted(k for k in keys if old.get(k) != new.get(k))
 
 
 def _apply_record_filters(
@@ -240,6 +277,77 @@ def _fmt_cell(value: Any) -> str:
     return str(value)
 
 
+@router.get("/{record_id}/activity")
+async def get_record_activity(
+    record_id: UUID,
+    account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """List a record's audit-trail entries (oldest first).
+
+    If no persisted "created" entry exists (records captured by voice/SMS or
+    created before the audit trail shipped), a synthesized creation entry is
+    derived from the record's own metadata so every timeline starts at the
+    beginning.
+    """
+    check_account_permission(user, str(account_id), "records.view", db)
+
+    record = (
+        db.query(Record)
+        .filter(Record.id == record_id, Record.account_id == account_id)
+        .first()
+    )
+    if not record:
+        raise HTTPException(status_code=404, detail="Record not found")
+
+    rows = (
+        db.query(RecordActivity)
+        .options(joinedload(RecordActivity.actor))
+        .filter(
+            RecordActivity.record_id == record_id,
+            RecordActivity.account_id == account_id,
+        )
+        .order_by(RecordActivity.created_at.asc())
+        .all()
+    )
+    entries = [r.to_dict() for r in rows]
+
+    if not any(r.action == RecordActivityAction.CREATED for r in rows):
+        assistant_name = None
+        if record.assistant_id:
+            assistant = (
+                db.query(Assistant)
+                .filter(
+                    Assistant.id == record.assistant_id,
+                    Assistant.account_id == account_id,
+                )
+                .first()
+            )
+            assistant_name = assistant.name if assistant else None
+        entries.insert(
+            0,
+            {
+                "id": f"synthesized-created-{record.id}",
+                "record_id": str(record.id),
+                "action": RecordActivityAction.CREATED,
+                "actor_user_id": None,
+                "actor_name": assistant_name,
+                "old_status": None,
+                "new_status": None,
+                "changed_fields": [],
+                "created_at": record.created_at.isoformat() + "Z"
+                if record.created_at
+                else None,
+                "synthesized": True,
+                "source_channel": record.source_channel,
+                "capture_method": record.capture_method,
+            },
+        )
+
+    return {"activity": entries}
+
+
 @router.get("/{record_id}")
 async def get_record(
     record_id: UUID,
@@ -287,6 +395,15 @@ async def create_record(
         capture_method=CaptureMethod.MANUAL.value,
     )
     db.add(record)
+    db.flush()
+    _log_activity(
+        db,
+        account_id=account_id,
+        record_id=record.id,
+        user=user,
+        action=RecordActivityAction.CREATED,
+        new_status=record.status,
+    )
     db.commit()
     db.refresh(record)
 
@@ -313,11 +430,28 @@ async def update_record(
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
 
+    old_data = dict(record.data or {})
+    old_status = record.status
+
     update_data = data.model_dump(exclude_unset=True)
     if "data" in update_data and update_data["data"] is not None:
         record.data = update_data["data"]
     if "status" in update_data:
         record.status = update_data["status"]
+
+    changed_fields = _diff_data_keys(old_data, dict(record.data or {}))
+    status_changed = record.status != old_status
+    if changed_fields or status_changed:
+        _log_activity(
+            db,
+            account_id=account_id,
+            record_id=record.id,
+            user=user,
+            action=RecordActivityAction.UPDATED,
+            old_status=old_status if status_changed else None,
+            new_status=record.status if status_changed else None,
+            changed_fields=changed_fields or None,
+        )
 
     record.updated_at = datetime.utcnow()
     db.commit()
@@ -345,6 +479,14 @@ async def delete_record(
     if not record:
         raise HTTPException(status_code=404, detail="Record not found")
 
+    _log_activity(
+        db,
+        account_id=account_id,
+        record_id=record.id,
+        user=user,
+        action=RecordActivityAction.DELETED,
+        old_status=record.status,
+    )
     db.delete(record)
     db.commit()
 

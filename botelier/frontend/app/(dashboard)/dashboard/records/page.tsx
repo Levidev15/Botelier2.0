@@ -20,6 +20,8 @@ import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { usePermissions } from "@/lib/auth/usePermissions";
 import { usePagePermission, AccessDeniedPage } from "@/components/ui/PermissionGate";
+import TimezonePicker from "@/components/analytics/TimezonePicker";
+import { useTimezonePreference } from "@/lib/hooks/useTimezonePreference";
 import type { RecordType, RecordRow, FieldDef } from "./types";
 import { formatCell, formatDateTime, sourceMeta } from "./types";
 import RecordFormModal from "./components/RecordFormModal";
@@ -56,6 +58,7 @@ export default function RecordsPage() {
 
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState<RecordRow | null>(null);
+  const { timezone, setTimezone } = useTimezonePreference();
 
   const selectedType = useMemo(
     () => recordTypes.find((t) => t.id === selectedTypeId) || null,
@@ -231,6 +234,7 @@ export default function RecordsPage() {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <TimezonePicker value={timezone} onChange={setTimezone} />
             {canExport && selectedType && (
               <button
                 onClick={handleExport}
@@ -436,7 +440,7 @@ export default function RecordsPage() {
                             className="border-t border-gray-800 hover:bg-[#0e0e0e]"
                           >
                             <td className="px-4 py-3 whitespace-nowrap text-gray-300">
-                              {formatDateTime(r.created_at)}
+                              {formatDateTime(r.created_at, timezone)}
                             </td>
                             <td className="px-4 py-3 whitespace-nowrap">
                               {sourceHref ? (
@@ -551,6 +555,7 @@ export default function RecordsPage() {
           accountId={accountId}
           recordType={selectedType}
           record={editing}
+          timezone={timezone}
           onClose={() => {
             setShowForm(false);
             setEditing(null);

@@ -2,6 +2,7 @@
 
 import os
 import uuid
+import zoneinfo
 from datetime import datetime, timedelta
 from typing import Optional
 
@@ -11,6 +12,7 @@ from jose import ExpiredSignatureError, JWTError, jwt
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
 
+from botelier.auth.middleware import get_current_user
 from botelier.database import get_db
 from botelier.models.invitation import AccountInvitation, InvitationStatus
 from botelier.models.role import AccountMembership
@@ -293,3 +295,40 @@ async def validate_token(request: ValidateTokenRequest, db: Session = Depends(ge
         return ValidateTokenResponse(valid=False)
     except Exception:
         return ValidateTokenResponse(valid=False)
+
+
+class UIPreferencesUpdate(BaseModel):
+    timezone: Optional[str] = Field(default=None, max_length=64)
+
+
+@router.get("/preferences")
+async def get_ui_preferences(user: User = Depends(get_current_user)):
+    """Return the authenticated user's UI preferences (e.g. saved timezone)."""
+    return user.ui_preferences or {}
+
+
+@router.patch("/preferences")
+async def update_ui_preferences(
+    request: UIPreferencesUpdate,
+    db: Session = Depends(get_db),
+    user: User = Depends(get_current_user),
+):
+    """Merge the provided UI preferences into the user's saved preferences."""
+    updates = request.model_dump(exclude_unset=True)
+
+    if "timezone" in updates and updates["timezone"] is not None:
+        try:
+            zoneinfo.ZoneInfo(updates["timezone"])
+        except (zoneinfo.ZoneInfoNotFoundError, ValueError, KeyError):
+            raise HTTPException(status_code=400, detail="Invalid timezone identifier")
+
+    prefs = dict(user.ui_preferences or {})
+    for key, value in updates.items():
+        if value is None:
+            prefs.pop(key, None)
+        else:
+            prefs[key] = value
+
+    user.ui_preferences = prefs
+    db.commit()
+    return prefs

@@ -11,7 +11,7 @@ from datetime import datetime
 
 from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text
 from sqlalchemy import Enum as SQLEnum
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
 from botelier.database import Base
@@ -58,6 +58,11 @@ class User(Base):
     user_type = Column(SQLEnum(UserType), default=UserType.ACCOUNT_USER, nullable=False)
 
     is_active = Column(Boolean, default=True)
+
+    # Small per-user UI preferences (e.g. {"timezone": "America/New_York"}).
+    # Server-persisted so choices like the dashboard timezone survive sessions
+    # and devices. Never store secrets here.
+    ui_preferences = Column(JSONB, nullable=False, server_default="{}", default=dict)
 
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
