@@ -1292,6 +1292,42 @@ class FunctionMapper:
             await _asyncio.sleep(0.25)
 
             await params.llm.push_frame(TTSSpeakFrame(goodbye_message))
+
+            # Issue a Twilio REST hangup so the call terminates reliably on
+            # both Azure and Replit.  With auto_hang_up=False on
+            # TwilioFrameSerializer, pushing EndFrame only closes the WebSocket
+            # — Twilio may not hang up the PSTN leg immediately.  This mirrors
+            # the approach used by the transfer tool (REST Dial before EndFrame).
+            # The REST call is skipped in the simulator (no twilio_client /
+            # call_sid) and handled gracefully on 404 (call already ended).
+            if self.twilio_client and self.call_sid:
+                try:
+                    await _asyncio.to_thread(
+                        lambda: self.twilio_client.calls(self.call_sid).update(
+                            status="completed"
+                        )
+                    )
+                    logger.info(
+                        f"📵 REST hangup issued for call {self.call_sid} (end_call tool)"
+                    )
+                except _TwilioRestException as _e:
+                    if _e.status == 404:
+                        logger.warning(
+                            f"REST hangup 404 for call {self.call_sid} — call already ended"
+                        )
+                    else:
+                        logger.warning(
+                            f"REST hangup failed for call {self.call_sid}: {_e} — continuing EndFrame"
+                        )
+                except Exception as _e:
+                    logger.warning(
+                        f"REST hangup unexpected error for call {self.call_sid}: {_e} — continuing EndFrame"
+                    )
+            else:
+                logger.debug(
+                    f"No Twilio client/call_sid — skipping REST hangup (simulator or test context)"
+                )
+
             await params.llm.push_frame(EndFrame())
 
         return function_schema, end_call_handler
@@ -1869,8 +1905,41 @@ class FunctionMapper:
                 return
 
             elif result.get("action") == "end":
+                import asyncio as _asyncio_end
+
                 end_msg = result.get("message", "Goodbye!")
                 await params.llm.push_frame(TTSSpeakFrame(end_msg))
+
+                # Issue Twilio REST hangup for reliable PSTN teardown — same
+                # guard and error handling as end_call_handler above.
+                if self.twilio_client and self.call_sid:
+                    try:
+                        await _asyncio_end.to_thread(
+                            lambda: self.twilio_client.calls(self.call_sid).update(
+                                status="completed"
+                            )
+                        )
+                        logger.info(
+                            f"📵 REST hangup issued for call {self.call_sid} (flow END node)"
+                        )
+                    except _TwilioRestException as _e:
+                        if _e.status == 404:
+                            logger.warning(
+                                f"REST hangup 404 for call {self.call_sid} (flow END) — call already ended"
+                            )
+                        else:
+                            logger.warning(
+                                f"REST hangup failed for call {self.call_sid} (flow END): {_e} — continuing EndFrame"
+                            )
+                    except Exception as _e:
+                        logger.warning(
+                            f"REST hangup unexpected error for call {self.call_sid} (flow END): {_e} — continuing EndFrame"
+                        )
+                else:
+                    logger.debug(
+                        f"No Twilio client/call_sid — skipping REST hangup for flow END (simulator or test context)"
+                    )
+
                 await params.llm.push_frame(EndFrame())
                 return
 
