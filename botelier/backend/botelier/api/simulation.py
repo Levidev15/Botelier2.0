@@ -749,6 +749,25 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                 tools.extend(state.capability_schemas)
             if state.dynamic_operation_schemas:
                 tools.extend(state.dynamic_operation_schemas)
+
+            # Simulator parity with the live voice end_call gate: while a
+            # side-effect node (SAVE_RECORD, API_REQUEST, CAPABILITY,
+            # CONFIRMATION, SET_VARIABLE) is pending downstream — or the flow
+            # sits directly on one — strip any end_call_* tool so the LLM
+            # cannot skip the required step by ending the call prematurely.
+            # In the simulator, end_call_* only appears via the flow's own
+            # get_function_schemas() (there is no separate global end_call
+            # non-flow tool), so this filter covers the same logical gap.
+            _executor = state.executor
+            if (
+                _executor.is_on_required_action_node()
+                or _executor.has_pending_side_effect_downstream()
+            ):
+                tools = [
+                    t for t in tools
+                    if not t.get("function", {}).get("name", "").startswith("end_call_")
+                ]
+
             exposed_names = {
                 t["function"]["name"]
                 for t in tools

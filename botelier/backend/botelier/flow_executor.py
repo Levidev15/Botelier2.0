@@ -56,6 +56,21 @@ _ACTION_NODE_TYPES = frozenset(
     }
 )
 
+# Side-effect node types: nodes that mutate external state (persist records,
+# call APIs, set variables, confirm data) and must NEVER be skipped.  END and
+# TRANSFER are deliberately excluded — they are flow-control terminators, not
+# data-mutating actions, and should never block the global end_call gate on
+# their own.  Used by has_pending_side_effect_downstream().
+_SIDE_EFFECT_NODE_TYPES = frozenset(
+    {
+        NodeType.API_REQUEST,
+        NodeType.CAPABILITY,
+        NodeType.CONFIRMATION,
+        NodeType.SET_VARIABLE,
+        NodeType.SAVE_RECORD,
+    }
+)
+
 
 class SlotType(str, Enum):
     TEXT = "text"
@@ -996,6 +1011,12 @@ class FlowExecutor:
                 context_lines.append(
                     f'CURRENT NODE: Ask the customer (you may phrase naturally): "{resolved}"'
                 )
+            context_lines.append(
+                "IMPORTANT: Any answer — including 'No', 'Nothing else', 'I'm fine', "
+                "or any other declining response — is a valid answer. Call the collect "
+                "function to record it. Never call end_call yourself; the flow will "
+                "end the call after all required steps have completed."
+            )
 
         elif current_node.type == NodeType.COLLECT_FORM:
             intro = current_node.data.get("introMessage", "")
@@ -1015,6 +1036,12 @@ class FlowExecutor:
                     context_lines.append(
                         f'Then ask for {first_slot.get("variableKey")}: "{resolved}"'
                     )
+            context_lines.append(
+                "IMPORTANT: Any answer — including 'No', 'Nothing else', 'I'm fine', "
+                "or any other declining response — is a valid answer. Call the collect "
+                "function to record it. Never call end_call yourself; the flow will "
+                "end the call after all required steps have completed."
+            )
 
         elif current_node.type == NodeType.CONFIRMATION:
             confirmation_data = current_node.data.get("confirmation", {})
@@ -1070,6 +1097,23 @@ class FlowExecutor:
             if pre_message:
                 resolved = substitute_variables(pre_message, self.state.collected_slots)
                 context_lines.append(f'CURRENT NODE: Before transfer, say: "{resolved}"')
+
+        elif current_node.type == NodeType.SAVE_RECORD:
+            save_data = current_node.data.get(
+                "saveRecord", current_node.data.get("save_record", {})
+            )
+            record_type_name = (
+                save_data.get("recordTypeName")
+                or current_node.data.get("name")
+                or "record"
+            )
+            fn_name = f"save_record_{current_node.id}"
+            context_lines.append(
+                f"CURRENT NODE: Save Record — you MUST call `{fn_name}` NOW to "
+                f"save the collected '{record_type_name}' record. Do NOT end the "
+                f"call or say goodbye before calling this function — the record "
+                f"will be lost if you do."
+            )
 
         elif current_node.type in (NodeType.API_REQUEST, NodeType.CAPABILITY):
             api_config = current_node.data.get("api", {})
@@ -1252,6 +1296,62 @@ class FlowExecutor:
         """
         current = self.state.get_current_node()
         return current is not None and current.type in _ACTION_NODE_TYPES
+
+    def has_pending_side_effect_downstream(self) -> bool:
+        """Return True if a side-effect node exists on any reachable path ahead.
+
+        Side-effect nodes (``_SIDE_EFFECT_NODE_TYPES``): SAVE_RECORD, API_REQUEST,
+        CAPABILITY, CONFIRMATION, SET_VARIABLE.  END and TRANSFER are excluded —
+        they are flow-control terminators, not data mutators, and must not prevent
+        the LLM from ending a pure Q&A flow.
+
+        Unlike ``_get_reachable_action_node_ids``, this BFS **passes through**
+        unsatisfied collect nodes instead of stopping there.  The failing production
+        scenario is exactly "sitting on the final collect node ('anything else?')
+        while SAVE_RECORD is downstream" — the existing ``is_on_required_action_node``
+        check returned False in that position, leaving the global end_call available.
+
+        Used together with ``is_on_required_action_node()`` in FunctionMapper:
+        block global end_call if EITHER check is True.
+        """
+        current = self.state.get_current_node()
+        if not current:
+            return False
+
+        # Sitting directly on a side-effect node → True immediately.
+        if current.type in _SIDE_EFFECT_NODE_TYPES:
+            return True
+
+        node_by_id = {n.id: n for n in self.flow_config.nodes}
+        visited: set = set()
+        queue = list(self._bfs_next_targets(current))
+
+        while queue:
+            node_id = queue.pop(0)
+            if node_id in visited:
+                continue
+            visited.add(node_id)
+
+            node = node_by_id.get(node_id)
+            if not node:
+                continue
+
+            if node.type in _SIDE_EFFECT_NODE_TYPES:
+                return True
+
+            # END and TRANSFER are not side-effects; stop this branch without
+            # triggering the gate.
+            if node.type in (NodeType.END, NodeType.TRANSFER):
+                continue
+
+            # Every other node type — MESSAGE, INITIAL, CONDITION, ROUTER, and
+            # collect nodes (satisfied OR unsatisfied) — is transparent: keep
+            # traversing so downstream side-effects are always reachable.
+            for target in self._bfs_next_targets(node):
+                if target not in visited:
+                    queue.append(target)
+
+        return False
 
     def _get_reachable_action_node_ids(self) -> set:
         """Return ids of action nodes whose functions may be exposed right now.

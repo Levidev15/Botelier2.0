@@ -405,13 +405,25 @@ class FunctionMapper:
         try:
             flow_schemas = executor.get_function_schemas()
 
-            # When the flow is sitting on a required action node (e.g. SAVE_RECORD,
-            # API_REQUEST, CONFIRMATION) block the global end_call from the tool list.
-            # This prevents the LLM from skipping the action by calling end_call
-            # directly — the root cause of records not being saved when the caller
-            # goes on a detour before the flow's natural end.  The flow's own
+            # Block the global end_call from the tool list while any required
+            # side-effect (SAVE_RECORD, API_REQUEST, CAPABILITY, CONFIRMATION,
+            # SET_VARIABLE) has not yet fired — either because the flow is sitting
+            # directly on such a node, OR because the current node (typically a
+            # collect node) has a side-effect node pending downstream.
+            #
+            # The second case is the root cause of the "decline loses the record"
+            # bug: while on the final "anything else?" collect node, SAVE_RECORD
+            # is downstream but is_on_required_action_node() returned False (collect
+            # nodes are not action nodes), leaving end_call available for the LLM to
+            # skip straight past SAVE_RECORD on a "No" answer.
+            #
+            # Transfer/escalation tools are intentionally NOT blocked — callers
+            # can always escalate to a human even mid-flow.  The flow's own
             # end_call_<node_id> is still exposed via get_function_schemas() above.
-            on_required_action = executor.is_on_required_action_node()
+            on_required_action = (
+                executor.is_on_required_action_node()
+                or executor.has_pending_side_effect_downstream()
+            )
 
             function_schema_objects = []
 
