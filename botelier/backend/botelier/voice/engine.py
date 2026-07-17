@@ -1618,6 +1618,7 @@ class VoiceEngineFactory:
             # case-insensitive whole-word match, preserves original casing of
             # the replacement string as written).
             import re as _re
+            import json as _json
 
             _default_substitutions: dict[str, str] = {
                 "washcloths": "wash cloths",
@@ -1636,6 +1637,36 @@ class VoiceEngineFactory:
             ]
 
             class _BotelierDeepgramTTSService(DeepgramTTSService):
+                """Deepgram TTS with Botelier-specific enhancements.
+
+                1. TTSUsageMetrics: pipecat's DeepgramTTSService.run_tts() does not
+                   call start_tts_usage_metrics(); we call it so UsageObserver can
+                   capture TTS character counts.  Called once per run_tts invocation,
+                   on the original text before substitution.
+
+                2. Word-boundary substitution in TOKEN mode: pipecat's SimpleText
+                   Aggregator yields each raw LLM token immediately (e.g. "wash" /
+                   "cloth" / "s"), so the whole-word regex \\bwashcloths\\b never
+                   sees the complete word.  We buffer sub-word fragments until the
+                   last whitespace boundary and carry the trailing partial word into
+                   the next call.  flush_audio() sends the remaining partial as a
+                   Speak message before the Flush command so the trailing word of
+                   every utterance is always synthesised.
+
+                   In SENTENCE mode the complete sentence arrives in one call, so
+                   buffering is bypassed entirely to avoid cross-sentence artefacts.
+
+                   On interruption the buffer is cleared so stale partial words
+                   never leak into the next LLM response.
+                """
+
+                def __init__(self, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    # Partial-word accumulator keyed by context_id.
+                    # Populated in run_tts (TOKEN mode), drained in flush_audio,
+                    # and cleared wholesale on interruption.
+                    self._word_buffer: dict[str, str] = {}
+
                 @staticmethod
                 def _apply_substitutions(text: str) -> str:
                     for pattern, replacement in _sub_patterns:
@@ -1644,10 +1675,59 @@ class VoiceEngineFactory:
 
                 async def run_tts(self, text: str, context_id: str):
                     await self.start_tts_usage_metrics(text)
-                    async for frame in super().run_tts(
-                        self._apply_substitutions(text), context_id
-                    ):
-                        yield frame
+
+                    from pipecat.services.tts_service import TextAggregationMode
+
+                    if self._text_aggregation_mode != TextAggregationMode.TOKEN:
+                        # SENTENCE mode: the full sentence arrives at once;
+                        # whole-word regexes match correctly without buffering.
+                        async for frame in super().run_tts(
+                            self._apply_substitutions(text), context_id
+                        ):
+                            yield frame
+                        return
+
+                    # TOKEN mode: buffer sub-word fragments and only pass complete
+                    # words (everything up to the last whitespace) through substitution.
+                    # The trailing partial word is carried in _word_buffer until the
+                    # next token arrives or flush_audio() is called.
+                    pending = self._word_buffer.pop(context_id, "") + text
+                    ws_pos = max(pending.rfind(" "), pending.rfind("\n"), pending.rfind("\t"))
+                    if ws_pos >= 0:
+                        complete = pending[: ws_pos + 1]          # includes trailing ws
+                        self._word_buffer[context_id] = pending[ws_pos + 1 :]
+                    else:
+                        complete = ""
+                        self._word_buffer[context_id] = pending   # whole thing is partial
+
+                    if complete:
+                        async for frame in super().run_tts(
+                            self._apply_substitutions(complete), context_id
+                        ):
+                            yield frame
+
+                async def flush_audio(self, context_id: str | None = None):
+                    # Drain any buffered partial word BEFORE sending the Flush command.
+                    # Metrics for this text were already recorded in the run_tts call
+                    # that received it — do NOT call start_tts_usage_metrics here.
+                    ctx = context_id if context_id is not None else self._turn_context_id
+                    partial = self._word_buffer.pop(ctx, "") if ctx is not None else ""
+                    if partial and self._websocket:
+                        try:
+                            await self._websocket.send(
+                                _json.dumps(
+                                    {"type": "Speak", "text": self._apply_substitutions(partial)}
+                                )
+                            )
+                        except Exception as e:
+                            logger.error(f"{self} error flushing buffered word in TTS: {e}")
+                    await super().flush_audio(context_id)
+
+                async def on_audio_context_interrupted(self, context_id: str):
+                    # Clear all buffered partial words on interruption so nothing
+                    # leaks into the next LLM response.
+                    self._word_buffer.clear()
+                    await super().on_audio_context_interrupted(context_id)
 
             from pipecat.services.tts_service import TextAggregationMode
 
