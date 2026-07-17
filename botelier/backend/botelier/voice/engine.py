@@ -684,6 +684,8 @@ class TtsCompletionWatcher(FrameProcessor):
         self._speaking_done = asyncio.Event()
         self._speaking_done.set()  # Start in "done" state — no pending speech
         self._on_done_callback = None  # One-shot async callback
+        self._bot_speaking = False  # True between BotStarted/BotStoppedSpeakingFrame
+        self._guard_task = None  # Active timeout-guard task (cancelled on teardown)
 
     def reset(self):
         """Clear the completion event.
@@ -694,7 +696,9 @@ class TtsCompletionWatcher(FrameProcessor):
         """
         self._speaking_done.clear()
 
-    def schedule_after_speech(self, callback, timeout: float = 5.0) -> None:
+    def schedule_after_speech(
+        self, callback, timeout: float = 5.0, max_wait: float = 60.0
+    ) -> None:
         """Run ``callback`` as soon as the current speech is done.
 
         - If speech has already ended (event is set), fires callback immediately
@@ -702,10 +706,16 @@ class TtsCompletionWatcher(FrameProcessor):
         - If speech is still in progress, registers it as a one-shot callback
           that fires when the next BotStoppedSpeakingFrame arrives.
 
-        A safety ``timeout`` (default 5 s) guarantees the callback fires even
-        when BotStoppedSpeakingFrame never arrives — for example when Pipecat's
-        FunctionCallInProgressFrame wipes the TTS context before Deepgram audio
-        returns, leaving the pipeline silent and the event permanently unset.
+        The safety timeout is SPEECH-AWARE: ``timeout`` (default 5 s) only
+        applies while the bot is NOT audibly speaking — it covers the failure
+        case where speech never starts (e.g. Pipecat's FunctionCallInProgressFrame
+        wipes the TTS context before Deepgram audio returns, leaving the pipeline
+        silent and the event permanently unset).  Once BotStartedSpeakingFrame is
+        observed, the guard waits for the speech to finish naturally instead of
+        firing mid-sentence — a configured message longer than ``timeout`` seconds
+        of audio is no longer clipped.  ``max_wait`` (default 60 s) is the hard
+        upper bound so a stuck pipeline (BotStoppedSpeakingFrame lost while the
+        speaking flag stays set) can never strand a caller indefinitely.
 
         This is the preferred method for transfer handlers: call reset() first,
         then schedule_after_speech(), then push the TTSSpeakFrame, then return
@@ -719,8 +729,11 @@ class TtsCompletionWatcher(FrameProcessor):
 
         Args:
             callback: Async callable (no arguments) to invoke after speech ends.
-            timeout:  Seconds to wait for BotStoppedSpeakingFrame before firing
-                      the callback unconditionally.  Default 5 s.
+            timeout:  Seconds to wait for BotStoppedSpeakingFrame while the bot
+                      is not speaking, before firing the callback unconditionally.
+                      Default 5 s.
+            max_wait: Absolute ceiling in seconds regardless of speaking state.
+                      Default 60 s.
         """
         if self._speaking_done.is_set():
             asyncio.create_task(callback())
@@ -730,18 +743,49 @@ class TtsCompletionWatcher(FrameProcessor):
             self._on_done_callback = callback
 
             async def _timeout_guard():
-                try:
-                    await asyncio.wait_for(self._speaking_done.wait(), timeout=timeout)
-                except TimeoutError:
-                    # BotStoppedSpeakingFrame never arrived within the window.
-                    # Fire the callback now so the transfer is never permanently lost.
+                loop = asyncio.get_event_loop()
+                start = loop.time()
+                hard_deadline = start + max_wait
+                # Deadline while the bot is silent.  Re-armed each time we
+                # observe the bot actively speaking, so silence AFTER speech
+                # (e.g. a lost BotStoppedSpeakingFrame) still has a bounded wait.
+                silent_deadline = start + timeout
+                timed_out = False
+                while True:
+                    now = loop.time()
+                    if now >= hard_deadline:
+                        timed_out = True
+                        break
+                    if self._bot_speaking:
+                        # Bot is audibly speaking — do NOT fire mid-sentence.
+                        # Push the silence deadline forward so the post-speech
+                        # grace period restarts when speech ends.
+                        silent_deadline = now + timeout
+                    elif now >= silent_deadline:
+                        timed_out = True
+                        break
+                    try:
+                        await asyncio.wait_for(
+                            self._speaking_done.wait(), timeout=0.25
+                        )
+                        # Event set — process_frame fires the callback.
+                        return
+                    except TimeoutError:
+                        continue
+                if timed_out:
+                    # Fire the callback now so the action is never permanently lost.
                     # Check atomically: process_frame may have already fired it.
                     cb = self._on_done_callback
                     self._on_done_callback = None
+                    # Detach ourselves BEFORE awaiting the callback so a
+                    # concurrent clear_callback() (call teardown) can never
+                    # cancel an in-flight transfer/hangup mid-execution.
+                    self._guard_task = None
                     if cb is not None:
                         logger.warning(
                             f"TtsCompletionWatcher: BotStoppedSpeakingFrame did not arrive "
-                            f"within {timeout}s — firing transfer callback via timeout"
+                            f"(waited {loop.time() - start:.1f}s, bot_speaking={self._bot_speaking}) "
+                            f"— firing post-speech callback via timeout"
                         )
                         try:
                             await cb()
@@ -750,15 +794,22 @@ class TtsCompletionWatcher(FrameProcessor):
                                 "TtsCompletionWatcher: unhandled exception in timeout callback"
                             )
 
-            asyncio.create_task(_timeout_guard())
+            self._guard_task = asyncio.create_task(_timeout_guard())
 
     def clear_callback(self) -> None:
         """Remove any pending one-shot callback.
 
         Call this on pipeline shutdown or call hang-up to avoid firing a
-        stale transfer after the call has already ended.
+        stale transfer after the call has already ended.  Also cancels the
+        timeout-guard task so it doesn't linger (up to max_wait) polling for
+        a callback that no longer exists.  A guard that has already popped
+        its callback detaches itself first, so an in-flight action is never
+        cancelled mid-execution.
         """
         self._on_done_callback = None
+        if self._guard_task is not None and not self._guard_task.done():
+            self._guard_task.cancel()
+        self._guard_task = None
 
     async def wait_until_done(self, timeout: float = 15.0) -> bool:
         """Wait until BotStoppedSpeakingFrame is observed or the timeout expires.
@@ -778,8 +829,13 @@ class TtsCompletionWatcher(FrameProcessor):
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
+        if isinstance(frame, BotStartedSpeakingFrame):
+            # Track audible speech so the schedule_after_speech timeout guard
+            # never fires mid-sentence (see _timeout_guard).
+            self._bot_speaking = True
         if isinstance(frame, BotStoppedSpeakingFrame):
             logger.debug("TtsCompletionWatcher: BotStoppedSpeakingFrame received — signalling done")
+            self._bot_speaking = False
             self._speaking_done.set()
             # Fire and clear the one-shot callback if one is registered.
             # Use create_task so the callback runs outside this frame-processing

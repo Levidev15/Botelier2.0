@@ -30,9 +30,13 @@ from pipecat.services.llm_service import FunctionCallParams
 
 
 # Maximum time to wait for Twilio's playback mark acknowledgement before
-# continuing a transfer. The timeout is a safety net; a missing mark should not
-# strand a caller, but a received mark proves the pre-transfer phrase played.
-TWILIO_MARK_TIMEOUT_SECS: float = 2.0
+# continuing a transfer or hangup. The timeout is a safety net; a missing mark
+# should not strand a caller, but a received mark proves the configured phrase
+# fully played.  The mark is only sent AFTER BotStoppedSpeakingFrame, so the
+# remaining wait covers Twilio's outbound jitter buffer (typically a few
+# seconds of tail audio) — 2 s was too tight and clipped the end of longer
+# messages; 10 s comfortably covers the buffer without stranding anyone.
+TWILIO_MARK_TIMEOUT_SECS: float = 10.0
 
 
 class FunctionMapper:
@@ -197,6 +201,83 @@ class FunctionMapper:
         return await self._twilio_mark_watcher.send_mark_and_wait(
             mark_name, timeout=TWILIO_MARK_TIMEOUT_SECS
         )
+
+    async def _rest_hangup(self, label: str) -> None:
+        """Issue a Twilio REST hangup (status=completed) for reliable PSTN teardown.
+
+        With auto_hang_up=False on TwilioFrameSerializer, pushing EndFrame only
+        closes the WebSocket — Twilio may not hang up the PSTN leg immediately.
+        Skipped in the simulator (no twilio_client / call_sid) and handled
+        gracefully on 404 (call already ended).
+        """
+        if not (self.twilio_client and self.call_sid):
+            logger.debug(
+                f"No Twilio client/call_sid — skipping REST hangup ({label}; simulator or test context)"
+            )
+            return
+        try:
+            await asyncio.to_thread(
+                lambda: self.twilio_client.calls(self.call_sid).update(status="completed")
+            )
+            logger.info(f"📵 REST hangup issued for call {self.call_sid} ({label})")
+        except _TwilioRestException as _e:
+            if _e.status == 404:
+                logger.warning(
+                    f"REST hangup 404 for call {self.call_sid} ({label}) — call already ended"
+                )
+            else:
+                logger.warning(
+                    f"REST hangup failed for call {self.call_sid} ({label}): {_e} — continuing EndFrame"
+                )
+        except Exception as _e:
+            logger.warning(
+                f"REST hangup unexpected error for call {self.call_sid} ({label}): {_e} — continuing EndFrame"
+            )
+
+    async def _finalize_call_end(self, llm, label: str) -> None:
+        """Hang up the call AFTER the goodbye has been fully heard.
+
+        Runs as a post-speech callback (via TtsCompletionWatcher), so it starts
+        only after BotStoppedSpeakingFrame. It then awaits a Twilio playback
+        mark — Twilio acknowledges the mark only after all buffered outbound
+        audio has actually played to the caller — before issuing the REST
+        hangup and ending the pipeline. Same caller-heard boundary transfers use.
+        """
+        try:
+            await self._await_twilio_playback_mark(label)
+        except Exception as _mark_err:
+            logger.warning(
+                f"Playback-mark wait failed for call {self.call_sid} ({label}): {_mark_err} — proceeding with hangup"
+            )
+        await self._rest_hangup(label)
+        await llm.push_frame(EndFrame())
+
+    def _run_after_speech(self, callback, label: str, reset: bool = True) -> None:
+        """Register ``callback`` to fire once current speech completes.
+
+        Uses TtsCompletionWatcher when available (speech-aware, outside
+        Pipecat's function-call timeout); falls back to a fixed 3 s delay
+        otherwise. ``reset=True`` clears the watcher first so it waits for a
+        TTSSpeakFrame the caller is about to push; use ``reset=False`` when
+        the speech was initiated upstream.
+        """
+        if self._tts_completion_watcher is not None:
+            if reset:
+                self._tts_completion_watcher.reset()
+            self._tts_completion_watcher.schedule_after_speech(callback)
+            logger.info(
+                f"📋 {label} callback registered for call {self.call_sid} — will fire after speech"
+            )
+        else:
+
+            async def _delayed():
+                await asyncio.sleep(3.0)
+                await callback()
+
+            asyncio.create_task(_delayed())
+            logger.warning(
+                f"No TtsCompletionWatcher for call {self.call_sid} — using 3s fallback delay for {label}"
+            )
 
     def set_event_queue(self, event_queue) -> None:
         """Attach the CallEventQueue for this call.
@@ -1270,7 +1351,16 @@ class FunctionMapper:
         }
 
         async def end_call_handler(params: FunctionCallParams):
-            """End the call gracefully.
+            """End the call gracefully — AFTER the goodbye is fully heard.
+
+            Same decoupled pattern as transfer_handler: register a post-speech
+            callback on TtsCompletionWatcher, push the goodbye TTSSpeakFrame,
+            and return immediately.  The callback (_finalize_call_end) fires
+            once BotStoppedSpeakingFrame arrives, awaits a Twilio playback mark
+            (proof the caller heard the buffered audio), and only THEN issues
+            the REST hangup + EndFrame.  Previously the REST hangup was issued
+            immediately after pushing the TTSSpeakFrame, which killed the phone
+            leg before the goodbye played.
 
             IMPORTANT: Do NOT call result_callback here.  Calling it feeds the
             function result back into the LLM, triggering a new generation cycle.
@@ -1283,6 +1373,13 @@ class FunctionMapper:
 
             self.track_tool_usage(tool.name)
 
+            async def _finalize_end_call():
+                await self._finalize_call_end(params.llm, "end_call")
+
+            # Register BEFORE pushing the TTSSpeakFrame so the watcher waits
+            # for the goodbye we're about to speak.
+            self._run_after_speech(_finalize_end_call, label="End-call")
+
             # Yield to let FunctionCallInProgressFrame clear the TTS context
             # before we push TTSSpeakFrame.  Without this sleep, that frame
             # arrives ~67 ms after this handler runs and wipes the context we
@@ -1292,43 +1389,6 @@ class FunctionMapper:
             await _asyncio.sleep(0.25)
 
             await params.llm.push_frame(TTSSpeakFrame(goodbye_message))
-
-            # Issue a Twilio REST hangup so the call terminates reliably on
-            # both Azure and Replit.  With auto_hang_up=False on
-            # TwilioFrameSerializer, pushing EndFrame only closes the WebSocket
-            # — Twilio may not hang up the PSTN leg immediately.  This mirrors
-            # the approach used by the transfer tool (REST Dial before EndFrame).
-            # The REST call is skipped in the simulator (no twilio_client /
-            # call_sid) and handled gracefully on 404 (call already ended).
-            if self.twilio_client and self.call_sid:
-                try:
-                    await _asyncio.to_thread(
-                        lambda: self.twilio_client.calls(self.call_sid).update(
-                            status="completed"
-                        )
-                    )
-                    logger.info(
-                        f"📵 REST hangup issued for call {self.call_sid} (end_call tool)"
-                    )
-                except _TwilioRestException as _e:
-                    if _e.status == 404:
-                        logger.warning(
-                            f"REST hangup 404 for call {self.call_sid} — call already ended"
-                        )
-                    else:
-                        logger.warning(
-                            f"REST hangup failed for call {self.call_sid}: {_e} — continuing EndFrame"
-                        )
-                except Exception as _e:
-                    logger.warning(
-                        f"REST hangup unexpected error for call {self.call_sid}: {_e} — continuing EndFrame"
-                    )
-            else:
-                logger.debug(
-                    f"No Twilio client/call_sid — skipping REST hangup (simulator or test context)"
-                )
-
-            await params.llm.push_frame(EndFrame())
 
         return function_schema, end_call_handler
 
@@ -1905,42 +1965,24 @@ class FunctionMapper:
                 return
 
             elif result.get("action") == "end":
-                import asyncio as _asyncio_end
-
                 end_msg = result.get("message", "Goodbye!")
+
+                # Same decoupled pattern as end_call_handler: register the
+                # hangup as a post-speech callback, push the goodbye, return.
+                # _finalize_call_end awaits the Twilio playback mark before the
+                # REST hangup so the full message is heard.  Previously the
+                # REST hangup fired immediately after pushing the TTSSpeakFrame,
+                # clipping the flow END message.
+                async def _finalize_flow_end():
+                    await self._finalize_call_end(params.llm, "flow_end")
+
+                # Register BEFORE pushing the TTSSpeakFrame so the watcher
+                # waits for the goodbye we're about to speak.
+                self._run_after_speech(_finalize_flow_end, label="Flow END")
+
                 await params.llm.push_frame(TTSSpeakFrame(end_msg))
-
-                # Issue Twilio REST hangup for reliable PSTN teardown — same
-                # guard and error handling as end_call_handler above.
-                if self.twilio_client and self.call_sid:
-                    try:
-                        await _asyncio_end.to_thread(
-                            lambda: self.twilio_client.calls(self.call_sid).update(
-                                status="completed"
-                            )
-                        )
-                        logger.info(
-                            f"📵 REST hangup issued for call {self.call_sid} (flow END node)"
-                        )
-                    except _TwilioRestException as _e:
-                        if _e.status == 404:
-                            logger.warning(
-                                f"REST hangup 404 for call {self.call_sid} (flow END) — call already ended"
-                            )
-                        else:
-                            logger.warning(
-                                f"REST hangup failed for call {self.call_sid} (flow END): {_e} — continuing EndFrame"
-                            )
-                    except Exception as _e:
-                        logger.warning(
-                            f"REST hangup unexpected error for call {self.call_sid} (flow END): {_e} — continuing EndFrame"
-                        )
-                else:
-                    logger.debug(
-                        f"No Twilio client/call_sid — skipping REST hangup for flow END (simulator or test context)"
-                    )
-
-                await params.llm.push_frame(EndFrame())
+                # Do NOT call result_callback — same reasoning as the transfer
+                # branch above (a new LLM cycle would cancel in-flight TTS).
                 return
 
             # Add current progress to result for LLM context (non-terminal actions only)
