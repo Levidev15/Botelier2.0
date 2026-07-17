@@ -664,6 +664,9 @@ async def export_call_logs(
             "ACW Skip Reason",
             # Task #253 — transcript (last, so it doesn't shift prior columns).
             "Transcript",
+            # Task #397 — appended AFTER Transcript so every pre-existing
+            # column keeps its exact position (strict additive contract).
+            "Topic",
         ]
         writer.writerow(header)
 
@@ -753,6 +756,8 @@ async def export_call_logs(
                 log.acw_skip_reason or "",
                 # Task #253 — transcript:
                 transcript_cell,
+                # Task #397 — topic (appended last; see header comment):
+                log.acw_topic or "",
             ]
             writer.writerow(row)
 
@@ -968,6 +973,7 @@ async def generate_summary(
             "disposition_name": disposition.get("name") if disposition else None,
             "acw_resolution": result.get("acw_resolution"),
             "acw_quality_score": result.get("acw_quality_score"),
+            "acw_topic": result.get("acw_topic"),
             "acw_completed_at": result.get("acw_completed_at"),
         }
 

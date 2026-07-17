@@ -54,6 +54,7 @@ export interface CallLog {
   acw_resolution: string | null;
   acw_quality_score: number | null;
   acw_skip_reason?: string | null;
+  acw_topic?: string | null;
   caller_spoke?: boolean | null;
   ended_early: boolean;
   transfer_mode: string | null;

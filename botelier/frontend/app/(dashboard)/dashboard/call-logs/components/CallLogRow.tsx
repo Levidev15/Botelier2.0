@@ -245,6 +245,18 @@ export default function CallLogRow({
           </td>
         )}
 
+        {visibleColumns.has("topic") && (
+          <td className="px-4 py-3">
+            {log.acw_topic ? (
+              <span className="px-2 py-0.5 text-xs rounded-full border bg-teal-500/10 border-teal-500/30 text-teal-400">
+                {log.acw_topic}
+              </span>
+            ) : (
+              <span className="text-sm text-gray-500">-</span>
+            )}
+          </td>
+        )}
+
         {visibleColumns.has("resolution") && (
           <td className="px-4 py-3">
             {log.acw_resolution ? (

@@ -121,6 +121,9 @@ class CallLog(Base):
     # Task #98: system-side reason ACW was skipped (e.g. "no_caller_audio").
     # Distinct from acw_resolution which is the LLM-picked outcome.
     acw_skip_reason = Column(String, nullable=True)
+    # Task #397: LLM-generated call topic (3 words or less). Auto-only —
+    # never operator-configured or user-edited.
+    acw_topic = Column(String, nullable=True)
 
     # Task #98 — tri-state caller engagement signal.
     #   NULL  = unknown / legacy (pre-deploy row, never observed by Pipecat).
@@ -205,6 +208,7 @@ class CallLog(Base):
             if self.acw_completed_at
             else None,
             "acw_skip_reason": self.acw_skip_reason,
+            "acw_topic": self.acw_topic,
             "caller_spoke": self.caller_spoke,
             "tool_name": self.tool_name,
             "transfer_mode": self.transfer_mode,

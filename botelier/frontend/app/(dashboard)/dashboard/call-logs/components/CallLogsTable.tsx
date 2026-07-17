@@ -6,7 +6,11 @@ import type { CallLog } from "../types";
 import { TIMEZONE_OPTIONS } from "@/components/analytics/TimezonePicker";
 import CallLogRow from "./CallLogRow";
 
-const LS_KEY = "botelier_call_logs_visible_cols";
+// Task #397 — key bumped to v2 when the Topic column was added so saved
+// preferences from before Topic existed get it enabled once (legacy prefs
+// are migrated below; hiding Topic afterwards persists normally).
+const LS_KEY = "botelier_call_logs_visible_cols_v2";
+const LEGACY_LS_KEY = "botelier_call_logs_visible_cols";
 
 interface ColumnDef {
   key: string;
@@ -19,6 +23,7 @@ const TOGGLEABLE_COLS: ColumnDef[] = [
   { key: "assistant",   label: "Assistant" },
   { key: "tool",        label: "Tool / Flow" },
   { key: "disposition", label: "Disposition" },
+  { key: "topic",       label: "Topic" },
   { key: "resolution",  label: "Resolution" },
   { key: "score",       label: "Score" },
   { key: "transfer",    label: "Transfer" },
@@ -84,7 +89,18 @@ export default function CallLogsTable({
 
   useEffect(() => {
     try {
-      const raw = localStorage.getItem(LS_KEY);
+      let raw = localStorage.getItem(LS_KEY);
+      if (!raw) {
+        // Migrate pre-Topic preferences: keep the user's choices, add the
+        // new "topic" column once, and persist under the v2 key.
+        const legacy = localStorage.getItem(LEGACY_LS_KEY);
+        if (legacy) {
+          const legacySaved: string[] = JSON.parse(legacy);
+          const migrated = [...new Set([...legacySaved, "topic"])];
+          localStorage.setItem(LS_KEY, JSON.stringify(migrated));
+          raw = JSON.stringify(migrated);
+        }
+      }
       if (raw) {
         const saved: string[] = JSON.parse(raw);
         const valid = saved.filter((k) => ALL_COL_KEYS.has(k));

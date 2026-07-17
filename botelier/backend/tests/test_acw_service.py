@@ -254,3 +254,159 @@ def test_should_auto_run_acw_requires_explicit_true():
 
     assert acw_service.should_auto_run_acw(new_assistant, "CA-new") is False
     assert acw_service.should_auto_run_acw(enabled_assistant, "CA-enabled") is True
+
+
+# ── Task #397: topic generation, prompt upgrades, terminal skip states ──────
+
+
+def test_run_acw_persists_sanitized_topic():
+    assistant = _assistant()
+    disposition = _disposition(assistant)
+    resolution = _resolution(assistant)
+    call_log = _call_log(assistant)
+    db = _FakeSession(
+        assistant=assistant,
+        dispositions=[disposition],
+        resolutions=[resolution],
+    )
+    client = _FakeOpenAIClient(
+        [
+            {
+                "disposition_id": str(disposition.id),
+                "resolution_option_id": str(resolution.id),
+                "topic": "  Checkout   Time Inquiry Question!! ",
+            }
+        ]
+    )
+
+    with patch.object(acw_service, "_get_client", return_value=client):
+        result = acw_service.run_acw(call_log, db)
+
+    assert result["success"] is True
+    # Sanitizer collapses whitespace, strips punctuation, caps at 3 words.
+    assert call_log.acw_topic == "Checkout Time Inquiry"
+    assert result["acw_topic"] == "Checkout Time Inquiry"
+
+
+def test_run_acw_missing_topic_never_blocks_other_fields():
+    assistant = _assistant()
+    disposition = _disposition(assistant)
+    resolution = _resolution(assistant)
+    call_log = _call_log(assistant)
+    db = _FakeSession(
+        assistant=assistant,
+        dispositions=[disposition],
+        resolutions=[resolution],
+    )
+    client = _FakeOpenAIClient(
+        [
+            {
+                "disposition_id": str(disposition.id),
+                "resolution_option_id": str(resolution.id),
+                "quality_score": 88,
+            }
+        ]
+    )
+
+    with patch.object(acw_service, "_get_client", return_value=client):
+        result = acw_service.run_acw(call_log, db)
+
+    assert result["success"] is True
+    assert call_log.acw_topic is None
+    assert call_log.disposition_id == disposition.id
+    assert call_log.acw_quality_score == 88
+    assert call_log.acw_completed_at is not None
+
+
+def test_run_acw_topic_only_run_when_auto_run_and_no_sections():
+    assistant = _assistant(acw_config={"auto_run": True})
+    call_log = _call_log(assistant)
+    db = _FakeSession(assistant=assistant)
+    client = _FakeOpenAIClient([{"topic": "Room Booking"}])
+
+    with patch.object(acw_service, "_get_client", return_value=client):
+        result = acw_service.run_acw(call_log, db)
+
+    assert result["success"] is True
+    assert call_log.acw_topic == "Room Booking"
+    assert call_log.acw_skip_reason is None
+    assert call_log.acw_completed_at is not None
+
+
+def test_run_acw_still_skips_no_sections_without_auto_run():
+    assistant = _assistant(acw_config={})
+    call_log = _call_log(assistant)
+    db = _FakeSession(assistant=assistant)
+
+    result = acw_service.run_acw(call_log, db)
+
+    assert result == {"skipped": True, "reason": "no_sections_enabled"}
+    assert call_log.acw_skip_reason == "no_sections_enabled"
+    assert call_log.acw_completed_at is not None
+
+
+def test_run_acw_llm_failure_stamps_terminal_skip_state():
+    assistant = _assistant()
+    disposition = _disposition(assistant)
+    call_log = _call_log(assistant)
+    db = _FakeSession(assistant=assistant, dispositions=[disposition])
+    client = _FakeOpenAIClient([RuntimeError("boom"), RuntimeError("boom again")])
+
+    with patch.object(acw_service, "_get_client", return_value=client):
+        result = acw_service.run_acw(call_log, db)
+
+    assert "error" in result
+    assert call_log.acw_skip_reason == "llm_error"
+    assert call_log.acw_completed_at is not None
+    assert db.commits == 1
+
+
+def test_run_acw_classification_invalid_stamps_completed_and_keeps_topic():
+    assistant = _assistant(acw_config={"auto_run": True})
+    disposition = _disposition(assistant)
+    call_log = _call_log(assistant)
+    db = _FakeSession(assistant=assistant, dispositions=[disposition])
+    bad = {"disposition_id": str(uuid.uuid4()), "topic": "Cake Order"}
+    client = _FakeOpenAIClient([bad, bad])
+
+    with patch.object(acw_service, "_get_client", return_value=client):
+        result = acw_service.run_acw(call_log, db)
+
+    assert result["error"] == "classification_invalid"
+    assert call_log.acw_skip_reason == "classification_invalid"
+    assert call_log.acw_completed_at is not None
+    assert call_log.acw_topic == "Cake Order"
+
+
+def test_response_schema_always_requires_topic():
+    schema = acw_service._build_acw_response_schema(
+        dispositions=[],
+        resolution_options=[],
+        has_quality=False,
+        has_summary=False,
+    )
+    assert schema["properties"]["topic"]["type"] == "string"
+    assert "topic" in schema["required"]
+
+
+def test_sanitize_topic_contract():
+    assert acw_service._sanitize_topic(None) is None
+    assert acw_service._sanitize_topic(42) is None
+    assert acw_service._sanitize_topic("   ") is None
+    assert acw_service._sanitize_topic("Checkout Time") == "Checkout Time"
+    assert (
+        acw_service._sanitize_topic("one two three four five") == "one two three"
+    )
+    assert acw_service._sanitize_topic('"Room Booking."') == "Room Booking"
+
+
+def test_humanize_action_name():
+    assert (
+        acw_service._humanize_action_name("execute_lookup_reservation_node_1a2b3c")
+        == "Lookup Reservation"
+    )
+    assert acw_service._humanize_action_name("end_call_9f8e7d") == "End Call"
+    assert acw_service._humanize_action_name("confirm_details") == "Confirm Details"
+    assert acw_service._humanize_action_name("request_human") == "Request Human"
+    # Real words are never stripped (no digit in suffix).
+    assert acw_service._humanize_action_name("save_record") == "Save Record"

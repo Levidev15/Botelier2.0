@@ -294,6 +294,7 @@ export default function CallLogsPage() {
                   disposition_color: result.disposition?.color || null,
                   acw_resolution: result.acw_resolution || null,
                   acw_quality_score: result.acw_quality_score ?? null,
+                  acw_topic: result.acw_topic ?? null,
                 }
               : l
           )

@@ -108,6 +108,8 @@ _ADDITIVE_MIGRATIONS = [
     "ALTER TABLE sms_conversations ADD COLUMN IF NOT EXISTS needs_attention BOOLEAN NOT NULL DEFAULT FALSE",
     # call_logs — transfer_mode ('warm' or 'cold') — null means no transfer or legacy warm
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS transfer_mode VARCHAR",
+    # Task #397 — LLM-generated call topic (3 words or less), produced by post-call QA.
+    "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS acw_topic VARCHAR",
     "ALTER TABLE call_logs ADD COLUMN IF NOT EXISTS duration_source VARCHAR(32) NOT NULL DEFAULT 'unknown'",
     "ALTER TABLE call_legs ADD COLUMN IF NOT EXISTS duration_source VARCHAR(32) NOT NULL DEFAULT 'unknown'",
     "ALTER TABLE account_billing_config ADD COLUMN IF NOT EXISTS voice_rate_model VARCHAR(16) NOT NULL DEFAULT 'combined'",

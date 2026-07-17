@@ -1,5 +1,6 @@
 import json
 import os
+import re
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -25,6 +26,14 @@ def _get_client() -> OpenAI:
 
 _MAX_TRANSCRIPT_CHARS = 32000
 _MAX_LLM_ATTEMPTS = 2
+# Task #397 — tool-result snippets in the QA transcript. 500 chars keeps
+# confirmation numbers / dates / amounts visible so the LLM can verify the
+# agent quoted accurate information (120 was too aggressive).
+_MAX_TOOL_RESULT_CHARS = 500
+# Task #397 — condensed assistant system prompt included as ASSISTANT PURPOSE.
+_MAX_SYSTEM_PROMPT_CHARS = 1500
+_MAX_TOPIC_WORDS = 3
+_MAX_TOPIC_CHARS = 60
 
 _ROLE_LABELS = {
     "user": "Customer",
@@ -47,6 +56,51 @@ def _mask_number(number: str) -> str:
     if len(digits) >= 4:
         return f"***-{digits[-4:]}"
     return number
+
+
+# Trailing id-ish segments on flow tool names (e.g. "_node_1a2b3c", "_9f8e7d",
+# "_123"). Requires at least one digit so real words are never stripped.
+_ID_SUFFIX_RE = re.compile(r"_(?:node_)?(?=[0-9a-f]*[0-9])[0-9a-f]{3,}$", re.IGNORECASE)
+
+
+def _humanize_action_name(fn_name: str) -> str:
+    """Turn a machine tool name into a readable action label for the QA prompt.
+
+    "execute_lookup_reservation_node_1a2b3c" → "Lookup Reservation"
+    "end_call_9f8e7d" → "End Call"
+    Falls back to the raw name if nothing readable remains.
+    """
+    name = (fn_name or "").strip()
+    for prefix in ("execute_",):
+        if name.startswith(prefix):
+            name = name[len(prefix):]
+    prev = None
+    while prev != name:
+        prev = name
+        name = _ID_SUFFIX_RE.sub("", name)
+    if name.endswith("_node"):
+        name = name[: -len("_node")]
+    words = [w for w in name.split("_") if w]
+    if not words:
+        return fn_name
+    return " ".join(w.capitalize() for w in words)
+
+
+def _sanitize_topic(value: Any) -> Optional[str]:
+    """Enforce the 3-words-or-less topic contract server-side.
+
+    Defensive: collapses whitespace, strips punctuation edges, truncates to
+    the first 3 words and a hard char cap. Returns None for anything unusable
+    so a bad topic never blocks the rest of the QA result.
+    """
+    if not isinstance(value, str):
+        return None
+    cleaned = " ".join(value.split()).strip(" .,:;!?\"'`")
+    if not cleaned:
+        return None
+    words = cleaned.split(" ")[:_MAX_TOPIC_WORDS]
+    topic = " ".join(words)[:_MAX_TOPIC_CHARS].strip()
+    return topic or None
 
 
 def _fmt_duration(seconds: Optional[int]) -> str:
@@ -88,10 +142,12 @@ def _build_transcript_text(transcript: list) -> str:
                     elif hasattr(tc, "function"):
                         fn_name = getattr(tc.function, "name", "")
                     if fn_name:
-                        lines.append(f"AI Agent: [Action taken: {fn_name}]")
+                        lines.append(
+                            f"AI Agent: [Action taken: {_humanize_action_name(fn_name)}]"
+                        )
 
         elif role == "tool":
-            snippet = content.strip()[:120] if content else ""
+            snippet = content.strip()[:_MAX_TOOL_RESULT_CHARS] if content else ""
             if snippet:
                 lines.append(f"System: [Tool result: {snippet}]")
 
@@ -106,8 +162,24 @@ def _build_call_context(call_log: CallLog, db: Session) -> str:
     """
     lines = ["CALL CONTEXT:"]
 
-    duration_str = _fmt_duration(call_log.duration_seconds)
-    lines.append(f"- Duration: {duration_str}")
+    # Task #397 — judge pacing against the AI conversation leg (authoritative
+    # Pipecat duration), not the billing duration which includes transfer time.
+    # Matches the dashboard's Duration display exactly. Falls back to the
+    # billing duration when no AI leg exists (legacy rows).
+    ai_leg_seconds = sum(
+        leg.duration_seconds or 0
+        for leg in db.query(CallLeg)
+        .filter(
+            CallLeg.call_log_id == call_log.id,
+            CallLeg.leg_type == LegType.AI_CONVERSATION.value,
+            CallLeg.duration_source == "pipecat",
+        )
+        .all()
+    )
+    if ai_leg_seconds > 0:
+        lines.append(f"- AI Conversation Duration: {_fmt_duration(ai_leg_seconds)}")
+    else:
+        lines.append(f"- Duration: {_fmt_duration(call_log.duration_seconds)}")
 
     if call_log.caller_number:
         lines.append(f"- Caller: {_mask_number(call_log.caller_number)}")
@@ -219,6 +291,15 @@ def _build_acw_response_schema(
         properties["summary"] = {"type": "string"}
         required.append("summary")
 
+    # Task #397 — topic is always part of the QA response. Length limits are
+    # NOT expressed here (OpenAI strict mode rejects maxLength); the 3-word
+    # cap is enforced server-side by _sanitize_topic.
+    properties["topic"] = {
+        "type": "string",
+        "description": "Main topic of the call in 3 words or less, Title Case.",
+    }
+    required.append("topic")
+
     return {
         "type": "object",
         "properties": properties,
@@ -307,7 +388,15 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
     has_quality = bool(quality_rubric and quality_rubric.strip())
     has_summary = summary_enabled
 
-    if not any([has_dispositions, has_resolutions, has_quality, has_summary]):
+    # Task #397 — topic generation is always-on for auto-run assistants, so a
+    # QA config with no sections enabled still produces a topic-only run.
+    # Assistants without auto_run keep the original skip (manual behavior
+    # unchanged for operators who never turned QA on).
+    auto_run_enabled = acw_config.get("auto_run") is True
+    if (
+        not any([has_dispositions, has_resolutions, has_quality, has_summary])
+        and not auto_run_enabled
+    ):
         return _stamp_acw_skip(call_log, db, "no_sections_enabled")
 
     transcript_text = _build_transcript_text(call_log.transcript)
@@ -325,6 +414,20 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
     call_context = _build_call_context(call_log, db)
     prompt_parts = [f"Assistant: {assistant.name}\nAnalyze this call transcript.\n\n{call_context}"]
     json_fields = []
+
+    # Task #397 — give the QA judge the assistant's actual mission so scores
+    # and classifications are graded against what the agent was *supposed* to
+    # do, not a generic notion of a good call.
+    assistant_purpose = (assistant.system_prompt or "").strip()
+    if assistant_purpose:
+        if len(assistant_purpose) > _MAX_SYSTEM_PROMPT_CHARS:
+            assistant_purpose = (
+                assistant_purpose[:_MAX_SYSTEM_PROMPT_CHARS] + "\n[... truncated]"
+            )
+        prompt_parts.append(
+            "ASSISTANT PURPOSE (what this AI agent was configured to do — judge "
+            f"the call against this):\n{assistant_purpose}"
+        )
 
     if has_dispositions:
         disp_list = "\n".join(
@@ -347,7 +450,15 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
         json_fields.append('"resolution_option_id": "selected resolution option id"')
 
     if has_quality:
-        prompt_parts.append(f"QUALITY SCORE — rate 0-100 using this rubric:\n{quality_rubric}")
+        prompt_parts.append(
+            f"QUALITY SCORE — rate 0-100 using this rubric:\n{quality_rubric}\n"
+            "Anchor the score to these bands (apply them consistently):\n"
+            "- 90-100: excellent — caller's goal fully achieved, information accurate, no notable errors\n"
+            "- 70-89: good — goal achieved with minor issues (awkward phrasing, small delays, minor omissions)\n"
+            "- 50-69: fair — notable problems (wrong or missing information, skipped steps, goal only partly met)\n"
+            "- 25-49: poor — major failures, caller's goal mostly unmet\n"
+            "- 0-24: failed — the call did not serve its purpose"
+        )
         json_fields.append('"quality_score": integer 0-100')
 
     if has_summary:
@@ -358,6 +469,14 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
                 "SUMMARY — Provide a concise 2-3 sentence summary: caller intent, actions taken, outcome."
             )
         json_fields.append('"summary": "..."')
+
+    # Task #397 — topic is always requested, regardless of configured sections.
+    prompt_parts.append(
+        "TOPIC (required) — State the main topic of this call in 3 words or "
+        'less, e.g. "Room Booking", "Checkout Time", "Cake Order". '
+        "Use Title Case. No punctuation."
+    )
+    json_fields.append('"topic": "main call topic, 3 words or less"')
 
     prompt_parts.append(f"\nTranscript:\n{transcript_text}")
     prompt_parts.append(f"\nRespond ONLY with JSON:\n{{{', '.join(json_fields)}}}")
@@ -387,16 +506,19 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
         if has_summary:
             system_fields.append("summary")
 
+        system_content = (
+            "You are a call center QA analyst. Analyze the call transcript and "
+            "return only valid JSON. Always include a 'topic' field: the call's "
+            "main topic in 3 words or less."
+        )
+        if system_fields:
+            system_content += (
+                " Select exactly one configured option ID for each required "
+                f"classification field: {', '.join(system_fields)}."
+            )
+
         messages = [
-            {
-                "role": "system",
-                "content": (
-                    "You are a call center QA analyst. Analyze the call transcript and "
-                    "return only valid JSON. Select exactly one configured option ID "
-                    "for each required classification field: "
-                    f"{', '.join(system_fields)}."
-                ),
-            },
+            {"role": "system", "content": system_content},
             {"role": "user", "content": full_prompt},
         ]
 
@@ -470,11 +592,32 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
             )
 
         if validation_errors:
+            # Task #397 — terminal stamp: without acw_completed_at the row
+            # stays "QA pending" forever. Manual re-run remains possible
+            # because run_acw_in_thread re-runs any row with a skip reason.
             call_log.acw_skip_reason = "classification_invalid"
+            if not call_log.acw_completed_at:
+                call_log.acw_completed_at = datetime.utcnow()
+            # Topic is independent of classification — keep it if usable.
+            topic_value = _sanitize_topic(result.get("topic"))
+            if topic_value:
+                call_log.acw_topic = topic_value
             db.commit()
             return {"error": "classification_invalid", "details": validation_errors}
     except Exception as e:
         logger.exception(f"ACW LLM call failed for call {call_log.id}: {e}")
+        # Task #397 — stamp a terminal skip state so the row never sits in
+        # "QA pending" after an LLM outage. Manual re-run clears it on success.
+        try:
+            call_log.acw_skip_reason = "llm_error"
+            if not call_log.acw_completed_at:
+                call_log.acw_completed_at = datetime.utcnow()
+            db.commit()
+        except Exception:
+            db.rollback()
+            logger.exception(
+                f"ACW: failed to stamp llm_error skip state for call {call_log.id}"
+            )
         return {"error": str(e)}
 
     if selected_disposition:
@@ -493,6 +636,12 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
         if summary_text:
             call_log.ai_summary = summary_text
 
+    # Task #397 — topic is best-effort: a missing/garbage topic never blocks
+    # dispositions, resolution, quality, or summary.
+    topic_value = _sanitize_topic(result.get("topic"))
+    if topic_value:
+        call_log.acw_topic = topic_value
+
     call_log.acw_skip_reason = None
     call_log.acw_completed_at = datetime.utcnow()
     db.commit()
@@ -505,6 +654,7 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
         "acw_resolution": call_log.acw_resolution,
         "acw_quality_score": call_log.acw_quality_score,
         "summary": call_log.ai_summary,
+        "acw_topic": call_log.acw_topic,
         "acw_completed_at": call_log.acw_completed_at.isoformat() + "Z"
         if call_log.acw_completed_at
         else None,
@@ -527,7 +677,15 @@ def run_acw_in_thread(call_log_id: UUID) -> Dict[str, Any]:
         if not call_log:
             logger.warning(f"ACW thread: call log {call_log_id} not found")
             return {"error": "call_log_not_found"}
-        if call_log.acw_completed_at:
+        # Task #397 — a row is only "already completed" when it finished
+        # cleanly (no skip reason). Rows stamped with a terminal skip state
+        # (llm_error, classification_invalid, no_transcript, ...) stay
+        # re-runnable via the manual QA endpoint; a successful re-run clears
+        # the skip reason. Auto-run dedupe still checks acw_completed_at
+        # upstream, so terminal skips are not re-enqueued automatically
+        # (edge case: a task already in flight when the skip was stamped may
+        # re-run once — bounded and idempotent).
+        if call_log.acw_completed_at and not call_log.acw_skip_reason:
             logger.debug(f"ACW thread: already completed for {call_log_id}, skipping")
             return {"skipped": True, "reason": "already_completed"}
         return run_acw(call_log, db)
