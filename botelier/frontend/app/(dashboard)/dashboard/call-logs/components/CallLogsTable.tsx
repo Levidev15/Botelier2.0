@@ -96,7 +96,7 @@ export default function CallLogsTable({
         const legacy = localStorage.getItem(LEGACY_LS_KEY);
         if (legacy) {
           const legacySaved: string[] = JSON.parse(legacy);
-          const migrated = [...new Set([...legacySaved, "topic"])];
+          const migrated = Array.from(new Set([...legacySaved, "topic"]));
           localStorage.setItem(LS_KEY, JSON.stringify(migrated));
           raw = JSON.stringify(migrated);
         }
@@ -117,7 +117,7 @@ export default function CallLogsTable({
       } else {
         next.add(key);
       }
-      try { localStorage.setItem(LS_KEY, JSON.stringify([...next])); } catch {}
+      try { localStorage.setItem(LS_KEY, JSON.stringify(Array.from(next))); } catch {}
       return next;
     });
   };

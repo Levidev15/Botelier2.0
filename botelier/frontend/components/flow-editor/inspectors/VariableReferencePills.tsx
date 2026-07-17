@@ -31,8 +31,8 @@ function isJsonBlobVariable(v: FlowVariable): boolean {
 }
 
 export default function VariableReferencePills({ text, variables }: Props) {
-  const matches = [...text.matchAll(/\{\{(\w+)\}\}/g)];
-  const unique = [...new Set(matches.map((m) => m[1]))];
+  const matches = Array.from(text.matchAll(/\{\{(\w+)\}\}/g));
+  const unique = Array.from(new Set(matches.map((m) => m[1])));
 
   if (unique.length === 0) return null;
 
