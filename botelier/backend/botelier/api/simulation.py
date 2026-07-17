@@ -21,6 +21,7 @@ from ..database import get_db
 from ..flow_executor import FlowExecutor, NodeType, parse_flow_config
 from ..models.assistant import Assistant
 from ..models.tool import Tool, ToolType
+from ..models.tool_set import ToolSet
 from ..models.user import User
 from ..services.ssrf_safe_transport import _BLOCKED_LITERAL_HOSTS, SSRFSafeTransport
 
@@ -420,7 +421,11 @@ async def _execute_sim_dynamic_operation(
 
 
 def _resolve_flow_assistant(
-    db: Session, tool: Tool, assistant_id: Optional[str], user: User
+    db: Session,
+    tool: Tool,
+    assistant_id: Optional[str],
+    user: User,
+    account_id: Optional[str] = None,
 ) -> Optional[Assistant]:
     """Resolve the assistant whose config (KB + escalation number) should back
     this flow simulation.
@@ -431,23 +436,25 @@ def _resolve_flow_assistant(
     parity works even without a frontend change. Returns ``None`` when nothing
     can be resolved.
     """
+    effective_account_id = account_id or (str(tool.account_id) if tool.account_id else None)
+
     if assistant_id:
         assistant = db.query(Assistant).filter(Assistant.id == assistant_id).first()
         if not assistant:
             raise HTTPException(status_code=404, detail="Assistant not found")
-        if tool.account_id and str(assistant.account_id) != str(tool.account_id):
+        if effective_account_id and str(assistant.account_id) != effective_account_id:
             raise HTTPException(
                 status_code=403, detail="Assistant does not belong to this account"
             )
         check_account_permission(user, str(assistant.account_id), "assistants.view", db)
         return assistant
 
-    if tool.tool_set_id and tool.account_id:
+    if tool.tool_set_id and effective_account_id:
         return (
             db.query(Assistant)
             .filter(
                 Assistant.tool_set_id == tool.tool_set_id,
-                Assistant.account_id == tool.account_id,
+                Assistant.account_id == effective_account_id,
             )
             .order_by(Assistant.created_at.desc())
             .first()
@@ -470,8 +477,19 @@ async def start_simulation(
     if not tool:
         raise HTTPException(status_code=404, detail="Tool not found")
 
-    if tool.account_id:
-        check_account_permission(user, str(tool.account_id), "tools.view", db)
+    # Tools are tenant-scoped through their ToolSet (tools.account_id is NULL
+    # for most tools — the create endpoint never stamps it). Resolve the
+    # effective account through the ToolSet when the direct column is empty so
+    # the FlowExecutor gets a real account_id (required for SAVE_RECORD) and
+    # the permission check binds to the right tenant.
+    sim_account_id = str(tool.account_id) if tool.account_id else None
+    if not sim_account_id and tool.tool_set_id:
+        tool_set = db.query(ToolSet).filter(ToolSet.id == tool.tool_set_id).first()
+        if tool_set and tool_set.account_id:
+            sim_account_id = str(tool_set.account_id)
+
+    if sim_account_id:
+        check_account_permission(user, sim_account_id, "tools.view", db)
 
     if tool.tool_type.value != "FLOW":
         raise HTTPException(status_code=400, detail="Tool is not a flow type")
@@ -485,7 +503,9 @@ async def start_simulation(
     # inject the same knowledge base block and expose the same "talk to a human"
     # escalation. Explicit assistant_id wins; otherwise fall back to an assistant
     # sharing the tool's tool_set.
-    assistant = _resolve_flow_assistant(db, tool, request.assistant_id, user)
+    assistant = _resolve_flow_assistant(
+        db, tool, request.assistant_id, user, account_id=sim_account_id
+    )
     kb_prompt_block = _build_kb_prompt_block(
         assistant.knowledge_base_id if assistant else None
     )
@@ -507,7 +527,7 @@ async def start_simulation(
         executor = FlowExecutor(
             flow_config,
             db_session=db,
-            account_id=str(tool.account_id) if tool.account_id else None,
+            account_id=sim_account_id,
             flow_tool_id=str(tool.id),
             escalation_target=escalation_target,
             property_id=property_id,
@@ -521,7 +541,7 @@ async def start_simulation(
         tool_id=request.tool_id,
         executor=executor,
         tool_name=tool.name,
-        account_id=str(tool.account_id) if tool.account_id else None,
+        account_id=sim_account_id,
         kb_prompt_block=kb_prompt_block,
         escalation_target=escalation_target,
         model=sim_model,
@@ -759,6 +779,14 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                 NodeType.CAPABILITY,
             ):
                 candidate = f"execute_{current_node.id}"
+                if candidate not in all_functions_called:
+                    forced_name = candidate
+            elif current_node and current_node.type == NodeType.END:
+                # END nodes must actually end the session. "auto" lets the LLM
+                # speak the goodbye as plain text and leave the session open —
+                # forcing end_call_<id> guarantees the flow terminates (the
+                # handler returns action="end", which flips is_ended).
+                candidate = f"end_call_{current_node.id}"
                 if candidate not in all_functions_called:
                     forced_name = candidate
 

@@ -549,6 +549,11 @@ class FlowExecutor:
         #   The winner executes; every waiter picks up the cached result afterward.
         self._non_get_results: dict[str, dict] = {}
         self._non_get_locks: dict[str, asyncio.Lock] = {}
+        # Tracks whether the built-in confirm_details fallback (flows WITHOUT a
+        # CONFIRMATION node) already got a positive confirmation. Once True the
+        # fallback is no longer exposed, so the LLM can't loop back into
+        # re-confirming already-collected info after the caller says "no thanks".
+        self._details_confirmed = False
 
     # -- Durable session state (Task #330) ----------------------------------
     def _snapshot_key(self) -> Optional[tuple[str, str]]:
@@ -999,9 +1004,21 @@ class FlowExecutor:
 
         elif current_node.type == NodeType.END:
             closing = current_node.data.get("closingMessage", "")
+            end_fn = f"end_call_{current_node.id}"
             if closing:
                 resolved = substitute_variables(closing, self.state.collected_slots)
-                context_lines.append(f'CURRENT NODE: Say goodbye: "{resolved}"')
+                context_lines.append(
+                    f"CURRENT NODE: End Call — you MUST call the `{end_fn}` function NOW "
+                    f"to end the call. The function will deliver the closing message "
+                    f'"{resolved}" to the caller. Do NOT just say goodbye as plain text — '
+                    f"the call only ends when you call the function."
+                )
+            else:
+                context_lines.append(
+                    f"CURRENT NODE: End Call — you MUST call the `{end_fn}` function NOW "
+                    f"to end the call. Do NOT just say goodbye as plain text — the call "
+                    f"only ends when you call the function."
+                )
 
         elif current_node.type == NodeType.TRANSFER:
             transfer = current_node.data.get("transfer", {})
@@ -1480,7 +1497,7 @@ class FlowExecutor:
         has_confirmation_node = any(
             node.type == NodeType.CONFIRMATION for node in self.flow_config.nodes
         )
-        if not has_confirmation_node:
+        if not has_confirmation_node and self._should_expose_confirm_details(current_node):
             functions.append(
                 {
                     "type": "function",
@@ -1510,6 +1527,28 @@ class FlowExecutor:
             )
 
         return functions
+
+    def _should_expose_confirm_details(self, current_node) -> bool:
+        """Gate the built-in confirm_details fallback (flows WITHOUT a CONFIRMATION node).
+
+        Previously this fallback was exposed ungated on every turn, so after the
+        caller declined an optional slot ("no thank you") the LLM could call
+        confirm_details instead of the collect function — the handler returned
+        "Great, confirmed." without advancing flow state, looping the bot back
+        into re-summarizing and re-asking. Only expose it when:
+        - all required variables are collected (there is something to confirm),
+        - the flow has not already moved past collection into an action/end node
+          (those must fire, not re-confirm), and
+        - no successful confirmation has already happened this session.
+        """
+        if self._details_confirmed:
+            return False
+        if current_node is not None and current_node.type in _ACTION_NODE_TYPES:
+            return False
+        required_keys = [v.key for v in self.flow_config.variables if v.required]
+        if not required_keys:
+            return False
+        return all(key in self.state.collected_slots for key in required_keys)
 
     def get_all_function_schemas(self) -> list[dict]:
         """Generate ALL function schemas from the flow (for handler registration).
@@ -1586,7 +1625,13 @@ class FlowExecutor:
         """Create a function schema for collecting a slot."""
         validation = self._get_validation_for_variable(var.key) or {}
 
-        if var.type == SlotType.CHOICE and var.choices:
+        # Choice options may live on the flow-level variable (var.choices) OR on
+        # the collecting node's slot.validation.choices (the editor stores them
+        # there). Fall back to the node's list so choice slots always present an
+        # enum to the LLM instead of a free-text parameter.
+        choice_options = var.choices or validation.get("choices")
+
+        if var.type == SlotType.CHOICE and choice_options:
             return {
                 "type": "function",
                 "function": {
@@ -1597,7 +1642,7 @@ class FlowExecutor:
                         "properties": {
                             var.key: {
                                 "type": "string",
-                                "enum": var.choices,
+                                "enum": choice_options,
                                 "description": var.description,
                             }
                         },
@@ -3593,6 +3638,9 @@ class FlowExecutor:
                 return result
 
         if confirmed:
+            # Stop re-exposing the fallback after a successful confirmation so
+            # the LLM can't loop back into re-confirming the same details.
+            self._details_confirmed = True
             return {
                 "success": True,
                 "message": "Great, confirmed.",
