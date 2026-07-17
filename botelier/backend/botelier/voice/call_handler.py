@@ -22,6 +22,8 @@ from pipecat.pipeline.runner import PipelineRunner
 from pipecat.serializers.twilio import TwilioFrameSerializer
 from pipecat.transports.websocket.fastapi import FastAPIWebsocketParams, FastAPIWebsocketTransport
 
+from .serializers import BoteliTwilioFrameSerializer
+
 from ..database import SessionLocal
 from ..models.assistant import Assistant
 from ..models.phone_number import PhoneNumber
@@ -591,7 +593,7 @@ class CallHandler:
             #   - Cold transfer: Twilio SIP REFERs the call away
             #   - Normal hangup: caller hangs up → WebSocket close → Twilio
             #     ends the call naturally (no separate hangup REST needed)
-            serializer = TwilioFrameSerializer(
+            serializer = BoteliTwilioFrameSerializer(
                 stream_sid=stream_sid,
                 call_sid=call_sid,
                 account_sid=os.environ.get("TWILIO_ACCOUNT_SID"),

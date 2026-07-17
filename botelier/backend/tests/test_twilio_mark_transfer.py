@@ -14,6 +14,7 @@ if _voice_pkg is not None:
     _voice_pkg.__path__ = [str(_VOICE_DIR)]
 
 from botelier.voice.engine import TwilioMarkWatcher
+from botelier.voice.serializers import BoteliTwilioFrameSerializer
 from pipecat.frames.frames import InputTransportMessageFrame, OutputTransportMessageFrame
 from pipecat.processors.frame_processor import FrameDirection
 from pipecat.serializers.twilio import TwilioFrameSerializer
@@ -21,7 +22,10 @@ from pipecat.serializers.twilio import TwilioFrameSerializer
 
 @pytest.mark.asyncio
 async def test_twilio_serializer_deserializes_mark_event():
-    serializer = TwilioFrameSerializer(
+    """BoteliTwilioFrameSerializer must return an InputTransportMessageFrame
+    for Twilio mark events.  The stock TwilioFrameSerializer returns None for
+    mark events (the original bug); our subclass fixes this."""
+    serializer = BoteliTwilioFrameSerializer(
         stream_sid="MZ123",
         params=TwilioFrameSerializer.InputParams(auto_hang_up=False),
     )
@@ -37,7 +41,7 @@ async def test_twilio_serializer_deserializes_mark_event():
 
 @pytest.mark.asyncio
 async def test_twilio_serializer_serializes_mark_message():
-    serializer = TwilioFrameSerializer(
+    serializer = BoteliTwilioFrameSerializer(
         stream_sid="MZ123",
         params=TwilioFrameSerializer.InputParams(auto_hang_up=False),
     )
