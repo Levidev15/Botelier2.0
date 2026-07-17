@@ -250,3 +250,101 @@ def test_capability_node_is_action_node_type():
     ex.state.collected_slots["a"] = "yes"
     forced = f"execute_{node.id}"
     assert forced in _fn_names(ex.get_function_schemas())
+
+
+# ---------------------------------------------------------------------------
+# BUG 3 — global end_call available alongside save_record_node, so the LLM
+# could skip the save step by calling end_call directly after a detour.
+# Regression coverage for is_on_required_action_node().
+# ---------------------------------------------------------------------------
+
+def _save_record_flow():
+    """start → collect_name → collect_room → save_record → end."""
+    config = {
+        "initial_node": "start",
+        "variables": [
+            {"key": "name", "type": "text", "description": "Guest name"},
+            {"key": "room", "type": "text", "description": "Room number"},
+        ],
+        "nodes": [
+            {"id": "start", "type": "initial", "data": {}},
+            {"id": "collect_name", "type": "collect_slot",
+             "data": {"slot": {"variableKey": "name", "prompt": "Name?"}}},
+            {"id": "collect_room", "type": "collect_slot",
+             "data": {"slot": {"variableKey": "room", "prompt": "Room?"}}},
+            {"id": "save", "type": "save_record",
+             "data": {"saveRecord": {"recordTypeId": "abc123", "fieldMappings": []}}},
+            {"id": "end", "type": "end", "data": {}},
+        ],
+        "edges": [
+            {"id": "e1", "source": "start", "target": "collect_name"},
+            {"id": "e2", "source": "collect_name", "target": "collect_room"},
+            {"id": "e3", "source": "collect_room", "target": "save"},
+            {"id": "e4", "source": "save", "target": "end"},
+        ],
+    }
+    return FlowExecutor(parse_flow_config(config))
+
+
+def test_is_on_required_action_node_false_during_collection():
+    """is_on_required_action_node() is False while collecting slots."""
+    ex = _save_record_flow()
+
+    # On the initial node — no action node yet.
+    assert ex.is_on_required_action_node() is False
+
+    # Collecting name.
+    ex.state.current_node_id = "collect_name"
+    assert ex.is_on_required_action_node() is False
+
+    # Collecting room.
+    ex.state.collected_slots["name"] = "Corey"
+    ex.state.current_node_id = "collect_room"
+    assert ex.is_on_required_action_node() is False
+
+
+def test_is_on_required_action_node_true_on_save_record():
+    """is_on_required_action_node() is True when sitting on SAVE_RECORD."""
+    ex = _save_record_flow()
+    ex.state.collected_slots.update({"name": "Corey", "room": "2302"})
+    ex.state.current_node_id = "save"
+
+    assert ex.is_on_required_action_node() is True
+    # The save_record schema is exposed; nothing downstream leaks.
+    names = _fn_names(ex.get_function_schemas())
+    assert "save_record_save" in names
+    assert "end_call_end" not in names
+
+
+def test_is_on_required_action_node_false_on_end_node():
+    """is_on_required_action_node() is True on the END node too (it's an action).
+
+    The flow's own end_call_<id> comes from get_function_schemas(); the global
+    end_call is blocked by the mapper — but that's tested in call_handler
+    integration tests.  Here we just confirm the flag value.
+    """
+    ex = _save_record_flow()
+    ex.state.collected_slots.update({"name": "Corey", "room": "2302"})
+    ex.state.current_node_id = "end"
+
+    assert ex.is_on_required_action_node() is True
+    names = _fn_names(ex.get_function_schemas())
+    assert "end_call_end" in names
+
+
+def test_is_on_required_action_node_covers_all_action_types():
+    """Every node in _ACTION_NODE_TYPES triggers is_on_required_action_node()."""
+    from botelier.flow_executor import _ACTION_NODE_TYPES
+
+    for node_type in _ACTION_NODE_TYPES:
+        config = {
+            "initial_node": "n",
+            "variables": [],
+            "nodes": [{"id": "n", "type": node_type.value, "data": {}}],
+            "edges": [],
+        }
+        ex = FlowExecutor(parse_flow_config(config))
+        ex.state.current_node_id = "n"
+        assert ex.is_on_required_action_node() is True, (
+            f"Expected True for node_type={node_type}"
+        )

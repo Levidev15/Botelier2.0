@@ -1218,6 +1218,18 @@ class FlowExecutor:
             if edge.source == node.id
         ]
 
+    def is_on_required_action_node(self) -> bool:
+        """Return True when the flow is sitting on an action node that must fire next.
+
+        Used by FunctionMapper to decide whether to block the global end_call tool
+        from the non-flow tool list.  When True, the LLM must invoke the action node
+        function (e.g. save_record, api_request, confirmation) before it can end the
+        call — preventing it from skipping required steps via the global end_call.
+        The flow's own end_call_<node_id> is still exposed via get_function_schemas().
+        """
+        current = self.state.get_current_node()
+        return current is not None and current.type in _ACTION_NODE_TYPES
+
     def _get_reachable_action_node_ids(self) -> set:
         """Return ids of action nodes whose functions may be exposed right now.
 

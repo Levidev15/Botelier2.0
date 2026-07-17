@@ -1786,6 +1786,11 @@ You have access to the following Q&A knowledge base. Use this information to ans
                         # These tools remain available during flow execution
                         mapper.register_non_flow_tool_schema(function_schema_dict)
 
+                        # Track end_call schema names so update_llm_tools_for_flow
+                        # can block them when the flow requires an action node first.
+                        if tool.tool_type == ToolType.END_CALL:
+                            mapper._end_call_schema_names.add(fn_name)
+
                         # Convert dict to FunctionSchema
                         tool_schema = FunctionSchema(
                             name=function_schema_dict["name"],

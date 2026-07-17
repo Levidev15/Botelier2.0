@@ -1558,9 +1558,10 @@ class VoiceEngineFactory:
 
             # TOKEN mode sends each LLM token to Deepgram the moment it arrives,
             # keeping Deepgram's internal synthesis buffer continuously filled and
-            # eliminating sentence-boundary drain gaps.  Default is "sentence" to
-            # preserve existing behaviour for all current assistants.
-            _mode_str = config.tts_config.get("text_aggregation_mode", "sentence")
+            # eliminating sentence-boundary drain gaps.  Default is "token" because
+            # "sentence" produces audible 40–1800ms gaps at every sentence boundary;
+            # operators can override back to "sentence" via tts_config on the assistant.
+            _mode_str = config.tts_config.get("text_aggregation_mode", "token")
             text_aggregation_mode = (
                 TextAggregationMode.TOKEN
                 if _mode_str == "token"

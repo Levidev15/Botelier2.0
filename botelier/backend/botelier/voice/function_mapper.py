@@ -110,6 +110,13 @@ class FunctionMapper:
         # These tools should always remain available even during flow execution
         self._non_flow_tool_schemas: List[Dict[str, Any]] = []
 
+        # Names of non-flow schemas that map to END_CALL tools.  Populated by
+        # call_handler when registering end_call tools.  Used by
+        # update_llm_tools_for_flow to block the global end_call when the flow
+        # is sitting on a required action node (e.g. save_record) — preventing
+        # the LLM from skipping the action by calling end_call directly.
+        self._end_call_schema_names: set = set()
+
         # TTS completion watcher — set by CallHandler after pipeline creation.
         # Used by transfer handlers to await real TTS completion instead of a
         # fixed sleep, ensuring the pre-transfer message is never clipped.
@@ -317,6 +324,14 @@ class FunctionMapper:
         try:
             flow_schemas = executor.get_function_schemas()
 
+            # When the flow is sitting on a required action node (e.g. SAVE_RECORD,
+            # API_REQUEST, CONFIRMATION) block the global end_call from the tool list.
+            # This prevents the LLM from skipping the action by calling end_call
+            # directly — the root cause of records not being saved when the caller
+            # goes on a detour before the flow's natural end.  The flow's own
+            # end_call_<node_id> is still exposed via get_function_schemas() above.
+            on_required_action = executor.is_on_required_action_node()
+
             function_schema_objects = []
 
             # 1. Include non-flow tools (transfer, end call, etc.)
@@ -325,6 +340,11 @@ class FunctionMapper:
             # handler is no longer registered.  Exposing an unregistered function
             # here would cause LLM call errors if the model tried to invoke it.
             for non_flow_schema in self._non_flow_tool_schemas:
+                # Block global end_call while a required action node hasn't fired yet.
+                # Transfer/escalation tools are intentionally NOT blocked — callers
+                # can always escalate to a human even mid-flow.
+                if on_required_action and non_flow_schema["name"] in self._end_call_schema_names:
+                    continue
                 func_schema = FunctionSchema(
                     name=non_flow_schema["name"],
                     description=non_flow_schema.get("description", ""),
@@ -1236,7 +1256,16 @@ class FunctionMapper:
 
         function_schema = {
             "name": sanitize_function_name(tool.name),
-            "description": tool.description,
+            # Append a firm instruction to suppress LLM-generated text alongside this
+            # tool call.  Without it the model emits a spoken farewell (e.g. "Goodbye!")
+            # AND the handler pushes TTSSpeakFrame(goodbye_message), producing double
+            # audio.  The farewell is handled entirely by the handler — the LLM must
+            # only call the function and return an empty assistant message.
+            "description": (
+                tool.description
+                + " When calling this function, do not generate any spoken text"
+                " — the farewell message is handled automatically."
+            ),
             "parameters": {"type": "object", "properties": {}, "required": []},
         }
 
