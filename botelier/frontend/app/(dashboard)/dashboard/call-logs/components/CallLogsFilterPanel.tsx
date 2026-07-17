@@ -31,6 +31,8 @@ interface CallLogsFilterPanelProps {
   onTimezoneChange: (v: string) => void;
   hasActiveFilters: boolean;
   onClearFilters: () => void;
+  phoneNumberIdFilter: string;
+  setPhoneNumberIdFilter: (v: string) => void;
 }
 
 export default function CallLogsFilterPanel({
@@ -47,6 +49,7 @@ export default function CallLogsFilterPanel({
   qualityMax, setQualityMax,
   timezone, onTimezoneChange,
   hasActiveFilters, onClearFilters,
+  phoneNumberIdFilter, setPhoneNumberIdFilter,
 }: CallLogsFilterPanelProps) {
   const selectClass = "w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600";
   const inputClass = "w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600";
@@ -76,6 +79,17 @@ export default function CallLogsFilterPanel({
           </select>
         </div>
         <div>
+          <label className={labelClass}>Phone Number</label>
+          <select value={phoneNumberIdFilter} onChange={(e) => setPhoneNumberIdFilter(e.target.value)} className={selectClass}>
+            <option value="">All numbers</option>
+            {filterOptions?.phone_numbers.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.name ? `${p.number} (${p.name})` : p.number}
+              </option>
+            ))}
+          </select>
+        </div>
+        <div>
           <label className={labelClass}>Disposition</label>
           <DispositionSelect
             value={dispositionIdFilter}
@@ -92,6 +106,9 @@ export default function CallLogsFilterPanel({
             ))}
           </select>
         </div>
+      </div>
+
+      <div className="grid grid-cols-5 gap-3">
         <div>
           <label className={labelClass}>Transferred</label>
           <select
@@ -107,9 +124,6 @@ export default function CallLogsFilterPanel({
             <option value="false">Not transferred</option>
           </select>
         </div>
-      </div>
-
-      <div className="grid grid-cols-5 gap-3">
         <div>
           <label className={labelClass}>From Date</label>
           <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} className={inputClass} />
@@ -141,28 +155,30 @@ export default function CallLogsFilterPanel({
             className={inputClass}
           />
         </div>
-        <div>
-          <label className={labelClass}>Quality Score Max</label>
-          <input
-            type="number"
-            min={0}
-            max={100}
-            placeholder="100"
-            value={qualityMax ?? ""}
-            onChange={(e) => setQualityMax(e.target.value === "" ? null : Number(e.target.value))}
-            className={inputClass}
-          />
-        </div>
       </div>
 
       <div className="flex items-end justify-between gap-3">
-        <div className="w-48">
-          <label className={labelClass}>Timezone</label>
-          <select value={timezone} onChange={(e) => onTimezoneChange(e.target.value)} className={selectClass}>
-            {TIMEZONE_OPTIONS.map((tz) => (
-              <option key={tz.value} value={tz.value}>{tz.label}</option>
-            ))}
-          </select>
+        <div className="flex gap-3">
+          <div className="w-40">
+            <label className={labelClass}>Quality Score Max</label>
+            <input
+              type="number"
+              min={0}
+              max={100}
+              placeholder="100"
+              value={qualityMax ?? ""}
+              onChange={(e) => setQualityMax(e.target.value === "" ? null : Number(e.target.value))}
+              className={inputClass}
+            />
+          </div>
+          <div className="w-48">
+            <label className={labelClass}>Timezone</label>
+            <select value={timezone} onChange={(e) => onTimezoneChange(e.target.value)} className={selectClass}>
+              {TIMEZONE_OPTIONS.map((tz) => (
+                <option key={tz.value} value={tz.value}>{tz.label}</option>
+              ))}
+            </select>
+          </div>
         </div>
         {hasActiveFilters && (
           <button onClick={onClearFilters} className="text-sm text-gray-400 hover:text-foreground flex items-center gap-1 pb-2">

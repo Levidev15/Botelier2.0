@@ -53,6 +53,8 @@ export default function CallLogsPage() {
   // predicate via `?bucket=` on /api/call-logs, guaranteeing the count
   // matches the drilldown exactly.
   const [bucketFilter, setBucketFilter] = useState<string>("");
+  const [sortOrder, setSortOrder] = useState<"desc" | "asc">("desc");
+  const [phoneNumberIdFilter, setPhoneNumberIdFilter] = useState("");
 
   useEffect(() => {
     if (typeof window === "undefined") return;
@@ -69,7 +71,9 @@ export default function CallLogsPage() {
     const qmax = sp.get("quality_max"); if (qmax) setQualityMax(Number(qmax));
     const hr = sp.get("hour"); if (hr !== null) setHourFilter(Number(hr));
     const bk = sp.get("bucket"); if (bk) setBucketFilter(bk);
-    if (s || a || df || dt || ht || did || ar || acw || qmin || qmax || hr !== null || bk) setShowFilters(true);
+    const so = sp.get("sort_order"); if (so === "asc" || so === "desc") setSortOrder(so);
+    const pn = sp.get("phone_number_id"); if (pn) setPhoneNumberIdFilter(pn);
+    if (s || a || df || dt || ht || did || ar || acw || qmin || qmax || hr !== null || bk || pn) setShowFilters(true);
   }, []);
 
   // Deep link from a captured record's source: /dashboard/call-logs?call=<id>
@@ -126,6 +130,8 @@ export default function CallLogsPage() {
       if (qualityMax !== null) params.append("quality_max", String(qualityMax));
       if (hourFilter !== null) params.append("hour", String(hourFilter));
       if (bucketFilter) params.append("bucket", bucketFilter);
+      params.append("sort_order", sortOrder);
+      if (phoneNumberIdFilter) params.append("phone_number_id", phoneNumberIdFilter);
 
       const response = await authFetch(`/api/call-logs?${params}`);
       if (!response.ok) throw new Error("Failed to fetch call logs");
@@ -141,7 +147,7 @@ export default function CallLogsPage() {
       setLoading(false);
     }
   }, [accountId, page, search, statusFilter, assistantFilter, dateFrom, dateTo, timezone,
-      hasTransferFilter, dispositionIdFilter, acwResolutionFilter, acwCompletedFilter, qualityMin, qualityMax, hourFilter, bucketFilter]);
+      hasTransferFilter, dispositionIdFilter, acwResolutionFilter, acwCompletedFilter, qualityMin, qualityMax, hourFilter, bucketFilter, sortOrder, phoneNumberIdFilter]);
 
   const fetchFilterOptions = useCallback(async () => {
     if (!accountId) return;
@@ -193,6 +199,8 @@ export default function CallLogsPage() {
     if (qualityMax !== null) sp.set("quality_max", String(qualityMax));
     if (hourFilter !== null) sp.set("hour", String(hourFilter));
     if (bucketFilter) sp.set("bucket", bucketFilter);
+    if (sortOrder !== "desc") sp.set("sort_order", sortOrder);
+    if (phoneNumberIdFilter) sp.set("phone_number_id", phoneNumberIdFilter);
     const qs = sp.toString();
     const next = qs ? `${window.location.pathname}?${qs}` : window.location.pathname;
     if (next !== `${window.location.pathname}${window.location.search}`) {
@@ -200,7 +208,7 @@ export default function CallLogsPage() {
     }
   }, [statusFilter, assistantFilter, dateFrom, dateTo, hasTransferFilter,
       dispositionIdFilter, acwResolutionFilter, acwCompletedFilter,
-      qualityMin, qualityMax, hourFilter, bucketFilter]);
+      qualityMin, qualityMax, hourFilter, bucketFilter, sortOrder, phoneNumberIdFilter]);
 
   const handleExport = async () => {
     if (!accountId) return;
@@ -220,6 +228,8 @@ export default function CallLogsPage() {
       if (qualityMax !== null) params.append("quality_max", String(qualityMax));
       if (hourFilter !== null) params.append("hour", String(hourFilter));
       if (bucketFilter) params.append("bucket", bucketFilter);
+      params.append("sort_order", sortOrder);
+      if (phoneNumberIdFilter) params.append("phone_number_id", phoneNumberIdFilter);
 
       const response = await authFetch(`/api/call-logs/export?${params}`);
       if (!response.ok) throw new Error("Export failed");
@@ -367,6 +377,7 @@ export default function CallLogsPage() {
     setBucketFilter("");
     setDateFrom("");
     setDateTo("");
+    setPhoneNumberIdFilter("");
     setPage(1);
   };
 
@@ -374,7 +385,7 @@ export default function CallLogsPage() {
     search || statusFilter || assistantFilter || dateFrom || dateTo ||
     hasTransferFilter !== null || dispositionIdFilter || acwResolutionFilter ||
     acwCompletedFilter !== null || qualityMin !== null || qualityMax !== null || hourFilter !== null ||
-    bucketFilter;
+    bucketFilter || phoneNumberIdFilter;
 
   // Task #103 — Echo every URL-driven filter as a removable chip above the
   // search bar so operators landing from an analytics drilldown immediately
@@ -396,6 +407,9 @@ export default function CallLogsPage() {
     : "";
   const dispositionName = dispositionIdFilter
     ? filterOptions?.dispositions.find(d => d.id === dispositionIdFilter)?.name ?? dispositionIdFilter
+    : "";
+  const phoneNumberLabel = phoneNumberIdFilter
+    ? (filterOptions?.phone_numbers.find(p => p.id === phoneNumberIdFilter)?.number ?? phoneNumberIdFilter)
     : "";
 
   const BUCKET_LABELS: Record<string, string> = {
@@ -425,6 +439,7 @@ export default function CallLogsPage() {
   if (qualityMin !== null) filterChips.push({ key: "quality_min", label: `Quality ≥ ${qualityMin}`, onClear: () => { setQualityMin(null); setPage(1); } });
   if (qualityMax !== null) filterChips.push({ key: "quality_max", label: `Quality ≤ ${qualityMax}`, onClear: () => { setQualityMax(null); setPage(1); } });
   if (hourFilter !== null) filterChips.push({ key: "hour", label: `Hour: ${String(hourFilter).padStart(2, "0")}:00 (${timezone})`, onClear: () => { setHourFilter(null); setPage(1); } });
+  if (phoneNumberIdFilter) filterChips.push({ key: "phone_number_id", label: `Phone: ${phoneNumberLabel}`, onClear: () => { setPhoneNumberIdFilter(""); setPage(1); } });
 
   if (!permLoading && !hasAccess) {
     return <AccessDeniedPage message="You don't have permission to view call logs." />;
@@ -467,6 +482,10 @@ export default function CallLogsPage() {
         onTimezoneChange={handleTimezoneChange}
         onClearFilters={clearFilters}
         filterChips={filterChips}
+        sortOrder={sortOrder}
+        setSortOrder={setSortOrder}
+        phoneNumberIdFilter={phoneNumberIdFilter}
+        setPhoneNumberIdFilter={setPhoneNumberIdFilter}
       />
 
       <div className="flex-1 overflow-auto p-8">

@@ -8,7 +8,7 @@ import asyncio
 import csv
 import io
 from datetime import datetime, timedelta, timezone as dt_timezone
-from typing import List, Optional
+from typing import List, Literal, Optional
 from uuid import UUID
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
@@ -118,6 +118,9 @@ async def get_call_logs(
             "failed, unresolved, silent_caller. Maps 1:1 to the analytics "
             "partition predicates so the row set exactly matches the drilldown."
         ),
+    ),
+    sort_order: Literal["asc", "desc"] = Query(
+        "desc", description="Sort order for started_at: 'desc' (newest first, default) or 'asc' (oldest first)."
     ),
     page: int = Query(1, ge=1, description="Page number"),
     limit: int = Query(50, ge=1, le=100, description="Items per page"),
@@ -243,7 +246,7 @@ async def get_call_logs(
 
         call_logs = (
             query.options(joinedload(CallLog.legs), joinedload(CallLog.disposition))
-            .order_by(desc(CallLog.started_at))
+            .order_by(asc(CallLog.started_at) if sort_order == "asc" else desc(CallLog.started_at))
             .offset((page - 1) * limit)
             .limit(limit)
             .all()
@@ -438,6 +441,9 @@ async def export_call_logs(
     quality_min: Optional[int] = Query(None, ge=0, le=100, description="Minimum ACW quality score."),
     quality_max: Optional[int] = Query(None, ge=0, le=100, description="Maximum ACW quality score."),
     hour: Optional[int] = Query(None, ge=0, le=23, description="Hour of day (0-23). Matches in tz when provided."),
+    sort_order: Literal["asc", "desc"] = Query(
+        "desc", description="Sort order for started_at: 'desc' (newest first, default) or 'asc' (oldest first)."
+    ),
     tz: Optional[str] = Query(  # noqa: A002 — short query name kept to match dashboard
         None,
         description=(
@@ -600,7 +606,7 @@ async def export_call_logs(
                 joinedload(CallLog.legs),
                 joinedload(CallLog.disposition),
             )
-            .order_by(asc(CallLog.started_at))
+            .order_by(asc(CallLog.started_at) if sort_order == "asc" else desc(CallLog.started_at))
             .all()
         )
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { Download, Search, Filter, RefreshCw, X } from "lucide-react";
+import { ArrowDownUp, Download, Search, Filter, RefreshCw, X } from "lucide-react";
 import CallLogsFilterPanel from "./CallLogsFilterPanel";
 import type { FilterOptions } from "../types";
 
@@ -45,6 +45,10 @@ interface CallLogsToolbarProps {
   onTimezoneChange: (tz: string) => void;
   onClearFilters: () => void;
   filterChips?: FilterChip[];
+  sortOrder: "desc" | "asc";
+  setSortOrder: (v: "desc" | "asc") => void;
+  phoneNumberIdFilter: string;
+  setPhoneNumberIdFilter: (v: string) => void;
 }
 
 export default function CallLogsToolbar({
@@ -82,6 +86,10 @@ export default function CallLogsToolbar({
   onTimezoneChange,
   onClearFilters,
   filterChips,
+  sortOrder,
+  setSortOrder,
+  phoneNumberIdFilter,
+  setPhoneNumberIdFilter,
 }: CallLogsToolbarProps) {
   return (
     <div className="border-b border-gray-800 bg-[#0a0a0a] sticky top-0 z-10">
@@ -98,6 +106,14 @@ export default function CallLogsToolbar({
               title="Refresh"
             >
               <RefreshCw className="h-4 w-4" />
+            </button>
+            <button
+              onClick={() => setSortOrder(sortOrder === "desc" ? "asc" : "desc")}
+              className="inline-flex items-center px-3 py-2 bg-[#141414] border border-gray-800 hover:bg-gray-800 rounded-lg transition text-sm font-medium text-gray-300"
+              title={sortOrder === "desc" ? "Currently: Newest first. Click for Oldest first." : "Currently: Oldest first. Click for Newest first."}
+            >
+              <ArrowDownUp className="h-4 w-4 mr-2 text-gray-400" />
+              {sortOrder === "desc" ? "Newest first" : "Oldest first"}
             </button>
             {canExport && (
               <button
@@ -194,6 +210,8 @@ export default function CallLogsToolbar({
               onTimezoneChange={onTimezoneChange}
               hasActiveFilters={hasActiveFilters}
               onClearFilters={onClearFilters}
+              phoneNumberIdFilter={phoneNumberIdFilter}
+              setPhoneNumberIdFilter={setPhoneNumberIdFilter}
             />
           )}
         </div>
