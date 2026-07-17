@@ -59,12 +59,14 @@ async def finalize_active_calls_on_shutdown(session_factory, call_handler=None) 
     """
     if call_handler is None:
         try:
-            from botelier.api.websockets import call_handler as _call_handler
+            from botelier.api.websockets import get_call_handler_if_initialized
 
-            call_handler = _call_handler
+            call_handler = get_call_handler_if_initialized()
         except Exception as e:
-            print(f"⚠️  shutdown finalizer: could not import call_handler: {e}")
+            print(f"⚠️  shutdown finalizer: could not import websockets module: {e}")
             return
+        if call_handler is None:
+            return  # No WebSocket call has ever connected — nothing to finalize
 
     active_sids = list(set(call_handler.active_calls.keys()) | set(call_handler.call_tasks.keys()))
     if not active_sids:

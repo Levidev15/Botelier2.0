@@ -245,9 +245,14 @@ async def _stuck_call_sweeper_loop():
                 await asyncio.sleep(_INTERVAL_SECONDS)
             first_run = False
             try:
-                from botelier.api.websockets import call_handler
+                from botelier.api.websockets import get_call_handler_if_initialized
 
-                active = set(call_handler.active_calls.keys()) | set(call_handler.call_tasks.keys())
+                _ch = get_call_handler_if_initialized()
+                active = (
+                    set(_ch.active_calls.keys()) | set(_ch.call_tasks.keys())
+                    if _ch is not None
+                    else set()
+                )
             except Exception:
                 active = set()
             try:

@@ -32,6 +32,16 @@ def _get_call_handler():
     return _call_handler
 
 
+def get_call_handler_if_initialized():
+    """Return the CallHandler singleton if already created, else None.
+
+    Safe to call at any time — never triggers pipecat import.  Used by
+    the shutdown finalizer and stuck-call sweeper so they can inspect
+    active call state without eagerly loading the voice pipeline.
+    """
+    return _call_handler
+
+
 @router.websocket("/call")
 async def websocket_call_endpoint(websocket: WebSocket, db: Session = Depends(get_db)):
     """WebSocket endpoint for Twilio Media Streams - Official Pipecat Pattern.
