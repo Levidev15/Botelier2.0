@@ -218,9 +218,19 @@ def _build_call_context(call_log: CallLog, db: Session) -> str:
     return "\n".join(lines)
 
 
-def _stamp_acw_skip(call_log: CallLog, db: Session, reason: str) -> Dict[str, Any]:
+def _stamp_acw_skip(
+    call_log: CallLog,
+    db: Session,
+    reason: str,
+    *,
+    trigger_path: str = "unknown",
+    transcript_length: int = 0,
+) -> Dict[str, Any]:
     """Persist a terminal ACW skip state so rows do not look indefinitely pending."""
-    logger.info(f"ACW skipped for call {call_log.id}: {reason}")
+    logger.info(
+        f"acw_skip call_log_id={call_log.id} skip_reason={reason} "
+        f"trigger_path={trigger_path} transcript_length={transcript_length}"
+    )
     try:
         call_log.acw_skip_reason = reason
         if not call_log.acw_completed_at:
@@ -342,20 +352,30 @@ def should_auto_run_acw(assistant: Optional[Assistant], call_sid: Optional[str] 
     return False
 
 
-def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
+def run_acw(call_log: CallLog, db: Session, *, trigger_path: str = "unknown") -> Dict[str, Any]:
+    transcript_length = len(call_log.transcript) if call_log.transcript else 0
     # Task #98 — short-circuit when the caller never spoke. There is nothing
     # for the LLM to score, classify, or summarize. Stamp acw_completed_at
     # and acw_skip_reason so the UI can show a clean "No Caller Audio" badge
     # instead of leaving the row dangling in a perpetual "ACW pending" state.
     if call_log.caller_spoke is False:
-        return _stamp_acw_skip(call_log, db, "no_caller_audio")
+        return _stamp_acw_skip(
+            call_log, db, "no_caller_audio",
+            trigger_path=trigger_path, transcript_length=transcript_length,
+        )
 
     if not call_log.transcript:
-        return _stamp_acw_skip(call_log, db, "no_transcript")
+        return _stamp_acw_skip(
+            call_log, db, "no_transcript",
+            trigger_path=trigger_path, transcript_length=0,
+        )
 
     assistant = db.query(Assistant).filter(Assistant.id == call_log.assistant_id).first()
     if not assistant:
-        return _stamp_acw_skip(call_log, db, "no_assistant")
+        return _stamp_acw_skip(
+            call_log, db, "no_assistant",
+            trigger_path=trigger_path, transcript_length=transcript_length,
+        )
 
     acw_config = assistant.acw_config or {}
 
@@ -397,11 +417,17 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
         not any([has_dispositions, has_resolutions, has_quality, has_summary])
         and not auto_run_enabled
     ):
-        return _stamp_acw_skip(call_log, db, "no_sections_enabled")
+        return _stamp_acw_skip(
+            call_log, db, "no_sections_enabled",
+            trigger_path=trigger_path, transcript_length=transcript_length,
+        )
 
     transcript_text = _build_transcript_text(call_log.transcript)
     if not transcript_text.strip():
-        return _stamp_acw_skip(call_log, db, "empty_transcript")
+        return _stamp_acw_skip(
+            call_log, db, "empty_transcript",
+            trigger_path=trigger_path, transcript_length=transcript_length,
+        )
 
     if len(transcript_text) > _MAX_TRANSCRIPT_CHARS:
         truncated = transcript_text[:_MAX_TRANSCRIPT_CHARS]
@@ -646,7 +672,10 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
     call_log.acw_completed_at = datetime.utcnow()
     db.commit()
 
-    logger.info(f"ACW completed for call {call_log.id}")
+    logger.info(
+        f"acw_complete call_log_id={call_log.id} skip_reason=none "
+        f"trigger_path={trigger_path} transcript_length={transcript_length}"
+    )
 
     return {
         "success": True,
@@ -661,7 +690,7 @@ def run_acw(call_log: CallLog, db: Session) -> Dict[str, Any]:
     }
 
 
-def run_acw_in_thread(call_log_id: UUID) -> Dict[str, Any]:
+def run_acw_in_thread(call_log_id: UUID, trigger_path: str = "unknown") -> Dict[str, Any]:
     """Thread-safe ACW runner.
 
     Creates and owns its own DB session so it is safe to call from any thread
@@ -688,7 +717,7 @@ def run_acw_in_thread(call_log_id: UUID) -> Dict[str, Any]:
         if call_log.acw_completed_at and not call_log.acw_skip_reason:
             logger.debug(f"ACW thread: already completed for {call_log_id}, skipping")
             return {"skipped": True, "reason": "already_completed"}
-        return run_acw(call_log, db)
+        return run_acw(call_log, db, trigger_path=trigger_path)
     except Exception as e:
         logger.exception(f"ACW thread runner failed for {call_log_id}: {e}")
         return {"error": str(e)}
@@ -696,12 +725,17 @@ def run_acw_in_thread(call_log_id: UUID) -> Dict[str, Any]:
         db.close()
 
 
-async def run_acw_background(call_log_id: UUID):
+async def run_acw_background(call_log_id: UUID, trigger_path: str = "unknown"):
     """Async background task: polls for transcript readiness then runs ACW in a thread.
 
     Polling uses ``asyncio.sleep`` so no thread-pool worker is held while waiting.
     The actual ACW work (OpenAI call + DB writes) runs in a thread-pool executor
     via ``run_acw_in_thread``, which owns its own session — safe across threads.
+
+    The polling window is 8 attempts × 2.5s = ~20s to reduce transcript timing
+    races on the status-callback safety-net path. Rows stamped with
+    ``transcript_not_ready`` are auto-cleared and retried the next time
+    ``_maybe_enqueue_acw`` fires for that call (e.g. a late Twilio status).
     """
     import asyncio
 
@@ -711,7 +745,8 @@ async def run_acw_background(call_log_id: UUID):
     transcript_ready = False
     db = SessionLocal()
     try:
-        max_retries = 5
+        max_retries = 8
+        poll_interval = 2.5
         call_log = None
         for attempt in range(max_retries):
             call_log = db.query(CallLog).filter(CallLog.id == call_log_id).first()
@@ -729,18 +764,22 @@ async def run_acw_background(call_log_id: UUID):
             # Expire before sleeping so the next loop iteration re-fetches from DB
             # rather than returning the identity-mapped cached object.
             db.expire(call_log)
-            wait = 2 * (attempt + 1)
             logger.info(
-                f"ACW background: transcript not ready for {call_log_id}, "
-                f"retry {attempt + 1}/{max_retries} in {wait}s"
+                f"ACW background: transcript not ready for {call_log_id} "
+                f"trigger_path={trigger_path}, "
+                f"retry {attempt + 1}/{max_retries} in {poll_interval}s"
             )
-            await asyncio.sleep(wait)
+            await asyncio.sleep(poll_interval)
         else:
             logger.warning(
-                f"ACW background: transcript never arrived for {call_log_id}, skipping"
+                f"ACW background: transcript never arrived for {call_log_id} "
+                f"trigger_path={trigger_path}, stamping transcript_not_ready for auto-retry"
             )
             if call_log:
-                _stamp_acw_skip(call_log, db, "transcript_not_ready")
+                _stamp_acw_skip(
+                    call_log, db, "transcript_not_ready",
+                    trigger_path=trigger_path, transcript_length=0,
+                )
     except Exception as e:
         logger.exception(f"ACW background polling failed for {call_log_id}: {e}")
     finally:
@@ -751,4 +790,6 @@ async def run_acw_background(call_log_id: UUID):
 
     # --- execution phase: run ACW in a thread with its own session ---
     loop = asyncio.get_running_loop()
-    await loop.run_in_executor(None, run_acw_in_thread, call_log_id)
+    await loop.run_in_executor(
+        None, run_acw_in_thread, call_log_id, trigger_path
+    )

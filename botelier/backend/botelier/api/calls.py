@@ -780,7 +780,7 @@ async def call_status_callback(
                 # when that webhook never arrives these calls silently skip QA.
                 # All three helpers are idempotent, so a late connect-complete
                 # re-enqueue is safe.
-                _maybe_enqueue_acw(call_sid, db, background_tasks)
+                _maybe_enqueue_acw(call_sid, db, background_tasks, "status_callback")
                 _maybe_enqueue_record_extraction(call_sid, db, background_tasks)
                 _maybe_enqueue_billing_alert(call_sid, db, background_tasks)
 
@@ -791,7 +791,12 @@ async def call_status_callback(
         return {"status": "error", "message": str(e)}
 
 
-def _maybe_enqueue_acw(call_sid: str, db: Session, background_tasks: BackgroundTasks):
+def _maybe_enqueue_acw(
+    call_sid: str,
+    db: Session,
+    background_tasks: BackgroundTasks,
+    trigger_path: str = "unknown",
+):
     call_log = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
     if not call_log:
         logger.warning(f"ACW auto-run skipped for call {call_sid}: call log not found")
@@ -802,13 +807,31 @@ def _maybe_enqueue_acw(call_sid: str, db: Session, background_tasks: BackgroundT
     from ..models import Assistant
 
     if call_log.acw_completed_at:
-        logger.debug(f"ACW already completed for call {call_sid}, skipping duplicate enqueue")
-        return
+        if call_log.acw_skip_reason == "transcript_not_ready":
+            logger.info(
+                f"ACW transcript_not_ready for call {call_sid} "
+                f"trigger_path={trigger_path} — clearing for automatic retry"
+            )
+            call_log.acw_skip_reason = None
+            call_log.acw_completed_at = None
+            try:
+                db.commit()
+            except Exception as exc:
+                logger.warning(
+                    f"Failed to clear transcript_not_ready for {call_sid}: {exc}"
+                )
+                db.rollback()
+                return
+        else:
+            logger.debug(f"ACW already completed for call {call_sid}, skipping duplicate enqueue")
+            return
 
     assistant = db.query(Assistant).filter(Assistant.id == call_log.assistant_id).first()
     if should_auto_run_acw(assistant, call_sid):
-        logger.info(f"Enqueueing ACW background task for call {call_sid}")
-        background_tasks.add_task(run_acw_background, call_log.id)
+        logger.info(
+            f"Enqueueing ACW background task for call {call_sid} trigger_path={trigger_path}"
+        )
+        background_tasks.add_task(run_acw_background, call_log.id, trigger_path)
 
 
 def _maybe_enqueue_record_extraction(
@@ -895,7 +918,7 @@ async def connect_complete(
                 # No /transfer-status callbacks will arrive — finalize the record now.
                 call_logger.complete_cold_transfer(call_sid)
                 logger.info(f"Cold transfer call {call_sid} finalized at connect-complete")
-                _maybe_enqueue_acw(call_sid, db, background_tasks)
+                _maybe_enqueue_acw(call_sid, db, background_tasks, "connect_complete")
                 _maybe_enqueue_record_extraction(call_sid, db, background_tasks)
                 _maybe_enqueue_billing_alert(call_sid, db, background_tasks)
             else:
@@ -940,7 +963,7 @@ async def connect_complete(
                 call_started_at=call_log.started_at,
             )
 
-        _maybe_enqueue_acw(call_sid, db, background_tasks)
+        _maybe_enqueue_acw(call_sid, db, background_tasks, "connect_complete")
         _maybe_enqueue_record_extraction(call_sid, db, background_tasks)
         _maybe_enqueue_billing_alert(call_sid, db, background_tasks)
 
@@ -1063,7 +1086,7 @@ async def transfer_status_callback(
                 logger.info(
                     f"Transfer leg {call_sid} ended ({call_status}) — enqueueing ACW for parent call {parent_call_sid}"
                 )
-                _maybe_enqueue_acw(parent_call_sid, db, background_tasks)
+                _maybe_enqueue_acw(parent_call_sid, db, background_tasks, "transfer_status")
                 _maybe_enqueue_record_extraction(parent_call_sid, db, background_tasks)
                 _maybe_enqueue_billing_alert(parent_call_sid, db, background_tasks)
 
