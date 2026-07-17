@@ -401,3 +401,83 @@ def test_regression_pending_side_effect_true_during_earlier_collection():
     ex.state.collected_slots["name"] = "Corey"
     ex.state.current_node_id = "collect_room"
     assert ex.has_pending_side_effect_downstream() is True
+
+
+# ---------------------------------------------------------------------------
+# Simulator parity: end_call_<node_id> must NOT be stripped at END node
+# ---------------------------------------------------------------------------
+# The simulator filter in _process_with_llm uses ONLY has_pending_side_effect_
+# downstream() — NOT is_on_required_action_node().  This section verifies the
+# exact guard that prevents the regression:
+#   • END is in _ACTION_NODE_TYPES → is_on_required_action_node() is True there
+#   • But END is NOT in _SIDE_EFFECT_NODE_TYPES → has_pending_side_effect_downstream()
+#     is False → the simulator filter does NOT fire → end_call_<id> stays.
+# ---------------------------------------------------------------------------
+
+def test_simulator_gate_does_not_fire_on_end_node():
+    """has_pending_side_effect_downstream() is False on END node.
+
+    This is the critical invariant: the simulator only gates on this method,
+    not on is_on_required_action_node().  At END node, the flow's own
+    end_call_<id> must survive so the simulated session can terminate.
+    """
+    ex = _collect_then_save_flow()
+    ex.state.collected_slots["anything_else"] = "No"
+    # Simulate: SAVE_RECORD fired, flow advanced to END.
+    ex.state.current_node_id = "end"
+
+    # This is what the simulator uses as its filter condition.
+    sim_gate = ex.has_pending_side_effect_downstream()
+    assert sim_gate is False, (
+        "Simulator gate must be False at END node so end_call_<id> is not stripped"
+    )
+
+    # Confirm is_on_required_action_node() is True at END node, showing why
+    # we cannot OR it into the simulator condition.
+    assert ex.is_on_required_action_node() is True
+
+
+def test_simulator_gate_fires_on_collect_before_save_record():
+    """Simulator gate True on collect node → end_call_* would be stripped."""
+    ex = _collect_then_save_flow()
+    ex.state.current_node_id = "ask"
+
+    assert ex.has_pending_side_effect_downstream() is True
+    # Confirm end_call_end is NOT in the flow schemas at this position
+    # (get_reachable_action_node_ids stops at uncollected current node).
+    names = _fn_names(ex.get_function_schemas())
+    assert "end_call_end" not in names
+
+
+def test_end_call_node_id_present_in_schemas_at_end_node():
+    """At the END node, end_call_<node_id> appears in flow schemas.
+
+    This is the tool the simulator needs to terminate; stripping it would
+    leave the simulated session with no termination path.
+    """
+    ex = _collect_then_save_flow()
+    ex.state.collected_slots["anything_else"] = "No"
+    ex.state.current_node_id = "end"
+
+    names = _fn_names(ex.get_function_schemas())
+    assert "end_call_end" in names
+    # has_pending_side_effect_downstream() is False here, so the simulator
+    # filter would NOT strip it.
+    assert ex.has_pending_side_effect_downstream() is False
+
+
+def test_simulator_gate_fires_on_save_record_node_strips_end_call():
+    """Sitting on SAVE_RECORD: gate fires; end_call_* correctly stripped.
+
+    At SAVE_RECORD the flow schemas don't include end_call_end anyway
+    (action node gating stops downstream exposure), so this is defense-in-depth.
+    """
+    ex = _collect_then_save_flow()
+    ex.state.collected_slots["anything_else"] = "No"
+    ex.state.current_node_id = "save"
+
+    assert ex.has_pending_side_effect_downstream() is True
+    # Flow schemas at SAVE_RECORD node: only save_record_save exposed.
+    names = _fn_names(ex.get_function_schemas())
+    assert "save_record_save" in names
+    assert "end_call_end" not in names

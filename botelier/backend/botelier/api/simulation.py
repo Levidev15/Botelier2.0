@@ -755,14 +755,20 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
             # CONFIRMATION, SET_VARIABLE) is pending downstream — or the flow
             # sits directly on one — strip any end_call_* tool so the LLM
             # cannot skip the required step by ending the call prematurely.
-            # In the simulator, end_call_* only appears via the flow's own
-            # get_function_schemas() (there is no separate global end_call
-            # non-flow tool), so this filter covers the same logical gap.
+            #
+            # IMPORTANT: use has_pending_side_effect_downstream() ONLY — NOT
+            # OR-ed with is_on_required_action_node().  Reason: in the simulator
+            # end_call_<node_id> is the flow's own END-node tool (there is no
+            # separate global end_call tool as in live calls).  END is in
+            # _ACTION_NODE_TYPES so is_on_required_action_node() returns True
+            # when the flow reaches the END node — ORing it would strip
+            # end_call_<node_id> from the tool list at exactly the moment the
+            # LLM needs it to close the session.
+            # has_pending_side_effect_downstream() returns False on END nodes
+            # (END is not a side-effect type), so this correctly fires only
+            # while actual pending data-mutations remain in the flow.
             _executor = state.executor
-            if (
-                _executor.is_on_required_action_node()
-                or _executor.has_pending_side_effect_downstream()
-            ):
+            if _executor.has_pending_side_effect_downstream():
                 tools = [
                     t for t in tools
                     if not t.get("function", {}).get("name", "").startswith("end_call_")
