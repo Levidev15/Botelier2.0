@@ -21,11 +21,11 @@ if TYPE_CHECKING:
 from twilio.base.exceptions import TwilioRestException as _TwilioRestException
 from twilio.rest import Client as TwilioClient
 
-from botelier.flow_executor import FlowExecutor, parse_flow_config
+from botelier.flow_executor import FlowExecutor, parse_flow_config, substitute_variables
 from botelier.models.tool import Tool, ToolType
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
-from pipecat.frames.frames import EndFrame, TTSSpeakFrame
+from pipecat.frames.frames import EndFrame, FunctionCallResultProperties, TTSSpeakFrame
 from pipecat.services.llm_service import FunctionCallParams
 
 
@@ -1889,9 +1889,11 @@ class FunctionMapper:
             # the caller hears them back-to-back without the LLM waiting for
             # input between them.
             initial_messages = executor.get_initial_messages()
+            spoke_any = False
             for message in initial_messages:
                 if message:
                     await params.llm.push_frame(TTSSpeakFrame(message))
+                    spoke_any = True
 
             # State is now advanced to the first COLLECT node.  Updating tools
             # here exposes the correct collect_* functions for that node.
@@ -1899,27 +1901,74 @@ class FunctionMapper:
 
             # Give the LLM the remaining variable list for context so it knows
             # what to collect, but omit the greeting — it has already been spoken.
-            variables_to_collect = [
-                {"key": v.key, "type": v.type.value, "description": v.description}
-                for v in executor.flow_config.variables
-                if v.key not in executor.state.collected_slots
-            ]
+            # Each entry carries its collect node's typed instructions so the
+            # LLM knows HOW to ask/handle every value, not just what to collect.
+            variables_to_collect = []
+            for v in executor.flow_config.variables:
+                if v.key in executor.state.collected_slots:
+                    continue
+                entry = {"key": v.key, "type": v.type.value, "description": v.description}
+                try:
+                    raw_instructions = executor._get_instructions_for_variable(v.key)
+                except Exception:  # noqa: BLE001 - guidance is best-effort
+                    raw_instructions = None
+                if raw_instructions and raw_instructions.strip():
+                    entry["instructions"] = substitute_variables(
+                        raw_instructions.strip(), executor.state.collected_slots
+                    )
+                variables_to_collect.append(entry)
 
             progress = executor.get_progress()
 
-            await params.result_callback(
-                {
-                    "status": "flow_started",
-                    "progress": progress,
-                    "variables_to_collect": variables_to_collect,
-                    "instructions": (
-                        "The greeting has already been spoken to the caller. "
-                        "Collect the required information by calling the collect_* functions "
-                        "as you gather each value from the caller. "
-                        "Ask for each piece of information naturally in conversation."
-                    ),
-                }
-            )
+            result_payload = {
+                "status": "flow_started",
+                "progress": progress,
+                "variables_to_collect": variables_to_collect,
+                "instructions": (
+                    "The greeting AND the first question have already been spoken "
+                    "to the caller. Do NOT greet again and do NOT repeat the first "
+                    "question — wait for the caller's response. Then collect the "
+                    "required information by calling the collect_* functions as you "
+                    "gather each value, asking for each piece naturally in "
+                    "conversation."
+                ),
+            }
+
+            # Same CURRENT NODE guidance the simulator injects per turn. At
+            # flow start the current node's prompt was just spoken aloud, so
+            # frame it as reference-only — otherwise the LLM re-asks the first
+            # question on the caller's first answer.
+            try:
+                node_context = executor.get_current_node_context()
+            except Exception:  # noqa: BLE001 - guidance is best-effort
+                node_context = None
+            if node_context:
+                result_payload["current_node_context"] = (
+                    "NOTE: the prompt below has ALREADY been spoken to the caller "
+                    "— do not repeat it; use it only to interpret their answer:\n"
+                    + node_context
+                )
+
+            # The greeting + first question were just spoken via TTSSpeakFrame,
+            # so suppress the post-function-call LLM completion. Without this
+            # the LLM immediately generates its own greeting/question on top of
+            # the spoken one — the "double greeting" the caller hears at flow
+            # start. The result still lands in context, so when the caller
+            # answers, the next completion sees the flow state and guidance.
+            # If nothing was actually spoken (misconfigured flow with no
+            # initial messages), keep the default completion so the caller
+            # never gets dead air.
+            if spoke_any:
+                await params.result_callback(
+                    result_payload,
+                    properties=FunctionCallResultProperties(run_llm=False),
+                )
+            else:
+                logger.warning(
+                    f"Flow {tool_name} produced no initial messages at trigger; "
+                    "keeping the post-function LLM completion to avoid dead air."
+                )
+                await params.result_callback(result_payload)
 
         return handler
 

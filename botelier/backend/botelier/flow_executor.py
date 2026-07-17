@@ -212,6 +212,13 @@ class FlowState:
         self.is_complete: bool = False
         self.transfer_requested: bool = False
         self.transfer_target: Optional[str] = None
+        # Records created by SAVE_RECORD nodes during this session, keyed by
+        # node id → record id. Lets post-save variable changes (confirm/edit
+        # corrections) sync back into the already-saved record instead of the
+        # record silently going stale. Persisted inside the flow_sessions
+        # snapshot (under the reserved "_saved_records" key) so it survives a
+        # websocket dropout / reconnect on a fresh worker.
+        self.saved_records: dict[str, str] = {}
 
         for var in flow_config.variables:
             if var.default_value:
@@ -497,7 +504,9 @@ You have access to a structured conversation flow (started when the caller wants
 7. For number fields, respect the minimum and maximum limits specified.
 8. IMPORTANT: Never use markdown formatting (no asterisks, bold, bullets, etc). This is a voice conversation - speak naturally without any special formatting.
 9. When a function returns a "speak_exactly" field, speak that text verbatim without paraphrasing.
-10. If the caller asks a question mid-flow, answer it briefly (use the knowledge base if one is available), then continue collecting where you left off. Do not restart the flow or lose your place."""
+10. If the caller asks a question mid-flow, answer it briefly (use the knowledge base if one is available), then continue collecting where you left off. Do not restart the flow or lose your place.
+11. When a function result includes "node_instructions", follow those instructions when composing your very next reply — they are the flow designer's directions for the step that just completed (e.g. how to confirm the value you just collected).
+12. When a function result includes "current_node_context", treat it exactly like CURRENT NODE instructions: it tells you what to say or ask next."""
 
 
 class FlowExecutor:
@@ -578,13 +587,20 @@ class FlowExecutor:
         if not key:
             return
         session_key, tool_id = key
+        # Ride the saved-record map inside the collected_slots JSON under a
+        # reserved "_saved_records" key so the record ids survive a reconnect
+        # without any schema change. Popped back out on rehydrate; the reserved
+        # key never lives in the in-memory collected_slots the LLM sees.
+        slots_payload: dict[str, Any] = dict(self.state.collected_slots)
+        if self.state.saved_records:
+            slots_payload["_saved_records"] = self.state.saved_records
         payload = {
             "account_id": str(self.account_id) if self.account_id else None,
             "property_id": self.property_id,
             "session_key": session_key,
             "tool_id": tool_id,
             "current_node_id": self.state.current_node_id,
-            "collected_slots": json.dumps(self.state.collected_slots, default=str),
+            "collected_slots": json.dumps(slots_payload, default=str),
             "status": "complete" if self.state.is_complete else "active",
         }
         try:
@@ -679,6 +695,11 @@ class FlowExecutor:
             except (ValueError, TypeError):
                 saved_slots = {}
         if isinstance(saved_slots, dict):
+            saved_records = saved_slots.pop("_saved_records", None)
+            if isinstance(saved_records, dict):
+                self.state.saved_records.update(
+                    {str(k): str(v) for k, v in saved_records.items()}
+                )
             self.state.collected_slots.update(saved_slots)
         if saved_node:
             self.state.current_node_id = saved_node
@@ -1050,7 +1071,28 @@ class FlowExecutor:
             if node_instructions:
                 context_lines.append(f"Additional instructions: {node_instructions}")
 
+        # Every other node type: surface the node's typed instructions so the
+        # editor's per-node guidance is honored while that node is active —
+        # on live calls exactly as in the simulator (API/CAPABILITY nodes
+        # already appended theirs above).
+        if current_node.type not in (NodeType.API_REQUEST, NodeType.CAPABILITY):
+            generic_instructions = (current_node.data.get("instructions") or "").strip()
+            if generic_instructions:
+                resolved_instructions = substitute_variables(
+                    generic_instructions, self.state.collected_slots
+                )
+                context_lines.append(f"Node instructions: {resolved_instructions}")
+
         return "\n".join(context_lines) if context_lines else None
+
+    def get_current_node_context(self) -> Optional[str]:
+        """Public accessor for the active node's guidance block.
+
+        Used by live-call function results (flow trigger + every flow function)
+        so a real call sees the same CURRENT NODE guidance the simulator puts
+        in its per-turn system prompt.
+        """
+        return self._get_current_node_context()
 
     def _get_validation_for_variable(self, var_key: str) -> Optional[dict]:
         """Get the validation config for the node that collects a specific variable."""
@@ -1908,6 +1950,20 @@ class FlowExecutor:
         - action: Optional action type (transfer, end, etc.)
         """
         result = await self._dispatch_function_call(function_name, arguments)
+        # Live↔simulator parity: attach the now-active node's guidance to every
+        # non-terminal result so the live LLM receives per-node instructions at
+        # the moment that node becomes current (the simulator gets the same
+        # block via its per-turn system prompt rebuild).
+        if isinstance(result, dict) and result.get("action") not in ("transfer", "end"):
+            if "current_node_context" not in result:
+                try:
+                    node_context = self._get_current_node_context()
+                except Exception as exc:  # noqa: BLE001 - guidance is best-effort
+                    logger.warning(f"current_node_context enrichment failed (non-fatal): {exc}")
+                    node_context = None
+                if node_context:
+                    result["current_node_context"] = node_context
+        await self._sync_saved_records()
         await self._snapshot_state()
         return result
 
@@ -2083,6 +2139,21 @@ class FlowExecutor:
                 self._get_next_node_configured_message(next_node) if next_node else (None, False)
             )
 
+            # Surface the collecting node's typed instructions with the result
+            # so the LLM applies them to the value it just collected (e.g.
+            # "spell the name back to confirm"). Resolved AFTER the value is
+            # stored so {{var}} placeholders include the fresh value.
+            node_instructions = None
+            if collecting_node_id:
+                for n in self.flow_config.nodes:
+                    if n.id == collecting_node_id:
+                        raw_instructions = (n.data.get("instructions") or "").strip()
+                        if raw_instructions:
+                            node_instructions = substitute_variables(
+                                raw_instructions, self.state.collected_slots
+                            )
+                        break
+
             result = {
                 "success": True,
                 "action": None,
@@ -2090,6 +2161,9 @@ class FlowExecutor:
                 "current_node_id": next_node_id or collecting_node_id or self.state.current_node_id,
                 "next_slot": next_slot_instructions,
             }
+
+            if node_instructions:
+                result["node_instructions"] = node_instructions
 
             if next_node_message:
                 result["message"] = next_node_message
@@ -3367,36 +3441,8 @@ class FlowExecutor:
                 )
                 return _result(False, "Record type not available")
 
-            # Resolve each mapped field as a template against collected slots.
-            mapping = save_data.get("mapping", save_data.get("fieldMapping", {})) or {}
-            valid_keys = {
-                f.get("key") for f in (record_type.fields or []) if isinstance(f, dict)
-            }
-            data: dict[str, Any] = {}
-            for field_key, template in mapping.items():
-                if field_key not in valid_keys:
-                    continue
-                if not isinstance(template, str):
-                    data[field_key] = template
-                    continue
-                resolved = substitute_variables(template, self.state.collected_slots).strip()
-                if resolved:
-                    data[field_key] = resolved
-
-            # Optional static/template status, validated against status_options.
-            status = None
-            status_raw = save_data.get("status")
-            if isinstance(status_raw, str) and status_raw.strip():
-                candidate = substitute_variables(
-                    status_raw, self.state.collected_slots
-                ).strip()
-                allowed = {
-                    o.get("value")
-                    for o in (record_type.status_options or [])
-                    if isinstance(o, dict)
-                }
-                if not allowed or candidate in allowed:
-                    status = candidate or None
+            # Resolve field mapping + status from the CURRENT collected slots.
+            data, status = self._resolve_record_payload(save_data, record_type)
 
             # Link back to the originating call (best-effort).
             source_call_log_id = None
@@ -3424,6 +3470,13 @@ class FlowExecutor:
             record_type_name = record_type.name
             db.add(record)
             db.commit()
+            # Remember the saved record so later variable changes (e.g. a
+            # confirm/edit correction after the save already fired) sync back
+            # into it instead of leaving the record stale.
+            try:
+                self.state.saved_records[node_id] = str(record.id)
+            except Exception:  # noqa: BLE001 - tracking is best-effort
+                pass
             logger.info(
                 f"SAVE_RECORD: saved {record_type_name} record for type "
                 f"{record_type_id} (call_sid={self.call_sid})"
@@ -3440,6 +3493,142 @@ class FlowExecutor:
             except Exception:  # noqa: BLE001
                 pass
             return _result(False, "Record could not be saved")
+        finally:
+            try:
+                db.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _resolve_record_payload(self, save_data: dict, record_type) -> tuple[dict, Optional[str]]:
+        """Resolve a SAVE_RECORD node's field mapping + status against the
+        CURRENT collected slots.
+
+        Shared by the initial save and the post-save sync so both always
+        produce identical payloads for identical variable state.
+        """
+        mapping = save_data.get("mapping", save_data.get("fieldMapping", {})) or {}
+        valid_keys = {
+            f.get("key") for f in (record_type.fields or []) if isinstance(f, dict)
+        }
+        data: dict[str, Any] = {}
+        for field_key, template in mapping.items():
+            if field_key not in valid_keys:
+                continue
+            if not isinstance(template, str):
+                data[field_key] = template
+                continue
+            resolved = substitute_variables(template, self.state.collected_slots).strip()
+            if resolved:
+                data[field_key] = resolved
+
+        # Optional static/template status, validated against status_options.
+        status = None
+        status_raw = save_data.get("status")
+        if isinstance(status_raw, str) and status_raw.strip():
+            candidate = substitute_variables(
+                status_raw, self.state.collected_slots
+            ).strip()
+            allowed = {
+                o.get("value")
+                for o in (record_type.status_options or [])
+                if isinstance(o, dict)
+            }
+            if not allowed or candidate in allowed:
+                status = candidate or None
+
+        return data, status
+
+    async def _sync_saved_records(self) -> None:
+        """Re-sync already-saved records after any post-save variable change.
+
+        If a SAVE_RECORD node fired and the caller then corrects a value (e.g.
+        via the confirmation edit path), the stored record would silently go
+        stale. Runs after every function call; no-op until a record exists.
+        Best-effort in a worker thread with its own session — a sync failure
+        never affects the live call.
+        """
+        if not self.state.saved_records or not self.account_id:
+            return
+        try:
+            await asyncio.to_thread(self._sync_saved_records_blocking)
+        except Exception as exc:  # noqa: BLE001 - sync must never break a call
+            logger.warning(f"Saved-record sync failed (non-fatal): {exc}")
+
+    def _sync_saved_records_blocking(self) -> None:
+        """Recompute each saved record's payload and update it if it changed.
+
+        Account-scoped on every lookup (tenant isolation); uses a dedicated
+        short-lived session, mirroring ``_handle_save_record``.
+        """
+        import uuid as _uuid
+
+        from botelier.database import SessionLocal
+        from botelier.models.record import Record
+        from botelier.models.record_type import RecordType
+
+        try:
+            account_uuid = _uuid.UUID(str(self.account_id))
+        except (ValueError, TypeError):
+            return
+
+        db = SessionLocal()
+        try:
+            for node_id, record_id in list(self.state.saved_records.items()):
+                node = None
+                for n in self.flow_config.nodes:
+                    if n.id == node_id:
+                        node = n
+                        break
+                if node is None:
+                    continue
+                save_data = node.data.get("saveRecord", node.data.get("save_record", {}))
+
+                try:
+                    record_uuid = _uuid.UUID(str(record_id))
+                except (ValueError, TypeError):
+                    continue
+
+                record = (
+                    db.query(Record)
+                    .filter(Record.id == record_uuid, Record.account_id == account_uuid)
+                    .first()
+                )
+                if record is None:
+                    continue
+
+                record_type = (
+                    db.query(RecordType)
+                    .filter(
+                        RecordType.id == record.record_type_id,
+                        RecordType.account_id == account_uuid,
+                    )
+                    .first()
+                )
+                if record_type is None:
+                    continue
+
+                data, status = self._resolve_record_payload(save_data, record_type)
+
+                changed = False
+                if data != (record.data or {}):
+                    record.data = data
+                    changed = True
+                if status is not None and status != record.status:
+                    record.status = status
+                    changed = True
+
+                if changed:
+                    db.commit()
+                    logger.info(
+                        f"SAVE_RECORD sync: updated record {record_id} after "
+                        f"post-save variable change (call_sid={self.call_sid})"
+                    )
+        except Exception:
+            try:
+                db.rollback()
+            except Exception:  # noqa: BLE001
+                pass
+            raise
         finally:
             try:
                 db.close()
