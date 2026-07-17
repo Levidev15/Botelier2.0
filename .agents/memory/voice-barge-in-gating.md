@@ -28,6 +28,17 @@ description: Pipecat interruption semantics — InterruptionFrame fires on every
   full generated response, compare overlapping prefixes (cap ~80 chars, require ≥12).
   Known limitation: two responses in one call sharing the same ≥12-char prefix can
   cross-match.
+- **Mute-while-bot-speaking windows FLICKER between TTS segments:** one LLM response
+  often produces multiple TTS utterance segments, and `BotStoppedSpeakingFrame` fires
+  between them (double BotStopped inside one response window is the log signature). On
+  the Flux path with interruptions OFF, each flicker lifts `AlwaysUserMuteStrategy`
+  mid-response; any caller-side noise then fires Flux StartOfTurn →
+  `broadcast_interruption()` (Flux STT keeps `should_interrupt=True`) → Twilio serializer
+  sends `clear`, wiping the audio Twilio buffered ahead → the bot audibly cuts out
+  (worst when spelling letter-by-letter, since those responses are pause-heavy).
+  **Why:** relying on mute windows alone assumes bot-speaking state is continuous per
+  response — it isn't. When interruptions are disabled, gate the interruption broadcast
+  at the source, not just the audio feed.
 - **How to apply:** anything touching `InterruptionTracker`, turn strategies, or
   `_extract_transcript` interrupted/recovery logic — run
   `tests/test_interrupted_transcript.py` (includes the "completed response + next user

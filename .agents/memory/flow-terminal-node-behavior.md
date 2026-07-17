@@ -12,6 +12,9 @@ The built-in `confirm_details` (flows WITHOUT a CONFIRMATION node) must only be 
 ## END nodes need an explicit "call the function" instruction
 The current-node context for END nodes must instruct the model to CALL `end_call_<node_id>` — merely quoting the goodbye text makes the LLM speak it as plain text and the call/session never ends (voice, SMS, and simulator all share this prompt path). The simulator additionally forces `tool_choice` for END nodes, same pattern as API_REQUEST (live voice never forces tool_choice).
 
+## Global end_call competes with the final collect function
+The end_call gate (`is_on_required_action_node` → filtered in `update_llm_tools_for_flow`) only blocks the global end_call while the flow SITS ON an action node. While sitting on the last collect node before a SAVE_RECORD, end_call stays exposed — and when the caller answers the final "anything else?" with "No", the LLM non-deterministically calls end_call instead of the collect function, so the flow never advances and the record is silently lost (same code/flow config succeeds on other calls). Gating must consider action nodes still PENDING DOWNSTREAM, and collect-node context should say "a decline is still an answer — call the collect function, never end the call yourself".
+
 ## tools.account_id is NULL for most tools
 Tools are tenant-scoped through `ToolSet.account_id`; the tool-create endpoint never stamps `tools.account_id`. Anything needing the tool's account (e.g. simulator FlowExecutor for SAVE_RECORD) must resolve through the ToolSet when the direct column is NULL.
 
