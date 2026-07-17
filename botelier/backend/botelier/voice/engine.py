@@ -62,6 +62,9 @@ from pipecat.turns.user_mute.mute_until_first_bot_complete_user_mute_strategy im
 from pipecat.turns.user_start.min_words_user_turn_start_strategy import (
     MinWordsUserTurnStartStrategy,
 )
+from pipecat.turns.user_start.transcription_user_turn_start_strategy import (
+    TranscriptionUserTurnStartStrategy,
+)
 from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 
@@ -1448,6 +1451,14 @@ class VoiceEngineFactory:
                 return DeepgramFluxSTTService(
                     api_key=api_keys.get("deepgram_api_key"),
                     ttfs_p99_latency=flux_ttfs,
+                    # Gate broadcast_interruption() in _handle_start_of_turn.
+                    # When the assistant's interruptions toggle is OFF we set this
+                    # False so that background noise / breaths during the inter-segment
+                    # mute gap cannot trigger a Twilio `clear` that wipes buffered audio
+                    # and cuts the bot's voice mid-sentence.  UserStartedSpeaking,
+                    # EndOfTurn transcriptions, and metrics still fire normally so
+                    # normal turn-taking is completely unaffected.
+                    should_interrupt=config.enable_interruptions,
                     settings=DeepgramFluxSTTService.Settings(
                         model=model,
                         eager_eot_threshold=config.stt_config.get("eager_eot_threshold"),
@@ -1985,29 +1996,53 @@ class VoiceEngineFactory:
             # voice is cut off mid-word.  The greeting suffers the same fate on the
             # very first response before the caller has spoken at all.
             #
-            # should_interrupt=True is intentional on the DeepgramFluxSTTService
-            # (see engine.py create_stt()).  With these mute strategies in place no
-            # caller audio reaches Flux while the bot is speaking, so Flux cannot
-            # spuriously fire StartOfTurn during bot speech, and broadcast_interruption()
-            # is only triggered by genuine caller speech that arrives after the mute
-            # window closes.
+            # Interruption guard (toggle OFF):
+            #   Two independent sources can fire broadcast_interruption() and cause
+            #   a Twilio `clear` that wipes audio buffered in the carrier — this is
+            #   the root cause of bot speech being audibly cut mid-sentence when the
+            #   caller breathes or speaks during inter-segment pauses (BotStoppedSpeaking
+            #   fires between TTS segments, briefly lifting the AlwaysUserMuteStrategy
+            #   window):
+            #
+            #   1. DeepgramFluxSTTService._handle_start_of_turn (pipecat flux/base.py):
+            #      caller noise during the unmuted window → Flux fires StartOfTurn →
+            #      broadcast_interruption() — gated by should_interrupt=False on the
+            #      STT service (set in create_stt_service() above).
+            #
+            #   2. LLMUserAggregator / TranscriptionUserTurnStartStrategy: if a real
+            #      word is transcribed during the unmuted gap the aggregator's default
+            #      TranscriptionUserTurnStartStrategy (enable_interruptions=True) also
+            #      fires an interruption — gated by explicit UserTurnStrategies with
+            #      enable_interruptions=False below.
+            #
+            #   The mute strategies are kept unchanged — they are the primary guard
+            #   against Flux watchdog stalls during bot speech.  The interruption gates
+            #   are additive (defence-in-depth) for the unmuted inter-segment windows.
             flux_mute_strategies = [
                 MuteUntilFirstBotCompleteUserMuteStrategy(),
                 FunctionCallUserMuteStrategy(),
             ]
+            flux_turn_strategies: UserTurnStrategies | None = None
             if not config.enable_interruptions:
-                # Per-assistant "interruptible" toggle OFF: no caller audio
-                # reaches Flux while the bot is speaking, so Flux can never
-                # fire StartOfTurn → broadcast_interruption() during bot speech.
+                # Per-assistant "interruptible" toggle OFF:
+                #   - AlwaysUserMuteStrategy: mutes caller audio during bot speech so
+                #     Flux never sees audio in those windows.
+                #   - UserTurnStrategies with enable_interruptions=False: ensures that
+                #     even if a word is transcribed during an inter-segment unmuted
+                #     gap the aggregator will NOT emit an interruption frame.
                 flux_mute_strategies.insert(0, AlwaysUserMuteStrategy())
+                flux_turn_strategies = UserTurnStrategies(
+                    start=[TranscriptionUserTurnStartStrategy(enable_interruptions=False)]
+                )
 
             user_params = LLMUserAggregatorParams(
                 user_mute_strategies=flux_mute_strategies,
+                user_turn_strategies=flux_turn_strategies,
             )
             logger.info(
                 f"Deepgram Flux mute strategies wired into LLMUserAggregator "
                 f"(model={config.stt_model!r}); VAD/SmartTurn omitted — Flux owns turn detection | "
-                f"interruptions={'enabled' if config.enable_interruptions else 'DISABLED (caller muted during bot speech)'}"
+                f"interruptions={'enabled' if config.enable_interruptions else 'DISABLED (should_interrupt=False + enable_interruptions=False on turn strategy)'}"
             )
 
         context_aggregator = LLMContextAggregatorPair(context, user_params=user_params)
