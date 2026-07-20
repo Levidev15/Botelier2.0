@@ -252,32 +252,84 @@ class FunctionMapper:
         await self._rest_hangup(label)
         await llm.push_frame(EndFrame())
 
-    def _run_after_speech(self, callback, label: str, reset: bool = True) -> None:
-        """Register ``callback`` to fire once current speech completes.
+    def _run_after_speech(
+        self,
+        callback,
+        label: str,
+        reset: bool = True,
+        context_id: str | None = None,
+    ) -> None:
+        """Register ``callback`` to fire once the current speech utterance completes.
 
-        Uses TtsCompletionWatcher when available (speech-aware, outside
-        Pipecat's function-call timeout); falls back to a fixed 3 s delay
-        otherwise. ``reset=True`` clears the watcher first so it waits for a
-        TTSSpeakFrame the caller is about to push; use ``reset=False`` when
-        the speech was initiated upstream.
+        Binding strategy (in priority order):
+
+        1. **Context-ID binding** — if ``context_id`` is provided, or if
+           ``reset=False`` and the TTS service exposes ``_turn_context_id``
+           (the LLM's active context), the callback is registered on the TTS
+           service's per-context registry.  It fires when ``on_audio_context_completed``
+           is called for exactly that context_id — immune to Deepgram's spurious
+           mid-turn ``BotStoppedSpeakingFrame``.
+
+        2. **BotStoppedSpeakingFrame watcher** — fallback when context-ID
+           binding is unavailable (unrecognised TTS provider).  ``reset=True``
+           clears the watcher before registering so it waits for the next
+           ``TTSSpeakFrame`` the caller is about to push.
+
+        3. **Fixed 3 s delay** — last resort when neither watcher nor TTS
+           service is available (simulator / test context).
+
+        Args:
+            callback:    Async callable with no arguments.
+            label:       Human-readable label for log messages.
+            reset:       For fallback path only — clears watcher before
+                         registering.  For context-ID path, this has no effect.
+            context_id:  Specific audio context_id to bind to.  When None and
+                         reset=False, the method reads _turn_context_id from the
+                         TTS service (the LLM's current utterance context).
         """
+        # ── 1. Context-ID binding (preferred) ─────────────────────────────────
+        effective_ctx_id = context_id
+        if (
+            effective_ctx_id is None
+            and not reset
+            and self._tts_service is not None
+        ):
+            # For flow handlers: the LLM spoke the terminal message; its active
+            # context is the one whose completion we want to wait for.
+            effective_ctx_id = getattr(self._tts_service, "_turn_context_id", None)
+
+        if (
+            effective_ctx_id is not None
+            and self._tts_service is not None
+            and hasattr(self._tts_service, "register_context_done_callback")
+        ):
+            self._tts_service.register_context_done_callback(effective_ctx_id, callback)
+            logger.info(
+                f"📋 {label} callback bound to audio context {effective_ctx_id[:8]}... "
+                f"for call {self.call_sid}"
+            )
+            return
+
+        # ── 2. BotStoppedSpeakingFrame watcher (fallback) ─────────────────────
         if self._tts_completion_watcher is not None:
             if reset:
                 self._tts_completion_watcher.reset()
             self._tts_completion_watcher.schedule_after_speech(callback)
             logger.info(
-                f"📋 {label} callback registered for call {self.call_sid} — will fire after speech"
+                f"📋 {label} callback registered (BotStopped fallback) "
+                f"for call {self.call_sid}"
             )
-        else:
+            return
 
-            async def _delayed():
-                await asyncio.sleep(3.0)
-                await callback()
+        # ── 3. Fixed delay (last resort) ───────────────────────────────────────
+        async def _delayed():
+            await asyncio.sleep(3.0)
+            await callback()
 
-            asyncio.create_task(_delayed())
-            logger.warning(
-                f"No TtsCompletionWatcher for call {self.call_sid} — using 3s fallback delay for {label}"
-            )
+        asyncio.create_task(_delayed())
+        logger.warning(
+            f"No TtsCompletionWatcher for call {self.call_sid} — using 3s fallback delay for {label}"
+        )
 
     def set_event_queue(self, event_queue) -> None:
         """Attach the CallEventQueue for this call.
@@ -960,75 +1012,50 @@ class FunctionMapper:
                             f"EndFrame not pushed; pipeline remains active"
                         )
 
-            # Register _execute_transfer to fire after speech ends (outside Pipecat timeout).
-            # Reset first so the watcher waits for the TTSSpeakFrame we're about to push.
-            if self._tts_completion_watcher is not None:
-                self._tts_completion_watcher.reset()
-                self._tts_completion_watcher.schedule_after_speech(_execute_transfer)
-                logger.info(
-                    f"📋 Transfer callback registered for call {self.call_sid} — will fire after TTS"
-                )
-            else:
-                # Fallback: no watcher available, use a fixed delay.
-                async def _delayed_transfer():
-                    await _asyncio.sleep(3.0)
-                    await _execute_transfer()
-
-                _asyncio.create_task(_delayed_transfer())
-                logger.warning(
-                    f"No TtsCompletionWatcher for call {self.call_sid} — using 3s fallback delay for transfer"
-                )
-
-            # Push the pre-transfer message.  The transfer fires via callback
-            # once BotStoppedSpeakingFrame arrives; the callback then pushes
-            # EndFrame to close the pipeline after the Twilio REST call.
-            #
-            # IMPORTANT: Do NOT call result_callback here.  Calling it causes
-            # Pipecat to feed the function result back into the LLM, which starts
-            # a new LLM generation cycle that cancels in-flight TTS.
-            #
-            # WHY THE SLEEP: When the LLM calls a function, Pipecat emits both
-            # FunctionCallsStartedFrame and FunctionCallInProgressFrame downstream.
-            # FunctionCallInProgressFrame cleans up the current TTS context ~67ms
-            # after this handler runs.  Without the sleep, our TTSSpeakFrame opens
-            # a new context immediately, which FunctionCallInProgressFrame then
-            # wipes before Deepgram audio arrives (~125ms in prod).  Sleeping 250ms
-            # (raised from 150ms) lets FunctionCallInProgressFrame fully clear the
-            # stale context, so our TTSSpeakFrame opens a fresh context that lives
-            # long enough to receive audio.  The watcher's 5s timeout is the safety
-            # net if TTS still fails for any reason.
-            #
-            # Yielding control (asyncio.sleep(0)) ensures any pending async
-            # callbacks from FunctionCallInProgressFrame have fully executed before
-            # we check and restore TTS context state.
             # Record what will be spoken so _execute_transfer can append it to
             # the saved transcript (TTSSpeakFrame bypasses the LLM context).
             self._pending_pre_transfer_message = pre_message
+
+            # WHY THE SLEEP: FunctionCallInProgressFrame arrives ~67ms after this
+            # handler runs and wipes the active TTS context before Deepgram audio
+            # returns (~125ms).  Sleeping 250ms (+ one event-loop yield) lets that
+            # frame fully clear the stale context.  We then create a fresh named
+            # context so the pre-transfer phrase has a valid landing zone and we
+            # know exactly which context_id to bind our callback to.
             await _asyncio.sleep(0)
             await _asyncio.sleep(0.25)
 
-            # If the TTS service supports audio contexts (AudioContextWordTTSService
-            # subclass in production Pipecat), an interruption may have cleared the
-            # active context leaving context_id as None.  Create a fresh named context
-            # so the transfer phrase audio has somewhere valid to land, preventing
-            # "unable to append audio to context: no context ID provided" frame drops.
-            # Creating a context is lightweight (just registers a UUID → Queue entry)
-            # and is only attempted when the service exposes this documented API.
-            if self._tts_service is not None and hasattr(self._tts_service, "create_audio_context"):
-                import uuid as _uuid
+            # Create a fresh TTS audio context and bind the transfer callback to it.
+            # When on_audio_context_completed fires for this exact context_id the
+            # transfer executes — immune to Deepgram's spurious mid-turn
+            # BotStoppedSpeakingFrame.  Falls back to BotStopped watcher if the
+            # TTS service does not expose create_audio_context.
+            import uuid as _uuid
 
+            _ctx_id: str | None = None
+            if self._tts_service is not None and hasattr(self._tts_service, "create_audio_context"):
                 _ctx_id = str(_uuid.uuid4())
                 try:
                     await self._tts_service.create_audio_context(_ctx_id)
                     logger.debug(
-                        f"Created fresh TTS audio context {_ctx_id} before transfer phrase "
-                        f"for call {self.call_sid}"
+                        f"Created fresh TTS audio context {_ctx_id} for transfer phrase "
+                        f"on call {self.call_sid}"
                     )
                 except Exception as _ctx_err:
                     logger.warning(
-                        f"Failed to create TTS audio context before transfer phrase "
-                        f"for call {self.call_sid}: {_ctx_err}"
+                        f"Failed to create TTS audio context for transfer phrase "
+                        f"on call {self.call_sid}: {_ctx_err}"
                     )
+                    _ctx_id = None
+
+            # Register callback AFTER context creation so we know the exact ctx_id.
+            # context_id=None falls through to BotStopped watcher (reset=True).
+            self._run_after_speech(
+                _execute_transfer,
+                label="Transfer",
+                reset=(_ctx_id is None),
+                context_id=_ctx_id,
+            )
 
             await params.llm.push_frame(TTSSpeakFrame(pre_message))
 
@@ -1388,18 +1415,40 @@ class FunctionMapper:
             async def _finalize_end_call():
                 await self._finalize_call_end(params.llm, "end_call")
 
-            # Register BEFORE pushing the TTSSpeakFrame so the watcher waits
-            # for the goodbye we're about to speak.
-            self._run_after_speech(_finalize_end_call, label="End-call")
-
             # Yield to let FunctionCallInProgressFrame clear the TTS context
-            # before we push TTSSpeakFrame.  Without this sleep, that frame
-            # arrives ~67 ms after this handler runs and wipes the context we
-            # just opened — the goodbye audio is dropped before it reaches the
-            # caller.  Same timing fix as transfer_handler (see comment there).
+            # before we push TTSSpeakFrame (arrives ~67ms later and wipes the
+            # context; 250ms sleep lets it finish first).  Then create a fresh
+            # named context and bind the hangup callback to that exact ID so it
+            # fires on on_audio_context_completed — never a spurious mid-turn
+            # BotStoppedSpeakingFrame.  Falls back to watcher/delay if the TTS
+            # service does not expose create_audio_context.
             await _asyncio.sleep(0)
             await _asyncio.sleep(0.25)
 
+            import uuid as _uuid
+
+            _ctx_id: str | None = None
+            if self._tts_service is not None and hasattr(self._tts_service, "create_audio_context"):
+                _ctx_id = str(_uuid.uuid4())
+                try:
+                    await self._tts_service.create_audio_context(_ctx_id)
+                    logger.debug(
+                        f"Created fresh TTS audio context {_ctx_id} for goodbye phrase "
+                        f"on call {self.call_sid}"
+                    )
+                except Exception as _ctx_err:
+                    logger.warning(
+                        f"Failed to create TTS audio context for goodbye phrase "
+                        f"on call {self.call_sid}: {_ctx_err}"
+                    )
+                    _ctx_id = None
+
+            self._run_after_speech(
+                _finalize_end_call,
+                label="End-call",
+                reset=(_ctx_id is None),
+                context_id=_ctx_id,
+            )
             await params.llm.push_frame(TTSSpeakFrame(goodbye_message))
 
         return function_schema, end_call_handler
@@ -1949,24 +1998,15 @@ class FunctionMapper:
                                     "EndFrame not pushed; pipeline remains active"
                                 )
 
-                    # Schedule the transfer to fire after any in-flight speech ends.
-                    # No reset() here — speech was initiated upstream, not by this handler.
-                    # schedule_after_speech fires immediately if speech is already done.
-                    if self._tts_completion_watcher is not None:
-                        self._tts_completion_watcher.schedule_after_speech(_execute_flow_transfer)
-                        logger.info(
-                            f"📋 Flow transfer callback registered for call {self.call_sid} — will fire after speech"
-                        )
-                    else:
-
-                        async def _delayed_flow_transfer():
-                            await _asyncio_flow.sleep(3.0)
-                            await _execute_flow_transfer()
-
-                        _asyncio_flow.create_task(_delayed_flow_transfer())
-                        logger.warning(
-                            f"No TtsCompletionWatcher for call {self.call_sid} — using 3s fallback delay for flow transfer"
-                        )
+                    # Bind the transfer to the LLM's current audio context (reset=False
+                    # reads _turn_context_id from the TTS service).  Falls back to
+                    # BotStopped watcher then fixed delay — never reset=True because the
+                    # speech was initiated upstream by the LLM, not by this handler.
+                    self._run_after_speech(
+                        _execute_flow_transfer,
+                        label="Flow transfer",
+                        reset=False,
+                    )
                 else:
                     # No Twilio client / call_sid / target — end the pipeline immediately
                     await params.llm.push_frame(EndFrame())
@@ -1988,9 +2028,10 @@ class FunctionMapper:
                 async def _finalize_flow_end():
                     await self._finalize_call_end(params.llm, "flow_end")
 
-                # Register BEFORE pushing the TTSSpeakFrame so the watcher
-                # waits for the goodbye we're about to speak.
-                self._run_after_speech(_finalize_flow_end, label="Flow END")
+                # Bind to the LLM's current audio context (reset=False reads
+                # _turn_context_id from the TTS service) — speech was initiated
+                # upstream by the LLM so we must not reset the watcher.
+                self._run_after_speech(_finalize_flow_end, label="Flow END", reset=False)
 
                 await params.llm.push_frame(TTSSpeakFrame(end_msg))
                 # Do NOT call result_callback — same reasoning as the transfer

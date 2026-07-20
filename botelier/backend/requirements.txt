@@ -5,8 +5,7 @@ psycopg2-binary==2.9.9
 pydantic[email]>=2.10.6
 python-multipart>=0.0.22
 twilio==9.0.0
-pipecat-ai[deepgram,websocket]==1.1.0
-pipecat-ai-flows==1.0.0
+pipecat-ai[deepgram,websocket]==1.5.0
 anthropic>=0.74.0
 aiohttp>=3.13.2
 loguru>=0.7.3

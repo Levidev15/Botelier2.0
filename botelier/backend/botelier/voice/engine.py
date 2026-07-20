@@ -1666,6 +1666,12 @@ class VoiceEngineFactory:
                     # Populated in run_tts (TOKEN mode), drained in flush_audio,
                     # and cleared wholesale on interruption.
                     self._word_buffer: dict[str, str] = {}
+                    # One-shot callbacks keyed by context_id.
+                    # Registered by terminal handlers (transfer, end-call) so they
+                    # fire on the EXACT utterance's audio completion rather than on
+                    # the next BotStoppedSpeakingFrame (which Deepgram emits spuriously
+                    # between sentences, causing pre-fire clipping bugs).
+                    self._context_done_callbacks: dict[str, Callable] = {}
 
                 @staticmethod
                 def _apply_substitutions(text: str) -> str:
@@ -1727,7 +1733,29 @@ class VoiceEngineFactory:
                     # Clear all buffered partial words on interruption so nothing
                     # leaks into the next LLM response.
                     self._word_buffer.clear()
+                    # Discard any pending callback for the interrupted context;
+                    # the speech was cut short so the transfer/hangup must not fire.
+                    self._context_done_callbacks.pop(context_id, None)
                     await super().on_audio_context_interrupted(context_id)
+
+                def register_context_done_callback(
+                    self, context_id: str, callback: Callable
+                ) -> None:
+                    """Register a one-shot async callback for audio-context completion.
+
+                    The callback fires when ``on_audio_context_completed`` is called
+                    for exactly this context_id — guaranteed to be after all audio
+                    chunks for the utterance have been pushed downstream.  The
+                    callback is discarded (not fired) if the context is interrupted.
+                    """
+                    self._context_done_callbacks[context_id] = callback
+
+                async def on_audio_context_completed(self, context_id: str):
+                    """Dispatch per-context callback then delegate to super."""
+                    cb = self._context_done_callbacks.pop(context_id, None)
+                    if cb is not None:
+                        asyncio.create_task(cb())
+                    await super().on_audio_context_completed(context_id)
 
             from pipecat.services.tts_service import TextAggregationMode
 
@@ -1770,7 +1798,35 @@ class VoiceEngineFactory:
         elif provider == "cartesia":
             from pipecat.services.cartesia.tts import CartesiaTTSService
 
-            return CartesiaTTSService(
+            class _BotelierCartesiaTTSService(CartesiaTTSService):
+                """Cartesia TTS with per-context-ID completion callbacks.
+
+                Mirrors the Deepgram subclass: terminal handlers register a
+                callback for the specific context_id of the utterance they
+                push, so the transfer/hangup fires only when that exact audio
+                has been pushed downstream — not on any BotStoppedSpeakingFrame.
+                """
+
+                def __init__(self, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    self._context_done_callbacks: dict[str, Callable] = {}
+
+                def register_context_done_callback(
+                    self, context_id: str, callback: Callable
+                ) -> None:
+                    self._context_done_callbacks[context_id] = callback
+
+                async def on_audio_context_completed(self, context_id: str):
+                    cb = self._context_done_callbacks.pop(context_id, None)
+                    if cb is not None:
+                        asyncio.create_task(cb())
+                    await super().on_audio_context_completed(context_id)
+
+                async def on_audio_context_interrupted(self, context_id: str):
+                    self._context_done_callbacks.pop(context_id, None)
+                    await super().on_audio_context_interrupted(context_id)
+
+            return _BotelierCartesiaTTSService(
                 api_key=api_keys.get("cartesia_api_key"),
                 voice_id=config.tts_voice_id,
             )
@@ -1824,16 +1880,19 @@ class VoiceEngineFactory:
                 utterance.  Used to record per-turn timestamps for the call transcript.
 
         Returns:
-            16-tuple: (pipeline, task, llm, context_aggregator, context,
+            17-tuple: (pipeline, task, llm, context_aggregator, context,
                       tts_completion_watcher, twilio_mark_watcher, first_speech_tracker,
                       greeting_completion_tracker, idle_timeout_tracker,
                       user_turn_capture, tts_latency_tracker, vad_suspicion_tracker,
-                      greeting_injector, usage_observer, tts_audio_gap_tracker).
+                      greeting_injector, usage_observer, tts_audio_gap_tracker, tts).
             - context is returned separately for transcript extraction.
             - tts_completion_watcher can be linked to FunctionMapper.set_tts_completion_watcher()
               so transfer handlers can await TTS completion without time-based sleeps.
             - twilio_mark_watcher can be linked to FunctionMapper.set_twilio_mark_watcher()
               so transfer handlers can wait for Twilio to acknowledge playback.
+            - tts is the TTS service instance; link it via FunctionMapper.set_tts_service() so
+              terminal handlers can bind callbacks to a specific audio context_id rather than
+              firing on any BotStoppedSpeakingFrame (the Deepgram spurious-fire bug).
             - first_speech_tracker / greeting_completion_tracker / idle_timeout_tracker /
               user_turn_capture / tts_latency_tracker / vad_suspicion_tracker need event_queue injected via
               set_event_queue() after pipeline creation.
@@ -2183,6 +2242,7 @@ class VoiceEngineFactory:
             greeting_injector,
             usage_observer,
             tts_audio_gap_tracker,
+            tts,
         )
 
     @staticmethod

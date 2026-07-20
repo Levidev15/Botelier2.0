@@ -712,6 +712,7 @@ class CallHandler:
                 greeting_injector,
                 usage_observer,
                 _tts_audio_gap_tracker,  # Pure observer; wired in pipeline, no direct use here
+                tts_service,
             ) = VoiceEngineFactory.create_pipeline(
                 config=config,
                 api_keys=api_keys,
@@ -725,11 +726,13 @@ class CallHandler:
                 stream_sid=stream_sid,
             )
 
-            # Link the TTS completion watcher to the FunctionMapper (if one was
-            # created for this call) so transfer handlers can await actual TTS completion.
+            # Link the TTS completion watcher, TTS service, and mark watcher to the
+            # FunctionMapper so terminal handlers can use context-ID-bound callbacks
+            # (immune to Deepgram's spurious mid-turn BotStoppedSpeakingFrame).
             if call_sid in self.call_mappers:
                 self.call_mappers[call_sid].set_tts_completion_watcher(tts_completion_watcher)
                 self.call_mappers[call_sid].set_twilio_mark_watcher(twilio_mark_watcher)
+                self.call_mappers[call_sid].set_tts_service(tts_service)
 
             # Store the usage observer so _save_call_transcript can read accumulated
             # LLM token counts, TTS chars, and model names at call teardown.
