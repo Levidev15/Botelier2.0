@@ -263,12 +263,29 @@ class FunctionMapper:
 
         Binding strategy (in priority order):
 
-        1. **Context-ID binding** — if ``context_id`` is provided, or if
-           ``reset=False`` and the TTS service exposes ``_turn_context_id``
-           (the LLM's active context), the callback is registered on the TTS
-           service's per-context registry.  It fires when ``on_audio_context_completed``
-           is called for exactly that context_id — immune to Deepgram's spurious
-           mid-turn ``BotStoppedSpeakingFrame``.
+        1. **Two-stage chain (context-ID + BotStopped)** — if ``context_id`` is
+           provided, or if ``reset=False`` and the TTS service exposes
+           ``_turn_context_id``, a wrapper is registered on the TTS service's
+           per-context registry.  When ``on_audio_context_completed`` fires (TTS
+           has pushed all audio frames downstream), the wrapper resets
+           ``TtsCompletionWatcher`` and schedules the real callback on it.  The
+           callback then fires only when ``BotStoppedSpeakingFrame`` arrives
+           upstream from ``transport.output()`` — i.e. after audio bytes are
+           confirmed written to the Twilio WebSocket.
+
+           Why two stages?  ``on_audio_context_completed`` fires at the TTS
+           service layer, not at the transport layer.  Audio frames still have
+           4-5 pipeline hops to travel before reaching ``transport.output()``.
+           If the mark were sent at context-ID completion time, it would race
+           past those in-flight audio frames in the pipeline queues, arrive at
+           Twilio before the audio, and be ack'd before the caller hears anything.
+           ``BotStoppedSpeakingFrame`` fires from the transport's audio task
+           *after* all audio bytes are written to the WebSocket — that is the
+           correct "safe to send mark and hang up" signal.
+
+           Interruption safety is preserved: if the context is interrupted,
+           ``on_audio_context_interrupted`` discards the wrapper before it runs,
+           so no stale hangup fires.
 
         2. **BotStoppedSpeakingFrame watcher** — fallback when context-ID
            binding is unavailable (unrecognised TTS provider).  ``reset=True``
@@ -287,7 +304,7 @@ class FunctionMapper:
                          reset=False, the method reads _turn_context_id from the
                          TTS service (the LLM's current utterance context).
         """
-        # ── 1. Context-ID binding (preferred) ─────────────────────────────────
+        # ── 1. Two-stage chain: context-ID → BotStoppedSpeakingFrame ──────────
         effective_ctx_id = context_id
         if (
             effective_ctx_id is None
@@ -303,10 +320,29 @@ class FunctionMapper:
             and self._tts_service is not None
             and hasattr(self._tts_service, "register_context_done_callback")
         ):
-            self._tts_service.register_context_done_callback(effective_ctx_id, callback)
+            # Capture the watcher at registration time so the closure is
+            # independent of any later assignment to self._tts_completion_watcher.
+            _watcher = self._tts_completion_watcher
+
+            async def _ctx_done_wrapper(_cb=callback, _w=_watcher):
+                # Stage 1 complete: on_audio_context_completed has fired.
+                # TTS has finished pushing audio frames downstream, but they
+                # have NOT yet reached transport.output() or the Twilio WebSocket.
+                # Hand off to TtsCompletionWatcher so the terminal action fires
+                # only after BotStoppedSpeakingFrame arrives from the transport
+                # (audio confirmed written to the WebSocket, in Twilio's buffer).
+                if _w is not None:
+                    _w.reset()
+                    _w.schedule_after_speech(_cb)
+                else:
+                    # No watcher available — run callback directly.
+                    # This preserves the same behaviour as the old direct binding.
+                    await _cb()
+
+            self._tts_service.register_context_done_callback(effective_ctx_id, _ctx_done_wrapper)
             logger.info(
                 f"📋 {label} callback bound to audio context {effective_ctx_id[:8]}... "
-                f"for call {self.call_sid}"
+                f"(→ BotStopped chain) for call {self.call_sid}"
             )
             return
 
@@ -1418,10 +1454,12 @@ class FunctionMapper:
             # Yield to let FunctionCallInProgressFrame clear the TTS context
             # before we push TTSSpeakFrame (arrives ~67ms later and wipes the
             # context; 250ms sleep lets it finish first).  Then create a fresh
-            # named context and bind the hangup callback to that exact ID so it
-            # fires on on_audio_context_completed — never a spurious mid-turn
-            # BotStoppedSpeakingFrame.  Falls back to watcher/delay if the TTS
-            # service does not expose create_audio_context.
+            # named context so _run_after_speech can bind the hangup to that
+            # exact context-ID.  The context-ID path now uses a two-stage chain:
+            # on_audio_context_completed → TtsCompletionWatcher.schedule_after_speech
+            # → BotStoppedSpeakingFrame, which fires only after audio bytes are
+            # confirmed written to the Twilio WebSocket.  Falls back to watcher/
+            # delay if the TTS service does not expose create_audio_context.
             await _asyncio.sleep(0)
             await _asyncio.sleep(0.25)
 

@@ -159,3 +159,64 @@ def test_twilio_mark_budget_raised():
     from botelier.voice.function_mapper import TWILIO_MARK_TIMEOUT_SECS
 
     assert TWILIO_MARK_TIMEOUT_SECS >= 8.0
+
+
+@pytest.mark.asyncio
+async def test_ctx_id_chains_to_bot_stopped_not_immediate():
+    """context-ID path must NOT fire the callback when on_audio_context_completed
+    fires — audio frames are still in pipeline queues at that point and have not
+    reached transport.output().  The callback must only fire after
+    BotStoppedSpeakingFrame arrives (audio confirmed written to WebSocket)."""
+    watcher = TtsCompletionWatcher()
+    fired = asyncio.Event()
+
+    async def real_callback():
+        fired.set()
+
+    # Replicate what _run_after_speech does in the context-ID path.
+    async def ctx_done_wrapper():
+        watcher.reset()
+        watcher.schedule_after_speech(real_callback, timeout=5.0)
+
+    # Stage 1: on_audio_context_completed fires (audio still in pipeline).
+    await ctx_done_wrapper()
+
+    # Callback must NOT have fired yet.
+    await asyncio.sleep(0)
+    assert not fired.is_set(), "callback fired before BotStoppedSpeakingFrame"
+
+    # Stage 2: BotStoppedSpeakingFrame arrives upstream from transport.output()
+    # (audio bytes written to WebSocket).
+    await watcher.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+    await asyncio.wait_for(fired.wait(), timeout=1.0)
+
+
+@pytest.mark.asyncio
+async def test_ctx_id_chain_survives_bot_already_speaking():
+    """If BotStartedSpeakingFrame has already arrived (audio partially in transit)
+    when the context-ID wrapper runs, the callback must still fire on BotStopped
+    and must not be triggered prematurely by the silence timeout."""
+    watcher = TtsCompletionWatcher()
+    fired = asyncio.Event()
+
+    async def real_callback():
+        fired.set()
+
+    # Simulate audio already flowing: BotStarted has reached the watcher.
+    await watcher.process_frame(BotStartedSpeakingFrame(), FrameDirection.UPSTREAM)
+
+    # context-ID wrapper runs (on_audio_context_completed fired).
+    async def ctx_done_wrapper():
+        watcher.reset()
+        watcher.schedule_after_speech(real_callback, timeout=0.3)
+
+    await ctx_done_wrapper()
+
+    # The watcher's _bot_speaking flag was set before reset(), so the timeout
+    # guard must NOT fire within 0.3 s of silence — it should wait for BotStopped.
+    await asyncio.sleep(0.5)
+    assert not fired.is_set(), "callback fired via timeout while bot was speaking"
+
+    # BotStopped arrives — callback fires.
+    await watcher.process_frame(BotStoppedSpeakingFrame(), FrameDirection.UPSTREAM)
+    await asyncio.wait_for(fired.wait(), timeout=1.0)
