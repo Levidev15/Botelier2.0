@@ -1,0 +1,22 @@
+Looking in indexes: http://package-firewall.replit.local/pypi/simple/
+Collecting num2words
+  Downloading http://package-firewall.replit.local/pypi/packages/d6/5b/545e9267a1cc080c8a1be2746113a063e34bcdd0f5173fd665a5c13cb234/num2words-0.5.14-py3-none-any.whl.metadata (13 kB)
+Collecting docopt>=0.6.2 (from num2words)
+  Downloading http://package-firewall.replit.local/pypi/packages/a2/55/8f8cab2afd404cf578136ef2cc5dfb50baa1761b68c9da1fb1e4eed343c9/docopt-0.6.2.tar.gz (25 kB)
+  Installing build dependencies: started
+  Installing build dependencies: finished with status 'done'
+  Getting requirements to build wheel: started
+  Getting requirements to build wheel: finished with status 'done'
+  Preparing metadata (pyproject.toml): started
+  Preparing metadata (pyproject.toml): finished with status 'done'
+Downloading http://package-firewall.replit.local/pypi/packages/d6/5b/545e9267a1cc080c8a1be2746113a063e34bcdd0f5173fd665a5c13cb234/num2words-0.5.14-py3-none-any.whl (163 kB)
+Building wheels for collected packages: docopt
+  Building wheel for docopt (pyproject.toml): started
+  Building wheel for docopt (pyproject.toml): finished with status 'done'
+  Created wheel for docopt: filename=docopt-0.6.2-py2.py3-none-any.whl size=13782 sha256=b2f0f26cc088ef47f2f400054a137c290f8d396a2e6a498485bfac506fecf053
+  Stored in directory: /home/runner/workspace/.cache/pip/wheels/7e/41/39/9d7a7ea8bf581d6ec6a7f843454d9ce9b4dc5bf5a8a863b42e
+Successfully built docopt
+Installing collected packages: docopt, num2words
+ERROR: pip's dependency resolver does not currently take into account all the packages that are installed. This behaviour is the source of the following dependency conflicts.
+pipecat-ai 1.5.0 requires pyyaml-include<2,>=1.4, which is not installed.
+Successfully installed docopt-0.6.2 num2words-0.5.14

@@ -19,3 +19,4 @@ openai>=1.0.0
 requests>=2.31.0
 azure-identity>=1.19.0
 azure-keyvault-secrets>=4.9.0
+num2words>=0.5.13
