@@ -23,3 +23,13 @@ description: Why dev and prod run different pipecat code, and why Flux paths mus
 - Flux drives everything itself: StartOfTurn → broadcasts `UserStartedSpeakingFrame` + `broadcast_interruption()` (gated by `should_interrupt`, wired to the assistant's interruption toggle); EndOfTurn → broadcasts `UserStoppedSpeakingFrame`. `ExternalUserTurnStartStrategy(enable_interruptions=False)` is correct — Flux owns interruption, not the strategy.
 - The fork's `default_user_turn_stop_strategies()` now fail-softs to `[]` with a warning if SmartTurn deps are missing — defense-in-depth only; no Botelier path should rely on it.
 - SmartTurn v3 is ONNX (bundled .onnx model, no torch, no HF download); transformers is needed only for `WhisperFeatureExtractor` (numpy-only preprocessing).
+
+# Do NOT add transformers to the production image without a build test
+
+**Rule:** Adding `transformers` (5.x) to `botelier/backend/requirements.txt` coincided with the Azure voice container entering a startup crash-loop (startup probe exit 1, uvicorn dead before binding). SUSPECTED cause — never confirmed from build/boot logs (Azure logs were unreachable): a fresh `pip install` in `python:3.11-slim` resolving transformers 5.x's transitive deps (`typer`→`click`, `tokenizers`, `huggingface-hub`) breaks the from-scratch image even though dev's incremental site-packages work fine. Confirm the actual failure in a clean-venv/Docker build before trusting this specific story; if a revision without transformers still crash-loops, pivot to Azure-side suspects (image pull, env, Key Vault at boot).
+
+**Why:** Dev never reproduces the Docker resolver: dev installs incrementally into an environment with existing pins; the image resolves everything from scratch. `pip check` passing in dev proves nothing about the image.
+
+**How to apply:**
+- Before adding any heavy/transitive-rich dependency to requirements.txt, build the production Dockerfile (or a pip install into a clean venv from only requirements.txt) and boot-test it first.
+- The Silero-VAD path constructs `LocalSmartTurnAnalyzerV3` unconditionally when VAD is enabled (lazy method-scope import) — with transformers absent from the image those calls fail per-call; only the Flux path is transformers-free by design. Fail-softing that construction or safely reintroducing transformers is open work.
