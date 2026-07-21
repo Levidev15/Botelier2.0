@@ -2172,8 +2172,8 @@ class VoiceEngineFactory:
             # Never pass None here: LLMUserAggregator would fall back to the
             # default UserTurnStrategies(), whose __post_init__ constructs a
             # SmartTurn (LocalSmartTurnAnalyzerV3) stop strategy — an ML model
-            # this path explicitly omits, and a hard crash if the optional
-            # `transformers` dependency is missing (production outage 2026-07-21).
+            # this path explicitly omits, and a hard crash on every call if the
+            # optional `transformers` dependency is missing from the image.
             flux_turn_strategies: UserTurnStrategies = ExternalUserTurnStrategies()
             if not config.enable_interruptions:
                 # Per-assistant "interruptible" toggle OFF:
