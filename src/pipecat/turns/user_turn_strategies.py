@@ -40,12 +40,24 @@ def default_user_turn_start_strategies() -> list[BaseUserTurnStartStrategy]:
 def default_user_turn_stop_strategies() -> list[BaseUserTurnStopStrategy]:
     """Return the default user turn stop strategies.
 
-    Returns ``[TurnAnalyzerUserTurnStopStrategy(LocalSmartTurnAnalyzerV3)]``.
-    Useful when building a custom strategy list that extends the defaults.
+    Returns ``[TurnAnalyzerUserTurnStopStrategy(LocalSmartTurnAnalyzerV3)]`` when
+    the optional SmartTurn dependencies (``transformers``, ``onnxruntime``,
+    ``soxr``) are available. Falls back to an empty list otherwise, so that
+    pipelines which never asked for SmartTurn (e.g. Flux STT paths, which own
+    their turn detection) are not taken down by a missing optional dependency.
     """
-    from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
+    try:
+        from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 
-    return [TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3())]
+        return [TurnAnalyzerUserTurnStopStrategy(turn_analyzer=LocalSmartTurnAnalyzerV3())]
+    except Exception as e:
+        from loguru import logger
+
+        logger.warning(
+            f"SmartTurn default stop strategy unavailable ({e}); "
+            "continuing without a default user turn stop strategy"
+        )
+        return []
 
 
 @dataclass

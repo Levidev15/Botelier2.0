@@ -65,8 +65,14 @@ from pipecat.turns.user_start.min_words_user_turn_start_strategy import (
 from pipecat.turns.user_start.transcription_user_turn_start_strategy import (
     TranscriptionUserTurnStartStrategy,
 )
-from pipecat.turns.user_stop import TurnAnalyzerUserTurnStopStrategy
-from pipecat.turns.user_turn_strategies import UserTurnStrategies
+from pipecat.turns.user_stop import (
+    ExternalUserTurnStopStrategy,
+    TurnAnalyzerUserTurnStopStrategy,
+)
+from pipecat.turns.user_turn_strategies import (
+    ExternalUserTurnStrategies,
+    UserTurnStrategies,
+)
 
 from ..config.providers import is_flux_model
 from .agent import VoiceAgentConfig
@@ -2161,7 +2167,14 @@ class VoiceEngineFactory:
                 MuteUntilFirstBotCompleteUserMuteStrategy(),
                 FunctionCallUserMuteStrategy(),
             ]
-            flux_turn_strategies: UserTurnStrategies | None = None
+            # Flux owns turn detection (StartOfTurn / EndOfTurn events from the
+            # STT service), so turn strategies must be EXPLICIT external ones.
+            # Never pass None here: LLMUserAggregator would fall back to the
+            # default UserTurnStrategies(), whose __post_init__ constructs a
+            # SmartTurn (LocalSmartTurnAnalyzerV3) stop strategy — an ML model
+            # this path explicitly omits, and a hard crash if the optional
+            # `transformers` dependency is missing (production outage 2026-07-21).
+            flux_turn_strategies: UserTurnStrategies = ExternalUserTurnStrategies()
             if not config.enable_interruptions:
                 # Per-assistant "interruptible" toggle OFF:
                 #   - AlwaysUserMuteStrategy: mutes caller audio during bot speech so
@@ -2169,9 +2182,12 @@ class VoiceEngineFactory:
                 #   - UserTurnStrategies with enable_interruptions=False: ensures that
                 #     even if a word is transcribed during an inter-segment unmuted
                 #     gap the aggregator will NOT emit an interruption frame.
+                #   - stop must stay explicit (ExternalUserTurnStopStrategy) so the
+                #     dataclass __post_init__ never falls back to the SmartTurn default.
                 flux_mute_strategies.insert(0, AlwaysUserMuteStrategy())
                 flux_turn_strategies = UserTurnStrategies(
-                    start=[TranscriptionUserTurnStartStrategy(enable_interruptions=False)]
+                    start=[TranscriptionUserTurnStartStrategy(enable_interruptions=False)],
+                    stop=[ExternalUserTurnStopStrategy()],
                 )
 
             user_params = LLMUserAggregatorParams(
