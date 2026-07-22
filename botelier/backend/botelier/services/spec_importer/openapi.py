@@ -492,6 +492,39 @@ def import_openapi_spec(
 
     base_url = extract_base_url(spec_data, base_url_override)
     auth_type, auth_config = _detect_auth_strategy(spec_data)
+
+    # --- OAuth2 token_url safety at import time --------------------------------
+    # Resolve relative tokenUrl values against base_url (common in many OAS specs).
+    # Reject absolute tokenUrls that point to a different scheme/host than the
+    # imported spec so that credentials cannot be pre-seeded to exfiltrate to an
+    # attacker-controlled endpoint before the user configures auth settings.
+    if auth_config.get("auth_strategy") == "oauth2_client_credentials":
+        from urllib.parse import urlparse, urljoin as _urljoin
+
+        raw_token_url = (auth_config.get("token_url") or "").strip()
+        if raw_token_url and base_url:
+            parsed_token = urlparse(raw_token_url)
+            parsed_base = urlparse(base_url)
+            if not parsed_token.scheme:
+                # Relative URL — resolve to absolute using the spec's base URL.
+                # Use urlparse/urljoin directly: leading "/" means host-root-relative,
+                # no "/" means relative to the base path — both handled correctly by urljoin.
+                auth_config["token_url"] = _urljoin(base_url, raw_token_url)
+            elif (
+                parsed_token.scheme != parsed_base.scheme
+                or (parsed_token.hostname or "").lower() != (parsed_base.hostname or "").lower()
+                or (parsed_token.port or None) != (parsed_base.port or None)
+            ):
+                # Cross-host token endpoint — strip it so the user is required
+                # to supply a valid token_url via the auth-config PATCH (which
+                # enforces same-host policy).  The DefaultAdapter will refuse to
+                # connect without a token_url.
+                del auth_config["token_url"]
+        elif not raw_token_url:
+            # tokenUrl absent/empty in spec — remove the key so required_fields
+            # correctly prompts the user to supply one via auth-config settings.
+            auth_config.pop("token_url", None)
+
     # Persist base_url into auth_config so DefaultAdapter can construct the
     # token acquisition URL at connect time (login_endpoint strategy) without
     # any caller being able to override it via a later PATCH.
