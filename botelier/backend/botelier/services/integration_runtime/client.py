@@ -302,6 +302,11 @@ class IntegrationClient:
         attempt = 0
         last_error: Optional[Exception] = None
         safe_method = config.method.upper() in _SAFE_METHODS
+        # One-shot flag: allow a single forced token refresh + retry on 401/403
+        # for integrations whose auth strategy acquires a bearer token at connect
+        # time (login_endpoint / oauth2_client_credentials). Certified adapters
+        # already handle this via their own refresh_credentials path.
+        _auth_refresh_attempted = False
 
         while attempt <= config.retry_count:
             try:
@@ -314,6 +319,26 @@ class IntegrationClient:
                 )
 
                 result = self._process_response(response, config, effective_response_vars)
+
+                # On 401/403: if this is a DefaultAdapter token strategy and we
+                # haven't retried yet, force-refresh the token and retry once.
+                if (
+                    result.status_code in (401, 403)
+                    and not _auth_refresh_attempted
+                    and auth_config_data.get("auth_strategy") in ("login_endpoint", "oauth2_client_credentials")
+                ):
+                    _auth_refresh_attempted = True
+                    logger.info(
+                        f"Token auth 401 for integration {integration.id}; "
+                        "forcing refresh and retrying once."
+                    )
+                    refresh_ok = await self._refresh_token_with_lock(integration)
+                    if refresh_ok:
+                        fresh = self._read_integration_fresh(integration.id)
+                        if fresh is not None:
+                            self._sync_cached_integration(integration, fresh)
+                        headers = self._build_headers(integration, config)
+                    continue
 
                 # Retry throttling (429) and transient server errors (5xx), but
                 # only for idempotent methods so a write is never re-applied.

@@ -121,7 +121,9 @@ def _detect_auth_strategy(spec_data: dict) -> tuple[str, dict]:
             # Other OAuth2 flows: tell the user it's bearer-based
             return "default", {"auth_strategy": "bearer"}
 
-    return "default", {"auth_strategy": "none"}
+    # Unknown scheme — default to bearer so the user sees a token prompt
+    # rather than silently connecting with no credentials.
+    return "default", {"auth_strategy": "bearer"}
 
 
 def _required_fields_from_strategy(auth_config: dict) -> list[dict]:
@@ -136,10 +138,11 @@ def _required_fields_from_strategy(auth_config: dict) -> list[dict]:
     if strategy == "bearer":
         return [
             {
-                "name": "access_token",
+                "key": "access_token",
                 "label": "API Token",
                 "type": "password",
                 "storage": "credentials",
+                "required": True,
             }
         ]
 
@@ -148,11 +151,12 @@ def _required_fields_from_strategy(auth_config: dict) -> list[dict]:
         header_name = auth_config.get("header_name", "X-API-Key")
         return [
             {
-                "name": cred_key,
+                "key": cred_key,
                 "label": header_name,
                 "type": "password",
                 "storage": "credentials",
                 "placeholder": f"Value for {header_name}",
+                "required": True,
             }
         ]
 
@@ -161,10 +165,11 @@ def _required_fields_from_strategy(auth_config: dict) -> list[dict]:
         param_name = auth_config.get("param_name", "api_key")
         return [
             {
-                "name": cred_key,
+                "key": cred_key,
                 "label": f"API Key ({param_name})",
                 "type": "password",
                 "storage": "credentials",
+                "required": True,
             }
         ]
 
@@ -173,36 +178,40 @@ def _required_fields_from_strategy(auth_config: dict) -> list[dict]:
         if headers_config:
             return [
                 {
-                    "name": hdr.get("credential_key", "api_key"),
+                    "key": hdr.get("credential_key", "api_key"),
                     "label": hdr.get("header_name", hdr.get("credential_key", "API Key")),
                     "type": "password",
                     "storage": "credentials",
+                    "required": True,
                 }
                 for hdr in headers_config
             ]
         # Fallback if headers list is empty
         return [
             {
-                "name": "api_key",
+                "key": "api_key",
                 "label": "API Key",
                 "type": "password",
                 "storage": "credentials",
+                "required": True,
             }
         ]
 
     if strategy == "basic":
         return [
             {
-                "name": "username",
+                "key": "username",
                 "label": "Username",
                 "type": "text",
                 "storage": "credentials",
+                "required": True,
             },
             {
-                "name": "password",
+                "key": "password",
                 "label": "Password",
                 "type": "password",
                 "storage": "credentials",
+                "required": True,
             },
         ]
 
@@ -220,10 +229,11 @@ def _required_fields_from_strategy(auth_config: dict) -> list[dict]:
             )
             fields.append(
                 {
-                    "name": cred_key,
+                    "key": cred_key,
                     "label": body_key.replace("_", " ").replace("-", " ").title(),
                     "type": "password" if is_secret else "text",
                     "storage": "credentials",
+                    "required": True,
                 }
             )
         return fields
@@ -231,26 +241,29 @@ def _required_fields_from_strategy(auth_config: dict) -> list[dict]:
     if strategy == "oauth2_client_credentials":
         fields: list[dict] = [
             {
-                "name": "client_id",
+                "key": "client_id",
                 "label": "Client ID",
                 "type": "text",
                 "storage": "credentials",
+                "required": True,
             },
             {
-                "name": "client_secret",
+                "key": "client_secret",
                 "label": "Client Secret",
                 "type": "password",
                 "storage": "credentials",
+                "required": True,
             },
         ]
         if auth_config.get("scope"):
             fields.append(
                 {
-                    "name": "scope",
+                    "key": "scope",
                     "label": "Scope (optional)",
                     "type": "text",
                     "storage": "credentials",
                     "placeholder": auth_config.get("scope", ""),
+                    "required": False,
                 }
             )
         return fields
