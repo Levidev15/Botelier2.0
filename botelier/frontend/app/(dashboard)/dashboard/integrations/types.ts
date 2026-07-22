@@ -91,6 +91,8 @@ export interface ImportableIntegrationType {
   spec_version: string | null;
   endpoint_count: number;
   origin: string;
+  auth_type: string;
+  required_fields: RequiredField[];
 }
 
 export interface OperationVariable {

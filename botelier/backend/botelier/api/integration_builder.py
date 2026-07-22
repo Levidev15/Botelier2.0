@@ -495,6 +495,8 @@ def list_importable_types(
                 "spec_version": it.spec_version,
                 "endpoint_count": len(it.get_endpoints()),
                 "origin": it.origin,
+                "auth_type": it.auth_type,
+                "required_fields": it.get_required_fields() or [],
             }
             for it in results
         ]

@@ -94,7 +94,21 @@ export default function APIBuilderSection({
   const getTypeConnections = (typeId: string) =>
     connections.filter((c) => c.integration_type_id === typeId);
 
-  // Build a minimal IntegrationType shape for ConnectModal from an importable type
+  // Default required_fields for imported types that have none set (e.g. unauthenticated APIs).
+  const FALLBACK_REQUIRED_FIELDS = [
+    {
+      key: "base_url",
+      label: "Base URL",
+      type: "text",
+      placeholder: "https://api.example.com/v1",
+      required: false,
+      description: "Override the base URL from the spec for this connection",
+    },
+  ];
+
+  // Build a minimal IntegrationType shape for ConnectModal from an importable type.
+  // Uses the actual auth_type and required_fields stored by the spec importer so
+  // ConnectModal shows the right credential fields for each API's auth scheme.
   const buildConnectType = (it: ImportableIntegrationType): IntegrationType => ({
     id: it.id,
     slug: it.slug,
@@ -102,28 +116,13 @@ export default function APIBuilderSection({
     description: "",
     logo_url: null,
     provider: "custom",
-    auth_type: "api_key",
+    auth_type: it.auth_type || "api_key",
     documentation_url: null,
     is_enabled: true,
-    required_fields: [
-      {
-        key: "api_key",
-        label: "API Key",
-        type: "password",
-        placeholder: "sk-...",
-        required: false,
-        description:
-          "API key or bearer token if required by this API (leave blank if unauthenticated)",
-      },
-      {
-        key: "base_url",
-        label: "Base URL",
-        type: "text",
-        placeholder: "https://api.example.com/v1",
-        required: false,
-        description: "Override the base URL from the spec for this connection",
-      },
-    ],
+    required_fields:
+      it.required_fields && it.required_fields.length > 0
+        ? it.required_fields
+        : FALLBACK_REQUIRED_FIELDS,
     endpoint_count: it.endpoint_count,
   });
 
