@@ -492,6 +492,11 @@ def import_openapi_spec(
 
     base_url = extract_base_url(spec_data, base_url_override)
     auth_type, auth_config = _detect_auth_strategy(spec_data)
+    # Persist base_url into auth_config so DefaultAdapter can construct the
+    # token acquisition URL at connect time (login_endpoint strategy) without
+    # any caller being able to override it via a later PATCH.
+    if base_url:
+        auth_config["base_url"] = base_url
     required_fields = _required_fields_from_strategy(auth_config)
 
     endpoints, source_type, spec_version = _parse_endpoints(spec_data)

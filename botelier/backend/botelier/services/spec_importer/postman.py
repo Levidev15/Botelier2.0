@@ -167,13 +167,16 @@ def import_postman_spec(
         db.add(it)
 
     base_url = base_url_override or ""
+    postman_auth_config: dict = {"auth_strategy": "bearer"}
+    if base_url:
+        postman_auth_config["base_url"] = base_url
     it.slug = slug
     it.name = title[:255]
     it.provider = base_url or title[:255]
     it.auth_type = "default"
-    it.set_auth_config({"auth_strategy": "bearer"})
+    it.set_auth_config(postman_auth_config)
     it.set_required_fields([
-        {"name": "access_token", "label": "API Token", "type": "password", "storage": "credentials"}
+        {"key": "access_token", "label": "API Token", "type": "password", "storage": "credentials", "required": True}
     ])
     it.set_endpoints(endpoints)
     it.is_enabled = True

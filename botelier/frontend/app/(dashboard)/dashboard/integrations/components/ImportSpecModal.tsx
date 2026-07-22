@@ -1,7 +1,10 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { Loader2, X, AlertCircle, Upload, Link, CheckCircle, FileJson, ChevronDown, Settings } from "lucide-react";
+import {
+  Loader2, X, AlertCircle, Upload, Link, CheckCircle, FileJson,
+  ChevronDown, Plus, Trash2,
+} from "lucide-react";
 
 const STRATEGY_OPTIONS = [
   { value: "bearer", label: "Bearer Token" },
@@ -24,6 +27,23 @@ const STRATEGY_DESCRIPTIONS: Record<string, string> = {
   login_endpoint: "Obtain a bearer token by calling the API's own login endpoint.",
   oauth2_client_credentials: "Obtain a bearer token via the OAuth2 client credentials grant.",
 };
+
+interface AvailableEndpoint {
+  id: string;
+  method: string;
+  path: string;
+  name: string;
+}
+
+interface ImportResult {
+  id: string;
+  name: string;
+  endpoint_count: number;
+  was_truncated: boolean;
+  auth_strategy: string;
+  auth_config: Record<string, unknown>;
+  available_endpoints: AvailableEndpoint[];
+}
 
 interface ImportSpecModalProps {
   accountId: string;
@@ -49,15 +69,16 @@ export default function ImportSpecModal({
   const [importing, setImporting] = useState(false);
   const [savingAuth, setSavingAuth] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [importResult, setImportResult] = useState<{
-    id: string;
-    name: string;
-    endpoint_count: number;
-    was_truncated: boolean;
-    auth_strategy: string;
-  } | null>(null);
+  const [importResult, setImportResult] = useState<ImportResult | null>(null);
+
+  // Auth config state
   const [authStrategy, setAuthStrategy] = useState("bearer");
+  const [authConfig, setAuthConfig] = useState<Record<string, unknown>>({});
+
   const fileRef = useRef<HTMLInputElement>(null);
+
+  const updateConfig = (key: string, value: unknown) =>
+    setAuthConfig((prev) => ({ ...prev, [key]: value }));
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
@@ -114,14 +135,18 @@ export default function ImportSpecModal({
         return;
       }
       onSuccess();
-      const detectedStrategy = data.auth_config?.auth_strategy || "bearer";
+      const detectedStrategy = data.auth_strategy || "bearer";
+      const detectedConfig = data.auth_config || { auth_strategy: detectedStrategy };
       setAuthStrategy(detectedStrategy);
+      setAuthConfig(detectedConfig);
       setImportResult({
         id: data.id,
         name: data.name,
         endpoint_count: data.endpoint_count,
         was_truncated: data.was_truncated,
         auth_strategy: detectedStrategy,
+        auth_config: detectedConfig,
+        available_endpoints: data.available_endpoints || [],
       });
     } catch (err: any) {
       setError(err?.message || "Import failed — please check your network and try again");
@@ -142,7 +167,7 @@ export default function ImportSpecModal({
           body: JSON.stringify({
             account_id: accountId,
             auth_strategy: authStrategy,
-            auth_config: { auth_strategy: authStrategy },
+            auth_config: { ...authConfig, auth_strategy: authStrategy },
           }),
         }
       );
@@ -160,19 +185,273 @@ export default function ImportSpecModal({
     }
   };
 
+  const availableEndpoints = importResult?.available_endpoints || [];
+  const bodyMappingEntries = Object.entries(
+    (authConfig.login_body_mapping as Record<string, string>) ||
+      { username: "username", password: "password" }
+  ).map(([body_key, cred_key]) => ({ body_key, cred_key }));
+
+  const updateBodyMapping = (entries: { body_key: string; cred_key: string }[]) => {
+    const mapping: Record<string, string> = {};
+    entries.forEach(({ body_key, cred_key }) => {
+      if (body_key.trim()) mapping[body_key.trim()] = cred_key.trim();
+    });
+    updateConfig("login_body_mapping", mapping);
+  };
+
+  const customHeaders = (authConfig.headers as { header_name: string; credential_key: string }[]) || [];
+
+  const renderStrategyFields = () => {
+    switch (authStrategy) {
+      case "api_key_header":
+        return (
+          <>
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">Header Name</label>
+              <input
+                type="text"
+                value={(authConfig.header_name as string) || ""}
+                onChange={(e) => updateConfig("header_name", e.target.value)}
+                placeholder="X-API-Key"
+                className="w-full px-3 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">Credential Field Name</label>
+              <input
+                type="text"
+                value={(authConfig.credential_key as string) || ""}
+                onChange={(e) => updateConfig("credential_key", e.target.value)}
+                placeholder="api_key"
+                className="w-full px-3 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+              />
+            </div>
+          </>
+        );
+
+      case "api_key_query":
+        return (
+          <>
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">Query Parameter Name</label>
+              <input
+                type="text"
+                value={(authConfig.param_name as string) || ""}
+                onChange={(e) => updateConfig("param_name", e.target.value)}
+                placeholder="api_key"
+                className="w-full px-3 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">Credential Field Name</label>
+              <input
+                type="text"
+                value={(authConfig.credential_key as string) || ""}
+                onChange={(e) => updateConfig("credential_key", e.target.value)}
+                placeholder="api_key"
+                className="w-full px-3 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+              />
+            </div>
+          </>
+        );
+
+      case "custom_headers":
+        return (
+          <div>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs font-medium text-gray-400">Header Keys</label>
+              <button
+                onClick={() =>
+                  updateConfig("headers", [...customHeaders, { header_name: "", credential_key: "" }])
+                }
+                className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
+              >
+                <Plus className="h-3 w-3" /> Add
+              </button>
+            </div>
+            <div className="space-y-1.5">
+              {customHeaders.map((hdr, idx) => (
+                <div key={idx} className="flex gap-2 items-center">
+                  <input
+                    type="text"
+                    value={hdr.header_name}
+                    onChange={(e) => {
+                      const updated = [...customHeaders];
+                      updated[idx] = { ...updated[idx], header_name: e.target.value };
+                      updateConfig("headers", updated);
+                    }}
+                    placeholder="X-Header-Name"
+                    className="flex-1 px-2 py-1 bg-[#0a0a0a] border border-gray-800 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-600"
+                  />
+                  <input
+                    type="text"
+                    value={hdr.credential_key}
+                    onChange={(e) => {
+                      const updated = [...customHeaders];
+                      updated[idx] = { ...updated[idx], credential_key: e.target.value };
+                      updateConfig("headers", updated);
+                    }}
+                    placeholder="field_name"
+                    className="flex-1 px-2 py-1 bg-[#0a0a0a] border border-gray-800 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-600"
+                  />
+                  <button
+                    onClick={() => updateConfig("headers", customHeaders.filter((_, i) => i !== idx))}
+                    className="text-red-400 hover:text-red-300"
+                  >
+                    <Trash2 className="h-3 w-3" />
+                  </button>
+                </div>
+              ))}
+              {customHeaders.length === 0 && (
+                <p className="text-xs text-gray-600">Add at least one header</p>
+              )}
+            </div>
+          </div>
+        );
+
+      case "login_endpoint":
+        return (
+          <>
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">Login Endpoint Path</label>
+              {availableEndpoints.length > 0 ? (
+                <select
+                  value={(authConfig.login_endpoint_path as string) || ""}
+                  onChange={(e) => updateConfig("login_endpoint_path", e.target.value)}
+                  className="w-full px-3 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                >
+                  <option value="">— Select endpoint —</option>
+                  {availableEndpoints
+                    .filter((ep) => ep.method === "POST" || ep.method === "PUT")
+                    .map((ep) => (
+                      <option key={ep.id} value={ep.path}>
+                        {ep.method} {ep.path}
+                      </option>
+                    ))}
+                  {availableEndpoints
+                    .filter((ep) => ep.method !== "POST" && ep.method !== "PUT")
+                    .map((ep) => (
+                      <option key={ep.id} value={ep.path}>
+                        {ep.method} {ep.path}
+                      </option>
+                    ))}
+                </select>
+              ) : (
+                <input
+                  type="text"
+                  value={(authConfig.login_endpoint_path as string) || ""}
+                  onChange={(e) => updateConfig("login_endpoint_path", e.target.value)}
+                  placeholder="/auth/login"
+                  className="w-full px-3 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                />
+              )}
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">Token JSON Path</label>
+              <input
+                type="text"
+                value={(authConfig.token_response_path as string) || ""}
+                onChange={(e) => updateConfig("token_response_path", e.target.value)}
+                placeholder="token"
+                className="w-full px-3 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+              />
+              <p className="text-xs text-gray-600 mt-0.5">Dot-path to the bearer token in the login response</p>
+            </div>
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-xs font-medium text-gray-400">Request Body Mapping</label>
+                <button
+                  onClick={() => updateBodyMapping([...bodyMappingEntries, { body_key: "", cred_key: "" }])}
+                  className="inline-flex items-center gap-1 text-xs text-blue-400 hover:text-blue-300"
+                >
+                  <Plus className="h-3 w-3" /> Add
+                </button>
+              </div>
+              <div className="space-y-1.5">
+                {bodyMappingEntries.map((entry, idx) => (
+                  <div key={idx} className="flex gap-2 items-center">
+                    <input
+                      type="text"
+                      value={entry.body_key}
+                      onChange={(e) => {
+                        const updated = [...bodyMappingEntries];
+                        updated[idx] = { ...updated[idx], body_key: e.target.value };
+                        updateBodyMapping(updated);
+                      }}
+                      placeholder="body_field"
+                      className="flex-1 px-2 py-1 bg-[#0a0a0a] border border-gray-800 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-600"
+                    />
+                    <span className="text-gray-600 text-xs">→</span>
+                    <input
+                      type="text"
+                      value={entry.cred_key}
+                      onChange={(e) => {
+                        const updated = [...bodyMappingEntries];
+                        updated[idx] = { ...updated[idx], cred_key: e.target.value };
+                        updateBodyMapping(updated);
+                      }}
+                      placeholder="cred_key"
+                      className="flex-1 px-2 py-1 bg-[#0a0a0a] border border-gray-800 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-600"
+                    />
+                    <button
+                      onClick={() => updateBodyMapping(bodyMappingEntries.filter((_, i) => i !== idx))}
+                      className="text-red-400 hover:text-red-300"
+                    >
+                      <Trash2 className="h-3 w-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </>
+        );
+
+      case "oauth2_client_credentials":
+        return (
+          <>
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">Token URL</label>
+              <input
+                type="url"
+                value={(authConfig.token_url as string) || ""}
+                onChange={(e) => updateConfig("token_url", e.target.value)}
+                placeholder="https://api.example.com/oauth/token"
+                className="w-full px-3 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium text-gray-400 mb-1">
+                Scope <span className="text-gray-600">(optional)</span>
+              </label>
+              <input
+                type="text"
+                value={(authConfig.scope as string) || ""}
+                onChange={(e) => updateConfig("scope", e.target.value)}
+                placeholder="read write"
+                className="w-full px-3 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+              />
+            </div>
+          </>
+        );
+
+      default:
+        return null;
+    }
+  };
+
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
       <div className="bg-[#1a1a1a] border border-gray-800 rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between p-4 border-b border-gray-800">
           <h2 className="text-lg font-semibold">
-            {importResult ? "Configure Auth Method" : "Import API Spec"}
+            {importResult ? "Set Auth Method" : "Import API Spec"}
           </h2>
           <button onClick={onClose} className="p-1 hover:bg-gray-800 rounded-lg transition">
             <X className="h-5 w-5" />
           </button>
         </div>
 
-        <div className="p-6 space-y-5">
+        <div className="p-6 space-y-4">
           {importResult ? (
             <>
               <div className="flex items-center gap-3 p-3 bg-green-900/20 border border-green-800/50 rounded-lg">
@@ -193,7 +472,10 @@ export default function ImportSpecModal({
                 <div className="relative">
                   <select
                     value={authStrategy}
-                    onChange={(e) => setAuthStrategy(e.target.value)}
+                    onChange={(e) => {
+                      setAuthStrategy(e.target.value);
+                      setAuthConfig((prev) => ({ ...prev, auth_strategy: e.target.value }));
+                    }}
                     className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg text-sm appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-blue-600"
                   >
                     {STRATEGY_OPTIONS.map((s) => (
@@ -209,15 +491,7 @@ export default function ImportSpecModal({
                 )}
               </div>
 
-              <div className="p-3 bg-[#111] border border-gray-800 rounded-lg">
-                <div className="flex items-start gap-2">
-                  <Settings className="h-4 w-4 text-gray-500 flex-shrink-0 mt-0.5" />
-                  <p className="text-xs text-gray-400">
-                    You can update individual auth details (header names, token URL, etc.) after import
-                    using the <span className="text-gray-300">Auth</span> button on the integration card.
-                  </p>
-                </div>
-              </div>
+              {renderStrategyFields()}
 
               {error && (
                 <div className="flex items-start gap-2 p-3 bg-red-900/30 border border-red-800 rounded-lg">

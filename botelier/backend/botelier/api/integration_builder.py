@@ -160,6 +160,7 @@ async def import_integration_spec(
         raise HTTPException(status_code=500, detail="Import failed")
 
     endpoints = integration_type.get_endpoints()
+    auth_config = integration_type.get_auth_config() or {}
     return {
         "id": str(integration_type.id),
         "slug": integration_type.slug,
@@ -168,6 +169,17 @@ async def import_integration_spec(
         "spec_version": integration_type.spec_version,
         "endpoint_count": len(endpoints),
         "was_truncated": (integration_type.raw_spec or {}).get("was_truncated", False),
+        "auth_strategy": auth_config.get("auth_strategy", "bearer"),
+        "auth_config": auth_config,
+        "available_endpoints": [
+            {
+                "id": ep.get("id"),
+                "method": ep.get("method"),
+                "path": ep.get("path"),
+                "name": ep.get("name"),
+            }
+            for ep in endpoints
+        ],
     }
 
 
