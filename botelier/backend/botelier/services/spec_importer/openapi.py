@@ -250,7 +250,7 @@ def _parse_endpoints(spec_data: dict) -> tuple[list[dict], str, str]:
                 request_body = operation.get("requestBody")
                 variables += _parse_request_body_params(request_body, components, security_scheme_names)
             else:
-                variables += _parse_swagger2_parameters(op_params, definitions, security_scheme_names)
+                variables = _parse_swagger2_parameters(op_params, definitions, security_scheme_names)
 
             # Deduplicate by name (operation params win over path params)
             seen: set = set()
@@ -335,6 +335,12 @@ def import_openapi_spec(
     required_fields = _required_fields_from_strategy(auth_config)
 
     endpoints, source_type, spec_version = _parse_endpoints(spec_data)
+    if not endpoints:
+        raise ValueError(
+            f"No endpoints found in this {'OpenAPI' if source_type == 'openapi' else 'Swagger'} spec. "
+            "The spec has no 'paths' with operations to import — please check that you "
+            "uploaded the full API specification."
+        )
     endpoints, was_truncated = truncate_spec_endpoints(endpoints, _MAX_ENDPOINTS)
     if was_truncated:
         logger.warning(
@@ -366,7 +372,7 @@ def import_openapi_spec(
     it.is_enabled = True
     it.origin = "customer_imported"
     it.source_type = source_type
-    it.spec_version = spec_version
+    it.spec_version = str(spec_version)[:64]
     it.spec_url = spec_url
     it.created_by_account_id = account_id
     # Store trimmed raw spec (drop paths/components to save space)

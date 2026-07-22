@@ -49,6 +49,36 @@ router = APIRouter()
 # ---------------------------------------------------------------------------
 
 
+def _parse_spec_bytes(raw: bytes) -> dict:
+    """Parse raw spec bytes as JSON, falling back to YAML.
+
+    OpenAPI/Swagger specs are commonly authored in YAML, so a JSON-only
+    parse would reject perfectly valid specs.
+
+    Raises:
+        HTTPException(400): content is neither valid JSON nor valid YAML,
+        or parses to something other than an object.
+    """
+    try:
+        data = json.loads(raw)
+    except Exception:
+        try:
+            import yaml
+
+            data = yaml.safe_load(raw)
+        except Exception:
+            raise HTTPException(
+                status_code=400,
+                detail="Could not parse the spec: content is neither valid JSON nor valid YAML.",
+            )
+    if not isinstance(data, dict):
+        raise HTTPException(
+            status_code=400,
+            detail="The spec must be a JSON or YAML object (an OpenAPI/Swagger document or Postman collection).",
+        )
+    return data
+
+
 @router.post("/api/integrations/import")
 async def import_integration_spec(
     body: dict,
@@ -83,9 +113,9 @@ async def import_integration_spec(
     if body.get("spec_file_b64"):
         try:
             raw = base64.b64decode(body["spec_file_b64"])
-            spec_data = json.loads(raw)
-        except Exception as exc:
-            raise HTTPException(status_code=400, detail=f"Invalid spec_file_b64: {exc}")
+        except Exception:
+            raise HTTPException(status_code=400, detail="Invalid file upload: could not decode file data.")
+        spec_data = _parse_spec_bytes(raw)
     elif spec_url:
         _validate_spec_url(spec_url)
         import httpx
@@ -102,11 +132,12 @@ async def import_integration_spec(
                         detail="spec_url returned a redirect; provide the direct URL",
                     )
                 resp.raise_for_status()
-                spec_data = resp.json()
+                spec_bytes = resp.content
         except HTTPException:
             raise
         except Exception as exc:
             raise HTTPException(status_code=400, detail=f"Failed to fetch spec from URL: {exc}")
+        spec_data = _parse_spec_bytes(spec_bytes)
     else:
         raise HTTPException(status_code=400, detail="Either spec_file_b64 or spec_url is required")
 
@@ -121,6 +152,7 @@ async def import_integration_spec(
         )
         db.commit()
     except ValueError as exc:
+        db.rollback()
         raise HTTPException(status_code=400, detail=str(exc))
     except Exception as exc:
         db.rollback()

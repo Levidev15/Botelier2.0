@@ -143,6 +143,13 @@ def import_postman_spec(
             "capability": None,
         })
 
+    if not endpoints:
+        raise ValueError(
+            "No requests found in this Postman collection. The collection has no "
+            "items with requests to import — please check that you exported the "
+            "full collection (Collection v2.1 format)."
+        )
+
     endpoints, was_truncated = truncate_spec_endpoints(endpoints, _MAX_ENDPOINTS)
     if was_truncated:
         logger.warning(
@@ -172,7 +179,10 @@ def import_postman_spec(
     it.is_enabled = True
     it.origin = "customer_imported"
     it.source_type = "postman"
-    it.spec_version = info.get("schema", "unknown")
+    # info["schema"] is a full URL (> varchar(64)); extract just the version.
+    schema_str = str(info.get("schema") or "")
+    version_match = re.search(r"collection/v?([\d.]+)", schema_str)
+    it.spec_version = (version_match.group(1) if version_match else (schema_str or "unknown"))[:64]
     it.spec_url = spec_url
     it.created_by_account_id = account_id
     it.raw_spec = {
