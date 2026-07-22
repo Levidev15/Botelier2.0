@@ -12,6 +12,7 @@ import SecretModal from "./components/SecretModal";
 import MCPModal from "./components/MCPModal";
 import ConnectModal from "./components/ConnectModal";
 import EditModal from "./components/EditModal";
+import AuthConfigModal from "./components/AuthConfigModal";
 import MCPSection from "./components/MCPSection";
 import SecretsSection from "./components/SecretsSection";
 import APILogsSection from "./components/APILogsSection";
@@ -48,6 +49,7 @@ export default function IntegrationsPage() {
     last_error: string | null;
   }>>({});
   const [activeTab, setActiveTab] = useState<"connections" | "api_builder" | "api_logs">("connections");
+  const [authConfigType, setAuthConfigType] = useState<IntegrationType | null>(null);
 
   const showNotification = (type: "success" | "error", message: string) => {
     setNotification({ type, message });
@@ -218,6 +220,10 @@ export default function IntegrationsPage() {
 
   const getIntegrationConnections = (typeId: string): AccountIntegration[] => {
     return accountIntegrations.filter(i => i.integration_type_id === typeId);
+  };
+
+  const handleAuthConfig = (type: IntegrationType) => {
+    setAuthConfigType(type);
   };
 
   const handleConnect = (type: IntegrationType) => {
@@ -404,6 +410,7 @@ export default function IntegrationsPage() {
                 handleTestConnection={handleTestConnection}
                 handleDisconnect={handleDisconnect}
                 handleDelete={handleDelete}
+                handleAuthConfig={handleAuthConfig}
               />
             ))}
 
@@ -491,6 +498,17 @@ export default function IntegrationsPage() {
           onSuccess={fetchIntegrations}
           onNotify={showNotification}
           onClose={() => setEditingConn(null)}
+        />
+      )}
+
+      {authConfigType && accountId && (
+        <AuthConfigModal
+          integrationType={authConfigType}
+          accountId={accountId}
+          authFetch={authFetch}
+          onSuccess={fetchIntegrations}
+          onNotify={showNotification}
+          onClose={() => setAuthConfigType(null)}
         />
       )}
     </div>

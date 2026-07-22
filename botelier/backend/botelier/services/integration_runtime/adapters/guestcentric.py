@@ -79,7 +79,7 @@ class GuestCentricAdapter(BaseIntegrationAdapter):
                 "prior availability lookup: " + ", ".join(missing)
             )
 
-    def needs_token(self, credentials: dict) -> bool:
+    def needs_token(self, credentials: dict, auth_config=None) -> bool:
         # Basic auth carries the credential on every request, so no token dance.
         return credentials.get("auth_method", "") != "basic_auth"
 

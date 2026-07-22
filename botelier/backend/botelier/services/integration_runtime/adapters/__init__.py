@@ -1,6 +1,6 @@
 """Per-vendor integration adapters + resolution registry."""
 
-from .base import BaseIntegrationAdapter, DefaultAdapter, RefreshContext
+from .base import BaseIntegrationAdapter, ConnectResult, DefaultAdapter, RefreshContext
 from .guestcentric import GuestCentricAdapter
 from .oauth2 import OAuth2AuthorizationCodeAdapter, resolve_token_endpoint
 from .opera_cloud import (
@@ -18,6 +18,7 @@ from .registry import (
 
 __all__ = [
     "BaseIntegrationAdapter",
+    "ConnectResult",
     "DefaultAdapter",
     "RefreshContext",
     "OperaCloudAdapter",

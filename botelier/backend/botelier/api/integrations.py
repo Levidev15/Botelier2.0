@@ -530,6 +530,34 @@ async def connect_integration(
                 integration.status = IntegrationStatus.ERROR
                 integration.last_error = f"Unsupported auth method: {auth_method}"
 
+        elif auth_type == "default":
+            from botelier.services.integration_runtime.adapters import DEFAULT_ADAPTER
+
+            auth_config = integration_type.get_auth_config() or {}
+            connect_result = await DEFAULT_ADAPTER.connect(request.credentials, auth_config)
+            if connect_result.success:
+                if connect_result.access_token:
+                    integration.set_access_token(connect_result.access_token)
+                    if connect_result.refresh_token:
+                        integration.set_refresh_token(connect_result.refresh_token)
+                    if connect_result.expires_in:
+                        integration.token_expires_at = datetime.utcnow() + timedelta(
+                            seconds=connect_result.expires_in
+                        )
+                integration.status = IntegrationStatus.CONNECTED
+                integration.connected_at = datetime.utcnow()
+                integration.connected_by_user_id = user_id
+                integration.last_error = None
+                logger.info(
+                    f"Successfully connected integration {integration_type.slug} for account {account_id}"
+                )
+            else:
+                integration.status = IntegrationStatus.ERROR
+                integration.last_error = connect_result.error or "Connection failed"
+                logger.error(
+                    f"Failed to connect integration {integration_type.slug}: {integration.last_error}"
+                )
+
         else:
             integration.status = IntegrationStatus.ERROR
             integration.last_error = f"Unsupported auth type: {auth_type}"
@@ -732,6 +760,33 @@ async def update_integration_credentials(
             else:
                 integration.status = IntegrationStatus.ERROR
                 integration.last_error = f"Unsupported auth method: {auth_method}"
+
+        elif auth_type == "default":
+            from botelier.services.integration_runtime.adapters import DEFAULT_ADAPTER
+
+            auth_config = integration_type.get_auth_config() or {}
+            connect_result = await DEFAULT_ADAPTER.connect(auth_input, auth_config)
+            if connect_result.success:
+                if connect_result.access_token:
+                    integration.set_access_token(connect_result.access_token)
+                    if connect_result.refresh_token:
+                        integration.set_refresh_token(connect_result.refresh_token)
+                    if connect_result.expires_in:
+                        integration.token_expires_at = datetime.utcnow() + timedelta(
+                            seconds=connect_result.expires_in
+                        )
+                integration.status = IntegrationStatus.CONNECTED
+                integration.last_error = None
+                logger.info(
+                    f"Credential update reconnected integration {integration_type.slug} for account {account_id}"
+                )
+            else:
+                integration.status = IntegrationStatus.ERROR
+                integration.last_error = connect_result.error or "Connection failed"
+                logger.error(
+                    f"Credential update failed for {integration_type.slug}: {integration.last_error}"
+                )
+
         else:
             integration.status = IntegrationStatus.ERROR
             integration.last_error = f"Unsupported auth type: {auth_type}"

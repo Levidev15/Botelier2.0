@@ -42,8 +42,36 @@ def _detect_auth_strategy(spec_data: dict) -> tuple[str, dict]:
     """Detect the primary auth strategy from security schemes.
 
     Returns (auth_type, auth_config) for the IntegrationType row.
+
+    Multiple apiKey header schemes → ``custom_headers`` (many APIs require more
+    than one header key, e.g. ``X-App-Key`` + ``X-Auth-Token``).
+    OAuth2 clientCredentials flow → ``oauth2_client_credentials`` with token URL.
+    Single apiKey → ``api_key_header`` or ``api_key_query``.
+    HTTP bearer/basic → ``bearer`` / ``basic``.
+    Unknown / no schemes → ``none`` (user can change via auth settings).
     """
     schemes = _parse_security_schemes(spec_data)
+
+    # Collect all apiKey-in-header schemes — multiple means custom_headers strategy.
+    api_key_header_schemes: list[dict] = []
+    for name, scheme in schemes.items():
+        scheme_type = (scheme.get("type") or "").lower()
+        scheme_in = (scheme.get("in") or "").lower()
+        if scheme_type == "apikey" and scheme_in == "header":
+            api_key_header_schemes.append(
+                {
+                    "header_name": scheme.get("name") or name,
+                    "credential_key": re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_")
+                    or "api_key",
+                }
+            )
+
+    if len(api_key_header_schemes) >= 2:
+        return "default", {
+            "auth_strategy": "custom_headers",
+            "headers": api_key_header_schemes,
+        }
+
     for name, scheme in schemes.items():
         scheme_type = (scheme.get("type") or "").lower()
         scheme_in = (scheme.get("in") or "").lower()
@@ -57,25 +85,54 @@ def _detect_auth_strategy(spec_data: dict) -> tuple[str, dict]:
 
         if scheme_type == "apikey":
             if scheme_in == "header":
+                cred_key = (
+                    re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "api_key"
+                )
                 return "default", {
                     "auth_strategy": "api_key_header",
-                    "header_name": scheme.get("name", "X-API-Key"),
+                    "header_name": scheme.get("name") or "X-API-Key",
+                    "credential_key": cred_key,
                 }
             if scheme_in == "query":
+                cred_key = (
+                    re.sub(r"[^a-z0-9]+", "_", name.lower()).strip("_") or "api_key"
+                )
                 return "default", {
                     "auth_strategy": "api_key_query",
-                    "param_name": scheme.get("name", "api_key"),
+                    "param_name": scheme.get("name") or "api_key",
+                    "credential_key": cred_key,
                 }
 
         if scheme_type == "oauth2":
+            # Check for client_credentials flow (machine-to-machine)
+            flows = scheme.get("flows") or {}
+            cc_flow = flows.get("clientCredentials") or {}
+            if cc_flow:
+                token_url = (cc_flow.get("tokenUrl") or "").strip()
+                scope_map = cc_flow.get("scopes") or {}
+                auth_config: dict = {
+                    "auth_strategy": "oauth2_client_credentials",
+                    "token_url": token_url,
+                }
+                if scope_map:
+                    # Include up to 5 scopes as a default hint
+                    auth_config["scope"] = " ".join(list(scope_map.keys())[:5])
+                return "default", auth_config
+            # Other OAuth2 flows: tell the user it's bearer-based
             return "default", {"auth_strategy": "bearer"}
 
     return "default", {"auth_strategy": "none"}
 
 
 def _required_fields_from_strategy(auth_config: dict) -> list[dict]:
-    """Build ``required_fields`` from the chosen auth strategy."""
+    """Build ``required_fields`` from the chosen auth strategy.
+
+    Returns the credential fields a user must fill to connect.  Called at
+    import time (from detected scheme) and by the auth-config editor whenever
+    the operator changes the strategy.
+    """
     strategy = auth_config.get("auth_strategy", "none")
+
     if strategy == "bearer":
         return [
             {
@@ -85,7 +142,45 @@ def _required_fields_from_strategy(auth_config: dict) -> list[dict]:
                 "storage": "credentials",
             }
         ]
-    if strategy == "api_key_header" or strategy == "api_key_query":
+
+    if strategy == "api_key_header":
+        cred_key = auth_config.get("credential_key", "api_key")
+        header_name = auth_config.get("header_name", "X-API-Key")
+        return [
+            {
+                "name": cred_key,
+                "label": header_name,
+                "type": "password",
+                "storage": "credentials",
+                "placeholder": f"Value for {header_name}",
+            }
+        ]
+
+    if strategy == "api_key_query":
+        cred_key = auth_config.get("credential_key", "api_key")
+        param_name = auth_config.get("param_name", "api_key")
+        return [
+            {
+                "name": cred_key,
+                "label": f"API Key ({param_name})",
+                "type": "password",
+                "storage": "credentials",
+            }
+        ]
+
+    if strategy == "custom_headers":
+        headers_config = auth_config.get("headers") or []
+        if headers_config:
+            return [
+                {
+                    "name": hdr.get("credential_key", "api_key"),
+                    "label": hdr.get("header_name", hdr.get("credential_key", "API Key")),
+                    "type": "password",
+                    "storage": "credentials",
+                }
+                for hdr in headers_config
+            ]
+        # Fallback if headers list is empty
         return [
             {
                 "name": "api_key",
@@ -94,6 +189,7 @@ def _required_fields_from_strategy(auth_config: dict) -> list[dict]:
                 "storage": "credentials",
             }
         ]
+
     if strategy == "basic":
         return [
             {
@@ -109,6 +205,57 @@ def _required_fields_from_strategy(auth_config: dict) -> list[dict]:
                 "storage": "credentials",
             },
         ]
+
+    if strategy == "login_endpoint":
+        # Fields come from the body_mapping; fall back to username/password if not set.
+        body_mapping: dict = auth_config.get("login_body_mapping") or {
+            "username": "username",
+            "password": "password",
+        }
+        fields = []
+        for body_key, cred_key in body_mapping.items():
+            is_secret = any(
+                w in cred_key.lower()
+                for w in ("password", "secret", "token", "key", "apikey")
+            )
+            fields.append(
+                {
+                    "name": cred_key,
+                    "label": body_key.replace("_", " ").replace("-", " ").title(),
+                    "type": "password" if is_secret else "text",
+                    "storage": "credentials",
+                }
+            )
+        return fields
+
+    if strategy == "oauth2_client_credentials":
+        fields: list[dict] = [
+            {
+                "name": "client_id",
+                "label": "Client ID",
+                "type": "text",
+                "storage": "credentials",
+            },
+            {
+                "name": "client_secret",
+                "label": "Client Secret",
+                "type": "password",
+                "storage": "credentials",
+            },
+        ]
+        if auth_config.get("scope"):
+            fields.append(
+                {
+                    "name": "scope",
+                    "label": "Scope (optional)",
+                    "type": "text",
+                    "storage": "credentials",
+                    "placeholder": auth_config.get("scope", ""),
+                }
+            )
+        return fields
+
+    # "none" or unknown — no credential fields needed
     return []
 
 

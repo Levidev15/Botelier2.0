@@ -60,7 +60,7 @@ class OAuth2AuthorizationCodeAdapter(BaseIntegrationAdapter):
 
     slug = None  # resolved by auth_type, not by a vendor slug
 
-    def needs_token(self, credentials: dict) -> bool:
+    def needs_token(self, credentials: dict, auth_config=None) -> bool:
         # Every data request must ride a fresh bearer obtained via the code
         # exchange / refresh grant.
         return True

@@ -83,7 +83,7 @@ def _validate_opera_gateway_url(gateway_url: str) -> None:
 class OperaCloudAdapter(BaseIntegrationAdapter):
     slug = "opera-cloud"
 
-    def needs_token(self, credentials: dict) -> bool:
+    def needs_token(self, credentials: dict, auth_config=None) -> bool:
         return True
 
     def resolve_base_url(self, auth_config: dict, credentials: dict) -> str:

@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  Plug, AlertCircle, ExternalLink, RefreshCw, Loader2, Trash2, Plus, Pencil, Unplug,
+  Plug, AlertCircle, ExternalLink, RefreshCw, Loader2, Trash2, Plus, Pencil, Unplug, Settings,
 } from "lucide-react";
 import type { IntegrationType, AccountIntegration, IntegrationStats } from "../types";
 
@@ -62,6 +62,7 @@ interface IntegrationCardProps {
   handleTestConnection: (conn: AccountIntegration) => void;
   handleDisconnect: (conn: AccountIntegration) => void;
   handleDelete: (conn: AccountIntegration) => void;
+  handleAuthConfig?: (type: IntegrationType) => void;
 }
 
 export default function IntegrationCard({
@@ -75,6 +76,7 @@ export default function IntegrationCard({
   handleTestConnection,
   handleDisconnect,
   handleDelete,
+  handleAuthConfig,
 }: IntegrationCardProps) {
   const slugInitials = type.slug === "opera-cloud" ? "OC" : type.slug === "guestcentric-crs" ? "GC" : type.name.slice(0, 2).toUpperCase();
   const gradientClass = type.slug === "opera-cloud" ? "from-orange-500 to-red-600" : "from-emerald-500 to-teal-600";
@@ -111,13 +113,25 @@ export default function IntegrationCard({
         </div>
 
         {canManage && (
-          <button
-            onClick={() => handleConnect(type)}
-            className="inline-flex items-center px-4 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition"
-          >
-            <Plus className="h-4 w-4 mr-1" />
-            Add Connection
-          </button>
+          <div className="flex items-center gap-2">
+            {type.auth_type === "default" && handleAuthConfig && (
+              <button
+                onClick={() => handleAuthConfig(type)}
+                className="inline-flex items-center px-3 py-1.5 text-sm font-medium text-gray-300 hover:text-white bg-gray-800 hover:bg-gray-700 rounded-lg transition"
+                title="Auth settings"
+              >
+                <Settings className="h-4 w-4 mr-1" />
+                Auth
+              </button>
+            )}
+            <button
+              onClick={() => handleConnect(type)}
+              className="inline-flex items-center px-4 py-1.5 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition"
+            >
+              <Plus className="h-4 w-4 mr-1" />
+              Add Connection
+            </button>
+          </div>
         )}
       </div>
 

@@ -197,7 +197,8 @@ class IntegrationClient:
         credentials = integration.get_credentials()
         adapter = self._resolve_adapter(integration)
 
-        needs_token = adapter.needs_token(credentials)
+        auth_config_data = integration.integration_type.get_auth_config() or {}
+        needs_token = adapter.needs_token(credentials, auth_config=auth_config_data)
 
         if needs_token and self._token_needs_refresh(integration):
             refresh_success = await self._refresh_token_with_lock(integration)

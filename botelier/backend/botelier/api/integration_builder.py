@@ -650,6 +650,245 @@ def _verify_operation_exists(db: Session, connection_id: str, operation_id: str)
         raise HTTPException(status_code=404, detail=f"Operation {operation_id!r} not found")
 
 
+# ---------------------------------------------------------------------------
+# Auth-config editing for customer_imported integration types
+# ---------------------------------------------------------------------------
+
+_ALLOWED_AUTH_STRATEGIES = frozenset(
+    {
+        "none",
+        "bearer",
+        "api_key_header",
+        "api_key_query",
+        "custom_headers",
+        "basic",
+        "login_endpoint",
+        "oauth2_client_credentials",
+    }
+)
+
+_AUTH_STRATEGY_LABELS = {
+    "none": "No Auth (Public API)",
+    "bearer": "API Token (Bearer)",
+    "api_key_header": "API Key (Header)",
+    "api_key_query": "API Key (Query Param)",
+    "custom_headers": "Multiple API Keys (Custom Headers)",
+    "basic": "Username & Password (Basic Auth)",
+    "login_endpoint": "Login Endpoint (Token Exchange)",
+    "oauth2_client_credentials": "OAuth2 Client Credentials",
+}
+
+
+def _get_imported_type(
+    db: Session, integration_type_id: str, account_id: str
+) -> IntegrationType:
+    """Fetch and validate a customer_imported IntegrationType owned by the account."""
+    it = (
+        db.query(IntegrationType)
+        .filter(IntegrationType.id == integration_type_id)
+        .first()
+    )
+    if not it:
+        raise HTTPException(status_code=404, detail="Integration type not found")
+    if getattr(it, "origin", None) != "customer_imported":
+        raise HTTPException(
+            status_code=403,
+            detail="Auth configuration can only be edited for imported integration types",
+        )
+    if str(getattr(it, "created_by_account_id", "")) != str(account_id):
+        raise HTTPException(
+            status_code=403,
+            detail="Not authorized to edit this integration type",
+        )
+    return it
+
+
+@router.get("/api/integrations/types/{integration_type_id}/auth-config")
+def get_integration_auth_config(
+    integration_type_id: str,
+    account_id: str,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Return the auth_config and required_fields for a customer_imported integration type."""
+    check_account_permission(current_user, account_id, "integrations.manage", db)
+    it = _get_imported_type(db, integration_type_id, account_id)
+    auth_config = it.get_auth_config() or {}
+    endpoints = it.get_endpoints() or []
+    return {
+        "id": str(it.id),
+        "auth_strategy": auth_config.get("auth_strategy", "bearer"),
+        "auth_config": auth_config,
+        "required_fields": it.get_required_fields() or [],
+        "available_strategies": [
+            {"value": k, "label": _AUTH_STRATEGY_LABELS.get(k, k)}
+            for k in sorted(_ALLOWED_AUTH_STRATEGIES)
+        ],
+        "available_endpoints": [
+            {
+                "id": ep.get("id"),
+                "method": ep.get("method"),
+                "path": ep.get("path"),
+                "name": ep.get("name"),
+            }
+            for ep in endpoints
+        ],
+    }
+
+
+@router.patch("/api/integrations/types/{integration_type_id}/auth-config")
+def update_integration_auth_config(
+    integration_type_id: str,
+    body: dict,
+    current_user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Update the auth strategy + config for a customer_imported integration type.
+
+    Changing the strategy regenerates ``required_fields`` so the connect/edit
+    modals automatically show the right credential inputs on the next open.
+
+    Body::
+
+        {
+            "account_id": "...",
+            "auth_strategy": "bearer" | "api_key_header" | ...,
+            "auth_config": { <strategy-specific extras> }
+        }
+    """
+    from botelier.services.spec_importer.openapi import _required_fields_from_strategy
+
+    account_id = str(body.get("account_id") or "").strip()
+    if not account_id:
+        raise HTTPException(status_code=400, detail="account_id is required")
+    check_account_permission(current_user, account_id, "integrations.manage", db)
+    it = _get_imported_type(db, integration_type_id, account_id)
+
+    strategy = str(body.get("auth_strategy") or "").strip().lower()
+    if strategy not in _ALLOWED_AUTH_STRATEGIES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"auth_strategy must be one of: "
+                + ", ".join(sorted(_ALLOWED_AUTH_STRATEGIES))
+            ),
+        )
+
+    incoming: dict = body.get("auth_config") or {}
+    existing: dict = it.get_auth_config() or {}
+
+    # Preserve base_url from the existing config unless the caller overrides it.
+    base_url = incoming.get("base_url") or existing.get("base_url") or ""
+
+    new_config: dict = {"auth_strategy": strategy}
+    if base_url:
+        new_config["base_url"] = base_url
+
+    if strategy == "api_key_header":
+        new_config["header_name"] = (
+            incoming.get("header_name")
+            or existing.get("header_name")
+            or "X-API-Key"
+        )
+        new_config["credential_key"] = (
+            incoming.get("credential_key")
+            or existing.get("credential_key")
+            or "api_key"
+        )
+
+    elif strategy == "api_key_query":
+        new_config["param_name"] = (
+            incoming.get("param_name") or existing.get("param_name") or "api_key"
+        )
+        new_config["credential_key"] = (
+            incoming.get("credential_key")
+            or existing.get("credential_key")
+            or "api_key"
+        )
+
+    elif strategy == "custom_headers":
+        headers = incoming.get("headers") or existing.get("headers") or []
+        if not headers:
+            raise HTTPException(
+                status_code=400,
+                detail="custom_headers strategy requires at least one entry in auth_config.headers",
+            )
+        new_config["headers"] = headers
+
+    elif strategy == "login_endpoint":
+        endpoint_path = (
+            incoming.get("login_endpoint_path")
+            or existing.get("login_endpoint_path")
+            or ""
+        ).strip()
+        if not endpoint_path:
+            raise HTTPException(
+                status_code=400,
+                detail="login_endpoint strategy requires auth_config.login_endpoint_path",
+            )
+        # Validate the path belongs to this spec's own endpoints (SSRF guard)
+        endpoints = it.get_endpoints() or []
+        if endpoints:
+            spec_paths = {ep.get("path", "").split("?")[0].rstrip("/") for ep in endpoints}
+            norm = endpoint_path.rstrip("/")
+            if not endpoint_path.startswith("/"):
+                norm = "/" + norm
+            if norm not in spec_paths and endpoint_path.rstrip("/") not in spec_paths:
+                raise HTTPException(
+                    status_code=400,
+                    detail="login_endpoint_path must match one of the spec's imported endpoint paths",
+                )
+        new_config["login_endpoint_path"] = endpoint_path
+        new_config["login_body_mapping"] = (
+            incoming.get("login_body_mapping")
+            or existing.get("login_body_mapping")
+            or {"username": "username", "password": "password"}
+        )
+        new_config["token_response_path"] = (
+            incoming.get("token_response_path")
+            or existing.get("token_response_path")
+            or "token"
+        )
+        refresh_path = incoming.get("refresh_token_response_path") or existing.get(
+            "refresh_token_response_path"
+        )
+        if refresh_path:
+            new_config["refresh_token_response_path"] = refresh_path
+        new_config["token_expiry_seconds"] = int(
+            incoming.get("token_expiry_seconds")
+            or existing.get("token_expiry_seconds")
+            or 3600
+        )
+
+    elif strategy == "oauth2_client_credentials":
+        token_url = (
+            incoming.get("token_url") or existing.get("token_url") or ""
+        ).strip()
+        if not token_url:
+            raise HTTPException(
+                status_code=400,
+                detail="oauth2_client_credentials strategy requires auth_config.token_url",
+            )
+        new_config["token_url"] = token_url
+        scope = incoming.get("scope") or existing.get("scope")
+        if scope:
+            new_config["scope"] = scope
+
+    required_fields = _required_fields_from_strategy(new_config)
+    it.set_auth_config(new_config)
+    it.set_required_fields(required_fields)
+    db.commit()
+    logger.info(
+        f"Auth config updated: type={it.slug} strategy={strategy} account={account_id}"
+    )
+    return {
+        "id": str(it.id),
+        "auth_strategy": strategy,
+        "auth_config": new_config,
+        "required_fields": required_fields,
+    }
+
+
 def _get_or_create_policy(
     db: Session,
     connection_id: str,

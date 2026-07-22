@@ -31,6 +31,7 @@ export interface IntegrationType {
   is_enabled: boolean;
   required_fields: RequiredField[];
   endpoint_count: number;
+  origin?: string;
 }
 
 export interface AccountIntegration {
