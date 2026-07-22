@@ -104,8 +104,8 @@ app.include_router(properties_router)  # Per-property data isolation (Task #327)
 app.include_router(record_types_router)  # Structured output record type definitions
 app.include_router(records_router)  # Structured output records
 app.include_router(resolution_options_router)  # Resolution status options
+app.include_router(integration_builder_router)  # Universal API Adapter — spec import + operation catalog; registered BEFORE integrations_router so /api/integrations/types/importable (static) wins over /api/integrations/types/{type_id} (wildcard)
 app.include_router(integrations_router)  # Third-party integrations (Opera Cloud, etc.)
-app.include_router(integration_builder_router)  # Universal API Adapter — spec import + operation catalog (Task #356)
 app.include_router(capabilities_router)  # Universal capability catalog (Task #330 T005)
 app.include_router(actions_router)  # Reusable no-code action library
 app.include_router(secrets_router)  # Account secrets (encrypted API key store)

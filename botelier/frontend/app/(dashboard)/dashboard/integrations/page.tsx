@@ -15,15 +15,12 @@ import EditModal from "./components/EditModal";
 import MCPSection from "./components/MCPSection";
 import SecretsSection from "./components/SecretsSection";
 import APILogsSection from "./components/APILogsSection";
+import APIBuilderSection from "./components/APIBuilderSection";
 
 export default function IntegrationsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
   const { authFetch, loading: authLoading, isAuthenticated } = useAuthToken();
   const { can: canPerm, loading: permsLoading } = usePermissions();
-  // Backend gate: routes guarded by integrations.manage in
-  // botelier/backend/botelier/api/integrations.py — UI mirrors that
-  // contract so read-only roles (staff / viewer) see no buttons that
-  // would 403 on click. (Task #144)
   const canManage = canPerm("integrations", "manage");
   const [integrationTypes, setIntegrationTypes] = useState<IntegrationType[]>([]);
   const [accountIntegrations, setAccountIntegrations] = useState<AccountIntegration[]>([]);
@@ -50,7 +47,7 @@ export default function IntegrationsPage() {
     last_called_at: string | null;
     last_error: string | null;
   }>>({});
-  const [activeTab, setActiveTab] = useState<"connections" | "api_logs">("connections");
+  const [activeTab, setActiveTab] = useState<"connections" | "api_builder" | "api_logs">("connections");
 
   const showNotification = (type: "success" | "error", message: string) => {
     setNotification({ type, message });
@@ -353,6 +350,16 @@ export default function IntegrationsPage() {
         >
           Connections
         </button>
+        <button
+          onClick={() => setActiveTab("api_builder")}
+          className={`px-3 py-1.5 rounded text-sm transition-colors ${
+            activeTab === "api_builder"
+              ? "bg-gray-800 text-white"
+              : "text-gray-400 hover:text-white"
+          }`}
+        >
+          API Builder
+        </button>
         {canManage && (
           <button
             onClick={() => setActiveTab("api_logs")}
@@ -367,7 +374,7 @@ export default function IntegrationsPage() {
         )}
       </div>
 
-      {!canManage && (
+      {!canManage && activeTab !== "api_logs" && (
         <div className="mb-6 flex items-start gap-3 px-4 py-3 rounded-lg border border-gray-800 bg-[#141414] text-sm text-gray-300">
           <Lock className="h-4 w-4 mt-0.5 text-gray-500 flex-shrink-0" />
           <div>
@@ -379,7 +386,7 @@ export default function IntegrationsPage() {
         </div>
       )}
 
-      {activeTab === "connections" ? (
+      {activeTab === "connections" && (
         <>
           <div className="space-y-4 max-w-4xl">
             {integrationTypes.map((type) => (
@@ -424,7 +431,20 @@ export default function IntegrationsPage() {
             />
           </div>
         </>
-      ) : accountId ? (
+      )}
+
+      {activeTab === "api_builder" && accountId && (
+        <div className="max-w-4xl">
+          <APIBuilderSection
+            accountId={accountId}
+            authFetch={authFetch}
+            onNotify={showNotification}
+            canManage={canManage}
+          />
+        </div>
+      )}
+
+      {activeTab === "api_logs" && accountId ? (
         <APILogsSection accountId={accountId} authFetch={authFetch} />
       ) : null}
 
