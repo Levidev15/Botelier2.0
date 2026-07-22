@@ -777,8 +777,10 @@ def update_integration_auth_config(
     incoming: dict = body.get("auth_config") or {}
     existing: dict = it.get_auth_config() or {}
 
-    # Preserve base_url from the existing config unless the caller overrides it.
-    base_url = incoming.get("base_url") or existing.get("base_url") or ""
+    # Never accept base_url from the PATCH body — only preserve the value set at
+    # import time. This ensures the login_endpoint token URL is always scoped to
+    # the imported spec's own host and cannot be redirected by a PATCH caller.
+    base_url = existing.get("base_url") or ""
 
     new_config: dict = {"auth_strategy": strategy}
     if base_url:

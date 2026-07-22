@@ -1,7 +1,29 @@
 "use client";
 
 import { useState, useRef } from "react";
-import { Loader2, X, AlertCircle, Upload, Link, CheckCircle, FileJson } from "lucide-react";
+import { Loader2, X, AlertCircle, Upload, Link, CheckCircle, FileJson, ChevronDown, Settings } from "lucide-react";
+
+const STRATEGY_OPTIONS = [
+  { value: "bearer", label: "Bearer Token" },
+  { value: "api_key_header", label: "API Key (Header)" },
+  { value: "api_key_query", label: "API Key (Query Parameter)" },
+  { value: "custom_headers", label: "Custom Headers" },
+  { value: "basic", label: "Basic Auth (Username + Password)" },
+  { value: "login_endpoint", label: "Login Endpoint (Token from API)" },
+  { value: "oauth2_client_credentials", label: "OAuth2 Client Credentials" },
+  { value: "none", label: "No Authentication" },
+];
+
+const STRATEGY_DESCRIPTIONS: Record<string, string> = {
+  none: "No authentication required.",
+  bearer: "Send a static API token in the Authorization header.",
+  api_key_header: "Send an API key in a custom request header.",
+  api_key_query: "Append an API key as a URL query parameter.",
+  custom_headers: "Send multiple API keys in separate request headers.",
+  basic: "Authenticate with a username and password.",
+  login_endpoint: "Obtain a bearer token by calling the API's own login endpoint.",
+  oauth2_client_credentials: "Obtain a bearer token via the OAuth2 client credentials grant.",
+};
 
 interface ImportSpecModalProps {
   accountId: string;
@@ -25,12 +47,16 @@ export default function ImportSpecModal({
   const [fileData, setFileData] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
   const [importing, setImporting] = useState(false);
+  const [savingAuth, setSavingAuth] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<{
+  const [importResult, setImportResult] = useState<{
+    id: string;
     name: string;
     endpoint_count: number;
     was_truncated: boolean;
+    auth_strategy: string;
   } | null>(null);
+  const [authStrategy, setAuthStrategy] = useState("bearer");
   const fileRef = useRef<HTMLInputElement>(null);
 
   const handleFile = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -87,12 +113,16 @@ export default function ImportSpecModal({
         setError(data.detail || "Import failed");
         return;
       }
-      setResult({
+      onSuccess();
+      const detectedStrategy = data.auth_config?.auth_strategy || "bearer";
+      setAuthStrategy(detectedStrategy);
+      setImportResult({
+        id: data.id,
         name: data.name,
         endpoint_count: data.endpoint_count,
         was_truncated: data.was_truncated,
+        auth_strategy: detectedStrategy,
       });
-      onSuccess();
     } catch (err: any) {
       setError(err?.message || "Import failed — please check your network and try again");
     } finally {
@@ -100,41 +130,102 @@ export default function ImportSpecModal({
     }
   };
 
+  const handleSaveAuth = async () => {
+    if (!importResult) return;
+    setError(null);
+    setSavingAuth(true);
+    try {
+      const res = await authFetch(
+        `/api/integrations/types/${importResult.id}/auth-config`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            account_id: accountId,
+            auth_strategy: authStrategy,
+            auth_config: { auth_strategy: authStrategy },
+          }),
+        }
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        setError(data.detail || "Failed to save auth method");
+        return;
+      }
+      onNotify("success", `${importResult.name} imported — auth set to "${authStrategy}"`);
+      onClose();
+    } catch (err: any) {
+      setError(err?.message || "Failed to save — please try again");
+    } finally {
+      setSavingAuth(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
       <div className="bg-[#1a1a1a] border border-gray-800 rounded-xl w-full max-w-lg max-h-[90vh] overflow-y-auto">
         <div className="flex items-center justify-between p-4 border-b border-gray-800">
-          <h2 className="text-lg font-semibold">Import API Spec</h2>
+          <h2 className="text-lg font-semibold">
+            {importResult ? "Configure Auth Method" : "Import API Spec"}
+          </h2>
           <button onClick={onClose} className="p-1 hover:bg-gray-800 rounded-lg transition">
             <X className="h-5 w-5" />
           </button>
         </div>
 
         <div className="p-6 space-y-5">
-          {result ? (
-            <div className="flex flex-col items-center gap-4 py-6">
-              <CheckCircle className="h-12 w-12 text-green-400" />
-              <div className="text-center">
-                <p className="text-lg font-semibold">{result.name}</p>
-                <p className="text-sm text-gray-400 mt-1">
-                  {result.endpoint_count} endpoint{result.endpoint_count !== 1 ? "s" : ""} imported
-                </p>
-                {result.was_truncated && (
-                  <p className="text-xs text-yellow-400 mt-2">
-                    Large spec — only the first endpoints were imported
+          {importResult ? (
+            <>
+              <div className="flex items-center gap-3 p-3 bg-green-900/20 border border-green-800/50 rounded-lg">
+                <CheckCircle className="h-5 w-5 text-green-400 flex-shrink-0" />
+                <div>
+                  <p className="text-sm font-medium text-green-300">{importResult.name} imported</p>
+                  <p className="text-xs text-green-500 mt-0.5">
+                    {importResult.endpoint_count} endpoint{importResult.endpoint_count !== 1 ? "s" : ""}
+                    {importResult.was_truncated && " (large spec — first batch imported)"}
                   </p>
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-sm font-medium text-gray-300 mb-1.5">
+                  Authentication Method
+                </label>
+                <div className="relative">
+                  <select
+                    value={authStrategy}
+                    onChange={(e) => setAuthStrategy(e.target.value)}
+                    className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg text-sm appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                  >
+                    {STRATEGY_OPTIONS.map((s) => (
+                      <option key={s.value} value={s.value}>
+                        {s.label}
+                      </option>
+                    ))}
+                  </select>
+                  <ChevronDown className="absolute right-2.5 top-2.5 h-4 w-4 text-gray-500 pointer-events-none" />
+                </div>
+                {STRATEGY_DESCRIPTIONS[authStrategy] && (
+                  <p className="text-xs text-gray-500 mt-1">{STRATEGY_DESCRIPTIONS[authStrategy]}</p>
                 )}
               </div>
-              <p className="text-sm text-gray-400 text-center max-w-xs">
-                Now add a connection for this integration, then configure and publish its operations.
-              </p>
-              <button
-                onClick={onClose}
-                className="px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition"
-              >
-                Done
-              </button>
-            </div>
+
+              <div className="p-3 bg-[#111] border border-gray-800 rounded-lg">
+                <div className="flex items-start gap-2">
+                  <Settings className="h-4 w-4 text-gray-500 flex-shrink-0 mt-0.5" />
+                  <p className="text-xs text-gray-400">
+                    You can update individual auth details (header names, token URL, etc.) after import
+                    using the <span className="text-gray-300">Auth</span> button on the integration card.
+                  </p>
+                </div>
+              </div>
+
+              {error && (
+                <div className="flex items-start gap-2 p-3 bg-red-900/30 border border-red-800 rounded-lg">
+                  <AlertCircle className="h-4 w-4 text-red-400 flex-shrink-0 mt-0.5" />
+                  <p className="text-sm text-red-300">{error}</p>
+                </div>
+              )}
+            </>
           ) : (
             <>
               <div>
@@ -251,30 +342,55 @@ export default function ImportSpecModal({
           )}
         </div>
 
-        {!result && (
-          <div className="flex items-center justify-end gap-3 p-4 border-t border-gray-800">
-            <button
-              onClick={onClose}
-              className="px-4 py-2 text-sm font-medium text-gray-300 hover:text-white transition"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={handleImport}
-              disabled={importing}
-              className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition disabled:opacity-50"
-            >
-              {importing ? (
-                <>
-                  <Loader2 className="h-4 w-4 mr-2 animate-spin" />
-                  Importing...
-                </>
-              ) : (
-                "Import Spec"
-              )}
-            </button>
-          </div>
-        )}
+        <div className="flex items-center justify-end gap-3 p-4 border-t border-gray-800">
+          {importResult ? (
+            <>
+              <button
+                onClick={onClose}
+                className="px-4 py-2 text-sm font-medium text-gray-300 hover:text-white transition"
+              >
+                Skip
+              </button>
+              <button
+                onClick={handleSaveAuth}
+                disabled={savingAuth}
+                className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition disabled:opacity-50"
+              >
+                {savingAuth ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Saving...
+                  </>
+                ) : (
+                  "Save & Done"
+                )}
+              </button>
+            </>
+          ) : (
+            <>
+              <button
+                onClick={onClose}
+                className="px-4 py-2 text-sm font-medium text-gray-300 hover:text-white transition"
+              >
+                Cancel
+              </button>
+              <button
+                onClick={handleImport}
+                disabled={importing}
+                className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition disabled:opacity-50"
+              >
+                {importing ? (
+                  <>
+                    <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+                    Importing...
+                  </>
+                ) : (
+                  "Import Spec"
+                )}
+              </button>
+            </>
+          )}
+        </div>
       </div>
     </div>
   );
