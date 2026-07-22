@@ -350,16 +350,18 @@ export default function IntegrationsPage() {
         >
           Connections
         </button>
-        <button
-          onClick={() => setActiveTab("api_builder")}
-          className={`px-3 py-1.5 rounded text-sm transition-colors ${
-            activeTab === "api_builder"
-              ? "bg-gray-800 text-white"
-              : "text-gray-400 hover:text-white"
-          }`}
-        >
-          API Builder
-        </button>
+        {canManage && (
+          <button
+            onClick={() => setActiveTab("api_builder")}
+            className={`px-3 py-1.5 rounded text-sm transition-colors ${
+              activeTab === "api_builder"
+                ? "bg-gray-800 text-white"
+                : "text-gray-400 hover:text-white"
+            }`}
+          >
+            API Builder
+          </button>
+        )}
         {canManage && (
           <button
             onClick={() => setActiveTab("api_logs")}

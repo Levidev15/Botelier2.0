@@ -15,6 +15,8 @@ import {
   ToggleRight,
   Search,
   RefreshCcw,
+  Plus,
+  Trash2,
 } from "lucide-react";
 import type { Operation, OperationPolicy, OperationVariable, ToolSet } from "../types";
 
@@ -149,6 +151,10 @@ export default function OperationCatalogPanel({
             max_executions_per_conv: policy.max_executions_per_conv || null,
             allowed_channels: policy.allowed_channels || null,
             response_size_bytes: policy.response_size_bytes ?? 32768,
+            redact_field_patterns:
+              policy.redact_field_patterns && policy.redact_field_patterns.length > 0
+                ? policy.redact_field_patterns
+                : null,
           }),
         }
       );
@@ -638,6 +644,11 @@ function PolicyTab({
         />
       </div>
 
+      <RedactPatternsEditor
+        patterns={policy.redact_field_patterns || []}
+        onChange={(patterns) => set("redact_field_patterns", patterns.length ? patterns : null)}
+      />
+
       <div className="pt-2">
         <button
           onClick={onSave}
@@ -652,6 +663,84 @@ function PolicyTab({
           ) : (
             "Save Policy"
           )}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ---- Redact Patterns Editor ----
+
+function RedactPatternsEditor({
+  patterns,
+  onChange,
+}: {
+  patterns: string[];
+  onChange: (patterns: string[]) => void;
+}) {
+  const [draft, setDraft] = useState("");
+
+  const add = () => {
+    const trimmed = draft.trim();
+    if (!trimmed || patterns.includes(trimmed)) return;
+    onChange([...patterns, trimmed]);
+    setDraft("");
+  };
+
+  const remove = (idx: number) => {
+    onChange(patterns.filter((_, i) => i !== idx));
+  };
+
+  return (
+    <div>
+      <div className="mb-1.5">
+        <p className="text-sm font-medium">Redact field patterns</p>
+        <p className="text-xs text-gray-500 mt-0.5">
+          Regex patterns matched against response field names. Matching fields are
+          replaced with <code className="text-gray-400">***</code> before the AI sees
+          the response.
+        </p>
+      </div>
+
+      <div className="space-y-1.5 mb-2">
+        {patterns.length === 0 && (
+          <p className="text-xs text-gray-600 italic">No patterns — nothing is redacted</p>
+        )}
+        {patterns.map((p, i) => (
+          <div
+            key={i}
+            className="flex items-center gap-2 px-2.5 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg"
+          >
+            <code className="flex-1 text-xs text-gray-300 font-mono truncate">{p}</code>
+            <button
+              onClick={() => remove(i)}
+              className="text-gray-600 hover:text-red-400 transition"
+              title="Remove pattern"
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ))}
+      </div>
+
+      <div className="flex gap-2">
+        <input
+          type="text"
+          value={draft}
+          onChange={(e) => setDraft(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { e.preventDefault(); add(); }
+          }}
+          placeholder="e.g. credit_card|cvv|ssn"
+          className="flex-1 px-3 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg text-sm font-mono focus:outline-none focus:ring-1 focus:ring-blue-600"
+        />
+        <button
+          onClick={add}
+          disabled={!draft.trim()}
+          className="inline-flex items-center gap-1 px-3 py-1.5 text-sm text-white bg-gray-700 hover:bg-gray-600 rounded-lg transition disabled:opacity-40"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add
         </button>
       </div>
     </div>
@@ -899,7 +988,7 @@ function PublishTab({
 
           <button
             onClick={onPublish}
-            disabled={publishing}
+            disabled={publishing || testStatus !== "passed"}
             className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-purple-700 hover:bg-purple-600 rounded-lg transition disabled:opacity-50"
           >
             {publishing ? (
