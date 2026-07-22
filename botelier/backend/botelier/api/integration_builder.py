@@ -883,6 +883,30 @@ def update_integration_auth_config(
                 status_code=400,
                 detail="oauth2_client_credentials strategy requires auth_config.token_url",
             )
+        # Scope token_url to the imported spec's own host.
+        # If the spec had a known base_url, the token endpoint must share its
+        # scheme + host so credentials cannot be exfiltrated to an attacker-
+        # controlled server via a PATCH body update.
+        if base_url:
+            from urllib.parse import urlparse
+            parsed_token = urlparse(token_url)
+            parsed_base = urlparse(base_url)
+            if (
+                parsed_token.scheme != parsed_base.scheme
+                or parsed_token.hostname != parsed_base.hostname
+                or (parsed_token.port or None) != (parsed_base.port or None)
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "oauth2_client_credentials token_url must be on the same "
+                        f"host as the imported spec ({parsed_base.scheme}://{parsed_base.hostname})"
+                    ),
+                )
+        else:
+            # No base_url recorded (e.g. Postman import without override) —
+            # apply the same SSRF guard used for spec_url fetches.
+            _validate_spec_url(token_url)
         new_config["token_url"] = token_url
         scope = incoming.get("scope") or existing.get("scope")
         if scope:

@@ -177,6 +177,7 @@ export default function ImportSpecModal({
         return;
       }
       onNotify("success", `${importResult.name} imported — auth set to "${authStrategy}"`);
+      onSuccess();
       onClose();
     } catch (err: any) {
       setError(err?.message || "Failed to save — please try again");
