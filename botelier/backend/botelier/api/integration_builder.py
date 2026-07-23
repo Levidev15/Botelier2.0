@@ -837,6 +837,13 @@ def update_integration_auth_config(
             )
         new_config["headers"] = headers
 
+    elif strategy == "basic":
+        # Optional list of credential keys appended as URL query params on every request
+        # alongside the Basic Auth header (e.g. ["apikey", "hotelId"]).
+        baqp = incoming.get("basic_auth_query_params") or existing.get("basic_auth_query_params")
+        if baqp:
+            new_config["basic_auth_query_params"] = [str(k) for k in baqp if k]
+
     elif strategy == "login_endpoint":
         endpoint_path = (
             incoming.get("login_endpoint_path")

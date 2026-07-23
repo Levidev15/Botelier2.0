@@ -23,6 +23,7 @@ interface AuthConfig {
   credential_key?: string;
   param_name?: string;
   headers?: { header_name: string; credential_key: string }[];
+  basic_auth_query_params?: string[];
   login_endpoint_path?: string;
   login_body_mapping?: Record<string, string>;
   login_body_static_fields?: Record<string, string>;
@@ -80,6 +81,7 @@ export default function AuthConfigModal({
     { body_key: "password", cred_key: "password" },
   ]);
   const [queryParamRows, setQueryParamRows] = useState<string[]>([]);
+  const [basicQueryParamRows, setBasicQueryParamRows] = useState<string[]>([]);
   const [loginHeaderRows, setLoginHeaderRows] = useState<HeaderRow[]>([]);
   const [staticFieldRows, setStaticFieldRows] = useState<MappingRow[]>([]);
 
@@ -106,6 +108,7 @@ export default function AuthConfigModal({
           setBodyMappingRows(Object.entries(mapping).map(([body_key, cred_key]) => ({ body_key, cred_key })));
         }
         setQueryParamRows(cfg.auth_request_query_params || []);
+        setBasicQueryParamRows(cfg.basic_auth_query_params || []);
         setLoginHeaderRows(cfg.login_request_headers || []);
         const sf = cfg.login_body_static_fields;
         if (sf && Object.keys(sf).length > 0) {
@@ -187,6 +190,11 @@ export default function AuthConfigModal({
   const updateQueryParamRows = (rows: string[]) => {
     setQueryParamRows(rows);
     updateConfig("auth_request_query_params", rows.filter((r) => r.trim()));
+  };
+
+  const updateBasicQueryParamRows = (rows: string[]) => {
+    setBasicQueryParamRows(rows);
+    updateConfig("basic_auth_query_params", rows.filter((r) => r.trim()));
   };
 
   const updateLoginHeaderRows = (rows: HeaderRow[]) => {
@@ -297,6 +305,52 @@ export default function AuthConfigModal({
                     />
                   </div>
                 </>
+              )}
+
+              {strategy === "basic" && (
+                <div>
+                  <div className="flex items-center justify-between mb-2">
+                    <div>
+                      <label className="block text-sm font-medium text-gray-300">Query Params on Every Request</label>
+                      <p className="text-xs text-gray-500 mt-0.5">
+                        Credential keys appended as URL query params on every API call (e.g. <code className="text-gray-400">apikey</code>, <code className="text-gray-400">hotelId</code>)
+                      </p>
+                    </div>
+                    <button
+                      onClick={() => updateBasicQueryParamRows([...basicQueryParamRows, ""])}
+                      className="inline-flex items-center gap-1 px-2 py-1 text-xs text-blue-400 hover:text-blue-300 bg-blue-900/20 hover:bg-blue-900/30 rounded transition shrink-0"
+                    >
+                      <Plus className="h-3 w-3" />
+                      Add Param
+                    </button>
+                  </div>
+                  <div className="space-y-2">
+                    {basicQueryParamRows.map((row, idx) => (
+                      <div key={idx} className="flex gap-2 items-center">
+                        <input
+                          type="text"
+                          value={row}
+                          onChange={(e) => {
+                            const updated = [...basicQueryParamRows];
+                            updated[idx] = e.target.value;
+                            updateBasicQueryParamRows(updated);
+                          }}
+                          placeholder="e.g. apikey or hotelId"
+                          className="flex-1 px-3 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-600"
+                        />
+                        <button
+                          onClick={() => updateBasicQueryParamRows(basicQueryParamRows.filter((_, i) => i !== idx))}
+                          className="p-1 text-red-400 hover:text-red-300 transition"
+                        >
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </button>
+                      </div>
+                    ))}
+                    {basicQueryParamRows.length === 0 && (
+                      <p className="text-xs text-gray-600">No extra query params — only the Basic Auth header will be sent</p>
+                    )}
+                  </div>
+                </div>
               )}
 
               {strategy === "custom_headers" && (

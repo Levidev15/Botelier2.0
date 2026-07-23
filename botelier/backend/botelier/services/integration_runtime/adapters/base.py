@@ -271,7 +271,12 @@ class DefaultAdapter(BaseIntegrationAdapter):
     def build_auth_query_params(
         self, auth_config: dict, credentials: dict, conn_config: dict
     ) -> dict:
-        """Inject query-param auth according to ``auth_config["auth_strategy"]``."""
+        """Inject query-param auth according to ``auth_config["auth_strategy"]``.
+
+        For ``basic`` strategy, ``basic_auth_query_params`` is a list of
+        credential keys (e.g. ["apikey", "hotelId"]) whose values are appended
+        as URL query parameters on every request alongside the Basic Auth header.
+        """
         strategy = (auth_config or {}).get("auth_strategy", "bearer")
         if strategy == "api_key_query":
             param_name = (auth_config or {}).get("param_name", "api_key")
@@ -279,6 +284,13 @@ class DefaultAdapter(BaseIntegrationAdapter):
             key_value = credentials.get(key_field) or credentials.get("api_key") or ""
             if key_value:
                 return {param_name: key_value}
+        if strategy == "basic":
+            params: dict = {}
+            for cred_key in (auth_config or {}).get("basic_auth_query_params") or []:
+                val = credentials.get(cred_key)
+                if val is not None:
+                    params[cred_key] = str(val)
+            return params
         return {}
 
     # ------------------------------------------------------------------

@@ -198,7 +198,10 @@ def _required_fields_from_strategy(auth_config: dict) -> list[dict]:
         ]
 
     if strategy == "basic":
-        return [
+        def _is_secret_b(key: str) -> bool:
+            return any(w in key.lower() for w in ("password", "secret", "token", "key", "apikey"))
+
+        fields: list[dict] = [
             {
                 "key": "username",
                 "label": "Username",
@@ -214,6 +217,18 @@ def _required_fields_from_strategy(auth_config: dict) -> list[dict]:
                 "required": True,
             },
         ]
+        seen_keys: set[str] = {"username", "password"}
+        for cred_key in (auth_config.get("basic_auth_query_params") or []):
+            if cred_key and cred_key not in seen_keys:
+                seen_keys.add(cred_key)
+                fields.append({
+                    "key": cred_key,
+                    "label": cred_key.replace("_", " ").replace("-", " ").title(),
+                    "type": "password" if _is_secret_b(cred_key) else "text",
+                    "storage": "credentials",
+                    "required": True,
+                })
+        return fields
 
     if strategy == "login_endpoint":
         # Collect every credential key the runtime will draw from, regardless of
