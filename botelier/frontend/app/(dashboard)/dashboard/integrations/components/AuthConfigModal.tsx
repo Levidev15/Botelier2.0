@@ -67,6 +67,11 @@ export default function AuthConfigModal({
   const [authConfig, setAuthConfig] = useState<AuthConfig>({ auth_strategy: "bearer" });
   const [availableStrategies, setAvailableStrategies] = useState<AvailableStrategy[]>([]);
   const [availableEndpoints, setAvailableEndpoints] = useState<AvailableEndpoint[]>([]);
+  // Body mapping rows live in their own state so empty rows persist while the user types.
+  const [bodyMappingRows, setBodyMappingRows] = useState<{ body_key: string; cred_key: string }[]>([
+    { body_key: "username", cred_key: "username" },
+    { body_key: "password", cred_key: "password" },
+  ]);
 
   useEffect(() => {
     const load = async () => {
@@ -81,9 +86,15 @@ export default function AuthConfigModal({
         }
         const data = await res.json();
         setStrategy(data.auth_strategy || "bearer");
-        setAuthConfig(data.auth_config || { auth_strategy: "bearer" });
+        const cfg: AuthConfig = data.auth_config || { auth_strategy: "bearer" };
+        setAuthConfig(cfg);
         setAvailableStrategies(data.available_strategies || []);
         setAvailableEndpoints(data.available_endpoints || []);
+        // Sync body mapping rows from saved config (or seed defaults)
+        const mapping = cfg.login_body_mapping;
+        if (mapping && Object.keys(mapping).length > 0) {
+          setBodyMappingRows(Object.entries(mapping).map(([body_key, cred_key]) => ({ body_key, cred_key })));
+        }
       } catch (e: any) {
         setError(e?.message || "Failed to load auth configuration");
       } finally {
@@ -148,17 +159,15 @@ export default function AuthConfigModal({
     updateConfig("headers", headers);
   };
 
-  const updateBodyMapping = (entries: { body_key: string; cred_key: string }[]) => {
+  const updateBodyMappingRow = (rows: { body_key: string; cred_key: string }[]) => {
+    setBodyMappingRows(rows);
+    // Commit only fully-keyed rows to authConfig so the save payload is clean
     const mapping: Record<string, string> = {};
-    entries.forEach(({ body_key, cred_key }) => {
+    rows.forEach(({ body_key, cred_key }) => {
       if (body_key.trim()) mapping[body_key.trim()] = cred_key.trim();
     });
     updateConfig("login_body_mapping", mapping);
   };
-
-  const bodyMappingEntries = Object.entries(authConfig.login_body_mapping || { username: "username", password: "password" }).map(
-    ([body_key, cred_key]) => ({ body_key, cred_key })
-  );
 
   return (
     <div className="fixed inset-0 bg-black/70 flex items-center justify-center z-50">
@@ -345,15 +354,15 @@ export default function AuthConfigModal({
                       Request Body Mapping
                     </label>
                     <div className="space-y-1.5">
-                      {bodyMappingEntries.map((entry, idx) => (
+                      {bodyMappingRows.map((entry, idx) => (
                         <div key={idx} className="flex gap-2 items-center">
                           <input
                             type="text"
                             value={entry.body_key}
                             onChange={(e) => {
-                              const updated = [...bodyMappingEntries];
+                              const updated = [...bodyMappingRows];
                               updated[idx] = { ...updated[idx], body_key: e.target.value };
-                              updateBodyMapping(updated);
+                              updateBodyMappingRow(updated);
                             }}
                             placeholder="request_body_field"
                             className="flex-1 px-3 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-600"
@@ -363,18 +372,15 @@ export default function AuthConfigModal({
                             type="text"
                             value={entry.cred_key}
                             onChange={(e) => {
-                              const updated = [...bodyMappingEntries];
+                              const updated = [...bodyMappingRows];
                               updated[idx] = { ...updated[idx], cred_key: e.target.value };
-                              updateBodyMapping(updated);
+                              updateBodyMappingRow(updated);
                             }}
                             placeholder="credential_field"
                             className="flex-1 px-3 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-600"
                           />
                           <button
-                            onClick={() => {
-                              const updated = bodyMappingEntries.filter((_, i) => i !== idx);
-                              updateBodyMapping(updated);
-                            }}
+                            onClick={() => updateBodyMappingRow(bodyMappingRows.filter((_, i) => i !== idx))}
                             className="p-1 text-red-400 hover:text-red-300 transition"
                           >
                             <Trash2 className="h-3.5 w-3.5" />
@@ -382,7 +388,7 @@ export default function AuthConfigModal({
                         </div>
                       ))}
                       <button
-                        onClick={() => updateBodyMapping([...bodyMappingEntries, { body_key: "", cred_key: "" }])}
+                        onClick={() => updateBodyMappingRow([...bodyMappingRows, { body_key: "", cred_key: "" }])}
                         className="inline-flex items-center gap-1 px-2 py-1 text-xs text-blue-400 hover:text-blue-300 bg-blue-900/20 rounded transition"
                       >
                         <Plus className="h-3 w-3" />
