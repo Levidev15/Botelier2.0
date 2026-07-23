@@ -118,6 +118,8 @@ export interface OperationPolicy {
   allowed_channels: string[] | null;
   response_size_bytes: number;
   redact_field_patterns: string[] | null;
+  response_mapping: Record<string, string>;
+  param_ownership_overrides: Record<string, string>;
   test_status: string;
   tested_at: string | null;
   test_passed: boolean | null;

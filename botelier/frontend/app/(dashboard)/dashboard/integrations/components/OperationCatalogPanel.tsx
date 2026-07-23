@@ -61,17 +61,22 @@ export default function OperationCatalogPanel({
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedOp, setSelectedOp] = useState<Operation | null>(null);
   const [search, setSearch] = useState("");
-  const [activeTab, setActiveTab] = useState<"policy" | "test" | "publish">("policy");
+  const [activeTab, setActiveTab] = useState<"policy" | "fields" | "test" | "publish">("policy");
 
   const [policy, setPolicy] = useState<Partial<OperationPolicy>>({});
   const [savingPolicy, setSavingPolicy] = useState(false);
 
+  const [responseMapping, setResponseMapping] = useState<Array<{ name: string; path: string }>>([]);
+  const [savingFields, setSavingFields] = useState(false);
+
   const [testParams, setTestParams] = useState<Record<string, string>>({});
   const [testing, setTesting] = useState(false);
+  const [testProjected, setTestProjected] = useState<Record<string, unknown> | null>(null);
   const [testResult, setTestResult] = useState<{
     success: boolean;
     status_code: number | null;
     data: unknown;
+    projected: Record<string, unknown> | null;
     error_message: string | null;
     latency_ms: number | null;
   } | null>(null);
@@ -119,7 +124,10 @@ export default function OperationCatalogPanel({
     setPolicy(op.policy || {});
     setTestParams({});
     setTestResult(null);
+    setTestProjected(null);
     setActiveTab("policy");
+    const mapping = op.policy?.response_mapping || {};
+    setResponseMapping(Object.entries(mapping).map(([name, path]) => ({ name, path })));
   };
 
   const refreshSelected = async (opId: string) => {
@@ -132,6 +140,8 @@ export default function OperationCatalogPanel({
     if (updated) {
       setSelectedOp(updated);
       setPolicy(updated.policy || {});
+      const mapping = updated.policy?.response_mapping || {};
+      setResponseMapping(Object.entries(mapping).map(([name, path]) => ({ name, path })));
     }
   };
 
@@ -169,6 +179,34 @@ export default function OperationCatalogPanel({
     }
   };
 
+  const handleSaveFields = async () => {
+    if (!selectedOp) return;
+    setSavingFields(true);
+    try {
+      const mapping: Record<string, string> = {};
+      for (const row of responseMapping) {
+        if (row.name.trim() && row.path.trim()) {
+          mapping[row.name.trim()] = row.path.trim();
+        }
+      }
+      const res = await authFetch(
+        `${baseUrl}/operations/${encodeURIComponent(selectedOp.id)}/policy`,
+        {
+          method: "PUT",
+          body: JSON.stringify({ response_mapping: mapping }),
+        }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "Failed to save fields");
+      onNotify("success", "Response fields saved — republish to apply");
+      await refreshSelected(selectedOp.id);
+    } catch (err: any) {
+      onNotify("error", err?.message || "Failed to save fields");
+    } finally {
+      setSavingFields(false);
+    }
+  };
+
   const handleTest = async () => {
     if (!selectedOp) return;
     setTesting(true);
@@ -187,9 +225,11 @@ export default function OperationCatalogPanel({
         success: data.success,
         status_code: data.status_code,
         data: data.data,
+        projected: data.projected ?? null,
         error_message: data.error_message,
         latency_ms: data.latency_ms,
       });
+      if (data.projected) setTestProjected(data.projected);
       await refreshSelected(selectedOp.id);
       if (data.success) onNotify("success", "Test passed");
     } catch (err: any) {
@@ -413,7 +453,7 @@ export default function OperationCatalogPanel({
 
               {/* Tabs */}
               <div className="flex border-b border-gray-800 px-6 flex-shrink-0">
-                {(["policy", "test", "publish"] as const).map((tab) => (
+                {(["policy", "fields", "test", "publish"] as const).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}
@@ -427,6 +467,11 @@ export default function OperationCatalogPanel({
                       <span className="flex items-center gap-1.5">
                         <Shield className="h-3.5 w-3.5" />
                         Policy
+                      </span>
+                    ) : tab === "fields" ? (
+                      <span className="flex items-center gap-1.5">
+                        <Eye className="h-3.5 w-3.5" />
+                        Response Fields
                       </span>
                     ) : tab === "test" ? (
                       <span className="flex items-center gap-1.5">
@@ -451,6 +496,15 @@ export default function OperationCatalogPanel({
                     onChange={setPolicy}
                     onSave={handleSavePolicy}
                     saving={savingPolicy}
+                  />
+                )}
+                {activeTab === "fields" && (
+                  <FieldsTab
+                    rows={responseMapping}
+                    onChange={setResponseMapping}
+                    onSave={handleSaveFields}
+                    saving={savingFields}
+                    testProjected={testProjected}
                   />
                 )}
                 {activeTab === "test" && (
@@ -766,6 +820,7 @@ function TestTab({
     success: boolean;
     status_code: number | null;
     data: unknown;
+    projected: Record<string, unknown> | null;
     error_message: string | null;
     latency_ms: number | null;
   } | null;
@@ -875,9 +930,19 @@ function TestTab({
           {result.error_message && (
             <p className="text-sm text-red-300">{result.error_message}</p>
           )}
+          {result.projected != null && Object.keys(result.projected).length > 0 && (
+            <div>
+              <p className="text-xs text-green-500 mb-1">Projected (what LLM sees)</p>
+              <pre className="text-xs bg-[#0a0a0a] border border-green-900 rounded p-3 text-green-300 overflow-x-auto max-h-48 whitespace-pre-wrap">
+                {JSON.stringify(result.projected, null, 2)}
+              </pre>
+            </div>
+          )}
           {result.data != null && (
             <div>
-              <p className="text-xs text-gray-500 mb-1">Response</p>
+              <p className="text-xs text-gray-500 mb-1">
+                Full response{result.projected != null ? " (raw — not sent to LLM)" : ""}
+              </p>
               <pre className="text-xs bg-[#0a0a0a] border border-gray-800 rounded p-3 text-gray-300 overflow-x-auto max-h-64 whitespace-pre-wrap">
                 {typeof result.data === "string"
                   ? result.data
@@ -885,6 +950,121 @@ function TestTab({
               </pre>
             </div>
           )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---- Fields Tab ----
+
+function FieldsTab({
+  rows,
+  onChange,
+  onSave,
+  saving,
+  testProjected,
+}: {
+  rows: Array<{ name: string; path: string }>;
+  onChange: (rows: Array<{ name: string; path: string }>) => void;
+  onSave: () => void;
+  saving: boolean;
+  testProjected: Record<string, unknown> | null;
+}) {
+  const addRow = () => onChange([...rows, { name: "", path: "" }]);
+  const removeRow = (i: number) => onChange(rows.filter((_, idx) => idx !== i));
+  const updateRow = (i: number, field: "name" | "path", value: string) => {
+    onChange(rows.map((r, idx) => (idx === i ? { ...r, [field]: value } : r)));
+  };
+
+  return (
+    <div className="space-y-6 max-w-lg">
+      <div>
+        <p className="text-sm font-medium mb-1">Response Field Projection</p>
+        <p className="text-xs text-gray-500 mb-4">
+          Extract specific fields from the API response to send to the LLM instead
+          of the full raw body. Without projections the LLM receives the entire
+          response (often 5–20k tokens). Use dot notation or JSONPath like{" "}
+          <code className="text-gray-400">$.rooms[*].name</code> or{" "}
+          <code className="text-gray-400">$.data.total</code>.
+        </p>
+
+        {rows.length === 0 ? (
+          <p className="text-sm text-gray-600 italic mb-4">
+            No fields defined — full response body sent to LLM
+          </p>
+        ) : (
+          <div className="space-y-2 mb-4">
+            <div className="grid grid-cols-[140px_1fr_28px] gap-2 text-xs text-gray-500 mb-1 px-1">
+              <span>Variable name</span>
+              <span>JSONPath</span>
+              <span />
+            </div>
+            {rows.map((row, i) => (
+              <div key={i} className="grid grid-cols-[140px_1fr_28px] gap-2 items-center">
+                <input
+                  type="text"
+                  value={row.name}
+                  onChange={(e) => updateRow(i, "name", e.target.value)}
+                  placeholder="e.g. room_list"
+                  className="px-2 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-600"
+                />
+                <input
+                  type="text"
+                  value={row.path}
+                  onChange={(e) => updateRow(i, "path", e.target.value)}
+                  placeholder="e.g. $.rooms"
+                  className="px-2 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded text-xs font-mono focus:outline-none focus:ring-1 focus:ring-blue-600"
+                />
+                <button
+                  onClick={() => removeRow(i)}
+                  className="flex items-center justify-center text-gray-600 hover:text-red-400 transition"
+                  title="Remove"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <button
+          onClick={addRow}
+          className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm text-gray-300 bg-gray-800 hover:bg-gray-700 rounded-lg transition"
+        >
+          <Plus className="h-3.5 w-3.5" />
+          Add Field
+        </button>
+      </div>
+
+      <div>
+        <button
+          onClick={onSave}
+          disabled={saving}
+          className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition disabled:opacity-50"
+        >
+          {saving ? (
+            <>
+              <Loader2 className="h-4 w-4 mr-2 animate-spin" />
+              Saving…
+            </>
+          ) : (
+            "Save Fields"
+          )}
+        </button>
+        <p className="text-xs text-gray-500 mt-1.5">
+          Re-publish the operation after saving for changes to apply in live calls.
+        </p>
+      </div>
+
+      {testProjected != null && Object.keys(testProjected).length > 0 && (
+        <div>
+          <p className="text-xs text-green-500 mb-1">
+            Last test — projected output (what the LLM would receive)
+          </p>
+          <pre className="text-xs bg-[#0a0a0a] border border-green-900 rounded p-3 text-green-300 overflow-x-auto max-h-48 whitespace-pre-wrap">
+            {JSON.stringify(testProjected, null, 2)}
+          </pre>
         </div>
       )}
     </div>

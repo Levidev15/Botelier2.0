@@ -1369,12 +1369,20 @@ class FunctionMapper:
                 )
                 return
 
+            from botelier.services.integration_runtime.types import ResponseVariable as _RV
+            _response_mapping = _exec_config.get("response_mapping") or {}
+            _response_variables = [
+                _RV(variable_key=k, json_path=v)
+                for k, v in _response_mapping.items()
+            ]
+
             config = IntegrationAPIConfig(
                 integration_id=_exec_config.get("integration_id") or connection_id or "",
                 method=_exec_config.get("method", "GET"),
                 path=_exec_config.get("path", "/"),
                 endpoint_id=_exec_config.get("endpoint_id") or operation_id or "",
                 query_param_overrides={},
+                response_variables=_response_variables,
             )
 
             result = await ActionExecutor(mapper.db_session).execute_and_log(
@@ -1393,7 +1401,14 @@ class FunctionMapper:
             )
 
             if result.success:
-                await params.result_callback(result.data)
+                # When response_mapping is defined, return only the projected
+                # fields (extracted_variables) so the LLM never sees the full
+                # raw response body. Fall back to result.data when no
+                # projections are configured (legacy behaviour).
+                if _response_variables and result.extracted_variables:
+                    await params.result_callback(result.extracted_variables)
+                else:
+                    await params.result_callback(result.data)
             else:
                 await params.result_callback(
                     {

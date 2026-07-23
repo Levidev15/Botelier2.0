@@ -284,6 +284,8 @@ def update_operation_policy(
         "allowed_channels",
         "response_size_bytes",
         "redact_field_patterns",
+        "response_mapping",
+        "param_ownership_overrides",
     }
     for field, value in body.items():
         if field in _ALLOWED_POLICY_FIELDS:
@@ -350,10 +352,21 @@ async def test_operation(
     policy.updated_at = datetime.utcnow()
     db.commit()
 
+    # Apply response_mapping to show operator which fields would reach the LLM.
+    projected = None
+    if policy.response_mapping and result.data is not None:
+        from botelier.services.integration_client import extract_json_value
+        projected = {}
+        for var_name, jsonpath in policy.response_mapping.items():
+            val = extract_json_value(result.data, jsonpath)
+            if val is not None:
+                projected[var_name] = val
+
     return {
         "success": result.success,
         "status_code": result.status_code,
         "data": result.data,
+        "projected": projected,
         "error_type": result.error_type.value if result.error_type else None,
         "error_message": result.error_message,
         "latency_ms": result.latency_ms,

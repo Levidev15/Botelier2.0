@@ -390,12 +390,19 @@ async def _execute_sim_dynamic_operation(
         return {"error": "Dynamic operation version config missing", "status": "failed"}
 
     exec_config = version.config
+    from botelier.services.integration_runtime.types import ResponseVariable as _RV
+    _response_mapping = exec_config.get("response_mapping") or {}
+    _response_variables = [
+        _RV(variable_key=k, json_path=v)
+        for k, v in _response_mapping.items()
+    ]
     api_config = IntegrationAPIConfig(
         integration_id=exec_config.get("integration_id") or connection_id or "",
         method=exec_config.get("method", "GET"),
         path=exec_config.get("path", "/"),
         endpoint_id=exec_config.get("endpoint_id") or operation_id or "",
         query_param_overrides={},
+        response_variables=_response_variables,
     )
 
     exec_result = await ActionExecutor(db).execute_and_log(
@@ -412,6 +419,8 @@ async def _execute_sim_dynamic_operation(
         )
     )
     if exec_result.success:
+        if _response_variables and exec_result.extracted_variables:
+            return exec_result.extracted_variables
         return exec_result.data or {"status": "ok"}
     return {
         "error": exec_result.error_message or "Dynamic operation failed",

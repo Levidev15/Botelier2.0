@@ -763,6 +763,11 @@ WHERE answered_at IS NULL
     # bot mid-response (AlwaysUserMuteStrategy suppresses caller audio while
     # the bot is speaking). Applies to both Silero-VAD and Deepgram Flux paths.
     "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS allow_interruptions BOOLEAN NOT NULL DEFAULT TRUE",
+    # Task #450 — Response field projection for imported API operations.
+    # response_mapping: {variable_name: jsonpath} — only extracted fields sent to LLM.
+    # param_ownership_overrides: {param_name: "llm"|"connection"|"fixed"} — overrides seed.
+    "ALTER TABLE connection_operation_policies ADD COLUMN IF NOT EXISTS response_mapping JSONB",
+    "ALTER TABLE connection_operation_policies ADD COLUMN IF NOT EXISTS param_ownership_overrides JSONB",
 ]
 
 

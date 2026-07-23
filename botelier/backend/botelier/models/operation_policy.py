@@ -76,6 +76,15 @@ class ConnectionOperationPolicy(Base):
     response_size_bytes = Column(Integer, nullable=False, default=32768)
     redact_field_patterns = Column(JSONB, nullable=True)
 
+    # Response field projection — {variable_name: jsonpath} dict.
+    # When set, only the extracted fields are forwarded to the LLM instead of
+    # the full raw response body (eliminates token bloat for large API payloads).
+    response_mapping = Column(JSONB, nullable=True)
+
+    # Param ownership overrides — {param_name: "llm"|"connection"|"fixed"}.
+    # Overrides the ownership declared in the imported spec for each variable.
+    param_ownership_overrides = Column(JSONB, nullable=True)
+
     # Test lifecycle
     test_status = Column(
         String(16),
@@ -111,6 +120,8 @@ class ConnectionOperationPolicy(Base):
             "allowed_channels": self.allowed_channels,
             "response_size_bytes": self.response_size_bytes,
             "redact_field_patterns": self.redact_field_patterns,
+            "response_mapping": self.response_mapping or {},
+            "param_ownership_overrides": self.param_ownership_overrides or {},
             "test_status": self.test_status,
             "tested_at": self.tested_at.isoformat() if self.tested_at else None,
             "test_passed": self.test_passed,

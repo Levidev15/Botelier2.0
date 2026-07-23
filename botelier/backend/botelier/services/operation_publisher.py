@@ -114,6 +114,7 @@ def _build_execution_config(
         "variables": variables,
         "risk_level": endpoint.get("risk_level", "read"),
         "response_policy": (policy.to_dict() if policy else {}),
+        "response_mapping": (policy.response_mapping or {}) if policy else {},
     }
 
 
