@@ -1402,11 +1402,11 @@ class FunctionMapper:
 
             if result.success:
                 # When response_mapping is defined, return only the projected
-                # fields (extracted_variables) so the LLM never sees the full
-                # raw response body. Fall back to result.data when no
-                # projections are configured (legacy behaviour).
-                if _response_variables and result.extracted_variables:
-                    await params.result_callback(result.extracted_variables)
+                # fields so the LLM never sees the full raw response body.
+                # Always use extracted_variables when projections are configured
+                # (even if extraction yields {}) — never fall back to raw data.
+                if _response_variables:
+                    await params.result_callback(result.extracted_variables or {})
                 else:
                     await params.result_callback(result.data)
             else:

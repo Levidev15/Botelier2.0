@@ -212,11 +212,20 @@ export default function OperationCatalogPanel({
     setTesting(true);
     setTestResult(null);
     try {
+      // Build draft response_mapping from current unsaved rows so operators
+      // can preview projected output before committing a Save Fields.
+      const draftMapping: Record<string, string> = {};
+      for (const row of responseMapping) {
+        if (row.name && row.path) draftMapping[row.name] = row.path;
+      }
       const res = await authFetch(
         `${baseUrl}/operations/${encodeURIComponent(selectedOp.id)}/test`,
         {
           method: "POST",
-          body: JSON.stringify({ variables: testParams }),
+          body: JSON.stringify({
+            variables: testParams,
+            response_mapping: Object.keys(draftMapping).length > 0 ? draftMapping : undefined,
+          }),
         }
       );
       const data = await res.json();

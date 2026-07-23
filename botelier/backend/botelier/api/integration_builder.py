@@ -353,11 +353,15 @@ async def test_operation(
     db.commit()
 
     # Apply response_mapping to show operator which fields would reach the LLM.
+    # A draft mapping from the request body takes precedence over the persisted
+    # policy mapping so operators can preview projections before saving.
+    draft_mapping = body.get("response_mapping")
+    effective_mapping = draft_mapping if draft_mapping is not None else (policy.response_mapping or {})
     projected = None
-    if policy.response_mapping and result.data is not None:
+    if effective_mapping and result.data is not None:
         from botelier.services.integration_client import extract_json_value
         projected = {}
-        for var_name, jsonpath in policy.response_mapping.items():
+        for var_name, jsonpath in effective_mapping.items():
             val = extract_json_value(result.data, jsonpath)
             if val is not None:
                 projected[var_name] = val

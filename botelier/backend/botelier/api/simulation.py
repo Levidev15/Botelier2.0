@@ -419,8 +419,8 @@ async def _execute_sim_dynamic_operation(
         )
     )
     if exec_result.success:
-        if _response_variables and exec_result.extracted_variables:
-            return exec_result.extracted_variables
+        if _response_variables:
+            return exec_result.extracted_variables or {}
         return exec_result.data or {"status": "ok"}
     return {
         "error": exec_result.error_message or "Dynamic operation failed",

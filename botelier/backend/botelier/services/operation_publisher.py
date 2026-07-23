@@ -201,6 +201,11 @@ def publish_operation(
         name = var.get("name", "")
         param_ownership[name] = var.get("ownership", "llm")
 
+    # Apply per-connection-policy overrides (e.g. operator forces a param to
+    # "connection" or "fixed" so the LLM never sees or controls it).
+    if policy and policy.param_ownership_overrides:
+        param_ownership.update(policy.param_ownership_overrides)
+
     fn_name = endpoint.get("name") or sanitize_function_name(operation_id)
     tool_slug = _derive_tool_name(fn_name, connection, integration_type)
     description = (endpoint.get("description") or endpoint.get("summary") or fn_name)[:500]

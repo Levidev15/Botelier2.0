@@ -851,8 +851,8 @@ class SMSService:
                 ),
             )
             if result.success:
-                if _response_variables and result.extracted_variables:
-                    return result.extracted_variables
+                if _response_variables:
+                    return result.extracted_variables or {}
                 return result.data
             return {
                 "error": result.error_message or "Dynamic operation failed",
