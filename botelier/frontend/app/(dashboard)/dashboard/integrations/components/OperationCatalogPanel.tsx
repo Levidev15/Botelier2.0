@@ -320,13 +320,13 @@ export default function OperationCatalogPanel({
                   {search ? "No operations match" : "No operations found"}
                 </div>
               )}
-              {filtered.map((op) => {
+              {filtered.map((op, opIdx) => {
                 const isSelected = selectedOp?.id === op.id;
                 const testBadge =
                   TEST_STATUS_BADGE[op.policy?.test_status || "untested"];
                 return (
                   <button
-                    key={op.id}
+                    key={`${op.id}-${opIdx}`}
                     onClick={() => selectOperation(op)}
                     className={`relative w-full text-left px-3 py-3 border-b border-gray-900 transition-colors ${
                       isSelected ? "bg-[#1a2030]" : "hover:bg-[#141414]"
