@@ -441,6 +441,10 @@ class DefaultAdapter(BaseIntegrationAdapter):
           base_url                    — server base URL
           login_endpoint_path         — path to POST to (e.g. /authentication/login)
           login_body_mapping          — {body_field: credential_key}, default username/password
+          login_body_static_fields    — {body_field: static_value} always merged into body
+          login_body_encoding         — "json" (default) or "form" (x-www-form-urlencoded)
+          login_request_headers       — [{header_name, credential_key}] extra headers on login call
+          auth_request_query_params   — [credential_key, ...] appended as URL query params
           token_response_path         — dot-path to token in response (default: "token")
           refresh_token_response_path — optional dot-path to refresh token
           token_expiry_seconds        — fallback TTL in seconds (default: 3600)
@@ -468,6 +472,7 @@ class DefaultAdapter(BaseIntegrationAdapter):
 
         url = f"{base_url}{endpoint_path}"
 
+        # --- Request body (credential-mapped + static fields) ---
         body_mapping: dict = auth_config.get("login_body_mapping") or {
             "username": "username",
             "password": "password",
@@ -477,6 +482,30 @@ class DefaultAdapter(BaseIntegrationAdapter):
             val = credentials.get(cred_key)
             if val is not None:
                 body[body_key] = val
+        for field_key, field_val in (auth_config.get("login_body_static_fields") or {}).items():
+            if field_key and field_val is not None:
+                body[field_key] = field_val
+
+        # --- URL query params on the login call ---
+        query_params: dict = {}
+        for cred_key in (auth_config.get("auth_request_query_params") or []):
+            val = credentials.get(cred_key)
+            if val is not None:
+                query_params[cred_key] = str(val)
+
+        # --- Body encoding and extra headers ---
+        encoding = (auth_config.get("login_body_encoding") or "json").lower()
+        content_type = (
+            "application/x-www-form-urlencoded" if encoding == "form" else "application/json"
+        )
+        request_headers: dict = {"Content-Type": content_type, "Accept": "application/json"}
+        for hdr in (auth_config.get("login_request_headers") or []):
+            hdr_name = (hdr.get("header_name") or "").strip()
+            hdr_cred_key = (hdr.get("credential_key") or "").strip()
+            if hdr_name and hdr_cred_key:
+                val = credentials.get(hdr_cred_key)
+                if val is not None:
+                    request_headers[hdr_name] = str(val)
 
         token_path = auth_config.get("token_response_path") or "token"
         refresh_path = auth_config.get("refresh_token_response_path") or ""
@@ -484,15 +513,22 @@ class DefaultAdapter(BaseIntegrationAdapter):
 
         try:
             async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
-                response = await client.post(
-                    url,
-                    json=body,
-                    headers={
-                        "Content-Type": "application/json",
-                        "Accept": "application/json",
-                    },
-                    timeout=30.0,
-                )
+                if encoding == "form":
+                    response = await client.post(
+                        url,
+                        data=body,
+                        params=query_params or None,
+                        headers=request_headers,
+                        timeout=30.0,
+                    )
+                else:
+                    response = await client.post(
+                        url,
+                        json=body,
+                        params=query_params or None,
+                        headers=request_headers,
+                        timeout=30.0,
+                    )
         except Exception as exc:
             # Network/timeout — transient; keep CONNECTED so next request retries.
             return ConnectResult(

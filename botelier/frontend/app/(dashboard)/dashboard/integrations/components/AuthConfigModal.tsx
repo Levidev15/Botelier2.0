@@ -25,6 +25,10 @@ interface AuthConfig {
   headers?: { header_name: string; credential_key: string }[];
   login_endpoint_path?: string;
   login_body_mapping?: Record<string, string>;
+  login_body_static_fields?: Record<string, string>;
+  login_body_encoding?: string;
+  login_request_headers?: { header_name: string; credential_key: string }[];
+  auth_request_query_params?: string[];
   token_response_path?: string;
   refresh_token_response_path?: string;
   token_expiry_seconds?: number;
@@ -52,6 +56,9 @@ const STRATEGY_DESCRIPTIONS: Record<string, string> = {
   oauth2_client_credentials: "Obtain a bearer token via the OAuth2 client credentials grant.",
 };
 
+type MappingRow = { body_key: string; cred_key: string };
+type HeaderRow = { header_name: string; credential_key: string };
+
 export default function AuthConfigModal({
   integrationType,
   accountId,
@@ -67,11 +74,14 @@ export default function AuthConfigModal({
   const [authConfig, setAuthConfig] = useState<AuthConfig>({ auth_strategy: "bearer" });
   const [availableStrategies, setAvailableStrategies] = useState<AvailableStrategy[]>([]);
   const [availableEndpoints, setAvailableEndpoints] = useState<AvailableEndpoint[]>([]);
-  // Body mapping rows live in their own state so empty rows persist while the user types.
-  const [bodyMappingRows, setBodyMappingRows] = useState<{ body_key: string; cred_key: string }[]>([
+
+  const [bodyMappingRows, setBodyMappingRows] = useState<MappingRow[]>([
     { body_key: "username", cred_key: "username" },
     { body_key: "password", cred_key: "password" },
   ]);
+  const [queryParamRows, setQueryParamRows] = useState<string[]>([]);
+  const [loginHeaderRows, setLoginHeaderRows] = useState<HeaderRow[]>([]);
+  const [staticFieldRows, setStaticFieldRows] = useState<MappingRow[]>([]);
 
   useEffect(() => {
     const load = async () => {
@@ -90,10 +100,16 @@ export default function AuthConfigModal({
         setAuthConfig(cfg);
         setAvailableStrategies(data.available_strategies || []);
         setAvailableEndpoints(data.available_endpoints || []);
-        // Sync body mapping rows from saved config (or seed defaults)
+
         const mapping = cfg.login_body_mapping;
         if (mapping && Object.keys(mapping).length > 0) {
           setBodyMappingRows(Object.entries(mapping).map(([body_key, cred_key]) => ({ body_key, cred_key })));
+        }
+        setQueryParamRows(cfg.auth_request_query_params || []);
+        setLoginHeaderRows(cfg.login_request_headers || []);
+        const sf = cfg.login_body_static_fields;
+        if (sf && Object.keys(sf).length > 0) {
+          setStaticFieldRows(Object.entries(sf).map(([body_key, cred_key]) => ({ body_key, cred_key })));
         }
       } catch (e: any) {
         setError(e?.message || "Failed to load auth configuration");
@@ -159,14 +175,32 @@ export default function AuthConfigModal({
     updateConfig("headers", headers);
   };
 
-  const updateBodyMappingRow = (rows: { body_key: string; cred_key: string }[]) => {
+  const updateBodyMappingRow = (rows: MappingRow[]) => {
     setBodyMappingRows(rows);
-    // Commit only fully-keyed rows to authConfig so the save payload is clean
     const mapping: Record<string, string> = {};
     rows.forEach(({ body_key, cred_key }) => {
       if (body_key.trim()) mapping[body_key.trim()] = cred_key.trim();
     });
     updateConfig("login_body_mapping", mapping);
+  };
+
+  const updateQueryParamRows = (rows: string[]) => {
+    setQueryParamRows(rows);
+    updateConfig("auth_request_query_params", rows.filter((r) => r.trim()));
+  };
+
+  const updateLoginHeaderRows = (rows: HeaderRow[]) => {
+    setLoginHeaderRows(rows);
+    updateConfig("login_request_headers", rows.filter((r) => r.header_name.trim() && r.credential_key.trim()));
+  };
+
+  const updateStaticFieldRows = (rows: MappingRow[]) => {
+    setStaticFieldRows(rows);
+    const sf: Record<string, string> = {};
+    rows.forEach(({ body_key, cred_key }) => {
+      if (body_key.trim()) sf[body_key.trim()] = cred_key;
+    });
+    updateConfig("login_body_static_fields", Object.keys(sf).length ? sf : undefined);
   };
 
   return (
@@ -314,6 +348,7 @@ export default function AuthConfigModal({
 
               {strategy === "login_endpoint" && (
                 <>
+                  {/* Login endpoint path */}
                   <div>
                     <label className="block text-sm font-medium text-gray-300 mb-1">Login Endpoint Path</label>
                     {availableEndpoints.length > 0 ? (
@@ -349,10 +384,36 @@ export default function AuthConfigModal({
                     )}
                     <p className="text-xs text-gray-500 mt-1">The API path to POST credentials to obtain a token</p>
                   </div>
+
+                  {/* Request body encoding */}
                   <div>
-                    <label className="block text-sm font-medium text-gray-300 mb-2">
-                      Request Body Mapping
-                    </label>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Request Encoding</label>
+                    <div className="relative">
+                      <select
+                        value={authConfig.login_body_encoding || "json"}
+                        onChange={(e) => updateConfig("login_body_encoding", e.target.value)}
+                        className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg text-sm appearance-none pr-8 focus:outline-none focus:ring-2 focus:ring-blue-600"
+                      >
+                        <option value="json">JSON (application/json)</option>
+                        <option value="form">Form (application/x-www-form-urlencoded)</option>
+                      </select>
+                      <ChevronDown className="absolute right-2.5 top-2.5 h-4 w-4 text-gray-500 pointer-events-none" />
+                    </div>
+                    <p className="text-xs text-gray-500 mt-1">JSON is standard; use Form for OAuth-style token endpoints</p>
+                  </div>
+
+                  {/* Request body mapping */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <label className="block text-sm font-medium text-gray-300">Request Body Mapping</label>
+                      <button
+                        onClick={() => updateBodyMappingRow([...bodyMappingRows, { body_key: "", cred_key: "" }])}
+                        className="inline-flex items-center gap-1 px-2 py-1 text-xs text-blue-400 hover:text-blue-300 bg-blue-900/20 rounded transition"
+                      >
+                        <Plus className="h-3 w-3" />
+                        Add field
+                      </button>
+                    </div>
                     <div className="space-y-1.5">
                       {bodyMappingRows.map((entry, idx) => (
                         <div key={idx} className="flex gap-2 items-center">
@@ -387,18 +448,166 @@ export default function AuthConfigModal({
                           </button>
                         </div>
                       ))}
-                      <button
-                        onClick={() => updateBodyMappingRow([...bodyMappingRows, { body_key: "", cred_key: "" }])}
-                        className="inline-flex items-center gap-1 px-2 py-1 text-xs text-blue-400 hover:text-blue-300 bg-blue-900/20 rounded transition"
-                      >
-                        <Plus className="h-3 w-3" />
-                        Add field
-                      </button>
                     </div>
                     <p className="text-xs text-gray-500 mt-1.5">
-                      Left = JSON body key sent to login endpoint · Right = credential key the user fills in
+                      Left = body field sent to API · Right = credential key the user fills in
                     </p>
                   </div>
+
+                  {/* URL query params on the login call */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-300">Auth Query Params</label>
+                        <p className="text-xs text-gray-500 mt-0.5">Credential fields appended as URL query params on the login call (e.g. <code className="text-gray-400">apikey</code>)</p>
+                      </div>
+                      <button
+                        onClick={() => updateQueryParamRows([...queryParamRows, ""])}
+                        className="inline-flex items-center gap-1 px-2 py-1 text-xs text-blue-400 hover:text-blue-300 bg-blue-900/20 rounded transition flex-shrink-0"
+                      >
+                        <Plus className="h-3 w-3" />
+                        Add
+                      </button>
+                    </div>
+                    {queryParamRows.length > 0 && (
+                      <div className="space-y-1.5">
+                        {queryParamRows.map((row, idx) => (
+                          <div key={idx} className="flex gap-2 items-center">
+                            <input
+                              type="text"
+                              value={row}
+                              onChange={(e) => {
+                                const updated = [...queryParamRows];
+                                updated[idx] = e.target.value;
+                                updateQueryParamRows(updated);
+                              }}
+                              placeholder="credential_field_name"
+                              className="flex-1 px-3 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-600"
+                            />
+                            <button
+                              onClick={() => updateQueryParamRows(queryParamRows.filter((_, i) => i !== idx))}
+                              className="p-1 text-red-400 hover:text-red-300 transition"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Extra headers on the login call */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-300">Login Request Headers</label>
+                        <p className="text-xs text-gray-500 mt-0.5">Extra headers to send on the login call (e.g. <code className="text-gray-400">X-API-Key</code>)</p>
+                      </div>
+                      <button
+                        onClick={() => updateLoginHeaderRows([...loginHeaderRows, { header_name: "", credential_key: "" }])}
+                        className="inline-flex items-center gap-1 px-2 py-1 text-xs text-blue-400 hover:text-blue-300 bg-blue-900/20 rounded transition flex-shrink-0"
+                      >
+                        <Plus className="h-3 w-3" />
+                        Add
+                      </button>
+                    </div>
+                    {loginHeaderRows.length > 0 && (
+                      <div className="space-y-1.5">
+                        {loginHeaderRows.map((row, idx) => (
+                          <div key={idx} className="flex gap-2 items-center">
+                            <input
+                              type="text"
+                              value={row.header_name}
+                              onChange={(e) => {
+                                const updated = [...loginHeaderRows];
+                                updated[idx] = { ...updated[idx], header_name: e.target.value };
+                                updateLoginHeaderRows(updated);
+                              }}
+                              placeholder="X-Header-Name"
+                              className="flex-1 px-3 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-600"
+                            />
+                            <span className="text-gray-600 text-xs">→</span>
+                            <input
+                              type="text"
+                              value={row.credential_key}
+                              onChange={(e) => {
+                                const updated = [...loginHeaderRows];
+                                updated[idx] = { ...updated[idx], credential_key: e.target.value };
+                                updateLoginHeaderRows(updated);
+                              }}
+                              placeholder="credential_field"
+                              className="flex-1 px-3 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-600"
+                            />
+                            <button
+                              onClick={() => updateLoginHeaderRows(loginHeaderRows.filter((_, i) => i !== idx))}
+                              className="p-1 text-red-400 hover:text-red-300 transition"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                        <p className="text-xs text-gray-500 mt-1">Left = header name · Right = credential field key</p>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Static body fields */}
+                  <div>
+                    <div className="flex items-center justify-between mb-2">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-300">
+                          Static Body Fields <span className="text-gray-500 font-normal">(optional)</span>
+                        </label>
+                        <p className="text-xs text-gray-500 mt-0.5">Fixed values always added to the body — not from credentials (e.g. <code className="text-gray-400">grant_type=client_credentials</code>)</p>
+                      </div>
+                      <button
+                        onClick={() => updateStaticFieldRows([...staticFieldRows, { body_key: "", cred_key: "" }])}
+                        className="inline-flex items-center gap-1 px-2 py-1 text-xs text-blue-400 hover:text-blue-300 bg-blue-900/20 rounded transition flex-shrink-0"
+                      >
+                        <Plus className="h-3 w-3" />
+                        Add
+                      </button>
+                    </div>
+                    {staticFieldRows.length > 0 && (
+                      <div className="space-y-1.5">
+                        {staticFieldRows.map((entry, idx) => (
+                          <div key={idx} className="flex gap-2 items-center">
+                            <input
+                              type="text"
+                              value={entry.body_key}
+                              onChange={(e) => {
+                                const updated = [...staticFieldRows];
+                                updated[idx] = { ...updated[idx], body_key: e.target.value };
+                                updateStaticFieldRows(updated);
+                              }}
+                              placeholder="field_name"
+                              className="flex-1 px-3 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-600"
+                            />
+                            <span className="text-gray-600 text-xs">=</span>
+                            <input
+                              type="text"
+                              value={entry.cred_key}
+                              onChange={(e) => {
+                                const updated = [...staticFieldRows];
+                                updated[idx] = { ...updated[idx], cred_key: e.target.value };
+                                updateStaticFieldRows(updated);
+                              }}
+                              placeholder="static value"
+                              className="flex-1 px-3 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded-lg text-xs focus:outline-none focus:ring-2 focus:ring-blue-600"
+                            />
+                            <button
+                              onClick={() => updateStaticFieldRows(staticFieldRows.filter((_, i) => i !== idx))}
+                              className="p-1 text-red-400 hover:text-red-300 transition"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Token JSON path */}
                   <div>
                     <label className="block text-sm font-medium text-gray-300 mb-1">Token JSON Path</label>
                     <input
@@ -410,6 +619,8 @@ export default function AuthConfigModal({
                     />
                     <p className="text-xs text-gray-500 mt-1">Dot-path to the bearer token in the login response (e.g. "token" or "data.access_token")</p>
                   </div>
+
+                  {/* Token expiry */}
                   <div>
                     <label className="block text-sm font-medium text-gray-300 mb-1">
                       Token Expiry (seconds) <span className="text-gray-500 font-normal">(optional)</span>
@@ -421,7 +632,7 @@ export default function AuthConfigModal({
                       min={60}
                       className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
                     />
-                    <p className="text-xs text-gray-500 mt-1">Default TTL in seconds if the login response omits expires_in (default: 3600)</p>
+                    <p className="text-xs text-gray-500 mt-1">Fallback TTL in seconds if the login response omits expires_in (default: 3600)</p>
                   </div>
                 </>
               )}

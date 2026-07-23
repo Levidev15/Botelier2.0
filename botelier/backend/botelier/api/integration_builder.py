@@ -873,6 +873,30 @@ def update_integration_auth_config(
             or existing.get("token_expiry_seconds")
             or 3600
         )
+        # --- Universal login-call options ---
+        # Credential keys to append as URL query params on the login POST
+        qp = incoming.get("auth_request_query_params") or existing.get("auth_request_query_params")
+        if qp:
+            new_config["auth_request_query_params"] = [str(k) for k in qp if k]
+        # Body encoding: "json" (default) or "form" (application/x-www-form-urlencoded)
+        encoding = (
+            incoming.get("login_body_encoding") or existing.get("login_body_encoding") or "json"
+        ).lower()
+        new_config["login_body_encoding"] = encoding if encoding in ("json", "form") else "json"
+        # Extra headers on the login call: [{header_name, credential_key}]
+        login_headers = incoming.get("login_request_headers") or existing.get("login_request_headers")
+        if login_headers:
+            new_config["login_request_headers"] = [
+                {"header_name": h.get("header_name", ""), "credential_key": h.get("credential_key", "")}
+                for h in login_headers
+                if h.get("header_name") and h.get("credential_key")
+            ]
+        # Static body fields: {field_name: static_value} always merged into the login body
+        static_fields = incoming.get("login_body_static_fields") or existing.get("login_body_static_fields")
+        if static_fields:
+            new_config["login_body_static_fields"] = {
+                str(k): str(v) for k, v in static_fields.items() if k
+            }
 
     elif strategy == "oauth2_client_credentials":
         token_url = (
