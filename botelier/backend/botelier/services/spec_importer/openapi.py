@@ -216,27 +216,59 @@ def _required_fields_from_strategy(auth_config: dict) -> list[dict]:
         ]
 
     if strategy == "login_endpoint":
-        # Fields come from the body_mapping; fall back to username/password if not set.
+        # Collect every credential key the runtime will draw from, regardless of
+        # how it is used (body field, URL query param, or request header).  All
+        # three sources pull values from the same encrypted credentials dict, so
+        # the user must provide all of them at connect time.
+        #
+        # Deduplication: a key that appears in more than one source (e.g. apikey
+        # in both body_mapping and auth_request_query_params) is only shown once.
+        # The label comes from whichever source is most descriptive.
+        def _is_secret(key: str) -> bool:
+            return any(w in key.lower() for w in ("password", "secret", "token", "key", "apikey"))
+
+        seen: dict[str, dict] = {}  # cred_key → field spec
+
+        # 1. Body mapping fields (credential value → body field name as label)
         body_mapping: dict = auth_config.get("login_body_mapping") or {
             "username": "username",
             "password": "password",
         }
-        fields = []
         for body_key, cred_key in body_mapping.items():
-            is_secret = any(
-                w in cred_key.lower()
-                for w in ("password", "secret", "token", "key", "apikey")
-            )
-            fields.append(
-                {
+            if cred_key not in seen:
+                seen[cred_key] = {
                     "key": cred_key,
                     "label": body_key.replace("_", " ").replace("-", " ").title(),
-                    "type": "password" if is_secret else "text",
+                    "type": "password" if _is_secret(cred_key) else "text",
                     "storage": "credentials",
                     "required": True,
                 }
-            )
-        return fields
+
+        # 2. URL query-param fields (credential key is both the param name and the label)
+        for cred_key in (auth_config.get("auth_request_query_params") or []):
+            if cred_key and cred_key not in seen:
+                seen[cred_key] = {
+                    "key": cred_key,
+                    "label": cred_key.replace("_", " ").replace("-", " ").title(),
+                    "type": "password" if _is_secret(cred_key) else "text",
+                    "storage": "credentials",
+                    "required": True,
+                }
+
+        # 3. Login-call header fields (header_name used as the human-readable label)
+        for hdr in (auth_config.get("login_request_headers") or []):
+            cred_key = hdr.get("credential_key", "")
+            header_name = hdr.get("header_name", cred_key)
+            if cred_key and cred_key not in seen:
+                seen[cred_key] = {
+                    "key": cred_key,
+                    "label": header_name.replace("_", " ").replace("-", " ").title(),
+                    "type": "password" if _is_secret(cred_key) else "text",
+                    "storage": "credentials",
+                    "required": True,
+                }
+
+        return list(seen.values())
 
     if strategy == "oauth2_client_credentials":
         fields: list[dict] = [
