@@ -500,7 +500,7 @@ def list_published_tools(
             db.query(Tool)
             .filter(
                 Tool.tool_type == ToolType.DYNAMIC_OPERATION.value,
-                Tool.config["integration_action_id"].astext == str(action.id),
+                Tool.config["integration_action_id"].as_string() == str(action.id),
             )
             .first()
         )

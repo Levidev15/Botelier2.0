@@ -255,7 +255,7 @@ def publish_operation(
         db.query(Tool)
         .filter(
             Tool.tool_type == ToolType.DYNAMIC_OPERATION.value,
-            Tool.config["integration_action_id"].astext == str(action.id),
+            Tool.config["integration_action_id"].as_string() == str(action.id),
         )
         .first()
     )
@@ -314,7 +314,7 @@ def unpublish_operation(
         db.query(Tool)
         .filter(
             Tool.tool_type == ToolType.DYNAMIC_OPERATION.value,
-            Tool.config["integration_action_id"].astext == str(action.id),
+            Tool.config["integration_action_id"].as_string() == str(action.id),
         )
         .first()
     )
