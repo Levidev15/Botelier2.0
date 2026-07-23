@@ -789,10 +789,18 @@ def update_integration_auth_config(
     incoming: dict = body.get("auth_config") or {}
     existing: dict = it.get_auth_config() or {}
 
-    # Never accept base_url from the PATCH body — only preserve the value set at
-    # import time. This ensures the login_endpoint token URL is always scoped to
-    # the imported spec's own host and cannot be redirected by a PATCH caller.
-    base_url = existing.get("base_url") or ""
+    # base_url is normally locked to the value captured at import time (SSRF guard:
+    # the login endpoint cannot be redirected to a host not in the imported spec).
+    # Exception: when no base_url was recorded at import (e.g. Postman collection
+    # without a server URL), the user may supply one via PATCH — but it must pass
+    # the same SSRF validation applied to spec_url fetches so internal hosts are
+    # still rejected.
+    base_url = (existing.get("base_url") or "").strip().rstrip("/")
+    if not base_url:
+        supplied = (incoming.get("base_url") or "").strip().rstrip("/")
+        if supplied:
+            _validate_spec_url(supplied)
+            base_url = supplied
 
     new_config: dict = {"auth_strategy": strategy}
     if base_url:

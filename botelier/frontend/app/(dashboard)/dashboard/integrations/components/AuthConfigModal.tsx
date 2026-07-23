@@ -348,6 +348,35 @@ export default function AuthConfigModal({
 
               {strategy === "login_endpoint" && (
                 <>
+                  {/* Base URL */}
+                  <div>
+                    <label className="block text-sm font-medium text-gray-300 mb-1">Base URL</label>
+                    {authConfig.base_url ? (
+                      <div className="flex items-center gap-2">
+                        <input
+                          type="text"
+                          value={authConfig.base_url}
+                          readOnly
+                          className="flex-1 px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg text-sm text-gray-500 cursor-not-allowed"
+                        />
+                        <span className="text-xs text-gray-600 whitespace-nowrap">locked at import</span>
+                      </div>
+                    ) : (
+                      <input
+                        type="url"
+                        value={authConfig.base_url || ""}
+                        onChange={(e) => updateConfig("base_url", e.target.value)}
+                        placeholder="https://api.example.com"
+                        className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600"
+                      />
+                    )}
+                    <p className="text-xs text-gray-500 mt-1">
+                      {authConfig.base_url
+                        ? "Set from the imported spec — cannot be changed here"
+                        : "Root URL of the API (e.g. https://api.example.com) — required when not in the imported spec"}
+                    </p>
+                  </div>
+
                   {/* Login endpoint path */}
                   <div>
                     <label className="block text-sm font-medium text-gray-300 mb-1">Login Endpoint Path</label>
