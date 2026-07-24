@@ -67,7 +67,9 @@ export default function OperationCatalogPanel({
   const [savingPolicy, setSavingPolicy] = useState(false);
 
   const [responseMapping, setResponseMapping] = useState<Array<{ name: string; path: string }>>([]);
+  const [paramOwnershipOverrides, setParamOwnershipOverrides] = useState<Record<string, string>>({});
   const [savingFields, setSavingFields] = useState(false);
+  const [pendingRepublish, setPendingRepublish] = useState(false);
 
   const [testParams, setTestParams] = useState<Record<string, string>>({});
   const [testing, setTesting] = useState(false);
@@ -125,9 +127,11 @@ export default function OperationCatalogPanel({
     setTestParams({});
     setTestResult(null);
     setTestProjected(null);
+    setPendingRepublish(false);
     setActiveTab("policy");
     const mapping = op.policy?.response_mapping || {};
     setResponseMapping(Object.entries(mapping).map(([name, path]) => ({ name, path })));
+    setParamOwnershipOverrides(op.policy?.param_ownership_overrides || {});
   };
 
   const refreshSelected = async (opId: string) => {
@@ -142,6 +146,7 @@ export default function OperationCatalogPanel({
       setPolicy(updated.policy || {});
       const mapping = updated.policy?.response_mapping || {};
       setResponseMapping(Object.entries(mapping).map(([name, path]) => ({ name, path })));
+      setParamOwnershipOverrides(updated.policy?.param_ownership_overrides || {});
     }
   };
 
@@ -193,12 +198,16 @@ export default function OperationCatalogPanel({
         `${baseUrl}/operations/${encodeURIComponent(selectedOp.id)}/policy`,
         {
           method: "PUT",
-          body: JSON.stringify({ response_mapping: mapping }),
+          body: JSON.stringify({
+            response_mapping: mapping,
+            param_ownership_overrides: paramOwnershipOverrides,
+          }),
         }
       );
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Failed to save fields");
-      onNotify("success", "Response fields saved — republish to apply");
+      onNotify("success", "Fields saved");
+      if (selectedOp.is_published) setPendingRepublish(true);
       await refreshSelected(selectedOp.id);
     } catch (err: any) {
       onNotify("error", err?.message || "Failed to save fields");
@@ -262,6 +271,7 @@ export default function OperationCatalogPanel({
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Publish failed");
       onNotify("success", `"${data.tool_name}" published as a tool`);
+      setPendingRepublish(false);
       await refreshSelected(selectedOp.id);
     } catch (err: any) {
       onNotify("error", err?.message || "Publish failed");
@@ -291,9 +301,11 @@ export default function OperationCatalogPanel({
     }
   };
 
-  const llmParams = (selectedOp?.variables || []).filter(
-    (v) => !v.ownership || v.ownership === "llm"
-  );
+  const llmParams = (selectedOp?.variables || []).filter((v) => {
+    // Apply effective ownership: policy override wins over the seed-level default.
+    const effective = paramOwnershipOverrides[v.name] || v.ownership || "llm";
+    return effective === "llm";
+  });
 
   const filtered = operations.filter((op) => {
     if (!search) return true;
@@ -511,9 +523,13 @@ export default function OperationCatalogPanel({
                   <FieldsTab
                     rows={responseMapping}
                     onChange={setResponseMapping}
+                    paramOwnershipOverrides={paramOwnershipOverrides}
+                    onOverridesChange={setParamOwnershipOverrides}
+                    variables={selectedOp?.variables || []}
                     onSave={handleSaveFields}
                     saving={savingFields}
                     testProjected={testProjected}
+                    isPendingRepublish={pendingRepublish && !!selectedOp?.is_published}
                   />
                 )}
                 {activeTab === "test" && (
@@ -967,27 +983,96 @@ function TestTab({
 
 // ---- Fields Tab ----
 
+const OWNERSHIP_OPTIONS = [
+  { value: "llm", label: "LLM provides" },
+  { value: "connection", label: "Connection config" },
+  { value: "fixed", label: "Fixed value" },
+];
+
 function FieldsTab({
   rows,
   onChange,
+  paramOwnershipOverrides,
+  onOverridesChange,
+  variables,
   onSave,
   saving,
   testProjected,
+  isPendingRepublish,
 }: {
   rows: Array<{ name: string; path: string }>;
   onChange: (rows: Array<{ name: string; path: string }>) => void;
+  paramOwnershipOverrides: Record<string, string>;
+  onOverridesChange: (overrides: Record<string, string>) => void;
+  variables: Array<{ name: string; ownership?: string }>;
   onSave: () => void;
   saving: boolean;
   testProjected: Record<string, unknown> | null;
+  isPendingRepublish: boolean;
 }) {
   const addRow = () => onChange([...rows, { name: "", path: "" }]);
   const removeRow = (i: number) => onChange(rows.filter((_, idx) => idx !== i));
   const updateRow = (i: number, field: "name" | "path", value: string) => {
     onChange(rows.map((r, idx) => (idx === i ? { ...r, [field]: value } : r)));
   };
+  const setOwnership = (name: string, value: string) =>
+    onOverridesChange({ ...paramOwnershipOverrides, [name]: value });
 
   return (
     <div className="space-y-6 max-w-lg">
+      {isPendingRepublish && (
+        <div className="flex items-start gap-2 px-3 py-2.5 rounded-lg bg-yellow-900/30 border border-yellow-700/60 text-yellow-300 text-xs">
+          <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+          <span>
+            Fields saved — re-publish this operation from the Publish tab for
+            changes to take effect in live calls.
+          </span>
+        </div>
+      )}
+
+      {/* Param ownership overrides */}
+      {variables.length > 0 && (
+        <div>
+          <p className="text-sm font-medium mb-1">Parameter Ownership</p>
+          <p className="text-xs text-gray-500 mb-3">
+            Override who controls each parameter. Params set to{" "}
+            <strong className="text-gray-300">Connection config</strong> or{" "}
+            <strong className="text-gray-300">Fixed value</strong> are hidden from
+            the LLM entirely — the LLM cannot see or hallucinate them.
+          </p>
+          <div className="space-y-1.5">
+            <div className="grid grid-cols-[1fr_160px] gap-2 text-xs text-gray-500 px-1 mb-1">
+              <span>Parameter</span>
+              <span>Controlled by</span>
+            </div>
+            {variables.map((v) => {
+              const seedOwnership = v.ownership || "llm";
+              const effective = paramOwnershipOverrides[v.name] || seedOwnership;
+              return (
+                <div key={v.name} className="grid grid-cols-[1fr_160px] gap-2 items-center">
+                  <span className="text-xs font-mono text-gray-300 truncate" title={v.name}>
+                    {v.name}
+                    {seedOwnership !== "llm" && !paramOwnershipOverrides[v.name] && (
+                      <span className="ml-1.5 text-gray-600 font-sans">(default: {seedOwnership})</span>
+                    )}
+                  </span>
+                  <select
+                    value={effective}
+                    onChange={(e) => setOwnership(v.name, e.target.value)}
+                    className="px-2 py-1.5 bg-[#0a0a0a] border border-gray-800 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-600"
+                  >
+                    {OWNERSHIP_OPTIONS.map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                  </select>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* Response field projection */}
       <div>
         <p className="text-sm font-medium mb-1">Response Field Projection</p>
         <p className="text-xs text-gray-500 mb-4">
@@ -1061,9 +1146,11 @@ function FieldsTab({
             "Save Fields"
           )}
         </button>
-        <p className="text-xs text-gray-500 mt-1.5">
-          Re-publish the operation after saving for changes to apply in live calls.
-        </p>
+        {!isPendingRepublish && (
+          <p className="text-xs text-gray-500 mt-1.5">
+            Re-publish the operation after saving for changes to apply in live calls.
+          </p>
+        )}
       </div>
 
       {testProjected != null && Object.keys(testProjected).length > 0 && (
