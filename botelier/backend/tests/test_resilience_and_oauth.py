@@ -21,6 +21,7 @@ never collide. The two resilience tables are created if absent.
 import uuid
 from datetime import datetime, timedelta
 from unittest.mock import MagicMock
+from urllib.parse import parse_qs
 
 import httpx
 import pytest
@@ -44,8 +45,13 @@ from botelier.services.integration_runtime.adapters.oauth2 import (
     OAuth2AuthorizationCodeAdapter,
     resolve_token_endpoint,
 )
+from botelier.services.integration_runtime.adapters.registry import (
+    UnsupportedAuthTypeError,
+    resolve_adapter,
+)
 from botelier.services.integration_runtime.resilience import (
     ResilienceConfig,
+    _resilience_state_id,
     circuit_allow,
     circuit_record_failure,
     circuit_record_success,
@@ -187,6 +193,26 @@ def test_rate_limit_admits_burst_then_rejects():
     assert rate_limit_acquire(iid, ACCOUNT_ID, conf) is False
 
 
+def test_resilience_state_is_independent_per_account_for_the_same_integration():
+    """A tenant can never exhaust or open another tenant's resilience state."""
+    iid = _new_iid()
+    other_account_id = "00000000-0000-0000-0000-000000000043"
+    conf = ResilienceConfig(
+        rate_limit_capacity=1,
+        rate_limit_refill_per_sec=0.0,
+        breaker_failure_threshold=1,
+        breaker_cooldown_s=300,
+    )
+
+    assert rate_limit_acquire(iid, ACCOUNT_ID, conf) is True
+    assert rate_limit_acquire(iid, ACCOUNT_ID, conf) is False
+    assert rate_limit_acquire(iid, other_account_id, conf) is True
+
+    circuit_record_failure(iid, ACCOUNT_ID, conf)
+    assert circuit_allow(iid, ACCOUNT_ID, conf)[0] is False
+    assert circuit_allow(iid, other_account_id, conf)[0] is True
+
+
 def test_rate_limit_disabled_always_allows():
     iid = _new_iid()
     conf = ResilienceConfig(rate_limit_enabled=False, rate_limit_capacity=1)
@@ -203,7 +229,10 @@ def test_rate_limit_refills_over_time():
     try:
         db.execute(
             IntegrationRateLimit.__table__.update()
-            .where(IntegrationRateLimit.integration_id == iid)
+            .where(
+                IntegrationRateLimit.integration_id
+                == _resilience_state_id(iid, ACCOUNT_ID)
+            )
             .values(updated_at=datetime.utcnow() - timedelta(seconds=5))
         )
         db.commit()
@@ -215,10 +244,10 @@ def test_rate_limit_refills_over_time():
 # ── Circuit breaker state machine ─────────────────────────────────────────────
 
 
-def _breaker_state(iid):
+def _breaker_state(iid, account_id=ACCOUNT_ID):
     db = SessionLocal()
     try:
-        row = db.get(IntegrationCircuitBreaker, iid)
+        row = db.get(IntegrationCircuitBreaker, _resilience_state_id(iid, account_id))
         return row.state if row else None
     finally:
         db.close()
@@ -289,6 +318,12 @@ def test_breaker_disabled_always_allows():
     assert circuit_allow(iid, ACCOUNT_ID, conf)[0] is True
 
 
+def test_adapter_registry_rejects_unknown_auth_type():
+    """Unknown auth schemes must fail before the client can issue HTTP."""
+    with pytest.raises(UnsupportedAuthTypeError, match="not supported"):
+        resolve_adapter(slug="arbitrary-api", auth_type="vendor_custom_hmac")
+
+
 # ── Client integration: retries, gates, breaker wiring ────────────────────────
 
 
@@ -336,6 +371,12 @@ def _custom_get_integration(*, method="GET", iid=None):
     return integ
 
 
+def _unsupported_auth_integration():
+    integ = _custom_get_integration()
+    integ.integration_type.auth_type = "vendor_custom_hmac"
+    return integ
+
+
 def _client_with(integ):
     client = IntegrationClient(account_id=ACCOUNT_ID, db=MagicMock())
     client._integration_cache[str(integ.id)] = integ
@@ -379,6 +420,25 @@ async def test_client_retries_429_then_succeeds(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_client_rejects_unsupported_auth_before_outbound_request(monkeypatch):
+    integ = _unsupported_auth_integration()
+    client = _client_with(integ)
+    captured = _install_capture(monkeypatch, lambda _req: httpx.Response(200, json={}))
+
+    result = await client.execute_request(
+        IntegrationAPIConfig(
+            integration_id=str(integ.id), endpoint_id="ping", method="GET"
+        ),
+        {},
+    )
+
+    assert result.success is False
+    assert result.error_type == APIErrorType.AUTH_ERROR
+    assert "not supported" in (result.error_message or "")
+    assert captured == []
+
+
+@pytest.mark.asyncio
 async def test_client_does_not_retry_post_on_5xx(monkeypatch):
     integ = _custom_get_integration(method="POST")
     client = _client_with(integ)
@@ -402,6 +462,109 @@ async def test_client_does_not_retry_post_on_5xx(monkeypatch):
     assert result.success is False
     # Non-idempotent method: a 5xx must NOT be retried.
     assert len(captured) == 1
+
+
+@pytest.mark.asyncio
+async def test_client_sends_form_encoded_body(monkeypatch):
+    integ = _custom_get_integration(method="POST")
+    client = _client_with(integ)
+    captured = _install_capture(monkeypatch, lambda _req: httpx.Response(200, json={}))
+
+    result = await client.execute_request(
+        IntegrationAPIConfig(
+            integration_id=str(integ.id),
+            endpoint_id="ping",
+            method="POST",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            body_template='{"email": "{{email}}", "status": "active"}',
+        ),
+        {"email": "guest@example.test"},
+    )
+
+    assert result.success is True
+    assert captured[0].headers["content-type"].startswith(
+        "application/x-www-form-urlencoded"
+    )
+    assert parse_qs(captured[0].content.decode()) == {
+        "email": ["guest@example.test"],
+        "status": ["active"],
+    }
+
+
+@pytest.mark.asyncio
+async def test_client_sends_xml_body_and_preserves_raw_text_response(monkeypatch):
+    integ = _custom_get_integration(method="POST")
+    client = _client_with(integ)
+    captured = _install_capture(
+        monkeypatch,
+        lambda _req: httpx.Response(
+            200, content=b"<result><ok>true</ok></result>", headers={"Content-Type": "application/xml"}
+        ),
+    )
+
+    result = await client.execute_request(
+        IntegrationAPIConfig(
+            integration_id=str(integ.id),
+            endpoint_id="ping",
+            method="POST",
+            headers={"Content-Type": "application/xml", "Accept": "application/xml"},
+            body_template="<guest><email>{{email}}</email></guest>",
+        ),
+        {"email": "guest@example.test"},
+    )
+
+    assert result.success is True
+    assert captured[0].content == b"<guest><email>guest@example.test</email></guest>"
+    assert result.data == "<result><ok>true</ok></result>"
+    assert result.raw_response == "<result><ok>true</ok></result>"
+
+
+@pytest.mark.asyncio
+async def test_client_sends_multipart_fields(monkeypatch):
+    integ = _custom_get_integration(method="POST")
+    client = _client_with(integ)
+    captured = _install_capture(monkeypatch, lambda _req: httpx.Response(200, json={}))
+
+    result = await client.execute_request(
+        IntegrationAPIConfig(
+            integration_id=str(integ.id),
+            endpoint_id="ping",
+            method="POST",
+            headers={"Content-Type": "multipart/form-data"},
+            body_template='{"name": "{{name}}", "role": "guest"}',
+        ),
+        {"name": "Ada"},
+    )
+
+    assert result.success is True
+    assert captured[0].headers["content-type"].startswith("multipart/form-data; boundary=")
+    assert b'name="name"' in captured[0].content
+    assert b"\r\nAda\r\n" in captured[0].content
+
+
+@pytest.mark.asyncio
+async def test_client_follows_redirects_with_a_bounded_policy(monkeypatch):
+    integ = _custom_get_integration(method="GET")
+    client = _client_with(integ)
+    calls = {"count": 0}
+
+    def responder(request):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            return httpx.Response(302, headers={"Location": "https://api.custom.test/next"})
+        assert request.url.path == "/next"
+        return httpx.Response(200, json={"ok": True})
+
+    captured = _install_capture(monkeypatch, responder)
+    result = await client.execute_request(
+        IntegrationAPIConfig(
+            integration_id=str(integ.id), endpoint_id="ping", method="GET"
+        ),
+        {},
+    )
+
+    assert result.success is True
+    assert len(captured) == 2
 
 
 @pytest.mark.asyncio

@@ -1,7 +1,8 @@
 """Cross-worker resilience primitives for the integration runtime (Task #331).
 
-Three concerns live here, all keyed by ``integration_id`` and all backed by
-Postgres so state is shared across every stateless replica:
+Three concerns live here, all keyed by an opaque, deterministic
+``(account_id, integration_id)`` state id and all backed by Postgres so state is
+shared across every stateless replica without crossing tenant boundaries:
 
   1. **Rate limiting** — a lazy token bucket (``rate_limit_acquire``). Protects a
      provider (and our own outbound budget) from a runaway flow / burst.
@@ -55,6 +56,22 @@ _DEFAULT_BACKOFF_JITTER = True
 
 
 SessionFactory = Callable[[], Any]
+
+
+def _resilience_state_id(integration_id, account_id) -> str:
+    """Return a deterministic UUID-like key scoped to an account + connection.
+
+    The existing operational tables intentionally use a single UUID primary key
+    and have no foreign keys, so a UUIDv5 key safely adds tenant isolation without
+    a destructive primary-key migration.  Account-less callers retain the
+    historical integration-only key for backwards compatibility.
+    """
+    import uuid
+
+    integration_key = str(integration_id)
+    if account_id is None:
+        return integration_key
+    return str(uuid.uuid5(uuid.NAMESPACE_URL, f"botelier:resilience:{account_id}:{integration_key}"))
 
 
 def _default_session_factory():
@@ -202,7 +219,7 @@ def rate_limit_acquire(
     if not config.rate_limit_enabled:
         return True
 
-    iid = str(integration_id)
+    iid = _resilience_state_id(integration_id, account_id)
     aid = str(account_id) if account_id is not None else None
     try:
         db = _open_session(session_factory)
@@ -298,7 +315,7 @@ def circuit_allow(
     if not config.breaker_enabled:
         return True, CircuitState.CLOSED
 
-    iid = str(integration_id)
+    iid = _resilience_state_id(integration_id, account_id)
     aid = str(account_id) if account_id is not None else None
     try:
         db = _open_session(session_factory)
@@ -380,7 +397,7 @@ def circuit_record_success(
     """Record a successful outcome: reset the breaker to CLOSED."""
     if not config.breaker_enabled:
         return
-    iid = str(integration_id)
+    iid = _resilience_state_id(integration_id, account_id)
     aid = str(account_id) if account_id is not None else None
     try:
         db = _open_session(session_factory)
@@ -419,7 +436,7 @@ def circuit_record_failure(
     """
     if not config.breaker_enabled:
         return
-    iid = str(integration_id)
+    iid = _resilience_state_id(integration_id, account_id)
     aid = str(account_id) if account_id is not None else None
     try:
         db = _open_session(session_factory)

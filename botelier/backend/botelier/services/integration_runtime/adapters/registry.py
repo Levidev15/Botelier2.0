@@ -1,9 +1,9 @@
 """Adapter resolution: integration-type slug → auth_type → DefaultAdapter.
 
 Resolution keys on the slug first (so a provider can pin a dedicated adapter
-regardless of its auth_type), then falls back to auth_type (the historical
-behavior — every vendor branch used to key on auth_type), and finally to the
-generic :class:`DefaultAdapter` for any config-only integration.
+regardless of its auth_type), then falls back to auth_type.  The generic
+:class:`DefaultAdapter` is deliberately limited to explicit no-auth/config-only
+types; unknown auth schemes must fail closed before an outbound request.
 
 Adapters are stateless, so a single shared instance per adapter is reused.
 """
@@ -14,6 +14,11 @@ from .base import BaseIntegrationAdapter, DefaultAdapter
 from .guestcentric import GuestCentricAdapter
 from .oauth2 import OAuth2AuthorizationCodeAdapter
 from .opera_cloud import OperaCloudAdapter
+
+
+class UnsupportedAuthTypeError(ValueError):
+    """Raised when an integration declares an auth scheme no adapter supports."""
+
 
 OPERA_ADAPTER = OperaCloudAdapter()
 GUESTCENTRIC_ADAPTER = GuestCentricAdapter()
@@ -30,6 +35,7 @@ _AUTH_TYPE_REGISTRY: dict[str, BaseIntegrationAdapter] = {
     "basic_or_jwt": GUESTCENTRIC_ADAPTER,
     "oauth2_authorization_code": OAUTH2_AUTHCODE_ADAPTER,
 }
+_GENERIC_AUTH_TYPES = {"none", "default", ""}
 
 
 def resolve_adapter(
@@ -37,6 +43,11 @@ def resolve_adapter(
 ) -> BaseIntegrationAdapter:
     if slug and slug in _SLUG_REGISTRY:
         return _SLUG_REGISTRY[slug]
-    if auth_type and auth_type in _AUTH_TYPE_REGISTRY:
-        return _AUTH_TYPE_REGISTRY[auth_type]
-    return DEFAULT_ADAPTER
+    normalized_auth_type = (auth_type or "").strip().lower()
+    if normalized_auth_type in _AUTH_TYPE_REGISTRY:
+        return _AUTH_TYPE_REGISTRY[normalized_auth_type]
+    if normalized_auth_type in _GENERIC_AUTH_TYPES:
+        return DEFAULT_ADAPTER
+    raise UnsupportedAuthTypeError(
+        f"Authentication type '{auth_type}' is not supported by the integration runtime"
+    )

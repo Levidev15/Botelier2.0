@@ -1,6 +1,6 @@
 import time
 from typing import Any, Dict, Optional
-from urllib.parse import urlparse
+from urllib.parse import urlencode, urlparse, urlunparse
 
 import httpx
 from fastapi import APIRouter, Depends, HTTPException
@@ -49,6 +49,7 @@ class ApiTestRequest(BaseModel):
     nodeId: Optional[str] = Field(default=None)
     flowToolId: Optional[str] = Field(default=None)
     sourceLabel: Optional[str] = Field(default=None)
+    queryParams: Optional[Dict[str, str]] = Field(default=None)
 
 
 class ApiTestResponse(BaseModel):
@@ -113,6 +114,7 @@ async def test_api_request(
                 path=endpoint.get("path", request.url),
                 endpoint_template=endpoint.get("path", request.url),
                 body_template=request.bodyTemplate or request.body,
+                headers=request.headers or {},
                 timeout=min(int(request.timeout or 8), 30),
                 retry_count=int(request.retryCount or 0),
                 query_param_overrides=request.queryParamOverrides or {},
@@ -131,6 +133,7 @@ async def test_api_request(
                 "timeout": request.timeout or 8,
                 "retryCount": request.retryCount or 0,
                 "responseMapping": mapping,
+                "queryParams": request.queryParams or {},
             }
 
         result = await ActionExecutor(db).execute_and_log(execution_request)
@@ -152,38 +155,34 @@ async def test_api_request(
 
     try:
         req_headers = request.headers or {}
+        parsed = urlparse(request.url)
+        query_params = request.queryParams or {}
+        if query_params:
+            existing_query = parsed.query
+            rendered_query = urlencode(query_params, doseq=True)
+            request_url = urlunparse(
+                parsed._replace(
+                    query=f"{existing_query}&{rendered_query}"
+                    if existing_query
+                    else rendered_query
+                )
+            )
+        else:
+            request_url = request.url
 
         async with httpx.AsyncClient(
             transport=SSRFSafeTransport(),
             timeout=request.timeout or 30,
         ) as client:
-            if request.method.upper() == "GET":
-                response = await client.get(request.url, headers=req_headers)
-            elif request.method.upper() == "POST":
-                if request.body:
-                    response = await client.post(
-                        request.url, headers=req_headers, content=request.body
-                    )
-                else:
-                    response = await client.post(request.url, headers=req_headers)
-            elif request.method.upper() == "PUT":
-                if request.body:
-                    response = await client.put(
-                        request.url, headers=req_headers, content=request.body
-                    )
-                else:
-                    response = await client.put(request.url, headers=req_headers)
-            elif request.method.upper() == "DELETE":
-                response = await client.delete(request.url, headers=req_headers)
-            elif request.method.upper() == "PATCH":
-                if request.body:
-                    response = await client.patch(
-                        request.url, headers=req_headers, content=request.body
-                    )
-                else:
-                    response = await client.patch(request.url, headers=req_headers)
-            else:
+            method = request.method.upper()
+            if method not in {"GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS"}:
                 raise HTTPException(status_code=400, detail=f"Unsupported method: {request.method}")
+            response = await client.request(
+                method,
+                request_url,
+                headers=req_headers,
+                content=request.body,
+            )
 
         elapsed_ms = (time.time() - start_time) * 1000
         resp_headers = dict(response.headers)

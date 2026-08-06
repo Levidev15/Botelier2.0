@@ -7,6 +7,7 @@ os.environ.setdefault("NEXTAUTH_SECRET", "test-nextauth-secret")
 from botelier.api import api_tester
 from botelier.api.api_tester import ApiTestRequest
 from botelier.api.flow_versions import validate_flow_config
+from botelier.models.integration import IntegrationStatus
 from botelier.services.integration_client import (
     APIErrorType,
     IntegrationAPIConfig,
@@ -68,6 +69,62 @@ async def test_account_api_tester_uses_action_executor(monkeypatch):
     assert request.legacy_config["responseMapping"] == {"room": "guest.room"}
     assert response.success is True
     assert response.extracted_variables == {"room": "214"}
+
+
+@pytest.mark.asyncio
+async def test_integration_api_tester_preserves_headers_and_body(monkeypatch):
+    captured = {}
+
+    def allow_access(*_args, **_kwargs):
+        return None
+
+    class _Endpoint:
+        id = "connection-id"
+        status = IntegrationStatus.CONNECTED
+        integration_type = type(
+            "Type",
+            (),
+            {"get_endpoints": lambda _self: [{"id": "send", "method": "DELETE", "path": "/send"}]},
+        )()
+
+    class _Query:
+        def filter(self, *_args):
+            return self
+
+        def first(self):
+            return _Endpoint()
+
+    class _Db:
+        def query(self, *_args):
+            return _Query()
+
+    async def fake_execute_and_log(self, request):
+        captured["request"] = request
+        return FakeResult()
+
+    monkeypatch.setattr(api_tester, "check_account_permission", allow_access)
+    monkeypatch.setattr(api_tester.ActionExecutor, "execute_and_log", fake_execute_and_log)
+
+    await api_tester.test_api_request(
+        ApiTestRequest(
+            account_id=ACCOUNT_ID,
+            apiSource="integration",
+            integrationId="connection-id",
+            endpointId="send",
+            url="https://api.example.test/send",
+            headers={"Content-Type": "application/xml", "X-Trace": "test"},
+            body="<remove id='7'/>",
+            queryParamOverrides={"mode": "hard"},
+        ),
+        current_user=object(),
+        db=_Db(),
+    )
+
+    config = captured["request"].integration_config
+    assert config.method == "DELETE"
+    assert config.body_template == "<remove id='7'/>"
+    assert config.headers == {"Content-Type": "application/xml", "X-Trace": "test"}
+    assert config.query_param_overrides == {"mode": "hard"}
 
 
 def test_flow_validation_accepts_patch_without_requiring_successful_api_test():
@@ -224,3 +281,18 @@ def test_override_for_unknown_param_key_is_ignored():
     assert "checkin=2026-02-02" in url
     assert "nonexistent" not in url
     assert "ignored" not in url
+
+
+def test_connection_base_url_override_is_used_and_must_be_a_safe_origin():
+    integration = _FakeIntegration()
+    integration.get_connection_config = lambda: {"base_url": "https://sandbox.example.test"}
+    client = IntegrationClient(ACCOUNT_ID, db=None)
+    config = IntegrationAPIConfig(integration_id="int_1", method="GET", path="/ping")
+
+    assert client._build_url(integration, config, {}) == "https://sandbox.example.test/ping"
+
+    integration.get_connection_config = lambda: {
+        "base_url": "https://user:pass@example.test?unsafe=yes"
+    }
+    with pytest.raises(ValueError, match="base URL"):
+        client._build_url(integration, config, {})

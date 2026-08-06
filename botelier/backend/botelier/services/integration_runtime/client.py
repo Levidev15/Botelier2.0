@@ -14,9 +14,10 @@ import json
 import re
 import time
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Optional
-from urllib.parse import urlencode
+from urllib.parse import urlencode, urlparse
 
 import httpx
 from loguru import logger
@@ -35,6 +36,7 @@ from .adapters import (
     RefreshContext,
     resolve_adapter,
 )
+from .adapters.registry import UnsupportedAuthTypeError
 from .jsonpath import extract_json_value
 from .resilience import (
     ResilienceConfig,
@@ -84,6 +86,20 @@ PROPERTY_IDENTITY_KEYS = frozenset(
 # retry-on-transport-error-only behavior so a write is never silently
 # re-attempted after the server may have already applied it.
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
+_FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
+_MULTIPART_CONTENT_TYPE = "multipart/form-data"
+
+
+class _InvalidBodyTemplate(ValueError):
+    """Raised when a configured JSON body cannot be rendered safely."""
+
+
+@dataclass
+class _RequestBody:
+    """Rendered payload and the httpx keyword required to encode it."""
+
+    mode: str
+    value: Any
 
 
 class IntegrationClient:
@@ -195,7 +211,28 @@ class IntegrationClient:
             )
 
         credentials = integration.get_credentials()
-        adapter = self._resolve_adapter(integration)
+        try:
+            adapter = self._resolve_adapter(integration)
+        except UnsupportedAuthTypeError as exc:
+            logger.warning(
+                f"Unsupported auth type for integration {integration.id}: {exc}"
+            )
+            self._write_call_log(
+                integration_id=str(integration.id),
+                endpoint_called=config.path,
+                method=config.method,
+                status_code=0,
+                success=False,
+                latency_ms=int(time.time() * 1000) - start_ms,
+                error_type=APIErrorType.AUTH_ERROR.value,
+                error_message=str(exc),
+            )
+            return APIResponse(
+                success=False,
+                status_code=0,
+                error_type=APIErrorType.AUTH_ERROR,
+                error_message=str(exc),
+            )
 
         auth_config_data = integration.integration_type.get_auth_config() or {}
         needs_token = adapter.needs_token(credentials, auth_config=auth_config_data)
@@ -246,7 +283,25 @@ class IntegrationClient:
                 ),
             )
         headers = self._build_headers(integration, config)
-        body = self._build_body(config, effective_vars, endpoint_def)
+        try:
+            body = self._build_body(config, effective_vars, endpoint_def)
+        except _InvalidBodyTemplate as exc:
+            self._write_call_log(
+                integration_id=str(integration.id),
+                endpoint_called=config.endpoint_template or config.path,
+                method=config.method,
+                status_code=0,
+                success=False,
+                latency_ms=int(time.time() * 1000) - start_ms,
+                error_type=APIErrorType.VALIDATION_ERROR.value,
+                error_message=str(exc),
+            )
+            return APIResponse(
+                success=False,
+                status_code=0,
+                error_type=APIErrorType.VALIDATION_ERROR,
+                error_message=str(exc),
+            )
         effective_response_vars = self._effective_response_variables(config, endpoint_def)
         log_endpoint = config.endpoint_template or config.path
 
@@ -804,7 +859,13 @@ class IntegrationClient:
         auth_config = integration.integration_type.get_auth_config()
         adapter = self._resolve_adapter(integration)
 
-        base_url = adapter.resolve_base_url(auth_config, credentials)
+        # Imported APIs often have a sandbox and production host. A validated
+        # connection-level override keeps that choice tenant-specific instead of
+        # mutating the shared integration type for every customer.
+        base_url = str(conn_config.get("base_url") or "").rstrip("/")
+        if not base_url:
+            base_url = adapter.resolve_base_url(auth_config, credentials).rstrip("/")
+        self._validate_base_url(base_url)
 
         path = config.path
         if endpoint_def:
@@ -880,6 +941,22 @@ class IntegrationClient:
 
         return url
 
+    @staticmethod
+    def _validate_base_url(base_url: str) -> None:
+        """Reject malformed connection overrides before any HTTP work begins."""
+        parsed = urlparse(base_url)
+        if (
+            parsed.scheme not in {"http", "https"}
+            or not parsed.netloc
+            or parsed.username is not None
+            or parsed.password is not None
+            or parsed.query
+            or parsed.fragment
+        ):
+            raise ValueError(
+                "Connection base URL must be an absolute HTTP/HTTPS origin without credentials, query, or fragment"
+            )
+
     def _build_headers(
         self, integration: AccountIntegration, config: IntegrationAPIConfig
     ) -> dict[str, str]:
@@ -899,7 +976,7 @@ class IntegrationClient:
         config: IntegrationAPIConfig,
         variables: dict[str, Any],
         endpoint_def: Optional[dict] = None,
-    ) -> Optional[dict]:
+    ) -> Optional[_RequestBody]:
         body_template = config.body_template
         if not body_template and endpoint_def:
             seed_body = endpoint_def.get("body_template")
@@ -912,10 +989,33 @@ class IntegrationClient:
             return None
 
         body_str = self._substitute_variables(body_template, variables)
+        content_type = self._body_content_type(config)
+
+        if content_type == _FORM_CONTENT_TYPE:
+            return _RequestBody(
+                mode="data",
+                value=self._parse_object_body(config, body_str, content_type),
+            )
+
+        if content_type == _MULTIPART_CONTENT_TYPE:
+            # httpx owns the multipart boundary. Remove the caller's bare
+            # content-type header before sending so it can add that boundary.
+            return _RequestBody(
+                mode="files",
+                value={
+                    key: (None, str(value))
+                    for key, value in self._parse_object_body(
+                        config, body_str, content_type
+                    ).items()
+                },
+            )
+
+        if content_type != "application/json" and not content_type.endswith("+json"):
+            return _RequestBody(mode="content", value=body_str.encode())
 
         try:
-            return json.loads(body_str)
-        except json.JSONDecodeError:
+            return _RequestBody(mode="json", value=json.loads(body_str))
+        except json.JSONDecodeError as exc:
             # NEVER log the rendered body — it may contain card data or other
             # secrets substituted from variables (Task #339). Log only the safe
             # endpoint identity so the failure is still diagnosable.
@@ -924,7 +1024,50 @@ class IntegrationClient:
                 f"(integration={getattr(config, 'integration_id', '?')} "
                 f"endpoint={getattr(config, 'endpoint_id', '?')})"
             )
-            return None
+            raise _InvalidBodyTemplate(
+                "Request body template must render valid JSON"
+            ) from exc
+
+    @staticmethod
+    def _body_content_type(config: IntegrationAPIConfig) -> str:
+        """Resolve the declared media type without its optional parameters."""
+        headers = config.headers or {}
+        content_type = next(
+            (
+                value
+                for key, value in headers.items()
+                if key.lower() == "content-type"
+            ),
+            "application/json",
+        )
+        return content_type.split(";", 1)[0].strip().lower()
+
+    def _parse_object_body(
+        self, config: IntegrationAPIConfig, body_str: str, content_type: str
+    ) -> dict[str, Any]:
+        """Parse form templates without logging their rendered (possibly secret) values."""
+        try:
+            parsed = json.loads(body_str)
+        except json.JSONDecodeError as exc:
+            self._log_invalid_body_template(config)
+            raise _InvalidBodyTemplate(
+                f"Request body template must render a JSON object for {content_type}"
+            ) from exc
+        if not isinstance(parsed, dict):
+            self._log_invalid_body_template(config)
+            raise _InvalidBodyTemplate(
+                f"Request body template must render a JSON object for {content_type}"
+            )
+        return parsed
+
+    @staticmethod
+    def _log_invalid_body_template(config: IntegrationAPIConfig) -> None:
+        """Log safe endpoint identifiers only; rendered templates may have secrets."""
+        logger.error(
+            "Failed to parse rendered request body "
+            f"(integration={getattr(config, 'integration_id', '?')} "
+            f"endpoint={getattr(config, 'endpoint_id', '?')})"
+        )
 
     def _substitute_variables(self, template: str, variables: dict[str, Any]) -> str:
         def replace_var(match):
@@ -937,21 +1080,34 @@ class IntegrationClient:
         return re.sub(r"\{\{(\w+)\}\}", replace_var, template)
 
     async def _make_request(
-        self, method: str, url: str, headers: dict, body: Optional[dict], timeout: int
+        self,
+        method: str,
+        url: str,
+        headers: dict,
+        body: Optional[_RequestBody],
+        timeout: int,
     ) -> httpx.Response:
-        async with httpx.AsyncClient(transport=SSRFSafeTransport()) as client:
-            if method.upper() == "GET":
-                return await client.get(url, headers=headers, timeout=timeout)
-            elif method.upper() == "POST":
-                return await client.post(url, headers=headers, json=body, timeout=timeout)
-            elif method.upper() == "PUT":
-                return await client.put(url, headers=headers, json=body, timeout=timeout)
-            elif method.upper() == "PATCH":
-                return await client.patch(url, headers=headers, json=body, timeout=timeout)
-            elif method.upper() == "DELETE":
-                return await client.delete(url, headers=headers, timeout=timeout)
-            else:
-                raise ValueError(f"Unsupported HTTP method: {method}")
+        request_headers = dict(headers)
+        request_kwargs: dict[str, Any] = {}
+        if body is not None:
+            request_kwargs[body.mode] = body.value
+            if body.mode == "files":
+                # Let httpx generate `multipart/form-data; boundary=...`.
+                request_headers.pop("Content-Type", None)
+                request_headers.pop("content-type", None)
+        # Each redirect is routed through SSRFSafeTransport, which validates the
+        # redirect target independently before connecting. httpx strips sensitive
+        # headers when a redirect changes origin.
+        async with httpx.AsyncClient(
+            transport=SSRFSafeTransport(), follow_redirects=True, max_redirects=5
+        ) as client:
+            return await client.request(
+                method.upper(),
+                url,
+                headers=request_headers,
+                timeout=timeout,
+                **request_kwargs,
+            )
 
     def _apply_canonical(
         self,
@@ -992,10 +1148,12 @@ class IntegrationClient:
         if response_variables is None:
             response_variables = config.response_variables
 
+        raw_response = None
         try:
             data = response.json()
         except json.JSONDecodeError:
             data = response.text
+            raw_response = response.text
 
         if 200 <= status_code < 300:
             extracted = self._extract_variables(data, response_variables)
@@ -1005,6 +1163,7 @@ class IntegrationClient:
                 data=data,
                 error_type=APIErrorType.SUCCESS,
                 extracted_variables=extracted,
+                raw_response=raw_response,
             )
 
         elif status_code == 401 or status_code == 403:
@@ -1014,6 +1173,7 @@ class IntegrationClient:
                 data=data,
                 error_type=APIErrorType.AUTH_ERROR,
                 error_message=config.on_auth_error_message,
+                raw_response=raw_response,
             )
 
         elif status_code == 404:
@@ -1023,6 +1183,7 @@ class IntegrationClient:
                 data=data,
                 error_type=APIErrorType.NOT_FOUND,
                 error_message=config.on_not_found_message,
+                raw_response=raw_response,
             )
 
         elif status_code == 400 or status_code == 422:
@@ -1033,6 +1194,7 @@ class IntegrationClient:
                 data=data,
                 error_type=APIErrorType.VALIDATION_ERROR,
                 error_message=error_detail or config.on_error_message,
+                raw_response=raw_response,
             )
 
         elif status_code >= 500:
@@ -1042,6 +1204,7 @@ class IntegrationClient:
                 data=data,
                 error_type=APIErrorType.SERVER_ERROR,
                 error_message=config.on_error_message,
+                raw_response=raw_response,
             )
 
         else:
@@ -1051,6 +1214,7 @@ class IntegrationClient:
                 data=data,
                 error_type=APIErrorType.UNKNOWN,
                 error_message=config.on_error_message,
+                raw_response=raw_response,
             )
 
     def _extract_variables(

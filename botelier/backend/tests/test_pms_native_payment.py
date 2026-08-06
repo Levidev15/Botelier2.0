@@ -288,11 +288,11 @@ def test_build_body_never_logs_card_on_malformed_json(caplog):
     handler_id = _loguru_logger.add(caplog.handler, format="{message}", level="DEBUG")
     try:
         with caplog.at_level(logging.DEBUG):
-            result = client._build_body(config, variables)
+            with pytest.raises(ValueError, match="must render valid JSON"):
+                client._build_body(config, variables)
     finally:
         _loguru_logger.remove(handler_id)
 
-    assert result is None  # malformed JSON returns None
     combined = caplog.text + " ".join(r.getMessage() for r in caplog.records)
     assert pan not in combined, "PAN leaked into logs"
     assert cvv not in combined, "CVV leaked into logs"

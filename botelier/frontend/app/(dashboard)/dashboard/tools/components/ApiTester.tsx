@@ -10,6 +10,11 @@ interface HeaderEntry {
   value: string;
 }
 
+interface QueryParamEntry {
+  key: string;
+  value: string;
+}
+
 interface ResponseData {
   status_code: number;
   headers: Record<string, string>;
@@ -55,9 +60,12 @@ export default function ApiTester() {
   const [method, setMethod] = useState("GET");
   const [url, setUrl] = useState("");
   const [headers, setHeaders] = useState<HeaderEntry[]>([]);
+  const [queryParams, setQueryParams] = useState<QueryParamEntry[]>([]);
+  const [contentType, setContentType] = useState("application/json");
   const [body, setBody] = useState("");
   const [timeout, setTimeout_] = useState(30);
   const [showHeaders, setShowHeaders] = useState(false);
+  const [showQueryParams, setShowQueryParams] = useState(false);
   const [showBody, setShowBody] = useState(false);
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState<ResponseData | null>(null);
@@ -78,6 +86,11 @@ export default function ApiTester() {
       headers.forEach((h) => {
         if (h.key.trim()) headersObj[h.key.trim()] = h.value;
       });
+      if (contentType) headersObj["Content-Type"] = contentType;
+      const queryParamsObj: Record<string, string> = {};
+      queryParams.forEach((param) => {
+        if (param.key.trim()) queryParamsObj[param.key.trim()] = param.value;
+      });
 
       const payload: any = {
         url,
@@ -85,9 +98,8 @@ export default function ApiTester() {
         timeout,
       };
       if (Object.keys(headersObj).length > 0) payload.headers = headersObj;
-      if (body.trim() && (method === "POST" || method === "PUT" || method === "PATCH")) {
-        payload.body = body;
-      }
+      if (Object.keys(queryParamsObj).length > 0) payload.queryParams = queryParamsObj;
+      if (body.trim()) payload.body = body;
 
       const res = await authFetch("/api/api-tester/test", {
         method: "POST",
@@ -109,6 +121,13 @@ export default function ApiTester() {
     const updated = [...headers];
     updated[i][field] = val;
     setHeaders(updated);
+  };
+  const addQueryParam = () => setQueryParams([...queryParams, { key: "", value: "" }]);
+  const removeQueryParam = (i: number) => setQueryParams(queryParams.filter((_, idx) => idx !== i));
+  const updateQueryParam = (i: number, field: "key" | "value", val: string) => {
+    const updated = [...queryParams];
+    updated[i][field] = val;
+    setQueryParams(updated);
   };
 
   const copyToClipboard = (text: string, path?: string) => {
@@ -145,10 +164,7 @@ export default function ApiTester() {
       <div className="flex gap-2">
         <select
           value={method}
-          onChange={(e) => {
-            setMethod(e.target.value);
-            if (["POST", "PUT", "PATCH"].includes(e.target.value)) setShowBody(true);
-          }}
+          onChange={(e) => setMethod(e.target.value)}
           className="w-28 px-3 py-2.5 bg-[#141414] border border-gray-800 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-purple-600 font-mono font-bold"
         >
           <option value="GET">GET</option>
@@ -174,6 +190,62 @@ export default function ApiTester() {
           {loading ? "Sending..." : "Send"}
         </button>
       </div>
+
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-400">Content Type</label>
+          <select
+            value={contentType}
+            onChange={(e) => setContentType(e.target.value)}
+            className={`${inputCls} font-sans`}
+          >
+            <option value="application/json">JSON (application/json)</option>
+            <option value="application/x-www-form-urlencoded">Form URL Encoded</option>
+            <option value="multipart/form-data">Multipart Form Data</option>
+            <option value="application/xml">XML</option>
+            <option value="text/plain">Plain Text</option>
+          </select>
+        </div>
+        <div className="flex items-end">
+          <button
+            onClick={() => setShowQueryParams(!showQueryParams)}
+            className="flex h-10 items-center gap-2 text-sm font-medium text-gray-300"
+          >
+            {showQueryParams ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+            Query Parameters
+            {queryParams.length > 0 && <span className="text-xs text-gray-500">({queryParams.length})</span>}
+          </button>
+        </div>
+      </div>
+
+      {showQueryParams && (
+        <div className="space-y-2 border-l border-gray-800 pl-3">
+          {queryParams.map((param, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <input
+                type="text"
+                value={param.key}
+                onChange={(e) => updateQueryParam(i, "key", e.target.value)}
+                placeholder="parameter"
+                className={`flex-1 ${inputCls}`}
+              />
+              <input
+                type="text"
+                value={param.value}
+                onChange={(e) => updateQueryParam(i, "value", e.target.value)}
+                placeholder="value"
+                className={`flex-1 ${inputCls}`}
+              />
+              <button onClick={() => removeQueryParam(i)} className="p-1.5 text-red-400 hover:text-red-300">
+                <Trash2 size={14} />
+              </button>
+            </div>
+          ))}
+          <button onClick={addQueryParam} className="flex items-center gap-1 text-xs text-purple-400 hover:text-purple-300">
+            <Plus size={12} /> Add Parameter
+          </button>
+        </div>
+      )}
 
       <div>
         <button
@@ -217,28 +289,26 @@ export default function ApiTester() {
         )}
       </div>
 
-      {(method === "POST" || method === "PUT" || method === "PATCH") && (
-        <div>
-          <button
-            onClick={() => setShowBody(!showBody)}
-            className="flex items-center gap-2 text-sm font-medium text-gray-300"
-          >
-            {showBody ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
-            Request Body
-          </button>
-          {showBody && (
-            <div className="mt-2">
-              <textarea
-                value={body}
-                onChange={(e) => setBody(e.target.value)}
-                rows={6}
-                className={`${inputCls} resize-none`}
-                placeholder='{"key": "value"}'
-              />
-            </div>
-          )}
-        </div>
-      )}
+      <div>
+        <button
+          onClick={() => setShowBody(!showBody)}
+          className="flex items-center gap-2 text-sm font-medium text-gray-300"
+        >
+          {showBody ? <ChevronDown size={14} /> : <ChevronRight size={14} />}
+          Request Body
+        </button>
+        {showBody && (
+          <div className="mt-2">
+            <textarea
+              value={body}
+              onChange={(e) => setBody(e.target.value)}
+              rows={6}
+              className={`${inputCls} resize-none`}
+              placeholder={contentType.includes("json") ? '{"key": "value"}' : "Raw request body"}
+            />
+          </div>
+        )}
+      </div>
 
       {response && (
         <div className="border border-gray-800 rounded-lg overflow-hidden">
