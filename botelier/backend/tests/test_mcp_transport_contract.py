@@ -28,7 +28,9 @@ from fastapi.testclient import TestClient
 
 import botelier.api.mcp_connections as mcp_api
 import httpx
+from sqlalchemy.dialects import postgresql
 
+from botelier.models.mcp_connection import MCPConnection
 from botelier.services.mcp_client import MCPClient, _format_mcp_connection_error
 from botelier.auth.middleware import get_current_user
 from botelier.database import get_db
@@ -251,3 +253,22 @@ async def test_streamable_http_preflight_surfaces_tls_error_before_mcp_taskgroup
     assert "TLS certificate verification failed" in error
     assert "TaskGroup" not in error
     transport_factory.assert_not_called()
+
+
+def test_transport_enum_binds_postgres_wire_value_not_python_member_name():
+    transport_enum = MCPConnection.__table__.c.transport_type.type
+    bind = transport_enum.bind_processor(postgresql.dialect())
+
+    assert bind(MCPTransportType.STREAMABLE_HTTP) == "streamable_http"
+
+
+def test_sse_content_type_mismatch_recommends_streamable_http():
+    error = Exception(
+        "Expected response header Content-Type to contain 'text/event-stream', "
+        "got 'application/json'"
+    )
+
+    assert _format_mcp_connection_error(error) == (
+        "This server returned Streamable HTTP JSON instead of an SSE stream. "
+        "Change the connection transport to 'Streamable HTTP' and test again."
+    )

@@ -69,6 +69,17 @@ def _format_mcp_connection_error(error: BaseException) -> str:
                 else "Could not connect to the MCP server."
             )
 
+    for leaf in leaves:
+        message = str(leaf).strip()
+        if (
+            "Content-Type to contain 'text/event-stream'" in message
+            and "application/json" in message
+        ):
+            return (
+                "This server returned Streamable HTTP JSON instead of an SSE stream. "
+                "Change the connection transport to 'Streamable HTTP' and test again."
+            )
+
     # Prefer the deepest useful message over the generic outer TaskGroup text.
     for leaf in leaves:
         message = str(leaf).strip()

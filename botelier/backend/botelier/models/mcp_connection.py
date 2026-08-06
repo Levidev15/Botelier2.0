@@ -93,7 +93,17 @@ class MCPConnection(Base):
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
 
-    transport_type = Column(SQLEnum(MCPTransportType), default=MCPTransportType.SSE, nullable=False)
+    # Persist enum *values* (``streamable_http``), not Python enum member
+    # names (``STREAMABLE_HTTP``). The established PostgreSQL enum uses the
+    # lowercase wire values, and SQLAlchemy otherwise binds the member name.
+    transport_type = Column(
+        SQLEnum(
+            MCPTransportType,
+            values_callable=lambda enum_class: [member.value for member in enum_class],
+        ),
+        default=MCPTransportType.SSE,
+        nullable=False,
+    )
 
     server_url = Column(String, nullable=False)
 
