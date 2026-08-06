@@ -68,8 +68,11 @@ export default function MCPModal({
         onSuccess();
         onClose();
       } else {
-        const error = await response.json();
-        alert(`Failed to save: ${error.detail || "Unknown error"}`);
+        const contentType = response.headers.get("content-type") || "";
+        const error = contentType.includes("application/json")
+          ? await response.json()
+          : { detail: await response.text() };
+        alert(`Failed to save: ${error.detail || `Request failed (${response.status})`}`);
       }
     } catch (error) {
       console.error("Failed to save MCP connection:", error);

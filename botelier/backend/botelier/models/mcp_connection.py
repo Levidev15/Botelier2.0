@@ -93,13 +93,21 @@ class MCPConnection(Base):
     name = Column(String(255), nullable=False)
     description = Column(Text, nullable=True)
 
-    # Persist enum *values* (``streamable_http``), not Python enum member
-    # names (``STREAMABLE_HTTP``). The established PostgreSQL enum uses the
-    # lowercase wire values, and SQLAlchemy otherwise binds the member name.
+    # This enum predates Streamable HTTP and its existing PostgreSQL labels use
+    # Python member names (``SSE``, ``HTTP``). ``streamable_http`` was added
+    # later as a lowercase wire value. Keep both representations compatible
+    # until the enum can be rebuilt through a deliberate database migration.
     transport_type = Column(
         SQLEnum(
             MCPTransportType,
-            values_callable=lambda enum_class: [member.value for member in enum_class],
+            values_callable=lambda enum_class: [
+                (
+                    member.value
+                    if member is MCPTransportType.STREAMABLE_HTTP
+                    else member.name
+                )
+                for member in enum_class
+            ],
         ),
         default=MCPTransportType.SSE,
         nullable=False,

@@ -255,10 +255,11 @@ async def test_streamable_http_preflight_surfaces_tls_error_before_mcp_taskgroup
     transport_factory.assert_not_called()
 
 
-def test_transport_enum_binds_postgres_wire_value_not_python_member_name():
+def test_transport_enum_supports_legacy_labels_and_streamable_http_wire_value():
     transport_enum = MCPConnection.__table__.c.transport_type.type
     bind = transport_enum.bind_processor(postgresql.dialect())
 
+    assert bind(MCPTransportType.SSE) == "SSE"
     assert bind(MCPTransportType.STREAMABLE_HTTP) == "streamable_http"
 
 
