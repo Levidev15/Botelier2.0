@@ -134,7 +134,15 @@ async def sms_webhook(
         logger.info(f"📩 Incoming SMS: {from_number} -> {to_number} | {body[:50]}...")
 
         sms_service = SMSService(db)
-        ai_response, conv_id, handoff_triggered = sms_service.process_incoming_sms(
+        # process_incoming_sms is fully synchronous and, when MCP tools are
+        # configured (Task #459), drives async MCP I/O via asyncio.run. Running
+        # it directly on this async handler's event loop would collide with that
+        # (asyncio.run on a running loop raises). Offload to a worker thread so
+        # the SMS turn owns a clean, loop-free thread for its synchronous work.
+        from starlette.concurrency import run_in_threadpool
+
+        ai_response, conv_id, handoff_triggered = await run_in_threadpool(
+            sms_service.process_incoming_sms,
             from_number=from_number,
             to_number=to_number,
             body=body,

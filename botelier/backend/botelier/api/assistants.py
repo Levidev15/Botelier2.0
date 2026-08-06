@@ -23,10 +23,47 @@ from botelier.auth.middleware import (
 )
 from botelier.database import get_db
 from botelier.models.assistant import Assistant
+from botelier.models.mcp_connection import (
+    SUPPORTED_MCP_TRANSPORTS,
+    MCPConnection,
+    MCPConnectionStatus,
+)
 from botelier.models.user import User, UserType
 from botelier.services.property_scope import property_belongs_to_account
 
 router = APIRouter(prefix="/api/assistants", tags=["assistants"])
+
+
+def _validate_assistant_mcp_connection(
+    db: Session, account_id: str, connection_id: Optional[str]
+) -> None:
+    """Require an assistant's MCP connection to be usable and tenant-owned."""
+    if connection_id is None:
+        return
+    connection = (
+        db.query(MCPConnection)
+        .filter(
+            MCPConnection.id == connection_id,
+            MCPConnection.account_id == account_id,
+            MCPConnection.is_active.is_(True),
+        )
+        .first()
+    )
+    if connection is None:
+        raise HTTPException(
+            status_code=400,
+            detail="MCP connection not found for this account",
+        )
+    if connection.status != MCPConnectionStatus.CONNECTED:
+        raise HTTPException(
+            status_code=400,
+            detail="MCP connection must be connected before assigning it",
+        )
+    if connection.transport_type not in SUPPORTED_MCP_TRANSPORTS:
+        raise HTTPException(
+            status_code=400,
+            detail="MCP connection must use SSE or Streamable HTTP",
+        )
 
 
 class AssistantCreate(BaseModel):
@@ -200,11 +237,14 @@ async def create_assistant(
         db, data.account_id, data.property_id
     ):
         raise HTTPException(status_code=400, detail="Property not found for this account")
+    _validate_assistant_mcp_connection(db, data.account_id, data.mcp_connection_id)
     assistant = Assistant(
         account_id=data.account_id,
         property_id=data.property_id,
         knowledge_base_id=data.knowledge_base_id,
         tool_set_id=data.tool_set_id,
+        mcp_connection_id=data.mcp_connection_id,
+        mcp_enabled_tools=data.mcp_enabled_tools or [],
         name=data.name,
         description=data.description,
         stt_provider=data.stt_provider,
@@ -258,6 +298,10 @@ async def update_assistant(
         db, str(assistant.account_id), update_data["property_id"]
     ):
         raise HTTPException(status_code=400, detail="Property not found for this account")
+    if "mcp_connection_id" in update_data:
+        _validate_assistant_mcp_connection(
+            db, str(assistant.account_id), update_data["mcp_connection_id"]
+        )
     for field, value in update_data.items():
         setattr(assistant, field, value)
 

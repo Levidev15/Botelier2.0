@@ -20,6 +20,8 @@ from mcp.types import Tool as MCPTool
 
 from botelier.services.ssrf_safe_transport import make_ssrf_safe_mcp_client_factory
 
+SUPPORTED_MCP_TRANSPORT_VALUES = frozenset({"sse", "streamable_http"})
+
 
 class MCPClientError(Exception):
     """Base exception for MCP client errors."""
@@ -108,6 +110,11 @@ class MCPClient:
             Tuple of (success, error_message)
         """
         try:
+            if self.transport_type not in SUPPORTED_MCP_TRANSPORT_VALUES:
+                raise MCPConnectionError(
+                    f"Unsupported MCP transport {self.transport_type!r}; "
+                    "supported transports are 'sse' and 'streamable_http'."
+                )
             headers = self._get_headers()
 
             if self.transport_type == "streamable_http":

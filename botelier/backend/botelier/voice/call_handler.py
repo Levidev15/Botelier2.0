@@ -50,6 +50,41 @@ except ImportError:
     StreamableHttpParameters = None
 
 
+def _merge_voice_mcp_tools(
+    function_schemas: list,
+    function_handlers: dict[str, Any],
+    discovered_tools: list,
+    enabled_names: set[str],
+    mcp_handler: Any,
+) -> tuple[list, list[str]]:
+    """Merge enabled MCP schemas into the initial voice tool contract.
+
+    Native platform names always win. Returns the surviving MCP schemas and
+    sorted collision names while mutating the pipeline inputs in place.
+    """
+    native_names = {
+        schema.name
+        for schema in function_schemas
+        if getattr(schema, "name", None)
+    }
+    filtered_tools = [
+        tool
+        for tool in discovered_tools
+        if tool.name in enabled_names and tool.name not in native_names
+    ]
+    colliding_names = sorted(
+        {
+            tool.name
+            for tool in discovered_tools
+            if tool.name in enabled_names and tool.name in native_names
+        }
+    )
+    function_schemas.extend(filtered_tools)
+    for tool in filtered_tools:
+        function_handlers[tool.name] = mcp_handler
+    return filtered_tools, colliding_names
+
+
 def _fetch_call_log_retry(call_sid: str):
     """Synchronous helper: open a fresh DB session, query for the CallLog,
     optionally stamp answered_at, then close the session.
@@ -484,11 +519,21 @@ class CallHandler:
                             db.query(MCPConnection)
                             .filter(
                                 MCPConnection.id == assistant.mcp_connection_id,
+                                MCPConnection.account_id == assistant.account_id,
                                 MCPConnection.is_active == True,
                             )
                             .first()
                         )
-                        if mcp_conn and mcp_conn.status == MCPConnectionStatus.CONNECTED:
+                        if (
+                            mcp_conn
+                            and mcp_conn.status == MCPConnectionStatus.CONNECTED
+                            and (
+                                mcp_conn.transport_type.value
+                                if mcp_conn.transport_type
+                                else "sse"
+                            )
+                            in {"sse", "streamable_http"}
+                        ):
                             credentials = None
                             if mcp_conn.credentials_encrypted:
                                 try:
@@ -523,8 +568,7 @@ class CallHandler:
             # 2. Get API keys
             api_keys = self._get_api_keys()
 
-            # 3. Build function schemas and handlers (knowledge base ALWAYS available)
-            # Note: MCP tools are registered separately after pipeline creation using Pipecat's MCPClient
+            # 3. Build native function schemas and handlers (knowledge base ALWAYS available)
             function_schemas, function_handlers = self._build_function_schemas_and_handlers(
                 assistant=assistant,
                 tools=tools,
@@ -541,6 +585,129 @@ class CallHandler:
                     else (_call_acct.name if _call_acct else None)
                 ),
             )
+
+            # 3.25 Resolve MCP before pipeline creation. Pipecat 1.5's
+            # register_tools_schema() only binds handlers; it does not mutate an
+            # already-created LLMContext. MCP FunctionSchema objects therefore
+            # must be merged into function_schemas before create_pipeline().
+            #
+            # The event queue is created later, so retain the outcome payload
+            # locally and emit it once the queue exists.
+            _mcp_event_payload = None
+            _mcp_client_for_pipeline = None
+            logger.info(
+                f"🔍 MCP setup check: mcp_connection_data={mcp_connection_data is not None}, "
+                f"mcp_enabled_tools={mcp_enabled_tools}, "
+                f"PIPECAT_MCP_AVAILABLE={PIPECAT_MCP_AVAILABLE}"
+            )
+            if mcp_connection_data and mcp_enabled_tools and PIPECAT_MCP_AVAILABLE:
+                import time as _time_mcp
+
+                _mcp_t_start = _time_mcp.monotonic()
+                try:
+                    mcp_headers = self._build_mcp_headers(
+                        auth_type=mcp_connection_data.get("auth_type", "none"),
+                        credentials=mcp_connection_data.get("credentials"),
+                    )
+                    _transport = mcp_connection_data.get("transport_type", "sse")
+                    if _transport == "streamable_http":
+                        if StreamableHttpParameters is None:
+                            raise RuntimeError(
+                                "Streamable HTTP MCP transport is unavailable in this "
+                                "Pipecat installation; update Pipecat or choose SSE."
+                            )
+                        _server_params = StreamableHttpParameters(
+                            url=mcp_connection_data["server_url"],
+                            headers=mcp_headers if mcp_headers else None,
+                            timeout=10.0,
+                            sse_read_timeout=300.0,
+                        )
+                    elif _transport == "sse":
+                        _server_params = SseServerParameters(
+                            url=mcp_connection_data["server_url"],
+                            headers=mcp_headers if mcp_headers else None,
+                            timeout=10.0,
+                            sse_read_timeout=300.0,
+                        )
+                    else:
+                        raise ValueError(
+                            f"Unsupported MCP transport {_transport!r}; "
+                            "supported transports are 'sse' and 'streamable_http'."
+                        )
+
+                    _mcp_client_for_pipeline = PipecatMCPClient(
+                        server_params=_server_params
+                    )
+                    await _mcp_client_for_pipeline.start()
+                    all_tools_schema = (
+                        await _mcp_client_for_pipeline.get_tools_schema()
+                    )
+
+                    filtered_tools, colliding_names = _merge_voice_mcp_tools(
+                        function_schemas,
+                        function_handlers,
+                        list(all_tools_schema.standard_tools or []),
+                        set(mcp_enabled_tools),
+                        _mcp_client_for_pipeline._tool_wrapper,
+                    )
+                    if colliding_names:
+                        logger.warning(
+                            "Skipping MCP tools that collide with native voice tools "
+                            f"(native wins): {colliding_names}"
+                        )
+
+                    if filtered_tools:
+                        # Store immediately so any later pipeline-construction
+                        # failure is still covered by the outer final teardown.
+                        self.call_mcp_clients[call_sid] = _mcp_client_for_pipeline
+                        logger.info(
+                            f"🔌 Added {len(filtered_tools)} MCP tools to initial "
+                            f"voice LLM context for call {call_sid}: "
+                            f"{[tool.name for tool in filtered_tools]}"
+                        )
+                    else:
+                        await _mcp_client_for_pipeline.close()
+                        _mcp_client_for_pipeline = None
+                        logger.warning(
+                            "No non-colliding MCP tools matched enabled list: "
+                            f"{mcp_enabled_tools}"
+                        )
+
+                    _mcp_duration_ms = int(
+                        (_time_mcp.monotonic() - _mcp_t_start) * 1000
+                    )
+                    _mcp_event_payload = (
+                        "mcp_registration_completed",
+                        "info",
+                        {
+                            "duration_ms": _mcp_duration_ms,
+                            "tools_registered_count": len(filtered_tools),
+                        },
+                    )
+                except Exception as e:
+                    if _mcp_client_for_pipeline is not None:
+                        self.call_mcp_clients.pop(call_sid, None)
+                        try:
+                            await _mcp_client_for_pipeline.close()
+                        except Exception as _mcp_close_err:
+                            logger.debug(
+                                "MCP client close after setup failure (non-fatal): "
+                                f"{_mcp_close_err}"
+                            )
+                        _mcp_client_for_pipeline = None
+                    _mcp_duration_ms = int(
+                        (_time_mcp.monotonic() - _mcp_t_start) * 1000
+                    )
+                    logger.error(f"Failed to prepare MCP tools for voice: {e}")
+                    _mcp_event_payload = (
+                        "mcp_registration_failed",
+                        "error",
+                        {
+                            "duration_ms": _mcp_duration_ms,
+                            "error_class": type(e).__name__,
+                            "error_message": str(e)[:200],
+                        },
+                    )
 
             # 3.5 Inject each flow tool's static system-prompt additions into the
             # live LLM system prompt. FlowExecutor.get_system_prompt() is otherwise
@@ -743,102 +910,6 @@ class CallHandler:
             self.call_usage_observers[call_sid] = usage_observer
             # Store idle tracker so cancel_idle_tracker() can stop it on transfer or teardown.
             self.call_idle_trackers[call_sid] = idle_timeout_tracker
-
-            # 6.5 Register MCP tools if connection is configured (must happen AFTER pipeline creation)
-            # The event_queue is created below (section 7.5) — we capture timing and outcome
-            # in a local dict here and emit the event once the queue is available.
-            _mcp_event_payload = None  # Tuple[event_type, details] or None if MCP skipped
-            logger.info(
-                f"🔍 MCP registration check: mcp_connection_data={mcp_connection_data is not None}, mcp_enabled_tools={mcp_enabled_tools}, PIPECAT_MCP_AVAILABLE={PIPECAT_MCP_AVAILABLE}"
-            )
-            if mcp_connection_data and mcp_enabled_tools and PIPECAT_MCP_AVAILABLE:
-                import time as _time_mcp
-
-                _mcp_t_start = _time_mcp.monotonic()
-                try:
-                    # Build authentication headers based on auth_type
-                    mcp_headers = self._build_mcp_headers(
-                        auth_type=mcp_connection_data.get("auth_type", "none"),
-                        credentials=mcp_connection_data.get("credentials"),
-                    )
-
-                    # Create Pipecat MCP client — choose transport based on connection config
-                    _transport = mcp_connection_data.get("transport_type", "sse")
-                    if _transport == "streamable_http" and StreamableHttpParameters is not None:
-                        _server_params = StreamableHttpParameters(
-                            url=mcp_connection_data["server_url"],
-                            headers=mcp_headers if mcp_headers else None,
-                            timeout=10.0,
-                            sse_read_timeout=300.0,
-                        )
-                    else:
-                        _server_params = SseServerParameters(
-                            url=mcp_connection_data["server_url"],
-                            headers=mcp_headers if mcp_headers else None,
-                            timeout=10.0,
-                            sse_read_timeout=300.0,
-                        )
-
-                    mcp_client = PipecatMCPClient(server_params=_server_params)
-
-                    # Pipecat 1.5.0 requires an explicit start() before any
-                    # schema/tool calls — opens the transport and initialises
-                    # the MCP session.
-                    await mcp_client.start()
-
-                    # Get all available tools from MCP server
-                    all_tools_schema = await mcp_client.get_tools_schema()
-
-                    # Filter to only enabled tools for this assistant
-                    _tools_registered = 0
-                    if all_tools_schema.standard_tools:
-                        from pipecat.adapters.schemas.tools_schema import ToolsSchema
-
-                        filtered_tools = [
-                            tool
-                            for tool in all_tools_schema.standard_tools
-                            if tool.name in mcp_enabled_tools
-                        ]
-
-                        if filtered_tools:
-                            filtered_schema = ToolsSchema(standard_tools=filtered_tools)
-                            await mcp_client.register_tools_schema(filtered_schema, llm)
-                            _tools_registered = len(filtered_tools)
-                            logger.info(
-                                f"🔌 Registered {len(filtered_tools)} MCP tools with LLM for call {call_sid}: {[t.name for t in filtered_tools]}"
-                            )
-                        else:
-                            logger.warning(
-                                f"No MCP tools matched enabled list: {mcp_enabled_tools}"
-                            )
-                    else:
-                        logger.warning(f"MCP server returned no tools")
-
-                    # Store client for cleanup
-                    self.call_mcp_clients[call_sid] = mcp_client
-
-                    _mcp_duration_ms = int((_time_mcp.monotonic() - _mcp_t_start) * 1000)
-                    _mcp_event_payload = (
-                        "mcp_registration_completed",
-                        "info",
-                        {
-                            "duration_ms": _mcp_duration_ms,
-                            "tools_registered_count": _tools_registered,
-                        },
-                    )
-
-                except Exception as e:
-                    _mcp_duration_ms = int((_time_mcp.monotonic() - _mcp_t_start) * 1000)
-                    logger.error(f"Failed to register MCP tools: {e}")
-                    _mcp_event_payload = (
-                        "mcp_registration_failed",
-                        "error",
-                        {
-                            "duration_ms": _mcp_duration_ms,
-                            "error_class": type(e).__name__,
-                            "error_message": str(e)[:200],
-                        },
-                    )
 
             # 7. Update active call with task and context
             self.active_calls[call_sid] = task
@@ -1703,8 +1774,9 @@ You have access to the following Q&A knowledge base. Use this information to ans
     ) -> tuple[list, dict[str, Any]]:
         """Build FunctionSchema objects and handlers for platform tools.
 
-        This follows Pipecat's proper pattern of creating schemas before pipeline initialization.
-        Note: MCP tools are registered separately after pipeline creation using Pipecat's MCPClient.
+        This follows Pipecat's proper pattern of creating schemas before
+        pipeline initialization. Enabled MCP schemas are merged by handle_call
+        before the same pipeline initialization step.
 
         Args:
             assistant: Database assistant model
@@ -1855,7 +1927,6 @@ You have access to the following Q&A knowledge base. Use this information to ans
                 function_handlers[esc_schema_dict["name"]] = esc_handler
                 logger.info("✅ Registered always-on request_human escalation tool")
 
-        # Note: MCP tools are registered separately after pipeline creation using Pipecat's MCPClient.register_tools()
         logger.info(f"📋 Built {len(function_schemas)} platform function schemas")
 
         return function_schemas, function_handlers

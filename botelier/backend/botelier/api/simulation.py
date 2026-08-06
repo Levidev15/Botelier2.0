@@ -60,10 +60,14 @@ class SimulationState:
         model: str = DEFAULT_SIM_MODEL,
         capability_schemas: Optional[list] = None,
         dynamic_operation_schemas: Optional[list] = None,
+        session_id: Optional[str] = None,
+        mcp_client: Optional[Any] = None,
+        mcp_schemas: Optional[list] = None,
     ):
         self.tool_id = tool_id
         self.tool_name = tool_name
         self.account_id = account_id
+        self.session_id = session_id
         self.executor = executor
         # Standalone universal-capability tools (Task #329) from the backing
         # assistant's tool_set, mirrored so the simulator previews capability
@@ -81,6 +85,20 @@ class SimulationState:
         self.dynamic_operation_names = {
             s["function"]["name"]
             for s in self.dynamic_operation_schemas
+            if s.get("function", {}).get("name")
+        }
+        # MCP (Model Context Protocol) tools from the backing assistant's linked
+        # MCP connection (Task #459). The live async MCPClient is opened once at
+        # session start and reused across turns — mirroring voice/SMS which hold
+        # a per-call MCP session — then closed on simulation end / start failure.
+        # `mcp_schemas` are OpenAI tool schemas merged into the exposed tool list;
+        # native flow function names (execute_* / collect_* / etc.) win any name
+        # collision, so MCP schemas here are pre-filtered against native names.
+        self.mcp_client = mcp_client
+        self.mcp_schemas = mcp_schemas or []
+        self.mcp_names = {
+            s["function"]["name"]
+            for s in self.mcp_schemas
             if s.get("function", {}).get("name")
         }
         # LLM model for this session — mirrors the backing assistant's llm_model
@@ -176,6 +194,24 @@ class TestAPIResponse(BaseModel):
     resolved_url: str
     resolved_body: Optional[str] = None
     error: Optional[str] = None
+
+
+def _capability_and_dynamic_names(
+    capability_schemas: Optional[list],
+    dynamic_operation_schemas: Optional[list],
+) -> set:
+    """Collect the function names from capability + dynamic-operation schemas.
+
+    Used as part of the native-name collision guard when merging MCP tools: any
+    discovered MCP tool colliding with one of these names is dropped (native
+    wins).
+    """
+    names: set = set()
+    for schema in (capability_schemas or []) + (dynamic_operation_schemas or []):
+        fn_name = schema.get("function", {}).get("name")
+        if fn_name:
+            names.add(fn_name)
+    return names
 
 
 def _build_kb_prompt_block(knowledge_base_id: Optional[Any]) -> str:
@@ -429,6 +465,180 @@ async def _execute_sim_dynamic_operation(
     }
 
 
+async def _connect_and_discover_mcp_tools(
+    db: Session,
+    assistant: Optional[Assistant],
+    account_id: Optional[str],
+    native_tool_names: set,
+) -> tuple[Optional[Any], list]:
+    """Resolve the assistant-linked MCP connection and open a live MCP session.
+
+    Mirrors the voice/SMS live path (see call_handler): the simulator connects to
+    the SAME MCP server the assistant is configured with, discovers the tools the
+    assistant has enabled, and exposes them to the LLM so a preview matches a real
+    call.  The async :class:`MCPClient` from ``services.mcp_client`` is used so the
+    simulator holds one open MCP session for the life of the session (reused across
+    turns), then closes it on simulation end / start failure.
+
+    Ownership + availability gating (fail-closed, identical intent to live):
+      - The linked connection must belong to the assistant's account (no
+        cross-tenant MCP access).
+      - It must be ``is_active`` and ``status == CONNECTED``; otherwise no MCP
+        tools are exposed (the simulator degrades to a flow-only preview).
+
+    Name-collision policy: native flow / capability / dynamic-operation function
+    names WIN.  Any discovered MCP tool whose name collides with a native name is
+    dropped, so the LLM never sees two functions with the same name and native
+    behavior is never shadowed by an external server.
+
+    Returns ``(client, schemas)`` where ``client`` is a connected ``MCPClient``
+    (or ``None`` when no usable connection) and ``schemas`` is the list of merged
+    OpenAI tool schemas.  On any failure the client is closed and ``(None, [])`` is
+    returned — MCP problems must never break a simulation start.
+    """
+    if not assistant or not assistant.mcp_connection_id:
+        return None, []
+
+    from botelier.models.mcp_connection import MCPConnection, MCPConnectionStatus
+    from botelier.services.mcp_client import MCPClient
+
+    conn = (
+        db.query(MCPConnection)
+        .filter(
+            MCPConnection.id == assistant.mcp_connection_id,
+            MCPConnection.is_active == True,  # noqa: E712
+        )
+        .first()
+    )
+    if not conn:
+        return None, []
+
+    # Ownership check: the connection must belong to the same account backing the
+    # simulation. Guards against a stale / cross-tenant mcp_connection_id.
+    if account_id and str(conn.account_id) != str(account_id):
+        logger.warning(
+            "Simulator MCP: connection %s does not belong to account %s — skipping",
+            conn.id,
+            account_id,
+        )
+        return None, []
+
+    if conn.status != MCPConnectionStatus.CONNECTED:
+        logger.info(
+            "Simulator MCP: connection %s not CONNECTED (status=%s) — skipping",
+            conn.id,
+            conn.status,
+        )
+        return None, []
+
+    enabled_tools = set(assistant.mcp_enabled_tools or [])
+    if not enabled_tools:
+        logger.info(
+            "Simulator MCP: assistant %s has no enabled MCP tools — skipping",
+            assistant.id,
+        )
+        return None, []
+
+    credentials = {}
+    if conn.credentials_encrypted:
+        try:
+            credentials = conn.get_credentials()
+        except Exception as cred_error:  # noqa: BLE001
+            logger.warning(
+                "Simulator MCP: failed to decrypt credentials for %s (may be stale): %s",
+                conn.id,
+                cred_error,
+            )
+            credentials = {}
+
+    transport_type = conn.transport_type.value if conn.transport_type else "sse"
+    client = MCPClient(
+        server_url=conn.server_url,
+        auth_type=conn.auth_type.value if conn.auth_type else "none",
+        credentials=credentials,
+        connection_config=conn.get_connection_config(),
+        transport_type=transport_type,
+    )
+
+    try:
+        success, error = await client.connect()
+        if not success:
+            logger.warning(
+                "Simulator MCP: connect failed for %s: %s", conn.id, error
+            )
+            await client.disconnect()
+            return None, []
+
+        discovered = await client.discover_tools()
+    except Exception as e:  # noqa: BLE001
+        logger.warning("Simulator MCP: discovery failed for %s: %s", conn.id, e)
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        return None, []
+
+    schemas: list = []
+    seen: set = set()
+    for tool_def in discovered:
+        name = tool_def.get("name")
+        if not name or name not in enabled_tools:
+            continue
+        # Native flow/capability/dynamic names win any collision — drop MCP tool.
+        if name in native_tool_names or name in seen:
+            continue
+        seen.add(name)
+        schemas.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "description": tool_def.get("description") or f"Execute {name}",
+                    "parameters": tool_def.get(
+                        "parameters",
+                        {"type": "object", "properties": {}, "required": []},
+                    ),
+                },
+            }
+        )
+
+    if not schemas:
+        # Nothing usable to expose — close the session; degrade to flow-only.
+        logger.info(
+            "Simulator MCP: no enabled tools matched discovery for %s — closing",
+            conn.id,
+        )
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        return None, []
+
+    logger.info(
+        "Simulator MCP: exposed %d MCP tool(s) from connection %s",
+        len(schemas),
+        conn.id,
+    )
+    return client, schemas
+
+
+async def _execute_sim_mcp_tool(
+    state: "SimulationState",
+    function_name: str,
+    function_args: dict,
+) -> dict:
+    """Execute an MCP tool through the session's open async MCPClient.
+
+    Mirrors voice/SMS: the tool call is dispatched to the same MCP server the
+    assistant is configured with, over the session that was opened at start.
+    Returns a JSON-serializable result dict (the MCPClient already normalizes the
+    MCP content payload and fail-closes to ``{"error": ..., "success": False}``).
+    """
+    if not state.mcp_client:
+        return {"error": f"MCP tool {function_name!r} unavailable", "success": False}
+    return await state.mcp_client.execute_tool(function_name, function_args)
+
+
 def _resolve_flow_assistant(
     db: Session,
     tool: Tool,
@@ -546,6 +756,41 @@ async def start_simulation(
         raise HTTPException(status_code=400, detail=f"Invalid flow configuration: {str(e)}")
 
     session_id = str(uuid.uuid4())
+
+    # Resolve + open the assistant's linked MCP connection (Task #459), then merge
+    # its enabled tools into the exposed tool list. Native flow / capability /
+    # dynamic-operation function names WIN any name collision, so build the set of
+    # native names first and pass it as the collision guard. The MCP session stays
+    # open for the life of this simulation session and is closed on end / failure.
+    native_tool_names = set()
+    for _schema in executor.get_function_schemas():
+        _fn = _schema.get("function", _schema)
+        if _fn.get("name"):
+            native_tool_names.add(_fn["name"])
+    native_tool_names |= _capability_and_dynamic_names(
+        capability_schemas, dynamic_operation_schemas
+    )
+    if escalation_target:
+        native_tool_names.add("request_human")
+
+    mcp_client = None
+    mcp_schemas: list = []
+    try:
+        mcp_client, mcp_schemas = await _connect_and_discover_mcp_tools(
+            db, assistant, sim_account_id, native_tool_names
+        )
+    except Exception as mcp_err:  # noqa: BLE001
+        # A failure during MCP setup must never break simulation start. Close any
+        # partially-opened client and degrade to a flow-only preview.
+        logger.warning(f"Simulator MCP setup failed, continuing without MCP: {mcp_err}")
+        if mcp_client is not None:
+            try:
+                await mcp_client.disconnect()
+            except Exception:  # noqa: BLE001
+                pass
+        mcp_client = None
+        mcp_schemas = []
+
     state = SimulationState(
         tool_id=request.tool_id,
         executor=executor,
@@ -556,6 +801,9 @@ async def start_simulation(
         model=sim_model,
         capability_schemas=capability_schemas,
         dynamic_operation_schemas=dynamic_operation_schemas,
+        session_id=session_id,
+        mcp_client=mcp_client,
+        mcp_schemas=mcp_schemas,
     )
 
     initial_messages = executor.get_initial_messages()
@@ -659,6 +907,11 @@ async def simulate_message(
         if llm_response.get("is_ended"):
             state.is_ended = True
 
+    if state.is_ended:
+        # Natural END/transfer paths must release the persistent MCP transport
+        # immediately; the UI may never send the explicit DELETE cleanup call.
+        await _close_session_mcp(state)
+
     state.add_message(
         "assistant",
         response_text,
@@ -758,6 +1011,12 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                 tools.extend(state.capability_schemas)
             if state.dynamic_operation_schemas:
                 tools.extend(state.dynamic_operation_schemas)
+            # Merge the assistant's linked MCP tools (Task #459). These were
+            # already collision-filtered at start so native flow / capability /
+            # dynamic names win; extending here is safe and mirrors voice/SMS
+            # exposing the same MCP tools to the LLM.
+            if state.mcp_schemas:
+                tools.extend(state.mcp_schemas)
 
             # Simulator parity with the live voice end_call gate: while a
             # side-effect node (SAVE_RECORD, API_REQUEST, CAPABILITY,
@@ -910,6 +1169,13 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                         result = await _execute_sim_dynamic_operation(
                             state, function_name, function_args, db
                         )
+                    elif function_name in state.mcp_names:
+                        # MCP tool (Task #459): dispatch to the same MCP server the
+                        # assistant is configured with, over the session opened at
+                        # start — identical to voice/SMS MCP tool execution.
+                        result = await _execute_sim_mcp_tool(
+                            state, function_name, function_args
+                        )
                     else:
                         result = await state.executor.handle_function_call(
                             function_name, function_args
@@ -999,6 +1265,23 @@ def _get_session_and_check_access(session_id: str, user: User, db: Session) -> "
     return state
 
 
+async def _close_session_mcp(state: "SimulationState") -> None:
+    """Close a session's open MCP client, if any (Task #459).
+
+    Best-effort: a failed disconnect must never surface as an API error. Mirrors
+    the voice/SMS teardown which closes the per-call MCP session at call end.
+    """
+    client = getattr(state, "mcp_client", None)
+    if client is None:
+        return
+    try:
+        await client.disconnect()
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"Simulator MCP disconnect (non-fatal): {e}")
+    finally:
+        state.mcp_client = None
+
+
 @router.delete("/session/{session_id}")
 async def end_simulation(
     session_id: str,
@@ -1006,7 +1289,8 @@ async def end_simulation(
     user: User = Depends(get_current_user),
 ):
     """End and cleanup a simulation session."""
-    _get_session_and_check_access(session_id, user, db)
+    state = _get_session_and_check_access(session_id, user, db)
+    await _close_session_mcp(state)
     del SimulationSession.sessions[session_id]
     return {"status": "ended"}
 

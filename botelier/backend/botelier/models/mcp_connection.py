@@ -38,13 +38,33 @@ class MCPAuthType(str, enum.Enum):
 
 
 class MCPTransportType(str, enum.Enum):
-    """Transport type for MCP server connections."""
+    """Transport type for MCP server connections.
+
+    Only ``SSE`` and ``STREAMABLE_HTTP`` are supported for new or updated
+    connections — these are the two transports the MCP client implements over
+    HTTP(S) (see ``botelier.services.mcp_client``).
+
+    ``STDIO``, ``HTTP``, and ``WEBSOCKET`` are legacy enum members retained
+    ONLY so existing database rows that still reference them keep loading
+    without a destructive migration. They must not be offered for new records
+    and are rejected by the API on create/update. Use
+    :data:`SUPPORTED_MCP_TRANSPORTS` when validating user input.
+    """
 
     STDIO = "stdio"
     HTTP = "http"
     SSE = "sse"
     WEBSOCKET = "websocket"
     STREAMABLE_HTTP = "streamable_http"
+
+
+#: Transports the platform actually supports for new/updated connections.
+#: Legacy rows may still hold other values, but callers must not create or
+#: update a connection to an unsupported transport.
+SUPPORTED_MCP_TRANSPORTS: tuple[MCPTransportType, ...] = (
+    MCPTransportType.SSE,
+    MCPTransportType.STREAMABLE_HTTP,
+)
 
 
 class MCPConnection(Base):

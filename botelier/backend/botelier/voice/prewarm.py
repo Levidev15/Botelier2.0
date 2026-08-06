@@ -392,11 +392,19 @@ async def _build_bundle(
                     _db.query(MCPConnection)
                     .filter(
                         MCPConnection.id == assistant.mcp_connection_id,
+                        MCPConnection.account_id == assistant.account_id,
                         MCPConnection.is_active.is_(True),
                     )
                     .first()
                 )
-                if mcp_conn and mcp_conn.status == MCPConnectionStatus.CONNECTED:
+                if (
+                    mcp_conn
+                    and mcp_conn.status == MCPConnectionStatus.CONNECTED
+                    and (
+                        mcp_conn.transport_type.value if mcp_conn.transport_type else "sse"
+                    )
+                    in {"sse", "streamable_http"}
+                ):
                     credentials = None
                     if mcp_conn.credentials_encrypted:
                         try:

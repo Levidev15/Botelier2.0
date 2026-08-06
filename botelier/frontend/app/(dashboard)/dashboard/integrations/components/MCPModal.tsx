@@ -132,8 +132,8 @@ export default function MCPModal({
             <label className="block text-sm font-medium text-gray-300 mb-1">Transport</label>
             <div className="flex gap-3">
               {([
-                { value: "sse", label: "SSE", hint: "Legacy — most self-hosted servers" },
-                { value: "streamable_http", label: "Streamable HTTP", hint: "Shopify and newer servers" },
+                { value: "streamable_http", label: "Streamable HTTP", hint: "Recommended for newer MCP servers" },
+                { value: "sse", label: "SSE", hint: "Server-Sent Events endpoint" },
               ] as const).map(({ value, label, hint }) => (
                 <button
                   key={value}

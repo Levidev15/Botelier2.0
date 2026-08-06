@@ -12,6 +12,7 @@ Reuses the same knowledge base, system prompt, and tools
 as the voice assistant — just without STT/TTS.
 """
 
+import asyncio
 import json
 import os
 import re
@@ -98,6 +99,15 @@ class SMSService:
         # stable contact key that keeps two guests' identical mutating capability
         # calls (e.g. the same payment amount) from colliding on one dedup key.
         self._current_conversation_id: Optional[str] = None
+        # Per-turn MCP session state (Task #459). The live async MCPClient is
+        # opened once at the start of an SMS turn that has an eligible MCP
+        # connection, its schemas merged into the LLM tool list, and it is closed
+        # at the end of the same turn. SMS has no long-lived call session, so the
+        # client lifetime is exactly one incoming message → response cycle.
+        self._mcp_client: Optional[Any] = None
+        # Set of MCP tool names exposed to the LLM this turn (post native-name
+        # collision filtering). Used to route tool_calls to the MCP client.
+        self._mcp_tool_names: set = set()
 
     def process_incoming_sms(
         self,
@@ -404,9 +414,28 @@ class SMSService:
         conversation: SMSConversation,
         current_message: str,
     ) -> tuple:
+        """Generate an AI response while keeping MCP on one asyncio task."""
+        return self._run_async(
+            self._generate_ai_response_async(
+                assistant, sms_config, conversation, current_message
+            )
+        )
+
+    async def _generate_ai_response_async(
+        self,
+        assistant: Assistant,
+        sms_config: Dict[str, Any],
+        conversation: SMSConversation,
+        current_message: str,
+    ) -> tuple:
         """Generate an AI response using the assistant's config.
 
         Returns (response_text, tools_called_list)
+
+        The entire MCP lifecycle stays in this coroutine. AnyIO-backed MCP
+        transports require the task that enters their context managers to also
+        execute and close them; separate ``asyncio.run`` calls violate that
+        invariant even when they happen on the same thread.
         """
         system_prompt = self._build_system_prompt(assistant, sms_config)
 
@@ -416,7 +445,14 @@ class SMSService:
         messages.extend(history)
         messages.append({"role": "user", "content": current_message})
 
-        tools_schema = self._build_tools_schema(assistant)
+        tools_schema = self._build_tools_schema(assistant) or []
+
+        # Open the assistant's MCP connection (if eligible) and merge its tool
+        # schemas for this turn only (Task #459). Native platform tools win any
+        # name collision, so MCP schemas are pre-filtered against native names.
+        native_names = {s["function"]["name"] for s in tools_schema}
+        mcp_schemas = await self._open_mcp_for_turn_async(assistant, native_names)
+        tools_schema = tools_schema + mcp_schemas
 
         llm_model = sms_config.get("llm_model") or assistant.llm_model or "gpt-4o-mini"
         temperature = assistant.temperature or 0.7
@@ -450,7 +486,9 @@ class SMSService:
 
                     tools_called.append({"name": fn_name, "arguments": fn_args})
 
-                    result = self._execute_tool(assistant, fn_name, fn_args)
+                    result = await self._execute_tool_async(
+                        assistant, fn_name, fn_args
+                    )
 
                     messages.append(
                         {
@@ -478,6 +516,10 @@ class SMSService:
         except Exception as e:
             logger.exception(f"Error generating SMS AI response: {e}")
             return None, None
+        finally:
+            # Close the per-turn MCP session regardless of success/failure so a
+            # remote MCP server connection never leaks across SMS turns.
+            await self._close_mcp_for_turn_async()
 
     def _build_system_prompt(self, assistant: Assistant, sms_config: Dict[str, Any]) -> str:
         base_prompt = assistant.system_prompt or "You are a helpful assistant."
@@ -576,6 +618,248 @@ class SMSService:
 
         return schema if schema else None
 
+    # ── MCP (Model Context Protocol) support — Task #459 ─────────────────────
+    #
+    # SMS mirrors the voice + simulator channels: an assistant may link one
+    # account-owned MCP connection whose remote tools become available to the
+    # LLM. Unlike voice (Pipecat, long-lived call session), SMS has no persistent
+    # session, so the async MCPClient is opened at the start of a turn and closed
+    # at the end of the same turn. Execution flows through the shared
+    # botelier.services.mcp_client.MCPClient (SSE / streamable_http transports).
+
+    def _run_async(self, coro):
+        """Run an MCP coroutine to completion from this synchronous code path.
+
+        ``process_incoming_sms`` runs synchronously, but the Twilio webhook that
+        calls it is an ``async`` FastAPI handler. Calling ``asyncio.run`` while an
+        event loop is already running on the current thread raises
+        ``RuntimeError``. To stay safe in both cases we:
+
+          * use ``asyncio.run`` when no loop is running on this thread, and
+          * offload to a dedicated worker thread with its own fresh event loop
+            when a loop *is* already running.
+
+        This never calls ``asyncio.run`` on a thread with a live loop.
+        """
+        try:
+            asyncio.get_running_loop()
+        except RuntimeError:
+            # No running loop on this thread → safe to own one.
+            return asyncio.run(coro)
+
+        # A loop is running on this thread; run the coroutine in a separate
+        # thread that owns its own loop so we never touch the live loop.
+        import concurrent.futures
+
+        def _runner():
+            loop = asyncio.new_event_loop()
+            try:
+                asyncio.set_event_loop(loop)
+                return loop.run_until_complete(coro)
+            finally:
+                try:
+                    loop.close()
+                finally:
+                    asyncio.set_event_loop(None)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
+            return pool.submit(_runner).result()
+
+    def _load_mcp_connection(self, assistant: Assistant):
+        """Resolve the assistant's MCP connection with full enforcement.
+
+        Returns the ``MCPConnection`` ONLY when it is safe to use:
+          * the assistant references a connection,
+          * the connection belongs to the assistant's account (ownership),
+          * the connection is active, and
+          * the connection status is CONNECTED.
+
+        Any failure returns ``None`` so the MCP tools simply never appear —
+        fail-closed, identical to how disconnected DYNAMIC_OPERATION tools are
+        skipped.
+        """
+        connection_id = getattr(assistant, "mcp_connection_id", None)
+        if not connection_id:
+            return None
+
+        from botelier.models.mcp_connection import MCPConnection, MCPConnectionStatus
+
+        conn = (
+            self.db.query(MCPConnection)
+            .filter(MCPConnection.id == connection_id)
+            .first()
+        )
+        if not conn:
+            return None
+
+        # Ownership: the connection must belong to the assistant's account.
+        if str(conn.account_id) != str(assistant.account_id):
+            logger.warning(
+                f"SMS MCP: connection {connection_id} not owned by account "
+                f"{assistant.account_id} — refusing to use it"
+            )
+            return None
+
+        if not conn.is_active:
+            return None
+
+        if conn.status != MCPConnectionStatus.CONNECTED:
+            logger.info(
+                f"SMS MCP: connection {conn.name} is {conn.status} — skipping MCP tools"
+            )
+            return None
+
+        return conn
+
+    def _build_mcp_schemas(
+        self, conn, enabled_tools: List[str], native_names: set
+    ) -> List[Dict[str, Any]]:
+        """Build OpenAI tool schemas for the enabled + discovered MCP tools.
+
+        Only tools in the assistant's ``mcp_enabled_tools`` list are exposed, and
+        any tool whose name collides with a native platform tool is dropped so the
+        native tool wins the collision. Tracks the surviving names in
+        ``_mcp_tool_names`` for execution routing.
+        """
+        discovered = conn.get_discovered_tools() or []
+        enabled_set = set(enabled_tools or [])
+
+        schemas: List[Dict[str, Any]] = []
+        self._mcp_tool_names = set()
+
+        for tool in discovered:
+            name = tool.get("name")
+            if not name or name not in enabled_set:
+                continue
+            # Native platform tools win name collisions — skip the MCP tool.
+            if name in native_names or name in self._mcp_tool_names:
+                continue
+
+            parameters = tool.get("parameters") or {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            }
+            schemas.append(
+                {
+                    "type": "function",
+                    "function": {
+                        "name": name,
+                        "description": tool.get("description") or f"Execute {name}",
+                        "parameters": parameters,
+                    },
+                }
+            )
+            self._mcp_tool_names.add(name)
+
+        return schemas
+
+    def _open_mcp_for_turn(
+        self, assistant: Assistant, native_names: set
+    ) -> List[Dict[str, Any]]:
+        """Synchronous compatibility wrapper for non-production callers/tests."""
+        return self._run_async(
+            self._open_mcp_for_turn_async(assistant, native_names)
+        )
+
+    async def _open_mcp_for_turn_async(
+        self, assistant: Assistant, native_names: set
+    ) -> List[Dict[str, Any]]:
+        """Open the MCP client for this turn and return its merged tool schemas.
+
+        Returns an empty list (and opens nothing) when the assistant has no
+        eligible MCP connection or no enabled tools. Never raises — an MCP setup
+        failure degrades gracefully to "no MCP tools this turn".
+        """
+        self._mcp_client = None
+        self._mcp_tool_names = set()
+
+        conn = self._load_mcp_connection(assistant)
+        if conn is None:
+            return []
+
+        enabled_tools = assistant.mcp_enabled_tools or []
+        if not enabled_tools:
+            return []
+
+        schemas = self._build_mcp_schemas(conn, enabled_tools, native_names)
+        if not schemas:
+            return []
+
+        from botelier.services.mcp_client import MCPClient
+
+        transport_type = conn.transport_type.value if conn.transport_type else "sse"
+        # MCPClient supports SSE and streamable_http; anything else is unsupported.
+        if transport_type not in ("sse", "streamable_http"):
+            logger.info(
+                f"SMS MCP: transport '{transport_type}' unsupported for SMS — "
+                f"skipping MCP tools"
+            )
+            self._mcp_tool_names = set()
+            return []
+
+        auth_type = conn.auth_type.value if conn.auth_type else "none"
+        credentials = conn.get_credentials()
+
+        client = MCPClient(
+            server_url=conn.server_url,
+            auth_type=auth_type,
+            credentials=credentials,
+            connection_config=conn.get_connection_config(),
+            transport_type=transport_type,
+        )
+
+        try:
+            success, error = await client.connect()
+            if not success:
+                logger.warning(f"SMS MCP: failed to connect to {conn.name}: {error}")
+                await client.disconnect()
+                self._mcp_tool_names = set()
+                return []
+        except Exception as e:
+            logger.warning(f"SMS MCP: error opening connection {conn.name}: {e}")
+            self._mcp_tool_names = set()
+            return []
+
+        self._mcp_client = client
+        logger.info(
+            f"SMS MCP: opened {conn.name} with {len(schemas)} enabled tool(s): "
+            f"{sorted(self._mcp_tool_names)}"
+        )
+        return schemas
+
+    def _execute_mcp_tool(self, fn_name: str, fn_args: Dict[str, Any]) -> Any:
+        """Synchronous compatibility wrapper for non-production callers/tests."""
+        return self._run_async(self._execute_mcp_tool_async(fn_name, fn_args))
+
+    async def _execute_mcp_tool_async(
+        self, fn_name: str, fn_args: Dict[str, Any]
+    ) -> Any:
+        """Execute an MCP tool through the live per-turn MCP client."""
+        if self._mcp_client is None:
+            return {"error": f"MCP tool '{fn_name}' unavailable", "status": "failed"}
+        try:
+            return await self._mcp_client.execute_tool(fn_name, fn_args)
+        except Exception as e:
+            logger.error(f"SMS MCP tool '{fn_name}' execution failed: {e}")
+            return {"error": "MCP tool execution failed", "status": "failed"}
+
+    def _close_mcp_for_turn(self):
+        """Synchronous compatibility wrapper for non-production callers/tests."""
+        return self._run_async(self._close_mcp_for_turn_async())
+
+    async def _close_mcp_for_turn_async(self):
+        """Disconnect + clear the per-turn MCP client so it never leaks."""
+        client = self._mcp_client
+        self._mcp_client = None
+        self._mcp_tool_names = set()
+        if client is None:
+            return
+        try:
+            await client.disconnect()
+        except Exception as e:
+            logger.debug(f"SMS MCP disconnect (non-fatal): {e}")
+
     def _build_capability_schema(self, tool: Tool) -> Optional[Dict[str, Any]]:
         """Build the OpenAI tool schema for a universal capability (Task #329).
 
@@ -639,6 +923,13 @@ class SMSService:
         }
 
     def _execute_tool(self, assistant: Assistant, fn_name: str, fn_args: Dict[str, Any]) -> Any:
+        # MCP tools (Task #459) are routed to the live MCP client for this turn.
+        # `_mcp_tool_names` was pre-filtered against native platform tool names,
+        # so any name found here is unambiguously MCP-owned — native tools win
+        # collisions because colliding MCP schemas are never exposed.
+        if fn_name in self._mcp_tool_names:
+            return self._execute_mcp_tool(fn_name, fn_args)
+
         # API_REQUEST tools expose the operator-chosen tool.name as the function
         # name, so match by name first.
         tool = (
@@ -677,6 +968,14 @@ class SMSService:
             return {"error": f"Tool '{fn_name}' not found", "status": "failed"}
 
         return {"error": f"Unsupported tool type: {tool.tool_type}", "status": "failed"}
+
+    async def _execute_tool_async(
+        self, assistant: Assistant, fn_name: str, fn_args: Dict[str, Any]
+    ) -> Any:
+        """Execute MCP asynchronously; preserve existing native sync execution."""
+        if fn_name in self._mcp_tool_names:
+            return await self._execute_mcp_tool_async(fn_name, fn_args)
+        return self._execute_tool(assistant, fn_name, fn_args)
 
     def _execute_capability(
         self, assistant: Assistant, capability_name: str, arguments: Dict[str, Any]

@@ -33,6 +33,7 @@ from sqlalchemy.orm import Session
 from botelier.auth.middleware import get_current_user
 from botelier.database import get_db
 from botelier.models.mcp_connection import (
+    SUPPORTED_MCP_TRANSPORTS,
     MCPAuthType,
     MCPConnection,
     MCPConnectionStatus,
@@ -135,14 +136,47 @@ class MCPConnectionTestRequest(BaseModel):
 
 
 def _validate_transport_type(value: str) -> MCPTransportType:
-    """Validate and convert transport type string to enum."""
+    """Validate and convert a transport type string to a supported enum member.
+
+    Only the transports in ``SUPPORTED_MCP_TRANSPORTS`` (``sse`` and
+    ``streamable_http``) are accepted for new or updated connections. Legacy
+    enum values (``stdio``, ``http``, ``websocket``) exist purely so old rows
+    still load; they are rejected here.
+
+    The error is intentionally actionable and sanitized: it echoes only the
+    allowed values, never the raw/attacker-controlled input, so it cannot be
+    used to reflect arbitrary content back to the caller.
+    """
+    supported = [t.value for t in SUPPORTED_MCP_TRANSPORTS]
+    normalized = (value or "").strip().lower()
+
     try:
-        return MCPTransportType(value.lower())
+        transport = MCPTransportType(normalized)
     except ValueError:
         raise HTTPException(
             status_code=400,
-            detail=f"Invalid transport_type. Must be one of: {[t.value for t in MCPTransportType]}",
+            detail=(
+                "Unsupported transport_type. Supported transports are: "
+                f"{', '.join(supported)}. Choose 'streamable_http' for newer "
+                "servers (e.g. hosted MCP endpoints) or 'sse' for servers that "
+                "expose a Server-Sent Events endpoint."
+            ),
         )
+
+    if transport not in SUPPORTED_MCP_TRANSPORTS:
+        # Legacy enum member (stdio / http / websocket) — recognized by the
+        # model for backward-compatible loads, but not offered going forward.
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"The '{transport.value}' transport is no longer supported. "
+                f"Supported transports are: {', '.join(supported)}. Update this "
+                "connection to 'streamable_http' (newer servers) or 'sse' "
+                "(Server-Sent Events endpoints)."
+            ),
+        )
+
+    return transport
 
 
 def _validate_auth_type(value: str) -> MCPAuthType:
@@ -298,6 +332,9 @@ async def test_existing_connection(
 
     _assert_account_access(current_user, str(connection.account_id))
     _validate_mcp_server_url(connection.server_url)
+    _validate_transport_type(
+        connection.transport_type.value if connection.transport_type else "sse"
+    )
 
     connection.status = MCPConnectionStatus.CONNECTING
     db.commit()
@@ -357,6 +394,9 @@ async def discover_tools(
 
     _assert_account_access(current_user, str(connection.account_id))
     _validate_mcp_server_url(connection.server_url)
+    _validate_transport_type(
+        connection.transport_type.value if connection.transport_type else "sse"
+    )
 
     try:
         credentials = connection.get_credentials()
@@ -409,6 +449,7 @@ async def test_connection_without_saving(
 ):
     """Test an MCP connection without saving it."""
     _validate_mcp_server_url(data.server_url)
+    transport_type = _validate_transport_type(data.transport_type)
     try:
         credentials = data.credentials.model_dump(exclude_none=True) if data.credentials else {}
 
@@ -417,7 +458,7 @@ async def test_connection_without_saving(
             auth_type=data.auth_type,
             credentials=credentials,
             timeout=15.0,
-            transport_type=data.transport_type,
+            transport_type=transport_type.value,
         )
 
         return {
