@@ -66,6 +66,9 @@ class IntegrationAPIConfig:
     endpoint_template: Optional[str] = None
     headers: Optional[dict[str, str]] = None
     body_template: Optional[str] = None
+    query_params: list[dict[str, Any]] = field(default_factory=list)
+    fixed_params: dict[str, Any] = field(default_factory=dict)
+    connection_params: dict[str, str] = field(default_factory=dict)
     timeout: int = 30
     retry_count: int = 2
     query_param_overrides: dict[str, str] = field(default_factory=dict)
