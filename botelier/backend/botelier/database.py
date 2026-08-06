@@ -660,6 +660,8 @@ WHERE answered_at IS NULL
     # IntegrationActionKind.IMPORTED enum value
     "ALTER TYPE integrationactionkind ADD VALUE IF NOT EXISTS 'imported'",
     "ALTER TYPE integrationactionkind ADD VALUE IF NOT EXISTS 'IMPORTED'",
+    # MCP Streamable HTTP transport (MCP spec 2025-03-26)
+    "ALTER TYPE mcptransporttype ADD VALUE IF NOT EXISTS 'streamable_http'",
     # IntegrationType new columns for imported specs
     "ALTER TABLE integration_types ADD COLUMN IF NOT EXISTS origin VARCHAR(32) NOT NULL DEFAULT 'botelier_certified'",
     "ALTER TABLE integration_types ADD COLUMN IF NOT EXISTS source_type VARCHAR(32)",

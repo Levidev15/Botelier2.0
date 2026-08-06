@@ -44,6 +44,7 @@ class MCPTransportType(str, enum.Enum):
     HTTP = "http"
     SSE = "sse"
     WEBSOCKET = "websocket"
+    STREAMABLE_HTTP = "streamable_http"
 
 
 class MCPConnection(Base):

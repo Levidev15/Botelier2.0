@@ -52,19 +52,22 @@ class MCPClient:
         auth_type: str = "none",
         credentials: Optional[Dict[str, str]] = None,
         connection_config: Optional[Dict[str, Any]] = None,
+        transport_type: str = "sse",
     ):
         """Initialize MCP client.
 
         Args:
-            server_url: URL of the MCP server (SSE endpoint)
+            server_url: URL of the MCP server
             auth_type: Authentication type (none, api_key, bearer, basic)
             credentials: Authentication credentials
             connection_config: Additional connection configuration
+            transport_type: Transport protocol — "sse" (default) or "streamable_http"
         """
         self.server_url = server_url
         self.auth_type = auth_type
         self.credentials = credentials or {}
         self.connection_config = connection_config or {}
+        self.transport_type = transport_type
 
         self._session: Optional[ClientSession] = None
         self._read_stream = None
@@ -107,15 +110,30 @@ class MCPClient:
         try:
             headers = self._get_headers()
 
-            self._context_manager = sse_client(
-                url=self.server_url,
-                headers=headers,
-                timeout=timeout,
-                httpx_client_factory=make_ssrf_safe_mcp_client_factory(),
-            )
+            if self.transport_type == "streamable_http":
+                from mcp.client.streamable_http import streamablehttp_client
+
+                self._context_manager = streamablehttp_client(
+                    url=self.server_url,
+                    headers=headers,
+                    timeout=timeout,
+                    httpx_client_factory=make_ssrf_safe_mcp_client_factory(),
+                )
+            else:
+                self._context_manager = sse_client(
+                    url=self.server_url,
+                    headers=headers,
+                    timeout=timeout,
+                    httpx_client_factory=make_ssrf_safe_mcp_client_factory(),
+                )
 
             streams = await self._context_manager.__aenter__()
-            self._read_stream, self._write_stream = streams
+            # streamablehttp_client yields a 3-tuple (read, write, get_session_id);
+            # sse_client yields a 2-tuple (read, write).
+            if self.transport_type == "streamable_http":
+                self._read_stream, self._write_stream, _ = streams
+            else:
+                self._read_stream, self._write_stream = streams
 
             self._session = ClientSession(
                 read_stream=self._read_stream,
@@ -264,6 +282,7 @@ async def test_mcp_connection(
     auth_type: str = "none",
     credentials: Optional[Dict[str, str]] = None,
     timeout: float = 10.0,
+    transport_type: str = "sse",
 ) -> Tuple[bool, Optional[str], List[Dict]]:
     """Test connection to an MCP server and discover tools.
 
@@ -275,6 +294,7 @@ async def test_mcp_connection(
         auth_type: Authentication type
         credentials: Authentication credentials
         timeout: Connection timeout
+        transport_type: Transport protocol — "sse" or "streamable_http"
 
     Returns:
         Tuple of (success, error_message, discovered_tools)
@@ -283,6 +303,7 @@ async def test_mcp_connection(
         server_url=server_url,
         auth_type=auth_type,
         credentials=credentials,
+        transport_type=transport_type,
     )
 
     try:
@@ -318,6 +339,7 @@ class MCPClientPool:
         auth_type: str = "none",
         credentials: Optional[Dict[str, str]] = None,
         connection_config: Optional[Dict[str, Any]] = None,
+        transport_type: str = "sse",
     ) -> MCPClient:
         """Get or create an MCP client for the given connection.
 
@@ -343,6 +365,7 @@ class MCPClientPool:
                 auth_type=auth_type,
                 credentials=credentials,
                 connection_config=connection_config,
+                transport_type=transport_type,
             )
 
             success, error = await client.connect()

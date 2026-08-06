@@ -406,6 +406,7 @@ async def _build_bundle(
                     mcp_conn_data = {
                         "id": str(mcp_conn.id),
                         "server_url": mcp_conn.server_url,
+                        "transport_type": (mcp_conn.transport_type.value if mcp_conn.transport_type else "sse"),
                         "auth_type": (mcp_conn.auth_type.value if mcp_conn.auth_type else "none"),
                         "credentials": credentials,
                         "discovered_tools": mcp_conn.discovered_tools or [],

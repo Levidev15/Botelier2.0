@@ -130,6 +130,7 @@ class MCPConnectionTestRequest(BaseModel):
 
     server_url: str = Field(..., min_length=1)
     auth_type: str = "none"
+    transport_type: str = "sse"
     credentials: Optional[MCPCredentials] = None
 
 
@@ -308,6 +309,7 @@ async def test_existing_connection(
             auth_type=connection.auth_type.value if connection.auth_type else "none",
             credentials=credentials,
             timeout=15.0,
+            transport_type=connection.transport_type.value if connection.transport_type else "sse",
         )
 
         if success:
@@ -363,6 +365,7 @@ async def discover_tools(
             auth_type=connection.auth_type.value if connection.auth_type else "none",
             credentials=credentials,
             timeout=15.0,
+            transport_type=connection.transport_type.value if connection.transport_type else "sse",
         )
 
         if success:
@@ -414,6 +417,7 @@ async def test_connection_without_saving(
             auth_type=data.auth_type,
             credentials=credentials,
             timeout=15.0,
+            transport_type=data.transport_type,
         )
 
         return {

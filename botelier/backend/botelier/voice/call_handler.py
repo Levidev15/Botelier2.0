@@ -38,7 +38,7 @@ from .greeting_cache import get_or_generate_greeting_audio
 from .prewarm import PreWarmBundle, PreWarmCache
 
 try:
-    from mcp.client.session_group import SseServerParameters
+    from mcp.client.session_group import SseServerParameters, StreamableHttpParameters
 
     from pipecat.services.mcp_service import MCPClient as PipecatMCPClient
 
@@ -47,6 +47,7 @@ except ImportError:
     PIPECAT_MCP_AVAILABLE = False
     PipecatMCPClient = None
     SseServerParameters = None
+    StreamableHttpParameters = None
 
 
 def _fetch_call_log_retry(call_sid: str):
@@ -500,6 +501,9 @@ class CallHandler:
                             mcp_connection_data = {
                                 "id": str(mcp_conn.id),
                                 "server_url": mcp_conn.server_url,
+                                "transport_type": mcp_conn.transport_type.value
+                                if mcp_conn.transport_type
+                                else "sse",
                                 "auth_type": mcp_conn.auth_type.value
                                 if mcp_conn.auth_type
                                 else "none",
@@ -758,15 +762,29 @@ class CallHandler:
                         credentials=mcp_connection_data.get("credentials"),
                     )
 
-                    # Create Pipecat MCP client with SSE parameters
-                    sse_params = SseServerParameters(
-                        url=mcp_connection_data["server_url"],
-                        headers=mcp_headers if mcp_headers else None,
-                        timeout=10.0,
-                        sse_read_timeout=300.0,
-                    )
+                    # Create Pipecat MCP client — choose transport based on connection config
+                    _transport = mcp_connection_data.get("transport_type", "sse")
+                    if _transport == "streamable_http" and StreamableHttpParameters is not None:
+                        _server_params = StreamableHttpParameters(
+                            url=mcp_connection_data["server_url"],
+                            headers=mcp_headers if mcp_headers else None,
+                            timeout=10.0,
+                            sse_read_timeout=300.0,
+                        )
+                    else:
+                        _server_params = SseServerParameters(
+                            url=mcp_connection_data["server_url"],
+                            headers=mcp_headers if mcp_headers else None,
+                            timeout=10.0,
+                            sse_read_timeout=300.0,
+                        )
 
-                    mcp_client = PipecatMCPClient(server_params=sse_params)
+                    mcp_client = PipecatMCPClient(server_params=_server_params)
+
+                    # Pipecat 1.5.0 requires an explicit start() before any
+                    # schema/tool calls — opens the transport and initialises
+                    # the MCP session.
+                    await mcp_client.start()
 
                     # Get all available tools from MCP server
                     all_tools_schema = await mcp_client.get_tools_schema()
@@ -1360,8 +1378,12 @@ class CallHandler:
             if call_sid in self.user_turn_timestamps:
                 del self.user_turn_timestamps[call_sid]
             if call_sid in self.call_mcp_clients:
-                del self.call_mcp_clients[call_sid]
-                logger.debug(f"Cleaned up MCP client reference for call {call_sid}")
+                _mcp_client_ref = self.call_mcp_clients.pop(call_sid)
+                try:
+                    await _mcp_client_ref.close()
+                except Exception as _mcp_close_err:
+                    logger.debug(f"MCP client close (non-fatal): {_mcp_close_err}")
+                logger.debug(f"Cleaned up MCP client for call {call_sid}")
             if call_sid in self.call_recording_sids:
                 del self.call_recording_sids[call_sid]
             if call_sid in self.call_tasks:

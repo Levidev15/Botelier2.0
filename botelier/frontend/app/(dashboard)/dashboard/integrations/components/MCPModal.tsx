@@ -16,6 +16,7 @@ const defaultForm = {
   name: "",
   description: "",
   server_url: "",
+  transport_type: "sse",
   auth_type: "none",
   api_key: "",
   token: "",
@@ -30,7 +31,7 @@ export default function MCPModal({
 }: MCPModalProps) {
   const [form, setForm] = useState(() =>
     editingMcp
-      ? { name: editingMcp.name, description: editingMcp.description || "", server_url: editingMcp.server_url, auth_type: editingMcp.auth_type, api_key: "", token: "" }
+      ? { name: editingMcp.name, description: editingMcp.description || "", server_url: editingMcp.server_url, transport_type: editingMcp.transport_type || "sse", auth_type: editingMcp.auth_type, api_key: "", token: "" }
       : defaultForm
   );
   const [saving, setSaving] = useState(false);
@@ -54,6 +55,7 @@ export default function MCPModal({
         name: form.name,
         description: form.description || null,
         server_url: form.server_url,
+        transport_type: form.transport_type,
         auth_type: form.auth_type,
         credentials: Object.keys(credentials).length > 0 ? credentials : null,
       };
@@ -119,12 +121,35 @@ export default function MCPModal({
             </label>
             <input
               type="text"
-              placeholder="https://your-mcp-server.com/sse"
+              placeholder={form.transport_type === "streamable_http" ? "https://your-mcp-server.com/api/mcp" : "https://your-mcp-server.com/sse"}
               value={form.server_url}
               onChange={(e) => setForm(prev => ({ ...prev, server_url: e.target.value }))}
               className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm font-mono"
             />
-            <p className="text-xs text-gray-500 mt-1">The SSE endpoint of your MCP server</p>
+          </div>
+
+          <div>
+            <label className="block text-sm font-medium text-gray-300 mb-1">Transport</label>
+            <div className="flex gap-3">
+              {([
+                { value: "sse", label: "SSE", hint: "Legacy — most self-hosted servers" },
+                { value: "streamable_http", label: "Streamable HTTP", hint: "Shopify and newer servers" },
+              ] as const).map(({ value, label, hint }) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setForm(prev => ({ ...prev, transport_type: value }))}
+                  className={`flex-1 px-3 py-2 rounded-lg border text-sm text-left transition ${
+                    form.transport_type === value
+                      ? "border-blue-500 bg-blue-600/10 text-white"
+                      : "border-gray-700 bg-[#0a0a0a] text-gray-400 hover:border-gray-600"
+                  }`}
+                >
+                  <div className="font-medium">{label}</div>
+                  <div className="text-xs opacity-60 mt-0.5">{hint}</div>
+                </button>
+              ))}
+            </div>
           </div>
 
           <div>
