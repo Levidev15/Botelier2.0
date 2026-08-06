@@ -15,8 +15,9 @@ dependency wiring, and Pydantic validation are all covered.
 """
 
 import os
+import ssl
 import uuid
-from unittest.mock import MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 os.environ.setdefault("DATABASE_URL", "postgresql://test:test@localhost/test")
 os.environ.setdefault("NEXTAUTH_SECRET", "test-secret-for-testing-only")
@@ -26,7 +27,9 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 import botelier.api.mcp_connections as mcp_api
-from botelier.services.mcp_client import MCPClient
+import httpx
+
+from botelier.services.mcp_client import MCPClient, _format_mcp_connection_error
 from botelier.auth.middleware import get_current_user
 from botelier.database import get_db
 from botelier.models.mcp_connection import (
@@ -203,3 +206,48 @@ async def test_direct_client_rejects_unsupported_transport_before_network(transp
     assert success is False
     assert "Unsupported MCP transport" in error
     assert "streamable_http" in error and "sse" in error
+
+
+def test_nested_taskgroup_tls_error_is_actionable():
+    tls_error = ssl.SSLCertVerificationError(
+        1, "certificate verify failed: unable to get local issuer certificate"
+    )
+    connect_error = httpx.ConnectError(
+        "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"
+    )
+    connect_error.__cause__ = tls_error
+    wrapped = ExceptionGroup(
+        "unhandled errors in a TaskGroup",
+        [connect_error],
+    )
+
+    message = _format_mcp_connection_error(wrapped)
+
+    assert "TLS certificate verification failed" in message
+    assert "Renew/fix" in message
+    assert "TaskGroup" not in message
+
+
+@pytest.mark.asyncio
+async def test_streamable_http_preflight_surfaces_tls_error_before_mcp_taskgroup():
+    client = MCPClient(
+        server_url="https://expired.example/mcp",
+        transport_type="streamable_http",
+    )
+    client._preflight_streamable_http = AsyncMock(
+        side_effect=httpx.ConnectError(
+            "[SSL: CERTIFICATE_VERIFY_FAILED] certificate verify failed"
+        )
+    )
+    tls_error = ssl.SSLCertVerificationError(1, "certificate has expired")
+    client._preflight_streamable_http.side_effect.__cause__ = tls_error
+
+    with patch(
+        "mcp.client.streamable_http.streamablehttp_client"
+    ) as transport_factory:
+        success, error = await client.connect()
+
+    assert success is False
+    assert "TLS certificate verification failed" in error
+    assert "TaskGroup" not in error
+    transport_factory.assert_not_called()

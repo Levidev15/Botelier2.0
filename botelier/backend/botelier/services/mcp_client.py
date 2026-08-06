@@ -9,6 +9,7 @@ This service handles:
 
 import asyncio
 import json
+import ssl
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -21,6 +22,59 @@ from mcp.types import Tool as MCPTool
 from botelier.services.ssrf_safe_transport import make_ssrf_safe_mcp_client_factory
 
 SUPPORTED_MCP_TRANSPORT_VALUES = frozenset({"sse", "streamable_http"})
+
+
+def _iter_exception_leaves(error: BaseException):
+    """Yield concrete exceptions hidden inside ExceptionGroup/TaskGroup wrappers."""
+    nested = getattr(error, "exceptions", None)
+    if nested:
+        for child in nested:
+            yield from _iter_exception_leaves(child)
+        return
+    yield error
+
+
+def _format_mcp_connection_error(error: BaseException) -> str:
+    """Return an actionable, sanitized error from nested MCP transport failures."""
+    leaves = list(_iter_exception_leaves(error))
+
+    for leaf in leaves:
+        chain = [leaf]
+        cause = getattr(leaf, "__cause__", None)
+        while cause is not None and cause not in chain:
+            chain.append(cause)
+            cause = getattr(cause, "__cause__", None)
+        chain_text = " ".join(str(item) for item in chain).upper()
+        if any(
+            isinstance(item, ssl.SSLCertVerificationError) for item in chain
+        ) or "CERTIFICATE_VERIFY_FAILED" in chain_text:
+            return (
+                "TLS certificate verification failed. The MCP server certificate "
+                "is expired, incomplete, or issued by an untrusted certificate "
+                "authority. Renew/fix the server certificate and full certificate "
+                "chain, then test again."
+            )
+
+    for leaf in leaves:
+        if isinstance(leaf, (httpx.ConnectTimeout, httpx.ReadTimeout, TimeoutError)):
+            return (
+                "Connection to the MCP server timed out. Confirm the URL is reachable "
+                "and that the selected transport matches the server."
+            )
+        if isinstance(leaf, httpx.ConnectError):
+            message = str(leaf).strip()
+            return (
+                f"Could not connect to the MCP server: {message}"
+                if message
+                else "Could not connect to the MCP server."
+            )
+
+    # Prefer the deepest useful message over the generic outer TaskGroup text.
+    for leaf in leaves:
+        message = str(leaf).strip()
+        if message and "TaskGroup" not in message:
+            return message[:500]
+    return str(error)[:500] or "MCP connection failed for an unknown reason."
 
 
 class MCPClientError(Exception):
@@ -100,6 +154,22 @@ class MCPClient:
 
         return headers
 
+    async def _preflight_streamable_http(
+        self, headers: Dict[str, str], timeout: float
+    ) -> None:
+        """Validate DNS/SSRF/TLS before MCP starts its AnyIO task group.
+
+        A HEAD response of any HTTP status proves the network and TLS handshake
+        succeeded; authentication and protocol validation remain the MCP
+        initialize request's responsibility.
+        """
+        client_factory = make_ssrf_safe_mcp_client_factory()
+        async with client_factory(
+            headers=headers,
+            timeout=httpx.Timeout(timeout),
+        ) as client:
+            await client.head(self.server_url)
+
     async def connect(self, timeout: float = 30.0) -> Tuple[bool, Optional[str]]:
         """Connect to the MCP server.
 
@@ -120,6 +190,7 @@ class MCPClient:
             if self.transport_type == "streamable_http":
                 from mcp.client.streamable_http import streamablehttp_client
 
+                await self._preflight_streamable_http(headers, timeout)
                 self._context_manager = streamablehttp_client(
                     url=self.server_url,
                     headers=headers,
@@ -155,7 +226,7 @@ class MCPClient:
             return True, None
 
         except Exception as e:
-            error_msg = str(e)
+            error_msg = _format_mcp_connection_error(e)
             logger.error(f"Failed to connect to MCP server {self.server_url}: {error_msg}")
             await self.disconnect()
             return False, error_msg

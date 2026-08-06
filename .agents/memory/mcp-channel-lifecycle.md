@@ -29,3 +29,16 @@ errors when a later task attempts to close a session opened by an earlier one.
 inside one coroutine. If the public service boundary is synchronous, bridge
 once around that whole coroutine rather than once per connect/execute/close
 operation.
+
+Streamable HTTP transport failures may hide the real network error inside an
+AnyIO `ExceptionGroup`, or cancel initialization before the nested exception is
+returned to the caller.
+
+**Why:** Reporting only the outer `TaskGroup` string makes certificate, DNS,
+timeout, and authentication problems indistinguishable; cleanup can also race
+an active async generator after initialization cancellation.
+
+**How to apply:** Run an SSRF-safe, TLS-verifying HTTP preflight before opening
+the Streamable HTTP MCP task group, then unwrap exception leaves/causes into
+sanitized actionable messages. Never solve certificate failures by disabling
+TLS verification.
