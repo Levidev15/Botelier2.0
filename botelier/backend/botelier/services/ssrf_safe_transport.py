@@ -102,7 +102,11 @@ class SSRFSafeTransport(httpx.AsyncHTTPTransport):
             method=request.method,
             url=safe_url,
             headers=headers,
-            content=request.content,
+            # Streamable HTTP MCP sends async request bodies. Accessing
+            # request.content here attempts to buffer a stream that has not
+            # been read, raising RuntimeError before the request reaches the
+            # server. Preserve the original stream so httpx can consume it.
+            stream=request.stream,
             extensions=extensions,
         )
 
