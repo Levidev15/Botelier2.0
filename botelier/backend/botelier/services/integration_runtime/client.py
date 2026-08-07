@@ -17,7 +17,7 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any, Optional
-from urllib.parse import urlencode, urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 import httpx
 from loguru import logger
@@ -89,9 +89,32 @@ _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
 _MULTIPART_CONTENT_TYPE = "multipart/form-data"
 
+# Guardrail clamps: config values ultimately come from stored JSON blobs
+# (endpoint seeds, published versions, drafts) that are not schema-validated,
+# so bound them here — one voice tool call must never hold a pipeline hostage
+# for minutes or spin dozens of retries.
+_MAX_TIMEOUT_S = 60
+_MAX_RETRIES = 5
+# Hard cap on the rendered request body (all encodings). Templates render
+# caller/LLM variables, so an unbounded value could balloon the payload.
+_MAX_BODY_BYTES = 2 * 1024 * 1024  # 2 MB
+# Transport-level cap on the response body, enforced while streaming — BEFORE
+# .json()/.text parse. (The redaction layer's bound is post-parse and cannot
+# protect against a multi-GB body exhausting memory.)
+_MAX_RESPONSE_BYTES = 10 * 1024 * 1024  # 10 MB
+
 
 class _InvalidBodyTemplate(ValueError):
     """Raised when a configured JSON body cannot be rendered safely."""
+
+
+class _ResponseTooLarge(Exception):
+    """Raised when an upstream response exceeds the transport-level size cap."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            f"Upstream response exceeded the {_MAX_RESPONSE_BYTES // (1024 * 1024)} MB limit"
+        )
 
 
 @dataclass
@@ -145,6 +168,16 @@ class IntegrationClient:
         self, config: IntegrationAPIConfig, variables: dict[str, Any]
     ) -> APIResponse:
         start_ms = int(time.time() * 1000)
+
+        # Clamp unvalidated numeric config before any of it is used.
+        try:
+            config.timeout = max(1, min(int(config.timeout or 30), _MAX_TIMEOUT_S))
+        except (TypeError, ValueError):
+            config.timeout = 30
+        try:
+            config.retry_count = max(0, min(int(config.retry_count or 0), _MAX_RETRIES))
+        except (TypeError, ValueError):
+            config.retry_count = 0
 
         integration = await self._get_integration(config.integration_id)
         if not integration:
@@ -432,9 +465,35 @@ class IntegrationClient:
                     circuit_record_success(integration.id, self.account_id, rconf)
                 return result
 
+            except _ResponseTooLarge as e:
+                # Provider sent an absurdly large body — do not retry (it will
+                # be just as large next time) and do not trip the breaker (the
+                # provider is up; the payload is simply unusable).
+                logger.error(f"{e}: {_sanitize_endpoint_for_log(url)}")
+                self._write_call_log(
+                    integration_id=str(integration.id),
+                    endpoint_called=log_endpoint,
+                    method=config.method,
+                    status_code=0,
+                    success=False,
+                    latency_ms=int(time.time() * 1000) - start_ms,
+                    error_type=APIErrorType.SERVER_ERROR.value,
+                    error_message=str(e),
+                )
+                circuit_record_success(integration.id, self.account_id, rconf)
+                return APIResponse(
+                    success=False,
+                    status_code=0,
+                    error_type=APIErrorType.SERVER_ERROR,
+                    error_message=str(e),
+                )
+
             except httpx.TimeoutException:
+                # Log only the sanitized URL — a rendered URL can carry API keys
+                # or other credentials in its query string.
                 logger.warning(
-                    f"Request timeout (attempt {attempt + 1}/{config.retry_count + 1}): {url}"
+                    f"Request timeout (attempt {attempt + 1}/{config.retry_count + 1}): "
+                    f"{_sanitize_endpoint_for_log(url)}"
                 )
                 last_error = httpx.TimeoutException(f"Request timed out after {config.timeout}s")
                 attempt += 1
@@ -871,7 +930,10 @@ class IntegrationClient:
         if endpoint_def:
             path = endpoint_def.get("path", path)
 
-        path = self._substitute_variables(path, variables)
+        # Path substitutions are URL-encoded so a variable value containing
+        # "/", "?", "#", or "%" cannot rewrite the path structure or smuggle a
+        # query string into the URL. Query params (below) go through urlencode.
+        path = self._substitute_variables(path, variables, url_encode=True)
 
         # Resolve the property-level hotel id for path templates. Prefer the
         # non-secret connection_config (where connections now store it) and fall
@@ -889,10 +951,11 @@ class IntegrationClient:
             # "{{hotel_id}}" contains "{hotel_id}" as a substring, so a single-
             # brace replace run first would corrupt it to "{value}" (leaving the
             # outer braces). Order double → single so whole placeholders resolve.
-            path = path.replace("{{hotelId}}", hotel_id)
-            path = path.replace("{{hotel_id}}", hotel_id)
-            path = path.replace("{hotelId}", hotel_id)
-            path = path.replace("{hotel_id}", hotel_id)
+            encoded_hotel_id = quote(str(hotel_id), safe="")
+            path = path.replace("{{hotelId}}", encoded_hotel_id)
+            path = path.replace("{{hotel_id}}", encoded_hotel_id)
+            path = path.replace("{hotelId}", encoded_hotel_id)
+            path = path.replace("{hotel_id}", encoded_hotel_id)
 
         # Fail fast: any {{var}} still in the path after all substitutions means a
         # required value (e.g. hotel_id) was never resolved — either missing from
@@ -964,10 +1027,22 @@ class IntegrationClient:
         adapter = self._resolve_adapter(integration)
 
         headers = {"Content-Type": "application/json", "Accept": "application/json"}
-        headers.update(adapter.build_auth_headers(integration, credentials))
 
+        # Config headers apply first, auth headers LAST: per-node/draft header
+        # maps come from stored JSON that operators (or the LLM-facing editor)
+        # can set, and must never be able to override or blank the adapter's
+        # credential headers (Authorization, X-API-Key, ...). Comparison is
+        # case-insensitive — HTTP header names are.
         if config.headers:
             headers.update(config.headers)
+
+        auth_headers = adapter.build_auth_headers(integration, credentials)
+        if auth_headers:
+            auth_keys_lower = {k.lower() for k in auth_headers}
+            headers = {
+                k: v for k, v in headers.items() if k.lower() not in auth_keys_lower
+            }
+            headers.update(auth_headers)
 
         return headers
 
@@ -989,6 +1064,11 @@ class IntegrationClient:
             return None
 
         body_str = self._substitute_variables(body_template, variables)
+        if len(body_str.encode("utf-8", errors="ignore")) > _MAX_BODY_BYTES:
+            self._log_invalid_body_template(config)
+            raise _InvalidBodyTemplate(
+                f"Rendered request body exceeds the {_MAX_BODY_BYTES // (1024 * 1024)} MB limit"
+            )
         content_type = self._body_content_type(config)
 
         if content_type == _FORM_CONTENT_TYPE:
@@ -1069,13 +1149,18 @@ class IntegrationClient:
             f"endpoint={getattr(config, 'endpoint_id', '?')})"
         )
 
-    def _substitute_variables(self, template: str, variables: dict[str, Any]) -> str:
+    def _substitute_variables(
+        self, template: str, variables: dict[str, Any], url_encode: bool = False
+    ) -> str:
         def replace_var(match):
             var_name = match.group(1)
             value = variables.get(var_name)
             if value is None:
                 return match.group(0)
-            return str(value)
+            rendered = str(value)
+            # URL-encode values substituted into a URL path so they can only
+            # ever occupy a single path segment (no "/", "?", "#" injection).
+            return quote(rendered, safe="") if url_encode else rendered
 
         return re.sub(r"\{\{(\w+)\}\}", replace_var, template)
 
@@ -1099,15 +1184,36 @@ class IntegrationClient:
         # redirect target independently before connecting. httpx strips sensitive
         # headers when a redirect changes origin.
         async with httpx.AsyncClient(
-            transport=SSRFSafeTransport(), follow_redirects=True, max_redirects=5
+            transport=SSRFSafeTransport(),
+            follow_redirects=True,
+            max_redirects=5,
+            timeout=timeout,
         ) as client:
-            return await client.request(
+            request = client.build_request(
                 method.upper(),
                 url,
                 headers=request_headers,
-                timeout=timeout,
                 **request_kwargs,
             )
+            # Stream the body with a hard cap enforced BEFORE full buffering —
+            # a declared Content-Length is checked first, but a chunked or
+            # lying response is still bounded while reading.
+            response = await client.send(request, stream=True)
+            try:
+                declared = response.headers.get("content-length")
+                if declared and declared.isdigit() and int(declared) > _MAX_RESPONSE_BYTES:
+                    raise _ResponseTooLarge()
+                buffered = bytearray()
+                async for chunk in response.aiter_bytes():
+                    buffered.extend(chunk)
+                    if len(buffered) > _MAX_RESPONSE_BYTES:
+                        raise _ResponseTooLarge()
+                # Mirror what Response.aread() does so .content/.text/.json()
+                # work after the stream is closed.
+                response._content = bytes(buffered)  # noqa: SLF001
+            finally:
+                await response.aclose()
+            return response
 
     def _apply_canonical(
         self,

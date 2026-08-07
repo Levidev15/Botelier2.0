@@ -125,6 +125,10 @@ async def test_api_request(
                 ],
             )
         else:
+            # Same SSRF preflight the unscoped path gets — the legacy executor
+            # also routes through SSRFSafeTransport, but failing fast here gives
+            # a clear 400 instead of a generic network error.
+            _validate_url(request.url)
             execution_request.legacy_config = {
                 "url": request.url,
                 "method": request.method,

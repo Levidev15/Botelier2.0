@@ -43,6 +43,27 @@ from datetime import datetime
 
 router = APIRouter()
 
+# Hard cap on spec size (raw bytes) for both file uploads and URL fetches.
+# OpenAPI/Postman specs are text documents; anything beyond this is either a
+# mistake or an attempt to exhaust memory/DB storage.
+_MAX_SPEC_BYTES = 5 * 1024 * 1024  # 5 MB
+# base64 inflates by ~4/3; reject oversized payloads BEFORE decoding.
+_MAX_SPEC_B64_CHARS = (_MAX_SPEC_BYTES * 4) // 3 + 1024
+
+# Content types that are clearly not a spec document. The parse step is the
+# real gate (fail-closed JSON/YAML), but rejecting obvious binary early gives
+# a clearer error and avoids buffering megabytes of video/zip for nothing.
+_REJECTED_SPEC_CONTENT_PREFIXES = (
+    "image/",
+    "video/",
+    "audio/",
+    "font/",
+    "application/zip",
+    "application/gzip",
+    "application/pdf",
+    "application/octet-stream",
+)
+
 
 # ---------------------------------------------------------------------------
 # Spec import
@@ -111,28 +132,70 @@ async def import_integration_spec(
     spec_url: Optional[str] = body.get("spec_url")
 
     if body.get("spec_file_b64"):
+        b64_payload = body["spec_file_b64"]
+        if not isinstance(b64_payload, str) or len(b64_payload) > _MAX_SPEC_B64_CHARS:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Spec file too large (max {_MAX_SPEC_BYTES // (1024 * 1024)} MB).",
+            )
         try:
-            raw = base64.b64decode(body["spec_file_b64"])
+            raw = base64.b64decode(b64_payload)
         except Exception:
             raise HTTPException(status_code=400, detail="Invalid file upload: could not decode file data.")
+        if len(raw) > _MAX_SPEC_BYTES:
+            raise HTTPException(
+                status_code=413,
+                detail=f"Spec file too large (max {_MAX_SPEC_BYTES // (1024 * 1024)} MB).",
+            )
         spec_data = _parse_spec_bytes(raw)
     elif spec_url:
+        # Fast preflight (scheme/host/resolved-IP checks) for a clear error
+        # message, then SSRFSafeTransport for the actual fetch — the transport
+        # re-resolves and pins the validated IP, closing the DNS-rebinding
+        # (TOCTOU) window between preflight and connect.
         _validate_spec_url(spec_url)
         import httpx
 
+        from botelier.services.ssrf_safe_transport import SSRFSafeTransport
+
         try:
             async with httpx.AsyncClient(
+                transport=SSRFSafeTransport(),
                 timeout=20.0,
                 follow_redirects=False,  # Redirects bypass the SSRF hostname check
             ) as client:
-                resp = await client.get(spec_url)
-                if resp.is_redirect:
-                    raise HTTPException(
-                        status_code=400,
-                        detail="spec_url returned a redirect; provide the direct URL",
+                async with client.stream("GET", spec_url) as resp:
+                    if resp.is_redirect:
+                        raise HTTPException(
+                            status_code=400,
+                            detail="spec_url returned a redirect; provide the direct URL",
+                        )
+                    resp.raise_for_status()
+                    content_type = (
+                        resp.headers.get("content-type", "").split(";", 1)[0].strip().lower()
                     )
-                resp.raise_for_status()
-                spec_bytes = resp.content
+                    if content_type.startswith(_REJECTED_SPEC_CONTENT_PREFIXES):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"spec_url returned unsupported content type: {content_type}",
+                        )
+                    declared = resp.headers.get("content-length")
+                    if declared and declared.isdigit() and int(declared) > _MAX_SPEC_BYTES:
+                        raise HTTPException(
+                            status_code=413,
+                            detail=f"Spec at URL too large (max {_MAX_SPEC_BYTES // (1024 * 1024)} MB).",
+                        )
+                    # Stream with a hard cap so a missing/lying Content-Length
+                    # cannot buffer an unbounded body into memory.
+                    buffered = bytearray()
+                    async for chunk in resp.aiter_bytes():
+                        buffered.extend(chunk)
+                        if len(buffered) > _MAX_SPEC_BYTES:
+                            raise HTTPException(
+                                status_code=413,
+                                detail=f"Spec at URL too large (max {_MAX_SPEC_BYTES // (1024 * 1024)} MB).",
+                            )
+                    spec_bytes = bytes(buffered)
         except HTTPException:
             raise
         except Exception as exc:
@@ -141,15 +204,72 @@ async def import_integration_spec(
     else:
         raise HTTPException(status_code=400, detail="Either spec_file_b64 or spec_url is required")
 
+    # A base URL override becomes the origin every published operation calls.
+    # Validate it here (shape + SSRF host checks) so a private/internal origin
+    # is rejected at import time instead of at first execution.
+    base_url_override = body.get("base_url_override")
+    if base_url_override is not None:
+        base_url_override = str(base_url_override).strip().rstrip("/")
+        if base_url_override:
+            from urllib.parse import urlparse as _urlparse
+
+            parsed_override = _urlparse(base_url_override)
+            if (
+                parsed_override.scheme not in ("http", "https")
+                or not parsed_override.netloc
+                or parsed_override.username is not None
+                or parsed_override.password is not None
+                or parsed_override.query
+                or parsed_override.fragment
+            ):
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "base_url_override must be an absolute HTTP/HTTPS origin "
+                        "without credentials, query, or fragment"
+                    ),
+                )
+            _validate_spec_url(base_url_override)
+        else:
+            base_url_override = None
+
     try:
         integration_type = import_spec(
             db=db,
             spec_data=spec_data,
             source_type=spec_type,
             account_id=account_id,
-            base_url_override=body.get("base_url_override"),
+            base_url_override=base_url_override,
             spec_url=spec_url,
         )
+        # Fail-closed origin validation for spec-DERIVED URLs (not just the
+        # override): the extracted server base URL and any absolute token URL
+        # become origins the runtime will call. Reject private/internal or
+        # non-HTTP origins at import time — before anything is persisted —
+        # instead of at first execution.
+        imported_auth = integration_type.get_auth_config() or {}
+        for label, value in (
+            ("server base URL", imported_auth.get("base_url")),
+            ("token URL", imported_auth.get("token_url")),
+        ):
+            value = (str(value) if value else "").strip()
+            if not value:
+                continue
+            if label == "token URL" and "://" not in value:
+                # Relative token path — resolved against base_url at runtime,
+                # which is validated above; nothing separate to check.
+                continue
+            try:
+                _validate_imported_origin(value)
+            except HTTPException as exc:
+                db.rollback()
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"The spec's {label} ({value}) was rejected: {exc.detail}. "
+                        "Re-import with a valid base_url_override."
+                    ),
+                )
         db.commit()
     except ValueError as exc:
         db.rollback()
@@ -255,7 +375,7 @@ def update_operation_policy(
     """Create or update the ConnectionOperationPolicy for one operation."""
     check_account_permission(user, account_id, "integrations.manage", db)
     _get_connection(db, account_id, connection_id)
-    _verify_operation_exists(db, connection_id, operation_id)
+    _verify_operation_exists(db, account_id, connection_id, operation_id)
 
     policy = (
         db.query(ConnectionOperationPolicy)
@@ -291,6 +411,20 @@ def update_operation_policy(
         if field in _ALLOWED_POLICY_FIELDS:
             setattr(policy, field, value)
 
+    # Request-shape settings are validated/normalized through the SAME
+    # normalizer that publish bakes into the version config and that
+    # test_operation applies — persisting anything else here would let the
+    # tested and published request shapes diverge.
+    if "request_overrides" in body:
+        from botelier.services.operation_publisher import normalize_request_overrides
+
+        try:
+            policy.request_overrides = normalize_request_overrides(
+                body.get("request_overrides")
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     policy.updated_at = datetime.utcnow()
     db.commit()
     return policy.to_dict()
@@ -321,14 +455,61 @@ async def test_operation(
     # Upsert policy row
     policy = _get_or_create_policy(db, connection_id, operation_id)
 
-    # Build IntegrationAPIConfig for the certified runtime path
-    config = IntegrationAPIConfig(
-        integration_id=connection_id,
-        method=endpoint.get("method", "GET"),
-        path=endpoint.get("path", "/"),
-        endpoint_id=operation_id,
-        query_param_overrides=body.get("query_params") or {},
+    # Request settings: the saved policy request_overrides overlaid with any
+    # draft fields sent in this request. Both run through the SAME normalizer
+    # (and the same config builder below) that publish_operation bakes into the
+    # published version config — so the request shape a test exercises is
+    # exactly the shape every channel executes once the draft is saved via the
+    # policy PATCH and republished.
+    from botelier.services.operation_publisher import (
+        build_operation_api_config,
+        normalize_request_overrides,
     )
+
+    draft_raw = {
+        k: body[k]
+        for k in ("headers", "content_type", "body_template", "body", "timeout", "retry_count")
+        if k in body and body[k] is not None
+    }
+    effective_raw = {**(policy.request_overrides or {}), **draft_raw}
+    try:
+        saved_settings = normalize_request_overrides(policy.request_overrides)
+        effective_settings = normalize_request_overrides(effective_raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    # Draft mapping from the request body takes precedence over the persisted
+    # policy mapping so operators can preview projections before saving. It is
+    # passed as response_variables so extraction runs on the SAME pre-redaction
+    # data the live channels extract from (parity with voice/SMS/flow).
+    draft_mapping = body.get("response_mapping")
+    effective_mapping = draft_mapping if draft_mapping is not None else (policy.response_mapping or {})
+    if not isinstance(effective_mapping, dict):
+        raise HTTPException(status_code=400, detail="response_mapping must be an object")
+
+    from botelier.services.integration_client import ResponseVariable
+
+    response_variables = [
+        ResponseVariable(variable_key=str(key), json_path=str(path))
+        for key, path in effective_mapping.items()
+        if key and path
+    ]
+
+    # Build the runtime config through the SAME builder every channel uses on
+    # the published version config — guaranteeing request-shape parity between
+    # this test and live voice/SMS/simulator execution.
+    config = build_operation_api_config(
+        {
+            "integration_id": connection_id,
+            "method": endpoint.get("method", "GET"),
+            "path": endpoint.get("path", "/"),
+            "endpoint_id": operation_id,
+            "request_overrides": effective_raw,
+        }
+    )
+    # Test-only extras: draft mapping preview and ad-hoc query params.
+    config.query_param_overrides = body.get("query_params") or {}
+    config.response_variables = response_variables
 
     context = ActionContext(
         account_id=account_id,
@@ -339,6 +520,10 @@ async def test_operation(
         context=context,
         variables=body.get("variables") or {},
         integration_config=config,
+        # Apply the connection's response policy (size bound + field redaction)
+        # to the raw body BEFORE it is returned to the browser — same treatment
+        # the LLM channels get, so a test never leaks fields production redacts.
+        response_policy=policy.to_dict(),
     )
 
     executor = ActionExecutor(db)
@@ -352,25 +537,37 @@ async def test_operation(
     policy.updated_at = datetime.utcnow()
     db.commit()
 
-    # Apply response_mapping to show operator which fields would reach the LLM.
-    # A draft mapping from the request body takes precedence over the persisted
-    # policy mapping so operators can preview projections before saving.
-    draft_mapping = body.get("response_mapping")
-    effective_mapping = draft_mapping if draft_mapping is not None else (policy.response_mapping or {})
+    # Per-field mapping diagnostics: silently dropping a missing JSONPath hides
+    # a broken mapping until it fails live. Report found/missing per field.
     projected = None
-    if effective_mapping and result.data is not None:
-        from botelier.services.integration_client import extract_json_value
-        projected = {}
-        for var_name, jsonpath in effective_mapping.items():
-            val = extract_json_value(result.data, jsonpath)
-            if val is not None:
-                projected[var_name] = val
+    mapping_diagnostics = None
+    if effective_mapping:
+        extracted = result.extracted_variables or {}
+        projected = {k: v for k, v in extracted.items() if v is not None}
+        mapping_diagnostics = [
+            {
+                "variable": str(key),
+                "json_path": str(path),
+                "found": extracted.get(str(key)) is not None,
+            }
+            for key, path in effective_mapping.items()
+            if key and path
+        ]
+
+    # Flag when this test ran with UNSAVED draft values (request settings that
+    # differ from the persisted policy, or a draft mapping) — a green test with
+    # drafts is only live-parity once saved via the policy PATCH + republished.
+    draft_overrides_applied = (
+        effective_settings != saved_settings or draft_mapping is not None
+    )
 
     return {
         "success": result.success,
         "status_code": result.status_code,
         "data": result.data,
         "projected": projected,
+        "draft_overrides_applied": draft_overrides_applied,
+        "mapping_diagnostics": mapping_diagnostics,
         "error_type": result.error_type.value if result.error_type else None,
         "error_message": result.error_message,
         "latency_ms": result.latency_ms,
@@ -396,7 +593,7 @@ def publish_op(
     """Publish an operation: creates IntegrationAction + Tool(DYNAMIC_OPERATION)."""
     check_account_permission(user, account_id, "integrations.manage", db)
     _get_connection(db, account_id, connection_id)
-    _verify_operation_exists(db, connection_id, operation_id)
+    _verify_operation_exists(db, account_id, connection_id, operation_id)
 
     try:
         tool = publish_operation(
@@ -569,6 +766,30 @@ def list_importable_types(
 # ---------------------------------------------------------------------------
 
 
+def _validate_imported_origin(url: str) -> None:
+    """Validate a spec-derived origin (server base URL or absolute token URL).
+
+    Same guarantees as the base_url_override checks: absolute http/https,
+    no embedded credentials, and the SSRF host checks in _validate_spec_url
+    (private ranges, loopback, metadata endpoints, DNS-resolved addresses).
+    """
+    from urllib.parse import urlparse
+
+    try:
+        parsed = urlparse(url)
+    except Exception:
+        raise HTTPException(status_code=400, detail="not a valid URL")
+
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(status_code=400, detail="must use http or https")
+    if not parsed.netloc:
+        raise HTTPException(status_code=400, detail="missing hostname")
+    if parsed.username is not None or parsed.password is not None:
+        raise HTTPException(status_code=400, detail="must not embed credentials")
+
+    _validate_spec_url(url)
+
+
 def _validate_spec_url(url: str) -> None:
     """Raise HTTPException if spec_url is unsafe (SSRF guard).
 
@@ -668,8 +889,23 @@ def _get_endpoint(db: Session, connection: AccountIntegration, operation_id: str
     return endpoint
 
 
-def _verify_operation_exists(db: Session, connection_id: str, operation_id: str) -> None:
-    conn = db.query(AccountIntegration).filter(AccountIntegration.id == connection_id).first()
+def _verify_operation_exists(
+    db: Session, account_id: str, connection_id: str, operation_id: str
+) -> None:
+    """Verify the operation exists on a connection owned by ``account_id``.
+
+    Account-scoped (defense in depth): even if a caller skips ``_get_connection``,
+    this lookup can never validate an operation against another tenant's
+    connection.
+    """
+    conn = (
+        db.query(AccountIntegration)
+        .filter(
+            AccountIntegration.id == connection_id,
+            AccountIntegration.account_id == account_id,
+        )
+        .first()
+    )
     if not conn:
         raise HTTPException(status_code=404, detail="Connection not found")
     it = db.query(IntegrationType).filter(IntegrationType.id == conn.integration_type_id).first()

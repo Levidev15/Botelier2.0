@@ -13,6 +13,7 @@ All tool names are namespaced by connection slug to prevent collisions when
 multiple connections of the same integration type exist on one account.
 """
 
+import json
 import re
 import uuid
 from datetime import datetime
@@ -74,6 +75,101 @@ def _build_llm_input_schema(
     }
 
 
+def normalize_request_overrides(raw: Optional[dict]) -> dict:
+    """Normalize per-operation request overrides to one canonical shape.
+
+    Single source of truth for the request settings an operator may customize
+    per operation: ``headers``, ``content_type`` (merged into headers),
+    ``body_template`` (``body`` accepted as alias), ``timeout`` (1–30s), and
+    ``retry_count`` (0–3). The SAME function feeds the policy PATCH,
+    ``test_operation``, and ``_build_execution_config`` — so the request shape
+    a test exercises and the shape the published tool executes cannot diverge.
+
+    Raises ValueError on malformed input (the API layer surfaces it as 400).
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError("request_overrides must be an object")
+
+    normalized: dict = {}
+
+    headers = raw.get("headers") or {}
+    if not isinstance(headers, dict):
+        raise ValueError("request_overrides.headers must be an object")
+    headers = {str(k): str(v) for k, v in headers.items() if k}
+
+    content_type = str(raw.get("content_type") or "").strip()
+    if content_type and not any(k.lower() == "content-type" for k in headers):
+        headers["Content-Type"] = content_type
+    if headers:
+        normalized["headers"] = headers
+
+    body_template = raw.get("body_template", raw.get("body"))
+    if body_template is not None:
+        if not isinstance(body_template, str):
+            body_template = json.dumps(body_template)
+        normalized["body_template"] = body_template
+
+    for key, lo, hi in (("timeout", 1, 30), ("retry_count", 0, 3)):
+        value = raw.get(key)
+        if value is None:
+            continue
+        try:
+            normalized[key] = min(max(int(value), lo), hi)
+        except (TypeError, ValueError):
+            raise ValueError(f"request_overrides.{key} must be an integer")
+
+    return normalized
+
+
+def build_operation_api_config(
+    exec_config: dict,
+    *,
+    fallback_integration_id: str = "",
+    fallback_endpoint_id: str = "",
+):
+    """Build the runtime ``IntegrationAPIConfig`` from a published version config.
+
+    Shared by EVERY dispatcher of DYNAMIC_OPERATION tools (voice, SMS,
+    simulator) and by ``test_operation`` — one builder means all channels and
+    the tester execute the exact same request shape, including any persisted
+    ``request_overrides``.
+    """
+    from botelier.services.integration_runtime.types import (
+        IntegrationAPIConfig,
+        ResponseVariable,
+    )
+
+    mapping = exec_config.get("response_mapping") or {}
+    response_variables = [
+        ResponseVariable(variable_key=str(k), json_path=str(v))
+        for k, v in mapping.items()
+        if k and v
+    ]
+
+    overrides = normalize_request_overrides(exec_config.get("request_overrides"))
+    optional: dict = {}
+    if overrides.get("headers"):
+        optional["headers"] = overrides["headers"]
+    if overrides.get("body_template") is not None:
+        optional["body_template"] = overrides["body_template"]
+    if overrides.get("timeout") is not None:
+        optional["timeout"] = overrides["timeout"]
+    if overrides.get("retry_count") is not None:
+        optional["retry_count"] = overrides["retry_count"]
+
+    return IntegrationAPIConfig(
+        integration_id=exec_config.get("integration_id") or fallback_integration_id,
+        method=exec_config.get("method", "GET"),
+        path=exec_config.get("path", "/"),
+        endpoint_id=exec_config.get("endpoint_id") or fallback_endpoint_id,
+        query_param_overrides={},
+        response_variables=response_variables,
+        **optional,
+    )
+
+
 def _build_execution_config(
     endpoint: dict,
     connection: AccountIntegration,
@@ -115,6 +211,12 @@ def _build_execution_config(
         "risk_level": endpoint.get("risk_level", "read"),
         "response_policy": (policy.to_dict() if policy else {}),
         "response_mapping": (policy.response_mapping or {}) if policy else {},
+        # Persisted request-shape settings (headers/body/timeout/retries) —
+        # the same values test_operation exercises. Normalized here so the
+        # stored config is canonical regardless of how the policy row was set.
+        "request_overrides": normalize_request_overrides(
+            policy.request_overrides if policy else None
+        ),
     }
 
 
@@ -133,7 +235,11 @@ def _derive_tool_name(
     conn_name = (connection.connection_name or integration_type.slug or "api")
     safe_conn = re.sub(r"[^a-zA-Z0-9]", "_", conn_name.lower()).strip("_")[:20]
     combined = f"{safe_conn}_{fn_name}"
-    return sanitize_function_name(combined)[:60]
+    # Sanitize AFTER truncation so the stored tool name is a fixed point of
+    # sanitize_function_name — a bare [:60] can leave a trailing underscore
+    # that channel-side re-sanitization would strip, silently diverging the
+    # published name from the schema name the LLM calls.
+    return sanitize_function_name(sanitize_function_name(combined)[:60])
 
 
 def publish_operation(

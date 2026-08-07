@@ -426,36 +426,38 @@ async def _execute_sim_dynamic_operation(
         return {"error": "Dynamic operation version config missing", "status": "failed"}
 
     exec_config = version.config
-    from botelier.services.integration_runtime.types import ResponseVariable as _RV
-    _response_mapping = exec_config.get("response_mapping") or {}
-    _response_variables = [
-        _RV(variable_key=k, json_path=v)
-        for k, v in _response_mapping.items()
-    ]
-    api_config = IntegrationAPIConfig(
-        integration_id=exec_config.get("integration_id") or connection_id or "",
-        method=exec_config.get("method", "GET"),
-        path=exec_config.get("path", "/"),
-        endpoint_id=exec_config.get("endpoint_id") or operation_id or "",
-        query_param_overrides={},
-        response_variables=_response_variables,
+    # Shared builder (same one test_operation and the live channels use) so the
+    # simulator executes the identical request shape, including any persisted
+    # request_overrides.
+    from botelier.services.operation_publisher import build_operation_api_config
+
+    api_config = build_operation_api_config(
+        exec_config,
+        fallback_integration_id=connection_id or "",
+        fallback_endpoint_id=operation_id or "",
     )
 
-    exec_result = await ActionExecutor(db).execute_and_log(
-        ActionExecutionRequest(
-            context=ActionContext(
-                account_id=state.account_id,
-                channel="test",
-                tool_id=str(tool.id),
-                property_id=getattr(state.executor, "property_id", None),
-            ),
-            variables=function_args,
-            integration_config=api_config,
-            response_policy=exec_config.get("response_policy"),
+    # Broad catch (parity with voice/SMS): an unexpected executor exception
+    # becomes a tool-result error instead of aborting the whole simulator turn.
+    try:
+        exec_result = await ActionExecutor(db).execute_and_log(
+            ActionExecutionRequest(
+                context=ActionContext(
+                    account_id=state.account_id,
+                    channel="test",
+                    tool_id=str(tool.id),
+                    property_id=getattr(state.executor, "property_id", None),
+                ),
+                variables=function_args,
+                integration_config=api_config,
+                response_policy=exec_config.get("response_policy"),
+            )
         )
-    )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(f"DYNAMIC_OPERATION simulator tool error: {exc}")
+        return {"error": "Dynamic operation failed", "status": "failed"}
     if exec_result.success:
-        if _response_variables:
+        if api_config.response_variables:
             return exec_result.extracted_variables or {}
         return exec_result.data or {"status": "ok"}
     return {

@@ -1369,43 +1369,48 @@ class FunctionMapper:
                 )
                 return
 
-            from botelier.services.integration_runtime.types import ResponseVariable as _RV
-            _response_mapping = _exec_config.get("response_mapping") or {}
-            _response_variables = [
-                _RV(variable_key=k, json_path=v)
-                for k, v in _response_mapping.items()
-            ]
+            # Shared builder (same one test_operation and every other channel
+            # uses) so the executed request shape — including persisted
+            # request_overrides — matches what was tested.
+            from botelier.services.operation_publisher import build_operation_api_config
 
-            config = IntegrationAPIConfig(
-                integration_id=_exec_config.get("integration_id") or connection_id or "",
-                method=_exec_config.get("method", "GET"),
-                path=_exec_config.get("path", "/"),
-                endpoint_id=_exec_config.get("endpoint_id") or operation_id or "",
-                query_param_overrides={},
-                response_variables=_response_variables,
+            config = build_operation_api_config(
+                _exec_config,
+                fallback_integration_id=connection_id or "",
+                fallback_endpoint_id=operation_id or "",
             )
 
-            result = await ActionExecutor(mapper.db_session).execute_and_log(
-                ActionExecutionRequest(
-                    context=ActionContext(
-                        account_id=mapper.account_id,
-                        channel="voice",
-                        call_sid=mapper.call_sid,
-                        tool_id=tool.id,
-                        property_id=mapper.property_id,
-                    ),
-                    variables=params.arguments,
-                    integration_config=config,
-                    response_policy=_exec_config.get("response_policy") if _exec_config else None,
+            # Broad catch (parity with the SMS channel): an unexpected executor
+            # exception must surface as a tool-result error the LLM can speak
+            # around — never propagate and kill the voice tool turn mid-call.
+            try:
+                result = await ActionExecutor(mapper.db_session).execute_and_log(
+                    ActionExecutionRequest(
+                        context=ActionContext(
+                            account_id=mapper.account_id,
+                            channel="voice",
+                            call_sid=mapper.call_sid,
+                            tool_id=tool.id,
+                            property_id=mapper.property_id,
+                        ),
+                        variables=params.arguments,
+                        integration_config=config,
+                        response_policy=_exec_config.get("response_policy") if _exec_config else None,
+                    )
                 )
-            )
+            except Exception as exc:
+                logger.error(f"DYNAMIC_OPERATION voice tool error: {exc}")
+                await params.result_callback(
+                    {"error": "Dynamic operation failed", "status": "failed"}
+                )
+                return
 
             if result.success:
                 # When response_mapping is defined, return only the projected
                 # fields so the LLM never sees the full raw response body.
                 # Always use extracted_variables when projections are configured
                 # (even if extraction yields {}) — never fall back to raw data.
-                if _response_variables:
+                if config.response_variables:
                     await params.result_callback(result.extracted_variables or {})
                 else:
                     await params.result_callback(result.data)

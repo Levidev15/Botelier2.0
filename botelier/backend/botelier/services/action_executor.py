@@ -40,7 +40,7 @@ from botelier.services.ssrf_safe_transport import SSRFSafeTransport
 _VAR_RE = re.compile(r"\{\{(\w+)\}\}")
 _SECRET_RE = re.compile(r"\{\{secrets\.(\w+)\}\}")
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
-_ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+_ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
 
 
 @dataclass
@@ -441,8 +441,10 @@ class ActionExecutor:
                 f"Unsupported HTTP method: {method}",
             )
 
-        timeout = min(int(config.get("timeout") or 5), 10 if context.channel in {"voice", "flow"} else 30)
-        retry_count = int(config.get("retryCount", config.get("retry_count", 0)) or 0)
+        # Clamp both ends: these values come from stored/user-editable tool
+        # config, so a negative or huge value must not stall a channel turn.
+        timeout = max(1, min(int(config.get("timeout") or 5), 10 if context.channel in {"voice", "flow"} else 30))
+        retry_count = max(0, min(int(config.get("retryCount", config.get("retry_count", 0)) or 0), 5))
         if method not in _SAFE_METHODS:
             retry_count = 0
 
@@ -491,6 +493,10 @@ class ActionExecutor:
     async def _send(self, client, method: str, url: str, headers: dict, body: Any):
         if method == "GET":
             return await client.get(url, headers=headers)
+        if method == "HEAD":
+            return await client.head(url, headers=headers)
+        if method == "OPTIONS":
+            return await client.options(url, headers=headers)
         if method == "POST":
             return await client.post(url, headers=headers, json=body)
         if method == "PUT":
@@ -524,6 +530,11 @@ class ActionExecutor:
         elif status_code in (400, 422):
             error_type = APIErrorType.VALIDATION_ERROR
             error_message = self._extract_error_message(data) or config.get("onError")
+        elif status_code == 429:
+            # Normalize to the same certified error type the integration
+            # runtime uses so channels can treat throttling consistently.
+            error_type = APIErrorType.RATE_LIMITED
+            error_message = config.get("onError") or "Rate limit exceeded"
         elif status_code >= 500:
             error_type = APIErrorType.SERVER_ERROR
             error_message = config.get("onError") or "Upstream system failed"

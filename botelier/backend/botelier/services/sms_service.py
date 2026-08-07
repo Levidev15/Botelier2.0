@@ -1119,19 +1119,15 @@ class SMSService:
             return {"error": "Operation version missing config", "status": "failed"}
 
         exec_config = version.config
-        from botelier.services.integration_runtime.types import ResponseVariable as _RV
-        _response_mapping = exec_config.get("response_mapping") or {}
-        _response_variables = [
-            _RV(variable_key=k, json_path=v)
-            for k, v in _response_mapping.items()
-        ]
-        config = IntegrationAPIConfig(
-            integration_id=exec_config.get("integration_id") or connection_id or "",
-            method=exec_config.get("method", "GET"),
-            path=exec_config.get("path", "/"),
-            endpoint_id=exec_config.get("endpoint_id") or tool_config.get("operation_id") or "",
-            query_param_overrides={},
-            response_variables=_response_variables,
+        # Shared builder (same one test_operation and the other channels use) so
+        # SMS executes the identical request shape, including any persisted
+        # request_overrides.
+        from botelier.services.operation_publisher import build_operation_api_config
+
+        config = build_operation_api_config(
+            exec_config,
+            fallback_integration_id=connection_id or "",
+            fallback_endpoint_id=tool_config.get("operation_id") or "",
         )
 
         try:
@@ -1150,7 +1146,7 @@ class SMSService:
                 ),
             )
             if result.success:
-                if _response_variables:
+                if config.response_variables:
                     return result.extracted_variables or {}
                 return result.data
             return {

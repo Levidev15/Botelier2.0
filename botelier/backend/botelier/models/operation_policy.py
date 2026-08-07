@@ -85,6 +85,12 @@ class ConnectionOperationPolicy(Base):
     # Overrides the ownership declared in the imported spec for each variable.
     param_ownership_overrides = Column(JSONB, nullable=True)
 
+    # Request-shape overrides — {headers, content_type, body_template, timeout,
+    # retry_count}. Normalized via operation_publisher.normalize_request_overrides
+    # before persisting; baked into the published version config at publish time
+    # so tested and live request shapes cannot diverge.
+    request_overrides = Column(JSONB, nullable=True)
+
     # Test lifecycle
     test_status = Column(
         String(16),
@@ -122,6 +128,7 @@ class ConnectionOperationPolicy(Base):
             "redact_field_patterns": self.redact_field_patterns,
             "response_mapping": self.response_mapping or {},
             "param_ownership_overrides": self.param_ownership_overrides or {},
+            "request_overrides": self.request_overrides or {},
             "test_status": self.test_status,
             "tested_at": self.tested_at.isoformat() if self.tested_at else None,
             "test_passed": self.test_passed,

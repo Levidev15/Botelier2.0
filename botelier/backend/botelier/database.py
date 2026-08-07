@@ -770,6 +770,7 @@ WHERE answered_at IS NULL
     # param_ownership_overrides: {param_name: "llm"|"connection"|"fixed"} — overrides seed.
     "ALTER TABLE connection_operation_policies ADD COLUMN IF NOT EXISTS response_mapping JSONB",
     "ALTER TABLE connection_operation_policies ADD COLUMN IF NOT EXISTS param_ownership_overrides JSONB",
+    "ALTER TABLE connection_operation_policies ADD COLUMN IF NOT EXISTS request_overrides JSONB",
 ]
 
 
