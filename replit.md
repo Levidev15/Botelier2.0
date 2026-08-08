@@ -10,6 +10,13 @@ Botelier is a multi-tenant, multichannel AI platform that provides businesses wi
 - Dev Twilio number (+1 702 707 4036) points to `riker.replit.dev`
 - Dev uses a **separate** database, fully isolated from production
 
+### Environment variables — OAuth2 split-domain topology
+
+| Variable | Required | Default | Purpose |
+|---|---|---|---|
+| `PUBLIC_BASE_URL` | prod only | auto (Replit domain) | API host — registered OAuth2 redirect_uri base. Set on voice.botelier.ai and any custom API domain. |
+| `FRONTEND_URL` | only when API and dashboard are on different hosts | `PUBLIC_BASE_URL` | Dashboard host. After the OAuth consent redirect, `/oauth/callback` hops the browser to `{FRONTEND_URL}/dashboard/integrations/oauth/complete`. Set this when `PUBLIC_BASE_URL` differs from the dashboard origin (e.g. `PUBLIC_BASE_URL=https://api.botelier.com`, `FRONTEND_URL=https://app.botelier.com`). Leave unset in dev/Replit single-host deployments. |
+
 ### Production voice (Azure Container Apps)
 - **`voice.botelier.ai`** runs the same full FastAPI codebase; only difference is `PUBLIC_BASE_URL=https://voice.botelier.ai`
 - Azure voice container + Replit production deployment share the same production Neon PostgreSQL database

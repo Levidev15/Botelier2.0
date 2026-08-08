@@ -21,6 +21,8 @@ export default function ConnectModal({
   onNotify,
   onClose,
 }: ConnectModalProps) {
+  const isOAuth2AuthCode = selectedType.auth_type === "oauth2_authorization_code";
+
   const [credentials, setCredentials] = useState<Record<string, string>>(() => {
     const defaults: Record<string, string> = {};
     selectedType.required_fields.forEach((field) => {
@@ -58,6 +60,48 @@ export default function ConnectModal({
     const { _connection_name, ...apiCredentials } = credentials;
 
     try {
+      if (isOAuth2AuthCode) {
+        // 3-legged OAuth2: call the authorize endpoint (authenticated) to
+        // create the pending integration and get the provider consent URL.
+        //
+        // After consent the provider redirects to /api/integrations/oauth/callback
+        // (the API host), which 302s to /dashboard/integrations/oauth/complete
+        // (the frontend page).  That page POSTs the code + state back to the
+        // authenticated backend endpoint to exchange for tokens.
+        //
+        // No binding cookie is needed — the backend completion endpoint
+        // requires a valid Bearer token (same user session).
+        const response = await authFetch(
+          `/api/integrations/account/${accountId}/oauth/authorize`,
+          {
+            method: "POST",
+            body: JSON.stringify({
+              integration_type_id: selectedType.id,
+              credentials: apiCredentials,
+              connection_name: _connection_name,
+            }),
+          },
+        );
+
+        if (!response.ok) {
+          const err = await response.json().catch(() => ({}));
+          setConnectError(err.detail || "Failed to start OAuth authorization");
+          return;
+        }
+
+        const data = await response.json();
+        if (!data.authorization_url) {
+          setConnectError("Server did not return an authorization URL");
+          return;
+        }
+
+        // Navigate the browser to the provider consent screen.
+        // Completion happens at /dashboard/integrations/oauth/complete.
+        window.location.href = data.authorization_url;
+        return;
+      }
+
+      // ── Standard (non-OAuth2-authcode) connect flow ──────────────────────
       const response = await authFetch(`/api/integrations/account/${accountId}/connect`, {
         method: "POST",
         body: JSON.stringify({

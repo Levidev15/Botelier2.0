@@ -1,4 +1,3 @@
-import base64
 import secrets
 from datetime import datetime, timedelta
 from typing import List, Optional
@@ -6,15 +5,18 @@ from urllib.parse import urlencode
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import RedirectResponse
 from loguru import logger
 from pydantic import BaseModel
 from sqlalchemy import Integer, func as sqlfunc
 from sqlalchemy.orm import Session, joinedload
 
-from botelier.auth.middleware import check_account_permission, get_current_user
-from botelier.config.domain import get_public_base_url
+from botelier.auth.middleware import (
+    check_account_permission,
+    get_current_user,
+)
+from botelier.config.domain import get_frontend_url, get_public_base_url
 from botelier.database import get_db
 from botelier.services.integration_runtime.adapters.oauth2 import resolve_token_endpoint
 from botelier.services.property_scope import property_belongs_to_account
@@ -32,9 +34,9 @@ from botelier.services.integration_client import (
 )
 from botelier.services.ssrf_safe_transport import SSRFSafeTransport
 
-# Reserved connection_config keys for the in-flight 3-legged OAuth2 flow.
-# ``_oauth_state_nonce`` is the CSRF nonce compared on callback; it is cleared
-# once the exchange completes so a state value can't be replayed.
+# Reserved connection_config key for the in-flight 3-legged OAuth2 flow.
+# The nonce is cleared once the exchange completes so a state value can't be
+# replayed.
 _OAUTH_STATE_NONCE_KEY = "_oauth_state_nonce"
 
 router = APIRouter(prefix="/api/integrations", tags=["integrations"])
@@ -1268,14 +1270,21 @@ class OAuthAuthorizeRequest(BaseModel):
 def _oauth_redirect_uri() -> str:
     """The redirect_uri the provider calls back to after user consent.
 
-    Must match what is registered with the provider and be identical on both the
-    authorize request and the token exchange (the OAuth2 spec requires it).
+    This is always the *API host* path — the value that must be pre-registered
+    with every OAuth provider.  It must be identical on both the authorize
+    request and the token exchange (the OAuth2 spec requires it).
+
+    The ``/oauth/callback`` endpoint is a stateless hop that immediately 302s to
+    ``/oauth/complete`` on the *dashboard* origin (see two-hop design below).
+    Only ``/oauth/callback`` is the registered URI; ``/oauth/complete`` never
+    appears in provider configuration.
     """
     return f"{get_public_base_url()}/api/integrations/oauth/callback"
 
 
 def _dashboard_integrations_url() -> str:
-    return f"{get_public_base_url()}/integrations"
+    """URL of the integrations page on the dashboard (frontend) host."""
+    return f"{get_frontend_url()}/dashboard/integrations"
 
 
 def _build_authorization_url(
@@ -1366,10 +1375,16 @@ async def start_oauth_authorization(
     and return the provider consent URL the operator's browser must visit.
 
     The encrypted credentials (client_id/secret/scope) are persisted now; the
-    access/refresh tokens are stored later by the callback after the user grants
-    consent. A random CSRF nonce is stashed in connection_config and encoded
-    into the OAuth ``state`` so the public callback can bind the response back to
-    this exact pending integration.
+    access/refresh tokens are stored later by the authenticated POST /oauth/complete
+    endpoint after the user grants consent.  A random CSRF nonce is stashed in
+    connection_config and encoded into the OAuth ``state`` so the completion
+    endpoint can bind the response back to this exact pending integration.
+
+    State format (3 colon-separated segments):
+        {account_id}:{integration_id}:{nonce}
+
+    where nonce = secrets.token_urlsafe(24) and account_id / integration_id are
+    UUIDs (no colons).  No user-controlled data rides in state.
     """
     _assert_account_access(current_user, account_id, db, permission="integrations.manage")
 
@@ -1415,7 +1430,7 @@ async def start_oauth_authorization(
     db.add(integration)
     db.commit()
 
-    state = f"{integration.id}:{nonce}"
+    state = f"{account_id}:{integration.id}:{nonce}"
     redirect_uri = _oauth_redirect_uri()
     authorization_url = _build_authorization_url(
         auth_config, request.credentials, redirect_uri, state
@@ -1425,42 +1440,132 @@ async def start_oauth_authorization(
         f"Started OAuth2 authorization for integration {integration.id} "
         f"({integration_type.slug}) account {account_id}"
     )
-    return {
-        "integration_id": str(integration.id),
-        "authorization_url": authorization_url,
-    }
+
+    return {"integration_id": str(integration.id), "authorization_url": authorization_url}
+
+
+# ── OAuth2 callback design ─────────────────────────────────────────────────────
+#
+# Registered redirect_uri: {PUBLIC_BASE_URL}/api/integrations/oauth/callback
+#
+# The provider redirects the browser here after consent.  This endpoint is a
+# stateless hop — it immediately 302s to the dashboard's /oauth/complete page
+# (a Next.js route rendered inside the authenticated dashboard shell) so that
+# the user's session cookie is present.  The frontend page then POSTs the code
+# and state to the authenticated backend POST /api/integrations/oauth/complete.
+#
+# Trusted hop target: get_frontend_url()
+# ──────────────────────────────────────
+# The dashboard origin comes ONLY from server configuration (FRONTEND_URL env
+# or get_public_base_url() fallback) — never from request headers, OAuth state,
+# or any user-controlled input.  This prevents code-leak / open-redirect.
+#
+# Security model
+# ──────────────
+# No cookie is needed.  The completion endpoint requires a valid Bearer token
+# (get_current_user), so only a user authenticated to the same account can
+# complete the exchange.  A forwarded callback link fails unless the recipient
+# is logged into the same Botelier account.
 
 
 @router.get("/oauth/callback")
 async def oauth_callback(
-    request: Request,
     code: Optional[str] = None,
     state: Optional[str] = None,
     error: Optional[str] = None,
+):
+    """Stateless hop — registered OAuth2 redirect_uri.
+
+    Immediately 302s to the dashboard's /oauth/complete page, forwarding all
+    provider-supplied parameters.  The hop target is fixed from server
+    configuration (FRONTEND_URL / get_public_base_url()) — nothing from the
+    request influences the redirect destination.
+    """
+    completion_page = f"{get_frontend_url()}/dashboard/integrations/oauth/complete"
+
+    params: dict = {}
+    if code:
+        params["code"] = code
+    if state:
+        params["state"] = state
+    if error:
+        params["error"] = error
+
+    query = urlencode(params) if params else ""
+    target = f"{completion_page}?{query}" if query else completion_page
+
+    logger.info(
+        f"OAuth hop → {completion_page} "
+        f"(code={'yes' if code else 'no'}, error={error!r})"
+    )
+    return RedirectResponse(url=target, status_code=302)
+
+
+class OAuthCompleteRequest(BaseModel):
+    code: Optional[str] = None
+    state: Optional[str] = None
+    error: Optional[str] = None
+
+
+@router.post("/oauth/complete")
+async def oauth_complete(
+    request: OAuthCompleteRequest,
+    current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
-    """Public OAuth2 redirect target — the provider sends the browser here after
-    consent. Validates the CSRF nonce, exchanges the code for tokens, stores them
-    encrypted, and redirects back to the dashboard.
+    """Authenticated OAuth2 completion — called by the frontend after the provider hop.
 
-    This route is intentionally unauthenticated (the consenting user's session
-    lives with the provider, not us); the security binding is the unguessable
-    nonce carried in ``state`` and matched against the pending integration.
+    The dashboard page at /dashboard/integrations/oauth/complete forwards the
+    code and state here via an authenticated POST (Bearer token).  Requiring
+    authentication means only the user who initiated the flow (or another user
+    in the same account) can complete it — a forwarded link is harmless without
+    a valid session.
+
+    Security layers (enforced in this order — no exceptions)
+    ---------------
+    1. Bearer authentication (get_current_user) — unauthenticated callers get 401.
+    2. State parse + UUID validation — malformed state is rejected before any DB access.
+    3. Account binding — account_id in state must be an account the caller has
+       integrations.manage on.  Checked before touching the integration row, so a
+       caller from a different account cannot read, mutate, or burn the nonce of
+       another account's pending integration even by supplying error= or a bad code.
+    4. Integration ownership — integration_id must belong to the state's account_id.
+    5. One-time CSRF nonce — constant-time compare, consumed before any commit.
+    6. Provider error / missing code / code exchange — only reachable after all
+       checks above pass.
     """
-    dashboard_url = _dashboard_integrations_url()
+    def _fail(reason: str, http_status: int = 400) -> HTTPException:
+        return HTTPException(status_code=http_status, detail=reason)
 
-    def _fail(reason: str) -> RedirectResponse:
-        return RedirectResponse(url=f"{dashboard_url}?integration_error={reason}")
+    # ── 1. Parse and validate state ───────────────────────────────────────────
+    if not request.state or request.state.count(":") < 2:
+        raise _fail("invalid_state")
 
-    if not state or ":" not in state:
-        return _fail("invalid_state")
+    parts = request.state.split(":", 2)
+    account_id_from_state = parts[0]
+    integration_id = parts[1]
+    nonce = parts[2]
 
-    integration_id, _, nonce = state.partition(":")
     try:
+        UUID(account_id_from_state)
         UUID(integration_id)
     except (ValueError, TypeError):
-        return _fail("invalid_state")
+        raise _fail("invalid_state")
 
+    # ── 2. Account access (authenticated) ────────────────────────────────────
+    # Raises 403 if current_user has no integrations.manage permission on
+    # account_id_from_state — covers mismatched-account and hostile callers.
+    # This runs BEFORE loading the integration row so that a caller from a
+    # different account cannot enumerate, mutate, or burn the nonce of another
+    # account's pending integration by supplying error= or a fabricated state.
+    try:
+        _assert_account_access(
+            current_user, account_id_from_state, db, permission="integrations.manage"
+        )
+    except HTTPException:
+        raise _fail("account_mismatch", http_status=403)
+
+    # ── 3. Load the pending integration ──────────────────────────────────────
     integration = (
         db.query(AccountIntegration)
         .options(joinedload(AccountIntegration.integration_type))
@@ -1468,39 +1573,50 @@ async def oauth_callback(
         .first()
     )
     if not integration:
-        return _fail("invalid_state")
+        raise _fail("invalid_state")
 
+    # Defend against a state value crafted to target an integration that
+    # belongs to a different account than the one in state (e.g., caller has
+    # integrations.manage on two accounts and crafts a cross-account state).
+    if str(integration.account_id) != account_id_from_state:
+        raise _fail("invalid_state")
+
+    # ── 4. One-time CSRF nonce ────────────────────────────────────────────────
     conn_config = integration.get_connection_config() or {}
     expected_nonce = conn_config.get(_OAUTH_STATE_NONCE_KEY)
-    # Fail closed: an absent or mismatched nonce means the state was forged or
-    # already consumed. secrets.compare_digest avoids a timing side-channel.
     if not expected_nonce or not nonce or not secrets.compare_digest(
         str(expected_nonce), str(nonce)
     ):
-        return _fail("invalid_state")
+        raise _fail("invalid_state")
 
-    # From here the state is authentic — always clear the one-time nonce so it
-    # cannot be replayed, regardless of the outcome.
+    # Consume the nonce before any DB commit — even if the steps below fail,
+    # the state cannot be replayed.
     conn_config.pop(_OAUTH_STATE_NONCE_KEY, None)
 
-    if error:
+    # ── 5. Provider-reported error ────────────────────────────────────────────
+    # Only reached after all security checks have passed, so the caller is
+    # authorised to mutate this integration row.
+    if request.error:
         integration.status = IntegrationStatus.ERROR
-        integration.last_error = f"Authorization denied: {error}"[:500]
+        integration.last_error = f"Authorization denied: {request.error}"[:500]
         integration.set_connection_config(conn_config)
         db.commit()
-        return _fail("access_denied")
+        raise _fail(f"access_denied: {request.error}")
 
-    if not code:
+    # ── 6. Require code ───────────────────────────────────────────────────────
+    if not request.code:
         integration.status = IntegrationStatus.ERROR
         integration.last_error = "Authorization callback missing code"
         integration.set_connection_config(conn_config)
         db.commit()
-        return _fail("missing_code")
+        raise _fail("missing_code")
 
+    # ── 7. Exchange code for tokens ───────────────────────────────────────────
     credentials = integration.get_credentials()
+    # redirect_uri must match exactly what was sent during authorization.
     redirect_uri = _oauth_redirect_uri()
     result = await exchange_authorization_code(
-        integration.integration_type, credentials, code, redirect_uri
+        integration.integration_type, credentials, request.code, redirect_uri
     )
 
     if result.get("success"):
@@ -1517,13 +1633,18 @@ async def oauth_callback(
         db.commit()
         slug = integration.integration_type.slug if integration.integration_type else ""
         logger.info(f"Completed OAuth2 connection for integration {integration.id}")
-        return RedirectResponse(url=f"{dashboard_url}?integration_connected={slug}")
+        return {
+            "status": "connected",
+            "integration_id": str(integration.id),
+            "integration_slug": slug,
+            "integration_name": integration.connection_name,
+        }
 
     integration.status = IntegrationStatus.ERROR
     integration.last_error = result.get("error", "Token exchange failed")[:500]
     integration.set_connection_config(conn_config)
     db.commit()
-    return _fail("token_exchange_failed")
+    raise _fail("token_exchange_failed")
 
 
 async def obtain_oauth_token(integration_type: IntegrationType, credentials: dict) -> dict:

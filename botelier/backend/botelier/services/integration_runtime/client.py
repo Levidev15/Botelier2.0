@@ -48,11 +48,14 @@ from .resilience import (
     rate_limit_acquire,
 )
 from .locks import (
+    _LOCK_ACQUIRE_BACKOFF_S,
+    _LOCK_ACQUIRE_RETRIES,
     _REFRESH_POLL_INTERVAL_S,
     _REFRESH_WAIT_TIMEOUT_S,
     _TOKEN_REFRESH_SKEW_S,
     _advisory_lock_key,
     _safe_close,
+    TokenRefreshLockUnavailableError,
 )
 from .redaction import _sanitize_endpoint_for_log
 from .types import (
@@ -271,7 +274,12 @@ class IntegrationClient:
         needs_token = adapter.needs_token(credentials, auth_config=auth_config_data)
 
         if needs_token and self._token_needs_refresh(integration):
-            refresh_success = await self._refresh_token_with_lock(integration)
+            try:
+                refresh_success = await self._refresh_token_with_lock(integration)
+            except TokenRefreshLockUnavailableError as lock_exc:
+                return self._make_lock_unavailable_response(
+                    integration, config.path, config.method, start_ms, lock_exc
+                )
             if not refresh_success:
                 self._write_call_log(
                     integration_id=str(integration.id),
@@ -420,7 +428,12 @@ class IntegrationClient:
                         f"Token auth 401 for integration {integration.id}; "
                         "forcing refresh and retrying once."
                     )
-                    refresh_ok = await self._refresh_token_with_lock(integration)
+                    try:
+                        refresh_ok = await self._refresh_token_with_lock(integration)
+                    except TokenRefreshLockUnavailableError as lock_exc:
+                        return self._make_lock_unavailable_response(
+                            integration, log_endpoint, config.method, start_ms, lock_exc
+                        )
                     if refresh_ok:
                         fresh = self._read_integration_fresh(integration.id)
                         if fresh is not None:
@@ -683,8 +696,14 @@ class IntegrationClient:
 
         The lock is held on a dedicated raw connection — never on the refresh's
         ORM session, whose commit would return its connection to the pool and
-        strand a session-level lock. Any lock-infrastructure failure degrades
-        gracefully to an unlocked refresh (the pre-existing behavior).
+        strand a session-level lock.
+
+        On DB infrastructure failure (connection open or lock execute), this
+        method retries up to _LOCK_ACQUIRE_RETRIES times with exponential
+        backoff and then raises TokenRefreshLockUnavailableError.  It NEVER
+        falls through to an unlocked refresh, because doing so could cause
+        concurrent double-refresh against providers that rotate refresh tokens
+        on use.
         """
         from sqlalchemy import text as _sql_text
 
@@ -692,26 +711,56 @@ class IntegrationClient:
 
         lock_key = _advisory_lock_key(integration.id)
 
-        try:
-            conn = engine.connect()
-        except Exception as exc:
-            logger.warning(
-                f"Token refresh: could not open lock connection for integration "
-                f"{integration.id} ({exc}); refreshing without cross-worker lock."
-            )
-            return await self._refresh_token(integration)
+        # --- Acquire a DB connection + advisory lock, with retries -----------
+        # Both the connect() call and the pg_try_advisory_lock execute are
+        # retried as a single unit: if the execute fails we close the bad
+        # connection and re-open (a failed execute may leave the connection in
+        # an error state that cannot be recovered with a re-execute alone).
+        conn = None
+        acquired = None
+        last_exc: Exception | None = None
 
-        try:
-            acquired = conn.execute(
-                _sql_text("SELECT pg_try_advisory_lock(:k)"), {"k": lock_key}
-            ).scalar()
-        except Exception as exc:
-            logger.warning(
-                f"Token refresh: advisory-lock acquire failed for integration "
-                f"{integration.id} ({exc}); refreshing without cross-worker lock."
+        for attempt in range(_LOCK_ACQUIRE_RETRIES + 1):
+            if attempt > 0:
+                backoff = _LOCK_ACQUIRE_BACKOFF_S * (2 ** (attempt - 1))
+                await asyncio.sleep(backoff)
+            try:
+                conn = engine.connect()
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    f"Token refresh: could not open lock connection for integration "
+                    f"{integration.id} (attempt {attempt + 1}/{_LOCK_ACQUIRE_RETRIES + 1}): {exc}"
+                )
+                conn = None
+                continue
+
+            try:
+                acquired = conn.execute(
+                    _sql_text("SELECT pg_try_advisory_lock(:k)"), {"k": lock_key}
+                ).scalar()
+                last_exc = None
+                break  # connection open + lock execute succeeded
+            except Exception as exc:
+                last_exc = exc
+                logger.warning(
+                    f"Token refresh: advisory-lock execute failed for integration "
+                    f"{integration.id} (attempt {attempt + 1}/{_LOCK_ACQUIRE_RETRIES + 1}): {exc}"
+                )
+                _safe_close(conn)
+                conn = None
+                acquired = None
+
+        if last_exc is not None:
+            # All retries exhausted — never run unlocked.
+            logger.error(
+                f"Token refresh: lock unavailable for integration {integration.id} "
+                f"after {_LOCK_ACQUIRE_RETRIES + 1} attempts; refusing unlocked refresh."
             )
-            _safe_close(conn)
-            return await self._refresh_token(integration)
+            raise TokenRefreshLockUnavailableError(
+                f"Token refresh lock unavailable after {_LOCK_ACQUIRE_RETRIES + 1} attempts: "
+                f"{last_exc}"
+            ) from last_exc
 
         if acquired:
             try:
@@ -775,6 +824,43 @@ class IntegrationClient:
             f"integration {integration.id}."
         )
         return False
+
+    def _make_lock_unavailable_response(
+        self,
+        integration: AccountIntegration,
+        endpoint: str,
+        method: str,
+        start_ms: int,
+        exc: Exception,
+    ) -> "APIResponse":
+        """Build the transient AUTH_ERROR response for a lock-unavailable failure.
+
+        Centralises the log + call-log + APIResponse construction so both
+        call sites in execute_request (proactive refresh and forced 401/403
+        refresh) produce identical, recognisable output.  The circuit breaker
+        is deliberately NOT tripped — the provider may be healthy; only our
+        DB lock layer is degraded.
+        """
+        _msg = "Token refresh temporarily unavailable (DB lock); please retry shortly."
+        logger.error(
+            f"Token refresh lock unavailable for integration {integration.id}: {exc}"
+        )
+        self._write_call_log(
+            integration_id=str(integration.id),
+            endpoint_called=endpoint,
+            method=method,
+            status_code=0,
+            success=False,
+            latency_ms=int(time.time() * 1000) - start_ms,
+            error_type=APIErrorType.AUTH_ERROR.value,
+            error_message=_msg,
+        )
+        return APIResponse(
+            success=False,
+            status_code=0,
+            error_type=APIErrorType.AUTH_ERROR,
+            error_message=_msg,
+        )
 
     def _resolve_adapter(self, integration: AccountIntegration):
         """Resolve the vendor adapter for this integration (slug → auth_type → default)."""

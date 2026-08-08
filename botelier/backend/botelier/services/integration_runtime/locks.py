@@ -10,6 +10,16 @@ import hashlib
 import uuid
 
 
+class TokenRefreshLockUnavailableError(Exception):
+    """Raised when the advisory lock for token refresh cannot be acquired
+    after retries due to a database infrastructure failure.
+
+    Callers must treat this as a transient AUTH_ERROR and must NOT run an
+    unlocked refresh — doing so risks concurrent double-refresh against
+    providers that rotate refresh tokens on use.
+    """
+
+
 def _advisory_lock_key(integration_id) -> int:
     """Derive a stable signed 64-bit Postgres advisory-lock key for a connection.
 
@@ -46,3 +56,11 @@ _TOKEN_REFRESH_SKEW_S = 60
 # row (rather than each pinning a DB connection) until the holder finishes.
 _REFRESH_WAIT_TIMEOUT_S = 45.0
 _REFRESH_POLL_INTERVAL_S = 0.2
+
+# Lock-acquisition retry budget for the holder path. On DB infrastructure
+# failures (connection open or pg_try_advisory_lock execute) we retry this many
+# times with short exponential backoff before raising
+# TokenRefreshLockUnavailableError.  Never fall through to an unlocked refresh.
+# Two retries: 0.25 s then 0.5 s — keeps voice-call latency impact under 1 s.
+_LOCK_ACQUIRE_RETRIES = 2
+_LOCK_ACQUIRE_BACKOFF_S = 0.25

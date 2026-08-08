@@ -8,6 +8,32 @@ import os
 from typing import Optional
 
 
+def get_frontend_url() -> str:
+    """Get the URL of the frontend dashboard application.
+
+    Used by the OAuth2 callback hop so the API server can 302 the browser
+    to the dashboard's /dashboard/integrations/oauth/complete page, where the
+    user's authenticated session completes the exchange.
+
+    Priority:
+    1. FRONTEND_URL — set this in deployments where the API and dashboard run
+       on separate hosts (e.g. PUBLIC_BASE_URL=https://api.botelier.com,
+       FRONTEND_URL=https://app.botelier.com).
+    2. get_public_base_url() — used automatically in single-host deployments
+       (Replit dev, Replit prod without a custom API domain) where the API and
+       dashboard share the same origin.
+
+    The value must NOT come from request headers or OAuth state — it is
+    trust-anchored in server configuration only.
+    """
+    frontend_url = os.environ.get("FRONTEND_URL", "").strip().rstrip("/")
+    if frontend_url:
+        if not frontend_url.startswith(("http://", "https://")):
+            frontend_url = f"https://{frontend_url}"
+        return frontend_url
+    return get_public_base_url()
+
+
 def get_public_base_url(fallback_host: Optional[str] = None) -> str:
     """Get the public base URL for this application.
 
