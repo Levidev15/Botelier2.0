@@ -1057,6 +1057,8 @@ class CallHandler:
                 tts_latency_tracker.set_event_queue(event_queue)
                 # Wire event_queue to VadSuspicionTracker (emits VAD quality suspicion events)
                 vad_suspicion_tracker.set_event_queue(event_queue)
+                # Wire event_queue to TtsAudioGapTracker (emits tts_audio_gap on audible stutter)
+                _tts_audio_gap_tracker.set_event_queue(event_queue)
 
                 # Emit deferred MCP registration event now that the queue is running.
                 # _mcp_event_payload is populated above when MCP ran; None means MCP was skipped.

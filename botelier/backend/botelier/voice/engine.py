@@ -1107,26 +1107,87 @@ class TtsAudioGapTracker(FrameProcessor):
 
     This processor is completely transparent: every frame is passed through
     unchanged with no blocking awaits on the hot path.
+
+    Per-turn aggregation (Task #473): each turn's gap stats (count of gaps over
+    the threshold, worst gap) are accumulated and flushed at the next
+    ``LLMFullResponseStartFrame``.  When any gap exceeded the audible threshold
+    (100 ms — long enough that a caller can hear the speech stutter), the
+    summary is logged at INFO and emitted as a ``tts_audio_gap`` CallEvent so
+    intra-turn audio smoothness is measurable on real calls, not only visible
+    in DEBUG logs.
     """
 
-    _GAP_THRESHOLD_S: float = 0.030  # 30 ms
+    _GAP_THRESHOLD_S: float = 0.030  # 30 ms — measurement threshold
+    _AUDIBLE_GAP_S: float = 0.100  # 100 ms — caller-audible stutter threshold
 
-    def __init__(self, **kwargs):
+    def __init__(self, timing_state: dict = None, event_queue=None, **kwargs):
         super().__init__(**kwargs)
         self._last_audio_t: float = 0.0
+        self._timing_state = timing_state if timing_state is not None else {}
+        self._event_queue = event_queue
+        self._gap_count: int = 0
+        self._max_gap_s: float = 0.0
+        # Turn index of the RESPONSE whose audio gaps are being aggregated.
+        # Captured at LLMFullResponseStartFrame — the flush happens at the
+        # NEXT response start, by which time UserTurnCapture has already
+        # advanced timing_state["turn_index"] to the next user turn, so
+        # reading it at flush time would misattribute the stutter.
+        self._resp_turn_index: int = 0
+
+    def set_event_queue(self, event_queue) -> None:
+        self._event_queue = event_queue
+
+    def _flush_turn_summary(self) -> None:
+        """Report the previous turn's gap stats (if any) and reset counters."""
+        if self._gap_count > 0:
+            _turn_index = self._resp_turn_index
+            _max_ms = self._max_gap_s * 1000
+            _audible = self._max_gap_s > self._AUDIBLE_GAP_S
+            _msg = (
+                f"⏱️ turn#{_turn_index} TTS gap summary: {self._gap_count} gaps "
+                f">{self._GAP_THRESHOLD_S * 1000:.0f}ms, worst {_max_ms:.0f}ms"
+            )
+            if _audible:
+                logger.info(_msg + " (caller-audible)")
+                if self._event_queue is not None:
+                    self._event_queue.log(
+                        "tts_audio_gap",
+                        event_source="pipecat",
+                        severity="warning",
+                        details={
+                            "turn_index": _turn_index,
+                            "gap_count": self._gap_count,
+                            "max_gap_ms": int(_max_ms),
+                        },
+                    )
+            else:
+                logger.debug(_msg)
+        self._gap_count = 0
+        self._max_gap_s = 0.0
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, LLMFullResponseStartFrame):
-            # Reset between turns so inter-turn silence is never flagged.
+            # Reset between turns so inter-turn silence is never flagged,
+            # flushing the previous turn's aggregated gap stats first.
+            self._flush_turn_summary()
+            self._resp_turn_index = self._timing_state.get("turn_index", 0)
             self._last_audio_t = 0.0
+
+        elif isinstance(frame, (EndFrame, CancelFrame)):
+            # Call is ending — flush the final response's gap stats (there
+            # will be no next LLMFullResponseStartFrame to trigger it).
+            self._flush_turn_summary()
 
         elif isinstance(frame, TTSAudioRawFrame):
             now = time.monotonic()
             if self._last_audio_t > 0.0:
                 gap_s = now - self._last_audio_t
                 if gap_s > self._GAP_THRESHOLD_S:
+                    self._gap_count += 1
+                    if gap_s > self._max_gap_s:
+                        self._max_gap_s = gap_s
                     logger.debug(
                         f"TTS audio gap {gap_s * 1000:.1f}ms detected between consecutive "
                         f"TTSAudioRawFrames — consider switching text_aggregation_mode to 'token'"
@@ -1190,6 +1251,12 @@ class TtsPipelineLatencyTracker(FrameProcessor):
         self._expecting_audio: bool = False
         self._t_first_audio: float = 0.0
         self._turn_emitted: bool = False  # Guards against double-emission per turn
+        # Task #473 — turn_latency events are held here until the TTS TTFB
+        # MetricsFrame arrives (it is generated with the first audio chunk and
+        # therefore reaches this tracker AFTER the frame that triggers
+        # emission), then flushed. Also flushed at the next response start and
+        # at End/Cancel so the last turn of a call is never lost.
+        self._pending_turn_event: dict | None = None
 
     def set_event_queue(self, event_queue) -> None:
         self._event_queue = event_queue
@@ -1276,6 +1343,14 @@ class TtsPipelineLatencyTracker(FrameProcessor):
         if _completion_tokens is not None:
             details["completion_tokens"] = int(_completion_tokens)
 
+        # Task #473 — per-service TTFB as reported by pipecat's own metrics
+        # (request→first-result inside each service). Popped so a turn whose
+        # service emitted no TTFB shows nulls instead of stale values.
+        for _ttfb_key in ("stt_ttfb_ms", "llm_ttfb_ms", "tts_ttfb_ms"):
+            _v = self._timing_state.pop(_ttfb_key, None)
+            if _v is not None:
+                details[_ttfb_key] = int(_v)
+
         # Single-line cache verdict at INFO so it shows in prod logs without a
         # DB round-trip — the fastest way to confirm/reject the prompt-cache
         # hypothesis on the next live call.
@@ -1287,17 +1362,44 @@ class TtsPipelineLatencyTracker(FrameProcessor):
                 f"llm_gen={_llm_generation_ms}ms"
             )
 
-        self._event_queue.log(
-            "turn_latency",
-            event_source="pipecat",
-            severity="info",
-            details=details,
-        )
+        # Normal streaming path: pipecat's TTS base calls stop_ttfb_metrics()
+        # on the FIRST TTSAudioRawFrame of the context and pushes the
+        # MetricsFrame before forwarding that audio frame downstream
+        # (tts_service.py tts_process_generator) — so by the time first audio
+        # triggers this emission, tts_ttfb_ms is already staged and the event
+        # can be flushed immediately.  The event is held open ONLY when the
+        # TTS TTFB has not been seen (e.g. injected/cached audio or a provider
+        # that reports TTFB late); it then flushes when the metric attaches,
+        # at the next LLMFullResponseStartFrame, or at End/Cancel — never
+        # leaking onto a later turn (turn attribution is fixed in `details`).
+        self._pending_turn_event = details
+        if "tts_ttfb_ms" in details:
+            self._flush_pending_turn_event()
+
+    def _flush_pending_turn_event(self) -> None:
+        """Send the held turn_latency event to the queue, if any."""
+        if self._pending_turn_event is None:
+            return
+        details = self._pending_turn_event
+        self._pending_turn_event = None
+        if self._event_queue is not None:
+            self._event_queue.log(
+                "turn_latency",
+                event_source="pipecat",
+                severity="info",
+                details=details,
+            )
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, LLMFullResponseStartFrame):
+            # Flush the previous turn's held event (its TTS TTFB never arrived)
+            # and drop any stale TTFB values so they can never attach to THIS
+            # turn's event.
+            self._flush_pending_turn_event()
+            for _k in ("stt_ttfb_ms", "llm_ttfb_ms", "tts_ttfb_ms"):
+                self._timing_state.pop(_k, None)
             self._expecting_audio = True
             self._t_first_audio = 0.0
             self._turn_emitted = False  # Reset per-turn emission guard
@@ -1349,8 +1451,39 @@ class TtsPipelineLatencyTracker(FrameProcessor):
             # via either branch above. Multiple MetricsData entries may be
             # bundled (TTFB, processing, usage) — only LLMUsageMetricsData is
             # relevant here.
+            from pipecat.metrics.metrics import TTFBMetricsData as _TTFB
+
             for _data in frame.data or []:
-                if isinstance(_data, LLMUsageMetricsData):
+                if isinstance(_data, _TTFB):
+                    # Task #473 — per-service TTFB (pipecat measures request→
+                    # first-result inside each service). Keyed by service kind
+                    # so turn_latency can carry stt/llm/tts TTFB side by side.
+                    _proc = (_data.processor or "").lower()
+                    _ms = int((_data.value or 0.0) * 1000)
+                    # NOTE: check STT before TTS — "sttservice" contains the
+                    # substring "tts", so the order matters.
+                    if "stt" in _proc or "flux" in _proc:
+                        _key = "stt_ttfb_ms"
+                    elif "tts" in _proc:
+                        _key = "tts_ttfb_ms"
+                    elif "llm" in _proc:
+                        _key = "llm_ttfb_ms"
+                    else:
+                        continue
+                    if self._pending_turn_event is not None:
+                        # The turn's event already emitted and is being held
+                        # open for exactly this metric — attach directly so it
+                        # can never leak onto a later turn. TTS TTFB is the
+                        # last metric expected for a turn (generated with the
+                        # first audio chunk), so flush once it attaches.
+                        self._pending_turn_event[_key] = _ms
+                        if _key == "tts_ttfb_ms":
+                            self._flush_pending_turn_event()
+                    else:
+                        # Metric arrived before emission (typical for LLM/STT
+                        # TTFB) — stage it for _emit_turn_latency to pick up.
+                        self._timing_state[_key] = _ms
+                elif isinstance(_data, LLMUsageMetricsData):
                     _usage = _data.value
                     self._timing_state["prompt_tokens"] = _usage.prompt_tokens
                     self._timing_state["completion_tokens"] = _usage.completion_tokens
@@ -1359,6 +1492,11 @@ class TtsPipelineLatencyTracker(FrameProcessor):
                     # prompts under the 1024-token cache threshold). Coerce
                     # to 0 so dashboards can treat absence as "no cache hit".
                     self._timing_state["cached_tokens"] = _usage.cache_read_input_tokens or 0
+
+        elif isinstance(frame, (EndFrame, CancelFrame)):
+            # Pipeline is ending — flush the last turn's held event so it is
+            # never lost (there will be no next LLMFullResponseStartFrame).
+            self._flush_pending_turn_event()
 
         await self.push_frame(frame, direction)
 
@@ -1861,6 +1999,22 @@ class VoiceEngineFactory:
                         text = pattern.sub(replacement, text)
                     return text
 
+                async def append_to_audio_context(self, context_id, frame):
+                    # Task #473 — TTS TTFB for the websocket path.  Pipecat's
+                    # websocket DeepgramTTSService receives audio in
+                    # _receive_messages and appends it directly to the audio
+                    # context, so the base tts_process_generator never sees a
+                    # TTSAudioRawFrame and stop_ttfb_metrics() is never called
+                    # (only the HTTP variant stops it).  Stop it here on the
+                    # first received audio chunk: stop_ttfb_metrics() is a
+                    # no-op unless start_ttfb_metrics() armed it for the
+                    # current synthesis, so this fires exactly once per
+                    # utterance and pushes the TTFB MetricsFrame downstream
+                    # BEFORE the audio plays out of the context.
+                    if isinstance(frame, TTSAudioRawFrame):
+                        await self.stop_ttfb_metrics()
+                    await super().append_to_audio_context(context_id, frame)
+
                 async def run_tts(self, text: str, context_id: str):
                     await self.start_tts_usage_metrics(text)
 
@@ -2193,7 +2347,7 @@ class VoiceEngineFactory:
         # Detect intra-turn audio gaps >30ms between consecutive TTSAudioRawFrames.
         # Off by default in production (LOG_LEVEL=INFO); enable by raising to DEBUG.
         # Resets on LLMFullResponseStartFrame to prevent cross-turn false positives.
-        tts_audio_gap_tracker = TtsAudioGapTracker()
+        tts_audio_gap_tracker = TtsAudioGapTracker(timing_state=_timing_state)
 
         # Log greeting_completed on the first BotStoppedSpeakingFrame (greeting TTS done).
         # Placed between TTS and tts_completion_watcher; both see the same frame.
