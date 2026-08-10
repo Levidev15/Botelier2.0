@@ -146,8 +146,9 @@ def test_end_call_hangup_is_deferred_to_post_speech_callback():
     assert "EndFrame()" in finalizer
 
     # Both end paths route through the post-speech scheduler.
-    assert 'self._finalize_call_end(params.llm, "end_call")' in src
-    assert 'self._finalize_call_end(params.llm, "flow_end")' in src
+    assert 'self._finalize_call_end(' in src
+    assert '"end_call", speech_text=goodbye_message' in src
+    assert '"flow_end", speech_text=end_msg' in src
 
     # The old inline-hangup markers are gone from the end paths.
     assert "REST hangup issued for call {self.call_sid} (end_call tool)" not in src

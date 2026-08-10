@@ -705,6 +705,12 @@ class TtsCompletionWatcher(FrameProcessor):
         self._on_done_callback = None  # One-shot async callback
         self._bot_speaking = False  # True between BotStarted/BotStoppedSpeakingFrame
         self._guard_task = None  # Active timeout-guard task (cancelled on teardown)
+        # Monotonic timestamp of the last TTS activity frame (TTSStartedFrame /
+        # TTSAudioRawFrame) observed flowing downstream.  Used by the timeout
+        # guard to distinguish "speech is queued/being synthesized but hasn't
+        # audibly started" (do NOT fire — would clip the announcement) from
+        # "pipeline is genuinely silent" (safe to fire after the grace period).
+        self._last_tts_activity: float | None = None
 
     def reset(self):
         """Clear the completion event.
@@ -716,7 +722,7 @@ class TtsCompletionWatcher(FrameProcessor):
         self._speaking_done.clear()
 
     def schedule_after_speech(
-        self, callback, timeout: float = 5.0, max_wait: float = 60.0
+        self, callback, timeout: float = 5.0, max_wait: float = 60.0, label: str = ""
     ) -> None:
         """Run ``callback`` as soon as the current speech is done.
 
@@ -755,6 +761,9 @@ class TtsCompletionWatcher(FrameProcessor):
                       Default 60 s.
         """
         if self._speaking_done.is_set():
+            logger.info(
+                f"TtsCompletionWatcher[{label}]: speech already done — firing callback immediately"
+            )
             asyncio.create_task(callback())
         else:
             if self._on_done_callback is not None:
@@ -764,6 +773,10 @@ class TtsCompletionWatcher(FrameProcessor):
             async def _timeout_guard():
                 loop = asyncio.get_event_loop()
                 start = loop.time()
+                # Only TTS activity observed AT OR AFTER scheduling counts as
+                # "the scheduled announcement is being synthesized".  Stale
+                # activity from an earlier utterance must not starve the guard.
+                sched_time = start
                 hard_deadline = start + max_wait
                 # Deadline while the bot is silent.  Re-armed each time we
                 # observe the bot actively speaking, so silence AFTER speech
@@ -775,10 +788,18 @@ class TtsCompletionWatcher(FrameProcessor):
                     if now >= hard_deadline:
                         timed_out = True
                         break
-                    if self._bot_speaking:
-                        # Bot is audibly speaking — do NOT fire mid-sentence.
-                        # Push the silence deadline forward so the post-speech
-                        # grace period restarts when speech ends.
+                    _tts_recent = (
+                        self._last_tts_activity is not None
+                        and self._last_tts_activity >= sched_time
+                        and (now - self._last_tts_activity) < timeout
+                    )
+                    if self._bot_speaking or _tts_recent:
+                        # Bot is audibly speaking, or TTS frames were observed
+                        # within the grace window (speech is queued/starting —
+                        # audible playback just hasn't been flagged yet).  Do
+                        # NOT fire mid-sentence or pre-sentence.  Push the
+                        # silence deadline forward so the grace period restarts
+                        # once activity genuinely stops.
                         silent_deadline = now + timeout
                     elif now >= silent_deadline:
                         timed_out = True
@@ -801,9 +822,13 @@ class TtsCompletionWatcher(FrameProcessor):
                     # cancel an in-flight transfer/hangup mid-execution.
                     self._guard_task = None
                     if cb is not None:
+                        _waited = loop.time() - start
+                        _path = "hard-cap" if _waited >= max_wait - 0.3 else "silent-grace"
                         logger.warning(
-                            f"TtsCompletionWatcher: BotStoppedSpeakingFrame did not arrive "
-                            f"(waited {loop.time() - start:.1f}s, bot_speaking={self._bot_speaking}) "
+                            f"TtsCompletionWatcher[{label}]: BotStoppedSpeakingFrame did not arrive "
+                            f"(path={_path}, waited={_waited:.1f}s, timeout={timeout}s, max_wait={max_wait}s, "
+                            f"bot_speaking={self._bot_speaking}, "
+                            f"tts_activity_age={'none' if self._last_tts_activity is None else f'{loop.time() - self._last_tts_activity:.1f}s'}) "
                             f"— firing post-speech callback via timeout"
                         )
                         try:
@@ -852,6 +877,11 @@ class TtsCompletionWatcher(FrameProcessor):
             # Track audible speech so the schedule_after_speech timeout guard
             # never fires mid-sentence (see _timeout_guard).
             self._bot_speaking = True
+        if isinstance(frame, (TTSStartedFrame, TTSAudioRawFrame)):
+            # Track TTS synthesis activity so the timeout guard never fires
+            # while the announcement is queued/starting but not yet audible
+            # (the pre-speech clipping failure mode).
+            self._last_tts_activity = asyncio.get_event_loop().time()
         if isinstance(frame, BotStoppedSpeakingFrame):
             logger.debug("TtsCompletionWatcher: BotStoppedSpeakingFrame received — signalling done")
             self._bot_speaking = False
@@ -1893,14 +1923,21 @@ class VoiceEngineFactory:
                     if ctx is not None:
                         partial = self._send_buffer.pop(ctx, "") + self._word_buffer.pop(ctx, "")
                     if partial and self._websocket:
-                        try:
-                            await self._websocket.send(
-                                _json.dumps(
-                                    {"type": "Speak", "text": self._apply_substitutions(partial)}
+                        _payload = _json.dumps(
+                            {"type": "Speak", "text": self._apply_substitutions(partial)}
+                        )
+                        # One retry: a failed flush silently truncates the tail
+                        # of a transfer announcement / goodbye — the words were
+                        # never synthesized, so this is the only recovery point.
+                        for _attempt in (1, 2):
+                            try:
+                                await self._websocket.send(_payload)
+                                break
+                            except Exception as e:
+                                logger.error(
+                                    f"{self} error flushing buffered TTS text "
+                                    f"(attempt {_attempt}/2, {len(partial)} chars, ctx={ctx}): {e}"
                                 )
-                            )
-                        except Exception as e:
-                            logger.error(f"{self} error flushing buffered word in TTS: {e}")
                     await super().flush_audio(context_id)
 
                 async def on_audio_context_interrupted(self, context_id: str):

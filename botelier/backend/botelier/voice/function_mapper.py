@@ -38,6 +38,32 @@ from pipecat.services.llm_service import FunctionCallParams
 # messages; 10 s comfortably covers the buffer without stranding anyone.
 TWILIO_MARK_TIMEOUT_SECS: float = 10.0
 
+# Conservative speech-rate assumptions for estimating how long a phrase takes
+# to play at 8 kHz telephony rates.  Used ONLY on degraded paths (missing mark
+# watcher, mark-ack timeout, no completion watcher) where we cannot confirm
+# playback and must wait a length-scaled estimate instead of a flat delay.
+_PLAYBACK_CHARS_PER_SEC: float = 14.0
+_PLAYBACK_PAD_SECS: float = 1.5
+_PLAYBACK_MIN_SECS: float = 2.0
+# Ceiling on degraded-path waits.  High enough that any realistic configured
+# announcement (a few sentences) is never undercut by the clamp — at 14 chars/s
+# this covers ~600 characters of speech.  It exists only to bound the wait if
+# an absurdly long text is configured, not to trim normal announcements.
+_PLAYBACK_MAX_SECS: float = 45.0
+
+
+def estimate_playback_secs(text: str | None) -> float:
+    """Estimate how many seconds ``text`` takes to speak over the phone.
+
+    Conservative (slightly over-estimates) so degraded fallback paths wait
+    long enough for the announcement to finish rather than clipping it.
+    Returns the minimum estimate when ``text`` is empty/unknown.
+    """
+    if not text:
+        return _PLAYBACK_MIN_SECS
+    est = len(text) / _PLAYBACK_CHARS_PER_SEC + _PLAYBACK_PAD_SECS
+    return max(_PLAYBACK_MIN_SECS, min(_PLAYBACK_MAX_SECS, est))
+
 
 class FunctionMapper:
     """Maps database tool configurations to executable Pipecat functions.
@@ -188,19 +214,50 @@ class FunctionMapper:
         self._twilio_mark_watcher = watcher
         logger.debug(f"TwilioMarkWatcher linked to FunctionMapper for call {self.call_sid}")
 
-    async def _await_twilio_playback_mark(self, label: str) -> bool:
-        """Wait for Twilio to acknowledge playback up to this point."""
+    async def _await_twilio_playback_mark(
+        self, label: str, expected_speech_text: str | None = None
+    ) -> bool:
+        """Wait for Twilio to acknowledge playback up to this point.
+
+        Degraded paths (no mark watcher, or mark ack timed out / never arrived)
+        do NOT proceed immediately: audio confirmed written to the WebSocket may
+        still be sitting unplayed in Twilio's outbound buffer, so we wait a
+        conservative length-scaled estimate of the announcement's remaining
+        playback time before returning.  A received mark ack skips the wait.
+        """
         if self._twilio_mark_watcher is None:
+            _est = estimate_playback_secs(expected_speech_text)
             logger.warning(
-                f"No TwilioMarkWatcher available for call {self.call_sid} — "
-                "transfer will proceed without playback acknowledgement"
+                f"⏳ Playback-mark DEGRADED path (no TwilioMarkWatcher) for call "
+                f"{self.call_sid} ({label}) — waiting {_est:.1f}s playback estimate "
+                f"instead of mark acknowledgement"
             )
+            await asyncio.sleep(_est)
             return False
 
         mark_name = f"{label}:{self.call_sid}:{uuid.uuid4().hex[:8]}"
-        return await self._twilio_mark_watcher.send_mark_and_wait(
-            mark_name, timeout=TWILIO_MARK_TIMEOUT_SECS
-        )
+        _reason = None
+        acked = False
+        try:
+            acked = await self._twilio_mark_watcher.send_mark_and_wait(
+                mark_name, timeout=TWILIO_MARK_TIMEOUT_SECS
+            )
+            if not acked:
+                _reason = f"ack timeout/missing after {TWILIO_MARK_TIMEOUT_SECS}s"
+        except Exception as _mark_err:
+            # A failed mark SEND is just as unconfirmed as a missing ack — the
+            # announcement may still be playing.  Treat it as degraded, never
+            # as permission to proceed immediately.
+            _reason = f"mark send/wait raised: {_mark_err}"
+        if _reason is not None:
+            _est = estimate_playback_secs(expected_speech_text)
+            logger.warning(
+                f"⏳ Playback-mark DEGRADED path ({_reason}) for call "
+                f"{self.call_sid} ({label}) — waiting additional {_est:.1f}s "
+                f"playback estimate before proceeding"
+            )
+            await asyncio.sleep(_est)
+        return acked
 
     async def _rest_hangup(self, label: str) -> None:
         """Issue a Twilio REST hangup (status=completed) for reliable PSTN teardown.
@@ -234,7 +291,9 @@ class FunctionMapper:
                 f"REST hangup unexpected error for call {self.call_sid} ({label}): {_e} — continuing EndFrame"
             )
 
-    async def _finalize_call_end(self, llm, label: str) -> None:
+    async def _finalize_call_end(
+        self, llm, label: str, speech_text: str | None = None
+    ) -> None:
         """Hang up the call AFTER the goodbye has been fully heard.
 
         Runs as a post-speech callback (via TtsCompletionWatcher), so it starts
@@ -244,7 +303,7 @@ class FunctionMapper:
         hangup and ending the pipeline. Same caller-heard boundary transfers use.
         """
         try:
-            await self._await_twilio_playback_mark(label)
+            await self._await_twilio_playback_mark(label, expected_speech_text=speech_text)
         except Exception as _mark_err:
             logger.warning(
                 f"Playback-mark wait failed for call {self.call_sid} ({label}): {_mark_err} — proceeding with hangup"
@@ -258,6 +317,7 @@ class FunctionMapper:
         label: str,
         reset: bool = True,
         context_id: str | None = None,
+        speech_text: str | None = None,
     ) -> None:
         """Register ``callback`` to fire once the current speech utterance completes.
 
@@ -292,8 +352,10 @@ class FunctionMapper:
            clears the watcher before registering so it waits for the next
            ``TTSSpeakFrame`` the caller is about to push.
 
-        3. **Fixed 3 s delay** — last resort when neither watcher nor TTS
-           service is available (simulator / test context).
+        3. **Length-scaled delay** — last resort when neither watcher nor TTS
+           service is available (simulator / test context).  Waits
+           max(3 s, estimate_playback_secs(speech_text)) so long announcements
+           are not clipped by a flat delay.
 
         Args:
             callback:    Async callable with no arguments.
@@ -333,10 +395,22 @@ class FunctionMapper:
                 # (audio confirmed written to the WebSocket, in Twilio's buffer).
                 if _w is not None:
                     _w.reset()
-                    _w.schedule_after_speech(_cb)
+                    _w.schedule_after_speech(_cb, label=label)
                 else:
-                    # No watcher available — run callback directly.
-                    # This preserves the same behaviour as the old direct binding.
+                    # No watcher available — DEGRADED path.  Context completion
+                    # only means TTS pushed all audio frames downstream; they
+                    # have NOT yet reached the transport/Twilio (see the race
+                    # rationale above).  Running the terminal action now could
+                    # clip the announcement, so wait a length-scaled playback
+                    # estimate first — the same caller-heard bound the other
+                    # degraded paths use.
+                    _delay = max(3.0, estimate_playback_secs(speech_text))
+                    logger.warning(
+                        f"⏳ {label}: context completed but no TtsCompletionWatcher "
+                        f"for call {self.call_sid} — DEGRADED path: waiting "
+                        f"{_delay:.1f}s playback estimate before terminal action"
+                    )
+                    await asyncio.sleep(_delay)
                     await _cb()
 
             self._tts_service.register_context_done_callback(effective_ctx_id, _ctx_done_wrapper)
@@ -350,21 +424,29 @@ class FunctionMapper:
         if self._tts_completion_watcher is not None:
             if reset:
                 self._tts_completion_watcher.reset()
-            self._tts_completion_watcher.schedule_after_speech(callback)
+            self._tts_completion_watcher.schedule_after_speech(callback, label=label)
             logger.info(
                 f"📋 {label} callback registered (BotStopped fallback) "
                 f"for call {self.call_sid}"
             )
             return
 
-        # ── 3. Fixed delay (last resort) ───────────────────────────────────────
+        # ── 3. Length-scaled delay (last resort) ──────────────────────────────
+        # No watcher exists, so we cannot observe playback at all.  Wait long
+        # enough for the announcement to be synthesized AND played: a flat 3 s
+        # clipped longer announcements.  estimate_playback_secs is conservative
+        # and clamped, and we never wait less than the old 3 s floor.
+        _delay = max(3.0, estimate_playback_secs(speech_text))
+
         async def _delayed():
-            await asyncio.sleep(3.0)
+            await asyncio.sleep(_delay)
             await callback()
 
         asyncio.create_task(_delayed())
         logger.warning(
-            f"No TtsCompletionWatcher for call {self.call_sid} — using 3s fallback delay for {label}"
+            f"⏳ No TtsCompletionWatcher for call {self.call_sid} — DEGRADED path: "
+            f"using {_delay:.1f}s length-scaled fallback delay for {label} "
+            f"(speech_text={'unknown' if speech_text is None else f'{len(speech_text)} chars'})"
         )
 
     def set_event_queue(self, event_queue) -> None:
@@ -807,7 +889,9 @@ class FunctionMapper:
                                         )
 
                             _mark_task = _asyncio.create_task(
-                                self._await_twilio_playback_mark("transfer")
+                                self._await_twilio_playback_mark(
+                                    "transfer", expected_speech_text=pre_message
+                                )
                             )
                             _gather_t0 = _asyncio.get_event_loop().time()
                             await _asyncio.gather(
@@ -1091,6 +1175,7 @@ class FunctionMapper:
                 label="Transfer",
                 reset=(_ctx_id is None),
                 context_id=_ctx_id,
+                speech_text=pre_message,
             )
 
             await params.llm.push_frame(TTSSpeakFrame(pre_message))
@@ -1469,7 +1554,9 @@ class FunctionMapper:
             self.track_tool_usage(tool.name)
 
             async def _finalize_end_call():
-                await self._finalize_call_end(params.llm, "end_call")
+                await self._finalize_call_end(
+                    params.llm, "end_call", speech_text=goodbye_message
+                )
 
             # Yield to let FunctionCallInProgressFrame clear the TTS context
             # before we push TTSSpeakFrame (arrives ~67ms later and wipes the
@@ -1506,6 +1593,7 @@ class FunctionMapper:
                 label="End-call",
                 reset=(_ctx_id is None),
                 context_id=_ctx_id,
+                speech_text=goodbye_message,
             )
             await params.llm.push_frame(TTSSpeakFrame(goodbye_message))
 
@@ -1823,6 +1911,10 @@ class FunctionMapper:
             if result.get("action") == "transfer":
                 target = result.get("target")
                 flow_transfer_mode = result.get("transfer_mode", "warm")
+                # The announcement the LLM/flow speaks before the transfer —
+                # used to scale degraded-path playback waits so long messages
+                # are never clipped when the mark ack is missing.
+                _flow_transfer_msg = result.get("message") or None
                 import asyncio as _asyncio_flow
                 import re as _re_flow
 
@@ -1851,7 +1943,9 @@ class FunctionMapper:
                         _flow_transfer_succeeded = False
                         _flow_call_already_ended = False
                         try:
-                            await self._await_twilio_playback_mark("flow-transfer")
+                            await self._await_twilio_playback_mark(
+                                "flow-transfer", expected_speech_text=_flow_transfer_msg
+                            )
 
                             # ── Step 1: Save transcript ──────────────────────────────────────────
                             # Must happen before any session opens — _save_call_transcript is async
@@ -2064,6 +2158,7 @@ class FunctionMapper:
                         _execute_flow_transfer,
                         label="Flow transfer",
                         reset=False,
+                        speech_text=_flow_transfer_msg,
                     )
                 else:
                     # No Twilio client / call_sid / target — end the pipeline immediately
@@ -2084,12 +2179,16 @@ class FunctionMapper:
                 # REST hangup fired immediately after pushing the TTSSpeakFrame,
                 # clipping the flow END message.
                 async def _finalize_flow_end():
-                    await self._finalize_call_end(params.llm, "flow_end")
+                    await self._finalize_call_end(
+                        params.llm, "flow_end", speech_text=end_msg
+                    )
 
                 # Bind to the LLM's current audio context (reset=False reads
                 # _turn_context_id from the TTS service) — speech was initiated
                 # upstream by the LLM so we must not reset the watcher.
-                self._run_after_speech(_finalize_flow_end, label="Flow END", reset=False)
+                self._run_after_speech(
+                    _finalize_flow_end, label="Flow END", reset=False, speech_text=end_msg
+                )
 
                 await params.llm.push_frame(TTSSpeakFrame(end_msg))
                 # Do NOT call result_callback — same reasoning as the transfer
