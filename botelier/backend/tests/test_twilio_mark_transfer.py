@@ -57,10 +57,17 @@ async def test_twilio_mark_watcher_resolves_matching_mark():
     watcher = TwilioMarkWatcher(stream_sid="MZ123")
 
     async def acknowledge():
-        await asyncio.sleep(0)
+        # The watcher uniquifies the wire name (uuid suffix) so concurrent
+        # sends can never collide — echo back whatever name it registered.
+        for _ in range(50):
+            await asyncio.sleep(0)
+            if watcher._pending:
+                break
+        wire_name = next(iter(watcher._pending))
+        assert wire_name.startswith("transfer:abc-")
         await watcher.process_frame(
             InputTransportMessageFrame(
-                message={"event": "mark", "streamSid": "MZ123", "mark": {"name": "transfer:abc"}}
+                message={"event": "mark", "streamSid": "MZ123", "mark": {"name": wire_name}}
             ),
             FrameDirection.DOWNSTREAM,
         )

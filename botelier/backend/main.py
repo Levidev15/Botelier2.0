@@ -5,6 +5,7 @@ Provides REST endpoints for tools, integrations, and voice agent configuration.
 """
 
 import os
+import time
 from contextlib import asynccontextmanager
 
 # IMPORTANT: configure logging BEFORE any other botelier import so every
@@ -196,6 +197,16 @@ async def startup_event():
     app.state._stuck_call_sweeper_task.add_done_callback(log_task_exception)
     print("✅ Stuck-call sweeper started (runs every 5 min)")
 
+    # Event-loop lag monitor: live-call audio pacing shares this single loop
+    # with every REST route, so any synchronous work (heavy SQL, CPU-bound
+    # serialization) that blocks the loop is heard as an audio gap by every
+    # active caller. Log whenever a 100 ms sleep drifts by more than 100 ms —
+    # this is the measurement that proves/disproves loop starvation during
+    # dropout reports. Tune via LOOP_LAG_THRESHOLD_MS (0 disables).
+    app.state._loop_lag_monitor_task = asyncio.create_task(_loop_lag_monitor_loop())
+    app.state._loop_lag_monitor_task.add_done_callback(log_task_exception)
+    print("✅ Event-loop lag monitor started (threshold 100 ms)")
+
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -218,14 +229,18 @@ async def shutdown_event():
     except Exception as e:
         print(f"⚠️  shutdown finalizer raised: {e}")
 
-    task = getattr(app.state, "_stuck_call_sweeper_task", None)
-    if task is not None and not task.done():
-        task.cancel()
-        try:
-            await task
-        except (asyncio.CancelledError, Exception):
-            pass
-        print("✅ Stuck-call sweeper cancelled on shutdown")
+    for attr, label in (
+        ("_stuck_call_sweeper_task", "Stuck-call sweeper"),
+        ("_loop_lag_monitor_task", "Event-loop lag monitor"),
+    ):
+        task = getattr(app.state, attr, None)
+        if task is not None and not task.done():
+            task.cancel()
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+            print(f"✅ {label} cancelled on shutdown")
 
 
 async def _stuck_call_sweeper_loop():
@@ -279,7 +294,42 @@ async def root():
     return {"message": "Botelier Backend API", "docs": "/api/docs", "health": "/api/health"}
 
 
+async def _loop_lag_monitor_loop():
+    """Log when the event loop stalls longer than the configured threshold.
+
+    Sleeps 100 ms at a time and compares wall-clock drift; drift beyond the
+    threshold means something blocked the loop (sync DB query, CPU-bound
+    work) — exactly the condition that causes audio gaps for live calls.
+    Rate-limited to one log per second so a badly stalled loop can't flood.
+    """
+    try:
+        threshold_ms = max(0.0, float(os.environ.get("LOOP_LAG_THRESHOLD_MS", "100")))
+    except ValueError:
+        threshold_ms = 100.0
+    if threshold_ms == 0:
+        return
+    interval = 0.1
+    last_log = 0.0
+    while True:
+        try:
+            start = time.monotonic()
+            await asyncio.sleep(interval)
+            lag_ms = (time.monotonic() - start - interval) * 1000.0
+            if lag_ms > threshold_ms and (time.monotonic() - last_log) >= 1.0:
+                last_log = time.monotonic()
+                print(f"⚠️  Event-loop lag: {lag_ms:.0f} ms (threshold {threshold_ms:.0f} ms)")
+        except asyncio.CancelledError:
+            break
+        except Exception as _lag_err:
+            print(f"⚠️  Loop-lag monitor error: {_lag_err}")
+            await asyncio.sleep(1.0)
+
+
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    # reload=True tears down live-call WebSockets on any file change — never
+    # allow it in production. This alternate launch path (`python main.py`)
+    # is dev-only; production uses the Dockerfile CMD (no --reload).
+    _is_prod = os.environ.get("BOTELIER_ENV", "").lower() in ("prod", "production")
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=not _is_prod)

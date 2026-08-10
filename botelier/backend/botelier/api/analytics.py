@@ -195,7 +195,7 @@ def _resolve_date_range(
 
 
 @router.get("/calls")
-async def get_call_analytics(
+def get_call_analytics(
     account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     date_from: Optional[datetime] = Query(
         None, description="Start of window (ISO 8601). Defaults to 7 days ago."
@@ -629,7 +629,7 @@ async def get_call_analytics(
 
 
 @router.get("/calls/drilldown")
-async def get_calls_drilldown(
+def get_calls_drilldown(
     account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     date_from: Optional[datetime] = Query(None, description="Start of window (ISO 8601)."),
     date_to: Optional[datetime] = Query(None, description="End of window (ISO 8601)."),
@@ -889,7 +889,7 @@ async def get_calls_drilldown(
 # the file is pivot-table-ready.
 # ---------------------------------------------------------------------------
 @router.get("/calls/export-summary")
-async def export_calls_summary(
+def export_calls_summary(
     account_id: UUID = Query(..., description="Account ID for multi-tenant isolation"),
     date_from: Optional[datetime] = Query(None),
     date_to: Optional[datetime] = Query(None),

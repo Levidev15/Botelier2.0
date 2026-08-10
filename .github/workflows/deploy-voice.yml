@@ -48,10 +48,22 @@ jobs:
 
       - name: Deploy to Azure Container Apps
         run: |
+          # min/max-replicas pinned to 1 on every deploy: call state (CallHandler,
+          # pipeline registry, pre-warm cache) is process-local, so >1 replica
+          # misroutes Twilio callbacks and scale-in kills live calls. Enforcing
+          # it here also brings pre-existing apps (created with max-replicas 10)
+          # into compliance. See scripts/azure-voice-setup.sh.
           az containerapp update \
             --name ${{ secrets.ACA_APP_NAME }} \
             --resource-group ${{ secrets.ACA_RESOURCE_GROUP }} \
-            --image "${{ secrets.ACR_LOGIN_SERVER }}/botelier-voice:${{ github.sha }}"
+            --image "${{ secrets.ACR_LOGIN_SERVER }}/botelier-voice:${{ github.sha }}" \
+            --min-replicas 1 \
+            --max-replicas 1
+          echo "Deployed scale config:"
+          az containerapp show \
+            --name ${{ secrets.ACA_APP_NAME }} \
+            --resource-group ${{ secrets.ACA_RESOURCE_GROUP }} \
+            --query "properties.template.scale" -o json
 
       - name: Wait for deployment and verify health
         run: |

@@ -158,7 +158,9 @@ async def _fetch_overview(account_id):
     db = SessionLocal()
     try:
         with patch.object(analytics_api, "check_account_permission"):
-            result = await analytics_api.get_call_analytics(
+            # Sync endpoint (runs in Starlette's threadpool in production so
+            # heavy SQL never blocks the live-call event loop) — call directly.
+            result = analytics_api.get_call_analytics(
                 account_id=account_id,
                 date_from=None,
                 date_to=None,

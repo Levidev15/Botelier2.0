@@ -131,13 +131,32 @@ if [ -n "$STREAM_TOKEN_SECRET" ]; then
 fi
 
 if az containerapp show --name "$ACA_APP" --resource-group "$RESOURCE_GROUP" &>/dev/null; then
-  echo "Container App $ACA_APP already exists — updating image only."
+  echo "Container App $ACA_APP already exists — updating image and pinning replicas."
   echo "(To update secrets, use: az containerapp secret set ...)"
+  # --min/max-replicas 1 is enforced on EVERY update so pre-existing apps
+  # created with the old max-replicas 10 setting are brought into compliance
+  # (see the rationale comment on the create branch below).
   az containerapp update \
     --name "$ACA_APP" \
     --resource-group "$RESOURCE_GROUP" \
-    --image "$ACR_LOGIN_SERVER/botelier-voice:latest"
+    --image "$ACR_LOGIN_SERVER/botelier-voice:latest" \
+    --min-replicas 1 \
+    --max-replicas 1
+  # Verify the deployed revision's scale configuration.
+  echo "Current scale config:"
+  az containerapp show \
+    --name "$ACA_APP" \
+    --resource-group "$RESOURCE_GROUP" \
+    --query "properties.template.scale" -o json
 else
+  # max-replicas MUST stay 1 until call state is externalized:
+  # CallHandler, is_pipeline_active, the pre-warm cache, and Twilio mark
+  # events are all process-local. With >1 replica, Twilio /status,
+  # /connect-complete, and transfer callbacks can land on a replica that
+  # does not hold the call's WebSocket (teardown silently no-ops), and
+  # scale-in kills live calls mid-sentence. The default HTTP-concurrency
+  # scale rule would scale on REST traffic, not calls.
+  # See docs/azure-voice-task-context.md.
   az containerapp create \
     --name "$ACA_APP" \
     --resource-group "$RESOURCE_GROUP" \
@@ -153,7 +172,7 @@ else
     --cpu 1.0 \
     --memory 2.0Gi \
     --min-replicas 1 \
-    --max-replicas 10
+    --max-replicas 1
 fi
 
 echo ""

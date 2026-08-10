@@ -33,4 +33,5 @@
 - [pipecat fork resolution & Flux turn strategies](pipecat-fork-and-flux-turn-strategies.md) — dev imports pip pipecat, prod Docker imports src/ fork via PYTHONPATH; Flux paths must pass explicit ExternalUserTurnStrategies, never None (None → SmartTurn default → transformers crash).
 - [FastAPI router ordering — static vs wildcard conflicts](fastapi-router-ordering.md) — static paths in a later router lose to wildcards in an earlier router; integration_builder_router must be registered before integrations_router in main.py.
 - [MCP channel lifecycle & Pipecat schemas](mcp-channel-lifecycle.md) — Pipecat MCP schemas must enter the initial LLMContext; AnyIO MCP sessions must open/use/close in one task; native names win.
+- [Voice dropout invariants](voice-dropout-hardening.md) — false interruptions, loop starvation, and TTS micro-fragmentation are all heard as speech cutting out; gates/clamps/replica-pin rules that must not regress.
 - [Adapter runtime guardrails](adapter-runtime-guardrails.md) — auth headers always win over config headers; path substitutions URL-encoded; response cap is transport-level pre-parse; test_operation drafts are preview-only.

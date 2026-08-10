@@ -195,7 +195,9 @@ async def test_set_pending_greeting_is_idempotent_after_inject():
 async def test_large_greeting_payload_preserves_order_and_payload():
     """Large payloads must maintain strict TTS frame order and full payload integrity."""
     upstream = _RecordingProcessor("upstream")
-    injector = GreetingAudioInjector(inject_yield_every_chunks=5)
+    # Small explicit pace keeps this test fast; production default (0.04 s per
+    # group ≈ 4× real-time) would need a ~1 s stopper for 100 chunks.
+    injector = GreetingAudioInjector(inject_yield_every_chunks=5, inject_pace_sleep_s=0.001)
     downstream = _RecordingProcessor("downstream")
 
     pipeline = Pipeline([upstream, injector, downstream])

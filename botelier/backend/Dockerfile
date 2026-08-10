@@ -58,8 +58,15 @@ EXPOSE 8000
 # SileroVAD + SmartTurn model weights are downloaded on first startup by the
 # pre-warm step in startup_event (main.py). With min-replicas=1 this only
 # happens once per deployment, not on every call.
+# --ws-ping-interval/--ws-ping-timeout  explicit WebSocket keepalive so the
+#                          Twilio media stream and browser sockets survive
+#                          intermediary (ACA Envoy ingress) idle timeouts and
+#                          dead peers are detected within ~50 s instead of
+#                          riding on library defaults.
 CMD ["uvicorn", "main:app", \
      "--host", "0.0.0.0", \
      "--port", "8000", \
      "--log-level", "info", \
-     "--timeout-keep-alive", "75"]
+     "--timeout-keep-alive", "75", \
+     "--ws-ping-interval", "20", \
+     "--ws-ping-timeout", "30"]

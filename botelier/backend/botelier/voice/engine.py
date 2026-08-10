@@ -364,12 +364,22 @@ class GreetingAudioInjector(FrameProcessor):
 
     _CHUNK_SIZE = 320  # 20 ms @ 8 kHz linear16 PCM (8000 * 2 bytes/sample * 0.020 s)
 
-    def __init__(self, inject_yield_every_chunks: int | None = 8, **kwargs):
+    def __init__(
+        self,
+        inject_yield_every_chunks: int | None = 8,
+        inject_pace_sleep_s: float = 0.04,
+        **kwargs,
+    ):
         super().__init__(**kwargs)
         self._pending_audio: bytes | None = None
         self._injected = False
         self._start_received = False
         self._inject_yield_every_chunks = inject_yield_every_chunks
+        # Pace the injection instead of enqueueing the whole greeting in one
+        # burst.  8 chunks = 160 ms of audio; sleeping 40 ms per group pushes
+        # at ~4× real-time — far ahead of playback (no gap risk) while keeping
+        # the transport queue shallow so barge-in/clears stay responsive.
+        self._inject_pace_sleep_s = max(0.0, inject_pace_sleep_s)
 
     def set_pending_greeting(self, audio_bytes: bytes) -> None:
         """Stash cached greeting bytes to be injected once the pipeline starts.
@@ -457,7 +467,7 @@ class GreetingAudioInjector(FrameProcessor):
                     and self._inject_yield_every_chunks > 0
                     and chunk_idx % self._inject_yield_every_chunks == 0
                 ):
-                    await asyncio.sleep(0)
+                    await asyncio.sleep(self._inject_pace_sleep_s)
             await self.push_frame(TTSStoppedFrame(), FrameDirection.DOWNSTREAM)
             chunk_count = -(-len(audio) // self._CHUNK_SIZE)  # ceil division
             logger.info(
@@ -886,6 +896,13 @@ class TwilioMarkWatcher(FrameProcessor):
             logger.warning("TwilioMarkWatcher: no stream SID; skipping playback mark")
             return False
 
+        # Uniquify the wire name: two concurrent waits on the same base name
+        # would otherwise share one dict slot — the second registration
+        # overwrites the first Event, and that caller waits out the full
+        # timeout (up to 2 s of dead air) even though its mark came back.
+        import uuid as _uuid
+
+        name = f"{name}-{_uuid.uuid4().hex[:8]}"
         event = asyncio.Event()
         self._pending[name] = event
         message = {
@@ -1454,6 +1471,121 @@ class VoiceEngineFactory:
                 flux_ttfs = float(
                     config.stt_config.get("ttfs_p99_latency", DEEPGRAM_TTFS_P99)
                 )
+                flux_settings = DeepgramFluxSTTService.Settings(
+                    model=model,
+                    eager_eot_threshold=config.stt_config.get("eager_eot_threshold"),
+                    eot_threshold=config.stt_config.get("eot_threshold", 0.7),
+                    eot_timeout_ms=config.stt_config.get("eot_timeout_ms", 5000),
+                    keyterm=config.stt_config.get("keyterm", []),
+                )
+
+                # Word-gated barge-in for the interruptions-ON path.
+                #
+                # Flux fires StartOfTurn on ANY detected speech onset — breaths,
+                # background voices, line noise — and with should_interrupt=True
+                # the base class broadcasts an interruption IMMEDIATELY with zero
+                # transcribed words.  That interruption reaches the transport and
+                # issues a Twilio `clear`, wiping carrier-buffered audio and
+                # audibly cutting the bot mid-word.  This mirrors the Silero
+                # path's MinWordsUserTurnStartStrategy: defer the transport-
+                # clearing broadcast until Flux has transcribed at least
+                # ``interrupt_min_words`` words for the turn.  UserStartedSpeaking,
+                # EndOfTurn, and metrics are unaffected — only the destructive
+                # interruption is deferred.  Set stt_config.interrupt_min_words=0
+                # to restore the legacy fire-on-StartOfTurn behaviour.
+                try:
+                    flux_min_words = max(
+                        0, int(float(config.stt_config.get("interrupt_min_words", 1) or 0))
+                    )
+                except (TypeError, ValueError):
+                    logger.warning(
+                        f"Invalid stt_config.interrupt_min_words value "
+                        f"{config.stt_config.get('interrupt_min_words')!r} — falling back to 1"
+                    )
+                    flux_min_words = 1
+
+                # Fork-coupling guard: the gating below overrides private Flux
+                # handlers (_handle_start_of_turn/_handle_update/_handle_end_of_turn).
+                # If a pipecat upgrade renames them, fail LOUDLY back to the
+                # ungated legacy behaviour instead of silently changing semantics.
+                _flux_hooks_present = all(
+                    hasattr(DeepgramFluxSTTService, attr)
+                    for attr in (
+                        "_handle_start_of_turn",
+                        "_handle_update",
+                        "_handle_end_of_turn",
+                        "_handle_eager_end_of_turn",
+                    )
+                )
+                if not _flux_hooks_present:
+                    logger.error(
+                        "DeepgramFluxSTTService private handlers changed in this pipecat "
+                        "version — word-gated barge-in DISABLED, using legacy immediate "
+                        "interruption. Re-align _GatedFluxSTTService with the fork."
+                    )
+
+                if config.enable_interruptions and flux_min_words > 0 and _flux_hooks_present:
+
+                    class _GatedFluxSTTService(DeepgramFluxSTTService):
+                        """Flux STT that defers interruption until real words arrive."""
+
+                        def __init__(self, *args, interrupt_min_words: int = 1, **kwargs):
+                            # Base must never broadcast on raw StartOfTurn; we
+                            # broadcast ourselves once the word gate passes.
+                            kwargs["should_interrupt"] = False
+                            super().__init__(*args, **kwargs)
+                            self._interrupt_min_words = interrupt_min_words
+                            self._pending_interrupt = False
+
+                        async def _maybe_broadcast(self, transcript: str) -> None:
+                            if not self._pending_interrupt:
+                                return
+                            if len((transcript or "").split()) >= self._interrupt_min_words:
+                                self._pending_interrupt = False
+                                logger.debug(
+                                    f"Flux word-gated interruption fired "
+                                    f"({self._interrupt_min_words}+ words transcribed)"
+                                )
+                                await self.broadcast_interruption()
+
+                        async def _handle_start_of_turn(self, transcript: str):
+                            self._pending_interrupt = True
+                            await super()._handle_start_of_turn(transcript)
+                            # StartOfTurn sometimes already carries the first
+                            # words — gate passes with zero added latency then.
+                            await self._maybe_broadcast(transcript)
+
+                        async def _handle_update(self, transcript: str):
+                            await self._maybe_broadcast(transcript)
+                            await super()._handle_update(transcript)
+
+                        async def _handle_eager_end_of_turn(self, transcript: str, data):
+                            # EagerEndOfTurn can carry the first complete
+                            # transcript and kicks off early LLM/TTS work — the
+                            # gate must resolve HERE, or a still-pending flag
+                            # would fire late at EndOfTurn and clear the newly
+                            # started bot audio (the exact dropout this fixes).
+                            await self._maybe_broadcast(transcript)
+                            self._pending_interrupt = False
+                            await super()._handle_eager_end_of_turn(transcript, data)
+
+                        async def _handle_end_of_turn(self, transcript: str, data):
+                            # Last chance before the turn completes; then clear
+                            # so a stale pending flag never leaks to next turn.
+                            await self._maybe_broadcast(transcript)
+                            self._pending_interrupt = False
+                            await super()._handle_end_of_turn(transcript, data)
+
+                    logger.info(
+                        f"Flux barge-in gating enabled: interrupt_min_words={flux_min_words}"
+                    )
+                    return _GatedFluxSTTService(
+                        api_key=api_keys.get("deepgram_api_key"),
+                        ttfs_p99_latency=flux_ttfs,
+                        interrupt_min_words=flux_min_words,
+                        settings=flux_settings,
+                    )
+
                 return DeepgramFluxSTTService(
                     api_key=api_keys.get("deepgram_api_key"),
                     ttfs_p99_latency=flux_ttfs,
@@ -1465,13 +1597,7 @@ class VoiceEngineFactory:
                     # EndOfTurn transcriptions, and metrics still fire normally so
                     # normal turn-taking is completely unaffected.
                     should_interrupt=config.enable_interruptions,
-                    settings=DeepgramFluxSTTService.Settings(
-                        model=model,
-                        eager_eot_threshold=config.stt_config.get("eager_eot_threshold"),
-                        eot_threshold=config.stt_config.get("eot_threshold", 0.7),
-                        eot_timeout_ms=config.stt_config.get("eot_timeout_ms", 5000),
-                        keyterm=config.stt_config.get("keyterm", []),
-                    ),
+                    settings=flux_settings,
                 )
             else:
                 # Build a subclass that inherits BotelierDeepgramSTTService's
@@ -1642,6 +1768,21 @@ class VoiceEngineFactory:
                 for word, replacement in _word_substitutions.items()
             ]
 
+            # TOKEN-mode Speak batching (see run_tts below).  A clause boundary
+            # is punctuation followed by whitespace — the batch always ends in
+            # whitespace so `[.,;:!?…\n]\s` matches at natural pause points.
+            _CLAUSE_BOUNDARY_RE = _re.compile(r"[.,;:!?…\n]['\")\]]*\s")
+            try:
+                _token_send_min_chars = max(
+                    0, int(float(config.tts_config.get("token_send_min_chars", 24) or 0))
+                )
+            except (TypeError, ValueError):
+                logger.warning(
+                    f"Invalid tts_config.token_send_min_chars value "
+                    f"{config.tts_config.get('token_send_min_chars')!r} — falling back to 24"
+                )
+                _token_send_min_chars = 24
+
             class _BotelierDeepgramTTSService(DeepgramTTSService):
                 """Deepgram TTS with Botelier-specific enhancements.
 
@@ -1672,6 +1813,11 @@ class VoiceEngineFactory:
                     # Populated in run_tts (TOKEN mode), drained in flush_audio,
                     # and cleared wholesale on interruption.
                     self._word_buffer: dict[str, str] = {}
+                    # Complete-word batch accumulator keyed by context_id —
+                    # words wait here until a clause boundary / min-chars
+                    # threshold dispatches them as ONE Speak request.
+                    self._send_buffer: dict[str, str] = {}
+                    self._token_send_min_chars = _token_send_min_chars
                     # One-shot callbacks keyed by context_id.
                     # Registered by terminal handlers (transfer, end-call) so they
                     # fire on the EXACT utterance's audio completion rather than on
@@ -1712,18 +1858,40 @@ class VoiceEngineFactory:
                         complete = ""
                         self._word_buffer[context_id] = pending   # whole thing is partial
 
+                    # Batch complete words into clause-sized Speak requests.
+                    # Sending every single word as its own Speak message creates
+                    # provider-side micro-bursts: dozens of tiny synthesis
+                    # requests whose inter-frame gaps (>30ms, logged by
+                    # AudioGapTracker) are audible as speech cutting in and out.
+                    # Accumulate complete words and dispatch when the batch hits
+                    # a clause boundary (. , ; : ! ? or newline followed by
+                    # whitespace) or reaches _token_send_min_chars — whichever
+                    # comes first.  flush_audio() drains any remainder, so no
+                    # text is ever lost.  Set tts_config.token_send_min_chars=0
+                    # to restore per-word dispatch.
                     if complete:
-                        async for frame in super().run_tts(
-                            self._apply_substitutions(complete), context_id
+                        batch = self._send_buffer.pop(context_id, "") + complete
+                        if (
+                            self._token_send_min_chars <= 0
+                            or len(batch) >= self._token_send_min_chars
+                            or _CLAUSE_BOUNDARY_RE.search(batch)
                         ):
-                            yield frame
+                            async for frame in super().run_tts(
+                                self._apply_substitutions(batch), context_id
+                            ):
+                                yield frame
+                        else:
+                            self._send_buffer[context_id] = batch
 
                 async def flush_audio(self, context_id: str | None = None):
-                    # Drain any buffered partial word BEFORE sending the Flush command.
-                    # Metrics for this text were already recorded in the run_tts call
-                    # that received it — do NOT call start_tts_usage_metrics here.
+                    # Drain the batched complete words AND any buffered partial
+                    # word BEFORE sending the Flush command.  Metrics for this
+                    # text were already recorded in the run_tts call that
+                    # received it — do NOT call start_tts_usage_metrics here.
                     ctx = context_id if context_id is not None else self._turn_context_id
-                    partial = self._word_buffer.pop(ctx, "") if ctx is not None else ""
+                    partial = ""
+                    if ctx is not None:
+                        partial = self._send_buffer.pop(ctx, "") + self._word_buffer.pop(ctx, "")
                     if partial and self._websocket:
                         try:
                             await self._websocket.send(
@@ -1739,6 +1907,7 @@ class VoiceEngineFactory:
                     # Clear all buffered partial words on interruption so nothing
                     # leaks into the next LLM response.
                     self._word_buffer.clear()
+                    self._send_buffer.clear()
                     # Discard any pending callback for the interrupted context;
                     # the speech was cut short so the transfer/hangup must not fire.
                     self._context_done_callbacks.pop(context_id, None)
@@ -1771,6 +1940,17 @@ class VoiceEngineFactory:
             # serialiser μ-law-encodes it for transmission.
             sample_rate = config.tts_config.get("sample_rate", 8000)
             encoding = config.tts_config.get("encoding", "linear16")
+            # The telephony transport is hard-wired to 8 kHz μ-law (Twilio Media
+            # Streams).  A misconfigured assistant-level sample_rate (e.g. 24000)
+            # forces a resample-or-corrupt path downstream — clamp it and warn
+            # loudly rather than let one bad config value garble live audio.
+            if sample_rate != 8000:
+                logger.warning(
+                    f"tts_config.sample_rate={sample_rate} does not match the 8 kHz "
+                    f"telephony transport — clamping to 8000. Fix the assistant's "
+                    f"tts_config to silence this warning."
+                )
+                sample_rate = 8000
 
             # TOKEN mode sends each LLM token to Deepgram the moment it arrives,
             # keeping Deepgram's internal synthesis buffer continuously filled and
@@ -1835,6 +2015,9 @@ class VoiceEngineFactory:
             return _BotelierCartesiaTTSService(
                 api_key=api_keys.get("cartesia_api_key"),
                 voice_id=config.tts_voice_id,
+                # Telephony transport is 8 kHz μ-law — pin the provider output
+                # so Pipecat's resampler chain is a no-op, matching Deepgram.
+                sample_rate=8000,
             )
         elif provider == "elevenlabs":
             from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
@@ -1842,6 +2025,7 @@ class VoiceEngineFactory:
             return ElevenLabsTTSService(
                 api_key=api_keys.get("elevenlabs_api_key"),
                 voice_id=config.tts_voice_id,
+                sample_rate=8000,  # telephony transport is 8 kHz μ-law
             )
         elif provider == "openai":
             from pipecat.services.openai.tts import OpenAITTSService
@@ -1849,6 +2033,7 @@ class VoiceEngineFactory:
             return OpenAITTSService(
                 api_key=api_keys.get("openai_api_key"),
                 voice=config.tts_voice_id or "alloy",
+                sample_rate=8000,  # telephony transport is 8 kHz μ-law
             )
         else:
             raise ValueError(f"Unsupported TTS provider: {provider}")

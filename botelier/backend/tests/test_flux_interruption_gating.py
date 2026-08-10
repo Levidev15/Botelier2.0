@@ -70,11 +70,25 @@ class TestFluxSTTShouldInterrupt:
 
         return captured
 
-    def test_interruptions_on_passes_should_interrupt_true(self):
+    def test_interruptions_on_default_uses_word_gated_subclass(self):
+        # With interruptions ON and the default interrupt_min_words=1, the
+        # word-gated subclass owns interruption broadcasting: the BASE class
+        # must be constructed with should_interrupt=False so raw StartOfTurn
+        # (noise/breaths) can never clear buffered Twilio audio directly.
         config = _flux_config(enable_interruptions=True)
         captured = self._call_create_stt(config)
+        assert captured.get("should_interrupt") is False, (
+            "Default gated path must pass should_interrupt=False to the base; "
+            "the subclass broadcasts once >=1 word is transcribed"
+        )
+
+    def test_interruptions_on_min_words_zero_restores_legacy(self):
+        config = _flux_config(
+            enable_interruptions=True, stt_config={"interrupt_min_words": 0}
+        )
+        captured = self._call_create_stt(config)
         assert captured.get("should_interrupt") is True, (
-            "With interruptions ON, should_interrupt must be True so barge-in works"
+            "interrupt_min_words=0 must restore legacy immediate interruption"
         )
 
     def test_interruptions_off_passes_should_interrupt_false(self):
