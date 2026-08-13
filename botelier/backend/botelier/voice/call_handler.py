@@ -748,6 +748,40 @@ class CallHandler:
                     f"{len(_flow_executors)} flow tool(s) into live prompt for call {call_sid}"
                 )
 
+                # Task #477 — apply per-flow-tool LLM overrides.
+                # If any flow tool has explicit LLM settings, they win over the
+                # assistant-level values (e.g. use gpt-4o for booking accuracy).
+                # If no flow tool has an override, apply a lower temperature
+                # default (0.4) when none was explicitly set on the assistant —
+                # structured flows need more predictable output than 0.7.
+                _flow_llm_override = _flow_mapper.get_flow_llm_override()
+                if _flow_llm_override:
+                    if _flow_llm_override.get("llm_provider"):
+                        config.llm_provider = _flow_llm_override["llm_provider"]
+                    if _flow_llm_override.get("llm_model"):
+                        config.llm_model = _flow_llm_override["llm_model"]
+                    if _flow_llm_override.get("llm_temperature") is not None:
+                        config.llm_temperature = _flow_llm_override["llm_temperature"]
+                    if _flow_llm_override.get("llm_max_tokens") is not None:
+                        config.llm_max_tokens = _flow_llm_override["llm_max_tokens"]
+                    logger.info(
+                        f"🤖 Applied flow tool LLM override for call {call_sid}: "
+                        f"provider={config.llm_provider} model={config.llm_model} "
+                        f"temp={config.llm_temperature} max_tokens={config.llm_max_tokens}"
+                    )
+                else:
+                    # No per-flow override — apply the structured-flow temperature
+                    # default when the operator has not set an explicit value on
+                    # the assistant (NULL in DB → `assistant.temperature or 0.7`
+                    # already resolved to 0.7 in _create_agent_config; we override
+                    # only when the raw DB value is NULL/falsy).
+                    if assistant.temperature is None:
+                        config.llm_temperature = 0.4
+                        logger.info(
+                            f"🌡️  Flow assistant {call_sid}: no explicit temperature set, "
+                            "using 0.4 (structured-flow default)"
+                        )
+
             # 4. Create TwilioFrameSerializer (Pipecat pattern)
             #
             # auto_hang_up=False: disables the automatic REST hangup that
@@ -1687,8 +1721,8 @@ You have access to the following Q&A knowledge base. Use this information to ans
             stt_config=assistant.stt_config or {},
             llm_provider=assistant.llm_provider,
             llm_model=assistant.llm_model,
-            llm_temperature=assistant.temperature or 0.7,
-            llm_max_tokens=assistant.max_tokens or 150,
+            llm_temperature=0.7 if assistant.temperature is None else assistant.temperature,
+            llm_max_tokens=assistant.max_tokens or 400,
             llm_config=assistant.llm_config or {},
             tts_provider=assistant.tts_provider,
             tts_voice_id=assistant.tts_voice or "",

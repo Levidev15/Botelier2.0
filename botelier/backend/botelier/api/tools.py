@@ -261,6 +261,18 @@ def update_tool(
         tool.config = tool_data.config
     if tool_data.is_active is not None:
         tool.is_active = "true" if tool_data.is_active else "false"
+    # Per-flow LLM overrides (Task #477).  The sentinel for "clear this field"
+    # is an explicit empty string / zero — absent key means "don't touch it".
+    # We check `in` on the raw dict so we can distinguish None-as-clear from absent.
+    _raw = tool_data.model_dump(exclude_unset=True) if hasattr(tool_data, "model_dump") else tool_data.dict(exclude_unset=True)
+    if "llm_provider" in _raw:
+        tool.llm_provider = tool_data.llm_provider or None
+    if "llm_model" in _raw:
+        tool.llm_model = tool_data.llm_model or None
+    if "llm_temperature" in _raw:
+        tool.llm_temperature = tool_data.llm_temperature
+    if "llm_max_tokens" in _raw:
+        tool.llm_max_tokens = tool_data.llm_max_tokens
 
     db.commit()
     db.refresh(tool)

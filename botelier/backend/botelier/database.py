@@ -118,6 +118,11 @@ _ADDITIVE_MIGRATIONS = [
     "ALTER TABLE call_billing_items ADD COLUMN IF NOT EXISTS call_leg_id UUID REFERENCES call_legs(id) ON DELETE CASCADE",
     "ALTER TABLE call_billing_items ADD COLUMN IF NOT EXISTS source_duration_seconds INTEGER",
     "ALTER TABLE call_billing_items ADD COLUMN IF NOT EXISTS duration_source VARCHAR(32) NOT NULL DEFAULT 'unknown'",
+    # Task #477 — per-flow-tool LLM overrides. All nullable; NULL = fall back to assistant-level settings.
+    "ALTER TABLE tools ADD COLUMN IF NOT EXISTS llm_provider VARCHAR(64)",
+    "ALTER TABLE tools ADD COLUMN IF NOT EXISTS llm_model VARCHAR(128)",
+    "ALTER TABLE tools ADD COLUMN IF NOT EXISTS llm_temperature FLOAT",
+    "ALTER TABLE tools ADD COLUMN IF NOT EXISTS llm_max_tokens INTEGER",
     "CREATE INDEX IF NOT EXISTS ix_call_billing_items_call_leg_id ON call_billing_items(call_leg_id)",
     """CREATE UNIQUE INDEX IF NOT EXISTS uq_call_billing_inbound_per_call
        ON call_billing_items(call_log_id) WHERE item_type = 'inbound_call'""",

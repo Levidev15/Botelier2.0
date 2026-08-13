@@ -63,6 +63,10 @@ class AssistantSnapshot:
     description: Optional[str] = None
     call_settings: Optional[Dict] = field(default_factory=dict)
     property_id: Optional[str] = None
+    # Task #477 — needed for the flow temperature fallback in call_handler
+    # ("if not assistant.temperature: use 0.4"). Must be None (falsy) when the
+    # DB row has no explicit value, identical to the ORM behaviour.
+    temperature: Optional[float] = None
 
 
 # HOT-PATH CONTRACT — ToolSnapshot
@@ -89,6 +93,13 @@ class ToolSnapshot:
     description: Optional[str]
     tool_type: Any
     config: Dict[str, Any] = field(default_factory=dict)
+    # Task #477 — per-flow LLM overrides. All nullable; None = fall back to
+    # assistant-level settings. FunctionMapper reads these via getattr so they
+    # must be present on the snapshot with the same attribute names as the ORM.
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_temperature: Optional[float] = None
+    llm_max_tokens: Optional[int] = None
 
 
 @dataclass
@@ -381,6 +392,11 @@ async def _build_bundle(
                         description=_t.description,
                         tool_type=_t.tool_type,
                         config=dict(_t.config or {}),
+                        # Task #477 — per-flow LLM overrides
+                        llm_provider=_t.llm_provider,
+                        llm_model=_t.llm_model,
+                        llm_temperature=_t.llm_temperature,
+                        llm_max_tokens=_t.llm_max_tokens,
                     )
                     for _t in _tool_rows
                 ]
@@ -452,6 +468,10 @@ async def _build_bundle(
                 description=getattr(assistant, "description", None),
                 call_settings=dict(assistant.call_settings or {}),
                 property_id=str(assistant.property_id) if assistant.property_id else None,
+                # Task #477 — flow temperature fallback needs the raw DB value
+                # (None when not set, falsy) so the "if not assistant.temperature"
+                # guard in call_handler behaves identically on warm and cold paths.
+                temperature=assistant.temperature,
             )
             # Detach everything from the session so the build-time
             # ``_create_agent_config`` read can still touch attributes

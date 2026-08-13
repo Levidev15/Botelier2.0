@@ -549,6 +549,20 @@ class FunctionMapper:
         """
         return list(self._flow_executors.values())
 
+    def get_flow_llm_override(self) -> dict | None:
+        """Return the first non-empty per-flow LLM override found across all flow tools.
+
+        Task #477 — flow tools can configure their own LLM provider, model,
+        temperature, and max_tokens. The first tool with any non-None value wins
+        (typical deployments have a single flow tool per assistant). Returns None
+        when no executor has an override set (i.e. all values are None).
+        """
+        for executor in self._flow_executors.values():
+            override = getattr(executor, "_llm_override", {}) or {}
+            if any(v is not None for v in override.values()):
+                return override
+        return None
+
     def update_llm_tools_for_flow(self, tool_name: str):
         """Update the LLM context tools to only expose the current/next slot function.
 
@@ -1711,6 +1725,14 @@ class FunctionMapper:
         if not hasattr(self, "_flow_executors"):
             self._flow_executors = {}
         self._flow_executors[tool.name] = executor
+        # Task #477 — stash any per-flow LLM overrides on the executor so
+        # call_handler can read them without needing the original tool object.
+        executor._llm_override = {
+            "llm_provider": getattr(tool, "llm_provider", None),
+            "llm_model": getattr(tool, "llm_model", None),
+            "llm_temperature": getattr(tool, "llm_temperature", None),
+            "llm_max_tokens": getattr(tool, "llm_max_tokens", None),
+        }
 
         # Return main flow trigger function
         # The LLM calls this when it detects the guest wants to start this flow
@@ -1815,6 +1837,13 @@ class FunctionMapper:
                 logger.warning(f"Flow resume failed for {tool_name} (non-fatal): {exc}")
             self._flow_executors[tool_name] = executor
             logger.info(f"Created new FlowExecutor for {tool_name}")
+            # Task #477 — stash per-flow LLM overrides for call_handler.
+            executor._llm_override = {
+                "llm_provider": getattr(tool, "llm_provider", None),
+                "llm_model": getattr(tool, "llm_model", None),
+                "llm_temperature": getattr(tool, "llm_temperature", None),
+                "llm_max_tokens": getattr(tool, "llm_max_tokens", None),
+            }
 
         # Get ALL function schemas for handler registration (so all handlers exist)
         all_function_schemas = executor.get_all_function_schemas()

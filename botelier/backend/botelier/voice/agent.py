@@ -36,7 +36,7 @@ class VoiceAgentConfig(BaseModel):
     llm_provider: str = "openai"
     llm_model: str = "gpt-4o-mini"
     llm_temperature: float = 0.7
-    llm_max_tokens: int = 150
+    llm_max_tokens: int = 400  # raised from 150 — prevents response truncation on confirmations
     llm_config: Dict[str, Any] = Field(default_factory=dict)
 
     tts_provider: str = "cartesia"

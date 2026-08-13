@@ -164,6 +164,12 @@ class ToolUpdate(BaseModel):
     description: Optional[str] = Field(None, min_length=1)
     config: Optional[Dict[str, Any]] = None
     is_active: Optional[bool] = None
+    # Per-flow-tool LLM overrides (Task #477). All optional; None = keep existing value.
+    # When set on a FLOW tool, these override the assistant-level LLM settings at call time.
+    llm_provider: Optional[str] = Field(None, max_length=64)
+    llm_model: Optional[str] = Field(None, max_length=128)
+    llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    llm_max_tokens: Optional[int] = Field(None, ge=1, le=32768)
 
     @validator("name")
     def name_characters(cls, v: Optional[str]) -> Optional[str]:

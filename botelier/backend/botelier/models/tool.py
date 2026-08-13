@@ -8,7 +8,7 @@ import enum
 import uuid as uuid_pkg
 from datetime import datetime
 
-from sqlalchemy import JSON, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Column, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
@@ -96,6 +96,14 @@ class Tool(Base):
     # Status
     is_active = Column(String(10), default="true")  # "true" or "false" as string
 
+    # Task #477 — per-flow-tool LLM overrides.
+    # All nullable; NULL means "fall back to the assistant-level setting".
+    # Only meaningful for FLOW type tools; silently ignored for other types.
+    llm_provider = Column(String(64), nullable=True)
+    llm_model = Column(String(128), nullable=True)
+    llm_temperature = Column(Float, nullable=True)
+    llm_max_tokens = Column(Integer, nullable=True)
+
     def __repr__(self):
         return f"<Tool(id={self.id}, name={self.name}, type={self.tool_type})>"
 
@@ -124,5 +132,11 @@ class Tool(Base):
                 "published_version_number": self.published_version_number or 0,
                 "has_draft": self.draft_version_id is not None,
             }
+            # Per-flow LLM overrides (nulls returned so the frontend can distinguish
+            # "explicitly unset" from "default").
+            result["llm_provider"] = self.llm_provider
+            result["llm_model"] = self.llm_model
+            result["llm_temperature"] = self.llm_temperature
+            result["llm_max_tokens"] = self.llm_max_tokens
 
         return result
