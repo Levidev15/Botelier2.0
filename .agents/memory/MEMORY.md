@@ -34,4 +34,5 @@
 - [FastAPI router ordering — static vs wildcard conflicts](fastapi-router-ordering.md) — static paths in a later router lose to wildcards in an earlier router; integration_builder_router must be registered before integrations_router in main.py.
 - [MCP channel lifecycle & Pipecat schemas](mcp-channel-lifecycle.md) — Pipecat MCP schemas must enter the initial LLMContext; AnyIO MCP sessions must open/use/close in one task; native names win.
 - [Voice dropout invariants](voice-dropout-hardening.md) — false interruptions, loop starvation, and TTS micro-fragmentation are all heard as speech cutting out; gates/clamps/replica-pin rules that must not regress.
+- [Next.js dev cache self-corruption](nextjs-dev-cache-corruption.md) — pages 200 but all /_next/static 404 + webpack-runtime MODULE_NOT_FOUND = Next 14.2.0 dev bug; upgrade patch version, cache clear alone recurs.
 - [Adapter runtime guardrails](adapter-runtime-guardrails.md) — auth headers always win over config headers; path substitutions URL-encoded; response cap is transport-level pre-parse; test_operation drafts are preview-only.
