@@ -80,6 +80,24 @@ def _validate_opera_gateway_url(gateway_url: str) -> None:
         )
 
 
+# Fallback token TTL when OHIP's token response omits ``expires_in``. Without a
+# stored expiry the runtime treats the token as always-stale and re-fetches it on
+# every request. OHIP access tokens are documented as ~60 minutes; use a
+# conservative default under that.
+_DEFAULT_TOKEN_TTL_S = 3300
+
+# Cap on provider response text echoed into our logs on refresh failure —
+# enough to diagnose (error code/description) without dumping full bodies.
+_LOG_BODY_MAX = 200
+
+
+def _truncate_for_log(text: Optional[str]) -> str:
+    body = (text or "").strip()
+    if len(body) > _LOG_BODY_MAX:
+        return body[:_LOG_BODY_MAX] + "…"
+    return body
+
+
 class OperaCloudAdapter(BaseIntegrationAdapter):
     slug = "opera-cloud"
 
@@ -169,14 +187,40 @@ class OperaCloudAdapter(BaseIntegrationAdapter):
                 )
 
                 if response.status_code == 200:
-                    token_data = response.json()
-                    integration.set_access_token(token_data.get("access_token"))
+                    # Guard against a malformed "success": non-JSON body or a JSON
+                    # body without an access_token. Treat as transient (keep
+                    # CONNECTED) so the next request retries the refresh.
+                    try:
+                        token_data = response.json()
+                    except Exception:
+                        token_data = None
+                    access_token = (
+                        token_data.get("access_token") if isinstance(token_data, dict) else None
+                    )
+                    if not access_token:
+                        logger.error(
+                            f"Token refresh for integration {integration.id} returned 200 "
+                            "but no access_token "
+                            f"(body: {_truncate_for_log(response.text)})"
+                        )
+                        integration.last_error = "Token endpoint returned 200 without access_token"
+                        db.add(integration)
+                        db.commit()
+                        return False
+
+                    integration.set_access_token(access_token)
                     if token_data.get("refresh_token"):
                         integration.set_refresh_token(token_data["refresh_token"])
-                    if token_data.get("expires_in"):
-                        integration.token_expires_at = datetime.utcnow() + timedelta(
-                            seconds=token_data["expires_in"]
-                        )
+                    # Always set an expiry: without one the runtime considers the
+                    # token perpetually stale and re-hits the token endpoint on
+                    # EVERY request.
+                    try:
+                        ttl = int(token_data.get("expires_in") or 0)
+                    except (TypeError, ValueError):
+                        ttl = 0
+                    if ttl <= 0:
+                        ttl = _DEFAULT_TOKEN_TTL_S
+                    integration.token_expires_at = datetime.utcnow() + timedelta(seconds=ttl)
 
                     integration.status = IntegrationStatus.CONNECTED
                     integration.last_error = None
@@ -185,8 +229,28 @@ class OperaCloudAdapter(BaseIntegrationAdapter):
 
                     logger.info(f"Successfully refreshed token for integration {integration.id}")
                     return True
+                elif response.status_code == 429 or response.status_code >= 500:
+                    # Transient provider throttling/outage — NOT a credential
+                    # problem. Keep the integration CONNECTED so the next request
+                    # retries the refresh automatically instead of demanding a
+                    # manual reconnect.
+                    logger.warning(
+                        f"Token refresh transient failure for integration {integration.id}: "
+                        f"{response.status_code} - {_truncate_for_log(response.text)}"
+                    )
+                    integration.last_error = (
+                        f"Token refresh temporarily failed: {response.status_code}"
+                    )
+                    db.add(integration)
+                    db.commit()
+                    return False
                 else:
-                    logger.error(f"Token refresh failed: {response.status_code} - {response.text}")
+                    # Definitive provider rejection (400/401/403 invalid_client
+                    # etc.) — terminal, requires reconnect with valid credentials.
+                    logger.error(
+                        f"Token refresh rejected for integration {integration.id}: "
+                        f"{response.status_code} - {_truncate_for_log(response.text)}"
+                    )
                     integration.status = IntegrationStatus.TOKEN_EXPIRED
                     integration.last_error = f"Token refresh failed: {response.status_code}"
                     db.add(integration)
