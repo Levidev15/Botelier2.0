@@ -28,6 +28,9 @@ interface OperationCatalogPanelProps {
   authFetch: (url: string, options?: RequestInit) => Promise<Response>;
   onNotify: (type: "success" | "error", message: string) => void;
   onClose: () => void;
+  /** Certified integrations: operations are platform-managed, so only
+   *  Response Fields (read) and Test are exposed. */
+  readOnly?: boolean;
 }
 
 const METHOD_COLORS: Record<string, string> = {
@@ -55,13 +58,16 @@ export default function OperationCatalogPanel({
   authFetch,
   onNotify,
   onClose,
+  readOnly = false,
 }: OperationCatalogPanelProps) {
   const [operations, setOperations] = useState<Operation[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedOp, setSelectedOp] = useState<Operation | null>(null);
   const [search, setSearch] = useState("");
-  const [activeTab, setActiveTab] = useState<"policy" | "fields" | "test" | "publish">("policy");
+  const [activeTab, setActiveTab] = useState<"policy" | "fields" | "test" | "publish">(
+    readOnly ? "test" : "policy"
+  );
 
   const [policy, setPolicy] = useState<Partial<OperationPolicy>>({});
   const [savingPolicy, setSavingPolicy] = useState(false);
@@ -128,7 +134,7 @@ export default function OperationCatalogPanel({
     setTestResult(null);
     setTestProjected(null);
     setPendingRepublish(false);
-    setActiveTab("policy");
+    setActiveTab(readOnly ? "test" : "policy");
     const mapping = op.policy?.response_mapping || {};
     setResponseMapping(Object.entries(mapping).map(([name, path]) => ({ name, path })));
     setParamOwnershipOverrides(op.policy?.param_ownership_overrides || {});
@@ -474,7 +480,10 @@ export default function OperationCatalogPanel({
 
               {/* Tabs */}
               <div className="flex border-b border-gray-800 px-6 flex-shrink-0">
-                {(["policy", "fields", "test", "publish"] as const).map((tab) => (
+                {(readOnly
+                  ? (["fields", "test"] as const)
+                  : (["policy", "fields", "test", "publish"] as const)
+                ).map((tab) => (
                   <button
                     key={tab}
                     onClick={() => setActiveTab(tab)}

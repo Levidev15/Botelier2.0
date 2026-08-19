@@ -42,6 +42,7 @@ export default function APIBuilderSection({
   canManage,
 }: APIBuilderSectionProps) {
   const [importedTypes, setImportedTypes] = useState<ImportableIntegrationType[]>([]);
+  const [allTypes, setAllTypes] = useState<IntegrationType[]>([]);
   const [connections, setConnections] = useState<AccountIntegration[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -56,6 +57,7 @@ export default function APIBuilderSection({
     connectionId: string;
     connectionName: string;
     integrationName: string;
+    readOnly?: boolean;
   } | null>(null);
 
   // Expanded type cards
@@ -65,9 +67,10 @@ export default function APIBuilderSection({
     setLoading(true);
     setLoadError(null);
     try {
-      const [typesRes, connRes] = await Promise.all([
+      const [typesRes, connRes, allTypesRes] = await Promise.all([
         authFetch(`/api/integrations/types/importable?account_id=${accountId}`),
         authFetch(`/api/integrations/account/${accountId}`),
+        authFetch(`/api/integrations/types`),
       ]);
       if (typesRes.ok) {
         const data = await typesRes.json();
@@ -79,6 +82,10 @@ export default function APIBuilderSection({
       if (connRes.ok) {
         const data = await connRes.json();
         setConnections(data || []);
+      }
+      if (allTypesRes.ok) {
+        const data = await allTypesRes.json();
+        setAllTypes(Array.isArray(data) ? data : data.integration_types || []);
       }
     } catch (err: any) {
       setLoadError(err?.message || "Failed to load");
@@ -93,6 +100,18 @@ export default function APIBuilderSection({
 
   const getTypeConnections = (typeId: string) =>
     connections.filter((c) => c.integration_type_id === typeId);
+
+  // Certified (platform-managed) connections with endpoint catalogs — shown
+  // read-only so users can inspect response fields and run operation tests.
+  const importedTypeIds = new Set(importedTypes.map((t) => t.id));
+  const certifiedConns = connections
+    .map((conn) => {
+      const type = allTypes.find((t) => t.id === conn.integration_type_id);
+      return type && !importedTypeIds.has(type.id) && (type.endpoint_count || 0) > 0
+        ? { conn, type }
+        : null;
+    })
+    .filter((x): x is { conn: AccountIntegration; type: IntegrationType } => x !== null);
 
   // Default required_fields for imported types that have none set (e.g. unauthenticated APIs).
   const FALLBACK_REQUIRED_FIELDS = [
@@ -319,6 +338,65 @@ export default function APIBuilderSection({
         </div>
       )}
 
+      {/* Certified integration connections (read-only operation catalog) */}
+      {certifiedConns.length > 0 && (
+        <div className="space-y-3">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-300">
+              Certified Integrations
+            </h3>
+            <p className="text-xs text-gray-500 mt-0.5">
+              Platform-managed connections — inspect response fields and test
+              operations with your stored credentials.
+            </p>
+          </div>
+          <div className="rounded-xl border border-gray-800 bg-[#141414] divide-y divide-gray-800/60">
+            {certifiedConns.map(({ conn, type }) => (
+              <div key={conn.id} className="flex items-center gap-4 px-5 py-3">
+                <div className="flex-1 min-w-0">
+                  <div className="flex items-center gap-2">
+                    {conn.status === "connected" ? (
+                      <CheckCircle className="h-3.5 w-3.5 text-green-400 flex-shrink-0" />
+                    ) : (
+                      <XCircle className="h-3.5 w-3.5 text-gray-600 flex-shrink-0" />
+                    )}
+                    <span className="text-sm font-medium truncate">
+                      {conn.connection_name || type.name}
+                    </span>
+                    <span className="inline-flex items-center px-2 py-0.5 rounded text-xs border bg-gray-800/60 text-gray-400 border-gray-700">
+                      {type.name}
+                    </span>
+                    <span className="text-xs text-gray-500">
+                      {type.endpoint_count} endpoint
+                      {type.endpoint_count !== 1 ? "s" : ""}
+                    </span>
+                  </div>
+                  {conn.last_error && (
+                    <p className="text-xs text-red-400 mt-0.5 truncate">
+                      {conn.last_error}
+                    </p>
+                  )}
+                </div>
+                <button
+                  onClick={() =>
+                    setCatalogConn({
+                      connectionId: conn.id,
+                      connectionName: conn.connection_name || type.name,
+                      integrationName: type.name,
+                      readOnly: true,
+                    })
+                  }
+                  className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-white bg-blue-700 hover:bg-blue-600 rounded-lg transition flex-shrink-0"
+                >
+                  <Settings className="h-3.5 w-3.5" />
+                  View & Test Operations
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
       {/* Import spec modal */}
       {showImportModal && (
         <ImportSpecModal
@@ -352,6 +430,7 @@ export default function APIBuilderSection({
           authFetch={authFetch}
           onNotify={onNotify}
           onClose={() => setCatalogConn(null)}
+          readOnly={catalogConn.readOnly}
         />
       )}
     </div>
