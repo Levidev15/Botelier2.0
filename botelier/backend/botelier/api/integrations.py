@@ -1680,8 +1680,9 @@ async def obtain_oauth_token(integration_type: IntegrationType, credentials: dic
         "scope": auth_config.get("scope", "urn:opc:hgbu:ws:__myscopes__"),
     }
 
+    masked_app_key = f"...{app_key[-4:]}" if app_key and len(app_key) > 4 else "***"
     logger.debug(
-        f"OHIP token request → {token_url} | x-app-key={app_key} | "
+        f"OHIP token request → {token_url} | x-app-key={masked_app_key} | "
         f"enterpriseId={enterprise_id} | scope={data['scope']}"
     )
 
@@ -1700,13 +1701,14 @@ async def obtain_oauth_token(integration_type: IntegrationType, credentials: dic
                     "expires_in": token_data.get("expires_in", 3600),
                 }
             else:
+                body_snippet = (response.text or "")[:200]
                 logger.error(
-                    f"OHIP token request failed: {response.status_code} - {response.text} "
-                    f"(url={token_url}, x-app-key={app_key}, x-enterpriseid={enterprise_id})"
+                    f"OHIP token request failed: {response.status_code} - {body_snippet} "
+                    f"(url={token_url}, x-app-key={masked_app_key}, x-enterpriseid={enterprise_id})"
                 )
                 return {
                     "success": False,
-                    "error": f"Token request failed: {response.status_code} - {response.text}",
+                    "error": f"Token request failed: {response.status_code} - {body_snippet}",
                 }
 
     except Exception as e:
@@ -1770,10 +1772,11 @@ async def obtain_jwt_token(integration_type: IntegrationType, credentials: dict)
                     "expires_in": expires_in,
                 }
             else:
-                logger.error(f"JWT login request failed: {response.status_code} - {response.text}")
+                body_snippet = (response.text or "")[:200]
+                logger.error(f"JWT login request failed: {response.status_code} - {body_snippet}")
                 return {
                     "success": False,
-                    "error": f"JWT login failed: {response.status_code} - {response.text}",
+                    "error": f"JWT login failed: {response.status_code} - {body_snippet}",
                 }
 
     except Exception as e:

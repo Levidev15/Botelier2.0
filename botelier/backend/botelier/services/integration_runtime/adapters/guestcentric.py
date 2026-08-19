@@ -240,7 +240,10 @@ class GuestCentricAdapter(BaseIntegrationAdapter):
                         )
                         return True
                     else:
-                        logger.error(f"JWT login failed: {response.status_code} - {response.text}")
+                        logger.error(
+                            f"JWT login failed: {response.status_code} - "
+                            f"{(response.text or '')[:200]}"
+                        )
                         integration.status = IntegrationStatus.TOKEN_EXPIRED
                         integration.last_error = f"JWT login failed: {response.status_code}"
                         db.add(integration)
