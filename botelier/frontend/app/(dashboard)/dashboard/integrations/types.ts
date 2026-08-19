@@ -103,7 +103,7 @@ export interface OperationVariable {
   required?: boolean;
   ownership?: string;
   enum?: string[];
-  default?: string;
+  default?: string | number;
 }
 
 export interface OperationPolicy {

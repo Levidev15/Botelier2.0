@@ -107,6 +107,7 @@ OPERA_CLOUD_INTEGRATION = {
                     "type": "text",
                     "label": "Confirmation Number",
                     "description": "The reservation confirmation number",
+                    "required": True,
                 }
             ],
             "response_mapping": {
@@ -346,10 +347,10 @@ OPERA_CLOUD_INTEGRATION = {
                 {"key": "rate_code", "type": "text", "label": "Rate Plan Code", "required": True},
                 {"key": "guest_count", "type": "number", "label": "Number of Adults", "default": 1},
                 {"key": "child_count", "type": "number", "label": "Number of Children", "default": 0},
-                {"key": "card_holder", "type": "text", "label": "Card Holder Name", "required": True},
-                {"key": "card_number", "type": "text", "label": "Card Number", "required": True},
-                {"key": "card_expiry", "type": "text", "label": "Card Expiry (MM/YY)", "required": True},
-                {"key": "card_cvv", "type": "text", "label": "Card CVV", "required": True},
+                {"key": "card_holder", "type": "text", "label": "Card Holder Name", "required": True, "ownership": "secret"},
+                {"key": "card_number", "type": "text", "label": "Card Number", "required": True, "ownership": "secret"},
+                {"key": "card_expiry", "type": "text", "label": "Card Expiry (MM/YY)", "required": True, "ownership": "secret"},
+                {"key": "card_cvv", "type": "text", "label": "Card CVV", "required": True, "ownership": "secret"},
             ],
             "response_mapping": {
                 "confirmation_number": "$.reservationId.id",
@@ -430,6 +431,7 @@ OPERA_CLOUD_INTEGRATION = {
                 "check_out_date": "check_out_date",
                 "guest_count": "guest_count",
                 "children": "children",
+                "room_type": "room_type",
             },
             "category": "Availability",
             "name": "Check Room Availability",

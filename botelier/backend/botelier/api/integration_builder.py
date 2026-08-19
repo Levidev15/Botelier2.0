@@ -347,11 +347,14 @@ def list_operations(
 
     results = []
     for ep in endpoints:
+        from botelier.services.operation_publisher import normalize_operation_variables
+
         op_id = ep.get("id", "")
         policy = policies.get(op_id)
         action = published_actions.get(op_id)
         results.append({
             **ep,
+            "variables": normalize_operation_variables(ep.get("variables")),
             "policy": policy.to_dict() if policy else None,
             "is_published": (
                 action is not None

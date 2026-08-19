@@ -130,7 +130,13 @@ export default function OperationCatalogPanel({
   const selectOperation = (op: Operation) => {
     setSelectedOp(op);
     setPolicy(op.policy || {});
-    setTestParams({});
+    setTestParams(
+      Object.fromEntries(
+        (op.variables || [])
+          .filter((variable) => variable.default !== undefined)
+          .map((variable) => [variable.name, String(variable.default)])
+      )
+    );
     setTestResult(null);
     setTestProjected(null);
     setPendingRepublish(false);
@@ -899,8 +905,15 @@ function TestTab({
                   </select>
                 ) : (
                   <input
-                    type="text"
-                    value={testParams[param.name] || ""}
+                    type={
+                      param.type === "date"
+                        ? "date"
+                        : param.type === "number" || param.type === "integer"
+                          ? "number"
+                          : "text"
+                    }
+                    step={param.type === "number" ? "any" : undefined}
+                    value={testParams[param.name] ?? ""}
                     onChange={(e) =>
                       onChange({ ...testParams, [param.name]: e.target.value })
                     }

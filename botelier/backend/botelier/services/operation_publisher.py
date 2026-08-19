@@ -35,6 +35,30 @@ from botelier.models.tool import Tool, ToolType
 from botelier.utils import sanitize_function_name
 
 
+def normalize_operation_variables(variables: Optional[list[dict]]) -> list[dict]:
+    """Return operation variables in the canonical API Builder shape.
+
+    Certified seeds historically use ``key``/``label`` while imported specs
+    use ``name``/``description``. Preserve legacy fields for the runtime, but
+    always expose a non-empty canonical name to catalog, publisher, and tests.
+    """
+    normalized: list[dict] = []
+    for raw in variables or []:
+        if not isinstance(raw, dict):
+            continue
+        name = str(raw.get("name") or raw.get("key") or "").strip()
+        if not name:
+            continue
+        item = dict(raw)
+        item["name"] = name
+        item.setdefault("key", name)
+        description = raw.get("description") or raw.get("label")
+        if description:
+            item["description"] = str(description)
+        normalized.append(item)
+    return normalized
+
+
 def _build_llm_input_schema(
     variables: list[dict],
     param_ownership: Optional[dict] = None,
@@ -49,7 +73,7 @@ def _build_llm_input_schema(
     properties: dict = {}
     required: list[str] = []
 
-    for var in variables or []:
+    for var in normalize_operation_variables(variables):
         name = var.get("name", "")
         ownership = param_ownership.get(name) or var.get("ownership", "llm")
         if ownership != "llm":
@@ -185,7 +209,7 @@ def _build_execution_config(
     credentials.  This is the runtime truth; the LLM-only input_schema is the
     visibility boundary.
     """
-    variables = endpoint.get("variables") or []
+    variables = normalize_operation_variables(endpoint.get("variables"))
     connection_params: dict = {}
     fixed_params: dict = {}
 

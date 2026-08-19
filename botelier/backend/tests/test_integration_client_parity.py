@@ -235,6 +235,38 @@ async def test_opera_data_request_prefers_explicit_app_key(monkeypatch):
     assert captured[0].headers["x-app-key"] == "APPKEY"
 
 
+@pytest.mark.asyncio
+async def test_opera_availability_request_renders_seed_defaults_and_variables(monkeypatch):
+    integ = _opera_integration(credentials_extra={"app_key": "APPKEY"})
+    client = _client_with(integ)
+    captured = _install_capture(monkeypatch, _json_response({}))
+
+    config = IntegrationAPIConfig(
+        integration_id=str(integ.id),
+        endpoint_id="check_availability",
+        method="GET",
+    )
+    result = await client.execute_request(
+        config,
+        {
+            "check_in_date": "2026-09-10",
+            "check_out_date": "2026-09-12",
+            "room_type": "KING",
+        },
+    )
+
+    assert result.success is True
+    assert len(captured) == 1
+    assert str(captured[0].url) == (
+        f"{OPERA_GATEWAY}/par/v1/hotels/OHIPSB02/availability"
+        "?roomStayStartDate=2026-09-10"
+        "&roomStayEndDate=2026-09-12"
+        "&adults=1"
+        "&children=0"
+        "&roomType=KING"
+    )
+
+
 # ── GuestCentric data-request parity ──────────────────────────────────────────
 
 
