@@ -911,9 +911,25 @@ async def test_integration_connection(
                         message="Token expired and refresh failed",
                         details={"error": refresh_result.get("error")},
                     )
+                _persist_refreshed_tokens(integration, refresh_result)
                 db.commit()
 
             test_result = await test_api_connection(integration_type, integration, credentials)
+
+            # One-shot forced refresh + retry on 401/403, mirroring the live
+            # runtime: a stored token can be revoked provider-side long before
+            # our local expiry clock says so.
+            if (
+                not test_result.get("success")
+                and (test_result.get("details") or {}).get("status_code") in (401, 403)
+            ):
+                refresh_result = await refresh_oauth_token(integration_type, integration)
+                if refresh_result.get("success"):
+                    _persist_refreshed_tokens(integration, refresh_result)
+                    db.commit()
+                    test_result = await test_api_connection(
+                        integration_type, integration, credentials
+                    )
 
         return TestConnectionResponse(
             success=test_result.get("success", False),
@@ -1831,6 +1847,24 @@ async def validate_basic_auth(integration_type: IntegrationType, credentials: di
         return {"success": False, "error": str(e)}
 
 
+def _persist_refreshed_tokens(integration: AccountIntegration, refresh_result: dict) -> None:
+    """Store tokens returned by refresh_oauth_token on the integration.
+
+    The refresh-token grant path persists tokens itself and returns only
+    {"success": True}; the fallback paths (fresh client_credentials or JWT
+    login) return the raw token payload without persisting — this bridges
+    that gap. Caller commits.
+    """
+    if refresh_result.get("access_token"):
+        integration.set_access_token(refresh_result["access_token"])
+        if refresh_result.get("refresh_token"):
+            integration.set_refresh_token(refresh_result["refresh_token"])
+        if refresh_result.get("expires_in"):
+            integration.token_expires_at = datetime.utcnow() + timedelta(
+                seconds=refresh_result["expires_in"]
+            )
+
+
 async def refresh_oauth_token(
     integration_type: IntegrationType, integration: AccountIntegration
 ) -> dict:
@@ -1986,7 +2020,8 @@ async def test_api_connection(
 
     gateway_url = credentials.get("gateway_url", "").rstrip("/")
     hotel_id = credentials.get("hotel_id")
-    app_key = credentials.get("app_key")
+    # Same fallback as token acquisition: explicit app_key, else client_id.
+    app_key = credentials.get("app_key") or credentials.get("client_id")
     access_token = integration.get_access_token()
 
     if not all([gateway_url, hotel_id, app_key, access_token]):
@@ -1997,7 +2032,10 @@ async def test_api_connection(
     except HTTPException as exc:
         return {"success": False, "message": exc.detail}
 
-    test_url = f"{gateway_url}/fof/v1/hotels/{hotel_id}/roomTypes"
+    # Health-check against an endpoint the integration actually uses in flows
+    # (seeded get_room_types). The previous fof/v1 path belongs to a module many
+    # OHIP app subscriptions don't include, causing false-negative 401s.
+    test_url = f"{gateway_url}/lov/v1/listOfValues/hotels/{hotel_id}/roomTypes"
 
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -2020,7 +2058,10 @@ async def test_api_connection(
                 return {
                     "success": False,
                     "message": f"API returned {response.status_code}",
-                    "details": {"response": response.text[:500]},
+                    "details": {
+                        "response": response.text[:500],
+                        "status_code": response.status_code,
+                    },
                 }
 
     except Exception as e:
