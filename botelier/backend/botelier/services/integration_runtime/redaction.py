@@ -81,10 +81,9 @@ def bound_and_redact_response(
     * Always strips ``_ALWAYS_REDACT_KEYS`` patterns from object keys (unless
       ``strip_secret_keys=False``).
     * Operator-supplied ``redact_patterns`` are applied after the built-in strip.
-    * If the serialised result exceeds ``size_limit_bytes``, keys are dropped
-      from the outermost dict (or items from a list) until it fits, and a warning
-      is appended.  The algorithm is best-effort — nested objects are not
-      recursively trimmed to save bytes; the outer layer is trimmed first.
+    * If the serialised result exceeds ``size_limit_bytes``, nested containers
+      are trimmed recursively so useful prefixes survive (for example, the
+      first room types in a large top-level array).
     * Never raises; returns the original data + a warning on unexpected errors.
     """
     warnings: list[str] = []
@@ -134,38 +133,69 @@ def bound_and_redact_response(
     if len(serialised) <= size_limit:
         return redacted, warnings
 
-    # Trim to fit — shallowly
+    # Trim to fit recursively. The old shallow algorithm dropped an entire
+    # top-level property when its nested array was large, often returning only
+    # {"__truncated__": true}. Preserve useful prefixes at every depth instead.
     warnings.append(
         f"Response body exceeded {size_limit} bytes "
         f"({len(serialised)} bytes); truncated."
     )
-    if isinstance(redacted, dict):
-        trimmed: dict = {}
-        for k, v in redacted.items():
-            candidate = dict(trimmed)
-            candidate[k] = v
-            try:
-                if len(json.dumps(candidate, default=str)) <= size_limit:
-                    trimmed[k] = v
-                else:
-                    trimmed["__truncated__"] = True
-                    break
-            except Exception:
-                break
-        return trimmed, warnings
 
-    if isinstance(redacted, list):
-        trimmed_list: list = []
-        for item in redacted:
-            candidate_list = trimmed_list + [item]
-            try:
-                if len(json.dumps(candidate_list, default=str)) <= size_limit:
-                    trimmed_list.append(item)
-                else:
-                    break
-            except Exception:
-                break
-        return trimmed_list, warnings
+    def _json_size(value: Any) -> int:
+        return len(json.dumps(value, default=str))
 
-    # Scalar — truncate as string
-    return serialised[:size_limit], warnings
+    def _fit(value: Any, budget: int) -> Any:
+        if budget <= 2:
+            return {} if isinstance(value, dict) else [] if isinstance(value, list) else ""
+        if _json_size(value) <= budget:
+            return value
+
+        if isinstance(value, dict):
+            result: dict = {}
+            items = list(value.items())
+            for index, (key, child) in enumerate(items):
+                marker = index < len(items) - 1
+                reserve = _json_size({"__truncated__": True}) + 1 if marker else 0
+                # Estimate remaining room from the actual partially-built object.
+                base = _json_size(result)
+                child_budget = max(2, budget - base - len(json.dumps(str(key))) - reserve - 3)
+                fitted_child = _fit(child, child_budget)
+                candidate = {**result, key: fitted_child}
+                if _json_size(candidate) <= budget - reserve:
+                    result[key] = fitted_child
+                else:
+                    result["__truncated__"] = True
+                    break
+                if _json_size(child) > _json_size(fitted_child):
+                    result["__truncated__"] = True
+                    break
+            if _json_size(result) > budget:
+                result.pop("__truncated__", None)
+            return result
+
+        if isinstance(value, list):
+            result: list = []
+            for child in value:
+                remaining = max(2, budget - _json_size(result) - 1)
+                fitted_child = _fit(child, remaining)
+                candidate = result + [fitted_child]
+                if _json_size(candidate) > budget:
+                    break
+                result.append(fitted_child)
+                if _json_size(child) > _json_size(fitted_child):
+                    break
+            return result
+
+        # JSON-encode a bounded string instead of slicing serialized JSON, which
+        # could produce invalid quoted/escaped content.
+        text = str(value)
+        low, high = 0, len(text)
+        while low < high:
+            mid = (low + high + 1) // 2
+            if _json_size(text[:mid]) <= budget:
+                low = mid
+            else:
+                high = mid - 1
+        return text[:low]
+
+    return _fit(redacted, size_limit), warnings

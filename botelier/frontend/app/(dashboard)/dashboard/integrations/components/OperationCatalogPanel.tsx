@@ -87,6 +87,7 @@ export default function OperationCatalogPanel({
     projected: Record<string, unknown> | null;
     error_message: string | null;
     latency_ms: number | null;
+    warnings: string[];
   } | null>(null);
 
   const [toolSets, setToolSets] = useState<ToolSet[]>([]);
@@ -258,6 +259,7 @@ export default function OperationCatalogPanel({
         projected: data.projected ?? null,
         error_message: data.error_message,
         latency_ms: data.latency_ms,
+        warnings: Array.isArray(data.warnings) ? data.warnings : [],
       });
       if (data.projected) setTestProjected(data.projected);
       await refreshSelected(selectedOp.id);
@@ -863,6 +865,7 @@ function TestTab({
     projected: Record<string, unknown> | null;
     error_message: string | null;
     latency_ms: number | null;
+    warnings: string[];
   } | null;
 }) {
   return (
@@ -976,6 +979,15 @@ function TestTab({
           </div>
           {result.error_message && (
             <p className="text-sm text-red-300">{result.error_message}</p>
+          )}
+          {result.warnings.length > 0 && (
+            <div className="rounded-md border border-amber-800 bg-amber-900/20 px-3 py-2">
+              {result.warnings.map((warning) => (
+                <p key={warning} className="text-xs text-amber-300">
+                  {warning}
+                </p>
+              ))}
+            </div>
           )}
           {result.projected != null && Object.keys(result.projected).length > 0 && (
             <div>
