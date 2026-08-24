@@ -679,9 +679,13 @@ async def update_integration_credentials(
     for field in required_fields:
         key = field["key"]
         incoming = request.credentials.get(key)
-        if field.get("type") == "password" and not incoming:
-            continue
-        if incoming is None:
+        # Password fields: blank means "unchanged" (user didn't re-type the secret).
+        # All other fields: treat an empty-string submission the same — preserve the
+        # stored value rather than overwriting it with "".  This prevents a common
+        # UX pattern where the Edit form pre-fills non-sensitive fields but leaves
+        # sensitive ones (e.g. apikey) blank, which would silently wipe the credential
+        # and break token refresh on the next expiry cycle.
+        if not incoming:
             continue
         if key in config_keys:
             merged_conn_config[key] = incoming
