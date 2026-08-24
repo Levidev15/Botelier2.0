@@ -907,9 +907,20 @@ async def test_integration_connection(
             if integration.is_token_expired():
                 refresh_result = await refresh_oauth_token(integration_type, integration)
                 if not refresh_result.get("success"):
+                    # Mark the DB so the UI badge reflects reality immediately.
+                    integration.status = IntegrationStatus.TOKEN_EXPIRED
+                    integration.last_error = (
+                        "Session expired — please reconnect via the Edit button. "
+                        f"Detail: {refresh_result.get('error', 'unknown')}"
+                    )
+                    db.add(integration)
+                    db.commit()
                     return TestConnectionResponse(
                         success=False,
-                        message="Token expired and refresh failed",
+                        message=(
+                            "Session expired — please reconnect by clicking the "
+                            "Edit (pencil) button on this connection."
+                        ),
                         details={"error": refresh_result.get("error")},
                     )
                 _persist_refreshed_tokens(integration, refresh_result)
@@ -930,6 +941,23 @@ async def test_integration_connection(
                     db.commit()
                     test_result = await test_api_connection(
                         integration_type, integration, credentials
+                    )
+                else:
+                    # Provider-side revocation confirmed — stamp the status.
+                    integration.status = IntegrationStatus.TOKEN_EXPIRED
+                    integration.last_error = (
+                        "Provider rejected token — please reconnect via the Edit button. "
+                        f"Detail: {refresh_result.get('error', 'unknown')}"
+                    )
+                    db.add(integration)
+                    db.commit()
+                    return TestConnectionResponse(
+                        success=False,
+                        message=(
+                            "Provider rejected the credential — please reconnect by "
+                            "clicking the Edit (pencil) button on this connection."
+                        ),
+                        details={"error": refresh_result.get("error")},
                     )
 
         return TestConnectionResponse(
