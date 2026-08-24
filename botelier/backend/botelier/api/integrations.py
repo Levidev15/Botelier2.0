@@ -462,6 +462,8 @@ async def connect_integration(
                 integration.set_access_token(token_result["access_token"])
                 if token_result.get("refresh_token"):
                     integration.set_refresh_token(token_result["refresh_token"])
+                # Always write token_expires_at — _compute_jwt_expires_in guarantees > 0;
+                # a zero/missing expires_in must never leave a stale past timestamp in place.
                 if token_result.get("expires_in"):
                     integration.token_expires_at = datetime.utcnow() + timedelta(
                         seconds=token_result["expires_in"]
@@ -511,10 +513,11 @@ async def connect_integration(
                     integration.set_access_token(token_result["access_token"])
                     if token_result.get("refresh_token"):
                         integration.set_refresh_token(token_result["refresh_token"])
-                    if token_result.get("expires_in"):
-                        integration.token_expires_at = datetime.utcnow() + timedelta(
-                            seconds=token_result["expires_in"]
-                        )
+                    # _compute_jwt_expires_in always returns > 0 — unconditionally stamp
+                    # token_expires_at so a stale past value never survives a reconnect.
+                    integration.token_expires_at = datetime.utcnow() + timedelta(
+                        seconds=token_result["expires_in"]
+                    )
 
                     integration.status = IntegrationStatus.CONNECTED
                     integration.connected_at = datetime.utcnow()
@@ -755,10 +758,11 @@ async def update_integration_credentials(
                     integration.set_access_token(token_result["access_token"])
                     if token_result.get("refresh_token"):
                         integration.set_refresh_token(token_result["refresh_token"])
-                    if token_result.get("expires_in"):
-                        integration.token_expires_at = datetime.utcnow() + timedelta(
-                            seconds=token_result["expires_in"]
-                        )
+                    # _compute_jwt_expires_in always returns > 0 — unconditionally stamp
+                    # token_expires_at so a stale past value never survives a reconnect.
+                    integration.token_expires_at = datetime.utcnow() + timedelta(
+                        seconds=token_result["expires_in"]
+                    )
                     integration.status = IntegrationStatus.CONNECTED
                     integration.last_error = None
                 else:
@@ -1766,6 +1770,12 @@ async def obtain_oauth_token(integration_type: IntegrationType, credentials: dic
 
 
 def _compute_jwt_expires_in(token_data: dict, max_lifetime_hours: int) -> int:
+    """Return the number of seconds until the JWT expires.
+
+    Always returns a positive integer — callers can unconditionally store it.
+    Priority: provider's ``expired_time`` datetime string > provider's
+    ``expires_in`` seconds > configured ``max_lifetime_hours`` default.
+    """
     expired_time_str = token_data.get("expired_time")
     if expired_time_str:
         try:
@@ -1775,7 +1785,11 @@ def _compute_jwt_expires_in(token_data: dict, max_lifetime_hours: int) -> int:
                 return seconds_remaining
         except (ValueError, TypeError):
             pass
-    return token_data.get("expires_in", max_lifetime_hours * 3600)
+    explicit = token_data.get("expires_in")
+    if explicit and int(explicit) > 0:
+        return int(explicit)
+    # Absolute fallback — provider gave no usable expiry hint.
+    return max_lifetime_hours * 3600
 
 
 async def obtain_jwt_token(integration_type: IntegrationType, credentials: dict) -> dict:
@@ -1892,6 +1906,9 @@ def _persist_refreshed_tokens(integration: AccountIntegration, refresh_result: d
         integration.set_access_token(refresh_result["access_token"])
         if refresh_result.get("refresh_token"):
             integration.set_refresh_token(refresh_result["refresh_token"])
+        # _compute_jwt_expires_in always returns > 0; unconditionally stamp
+        # token_expires_at so a zero/missing value never leaves a stale past
+        # timestamp that would make is_token_expired() fire immediately.
         if refresh_result.get("expires_in"):
             integration.token_expires_at = datetime.utcnow() + timedelta(
                 seconds=refresh_result["expires_in"]
@@ -2046,7 +2063,12 @@ async def test_api_connection(
                     return {
                         "success": False,
                         "message": f"API returned {response.status_code}",
-                        "details": {"response": response.text[:500]},
+                        # status_code must be present for the 401/403 forced-retry
+                        # block in test_integration_connection to fire.
+                        "details": {
+                            "status_code": response.status_code,
+                            "response": response.text[:500],
+                        },
                     }
         except Exception as e:
             return {"success": False, "message": f"Connection failed: {str(e)}"}
