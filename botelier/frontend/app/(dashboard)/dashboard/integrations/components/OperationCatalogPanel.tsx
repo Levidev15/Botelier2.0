@@ -87,6 +87,7 @@ export default function OperationCatalogPanel({
     json_path: string;
     label: string;
     type: string;
+    is_array_item: boolean;
   }>>([]);
   const [testResult, setTestResult] = useState<{
     success: boolean;
@@ -1057,7 +1058,7 @@ function FieldsTab({
   onSave: () => void;
   saving: boolean;
   testProjected: Record<string, unknown> | null;
-  suggestedMappings: Array<{ variable_key: string; json_path: string; label: string; type: string }>;
+  suggestedMappings: Array<{ variable_key: string; json_path: string; label: string; type: string; is_array_item: boolean }>;
   isPendingRepublish: boolean;
 }) {
   const addRow = () => onChange([...rows, { name: "", path: "" }]);
@@ -1065,6 +1066,18 @@ function FieldsTab({
   const updateRow = (i: number, field: "name" | "path", value: string) => {
     onChange(rows.map((r, idx) => (idx === i ? { ...r, [field]: value } : r)));
   };
+
+  // Per-suggestion "first / all" mode for array-item suggestions.
+  // Default is "all" so $.rooms[*].name is added unless the user picks "first".
+  const [arrayModes, setArrayModes] = useState<Record<string, "first" | "all">>({});
+  const getArrayMode = (jsonPath: string): "first" | "all" =>
+    arrayModes[jsonPath] ?? "all";
+  const setArrayMode = (jsonPath: string, mode: "first" | "all") =>
+    setArrayModes((prev) => ({ ...prev, [jsonPath]: mode }));
+  const effectivePath = (s: { json_path: string; is_array_item: boolean }) =>
+    s.is_array_item && getArrayMode(s.json_path) === "all"
+      ? s.json_path.replace(/\[0\]/g, "[*]")
+      : s.json_path;
   const setOwnership = (name: string, value: string) =>
     onOverridesChange({ ...paramOwnershipOverrides, [name]: value });
 
@@ -1223,20 +1236,55 @@ function FieldsTab({
           </div>
           <div className="space-y-1.5">
             {suggestedMappings.map((s) => {
+              const mode = getArrayMode(s.json_path);
+              const resolvedPath = effectivePath(s);
+              // A suggestion is "added" if the resolved path (honoring First/All) is
+              // already in the projection list, or if the variable key is taken.
               const isAdded = rows.some(
-                (r) => r.name === s.variable_key || r.path === s.json_path
+                (r) => r.path === resolvedPath || r.name === s.variable_key
               );
               return (
                 <div
                   key={s.json_path}
                   className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#0f1524] border border-blue-900/40"
                 >
+                  {/* Label + resolved path preview */}
                   <div className="flex-1 min-w-0">
                     <span className="text-xs text-gray-300 font-medium">{s.label}</span>
                     <code className="ml-2 text-xs text-blue-400 font-mono break-all">
-                      {s.json_path}
+                      {resolvedPath}
                     </code>
                   </div>
+
+                  {/* First / All toggle — only for array-origin paths */}
+                  {s.is_array_item && !isAdded && (
+                    <div className="flex shrink-0 rounded overflow-hidden border border-blue-900/60 text-xs">
+                      <button
+                        onClick={() => setArrayMode(s.json_path, "first")}
+                        className={`px-2 py-1 transition ${
+                          mode === "first"
+                            ? "bg-blue-700 text-white"
+                            : "bg-transparent text-gray-400 hover:text-gray-200"
+                        }`}
+                        title="Project only the first item (e.g. $.rooms[0].name)"
+                      >
+                        First
+                      </button>
+                      <button
+                        onClick={() => setArrayMode(s.json_path, "all")}
+                        className={`px-2 py-1 transition border-l border-blue-900/60 ${
+                          mode === "all"
+                            ? "bg-blue-700 text-white"
+                            : "bg-transparent text-gray-400 hover:text-gray-200"
+                        }`}
+                        title="Project all items as a list (e.g. $.rooms[*].name)"
+                      >
+                        All
+                      </button>
+                    </div>
+                  )}
+
+                  {/* Add / Added */}
                   {isAdded ? (
                     <div className="flex items-center gap-1 text-xs text-green-400 shrink-0">
                       <Check className="h-3 w-3" />
@@ -1245,7 +1293,7 @@ function FieldsTab({
                   ) : (
                     <button
                       onClick={() =>
-                        onChange([...rows, { name: s.variable_key, path: s.json_path }])
+                        onChange([...rows, { name: s.variable_key, path: resolvedPath }])
                       }
                       className="shrink-0 px-2 py-1 text-xs text-blue-300 bg-blue-900/30 hover:bg-blue-900/60 border border-blue-800/50 rounded transition"
                     >

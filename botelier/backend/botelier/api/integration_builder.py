@@ -607,6 +607,10 @@ async def test_operation(
                         "json_path": path,
                         "label": f.get("label", key),
                         "type": f.get("type", "string"),
+                        # True when this path was derived from inside an array
+                        # ([0] index). The frontend offers a "First / All" toggle
+                        # so the user can add $.rooms[*].name instead.
+                        "is_array_item": "[0]" in path,
                     }
                 )
                 seen_keys.add(key)

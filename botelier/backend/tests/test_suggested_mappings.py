@@ -50,6 +50,7 @@ def _build_suggestions(data, effective_mapping: dict, cap: int = 20) -> list[dic
                     "json_path": path,
                     "label": f.get("label", key),
                     "type": f.get("type", "string"),
+                    "is_array_item": "[0]" in path,
                 }
             )
             seen_keys.add(key)
@@ -219,3 +220,20 @@ class TestSuggestedMappingsEdgeCases:
         assert "json_path" in s
         assert "label" in s
         assert "type" in s
+        assert "is_array_item" in s
+
+    def test_is_array_item_true_for_array_origin_paths(self):
+        data = {"rooms": [{"name": "Suite", "price": 500}], "hotel_name": "Grand"}
+        suggestions = _build_suggestions(data, effective_mapping={})
+        by_path = {s["json_path"]: s for s in suggestions}
+        # Fields inside the array get is_array_item=True
+        assert by_path["$.rooms[0].name"]["is_array_item"] is True
+        assert by_path["$.rooms[0].price"]["is_array_item"] is True
+        # Top-level scalar field does not
+        assert by_path["$.hotel_name"]["is_array_item"] is False
+
+    def test_is_array_item_false_for_plain_scalar_paths(self):
+        data = {"id": "abc", "total": 100}
+        suggestions = _build_suggestions(data, effective_mapping={})
+        for s in suggestions:
+            assert s["is_array_item"] is False
