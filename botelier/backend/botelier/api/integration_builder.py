@@ -636,6 +636,161 @@ async def test_operation(
 
 
 # ---------------------------------------------------------------------------
+# AI-generated field projections
+# ---------------------------------------------------------------------------
+
+
+@router.post("/api/integrations/account/{account_id}/connection/{connection_id}/operations/{operation_id}/generate-projections")
+async def generate_projections(
+    account_id: str,
+    connection_id: str,
+    operation_id: str,
+    body: dict,
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Use AI to generate JSONPath field projections from a plain-English description.
+
+    Takes the actual response body from a prior test run plus a natural-language
+    description of what the operator wants the LLM to know, and returns a list
+    of suggested field projections (variable_key + json_path + label + type).
+
+    The model is instructed to prefer [*] wildcards for array fields so the LLM
+    receives all items, not just the first.
+    """
+    check_account_permission(user, account_id, "integrations.manage", db)
+    _get_connection(db, account_id, connection_id)
+
+    description = (body.get("description") or "").strip()
+    if not description:
+        raise HTTPException(status_code=400, detail="description is required")
+
+    response_body = body.get("response_body")
+    if not isinstance(response_body, (dict, list)):
+        raise HTTPException(
+            status_code=400, detail="response_body must be a JSON object or array"
+        )
+
+    import json as _json
+    import os as _os
+
+    from openai import AsyncOpenAI
+
+    # Truncate body to avoid token overflow — 12 k chars is plenty for structure discovery
+    body_str = _json.dumps(response_body, indent=2)
+    if len(body_str) > 12000:
+        body_str = body_str[:12000] + "\n... (truncated)"
+
+    prompt = (
+        "You are a JSONPath extraction expert helping configure an AI hotel assistant.\n\n"
+        f"The operator wants the AI to know: {description}\n\n"
+        f"API response JSON:\n{body_str}\n\n"
+        "Generate up to 15 JSONPath field projections that best match the description.\n\n"
+        "Rules:\n"
+        "- Only include fields that actually exist in the provided JSON\n"
+        "- For array fields use [*] wildcard (e.g. $.rooms[*].name) — never [0]\n"
+        "- variable_key must be snake_case (e.g. room_name, total_price)\n"
+        "- label should be human-readable title case (e.g. Room Name, Total Price)\n"
+        "- type: one of string, integer, number, boolean, array, object\n"
+        "- Return ONLY a JSON object with a single key 'fields' whose value is the array\n\n"
+        'Example: {"fields": [{"variable_key": "room_name", "json_path": "$.rooms[*].name", '
+        '"label": "Room Name", "type": "string"}]}'
+    )
+
+    client = AsyncOpenAI(api_key=_os.environ.get("OPENAI_API_KEY"))
+    try:
+        response = await client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[{"role": "user", "content": prompt}],
+            temperature=0,
+            max_tokens=1500,
+            response_format={"type": "json_object"},
+        )
+    except Exception as exc:
+        logger.warning("generate_projections OpenAI call failed: %s", exc)
+        raise HTTPException(status_code=502, detail="AI service unavailable — check OPENAI_API_KEY")
+
+    # Parse and validate the response
+    suggested_mappings: list[dict] = []
+    try:
+        import re as _re
+        from botelier.services.integration_runtime.jsonpath import extract_json_value
+
+        _ALLOWED_TYPES = frozenset({"string", "integer", "number", "boolean", "array", "object"})
+        _VAR_KEY_RE = _re.compile(r"^[a-z][a-z0-9_]*$")
+
+        def _normalise_key(raw: str) -> str:
+            """camelCase / kebab-case → snake_case, strip invalid chars."""
+            s = _re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", raw)
+            s = _re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
+            return s
+
+        raw_text = response.choices[0].message.content or ""
+        parsed = _json.loads(raw_text)
+
+        # Accept {"fields": [...]} or any first-list-value envelope
+        if isinstance(parsed, dict):
+            items = parsed.get("fields") or next(
+                (v for v in parsed.values() if isinstance(v, list)), []
+            )
+        elif isinstance(parsed, list):
+            items = parsed
+        else:
+            items = []
+
+        seen_keys: set = set()
+        seen_paths: set = set()
+
+        for item in items:
+            if not isinstance(item, dict):
+                continue
+            vkey = _normalise_key(str(item.get("variable_key") or ""))
+            jpath = str(item.get("json_path") or "").strip()
+            label = str(item.get("label") or vkey).strip()
+            vtype = str(item.get("type") or "string").strip()
+
+            if not vkey or not jpath:
+                continue
+            if not _VAR_KEY_RE.match(vkey):
+                continue
+            if vtype not in _ALLOWED_TYPES:
+                vtype = "string"
+            if vkey in seen_keys or jpath in seen_paths:
+                continue
+
+            # Validate that the path actually resolves against the provided body.
+            # This prevents the model hallucinating paths that don't exist.
+            try:
+                resolved = extract_json_value(response_body, jpath)
+                if resolved is None:
+                    continue
+            except Exception:
+                continue
+
+            suggested_mappings.append(
+                {
+                    "variable_key": vkey,
+                    "json_path": jpath,
+                    "label": label,
+                    "type": vtype,
+                    # Flag both [*] and [0] paths as array items so the
+                    # First/All toggle appears regardless of which form the
+                    # model or heuristic extractor chose.
+                    "is_array_item": "[0]" in jpath or "[*]" in jpath,
+                }
+            )
+            seen_keys.add(vkey)
+            seen_paths.add(jpath)
+
+            if len(suggested_mappings) >= 15:
+                break
+    except Exception as exc:
+        logger.warning("generate_projections parse failed: %s", exc)
+
+    return {"suggested_mappings": suggested_mappings}
+
+
+# ---------------------------------------------------------------------------
 # Publish / unpublish
 # ---------------------------------------------------------------------------
 

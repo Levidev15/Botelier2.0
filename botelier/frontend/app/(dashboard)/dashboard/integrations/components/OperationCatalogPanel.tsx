@@ -19,6 +19,7 @@ import {
   Trash2,
   Wand2,
   Check,
+  Sparkles,
 } from "lucide-react";
 import type { Operation, OperationPolicy, OperationVariable, ToolSet } from "../types";
 
@@ -89,6 +90,16 @@ export default function OperationCatalogPanel({
     type: string;
     is_array_item: boolean;
   }>>([]);
+  // AI-generated suggestions — separate list, replaced on each Generate call
+  const [aiSuggestions, setAiSuggestions] = useState<Array<{
+    variable_key: string;
+    json_path: string;
+    label: string;
+    type: string;
+    is_array_item: boolean;
+  }>>([]);
+  const [generatingAI, setGeneratingAI] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
   const [testResult, setTestResult] = useState<{
     success: boolean;
     status_code: number | null;
@@ -150,6 +161,8 @@ export default function OperationCatalogPanel({
     setTestResult(null);
     setTestProjected(null);
     setSuggestedMappings([]);
+    setAiSuggestions([]);
+    setAiError(null);
     setPendingRepublish(false);
     setActiveTab(readOnly ? "test" : "policy");
     const mapping = op.policy?.response_mapping || {};
@@ -282,6 +295,30 @@ export default function OperationCatalogPanel({
       onNotify("error", err?.message || "Test request failed");
     } finally {
       setTesting(false);
+    }
+  };
+
+  const handleGenerateAI = async (description: string) => {
+    if (!selectedOp || !testResult?.data) return;
+    setGeneratingAI(true);
+    setAiError(null);
+    try {
+      const res = await authFetch(
+        `${baseUrl}/operations/${encodeURIComponent(selectedOp.id)}/generate-projections`,
+        {
+          method: "POST",
+          body: JSON.stringify({ description, response_body: testResult.data }),
+        }
+      );
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || "AI generation failed");
+      setAiSuggestions(
+        Array.isArray(data.suggested_mappings) ? data.suggested_mappings : []
+      );
+    } catch (err: any) {
+      setAiError(err?.message || "AI generation failed");
+    } finally {
+      setGeneratingAI(false);
     }
   };
 
@@ -561,6 +598,11 @@ export default function OperationCatalogPanel({
                     saving={savingFields}
                     testProjected={testProjected}
                     suggestedMappings={suggestedMappings}
+                    aiSuggestions={aiSuggestions}
+                    generatingAI={generatingAI}
+                    aiError={aiError}
+                    onGenerateAI={handleGenerateAI}
+                    hasTestData={testResult?.data != null}
                     isPendingRepublish={pendingRepublish && !!selectedOp?.is_published}
                   />
                 )}
@@ -1038,6 +1080,14 @@ const OWNERSHIP_OPTIONS = [
   { value: "fixed", label: "Fixed value" },
 ];
 
+type SuggestionItem = {
+  variable_key: string;
+  json_path: string;
+  label: string;
+  type: string;
+  is_array_item: boolean;
+};
+
 function FieldsTab({
   rows,
   onChange,
@@ -1048,6 +1098,11 @@ function FieldsTab({
   saving,
   testProjected,
   suggestedMappings,
+  aiSuggestions,
+  generatingAI,
+  aiError,
+  onGenerateAI,
+  hasTestData,
   isPendingRepublish,
 }: {
   rows: Array<{ name: string; path: string }>;
@@ -1058,7 +1113,12 @@ function FieldsTab({
   onSave: () => void;
   saving: boolean;
   testProjected: Record<string, unknown> | null;
-  suggestedMappings: Array<{ variable_key: string; json_path: string; label: string; type: string; is_array_item: boolean }>;
+  suggestedMappings: SuggestionItem[];
+  aiSuggestions: SuggestionItem[];
+  generatingAI: boolean;
+  aiError: string | null;
+  onGenerateAI: (description: string) => Promise<void>;
+  hasTestData: boolean;
   isPendingRepublish: boolean;
 }) {
   const addRow = () => onChange([...rows, { name: "", path: "" }]);
@@ -1074,12 +1134,19 @@ function FieldsTab({
     arrayModes[jsonPath] ?? "all";
   const setArrayMode = (jsonPath: string, mode: "first" | "all") =>
     setArrayModes((prev) => ({ ...prev, [jsonPath]: mode }));
-  const effectivePath = (s: { json_path: string; is_array_item: boolean }) =>
-    s.is_array_item && getArrayMode(s.json_path) === "all"
-      ? s.json_path.replace(/\[0\]/g, "[*]")
-      : s.json_path;
+  const effectivePath = (s: { json_path: string; is_array_item: boolean }) => {
+    if (!s.is_array_item) return s.json_path;
+    const mode = getArrayMode(s.json_path);
+    // "all" → ensure wildcard (convert [0] → [*], leave [*] alone)
+    if (mode === "all") return s.json_path.replace(/\[0\]/g, "[*]");
+    // "first" → ensure indexed (convert [*] → [0], leave [0] alone)
+    return s.json_path.replace(/\[\*\]/g, "[0]");
+  };
   const setOwnership = (name: string, value: string) =>
     onOverridesChange({ ...paramOwnershipOverrides, [name]: value });
+
+  // Local state for the Ask AI textarea
+  const [aiDescription, setAiDescription] = useState("");
 
   return (
     <div className="space-y-6 max-w-lg">
@@ -1306,6 +1373,123 @@ function FieldsTab({
           </div>
         </div>
       )}
+
+      {/* ── Ask AI ── */}
+      <div className="rounded-lg border border-indigo-900/50 bg-[#0d0d1f] p-4 space-y-3">
+        <div className="flex items-center gap-2">
+          <Sparkles className="h-3.5 w-3.5 text-indigo-400 shrink-0" />
+          <p className="text-sm font-medium text-indigo-300">Generate with AI</p>
+          {!hasTestData && (
+            <span className="text-xs text-gray-600 italic">— run a test first to load a response</span>
+          )}
+        </div>
+        <p className="text-xs text-gray-500">
+          Describe what the AI should know from this response and we'll generate the JSONPath projections for you.
+        </p>
+        <textarea
+          value={aiDescription}
+          onChange={(e) => setAiDescription(e.target.value)}
+          placeholder="e.g. all room names, prices, whether free cancellation applies, and max occupancy"
+          rows={3}
+          className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-800 rounded text-xs text-gray-200 placeholder-gray-600 resize-none focus:outline-none focus:ring-1 focus:ring-indigo-600"
+        />
+        <div className="flex items-center gap-3">
+          <button
+            onClick={() => onGenerateAI(aiDescription)}
+            disabled={!hasTestData || !aiDescription.trim() || generatingAI}
+            title={!hasTestData ? "Run a test first to load a response" : undefined}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-indigo-200 bg-indigo-700 hover:bg-indigo-600 disabled:opacity-40 disabled:cursor-not-allowed rounded-lg transition"
+          >
+            {generatingAI ? (
+              <>
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                Generating…
+              </>
+            ) : (
+              <>
+                <Sparkles className="h-3.5 w-3.5" />
+                Generate Fields
+              </>
+            )}
+          </button>
+          {aiSuggestions.length > 0 && !generatingAI && (
+            <span className="text-xs text-gray-500">{aiSuggestions.length} fields suggested</span>
+          )}
+        </div>
+
+        {aiError && (
+          <p className="text-xs text-red-400">{aiError}</p>
+        )}
+
+        {aiSuggestions.length > 0 && (
+          <div className="space-y-1.5 pt-1">
+            <p className="text-xs text-indigo-400 font-medium">AI-generated suggestions</p>
+            {aiSuggestions.map((s) => {
+              const mode = getArrayMode(s.json_path);
+              const resolvedPath = effectivePath(s);
+              const isAdded = rows.some(
+                (r) => r.path === resolvedPath || r.name === s.variable_key
+              );
+              return (
+                <div
+                  key={s.json_path}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#12102a] border border-indigo-900/40"
+                >
+                  <div className="flex-1 min-w-0">
+                    <span className="text-xs text-gray-300 font-medium">{s.label}</span>
+                    <code className="ml-2 text-xs text-indigo-400 font-mono break-all">
+                      {resolvedPath}
+                    </code>
+                  </div>
+
+                  {s.is_array_item && !isAdded && (
+                    <div className="flex shrink-0 rounded overflow-hidden border border-indigo-900/60 text-xs">
+                      <button
+                        onClick={() => setArrayMode(s.json_path, "first")}
+                        className={`px-2 py-1 transition ${
+                          mode === "first"
+                            ? "bg-indigo-700 text-white"
+                            : "bg-transparent text-gray-400 hover:text-gray-200"
+                        }`}
+                        title="Project only the first item"
+                      >
+                        First
+                      </button>
+                      <button
+                        onClick={() => setArrayMode(s.json_path, "all")}
+                        className={`px-2 py-1 transition border-l border-indigo-900/60 ${
+                          mode === "all"
+                            ? "bg-indigo-700 text-white"
+                            : "bg-transparent text-gray-400 hover:text-gray-200"
+                        }`}
+                        title="Project all items as a list"
+                      >
+                        All
+                      </button>
+                    </div>
+                  )}
+
+                  {isAdded ? (
+                    <div className="flex items-center gap-1 text-xs text-green-400 shrink-0">
+                      <Check className="h-3 w-3" />
+                      Added
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() =>
+                        onChange([...rows, { name: s.variable_key, path: resolvedPath }])
+                      }
+                      className="shrink-0 px-2 py-1 text-xs text-indigo-300 bg-indigo-900/30 hover:bg-indigo-900/60 border border-indigo-800/50 rounded transition"
+                    >
+                      Add
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
     </div>
   );
 }
