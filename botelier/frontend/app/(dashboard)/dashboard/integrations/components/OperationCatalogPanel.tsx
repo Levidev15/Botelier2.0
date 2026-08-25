@@ -17,6 +17,8 @@ import {
   RefreshCcw,
   Plus,
   Trash2,
+  Wand2,
+  Check,
 } from "lucide-react";
 import type { Operation, OperationPolicy, OperationVariable, ToolSet } from "../types";
 
@@ -80,6 +82,12 @@ export default function OperationCatalogPanel({
   const [testParams, setTestParams] = useState<Record<string, string>>({});
   const [testing, setTesting] = useState(false);
   const [testProjected, setTestProjected] = useState<Record<string, unknown> | null>(null);
+  const [suggestedMappings, setSuggestedMappings] = useState<Array<{
+    variable_key: string;
+    json_path: string;
+    label: string;
+    type: string;
+  }>>([]);
   const [testResult, setTestResult] = useState<{
     success: boolean;
     status_code: number | null;
@@ -140,6 +148,7 @@ export default function OperationCatalogPanel({
     );
     setTestResult(null);
     setTestProjected(null);
+    setSuggestedMappings([]);
     setPendingRepublish(false);
     setActiveTab(readOnly ? "test" : "policy");
     const mapping = op.policy?.response_mapping || {};
@@ -233,6 +242,7 @@ export default function OperationCatalogPanel({
     if (!selectedOp) return;
     setTesting(true);
     setTestResult(null);
+    setSuggestedMappings([]);
     try {
       // Build draft response_mapping from current unsaved rows so operators
       // can preview projected output before committing a Save Fields.
@@ -262,6 +272,9 @@ export default function OperationCatalogPanel({
         warnings: Array.isArray(data.warnings) ? data.warnings : [],
       });
       if (data.projected) setTestProjected(data.projected);
+      if (data.success && Array.isArray(data.suggested_mappings)) {
+        setSuggestedMappings(data.suggested_mappings);
+      }
       await refreshSelected(selectedOp.id);
       if (data.success) onNotify("success", "Test passed");
     } catch (err: any) {
@@ -546,6 +559,7 @@ export default function OperationCatalogPanel({
                     onSave={handleSaveFields}
                     saving={savingFields}
                     testProjected={testProjected}
+                    suggestedMappings={suggestedMappings}
                     isPendingRepublish={pendingRepublish && !!selectedOp?.is_published}
                   />
                 )}
@@ -1032,6 +1046,7 @@ function FieldsTab({
   onSave,
   saving,
   testProjected,
+  suggestedMappings,
   isPendingRepublish,
 }: {
   rows: Array<{ name: string; path: string }>;
@@ -1042,6 +1057,7 @@ function FieldsTab({
   onSave: () => void;
   saving: boolean;
   testProjected: Record<string, unknown> | null;
+  suggestedMappings: Array<{ variable_key: string; json_path: string; label: string; type: string }>;
   isPendingRepublish: boolean;
 }) {
   const addRow = () => onChange([...rows, { name: "", path: "" }]);
@@ -1195,6 +1211,51 @@ function FieldsTab({
           <pre className="text-xs bg-[#0a0a0a] border border-green-900 rounded p-3 text-green-300 overflow-x-auto max-h-48 whitespace-pre-wrap">
             {JSON.stringify(testProjected, null, 2)}
           </pre>
+        </div>
+      )}
+
+      {suggestedMappings.length > 0 && (
+        <div>
+          <div className="flex items-center gap-2 mb-2">
+            <Wand2 className="h-3.5 w-3.5 text-blue-400 shrink-0" />
+            <p className="text-sm font-medium text-blue-300">Suggested Fields</p>
+            <span className="text-xs text-gray-500">from last test — click Add to project them</span>
+          </div>
+          <div className="space-y-1.5">
+            {suggestedMappings.map((s) => {
+              const isAdded = rows.some(
+                (r) => r.name === s.variable_key || r.path === s.json_path
+              );
+              return (
+                <div
+                  key={s.json_path}
+                  className="flex items-center gap-2 px-3 py-2 rounded-lg bg-[#0f1524] border border-blue-900/40"
+                >
+                  <div className="flex-1 min-w-0">
+                    <span className="text-xs text-gray-300 font-medium">{s.label}</span>
+                    <code className="ml-2 text-xs text-blue-400 font-mono break-all">
+                      {s.json_path}
+                    </code>
+                  </div>
+                  {isAdded ? (
+                    <div className="flex items-center gap-1 text-xs text-green-400 shrink-0">
+                      <Check className="h-3 w-3" />
+                      Added
+                    </div>
+                  ) : (
+                    <button
+                      onClick={() =>
+                        onChange([...rows, { name: s.variable_key, path: s.json_path }])
+                      }
+                      className="shrink-0 px-2 py-1 text-xs text-blue-300 bg-blue-900/30 hover:bg-blue-900/60 border border-blue-800/50 rounded transition"
+                    >
+                      Add
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
       )}
     </div>

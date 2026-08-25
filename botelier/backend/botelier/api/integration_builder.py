@@ -572,6 +572,49 @@ async def test_operation(
         effective_settings != saved_settings or draft_mapping is not None
     )
 
+    # Auto-suggest response field projections from the actual response body.
+    # Reuses the same extractor the spec importer uses — best-effort, fail-safe.
+    # Only emitted on successful tests; filtered to exclude already-mapped paths.
+    suggested_mappings: list[dict] = []
+    if result.success and result.data:
+        try:
+            import json as _json
+            from botelier.services.spec_importer.response_extractor import (
+                extract_from_json_example,
+                _path_to_variable_key,
+            )
+
+            raw = result.data
+            if isinstance(raw, str):
+                raw = _json.loads(raw)
+
+            fields = extract_from_json_example(raw, max_depth=3)
+
+            # Skip paths already covered by the effective mapping
+            existing_paths = {str(v) for v in effective_mapping.values()}
+            seen_keys = {str(k) for k in effective_mapping.keys()}
+
+            for f in fields:
+                path = f.get("path", "")
+                if not path or path in existing_paths:
+                    continue
+                key = _path_to_variable_key(path)
+                if not key or key in seen_keys:
+                    continue
+                suggested_mappings.append(
+                    {
+                        "variable_key": key,
+                        "json_path": path,
+                        "label": f.get("label", key),
+                        "type": f.get("type", "string"),
+                    }
+                )
+                seen_keys.add(key)
+                if len(suggested_mappings) >= 20:
+                    break
+        except Exception:
+            pass
+
     return {
         "success": result.success,
         "status_code": result.status_code,
@@ -584,6 +627,7 @@ async def test_operation(
         "latency_ms": result.latency_ms,
         "warnings": result.warnings,
         "test_status": policy.test_status,
+        "suggested_mappings": suggested_mappings,
     }
 
 
