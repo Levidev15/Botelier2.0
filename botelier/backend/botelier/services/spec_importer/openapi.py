@@ -15,8 +15,10 @@ from sqlalchemy.orm import Session
 
 from botelier.models.integration import IntegrationType
 
+from .response_extractor import extract_from_openapi_schema, fields_to_response_mapping
 from .utils import (
     build_variable_schema,
+    deduplicate_operation_ids,
     extract_base_url,
     infer_ownership,
     infer_risk_level,
@@ -409,13 +411,15 @@ def _parse_swagger2_parameters(
     return variables
 
 
-def _parse_endpoints(spec_data: dict) -> tuple[list[dict], str, str]:
+def _parse_endpoints(spec_data: dict) -> tuple[list[dict], str, str, list[dict]]:
     """Parse all path operations from OpenAPI 3.x or Swagger 2.x.
 
     Returns:
-        (endpoints, spec_type, spec_version)
-        spec_type    — "openapi" or "swagger"
-        spec_version — version string from the spec
+        (endpoints, spec_type, spec_version, duplicate_paths)
+        spec_type       — "openapi" or "swagger"
+        spec_version    — version string from the spec
+        duplicate_paths — list of {"method", "path"} dicts flagging same-method+path
+                          pairs within this spec (informational; never blocks import)
     """
     is_openapi3 = "openapi" in spec_data
     is_swagger2 = "swagger" in spec_data
@@ -492,6 +496,36 @@ def _parse_endpoints(spec_data: dict) -> tuple[list[dict], str, str]:
                 if body_vars else None
             )
 
+            # Auto-extract response mapping from the first 2xx JSON response schema.
+            # Tries "200", "201", "2XX", then "default" in order; uses the first
+            # schema found.  Falls back to the Swagger 2.x pattern where the schema
+            # lives directly on the response object (no content wrapper).
+            response_mapping: dict = {}
+            responses = operation.get("responses") or {}
+            for status_key in ("200", "201", "2XX", "default"):
+                resp = responses.get(status_key) or {}
+                # Resolve $ref on the response object itself
+                if "$ref" in resp:
+                    _ref = resp["$ref"]
+                    if _ref.startswith("#/"):
+                        _obj: dict = spec_data
+                        for _part in _ref[2:].split("/"):
+                            _obj = _obj.get(_part, {}) if isinstance(_obj, dict) else {}  # type: ignore[assignment]
+                        resp = _obj if isinstance(_obj, dict) else {}
+                # OpenAPI 3.x: responses → content → application/json → schema
+                schema = (
+                    (resp.get("content") or {})
+                    .get("application/json", {})
+                    .get("schema") or {}
+                )
+                # Swagger 2.x: schema directly on the response object
+                if not schema:
+                    schema = resp.get("schema") or {}
+                if schema:
+                    fields = extract_from_openapi_schema(schema, spec_data, max_depth=3)
+                    response_mapping = fields_to_response_mapping(fields)
+                    break
+
             endpoint: dict = {
                 "id": f"{method.upper()}_{fn_name}",
                 "method": method.upper(),
@@ -505,10 +539,25 @@ def _parse_endpoints(spec_data: dict) -> tuple[list[dict], str, str]:
                 "body_template": body_template,
                 "risk_level": risk_level,
                 "capability": None,
+                "response_mapping": response_mapping,
             }
             endpoints.append(endpoint)
 
-    return endpoints, spec_type, str(spec_version)
+    # Deduplicate operation IDs (same operationId reused across paths)
+    deduplicate_operation_ids(endpoints)
+
+    # Flag same-METHOD + same-path pairs so the UI can surface a warning.
+    # Two operations sharing a path is sometimes intentional (e.g. book with/without
+    # card capture) but is invisible to users without this signal.
+    from collections import Counter
+    _path_counts = Counter((e["method"], e["path"]) for e in endpoints)
+    duplicate_paths = [
+        {"method": m, "path": p}
+        for (m, p), n in _path_counts.items()
+        if n > 1
+    ]
+
+    return endpoints, spec_type, str(spec_version), duplicate_paths
 
 
 def import_openapi_spec(
@@ -579,7 +628,7 @@ def import_openapi_spec(
         auth_config["base_url"] = base_url
     required_fields = _required_fields_from_strategy(auth_config)
 
-    endpoints, source_type, spec_version = _parse_endpoints(spec_data)
+    endpoints, source_type, spec_version, duplicate_paths = _parse_endpoints(spec_data)
     if not endpoints:
         raise ValueError(
             f"No endpoints found in this {'OpenAPI' if source_type == 'openapi' else 'Swagger'} spec. "
@@ -628,6 +677,7 @@ def import_openapi_spec(
         "basePath": spec_data.get("basePath"),
         "endpoint_count": len(endpoints),
         "was_truncated": was_truncated,
+        "duplicate_paths": duplicate_paths,
     }
 
     db.flush()

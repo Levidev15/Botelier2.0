@@ -234,7 +234,13 @@ def _build_execution_config(
         "variables": variables,
         "risk_level": endpoint.get("risk_level", "read"),
         "response_policy": (policy.to_dict() if policy else {}),
-        "response_mapping": (policy.response_mapping or {}) if policy else {},
+        # Manual policy mapping wins; auto-extracted endpoint mapping is the
+        # fallback so importing + immediately publishing gives useful field
+        # extraction without any manual configuration step.
+        "response_mapping": (
+            ((policy.response_mapping or {}) if policy else {})
+            or (endpoint.get("response_mapping") or {})
+        ),
         # Persisted request-shape settings (headers/body/timeout/retries) —
         # the same values test_operation exercises. Normalized here so the
         # stored config is canonical regardless of how the policy row was set.

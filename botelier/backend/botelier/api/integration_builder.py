@@ -289,6 +289,7 @@ async def import_integration_spec(
         "spec_version": integration_type.spec_version,
         "endpoint_count": len(endpoints),
         "was_truncated": (integration_type.raw_spec or {}).get("was_truncated", False),
+        "duplicate_paths": (integration_type.raw_spec or {}).get("duplicate_paths", []),
         "auth_strategy": auth_config.get("auth_strategy", "bearer"),
         "auth_config": auth_config,
         "available_endpoints": [
@@ -482,11 +483,18 @@ async def test_operation(
         raise HTTPException(status_code=400, detail=str(exc))
 
     # Draft mapping from the request body takes precedence over the persisted
-    # policy mapping so operators can preview projections before saving. It is
-    # passed as response_variables so extraction runs on the SAME pre-redaction
-    # data the live channels extract from (parity with voice/SMS/flow).
+    # policy mapping so operators can preview projections before saving.
+    # The auto-extracted endpoint mapping (written at import time) is used as a
+    # final fallback so an operator can immediately test an imported operation
+    # and see the same extracted fields the published version will use — full
+    # parity with _build_execution_config's precedence chain.
     draft_mapping = body.get("response_mapping")
-    effective_mapping = draft_mapping if draft_mapping is not None else (policy.response_mapping or {})
+    effective_mapping = (
+        draft_mapping
+        if draft_mapping is not None
+        else (policy.response_mapping or {})
+        or (endpoint.get("response_mapping") or {})
+    )
     if not isinstance(effective_mapping, dict):
         raise HTTPException(status_code=400, detail="response_mapping must be an object")
 

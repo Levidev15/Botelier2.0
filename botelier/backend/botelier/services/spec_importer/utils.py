@@ -180,3 +180,50 @@ def truncate_spec_endpoints(endpoints: list[dict], max_count: int = 200) -> tupl
     if len(endpoints) <= max_count:
         return endpoints, False
     return endpoints[:max_count], True
+
+
+def deduplicate_operation_ids(endpoints: list[dict]) -> list[dict]:
+    """Suffix-disambiguate duplicate endpoint IDs within a single spec.
+
+    Walks the list in order; the first occurrence of each ID is left unchanged.
+    Each subsequent duplicate receives a numeric suffix (``_2``, ``_3``, …) that
+    is guaranteed to be collision-free even when the original spec already
+    contains IDs that look like generated suffixes (e.g. ``GET_x`` and
+    ``GET_x_2`` in the same input).
+
+    The algorithm pre-seeds a set of all existing IDs so candidate suffixes are
+    always checked against the full reserved namespace before being assigned.
+
+    Mutates the list in-place and returns it so callers can chain the call.
+
+    Examples::
+
+        [{"id": "GET_list"}, {"id": "GET_list"}]
+        →  [{"id": "GET_list"}, {"id": "GET_list_2"}]
+
+        [{"id": "GET_x"}, {"id": "GET_x"}, {"id": "GET_x_2"}]
+        →  [{"id": "GET_x"}, {"id": "GET_x_3"}, {"id": "GET_x_2"}]
+        # (GET_x_2 was pre-existing so the duplicate skips to _3)
+    """
+    # Pre-seed reserved set with every ID that already exists in the input.
+    # This prevents a generated suffix from landing on a value that is already
+    # occupied by a later entry in the list.
+    reserved: set[str] = {ep.get("id") or "" for ep in endpoints}
+
+    seen: dict[str, int] = {}
+    for ep in endpoints:
+        ep_id = ep.get("id") or ""
+        if ep_id not in seen:
+            seen[ep_id] = 1
+            # First occurrence — stays unchanged; already in reserved set.
+        else:
+            # Find the next suffix that is not already reserved.
+            counter = seen[ep_id] + 1
+            candidate = f"{ep_id}_{counter}"
+            while candidate in reserved:
+                counter += 1
+                candidate = f"{ep_id}_{counter}"
+            seen[ep_id] = counter
+            ep["id"] = candidate
+            reserved.add(candidate)
+    return endpoints

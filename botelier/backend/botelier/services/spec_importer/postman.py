@@ -10,8 +10,10 @@ from sqlalchemy.orm import Session
 
 from botelier.models.integration import IntegrationType
 
+from .response_extractor import extract_from_json_example, fields_to_response_mapping
 from .utils import (
     build_variable_schema,
+    deduplicate_operation_ids,
     infer_ownership,
     infer_risk_level,
     sanitize_operation_id,
@@ -128,6 +130,23 @@ def import_postman_spec(
             if v.get("location") == "query" and v.get("ownership") == "llm"
         ]
 
+        # Auto-extract response mapping from the first saved JSON response example.
+        # Postman stores saved examples in item["response"] as a list of objects
+        # each with a "body" string.  Use the first parseable JSON body.
+        response_mapping: dict = {}
+        for saved_response in (item.get("response") or []):
+            body_str = saved_response.get("body") or ""
+            if not body_str:
+                continue
+            try:
+                parsed = json.loads(body_str)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            fields = extract_from_json_example(parsed, max_depth=3)
+            if fields:
+                response_mapping = fields_to_response_mapping(fields)
+                break  # use first parseable example only
+
         endpoints.append({
             "id": f"{method}_{fn_name}",
             "method": method,
@@ -141,6 +160,7 @@ def import_postman_spec(
             "body_template": None,
             "risk_level": risk_level,
             "capability": None,
+            "response_mapping": response_mapping,
         })
 
     if not endpoints:
@@ -149,6 +169,16 @@ def import_postman_spec(
             "items with requests to import — please check that you exported the "
             "full collection (Collection v2.1 format)."
         )
+
+    # Deduplicate operation IDs then flag same-METHOD+path pairs
+    deduplicate_operation_ids(endpoints)
+    from collections import Counter
+    _path_counts = Counter((e["method"], e["path"]) for e in endpoints)
+    duplicate_paths = [
+        {"method": m, "path": p}
+        for (m, p), n in _path_counts.items()
+        if n > 1
+    ]
 
     endpoints, was_truncated = truncate_spec_endpoints(endpoints, _MAX_ENDPOINTS)
     if was_truncated:
@@ -192,6 +222,7 @@ def import_postman_spec(
         "info": info,
         "endpoint_count": len(endpoints),
         "was_truncated": was_truncated,
+        "duplicate_paths": duplicate_paths,
     }
 
     db.flush()
