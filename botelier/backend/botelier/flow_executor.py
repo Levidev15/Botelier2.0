@@ -23,6 +23,14 @@ from loguru import logger
 
 from botelier.services.ssrf_safe_transport import SSRFSafeTransport
 
+# Defense-in-depth (Task #534): a GET API node with identical arguments fired
+# again within this window is treated as an accidental duplicate call (e.g. a
+# racing tool call from an LLM provider that ignores parallel_tool_calls)
+# rather than a legitimate re-check, and returns the just-completed result
+# instead of re-hitting the endpoint. Short enough that a caller-driven re-run
+# seconds later (e.g. "check again with different dates") is never suppressed.
+GET_DEDUP_WINDOW_SECS: float = 3.0
+
 
 class NodeType(str, Enum):
     INITIAL = "initial"
@@ -226,6 +234,17 @@ class FlowState:
         self.pending_slot: Optional[str] = None
         self.retry_count: int = 0
         self.is_complete: bool = False
+        # Structural signal only: true once we've landed on a node with no
+        # outgoing edge (the designed graph has nothing further from here).
+        # Deliberately distinct from ``is_complete``, which means "a terminal
+        # action (end_call/transfer) has actually executed" and gates
+        # idempotency in _handle_end_call. Conflating the two (Task #534
+        # completion-review fix) made advance_to() mark is_complete=True the
+        # instant we merely *landed* on an END/TRANSFER node — before the
+        # handler that actually fires the end/transfer callback ever ran —
+        # so that handler's own idempotency guard swallowed itself as a
+        # "duplicate" and the call never actually ended or transferred.
+        self.graph_exhausted: bool = False
         self.transfer_requested: bool = False
         self.transfer_target: Optional[str] = None
         # Records created by SAVE_RECORD nodes during this session, keyed by
@@ -265,6 +284,10 @@ class FlowState:
                         return node
         return None
 
+    def has_outgoing_edge(self, node_id: str) -> bool:
+        """Whether any edge leaves ``node_id`` — i.e. the graph continues from here."""
+        return any(edge.source == node_id for edge in self.flow_config.edges)
+
     def advance_to(self, node_id: str) -> None:
         """Move to a specific node.
 
@@ -279,6 +302,19 @@ class FlowState:
         self.pending_slot = None
         self.retry_count = 0
         self._resolve_conditions()
+
+        # Exhausted-flow guardrail (Task #534): a node with no outgoing edge is
+        # the end of the designed graph, whatever type it is (a MESSAGE dead
+        # end, a CONFIRMATION with no configured next step, etc). Without this,
+        # is_complete only ever became True via the explicit END/error-retry
+        # paths, so a flow that simply ran off the end of its graph stayed
+        # "active" forever — the LLM had no signal the flow was over and could
+        # go on claiming actions (bookings, transfers) that never happened,
+        # and the durable flow_sessions snapshot never reached a terminal
+        # status. END/TRANSFER nodes are almost always themselves outgoing-
+        # edge-less, so this naturally covers them without special-casing.
+        if self.current_node_id and not self.has_outgoing_edge(self.current_node_id):
+            self.graph_exhausted = True
 
     def _resolve_conditions(self) -> None:
         """Follow CONDITION branches until landing on a non-condition node.
@@ -588,6 +624,23 @@ class FlowExecutor:
         #   The winner executes; every waiter picks up the cached result afterward.
         self._non_get_results: dict[str, dict] = {}
         self._non_get_locks: dict[str, asyncio.Lock] = {}
+        # Defense-in-depth (Task #534) — GET dedup guard. Disabling
+        # parallel_tool_calls on the LLM service (engine.py) is the primary
+        # fix for a model issuing two tool calls in one turn, but this is a
+        # second, independent line of defense: it also catches a duplicate
+        # GET that arrives near-simultaneously through some other path (a
+        # provider that ignores parallel_tool_calls, a retried turn, etc).
+        # Unlike the non-GET guard above this is intentionally short-lived —
+        # GETs are legitimately re-run later in a session (e.g. re-checking
+        # availability after the caller changes dates), so only calls with
+        # identical arguments landing within GET_DEDUP_WINDOW_SECS of each
+        # other are treated as the same accidental duplicate.
+        # _get_locks: node_id → lock serialising concurrent callers for that node.
+        # _get_recent: node_id → (monotonic_time, args_key, result) of the last
+        #   completed call, consulted by a waiter that arrives while the winner
+        #   is still running or just finished.
+        self._get_locks: dict[str, asyncio.Lock] = {}
+        self._get_recent: dict[str, tuple[float, str, dict]] = {}
         # Tracks whether the built-in confirm_details fallback (flows WITHOUT a
         # CONFIRMATION node) already got a positive confirmation. Once True the
         # fallback is no longer exposed, so the LLM can't loop back into
@@ -658,7 +711,11 @@ class FlowExecutor:
             "tool_id": tool_id,
             "current_node_id": self.state.current_node_id,
             "collected_slots": json.dumps(slots_payload, default=str),
-            "status": "complete" if self.state.is_complete else "active",
+            "status": (
+                "complete"
+                if (self.state.is_complete or self.state.graph_exhausted)
+                else "active"
+            ),
         }
         try:
             await asyncio.to_thread(self._write_snapshot, payload)
@@ -763,7 +820,14 @@ class FlowExecutor:
             self.state.collected_slots.update(saved_slots)
         if saved_node:
             self.state.current_node_id = saved_node
-        self.state.is_complete = saved_status == "complete"
+        # A persisted "complete" status can mean either the graph structurally
+        # ran off its end OR a terminal action already executed — the latter
+        # would mean the call already ended, so there'd be nothing to
+        # reconnect to. Restore it as the structural signal only; leave
+        # is_complete (the end_call idempotency guard) at its default False
+        # so a resumed session sitting on an END/TRANSFER node can still
+        # actually execute that terminal action once.
+        self.state.graph_exhausted = saved_status == "complete"
         logger.info(
             f"Rehydrated flow session {session_key}/{tool_id} at node "
             f"{self.state.current_node_id} ({len(self.state.collected_slots)} slots)"
@@ -1194,6 +1258,27 @@ class FlowExecutor:
                     generic_instructions, self.state.collected_slots
                 )
                 context_lines.append(f"Node instructions: {resolved_instructions}")
+
+        # Exhausted-flow guardrail (Task #534): the graph ran off its end
+        # (no outgoing edge from here — see FlowState.advance_to) without
+        # going through END/TRANSFER, whose own guidance above already tells
+        # the model exactly what to do. Every other node type has nothing
+        # left telling the model what to do next, and without this line
+        # nothing stops it from improvising — including claiming it performed
+        # an action (a booking, a save, a transfer) that never actually
+        # happened once the designed flow is over.
+        if (
+            self.state.graph_exhausted
+            and current_node.type not in (NodeType.END, NodeType.TRANSFER)
+        ):
+            context_lines.append(
+                "FLOW COMPLETE: This flow has reached the end of its configured "
+                "steps — there is nothing further defined here. Do NOT claim to "
+                "have booked, saved, transferred, or otherwise completed any "
+                "action unless a function result already confirmed it. If the "
+                "caller needs something else, offer to transfer them or end the "
+                "call gracefully; do not invent an outcome."
+            )
 
         return "\n".join(context_lines) if context_lines else None
 
@@ -2599,12 +2684,38 @@ class FlowExecutor:
                     self._non_get_results[node_id] = result
 
         else:
-            if api_source == "capability" and api_config.get("capability"):
-                result = await self._handle_capability_request(node_id, node, api_config)
-            elif api_source == "integration" and api_config.get("integrationId"):
-                result = await self._handle_integration_api_request(node_id, node, api_config)
-            else:
-                result = await self._handle_custom_api_request(node_id, node, api_config)
+            # GET dedup guard (Task #534, defense-in-depth) — see the
+            # _get_locks/_get_recent comment at __init__ for why this is
+            # short-lived rather than a permanent per-session cache like the
+            # non-GET guard above.
+            _args_key = repr(sorted(arguments.items())) if arguments else ""
+            if node_id not in self._get_locks:
+                self._get_locks[node_id] = asyncio.Lock()
+            _get_lock = self._get_locks[node_id]
+
+            async with _get_lock:
+                _recent = self._get_recent.get(node_id)
+                if (
+                    _recent
+                    and _recent[1] == _args_key
+                    and (time.monotonic() - _recent[0]) < GET_DEDUP_WINDOW_SECS
+                ):
+                    logger.info(
+                        f"API node {node_id} (GET) called again with identical "
+                        f"arguments within {GET_DEDUP_WINDOW_SECS}s — returning "
+                        "the just-completed result instead of re-firing the request"
+                    )
+                    result = dict(_recent[2])
+                else:
+                    if api_source == "capability" and api_config.get("capability"):
+                        result = await self._handle_capability_request(node_id, node, api_config)
+                    elif api_source == "integration" and api_config.get("integrationId"):
+                        result = await self._handle_integration_api_request(
+                            node_id, node, api_config
+                        )
+                    else:
+                        result = await self._handle_custom_api_request(node_id, node, api_config)
+                    self._get_recent[node_id] = (time.monotonic(), _args_key, result)
 
         result["thinking_message"] = thinking_message
 
@@ -3394,13 +3505,36 @@ class FlowExecutor:
                 self.state.advance_to(node_id)
                 next_node_id = node_id
 
-        return {
+        result = {
             "success": True,
             "message": f"Routing to: {matched_label}",
             "action": None,
             "routed_to": matched_label,
             "current_node_id": next_node_id,
         }
+
+        # If routing lands straight on END/TRANSFER, actually execute that
+        # terminal action rather than merely speaking its message (Task #534
+        # completion-review fix).
+        terminal_result = await self._maybe_execute_terminal_transition(next_node)
+        if terminal_result is not None:
+            return terminal_result
+
+        # ROUTER is a silent branch decision — "Routing to: X" is debug context,
+        # never meant to be spoken. But like SET_VARIABLE, it can branch
+        # straight into a node with real caller-facing content and no other
+        # direct-speech guarantee. Surface that content for the mapper to
+        # speak directly instead of leaving the branch outcome unannounced.
+        next_node_message, next_is_static = (
+            self._get_next_node_configured_message(next_node) if next_node else (None, False)
+        )
+        if next_node_message:
+            result["message"] = next_node_message
+            result["speak_directly"] = True
+            if next_is_static:
+                result["speak_exactly"] = next_node_message
+
+        return result
 
     def _confirmed_branch_next_node(self, node_id: str) -> Optional[FlowNode]:
         """Resolve the node a confirmation node advances to when confirmed.
@@ -3480,6 +3614,13 @@ class FlowExecutor:
             if next_node:
                 self.state.advance_to(next_node.id)
 
+            # If confirming silently advances straight into END/TRANSFER,
+            # actually execute that terminal action rather than merely
+            # speaking its message (Task #534 completion-review fix).
+            terminal_result = await self._maybe_execute_terminal_transition(next_node)
+            if terminal_result is not None:
+                return terminal_result
+
             next_node_message, next_is_static = (
                 self._get_next_node_configured_message(next_node) if next_node else (None, False)
             )
@@ -3502,6 +3643,14 @@ class FlowExecutor:
                     result["speak_exactly"] = confirmed_text
             else:
                 result["message"] = "Thank you for confirming."
+
+            # CONFIRMATION had no direct-speech guarantee at all — a live call
+            # went silent for ~10s after this exact dispatch because nothing
+            # forces the LLM's next turn to actually speak. Every message
+            # above is operator-authored, caller-facing prompt/summary text
+            # (like a slot prompt), so speak it directly rather than hoping
+            # the model continues on its own.
+            result["speak_directly"] = True
 
             return result
         else:
@@ -3531,6 +3680,7 @@ class FlowExecutor:
                     "confirmed": False,
                     "current_node_id": node_id,
                     "message": message,
+                    "speak_directly": True,
                 }
             elif field_to_change:
                 return {
@@ -3539,6 +3689,7 @@ class FlowExecutor:
                     "confirmed": False,
                     "current_node_id": node_id,
                     "message": self._targeted_field_question(field_to_change),
+                    "speak_directly": True,
                 }
 
             next_node = self.state.get_next_node(node_id, handle="edit")
@@ -3546,12 +3697,17 @@ class FlowExecutor:
             if next_node:
                 self.state.advance_to(next_node.id)
 
+            terminal_result = await self._maybe_execute_terminal_transition(next_node)
+            if terminal_result is not None:
+                return terminal_result
+
             result = {
                 "success": True,
                 "action": None,
                 "confirmed": False,
                 "current_node_id": next_node_id,
                 "message": edit_message,
+                "speak_directly": True,
             }
 
             return result
@@ -3644,6 +3800,39 @@ class FlowExecutor:
 
         return (None, False)
 
+    async def _maybe_execute_terminal_transition(
+        self, next_node: Optional[FlowNode]
+    ) -> Optional[dict]:
+        """Actually execute the terminal action when a silent advance lands
+        on an END or TRANSFER node — never just surface its message.
+
+        SET_VARIABLE, ROUTER, SAVE_RECORD, and CONFIRMATION can all advance
+        straight into END/TRANSFER with no LLM function call in between. The
+        naive fix (surface that node's configured message with
+        speak_directly=True) only ever spoke the words: it never invoked
+        end_call_callback/transfer_callback, so the call itself never
+        actually ended or transferred (Task #534 completion-review fix).
+        Routing through the exact same handlers a direct end_call_<id>/
+        transfer_<id> function call would use guarantees identical behavior
+        — closing-message resolution, the real callback invocation, and the
+        "action": "end"/"transfer" result the voice mapper already knows how
+        to speak-and-finalize (see function_mapper.py's dedicated handling
+        for those two action values, which bypasses speak_directly entirely).
+
+        Returns the terminal handler's result dict, or None if *next_node*
+        is not a terminal node (caller should fall back to its normal
+        message-surfacing behavior).
+        """
+        if next_node is None:
+            return None
+        if next_node.type == NodeType.END:
+            return await self._handle_end_call(f"end_call_{next_node.id}", {})
+        if next_node.type == NodeType.TRANSFER:
+            return await self._handle_transfer(
+                f"transfer_{next_node.id}", {"reason": "Flow reached a transfer step"}
+            )
+        return None
+
     async def _handle_set_variable(self, function_name: str, arguments: dict) -> dict:
         """Handle setting a variable value."""
         node_id = function_name.replace("set_var_", "")
@@ -3679,13 +3868,35 @@ class FlowExecutor:
         if next_node:
             self.state.advance_to(next_node.id)
 
-        return {
+        result = {
             "success": True,
             "message": f"Set {var_key} to {final_value}",
             "action": None,
             "set_variable": {var_key: final_value},
             "current_node_id": next_node_id,
         }
+
+        # If this silently advances straight into END/TRANSFER, actually
+        # execute that terminal action rather than merely speaking its
+        # message (Task #534 completion-review fix).
+        terminal_result = await self._maybe_execute_terminal_transition(next_node)
+        if terminal_result is not None:
+            return terminal_result
+
+        # SET_VARIABLE is a silent internal step — its own message is debug
+        # context only and must never be spoken. But it can advance straight
+        # into a node with real caller-facing content (a MESSAGE, CONFIRMATION,
+        # END, or TRANSFER node) with no other direct-speech guarantee, which
+        # is exactly the class of dead-air bug this surfaced on a live call.
+        # Surface that destination content so the mapper can speak it directly.
+        next_node_message, next_is_static = self._get_next_node_configured_message(next_node)
+        if next_node_message:
+            result["message"] = next_node_message
+            result["speak_directly"] = True
+            if next_is_static:
+                result["speak_exactly"] = next_node_message
+
+        return result
 
     async def _handle_save_record(self, function_name: str, arguments: dict) -> dict:
         """Handle a SAVE_RECORD flow node (voice-only).
@@ -3810,10 +4021,32 @@ class FlowExecutor:
                 f"{record_type_id} (call_sid={self.call_sid})"
             )
             field_summary = ", ".join(f"{k}: {v}" for k, v in data.items()) if data else ""
-            success_msg = f"Saved {record_type_name} record"
+            # The raw field dump is LLM context only — never spoken verbatim to
+            # a caller. SAVE_RECORD had no direct-speech guarantee at all, the
+            # same dead-air risk class as CONFIRMATION/ROUTER/SET_VARIABLE. If
+            # the node advances into real caller-facing content, speak that;
+            # otherwise speak a short, friendly, non-leaking acknowledgment so
+            # the caller is never left wondering whether the save went through.
+            # If the save silently advances straight into END/TRANSFER,
+            # actually execute that terminal action rather than merely
+            # speaking its message (Task #534 completion-review fix).
+            terminal_result = await self._maybe_execute_terminal_transition(next_node)
+            if terminal_result is not None:
+                return terminal_result
+
+            result = _result(True, f"Saved {record_type_name} record")
             if field_summary:
-                success_msg = f"{success_msg} — {field_summary}"
-            return _result(True, success_msg)
+                result["record_fields"] = field_summary
+            next_node_message, next_is_static = self._get_next_node_configured_message(next_node)
+            if next_node_message:
+                result["message"] = next_node_message
+                result["speak_directly"] = True
+                if next_is_static:
+                    result["speak_exactly"] = next_node_message
+            else:
+                result["message"] = "Got it, that's saved."
+                result["speak_directly"] = True
+            return result
         except Exception as exc:  # noqa: BLE001 - never break a live call
             logger.error(f"SAVE_RECORD node {node_id} failed: {exc}", exc_info=True)
             try:
@@ -4066,6 +4299,13 @@ class FlowExecutor:
                 if next_node:
                     self.state.advance_to(next_node.id)
 
+                # If confirming silently advances straight into END/TRANSFER,
+                # actually execute that terminal action rather than merely
+                # speaking its message (Task #534 completion-review fix).
+                terminal_result = await self._maybe_execute_terminal_transition(next_node)
+                if terminal_result is not None:
+                    return terminal_result
+
                 next_node_message, next_is_static = (
                     self._get_next_node_configured_message(next_node)
                     if next_node
@@ -4099,6 +4339,10 @@ class FlowExecutor:
                         result["speak_exactly"] = confirmed_text
                 else:
                     result["message"] = "Thank you for confirming."
+
+                # Same dead-air risk as _handle_confirmation — force the
+                # direct-speech guarantee since nothing else covers this path.
+                result["speak_directly"] = True
 
                 return result
             else:
@@ -4134,6 +4378,7 @@ class FlowExecutor:
                         "confirmed": False,
                         "current_node_id": confirmation_node.id,
                         "message": message,
+                        "speak_directly": True,
                     }
                 elif field_to_change:
                     return {
@@ -4142,6 +4387,7 @@ class FlowExecutor:
                         "confirmed": False,
                         "current_node_id": confirmation_node.id,
                         "message": self._targeted_field_question(field_to_change),
+                        "speak_directly": True,
                     }
 
                 next_node = self.state.get_next_node(confirmation_node.id, handle="edit")
@@ -4149,12 +4395,17 @@ class FlowExecutor:
                 if next_node:
                     self.state.advance_to(next_node.id)
 
+                terminal_result = await self._maybe_execute_terminal_transition(next_node)
+                if terminal_result is not None:
+                    return terminal_result
+
                 result = {
                     "success": True,
                     "action": None,
                     "confirmed": False,
                     "current_node_id": next_node_id,
                     "message": edit_message,
+                    "speak_directly": True,
                 }
 
                 return result
@@ -4163,12 +4414,17 @@ class FlowExecutor:
             # Stop re-exposing the fallback after a successful confirmation so
             # the LLM can't loop back into re-confirming the same details.
             self._details_confirmed = True
+            # This exact path — confirm_details with no CONFIRMATION node in
+            # the flow — is what produced ~10s of dead air on a real call: the
+            # function ran, returned this message, and nothing forced the LLM
+            # to actually say it. speak_directly closes that gap.
             return {
                 "success": True,
                 "message": "Great, confirmed.",
                 "action": "confirmed",
                 "collected_data": self.state.collected_slots.copy(),
                 "current_node_id": self.state.current_node_id,
+                "speak_directly": True,
             }
         else:
             field_to_change = arguments.get("field_to_change")
@@ -4180,6 +4436,7 @@ class FlowExecutor:
                     "message": "Got it, I've updated that. Is everything else correct?",
                     "action": None,
                     "current_node_id": self.state.current_node_id,
+                    "speak_directly": True,
                 }
             if field_to_change:
                 return {
@@ -4187,12 +4444,14 @@ class FlowExecutor:
                     "message": self._targeted_field_question(field_to_change),
                     "action": None,
                     "current_node_id": self.state.current_node_id,
+                    "speak_directly": True,
                 }
             return {
                 "success": True,
                 "message": "What would you like to change?",
                 "action": None,
                 "current_node_id": self.state.current_node_id,
+                "speak_directly": True,
             }
 
     def get_collected_data(self) -> dict:

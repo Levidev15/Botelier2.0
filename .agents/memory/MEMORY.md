@@ -37,3 +37,4 @@
 - [Next.js dev cache self-corruption](nextjs-dev-cache-corruption.md) — pages 200 but all /_next/static 404 + webpack-runtime MODULE_NOT_FOUND = Next 14.2.0 dev bug; upgrade patch version, cache clear alone recurs.
 - [Adapter runtime guardrails](adapter-runtime-guardrails.md) — auth headers always win over config headers; path substitutions URL-encoded; response cap is transport-level pre-parse; test_operation drafts are preview-only.
 - [Voice API completion bridges](voice-api-completion-bridges.md) — a wait greeting requires caller-safe speech when API returns; preserve raw mapping for LLM narration, and sort only timestamp-backed transcript text.
+- [Live flow execution hardening](live-flow-execution-hardening.md) — parallel_tool_calls=False; direct-speech guarantee must route silent END/TRANSFER landings through the real terminal handler, not just speak text; graph_exhausted ≠ is_complete; flow_sessions abandon via complete_call.

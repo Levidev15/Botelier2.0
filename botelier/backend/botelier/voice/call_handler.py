@@ -2096,9 +2096,9 @@ You have access to the following Q&A knowledge base. Use this information to ans
         try:
             # ── Extract on event loop — pure Python, no I/O ──────────────────────
             if llm_context:
-                transcript, tools_used = self._extract_transcript(call_sid, llm_context)
-                if extra_messages:
-                    transcript.extend(extra_messages)
+                transcript, tools_used = self._extract_transcript(
+                    call_sid, llm_context, extra_messages=extra_messages
+                )
                 logger.info(
                     f"Extracted transcript ({len(transcript)} messages) for call {call_sid}"
                 )
@@ -2176,7 +2176,9 @@ You have access to the following Q&A knowledge base. Use this information to ans
         except Exception as e:
             logger.exception(f"Error saving transcript for call {call_sid}: {e}")
 
-    def _extract_transcript(self, call_sid: str, llm_context: Any) -> tuple:
+    def _extract_transcript(
+        self, call_sid: str, llm_context: Any, extra_messages: list | None = None
+    ) -> tuple:
         """Extract conversation messages and tool names from Pipecat's LLMContext.
 
         Filters to only user and assistant messages, excluding system prompts
@@ -2186,6 +2188,17 @@ You have access to the following Q&A knowledge base. Use this information to ans
         Args:
             call_sid: Twilio call SID (for checking interrupted responses)
             llm_context: Pipecat's LLMContext object (passed directly from create_pipeline)
+            extra_messages: Additional transcript entries that bypassed the LLM
+                context (e.g. a pre-transfer message spoken via TTSSpeakFrame
+                directly). Merged in BEFORE the global chronological sort below
+                — carrying an "_elapsed_s" key anchors them exactly like any
+                other captured entry; without one they fall back to the same
+                interpolation every untimed entry gets, which places them
+                right after the last timed entry rather than blindly at the
+                tail of an already-sorted list (Task #534 — a prior version
+                appended extra_messages AFTER this function's sort had already
+                run, so they could never land anywhere but dead last even when
+                they belonged earlier).
 
         Returns:
             Tuple of (transcript, tools_used) where:
@@ -2347,6 +2360,15 @@ You have access to the following Q&A knowledge base. Use this information to ans
                         # never internal elapsed-time metadata.
                         msg["_elapsed_s"] = entry["elapsed_s"]
                         break
+
+            # Merge in extra_messages BEFORE the global sort below (Task #534)
+            # so they take part in the same chronological ordering as every
+            # other entry instead of being force-appended after the fact.
+            if extra_messages:
+                for _extra in extra_messages:
+                    if _extra.get("_elapsed_s") is not None and not _extra.get("timestamp"):
+                        _extra["timestamp"] = _fmt_elapsed(_extra["_elapsed_s"])
+                transcript.extend(extra_messages)
 
             # --- Global sort ---
             # Pipecat's retained context can commit user/assistant messages out of

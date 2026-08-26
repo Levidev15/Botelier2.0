@@ -254,6 +254,76 @@ class TestTranscriptOrdering:
             "_elapsed_s is an internal sort key and must be stripped from the final output"
         )
 
+    def test_extra_messages_join_the_global_sort_not_just_appended(self):
+        """extra_messages (e.g. the pre-transfer TTSSpeakFrame message, which
+        bypasses the LLM context entirely) must take part in the same
+        chronological sort as every other entry (Task #534) — a prior version
+        appended them AFTER this function's own sort had already run, so they
+        could only ever land dead last even when their real elapsed time put
+        them earlier than a later-committed context message.
+        """
+        handler = _bare_handler()
+        handler.user_turn_timestamps[CALL_SID] = [
+            {"text": "Please transfer me.", "elapsed_s": 5.0},
+        ]
+        # Context commits the user's turn only — the pre-transfer phrase
+        # never enters the LLM context, so it has no capture-buffer entry of
+        # its own and arrives purely via extra_messages.
+        handler.pending_responses[CALL_SID] = []
+
+        transcript, _ = handler._extract_transcript(
+            CALL_SID,
+            _ctx([{"role": "user", "content": "Please transfer me."}]),
+            extra_messages=[
+                {
+                    "role": "assistant",
+                    "content": "One moment while I connect you.",
+                    "interrupted": False,
+                    "_elapsed_s": 6.0,
+                }
+            ],
+        )
+
+        contents = [e["content"] for e in transcript]
+        assert contents == [
+            "Please transfer me.",              # T=5s
+            "One moment while I connect you.",  # T=6s — correctly placed last
+        ]
+        # Anchored entries get a display timestamp too, not just the sort key.
+        pre_transfer_entry = transcript[-1]
+        assert pre_transfer_entry.get("timestamp")
+        assert "_elapsed_s" not in pre_transfer_entry
+
+    def test_extra_message_without_elapsed_anchor_still_lands_after_prior_entries(self):
+        """An extra_message with no elapsed anchor (defensive fallback) must
+        still interpolate to AFTER the existing timed entries rather than
+        being blindly forced to the tail regardless of real chronology —
+        merging happens before the sort now, so plain list order plus
+        interpolation both push it to the correct place here."""
+        handler = _bare_handler()
+        handler.user_turn_timestamps[CALL_SID] = [
+            {"text": "Please transfer me.", "elapsed_s": 5.0},
+        ]
+        handler.pending_responses[CALL_SID] = []
+
+        transcript, _ = handler._extract_transcript(
+            CALL_SID,
+            _ctx([{"role": "user", "content": "Please transfer me."}]),
+            extra_messages=[
+                {
+                    "role": "assistant",
+                    "content": "One moment while I connect you.",
+                    "interrupted": False,
+                }
+            ],
+        )
+
+        contents = [e["content"] for e in transcript]
+        assert contents == [
+            "Please transfer me.",
+            "One moment while I connect you.",
+        ]
+
     def test_global_sort_without_action_timestamps_uses_interpolation(self):
         """When no action_timestamps are supplied, the action is interpolated correctly.
 

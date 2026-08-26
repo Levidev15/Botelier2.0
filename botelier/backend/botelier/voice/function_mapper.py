@@ -930,13 +930,26 @@ class FunctionMapper:
                                         )
                                         extra = []
                                         if self._pending_pre_transfer_message:
-                                            extra.append(
-                                                {
-                                                    "role": "assistant",
-                                                    "content": self._pending_pre_transfer_message,
-                                                    "interrupted": False,
-                                                }
-                                            )
+                                            _pt_entry = {
+                                                "role": "assistant",
+                                                "content": self._pending_pre_transfer_message,
+                                                "interrupted": False,
+                                            }
+                                            # Anchor it in the chronological sort
+                                            # (Task #534) instead of relying purely
+                                            # on tail-interpolation — it bypassed
+                                            # the LLM context, so it has no other
+                                            # captured timestamp of its own.
+                                            from datetime import datetime as _dt_pt
+
+                                            _start = getattr(
+                                                self.call_handler, "call_start_times", {}
+                                            ).get(self.call_sid)
+                                            if _start:
+                                                _pt_entry["_elapsed_s"] = (
+                                                    _dt_pt.utcnow() - _start
+                                                ).total_seconds()
+                                            extra.append(_pt_entry)
                                             self._pending_pre_transfer_message = None
                                         await self.call_handler._save_call_transcript(
                                             self.call_sid,
@@ -2018,16 +2031,19 @@ class FunctionMapper:
             if result.get("collected"):
                 logger.info(f"Flow {tool_name} collected: {result['collected']}")
 
-            # If the caller has just supplied the final required value before an
-            # API node, do not wait for the LLM to volunteer the newly-exposed
-            # execute_* function. That leaves live callers in silence when the
-            # post-function completion does not run. Execute the pending action
-            # now; POST/PUT/PATCH/DELETE nodes are already guarded by
-            # FlowExecutor's per-node idempotency locks/cache.
-            _collected_value = bool(result.get("collected"))
+            # If this call just advanced the flow onto an API node, do not
+            # wait for the LLM to volunteer the newly-exposed execute_*
+            # function. That leaves live callers in silence when the
+            # post-function completion does not run. This used to only fire
+            # after slot collection, but set_variable / router / confirmation
+            # / save_record nodes can advance straight onto an API node too —
+            # same silent-hang risk, same fix. POST/PUT/PATCH/DELETE nodes are
+            # already guarded by FlowExecutor's per-node idempotency
+            # locks/cache, so re-checking here is always safe.
             _current_node = executor.state.get_current_node()
+            _advanced = executor.state.current_node_id != _prev_node_id
             if (
-                _collected_value
+                _advanced
                 and _current_node
                 and _current_node.type == NodeType.API_REQUEST
             ):
@@ -2103,12 +2119,36 @@ class FunctionMapper:
             # caller turn.
             next_slot = result.get("next_slot") or {}
             next_prompt = str(next_slot.get("prompt") or "").strip()
+            _spoke_directly = False
             if result.get("collected") and next_prompt:
                 await params.llm.push_frame(TTSSpeakFrame(text=next_prompt))
                 logger.info(
                     f"🗣️ Spoke next flow prompt for {tool_name}: "
                     f"{next_slot.get('variable')!r}"
                 )
+                _spoke_directly = True
+            elif (
+                not _completed_api_node
+                and result.get("speak_directly")
+                and result.get("action") not in ("transfer", "end")
+            ):
+                # Task #534 — CONFIRMATION, ROUTER, SET_VARIABLE, and
+                # SAVE_RECORD results had no direct-speech guarantee at all:
+                # the tool call could complete with nothing spoken, leaving
+                # the caller in silence until they repeated themselves (the
+                # exact failure seen on a live call after confirm_details).
+                # FlowExecutor marks these results with speak_directly=True
+                # whenever "message" (or the verbatim speak_exactly override)
+                # is genuine caller-facing text, so speak it directly here
+                # too — the same guarantee collection prompts already have.
+                _direct_text = str(result.get("speak_exactly") or result.get("message") or "").strip()
+                if _direct_text:
+                    await params.llm.push_frame(TTSSpeakFrame(text=_direct_text))
+                    logger.info(
+                        f"🗣️ Spoke direct flow response for {tool_name} "
+                        f"({function_name}): {_direct_text!r}"
+                    )
+                    _spoke_directly = True
 
             # Handle special actions
             if result.get("action") == "transfer":
@@ -2411,7 +2451,7 @@ class FunctionMapper:
                 result["result"] = result.pop("voice_result")
             elif "result" not in result:
                 result["result"] = result.get("message", "Done")
-            if _collected_value and next_prompt:
+            if _spoke_directly:
                 await params.result_callback(
                     result,
                     properties=FunctionCallResultProperties(run_llm=False),
@@ -2429,6 +2469,43 @@ class FunctionMapper:
 
         async def handler(params: FunctionCallParams):
             logger.info(f"🎬 Starting flow: {tool_name}")
+
+            # Flow-switch race guard (Task #534, defense-in-depth). Both
+            # flow triggers are exposed together only in the very first
+            # completion, before either flow has advanced — disabling
+            # parallel_tool_calls (engine.py) closes the main way a single
+            # LLM turn could fire two of them at once, but this is a second,
+            # independent line of defense against a start_<other_flow> call
+            # landing while THIS flow is already under way (a stray/retried
+            # turn, a provider that ignores parallel_tool_calls, etc). This
+            # is exactly what produced a phantom "Housekeeping Request"
+            # flow_sessions row mid-call with no transcript trace on a real
+            # call. Reject the second trigger instead of silently starting a
+            # second, unrelated flow session in parallel.
+            for _other_name, _other_executor in self._flow_executors.items():
+                if _other_name == tool_name:
+                    continue
+                if (
+                    _other_executor.state.current_node_id
+                    and _other_executor.state.current_node_id
+                    != _other_executor.flow_config.initial_node
+                    and not _other_executor.state.is_complete
+                ):
+                    logger.warning(
+                        f"🚫 Rejecting start_{tool_name}: flow {_other_name!r} is "
+                        f"already in progress (node="
+                        f"{_other_executor.state.current_node_id!r}) for this call"
+                    )
+                    await params.result_callback(
+                        {
+                            "success": False,
+                            "message": (
+                                "Another request is already in progress on this "
+                                "call — finish or resolve that first."
+                            ),
+                        }
+                    )
+                    return
 
             # Track flow usage in call logs
             self.track_tool_usage(tool_name, is_flow=True)

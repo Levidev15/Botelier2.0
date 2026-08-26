@@ -665,6 +665,26 @@ class CallLogger:
             _call_log_id = call_log.id
             _call_started_at = call_log.started_at
 
+            # Flow session lifecycle (Task #534). complete_call() is the one
+            # convergence point every teardown path reaches — normal pipeline
+            # shutdown, the Twilio /status safety net, and the stuck-call
+            # sweeper/defensive-finalize paths all end up here. Durable
+            # flow_sessions snapshots (see FlowExecutor._snapshot_state) only
+            # ever reach "complete" when the in-memory executor itself sets
+            # is_complete before writing its next snapshot — a call that
+            # drops mid-flow (websocket dies, worker crashes, caller hangs up
+            # before the flow's own final snapshot) leaves its row stuck on
+            # "active" forever, with no signal that the flow was cut short.
+            # Only rows still "active" are touched — never overwrite a
+            # session that already legitimately reached "complete".
+            try:
+                self._abandon_active_flow_sessions(call_sid)
+            except Exception as _fs_err:  # noqa: BLE001 - lifecycle cleanup is best-effort
+                logger.warning(
+                    f"complete_call: marking flow_sessions abandoned failed for "
+                    f"{call_sid} (non-fatal): {_fs_err}"
+                )
+
             self.db.commit()
 
             # Post-commit, isolated, never-raises event writes (Task #123).
@@ -698,6 +718,35 @@ class CallLogger:
             logger.exception(f"Error completing call: {e}")
             self.db.rollback()
             return False
+
+    def _abandon_active_flow_sessions(self, call_sid: str) -> None:
+        """Mark any still-"active" flow_sessions rows for this call as abandoned.
+
+        Runs on the same session/transaction as the terminal CallLog mutation
+        in complete_call() so both commit atomically. Raw SQL (not the ORM
+        model) matches FlowExecutor._write_snapshot's own style for this
+        table and avoids importing FlowSession here. Only "active" rows are
+        touched — a row that already reached "complete" (the flow ran its
+        own course, including the exhausted-flow guardrail in
+        FlowState.advance_to) is left alone.
+        """
+        from sqlalchemy import text as _text
+
+        result = self.db.execute(
+            _text(
+                """
+                UPDATE flow_sessions
+                SET status = 'abandoned', updated_at = now()
+                WHERE session_key = :session_key AND status = 'active'
+                """
+            ),
+            {"session_key": call_sid},
+        )
+        if result.rowcount:
+            logger.info(
+                f"complete_call: marked {result.rowcount} flow_sessions row(s) "
+                f"abandoned for call {call_sid}"
+            )
 
     def record_tool_usage(self, call_sid: str, tool_name: str, is_flow: bool = False) -> bool:
         """Record that a tool or flow was used during a call.

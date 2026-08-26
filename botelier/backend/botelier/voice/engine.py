@@ -1847,7 +1847,19 @@ class VoiceEngineFactory:
             # `extra` is merged into the chat.completions.create() kwargs by
             # BaseOpenAILLMService.build_chat_completion_params (line 337) so
             # this is the supported plumbing for non-default request fields.
-            extra: dict[str, Any] = {}
+            #
+            # Task #534 — parallel_tool_calls is OpenAI's default `true`
+            # whenever tools are supplied, and Pipecat never overrides it.
+            # Flows are strictly sequential state machines (one node advance
+            # per turn); letting the model return >1 tool call in a turn let
+            # it fire a flow's execute_<node> AND the mapper's own pending-API
+            # auto-execute bridge in the same turn (duplicate API request), and
+            # let it call a second flow's start_<tool> trigger alongside a
+            # function for the already-active flow (phantom flow_sessions row
+            # with no transcript trace). Forcing one tool call per turn removes
+            # the mechanism behind both bugs at the root instead of only
+            # patching each symptom.
+            extra: dict[str, Any] = {"parallel_tool_calls": False}
             if config.agent_id:
                 extra["prompt_cache_key"] = f"botelier-assistant-{config.agent_id}"
             if hasattr(OpenAILLMService, "Settings"):
@@ -1864,6 +1876,7 @@ class VoiceEngineFactory:
                     ),
                 )
             # Fallback for older Pipecat versions without Settings API
+            # (parallel_tool_calls=False for the same reason as above).
             params = BaseOpenAILLMService.InputParams(
                 temperature=config.llm_temperature,
                 max_completion_tokens=config.llm_max_tokens,
