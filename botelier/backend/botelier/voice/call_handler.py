@@ -200,6 +200,9 @@ class CallHandler:
         self.user_turn_timestamps: dict[
             str, list[dict]
         ] = {}  # call_sid -> list of {text, timestamp} per user utterance
+        self.action_timestamps: dict[
+            str, list[dict]
+        ] = {}  # call_sid -> list of {name, elapsed_s} per tool/action call (in LLM invocation order)
         self.call_mcp_clients: dict[
             str, PipecatMCPClient
         ] = {}  # call_sid -> Pipecat MCPClient for MCP tool execution
@@ -650,6 +653,47 @@ class CallHandler:
                         set(mcp_enabled_tools),
                         _mcp_client_for_pipeline._tool_wrapper,
                     )
+
+                    # Wrap each MCP handler with call-scoped timestamp recording.
+                    # _merge_voice_mcp_tools uses a single shared _tool_wrapper for
+                    # every MCP tool; we replace each entry with a per-name wrapper
+                    # so [Action: <mcp_tool>] entries participate in the global sort
+                    # with real elapsed times instead of falling back to interpolation.
+                    # Closures capture _fn/_raw by value (default args) so the loop
+                    # body is safe.  action_timestamps[call_sid] is initialised before
+                    # any tool handler can fire, so the get() below is always safe at
+                    # invocation time even though MCP registration happens earlier.
+                    _mcp_ch = self  # capture CallHandler; mapper may not exist yet
+                    _mcp_cs = call_sid
+                    for _mcp_t in filtered_tools:
+                        _mcp_fn = _mcp_t.name
+                        _mcp_raw = function_handlers[_mcp_fn]
+
+                        async def _mcp_ts_wrapper(
+                            params,
+                            _fn=_mcp_fn,
+                            _raw=_mcp_raw,
+                            _ch=_mcp_ch,
+                            _cs=_mcp_cs,
+                        ):
+                            _ts_list = _ch.action_timestamps.get(_cs)
+                            if _ts_list is not None:
+                                from datetime import datetime as _dt_mcp
+
+                                _s = _ch.call_start_times.get(_cs)
+                                _ts_list.append(
+                                    {
+                                        "name": _fn,
+                                        "elapsed_s": (
+                                            (_dt_mcp.utcnow() - _s).total_seconds()
+                                            if _s
+                                            else 0.0
+                                        ),
+                                    }
+                                )
+                            return await _raw(params)
+
+                        function_handlers[_mcp_fn] = _mcp_ts_wrapper
                     if colliding_names:
                         logger.warning(
                             "Skipping MCP tools that collide with native voice tools "
@@ -868,6 +912,7 @@ class CallHandler:
             # timestamps, and (b) recover responses the LLM context never committed
             # (caller hung up mid-generation).
             self.pending_responses[call_sid] = []
+            self.action_timestamps[call_sid] = []
 
             def on_llm_response(text: str, timestamp: datetime):
                 start = self.call_start_times.get(call_sid)
@@ -1484,6 +1529,8 @@ class CallHandler:
                 del self.pending_responses[call_sid]
             if call_sid in self.user_turn_timestamps:
                 del self.user_turn_timestamps[call_sid]
+            if call_sid in self.action_timestamps:
+                del self.action_timestamps[call_sid]
             if call_sid in self.call_mcp_clients:
                 _mcp_client_ref = self.call_mcp_clients.pop(call_sid)
                 try:
@@ -1891,7 +1938,12 @@ You have access to the following Q&A knowledge base. Use this information to ans
                             )
                             function_schemas.append(tool_schema)
 
-                        function_handlers.update(flow_handlers)
+                        # Wrap every flow handler (trigger + per-slot/API functions)
+                        # with timestamp recording before registration so both
+                        # [Action: start_booking] and [Action: execute_*] entries
+                        # get real elapsed times in _extract_transcript.
+                        for _fn, _fh in flow_handlers.items():
+                            function_handlers[_fn] = mapper.wrap_with_timestamp(_fn, _fh)
                         logger.info(
                             f"✅ Built {len(flow_schemas)} function schemas for flow: {tool.name}"
                         )
@@ -1937,7 +1989,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
                             required=function_schema_dict.get("parameters", {}).get("required", []),
                         )
                         function_schemas.append(tool_schema)
-                        function_handlers[function_schema_dict["name"]] = handler
+                        function_handlers[fn_name] = mapper.wrap_with_timestamp(fn_name, handler)
 
                         logger.info(f"✅ Built function schema for tool: {tool.name}")
                 except Exception as e:
@@ -1960,7 +2012,8 @@ You have access to the following Q&A knowledge base. Use this information to ans
                         required=esc_schema_dict.get("parameters", {}).get("required", []),
                     )
                 )
-                function_handlers[esc_schema_dict["name"]] = esc_handler
+                esc_fn_name = esc_schema_dict["name"]
+                function_handlers[esc_fn_name] = mapper.wrap_with_timestamp(esc_fn_name, esc_handler)
                 logger.info("✅ Registered always-on request_human escalation tool")
 
         logger.info(f"📋 Built {len(function_schemas)} platform function schemas")
@@ -2290,38 +2343,91 @@ You have access to the following Q&A knowledge base. Use this information to ans
                         msg["_elapsed_s"] = entry["elapsed_s"]
                         break
 
-            # Pipecat's retained context can commit user/assistant messages out
-            # of their real-time order around tool calls. Reorder only entries
-            # backed by capture timestamps; tool actions and other un-timestamped
-            # entries retain their context-relative position so the audit trail
-            # remains coherent rather than guessing when an action occurred.
-            timed_positions = [
-                index for index, entry in enumerate(transcript) if "_elapsed_s" in entry
-            ]
-            timed_entries = sorted(
-                (transcript[index] for index in timed_positions),
-                key=lambda entry: entry["_elapsed_s"],
-            )
-            for index, entry in zip(timed_positions, timed_entries):
-                transcript[index] = entry
+            # --- Global sort ---
+            # Pipecat's retained context can commit user/assistant messages out of
+            # their real-time order around tool calls.  Assign every action entry
+            # its real elapsed timestamp (from the action_timestamps queue populated
+            # by _create_flow_function_handler), then sort the ENTIRE transcript in
+            # one pass so action barriers are no longer fixed.
+            # Entries with no elapsed anchor (e.g. system messages retained from the
+            # prompt) keep their context-relative position via interpolation between
+            # the nearest timed neighbours; the original index is the tiebreaker.
+            # Build a name-keyed lookup from the action_timestamps log so that
+            # [Action: start_booking] always matches the trigger's entry, [Action:
+            # execute_*] matches its flow-function entry, and non-flow tool actions
+            # fall back to interpolation without consuming flow-function slots.
+            # Within the same name, entries are consumed in invocation order.
+            action_ts_records = self.action_timestamps.get(call_sid, [])
+            action_ts_by_name: dict[str, list[float]] = {}
+            for _rec in action_ts_records:
+                action_ts_by_name.setdefault(_rec["name"], []).append(_rec["elapsed_s"])
+            action_ts_usage: dict[str, int] = {}
+
             for entry in transcript:
-                entry.pop("_elapsed_s", None)
+                content = entry.get("content", "")
+                if (
+                    content.startswith("[Action: ")
+                    and content.endswith("]")
+                    and "_elapsed_s" not in entry
+                ):
+                    fn_name = content[len("[Action: "):-1]
+                    idx = action_ts_usage.get(fn_name, 0)
+                    ts_list = action_ts_by_name.get(fn_name, [])
+                    if idx < len(ts_list):
+                        entry["_elapsed_s"] = ts_list[idx]
+                    action_ts_usage[fn_name] = idx + 1
+
+            n = len(transcript)
+            timed = [
+                (i, e["_elapsed_s"])
+                for i, e in enumerate(transcript)
+                if "_elapsed_s" in e
+            ]
+
+            def _virtual_time(idx: int, entry: dict) -> float:
+                """Sort key: captured time if available, else linear interpolation
+                between nearest timed neighbours so action barriers cross correctly."""
+                if "_elapsed_s" in entry:
+                    return entry["_elapsed_s"]
+                left: tuple | None = None
+                right: tuple | None = None
+                for j, t in timed:
+                    if j < idx and (left is None or j > left[0]):
+                        left = (j, t)
+                    elif j > idx and (right is None or j < right[0]):
+                        right = (j, t)
+                if left is None and right is None:
+                    return float(idx)
+                if left is None:
+                    rj, rt = right
+                    return rt - (rj - idx) * 1e-4
+                if right is None:
+                    lj, lt = left
+                    return lt + (idx - lj) * 1e-4
+                lj, lt = left
+                rj, rt = right
+                return lt + (rt - lt) * (idx - lj) / (rj - lj)
+
+            transcript = [
+                entry
+                for _, entry in sorted(
+                    enumerate(transcript),
+                    key=lambda ip: (_virtual_time(ip[0], ip[1]), ip[0]),
+                )
+            ]
 
             # --- Incomplete response recovery ---
-            # If the transcript ends with a user message the LLM context never has the
-            # AI's reply (caller hung up while the LLM was still generating).  Check the
-            # pending_responses buffer populated by LLMResponseCapture and, when the last
-            # captured response is not already represented in the context, append it so
-            # reviewers and ACW see the full exchange.
-            if transcript and transcript[-1]["role"] == "user" and captured_assistant:
+            # Caller hung up while the LLM was generating: the context never
+            # committed the last response.  Insert it at its elapsed-time position
+            # rather than unconditionally appending it at the end, so it lands in
+            # the correct chronological slot even when later entries exist.
+            if captured_assistant:
                 last_capture = captured_assistant[-1]
                 captured_text = last_capture["text"]
                 captured_key = captured_text[:80].lower()
+                captured_elapsed = last_capture["elapsed_s"]
 
-                # Only append if the captured text is not already in the transcript.
-                # This prevents re-appending a response that WAS committed to context
-                # (i.e. the last caller turn ends the conversation but the AI's prior
-                # response is already present in the context messages).
+                # Skip if the response was already committed to the LLM context.
                 already_committed = any(
                     entry["role"] == "assistant"
                     and entry.get("content", "")[:80].lower() == captured_key
@@ -2330,29 +2436,42 @@ You have access to the following Q&A knowledge base. Use this information to ans
 
                 if not already_committed:
                     if _matches_interrupted(captured_text):
-                        # The response was generated but interruption cancelled it
-                        # before (or while) it was spoken, and no spoken portion was
-                        # committed to context. Appending it would show the AI
-                        # "saying" something the caller never heard — skip it.
+                        # Generated but interruption cancelled it before it was
+                        # spoken; appending would show the AI "saying" something
+                        # the caller never heard — skip.
                         logger.info(
                             f"📋 Skipping recovery of interrupted, never-spoken response "
                             f"({len(captured_text)} chars) for call {call_sid}"
                         )
                     else:
-                        transcript.append(
+                        # Find the first sorted entry captured AFTER this response
+                        # and insert just before it.
+                        insert_pos = len(transcript)
+                        for i, entry in enumerate(transcript):
+                            et = entry.get("_elapsed_s")
+                            if et is not None and et > captured_elapsed:
+                                insert_pos = i
+                                break
+                        transcript.insert(
+                            insert_pos,
                             {
                                 "role": "assistant",
                                 "content": captured_text,
                                 "interrupted": False,
                                 "incomplete": True,
-                                "timestamp": _fmt_elapsed(last_capture["elapsed_s"]),
-                            }
+                                "timestamp": _fmt_elapsed(captured_elapsed),
+                                "_elapsed_s": captured_elapsed,
+                            },
                         )
                         logger.info(
                             f"📋 Recovered incomplete AI response ({len(captured_text)} chars) "
-                            f"at T+{last_capture['elapsed_s']:.1f}s for call {call_sid} "
-                            f"— caller hung up before LLM context committed"
+                            f"at T+{captured_elapsed:.1f}s for call {call_sid} — "
+                            f"inserted at position {insert_pos}/{len(transcript)}"
                         )
+
+            # Strip internal elapsed-time metadata — only the display timestamp survives.
+            for entry in transcript:
+                entry.pop("_elapsed_s", None)
 
         except Exception as e:
             logger.exception(f"Error extracting transcript: {e}")

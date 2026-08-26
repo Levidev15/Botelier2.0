@@ -40,6 +40,7 @@ def _bare_handler() -> CallHandler:
     handler.interrupted_responses = {}
     handler.user_turn_timestamps = {}
     handler.pending_responses = {}
+    handler.action_timestamps = {}   # added for global-sort action timestamp assignment
     return handler
 
 
@@ -198,6 +199,331 @@ class TestTranscriptOrdering:
             "How many adults?",
             "Two adults.",
         ]
+
+    def test_global_sort_crosses_action_barrier(self):
+        """A tool-action entry must NOT be a fixed barrier for the global sort.
+
+        Scenario: the LLM context was committed in this (wrong) order —
+            user(T=10s) · [Action: check_availability] · assistant(T=2s)
+        The assistant actually spoke at T=2s (greeting/confirmation before the
+        user's turn), then the user replied at T=10s, then the tool fired.
+        The slot-bounded sort left this unchanged; the global sort must produce:
+            assistant(T=2s) · [Action: check_availability(~6s)] · user(T=10s)
+        where the action's virtual time is interpolated between its neighbours.
+        """
+        handler = _bare_handler()
+        handler.user_turn_timestamps[CALL_SID] = [
+            {"text": "Yes please.", "elapsed_s": 10.0},
+        ]
+        handler.pending_responses[CALL_SID] = [
+            {"text": "Let me check that for you.", "elapsed_s": 2.0},
+        ]
+        # Supply the action timestamp so it gets an elapsed time between T=2 and T=10
+        handler.action_timestamps[CALL_SID] = [
+            {"name": "check_availability", "elapsed_s": 6.0},
+        ]
+
+        transcript, _ = handler._extract_transcript(
+            CALL_SID,
+            _ctx(
+                [
+                    # Context committed out of real-time order
+                    {"role": "user", "content": "Yes please."},
+                    {
+                        "role": "assistant",
+                        "tool_calls": [
+                            {"function": {"name": "check_availability"}}
+                        ],
+                    },
+                    {"role": "assistant", "content": "Let me check that for you."},
+                ]
+            ),
+        )
+
+        contents = [e["content"] for e in transcript]
+        assert contents == [
+            "Let me check that for you.",   # T=2s
+            "[Action: check_availability]", # T=6s (supplied)
+            "Yes please.",                   # T=10s
+        ], f"Unexpected order: {contents}"
+
+        # Internal _elapsed_s must be stripped before returning — callers must never
+        # see it in the final transcript dict.
+        action_entry = next(e for e in transcript if e["content"].startswith("[Action:"))
+        assert "_elapsed_s" not in action_entry, (
+            "_elapsed_s is an internal sort key and must be stripped from the final output"
+        )
+
+    def test_global_sort_without_action_timestamps_uses_interpolation(self):
+        """When no action_timestamps are supplied, the action is interpolated correctly.
+
+        Same scenario as above but without an explicit action timestamp: the
+        action's virtual time is interpolated between its timed neighbours and
+        it must still end up between them in the output.
+        """
+        handler = _bare_handler()
+        handler.user_turn_timestamps[CALL_SID] = [
+            {"text": "Yes please.", "elapsed_s": 10.0},
+        ]
+        handler.pending_responses[CALL_SID] = [
+            {"text": "Let me check that for you.", "elapsed_s": 2.0},
+        ]
+        # No action_timestamps — action gets interpolated virtual time
+
+        transcript, _ = handler._extract_transcript(
+            CALL_SID,
+            _ctx(
+                [
+                    {"role": "user", "content": "Yes please."},
+                    {
+                        "role": "assistant",
+                        "tool_calls": [{"function": {"name": "check_availability"}}],
+                    },
+                    {"role": "assistant", "content": "Let me check that for you."},
+                ]
+            ),
+        )
+
+        contents = [e["content"] for e in transcript]
+        assert contents == [
+            "Let me check that for you.",   # T=2s
+            "[Action: check_availability]", # interpolated ~6s
+            "Yes please.",                   # T=10s
+        ], f"Unexpected order without explicit action timestamps: {contents}"
+
+    def test_flow_trigger_and_flow_function_each_get_own_timestamp(self):
+        """Flow trigger (start_booking) and a flow function (collect_checkin) must
+        each receive their own timestamp, keyed by name, not consumed by position.
+
+        Context committed order (wrong):
+            [Action: start_booking] (T=?) · user(T=12s) · [Action: collect_checkin]
+        Actual elapsed order:
+            start_booking fires at T=2s, user speaks at T=12s, collect_checkin at T=18s
+        After global sort the transcript must read:
+            start_booking · user · collect_checkin
+        """
+        handler = _bare_handler()
+        handler.user_turn_timestamps[CALL_SID] = [
+            {"text": "March 15th.", "elapsed_s": 12.0},
+        ]
+        handler.pending_responses[CALL_SID] = []
+        handler.action_timestamps[CALL_SID] = [
+            {"name": "start_booking", "elapsed_s": 2.0},
+            {"name": "collect_checkin", "elapsed_s": 18.0},
+        ]
+
+        transcript, _ = handler._extract_transcript(
+            CALL_SID,
+            _ctx(
+                [
+                    # Out-of-order as Pipecat might commit them
+                    {
+                        "role": "assistant",
+                        "tool_calls": [{"function": {"name": "start_booking"}}],
+                    },
+                    {"role": "user", "content": "March 15th."},
+                    {
+                        "role": "assistant",
+                        "tool_calls": [{"function": {"name": "collect_checkin"}}],
+                    },
+                ]
+            ),
+        )
+
+        contents = [e["content"] for e in transcript]
+        assert contents == [
+            "[Action: start_booking]",   # T=2s — trigger
+            "March 15th.",               # T=12s
+            "[Action: collect_checkin]", # T=18s — flow function
+        ], f"Trigger and function got wrong timestamps/order: {contents}"
+
+    def test_non_flow_action_does_not_consume_flow_action_timestamp(self):
+        """A non-flow tool action (no entry in action_timestamps) must NOT
+        consume a flow action's queued timestamp, leaving the flow action
+        with the wrong elapsed time or no timestamp at all.
+
+        Scenario:
+            assistant(T=1s) · [Action: transfer_call] · [Action: check_availability] · user(T=20s)
+        action_timestamps only has an entry for check_availability (T=12s).
+        transfer_call must fall back to interpolation; check_availability must still
+        get its real T=12s.
+        """
+        handler = _bare_handler()
+        handler.user_turn_timestamps[CALL_SID] = [
+            {"text": "What is available?", "elapsed_s": 20.0},
+        ]
+        handler.pending_responses[CALL_SID] = [
+            {"text": "Of course!", "elapsed_s": 1.0},
+        ]
+        # Only the flow action has a recorded timestamp; the non-flow transfer_call
+        # has no entry — it must NOT steal check_availability's slot.
+        handler.action_timestamps[CALL_SID] = [
+            {"name": "check_availability", "elapsed_s": 12.0},
+        ]
+
+        transcript, _ = handler._extract_transcript(
+            CALL_SID,
+            _ctx(
+                [
+                    {"role": "assistant", "content": "Of course!"},
+                    {
+                        "role": "assistant",
+                        "tool_calls": [{"function": {"name": "transfer_call"}}],
+                    },
+                    {
+                        "role": "assistant",
+                        "tool_calls": [{"function": {"name": "check_availability"}}],
+                    },
+                    {"role": "user", "content": "What is available?"},
+                ]
+            ),
+        )
+
+        contents = [e["content"] for e in transcript]
+        # check_availability (T=12s) must appear before user (T=20s).
+        # transfer_call has no timestamp so it interpolates; its exact position is
+        # flexible, but it must NOT displace check_availability.
+        assert "[Action: check_availability]" in contents
+        assert "[Action: transfer_call]" in contents
+        ca_idx = contents.index("[Action: check_availability]")
+        user_idx = contents.index("What is available?")
+        assert ca_idx < user_idx, (
+            f"check_availability ({ca_idx}) should appear before user ({user_idx}): {contents}"
+        )
+
+    def test_mcp_handler_wrapper_records_timestamp_and_sorts(self):
+        """MCP tool wrapper captures action timestamp; _extract_transcript sorts correctly.
+
+        Simulates the wrapping pattern applied at the MCP merge call site in
+        call_handler so that [Action: mcp_tool] entries get real elapsed times
+        rather than relying on positional interpolation.
+        """
+        import asyncio
+        from datetime import datetime
+        from types import SimpleNamespace
+
+        handler = _bare_handler()
+        handler.call_start_times = {CALL_SID: datetime.utcnow()}  # type: ignore[attr-defined]
+        handler.action_timestamps[CALL_SID] = []
+        handler.user_turn_timestamps[CALL_SID] = [
+            {"text": "Please check me in.", "elapsed_s": 10.0},
+        ]
+        handler.pending_responses[CALL_SID] = [
+            {"text": "Of course, let me check.", "elapsed_s": 2.0},
+        ]
+
+        # Reproduce the closure created at the MCP merge call site.
+        _mcp_fn = "mcp_check_in"
+        _raw_mcp_calls: list = []
+
+        async def _raw_mcp(params):
+            _raw_mcp_calls.append(params)
+
+        from datetime import datetime as _dt_mcp  # noqa: PLC0415
+
+        async def _mcp_ts_wrapper(
+            params,
+            _fn=_mcp_fn,
+            _raw=_raw_mcp,
+            _ch=handler,
+            _cs=CALL_SID,
+        ):
+            _ts_list = _ch.action_timestamps.get(_cs)
+            if _ts_list is not None:
+                _s = _ch.call_start_times.get(_cs)
+                _ts_list.append(
+                    {
+                        "name": _fn,
+                        "elapsed_s": (_dt_mcp.utcnow() - _s).total_seconds() if _s else 0.0,
+                    }
+                )
+            return await _raw(params)
+
+        # Invoke the wrapper — simulates LLM calling the MCP tool mid-call.
+        asyncio.run(_mcp_ts_wrapper(SimpleNamespace()))
+
+        # 1 — Timestamp entry recorded under the correct name.
+        assert len(handler.action_timestamps[CALL_SID]) == 1
+        ts_entry = handler.action_timestamps[CALL_SID][0]
+        assert ts_entry["name"] == "mcp_check_in"
+        assert ts_entry["elapsed_s"] >= 0.0, "Elapsed must be non-negative"
+
+        # 2 — _extract_transcript uses the recorded timestamp in the global sort.
+        # Context out of order: user(T=10s) · action · assistant(T=2s).
+        transcript, _ = handler._extract_transcript(
+            CALL_SID,
+            _ctx(
+                [
+                    {"role": "user", "content": "Please check me in."},
+                    {
+                        "role": "assistant",
+                        "tool_calls": [{"function": {"name": "mcp_check_in"}}],
+                    },
+                    {"role": "assistant", "content": "Of course, let me check."},
+                ]
+            ),
+        )
+
+        contents = [e["content"] for e in transcript]
+        # assistant(T=2s) · action(~0s elapsed but < user T=10s) · user(T=10s)
+        # The critical assertion: action must appear before user in the final order.
+        assert "[Action: mcp_check_in]" in contents, f"Action missing: {contents}"
+        action_idx = contents.index("[Action: mcp_check_in]")
+        user_idx = contents.index("Please check me in.")
+        assert action_idx < user_idx, (
+            f"MCP action ({action_idx}) must appear before user ({user_idx}): {contents}"
+        )
+
+        # 3 — Internal _elapsed_s key must be stripped from the final output.
+        action_entry = next(e for e in transcript if e["content"].startswith("[Action:"))
+        assert "_elapsed_s" not in action_entry, (
+            "_elapsed_s is internal and must be stripped before returning"
+        )
+
+    def test_recovered_response_inserted_at_elapsed_position(self):
+        """Recovered (incomplete) assistant response must be inserted by time, not appended.
+
+        Scenario: an action fires at T=5s, then the LLM starts generating a response
+        at T=8s but the caller hangs up before it commits.  Context has only the
+        user turn and the action.  The recovered response must appear AFTER the
+        action (T=5s < T=8s), not at the very end after the user entry.
+        """
+        handler = _bare_handler()
+        handler.user_turn_timestamps[CALL_SID] = [
+            {"text": "What rooms do you have?", "elapsed_s": 3.0},
+        ]
+        handler.pending_responses[CALL_SID] = [
+            # This response was generated but never committed to context (hang-up)
+            {"text": "We have a Superior Room available.", "elapsed_s": 8.0},
+        ]
+        handler.action_timestamps[CALL_SID] = [
+            {"name": "check_availability", "elapsed_s": 5.0},
+        ]
+
+        transcript, _ = handler._extract_transcript(
+            CALL_SID,
+            _ctx(
+                [
+                    {"role": "user", "content": "What rooms do you have?"},
+                    {
+                        "role": "assistant",
+                        "tool_calls": [{"function": {"name": "check_availability"}}],
+                    },
+                    # Note: no committed assistant text — hang-up during generation
+                ]
+            ),
+        )
+
+        contents = [e["content"] for e in transcript]
+        assert contents == [
+            "What rooms do you have?",          # T=3s
+            "[Action: check_availability]",     # T=5s
+            "We have a Superior Room available.", # T=8s (recovered, inserted here)
+        ], f"Unexpected order for recovered response: {contents}"
+
+        recovered = next(e for e in transcript if e.get("incomplete"))
+        assert recovered["incomplete"] is True
+        assert recovered["interrupted"] is False
 
 
 def _tracker(hits: list) -> InterruptionTracker:

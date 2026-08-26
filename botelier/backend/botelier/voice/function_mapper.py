@@ -540,6 +540,49 @@ class FunctionMapper:
         """
         self._non_flow_tool_schemas.append(schema_dict)
 
+    def _record_action_timestamp(self, function_name: str) -> None:
+        """Append an elapsed-time entry for a tool invocation to action_timestamps.
+
+        Called from the universal handler wrapper applied at registration time in
+        call_handler so that EVERY registered tool (flow trigger, flow function,
+        non-flow custom, escalation) is covered without duplicating logic.
+        Guarded with getattr so tests that construct FunctionMapper via __new__
+        without setting call_handler/call_sid don't crash.
+        """
+        _ch = getattr(self, "call_handler", None)
+        _cs = getattr(self, "call_sid", None)
+        if not (_ch and _cs):
+            return
+        _ts_list = getattr(_ch, "action_timestamps", {}).get(_cs)
+        if _ts_list is None:
+            return
+        from datetime import datetime as _dt
+
+        _start = getattr(_ch, "call_start_times", {}).get(_cs)
+        _now = _dt.utcnow()
+        _ts_list.append(
+            {
+                "name": function_name,
+                "elapsed_s": (_now - _start).total_seconds() if _start else 0.0,
+            }
+        )
+
+    def wrap_with_timestamp(self, function_name: str, handler: Callable) -> Callable:
+        """Return a wrapper around *handler* that records an action timestamp.
+
+        Applied at every function_handlers registration point in call_handler so
+        that every tool type (flow trigger, flow function, non-flow custom/MCP,
+        escalation) records its invocation time under its canonical function name.
+        _extract_transcript then looks up timestamps by name, not position, so
+        mixed-tool transcripts are ordered correctly.
+        """
+
+        async def _timestamped(params):
+            self._record_action_timestamp(function_name)
+            return await handler(params)
+
+        return _timestamped
+
     def get_flow_executors(self) -> list:
         """Return the FlowExecutors created for this call's flow tools.
 
