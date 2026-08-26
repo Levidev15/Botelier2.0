@@ -69,6 +69,187 @@ def test_is_empty_handles_empty_collections():
 
 
 # ---------------------------------------------------------------------------
+# Collection handoff: the live voice handler speaks next_slot.prompt directly
+# ---------------------------------------------------------------------------
+def test_next_slot_instructions_include_configured_prompt():
+    """A collection result must expose the next node's rendered prompt.
+
+    FunctionMapper uses this value to speak the next question directly after a
+    successful collection. Without it, live calls rely on a second LLM turn
+    that may never run, leaving callers in silence.
+    """
+    nodes = [
+        {
+            "id": "checkin",
+            "type": "collect_slot",
+            "data": {"slot": {"variableKey": "checkin", "prompt": "When do you arrive?"}},
+        },
+        {
+            "id": "checkout",
+            "type": "collect_slot",
+            "data": {
+                "slot": {
+                    "variableKey": "checkout",
+                    "prompt": "When do you leave after {{checkin}}?",
+                }
+            },
+        },
+    ]
+    variables = [
+        {"key": "checkin", "type": "date", "description": "check-in"},
+        {"key": "checkout", "type": "date", "description": "check-out"},
+    ]
+    ex = FlowExecutor(
+        _cfg(
+            nodes,
+            [{"id": "checkin_to_checkout", "source": "checkin", "target": "checkout"}],
+            variables=variables,
+            initial="checkin",
+        )
+    )
+
+    result = asyncio.run(
+        ex.handle_function_call("collect_checkin", {"checkin": "2026-09-09"})
+    )
+
+    assert result["next_slot"]["variable"] == "checkout"
+    assert result["next_slot"]["prompt"] == "When do you leave after 2026-09-09?"
+    print("PASS: next slot includes its rendered configured prompt")
+
+
+def test_live_handler_speaks_next_prompt_without_llm_followup():
+    """The live handler must TTS the next question and suppress duplicate LLM speech."""
+    from types import SimpleNamespace
+
+    from botelier.voice.function_mapper import FunctionMapper
+
+    nodes = [
+        {
+            "id": "checkin",
+            "type": "collect_slot",
+            "data": {"slot": {"variableKey": "checkin", "prompt": "When do you arrive?"}},
+        },
+        {
+            "id": "checkout",
+            "type": "collect_slot",
+            "data": {"slot": {"variableKey": "checkout", "prompt": "When do you leave?"}},
+        },
+    ]
+    ex = FlowExecutor(
+        _cfg(
+            nodes,
+            [{"id": "e", "source": "checkin", "target": "checkout"}],
+            variables=[
+                {"key": "checkin", "type": "date", "description": "check-in"},
+                {"key": "checkout", "type": "date", "description": "check-out"},
+            ],
+            initial="checkin",
+        )
+    )
+
+    class _Llm:
+        def __init__(self):
+            self.frames = []
+
+        async def push_frame(self, frame):
+            self.frames.append(frame)
+
+    mapper = FunctionMapper.__new__(FunctionMapper)
+    mapper._flow_executors = {"booking": ex}
+    mapper.update_llm_tools_for_flow = lambda _tool_name: None
+    llm = _Llm()
+    callbacks = []
+
+    async def _callback(result, properties=None):
+        callbacks.append((result, properties))
+
+    handler = mapper._create_flow_function_handler("booking", "collect_checkin")
+    asyncio.run(
+        handler(
+            SimpleNamespace(
+                arguments={"checkin": "2026-09-09"},
+                llm=llm,
+                result_callback=_callback,
+            )
+        )
+    )
+
+    assert [frame.text for frame in llm.frames] == ["When do you leave?"]
+    assert callbacks[0][1].run_llm is False
+    print("PASS: live handler speaks next prompt without an LLM followup")
+
+
+def test_live_handler_runs_pending_api_once_after_collection():
+    """The live handler must execute a reached API node without another caller turn."""
+    from types import SimpleNamespace
+
+    from botelier.voice.function_mapper import FunctionMapper
+
+    cfg = _cfg(
+        [
+            {"id": "adults", "type": "collect_slot", "data": {"slot": {"variableKey": "adults"}}},
+            {
+                "id": "book",
+                "type": "api_request",
+                "data": {"api": {"thinkingMessage": "One moment while I check."}},
+            },
+            {"id": "done", "type": "message", "data": {}},
+        ],
+        [
+            {"id": "to_book", "source": "adults", "target": "book"},
+            {"id": "to_done", "source": "book", "target": "done"},
+        ],
+        variables=[{"key": "adults", "type": "number", "description": "adult count"}],
+        initial="adults",
+    )
+    ex = FlowExecutor(cfg)
+    calls = []
+
+    async def _handle(function_name, _arguments):
+        calls.append(function_name)
+        if function_name == "collect_adults":
+            ex.state.advance_to("book")
+            return {"success": True, "collected": {"adults": 2}, "message": "Got it."}
+        assert function_name == "execute_book"
+        ex.state.advance_to("done")
+        return {"success": True, "voice_result": "Your booking is confirmed.", "message": "Done"}
+
+    ex.handle_function_call = _handle
+
+    class _Llm:
+        def __init__(self):
+            self.frames = []
+
+        async def push_frame(self, frame):
+            self.frames.append(frame)
+
+    mapper = FunctionMapper.__new__(FunctionMapper)
+    mapper._flow_executors = {"booking": ex}
+    mapper.update_llm_tools_for_flow = lambda _tool_name: None
+    llm = _Llm()
+    callbacks = []
+
+    async def _callback(result, properties=None):
+        callbacks.append((result, properties))
+
+    handler = mapper._create_flow_function_handler("booking", "collect_adults")
+    asyncio.run(
+        handler(
+            SimpleNamespace(
+                arguments={"adults": 2},
+                llm=llm,
+                result_callback=_callback,
+            )
+        )
+    )
+
+    assert calls == ["collect_adults", "execute_book"]
+    assert [frame.text for frame in llm.frames] == ["One moment while I check."]
+    assert callbacks[0][0]["result"] == "Your booking is confirmed."
+    print("PASS: live handler executes pending API once after collection")
+
+
+# ---------------------------------------------------------------------------
 # CONDITION branch resolution on advance
 # ---------------------------------------------------------------------------
 def _condition_flow():

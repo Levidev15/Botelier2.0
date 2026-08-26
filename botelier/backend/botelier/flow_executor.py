@@ -1501,6 +1501,9 @@ class FlowExecutor:
             "variable": var_key,
             "type": var_info.type.value,
             "description": var_info.description,
+            "prompt": substitute_variables(
+                str(slot.get("prompt") or ""), self.state.collected_slots
+            ),
             "constraints": constraints if constraints else None,
             "instructions": instructions,
         }

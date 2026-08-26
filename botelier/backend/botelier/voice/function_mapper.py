@@ -21,7 +21,7 @@ if TYPE_CHECKING:
 from twilio.base.exceptions import TwilioRestException as _TwilioRestException
 from twilio.rest import Client as TwilioClient
 
-from botelier.flow_executor import FlowExecutor, parse_flow_config, substitute_variables
+from botelier.flow_executor import NodeType, FlowExecutor, parse_flow_config, substitute_variables
 from botelier.models.tool import Tool, ToolType
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
@@ -1920,6 +1920,31 @@ class FunctionMapper:
             if result.get("collected"):
                 logger.info(f"Flow {tool_name} collected: {result['collected']}")
 
+            # If the caller has just supplied the final required value before an
+            # API node, do not wait for the LLM to volunteer the newly-exposed
+            # execute_* function. That leaves live callers in silence when the
+            # post-function completion does not run. Execute the pending action
+            # now; POST/PUT/PATCH/DELETE nodes are already guarded by
+            # FlowExecutor's per-node idempotency locks/cache.
+            _collected_value = bool(result.get("collected"))
+            _current_node = executor.state.get_current_node()
+            if (
+                _collected_value
+                and _current_node
+                and _current_node.type == NodeType.API_REQUEST
+            ):
+                _api_function = f"execute_{_current_node.id}"
+                _thinking = (
+                    _current_node.data.get("api", {}).get("thinkingMessage") or ""
+                ).strip()
+                if _thinking and hasattr(params, "llm") and params.llm is not None:
+                    await params.llm.push_frame(TTSSpeakFrame(text=_thinking))
+                logger.info(
+                    f"▶️ Running pending API node for flow {tool_name} immediately "
+                    f"after collection: {_api_function}"
+                )
+                result = await executor.handle_function_call(_api_function, {})
+
             # CRITICAL: Refresh the LLM's exposed tools whenever this call advanced
             # the flow position. Slot collection is not the only thing that advances
             # the flow — set_variable / api_request / router / confirmation /
@@ -1935,6 +1960,23 @@ class FunctionMapper:
                 and executor.state.current_node_id != _prev_node_id
             ):
                 self.update_llm_tools_for_flow(tool_name)
+
+            # A collection function result normally starts a second LLM
+            # completion so the model can acknowledge the value and ask the
+            # next question. On live calls that continuation is not guaranteed:
+            # the tool call can complete with no spoken text, leaving the caller
+            # in silence until they repeat themselves. Speak the next configured
+            # collection prompt directly instead. The result still enters the
+            # LLM context, so its tools and validation stay current for the next
+            # caller turn.
+            next_slot = result.get("next_slot") or {}
+            next_prompt = str(next_slot.get("prompt") or "").strip()
+            if result.get("collected") and next_prompt:
+                await params.llm.push_frame(TTSSpeakFrame(text=next_prompt))
+                logger.info(
+                    f"🗣️ Spoke next flow prompt for {tool_name}: "
+                    f"{next_slot.get('variable')!r}"
+                )
 
             # Handle special actions
             if result.get("action") == "transfer":
@@ -2237,7 +2279,13 @@ class FunctionMapper:
                 result["result"] = result.pop("voice_result")
             elif "result" not in result:
                 result["result"] = result.get("message", "Done")
-            await params.result_callback(result)
+            if _collected_value and next_prompt:
+                await params.result_callback(
+                    result,
+                    properties=FunctionCallResultProperties(run_llm=False),
+                )
+            else:
+                await params.result_callback(result)
 
         return handler
 
