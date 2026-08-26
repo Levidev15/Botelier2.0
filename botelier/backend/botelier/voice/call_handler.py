@@ -1915,6 +1915,11 @@ You have access to the following Q&A knowledge base. Use this information to ans
                     account_name=account_name,
                     escalation_target=_escalation_number,
                     property_id=_property_id,
+                    # Provide a session factory so FlowExecutor and DYNAMIC_OPERATION
+                    # handlers can open their own short-lived DB sessions per API-node
+                    # execution on live voice calls (where db_session is always None
+                    # because the setup session is closed before the call starts).
+                    session_factory=SessionLocal,
                 )
                 self.call_mappers[call_sid] = mapper
                 logger.info(f"Created FunctionMapper for call {call_sid}")

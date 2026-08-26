@@ -100,6 +100,7 @@ class FunctionMapper:
         account_name: str = None,
         escalation_target: str = None,
         property_id: str = None,
+        session_factory=None,
     ):
         """Initialize function mapper with call context and Twilio credentials.
 
@@ -121,6 +122,12 @@ class FunctionMapper:
         self.to_number = to_number
         self.call_handler = call_handler
         self.db_session = db_session
+        # session_factory: callable → Session.  Set to SessionLocal on live voice
+        # calls (where db_session=None because the setup session is closed before
+        # the call starts).  Threaded into FlowExecutor and used by
+        # _map_dynamic_operation so each DB operation opens its own short-lived
+        # session and closes it immediately — identical to the SAVE_RECORD pattern.
+        self.session_factory = session_factory
         self.account_id = account_id
         self.account_name = account_name or ""
         # Assistant-level "talk to a human" number. Powers both the always-on
@@ -1452,19 +1459,29 @@ class FunctionMapper:
 
         # Connection-status + property-scope gate — must happen BEFORE schema
         # construction so the tool is invisible to the LLM when unavailable.
-        if connection_id and self.db_session:
-            conn = self.db_session.query(AccountIntegration).filter(
-                AccountIntegration.id == connection_id
-            ).first()
-            if not conn or conn.status != IntegrationStatus.CONNECTED:
-                return None  # Disconnected — invisible to LLM
-            # Property scope: account-global connections (property_id is NULL) are
-            # always visible; property-bound connections are only shown for the
-            # matching session property.
-            if conn.property_id is not None:
-                session_prop = self.property_id
-                if session_prop is None or str(conn.property_id) != str(session_prop):
-                    return None  # Wrong property scope — invisible to LLM
+        # Use session_factory when db_session is absent (live voice calls).
+        if connection_id and (self.db_session is not None or self.session_factory is not None):
+            _gate_db, _gate_owned = (
+                (self.db_session, False)
+                if self.db_session is not None
+                else (self.session_factory(), True)
+            )
+            try:
+                conn = _gate_db.query(AccountIntegration).filter(
+                    AccountIntegration.id == connection_id
+                ).first()
+                if not conn or conn.status != IntegrationStatus.CONNECTED:
+                    return None  # Disconnected — invisible to LLM
+                # Property scope: account-global connections (property_id is NULL) are
+                # always visible; property-bound connections are only shown for the
+                # matching session property.
+                if conn.property_id is not None:
+                    session_prop = self.property_id
+                    if session_prop is None or str(conn.property_id) != str(session_prop):
+                        return None  # Wrong property scope — invisible to LLM
+            finally:
+                if _gate_owned:
+                    _gate_db.close()
 
         # Build the function schema from the published action version's input_schema.
         # Fall back to an empty schema when the action hasn't been published yet
@@ -1480,7 +1497,19 @@ class FunctionMapper:
             ).first()
             return action, version, version.config if version else None
 
-        action, version, exec_config = _load_schema_and_config(self.db_session)
+        # Schema loading: use session_factory when db_session is absent (live voice calls).
+        _schema_db, _schema_owned = (
+            (self.db_session, False)
+            if self.db_session is not None
+            else (self.session_factory(), True)
+            if self.session_factory is not None
+            else (None, False)
+        )
+        try:
+            action, version, exec_config = _load_schema_and_config(_schema_db)
+        finally:
+            if _schema_owned and _schema_db is not None:
+                _schema_db.close()
 
         if version and version.input_schema:
             input_schema = version.input_schema
@@ -1497,55 +1526,74 @@ class FunctionMapper:
 
         async def dynamic_operation_handler(params: FunctionCallParams):
             """Execute a DYNAMIC_OPERATION through the certified integration runtime."""
-            if not mapper.db_session or not mapper.account_id:
+            if not mapper.account_id:
                 await params.result_callback(
                     {"error": "DYNAMIC_OPERATION requires account context", "status": "failed"}
                 )
                 return
 
-            _action, _version, _exec_config = _load_schema_and_config(mapper.db_session)
-
-            if not _version or not _exec_config:
-                await params.result_callback(
-                    {"error": f"Operation {operation_id!r} has no published version", "status": "failed"}
-                )
-                return
-
-            # Shared builder (same one test_operation and every other channel
-            # uses) so the executed request shape — including persisted
-            # request_overrides — matches what was tested.
-            from botelier.services.operation_publisher import build_operation_api_config
-
-            config = build_operation_api_config(
-                _exec_config,
-                fallback_integration_id=connection_id or "",
-                fallback_endpoint_id=operation_id or "",
+            # Open a short-lived session from the factory when db_session is absent
+            # (live voice calls); borrow the request session otherwise (simulator).
+            _exec_db, _exec_owned = (
+                (mapper.db_session, False)
+                if mapper.db_session is not None
+                else (mapper.session_factory(), True)
+                if mapper.session_factory is not None
+                else (None, False)
             )
-
-            # Broad catch (parity with the SMS channel): an unexpected executor
-            # exception must surface as a tool-result error the LLM can speak
-            # around — never propagate and kill the voice tool turn mid-call.
-            try:
-                result = await ActionExecutor(mapper.db_session).execute_and_log(
-                    ActionExecutionRequest(
-                        context=ActionContext(
-                            account_id=mapper.account_id,
-                            channel="voice",
-                            call_sid=mapper.call_sid,
-                            tool_id=tool.id,
-                            property_id=mapper.property_id,
-                        ),
-                        variables=params.arguments,
-                        integration_config=config,
-                        response_policy=_exec_config.get("response_policy") if _exec_config else None,
-                    )
-                )
-            except Exception as exc:
-                logger.error(f"DYNAMIC_OPERATION voice tool error: {exc}")
+            if _exec_db is None:
                 await params.result_callback(
-                    {"error": "Dynamic operation failed", "status": "failed"}
+                    {"error": "DYNAMIC_OPERATION requires account context", "status": "failed"}
                 )
                 return
+
+            try:
+                _action, _version, _exec_config = _load_schema_and_config(_exec_db)
+
+                if not _version or not _exec_config:
+                    await params.result_callback(
+                        {"error": f"Operation {operation_id!r} has no published version", "status": "failed"}
+                    )
+                    return
+
+                # Shared builder (same one test_operation and every other channel
+                # uses) so the executed request shape — including persisted
+                # request_overrides — matches what was tested.
+                from botelier.services.operation_publisher import build_operation_api_config
+
+                config = build_operation_api_config(
+                    _exec_config,
+                    fallback_integration_id=connection_id or "",
+                    fallback_endpoint_id=operation_id or "",
+                )
+
+                # Broad catch (parity with the SMS channel): an unexpected executor
+                # exception must surface as a tool-result error the LLM can speak
+                # around — never propagate and kill the voice tool turn mid-call.
+                try:
+                    result = await ActionExecutor(_exec_db).execute_and_log(
+                        ActionExecutionRequest(
+                            context=ActionContext(
+                                account_id=mapper.account_id,
+                                channel="voice",
+                                call_sid=mapper.call_sid,
+                                tool_id=tool.id,
+                                property_id=mapper.property_id,
+                            ),
+                            variables=params.arguments,
+                            integration_config=config,
+                            response_policy=_exec_config.get("response_policy") if _exec_config else None,
+                        )
+                    )
+                except Exception as exc:
+                    logger.error(f"DYNAMIC_OPERATION voice tool error: {exc}")
+                    await params.result_callback(
+                        {"error": "Dynamic operation failed", "status": "failed"}
+                    )
+                    return
+            finally:
+                if _exec_owned:
+                    _exec_db.close()
 
             if result.success:
                 # When response_mapping is defined, return only the projected
@@ -1754,7 +1802,9 @@ class FunctionMapper:
         # Parse the flow config into typed objects
         flow_config = parse_flow_config(flow_config_dict)
 
-        # Create flow executor with db context for integration API calls
+        # Create flow executor with db context for integration API calls.
+        # On live voice calls db_session=None; session_factory lets the executor
+        # open its own short-lived sessions per API node execution.
         executor = FlowExecutor(
             flow_config,
             db_session=self.db_session,
@@ -1762,6 +1812,7 @@ class FunctionMapper:
             flow_tool_id=str(tool.id),
             call_sid=self.call_sid,
             property_id=self.property_id,
+            session_factory=self.session_factory,
         )
 
         # Store executor for this flow (we might need to access collected data)
@@ -1858,7 +1909,9 @@ class FunctionMapper:
             executor = self._flow_executors[tool_name]
             logger.debug(f"Reusing existing FlowExecutor for {tool_name}")
         else:
-            # Parse and create new executor with db context for integration API calls
+            # Parse and create new executor with db context for integration API calls.
+            # On live voice calls db_session=None; session_factory lets the executor
+            # open its own short-lived sessions per API node execution.
             flow_config = parse_flow_config(dict(flow_config_dict))
             executor = FlowExecutor(
                 flow_config,
@@ -1868,6 +1921,7 @@ class FunctionMapper:
                 call_sid=self.call_sid,
                 escalation_target=self.escalation_target,
                 property_id=self.property_id,
+                session_factory=self.session_factory,
             )
             # Task #330 — resume a dropped call. If this contact already has a
             # durable snapshot for this flow (websocket dropout + reconnect on a

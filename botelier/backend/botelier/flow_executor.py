@@ -12,6 +12,7 @@ import json
 import re
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -550,6 +551,7 @@ class FlowExecutor:
         call_sid: Optional[str] = None,
         escalation_target: Optional[str] = None,
         property_id: Optional[str] = None,
+        session_factory: Optional[Callable] = None,
     ):
         self.flow_config = flow_config
         self.state = FlowState(flow_config)
@@ -557,6 +559,12 @@ class FlowExecutor:
         self.transfer_callback = transfer_callback
         self.end_call_callback = end_call_callback
         self.db_session = db_session
+        # session_factory is used on live voice calls where db_session=None
+        # (the long-lived setup session is closed before the call starts).
+        # Each DB operation opens its own short-lived session from the factory
+        # and closes it in finally — mirroring the SAVE_RECORD pattern.
+        # The simulator passes db_session directly and leaves session_factory=None.
+        self.session_factory = session_factory
         self.account_id = account_id
         self.flow_tool_id = flow_tool_id
         self.call_sid = call_sid
@@ -585,6 +593,33 @@ class FlowExecutor:
         # fallback is no longer exposed, so the LLM can't loop back into
         # re-confirming already-collected info after the caller says "no thanks".
         self._details_confirmed = False
+
+    @contextmanager
+    def _borrow_db_session(self):
+        """Yield a live DB session for a single operation.
+
+        Simulator / request-scoped callers pass ``db_session`` at construction;
+        the session is borrowed as-is (NOT closed) — the caller owns its lifecycle.
+
+        Live voice calls set ``session_factory`` and leave ``db_session=None``
+        because the long-lived setup session is closed before the call begins.
+        A short-lived session is opened here, used, then closed in ``finally`` —
+        identical to the SAVE_RECORD / track_tool_usage own-SessionLocal pattern.
+
+        Yields ``None`` when neither is configured so callers can guard on
+        truthiness without raising.
+        """
+        if self.db_session is not None:
+            yield self.db_session
+            return
+        if self.session_factory is not None:
+            _db = self.session_factory()
+            try:
+                yield _db
+            finally:
+                _db.close()
+            return
+        yield None
 
     # -- Durable session state (Task #330) ----------------------------------
     def _snapshot_key(self) -> Optional[tuple[str, str]]:
@@ -686,23 +721,26 @@ class FlowExecutor:
         ``True`` when state was restored.
         """
         key = self._snapshot_key()
-        if not key or self.db_session is None:
+        if not key:
             return False
         session_key, tool_id = key
         try:
             from sqlalchemy import text as _text
 
-            row = self.db_session.execute(
-                _text(
-                    """
-                    SELECT current_node_id, collected_slots, status
-                    FROM flow_sessions
-                    WHERE session_key = :session_key
-                      AND tool_id = CAST(:tool_id AS UUID)
-                    """
-                ),
-                {"session_key": session_key, "tool_id": tool_id},
-            ).fetchone()
+            with self._borrow_db_session() as db:
+                if db is None:
+                    return False
+                row = db.execute(
+                    _text(
+                        """
+                        SELECT current_node_id, collected_slots, status
+                        FROM flow_sessions
+                        WHERE session_key = :session_key
+                          AND tool_id = CAST(:tool_id AS UUID)
+                        """
+                    ),
+                    {"session_key": session_key, "tool_id": tool_id},
+                ).fetchone()
         except Exception as exc:  # noqa: BLE001 - resume is best-effort
             logger.warning(f"Flow session rehydrate query failed (non-fatal): {exc}")
             return False
@@ -2484,6 +2522,31 @@ class FlowExecutor:
             if resolved_id:
                 api_config = {**api_config, "integrationId": resolved_id}
 
+        # Guard: when the node is configured as an integration node but no
+        # connection ID could be resolved (slug not found, no CONNECTED integration,
+        # or no DB/account context), fail loudly with a caller-safe error instead of
+        # silently falling through to _handle_custom_api_request which would make a
+        # generic HTTP call with no credentials and return nothing useful to the
+        # caller.
+        if api_source == "integration" and not api_config.get("integrationId"):
+            _slug = api_config.get("integrationSlug", "")
+            logger.warning(
+                "flow_executor: API node %r has apiSource='integration' but no "
+                "integrationId could be resolved (slug=%r). Returning error to "
+                "caller — verify the connection is CONNECTED and the slug matches.",
+                node_id,
+                _slug,
+            )
+            return {
+                "success": False,
+                "message": api_config.get(
+                    "onError",
+                    "I'm unable to reach that service right now. Please try again shortly.",
+                ),
+                "action": None,
+                "current_node_id": node_id,
+            }
+
         # Capability nodes (Task #329) carry no HTTP method of their own — it
         # lives on the vendor endpoint resolved at runtime. Derive an effective
         # method from the registry `mutating` flag so write capabilities
@@ -2567,69 +2630,78 @@ class FlowExecutor:
         returns ``None`` so the caller falls through to the custom HTTP path
         rather than crashing.
         """
-        if not slug or not self.account_id or not self.db_session:
+        if not slug or not self.account_id:
             return None
-        try:
-            from botelier.models.integration import (
-                AccountIntegration,
-                IntegrationStatus,
-                IntegrationType,
-            )
-
-            base_q = (
-                self.db_session.query(AccountIntegration)
-                .join(
+        with self._borrow_db_session() as db:
+            if db is None:
+                logger.warning(
+                    "flow_executor: cannot resolve integration slug %r — no DB "
+                    "session available. Pass session_factory=SessionLocal when "
+                    "constructing FlowExecutor for live voice calls.",
+                    slug,
+                )
+                return None
+            try:
+                from botelier.models.integration import (
+                    AccountIntegration,
+                    IntegrationStatus,
                     IntegrationType,
-                    AccountIntegration.integration_type_id == IntegrationType.id,
                 )
-                .filter(
-                    AccountIntegration.account_id == self.account_id,
-                    AccountIntegration.status == IntegrationStatus.CONNECTED,
-                    IntegrationType.slug == slug,
-                )
-            )
 
-            # --- Step 1: exact property match ---
-            if self.property_id:
-                exact = base_q.filter(
-                    AccountIntegration.property_id == self.property_id
+                base_q = (
+                    db.query(AccountIntegration)
+                    .join(
+                        IntegrationType,
+                        AccountIntegration.integration_type_id == IntegrationType.id,
+                    )
+                    .filter(
+                        AccountIntegration.account_id == self.account_id,
+                        AccountIntegration.status == IntegrationStatus.CONNECTED,
+                        IntegrationType.slug == slug,
+                    )
+                )
+
+                # --- Step 1: exact property match ---
+                if self.property_id:
+                    exact = base_q.filter(
+                        AccountIntegration.property_id == self.property_id
+                    ).all()
+                    if len(exact) == 1:
+                        return str(exact[0].id)
+                    if len(exact) > 1:
+                        logger.warning(
+                            "flow_executor: ambiguous slug %r — %d property-scoped "
+                            "connections for property %s; cannot resolve",
+                            slug,
+                            len(exact),
+                            self.property_id,
+                        )
+                        return None
+
+                # --- Step 2: account-global connection (property_id IS NULL) ---
+                global_conns = base_q.filter(
+                    AccountIntegration.property_id.is_(None)
                 ).all()
-                if len(exact) == 1:
-                    return str(exact[0].id)
-                if len(exact) > 1:
-                    logger.debug(
-                        "flow_executor: ambiguous slug %r — %d property-scoped "
-                        "connections for property %s; cannot resolve",
+                if len(global_conns) == 1:
+                    return str(global_conns[0].id)
+                if len(global_conns) > 1:
+                    logger.warning(
+                        "flow_executor: ambiguous slug %r — %d account-global "
+                        "connections for account %s; cannot resolve",
                         slug,
-                        len(exact),
-                        self.property_id,
+                        len(global_conns),
+                        self.account_id,
                     )
                     return None
 
-            # --- Step 2: account-global connection (property_id IS NULL) ---
-            global_conns = base_q.filter(
-                AccountIntegration.property_id.is_(None)
-            ).all()
-            if len(global_conns) == 1:
-                return str(global_conns[0].id)
-            if len(global_conns) > 1:
+                return None
+            except Exception:
                 logger.debug(
-                    "flow_executor: ambiguous slug %r — %d account-global "
-                    "connections for account %s; cannot resolve",
+                    "flow_executor: slug resolution failed for %r (account %s)",
                     slug,
-                    len(global_conns),
                     self.account_id,
                 )
                 return None
-
-            return None
-        except Exception:
-            logger.debug(
-                "flow_executor: slug resolution failed for %r (account %s)",
-                slug,
-                self.account_id,
-            )
-            return None
 
     async def _handle_capability_request(
         self, node_id: str, node: FlowNode, api_config: dict
@@ -2674,23 +2746,24 @@ class FlowExecutor:
                 node_id, node, api_config, capability_name
             )
 
-        resolver = CapabilityResolver(self.db_session, self.account_id, self.property_id)
-        resolution = resolver.resolve(capability_name)
-        if resolution is None:
-            return {
-                "success": False,
-                "message": "That capability is not available right now.",
-                "action": None,
-                "current_node_id": node_id,
-            }
+        with self._borrow_db_session() as db:
+            resolver = CapabilityResolver(db, self.account_id, self.property_id)
+            resolution = resolver.resolve(capability_name)
+            if resolution is None:
+                return {
+                    "success": False,
+                    "message": "That capability is not available right now.",
+                    "action": None,
+                    "current_node_id": node_id,
+                }
 
-        # Inject the resolved connection's config constants (hotel_name, currency,
-        # …) into flow slots BEFORE translating so capability calls that need them
-        # (e.g. GuestCentric booking) resolve them exactly like integration nodes.
-        # Property-identity keys are re-forced from the connection by
-        # IntegrationClient regardless (Task #327).
-        self._inject_connection_config_to_slots(resolution.integration_id)
-        translated = resolver.translate_variables(resolution, self.state.collected_slots)
+            # Inject the resolved connection's config constants (hotel_name, currency,
+            # …) into flow slots BEFORE translating so capability calls that need them
+            # (e.g. GuestCentric booking) resolve them exactly like integration nodes.
+            # Property-identity keys are re-forced from the connection by
+            # IntegrationClient regardless (Task #327).
+            self._inject_connection_config_to_slots(resolution.integration_id)
+            translated = resolver.translate_variables(resolution, self.state.collected_slots)
 
         # Synthesize an integration api_config from the resolution so the shared
         # integration path executes the concrete vendor endpoint.
@@ -2910,21 +2983,22 @@ class FlowExecutor:
         # variable that the flow has already set.
         self._inject_connection_config_to_slots(api_config.get("integrationId", ""))
 
-        response = await ActionExecutor(self.db_session).execute_and_log(
-            ActionExecutionRequest(
-                context=ActionContext(
-                    account_id=self.account_id,
-                    channel="flow",
-                    call_sid=self.call_sid,
-                    flow_tool_id=self.flow_tool_id,
-                    node_id=node_id,
-                    source_label=node.data.get("name") or node_id,
-                    property_id=self.property_id,
-                ),
-                variables=variables if variables is not None else self.state.collected_slots,
-                integration_config=config,
+        with self._borrow_db_session() as db:
+            response = await ActionExecutor(db).execute_and_log(
+                ActionExecutionRequest(
+                    context=ActionContext(
+                        account_id=self.account_id,
+                        channel="flow",
+                        call_sid=self.call_sid,
+                        flow_tool_id=self.flow_tool_id,
+                        node_id=node_id,
+                        source_label=node.data.get("name") or node_id,
+                        property_id=self.property_id,
+                    ),
+                    variables=variables if variables is not None else self.state.collected_slots,
+                    integration_config=config,
+                )
             )
-        )
 
         if response.success:
             # responseMapping is merged into response_vars above, so all
@@ -2975,7 +3049,7 @@ class FlowExecutor:
         Substitution is server-side only — secret values never leave the backend.
         Unresolvable references are left as-is so misconfiguration is visible in logs.
         """
-        if not text or "{{secrets." not in text or not self.account_id or not self.db_session:
+        if not text or "{{secrets." not in text or not self.account_id:
             return text
 
         import re as _re
@@ -2986,14 +3060,17 @@ class FlowExecutor:
 
         from botelier.models.integration import AccountSecret
 
-        secrets = (
-            self.db_session.query(AccountSecret)
-            .filter(
-                AccountSecret.account_id == self.account_id,
-                AccountSecret.key.in_(list(secret_refs)),
+        with self._borrow_db_session() as db:
+            if db is None:
+                return text
+            secrets = (
+                db.query(AccountSecret)
+                .filter(
+                    AccountSecret.account_id == self.account_id,
+                    AccountSecret.key.in_(list(secret_refs)),
+                )
+                .all()
             )
-            .all()
-        )
         secret_map = {s.key: s.get_value() for s in secrets}
 
         def replace_secret(m):
@@ -3018,19 +3095,22 @@ class FlowExecutor:
         Failures are logged at DEBUG and never bubble up — a missing or malformed
         connection_config is not a blocking error for the flow.
         """
-        if not integration_id or not self.account_id or not self.db_session:
+        if not integration_id or not self.account_id:
             return
         try:
             from botelier.models.integration import AccountIntegration
 
-            integration = (
-                self.db_session.query(AccountIntegration)
-                .filter(
-                    AccountIntegration.id == integration_id,
-                    AccountIntegration.account_id == self.account_id,
+            with self._borrow_db_session() as db:
+                if db is None:
+                    return
+                integration = (
+                    db.query(AccountIntegration)
+                    .filter(
+                        AccountIntegration.id == integration_id,
+                        AccountIntegration.account_id == self.account_id,
+                    )
+                    .first()
                 )
-                .first()
-            )
             if not integration:
                 return
             conn_config = integration.get_connection_config() or {}
@@ -3054,29 +3134,32 @@ class FlowExecutor:
         error_message: Optional[str] = None,
     ) -> None:
         """Fire-and-forget IntegrationCallLog write for custom-URL API calls (integration_id=None)."""
-        if not self.account_id or not self.db_session:
+        if not self.account_id:
             return
-        try:
-            from botelier.models.integration import IntegrationCallLog as _ICL
-            from botelier.services.integration_client import _sanitize_endpoint_for_log
+        with self._borrow_db_session() as db:
+            if db is None:
+                return
+            try:
+                from botelier.models.integration import IntegrationCallLog as _ICL
+                from botelier.services.integration_client import _sanitize_endpoint_for_log
 
-            log = _ICL(
-                id=uuid.uuid4(),
-                account_id=self.account_id,
-                integration_id=None,
-                endpoint_called=_sanitize_endpoint_for_log(endpoint),
-                method=method,
-                status_code=status_code,
-                success=success,
-                latency_ms=latency_ms,
-                error_type=error_type,
-                error_message=error_message[:500] if error_message else None,
-                called_at=datetime.utcnow(),
-            )
-            self.db_session.add(log)
-            self.db_session.commit()
-        except Exception as exc:
-            logger.warning(f"Failed to write custom URL call log (non-fatal): {exc}")
+                log = _ICL(
+                    id=uuid.uuid4(),
+                    account_id=self.account_id,
+                    integration_id=None,
+                    endpoint_called=_sanitize_endpoint_for_log(endpoint),
+                    method=method,
+                    status_code=status_code,
+                    success=success,
+                    latency_ms=latency_ms,
+                    error_type=error_type,
+                    error_message=error_message[:500] if error_message else None,
+                    called_at=datetime.utcnow(),
+                )
+                db.add(log)
+                db.commit()
+            except Exception as exc:
+                logger.warning(f"Failed to write custom URL call log (non-fatal): {exc}")
 
     async def _handle_custom_api_request(
         self, node_id: str, node: FlowNode, api_config: dict
@@ -3093,21 +3176,22 @@ class FlowExecutor:
             ActionExecutor,
         )
 
-        response = await ActionExecutor(self.db_session).execute_and_log(
-            ActionExecutionRequest(
-                context=ActionContext(
-                    account_id=self.account_id,
-                    channel="flow",
-                    call_sid=self.call_sid,
-                    flow_tool_id=self.flow_tool_id,
-                    node_id=node_id,
-                    source_label=node.data.get("name") or node_id,
-                    property_id=self.property_id,
-                ),
-                variables=self.state.collected_slots,
-                legacy_config=api_config,
+        with self._borrow_db_session() as db:
+            response = await ActionExecutor(db).execute_and_log(
+                ActionExecutionRequest(
+                    context=ActionContext(
+                        account_id=self.account_id,
+                        channel="flow",
+                        call_sid=self.call_sid,
+                        flow_tool_id=self.flow_tool_id,
+                        node_id=node_id,
+                        source_label=node.data.get("name") or node_id,
+                        property_id=self.property_id,
+                    ),
+                    variables=self.state.collected_slots,
+                    legacy_config=api_config,
+                )
             )
-        )
 
         if response.success:
             for var_key, value in response.extracted_variables.items():
