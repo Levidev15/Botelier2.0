@@ -1901,6 +1901,7 @@ class FunctionMapper:
             _api_node = next(
                 (n for n in executor.flow_config.nodes if n.id == _node_id), None
             )
+            _completed_api_node = _api_node
             if _api_node:
                 _thinking = (_api_node.data.get("api", {}).get("thinkingMessage") or "").strip()
                 if _thinking:
@@ -1944,6 +1945,40 @@ class FunctionMapper:
                     f"after collection: {_api_function}"
                 )
                 result = await executor.handle_function_call(_api_function, {})
+                _completed_api_node = _current_node
+
+            # The lookup's detailed presentation still comes from the LLM: its
+            # response instructions may contain structured data that must not be
+            # read verbatim.  However, the thinking message above is spoken
+            # directly while the request runs, and a missing/cancelled LLM
+            # continuation used to leave callers stranded after hearing it.
+            # Give callers an immediate, safe completion bridge as soon as an API
+            # result is available.  The function result remains in the LLM
+            # context, so it can then present the mapped result naturally.
+            if _completed_api_node:
+                _api_config = _completed_api_node.data.get("api", {}) or {}
+                if result.get("success"):
+                    # Do not infer an outcome from transport success: an
+                    # availability search with no rooms is still a successful
+                    # API request. The LLM receives the mapped result and
+                    # presents the actual availability outcome next.
+                    _completion_bridge = "I've completed that check. Let me walk you through what I found."
+                else:
+                    _completion_bridge = str(
+                        _api_config.get("onError")
+                        or "I'm sorry, I wasn't able to complete that check. Please try again."
+                    ).strip()
+                if _completion_bridge and hasattr(params, "llm") and params.llm is not None:
+                    try:
+                        await params.llm.push_frame(TTSSpeakFrame(text=_completion_bridge))
+                        logger.info(
+                            f"🗣️ Spoke API completion bridge for {tool_name}: "
+                            f"{'success' if result.get('success') else 'error'}"
+                        )
+                    except Exception as _bridge_err:
+                        logger.warning(
+                            f"Could not emit API completion bridge for {tool_name}: {_bridge_err}"
+                        )
 
             # CRITICAL: Refresh the LLM's exposed tools whenever this call advanced
             # the flow position. Slot collection is not the only thing that advances

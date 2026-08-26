@@ -2278,9 +2278,34 @@ You have access to the following Q&A knowledge base. Use this information to ans
                     continue  # already has a timestamp — leave it alone
                 content = msg.get("content", "")
                 key = content[:80].lower()
-                ts = user_ts_map.get(key) if msg["role"] == "user" else assistant_ts_map.get(key)
-                if ts:
-                    msg["timestamp"] = ts
+                captured = (
+                    captured_user if msg["role"] == "user" else captured_assistant
+                )
+                for entry in captured:
+                    if entry["text"][:80].lower() == key:
+                        msg["timestamp"] = _fmt_elapsed(entry["elapsed_s"])
+                        # Keep this transient value only while ordering the
+                        # transcript. CallLogger persists the display timestamp,
+                        # never internal elapsed-time metadata.
+                        msg["_elapsed_s"] = entry["elapsed_s"]
+                        break
+
+            # Pipecat's retained context can commit user/assistant messages out
+            # of their real-time order around tool calls. Reorder only entries
+            # backed by capture timestamps; tool actions and other un-timestamped
+            # entries retain their context-relative position so the audit trail
+            # remains coherent rather than guessing when an action occurred.
+            timed_positions = [
+                index for index, entry in enumerate(transcript) if "_elapsed_s" in entry
+            ]
+            timed_entries = sorted(
+                (transcript[index] for index in timed_positions),
+                key=lambda entry: entry["_elapsed_s"],
+            )
+            for index, entry in zip(timed_positions, timed_entries):
+                transcript[index] = entry
+            for entry in transcript:
+                entry.pop("_elapsed_s", None)
 
             # --- Incomplete response recovery ---
             # If the transcript ends with a user message the LLM context never has the

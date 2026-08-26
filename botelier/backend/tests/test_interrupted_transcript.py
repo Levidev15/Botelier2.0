@@ -170,6 +170,36 @@ class TestIncompleteRecoverySkip:
         assert sum(1 for m in transcript if m["role"] == "assistant") == 1
 
 
+class TestTranscriptOrdering:
+    def test_timestamped_messages_are_ordered_by_capture_time(self):
+        """Context commit order must not make the call transcript misleading."""
+        handler = _bare_handler()
+        handler.user_turn_timestamps[CALL_SID] = [
+            {"text": "I need a room.", "elapsed_s": 4.0},
+            {"text": "Two adults.", "elapsed_s": 12.0},
+        ]
+        handler.pending_responses[CALL_SID] = [
+            {"text": "How many adults?", "elapsed_s": 8.0},
+        ]
+
+        transcript, _ = handler._extract_transcript(
+            CALL_SID,
+            _ctx(
+                [
+                    {"role": "user", "content": "I need a room."},
+                    {"role": "user", "content": "Two adults."},
+                    {"role": "assistant", "content": "How many adults?"},
+                ]
+            ),
+        )
+
+        assert [entry["content"] for entry in transcript] == [
+            "I need a room.",
+            "How many adults?",
+            "Two adults.",
+        ]
+
+
 def _tracker(hits: list) -> InterruptionTracker:
     """InterruptionTracker with pipeline push stubbed out for unit testing."""
     tracker = InterruptionTracker(on_interruption=hits.append)

@@ -36,3 +36,4 @@
 - [Voice dropout invariants](voice-dropout-hardening.md) — false interruptions, loop starvation, and TTS micro-fragmentation are all heard as speech cutting out; gates/clamps/replica-pin rules that must not regress.
 - [Next.js dev cache self-corruption](nextjs-dev-cache-corruption.md) — pages 200 but all /_next/static 404 + webpack-runtime MODULE_NOT_FOUND = Next 14.2.0 dev bug; upgrade patch version, cache clear alone recurs.
 - [Adapter runtime guardrails](adapter-runtime-guardrails.md) — auth headers always win over config headers; path substitutions URL-encoded; response cap is transport-level pre-parse; test_operation drafts are preview-only.
+- [Voice API completion bridges](voice-api-completion-bridges.md) — a wait greeting requires caller-safe speech when API returns; preserve raw mapping for LLM narration, and sort only timestamp-backed transcript text.

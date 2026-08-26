@@ -244,9 +244,146 @@ def test_live_handler_runs_pending_api_once_after_collection():
     )
 
     assert calls == ["collect_adults", "execute_book"]
-    assert [frame.text for frame in llm.frames] == ["One moment while I check."]
+    assert [frame.text for frame in llm.frames] == [
+        "One moment while I check.",
+        "I've completed that check. Let me walk you through what I found.",
+    ]
     assert callbacks[0][0]["result"] == "Your booking is confirmed."
     print("PASS: live handler executes pending API once after collection")
+
+
+def test_live_handler_speaks_lookup_error_after_waiting_greeting():
+    """A failed lookup must never leave the caller after its waiting greeting."""
+    from types import SimpleNamespace
+
+    from botelier.voice.function_mapper import FunctionMapper
+
+    cfg = _cfg(
+        [
+            {
+                "id": "availability",
+                "type": "api_request",
+                "data": {
+                    "name": "Check Availability",
+                    "api": {
+                        "thinkingMessage": "One moment while I check availability.",
+                        "onError": "I couldn't retrieve rooms right now. Please try again.",
+                    },
+                },
+            }
+        ],
+        [],
+        initial="availability",
+    )
+    ex = FlowExecutor(cfg)
+
+    async def _handle(_function_name, _arguments):
+        return {
+            "success": False,
+            "message": "I couldn't retrieve rooms right now. Please try again.",
+            "action": None,
+        }
+
+    ex.handle_function_call = _handle
+
+    class _Llm:
+        def __init__(self):
+            self.frames = []
+
+        async def push_frame(self, frame):
+            self.frames.append(frame)
+
+    mapper = FunctionMapper.__new__(FunctionMapper)
+    mapper._flow_executors = {"booking": ex}
+    mapper.update_llm_tools_for_flow = lambda _tool_name: None
+    llm = _Llm()
+    callbacks = []
+
+    async def _callback(result, properties=None):
+        callbacks.append((result, properties))
+
+    handler = mapper._create_flow_function_handler("booking", "execute_availability")
+    asyncio.run(
+        handler(
+            SimpleNamespace(arguments={}, llm=llm, result_callback=_callback)
+        )
+    )
+
+    assert [frame.text for frame in llm.frames] == [
+        "One moment while I check availability.",
+        "I couldn't retrieve rooms right now. Please try again.",
+    ]
+    assert callbacks[0][0]["result"] == "I couldn't retrieve rooms right now. Please try again."
+    print("PASS: failed lookup speaks a caller-safe response after waiting")
+
+
+def test_live_handler_uses_neutral_and_configured_lookup_bridges():
+    """Empty successful searches and raw errors must not be misrepresented/spoken."""
+    from types import SimpleNamespace
+
+    from botelier.voice.function_mapper import FunctionMapper
+
+    cfg = _cfg(
+        [
+            {
+                "id": "availability",
+                "type": "api_request",
+                "data": {
+                    "name": "Check Availability",
+                    "api": {
+                        "thinkingMessage": "One moment while I check availability.",
+                        "onError": "I couldn't retrieve rooms right now. Please try again.",
+                    },
+                },
+            }
+        ],
+        [],
+        initial="availability",
+    )
+
+    class _Llm:
+        def __init__(self):
+            self.frames = []
+
+        async def push_frame(self, frame):
+            self.frames.append(frame)
+
+    async def _callback(_result, properties=None):
+        return None
+
+    for api_result, expected_bridge in [
+        (
+            {"success": True, "message": "Request completed", "voice_result": "No rooms found."},
+            "I've completed that check. Let me walk you through what I found.",
+        ),
+        (
+            {
+                "success": False,
+                "message": "httpx.ConnectError: upstream internal address",
+                "action": None,
+            },
+            "I couldn't retrieve rooms right now. Please try again.",
+        ),
+    ]:
+        ex = FlowExecutor(cfg)
+
+        async def _handle(_function_name, _arguments, response=api_result):
+            return response
+
+        ex.handle_function_call = _handle
+        mapper = FunctionMapper.__new__(FunctionMapper)
+        mapper._flow_executors = {"booking": ex}
+        mapper.update_llm_tools_for_flow = lambda _tool_name: None
+        llm = _Llm()
+        handler = mapper._create_flow_function_handler("booking", "execute_availability")
+        asyncio.run(
+            handler(SimpleNamespace(arguments={}, llm=llm, result_callback=_callback))
+        )
+
+        assert llm.frames[-1].text == expected_bridge
+        assert "available options" not in llm.frames[-1].text.lower()
+        assert "upstream" not in llm.frames[-1].text.lower()
+    print("PASS: lookup bridges are neutral on success and safe on failure")
 
 
 # ---------------------------------------------------------------------------
