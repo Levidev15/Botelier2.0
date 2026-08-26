@@ -1224,26 +1224,24 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
             meal_plan_id:           "$.room_rates[0].meal_plan_prices.included.id",
           },
           responseInstructions:
-            "AVAILABILITY DATA: {{room_rates}}\n\n" +
-            "Each object in room_rates contains:\n" +
-            "  room_type_name  — speak this name to the caller\n" +
-            "  room_type_code  — store internally as room_type_code (never speak the code)\n" +
-            "  rate_plan_name  — speak this name to the caller\n" +
-            "  rate_plan_code  — store internally as rate_plan_code (never speak the code)\n" +
-            "  total_price     — total price for the full stay\n\n" +
-            "IF room_rates IS EMPTY OR NULL:\n" +
+            "ROOM AVAILABILITY RESULTS\n\n" +
+            "Available room names (speak these): {{available_rooms}}\n\n" +
+            "Room + rate combinations: {{room_rates}}\n" +
+            "  NOTE: each item has room_type_code and rate_plan_code (internal codes, never speak).\n" +
+            "  total_price = total stay price. currency = price currency.\n\n" +
+            "Room name lookup (room_type_code → name): {{rooms}}\n" +
+            "Rate plan lookup (rate_plan_code → name): {{rates}}\n\n" +
+            "IF available_rooms IS EMPTY OR room_rates IS EMPTY OR NULL:\n" +
             "  Say: 'I'm sorry, I wasn't able to find any rooms available for those dates. " +
             "Would you like to try different check-in and check-out dates?'\n" +
             "  Do NOT proceed to room selection.\n\n" +
-            "IF room_rates HAS RESULTS:\n" +
+            "IF available_rooms AND room_rates HAVE RESULTS:\n" +
             "  1. Say: 'Great news — I found [N] room type(s) available for your dates.'\n" +
-            "  2. Deduplicate by room_type_code. For each unique room type, say:\n" +
-            "     '[number]. [room_type_name]'\n" +
-            "  3. Say: 'The following rate plans are available:'\n" +
-            "  4. Deduplicate by rate_plan_code. For each unique rate plan, say:\n" +
-            "     '[number]. [rate_plan_name] — total stay price [total_price]'\n" +
+            "  2. List each room by its display name from available_rooms (or the name field in rooms).\n" +
+            "  3. For each room, state the price by matching room_type_code in room_rates.\n" +
+            "  4. Look up the rate plan display name from the rates array using rate_plan_code.\n" +
             "  5. Ask: 'Which room type would you prefer?'\n" +
-            "  Important: always speak display names; store only codes.",
+            "  Important: always speak display names (from rooms/rates); store only codes.",
           onError:
             "I wasn't able to retrieve available rooms right now. Would you like to try different check-in or check-out dates?",
           timeout: 15,

@@ -1414,6 +1414,147 @@ def _backfill_billing_tool_data():
         db.close()
 
 
+# ---------------------------------------------------------------------------
+# GuestCentric availability-narration backfill
+#
+# WHY THIS EXISTS
+# An early GuestCentric flow seed described the API response fields incorrectly:
+# the per-node responseInstructions named "room_type_name" and "rate_plan_name"
+# as fields inside each room_rates item, but GuestCentric's API only returns
+# "room_type_code" and "rate_plan_code" in room_rates.  Room/rate display names
+# live in the separate "rooms" and "rates" top-level arrays.
+#
+# Any flow version saved from that seed will produce silent or wrong narration
+# on a live call because the LLM receives a narration script referencing fields
+# that don't exist.  The corrected seed references "available_rooms" for the
+# name list and "rooms"/"rates" for per-code name lookups.
+#
+# HOW IT WORKS
+# On startup, queries every flow_versions row whose serialised JSON contains
+# "room_type_name" (fast DB-side filter) and checks each node for the exact
+# broken pattern (api_request + GC slug + hotel_rooms + old instructions).
+# Affected nodes are patched to the corrected responseInstructions text.
+# Idempotent: re-running is safe (old text is absent after the first run).
+# ---------------------------------------------------------------------------
+
+# The old seed text used this phrase to describe a nonexistent field.
+_GC_OLD_NARRATION_MARKER = "room_type_name"
+
+# Corrected responseInstructions that reference fields that actually exist in GC data.
+_GC_CORRECTED_NARRATION = (
+    "ROOM AVAILABILITY RESULTS\n\n"
+    "Available room names (speak these): {{available_rooms}}\n\n"
+    "Room + rate combinations: {{room_rates}}\n"
+    "  NOTE: each item has room_type_code and rate_plan_code (internal codes, never speak).\n"
+    "  total_price = total stay price. currency = price currency.\n\n"
+    "Room name lookup (room_type_code \u2192 name): {{rooms}}\n"
+    "Rate plan lookup (rate_plan_code \u2192 name): {{rates}}\n\n"
+    "IF available_rooms IS EMPTY OR room_rates IS EMPTY OR NULL:\n"
+    "  Say: 'I\u2019m sorry, I wasn\u2019t able to find any rooms available for those dates. "
+    "Would you like to try different check-in and check-out dates?'\n"
+    "  Do NOT proceed to room selection.\n\n"
+    "IF available_rooms AND room_rates HAVE RESULTS:\n"
+    "  1. Say: 'Great news \u2014 I found [N] room type(s) available for your dates.'\n"
+    "  2. List each room by its display name from available_rooms (or the name field in rooms).\n"
+    "  3. For each room, state the price by matching room_type_code in room_rates.\n"
+    "  4. Look up the rate plan display name from the rates array using rate_plan_code.\n"
+    "  5. Ask: 'Which room type would you prefer?'\n"
+    "  Important: always speak display names (from rooms/rates); store only codes."
+)
+
+# Integration slug + endpoint ID that unambiguously identify the GC availability node.
+_GC_INTEGRATION_SLUGS = {"guestcentric-crs", "guestcentric"}
+_GC_AVAILABILITY_ENDPOINT = "hotel_rooms"
+
+
+def _patch_gc_availability_node(node: dict) -> bool:
+    """Patch a single flow node in-place if it has the old GC availability instructions.
+
+    Returns True if the node was modified, False otherwise.
+
+    The function is deliberately conservative: it only touches api_request nodes
+    that have both the GC integration slug and the hotel_rooms endpoint, and whose
+    responseInstructions still contain the old marker phrase.  Any node that has
+    already been updated (marker absent) is left untouched.
+    """
+    if node.get("type") != "api_request":
+        return False
+    api_cfg = (node.get("data") or {}).get("api") or {}
+    slug = api_cfg.get("integrationSlug", "")
+    endpoint = api_cfg.get("endpointId", "")
+    ri = api_cfg.get("responseInstructions", "")
+    if slug not in _GC_INTEGRATION_SLUGS:
+        return False
+    if endpoint != _GC_AVAILABILITY_ENDPOINT:
+        return False
+    if _GC_OLD_NARRATION_MARKER not in ri:
+        return False
+    api_cfg["responseInstructions"] = _GC_CORRECTED_NARRATION
+    return True
+
+
+def _backfill_gc_availability_instructions():
+    """Idempotent startup backfill: fix old GC availability responseInstructions.
+
+    Finds every flow_versions row containing 'room_type_name' in its serialised
+    JSON (a fast DB-side text scan), then patches any api_request node that has
+    the GuestCentric hotel_rooms endpoint configured with the old incorrect
+    responseInstructions that reference non-existent room_type_name fields.
+    """
+    from botelier.models.flow_version import FlowVersion
+
+    db = SessionLocal()
+    try:
+        db.execute(
+            text("SELECT pg_advisory_xact_lock(hashtext('botelier_gc_availability_narration_v1'))")
+        )
+        candidates = (
+            db.query(FlowVersion)
+            .filter(
+                FlowVersion.flow_config.cast(__import__("sqlalchemy").Text).like(
+                    f"%{_GC_OLD_NARRATION_MARKER}%"
+                )
+            )
+            .all()
+        )
+        if not candidates:
+            logger.debug(
+                "GC availability narration backfill — no legacy flow versions found, skipping"
+            )
+            return
+
+        patched_count = 0
+        for fv in candidates:
+            cfg = fv.flow_config or {}
+            nodes = cfg.get("nodes") or []
+            changed = False
+            for node in nodes:
+                if _patch_gc_availability_node(node):
+                    changed = True
+                    patched_count += 1
+            if changed:
+                # Trigger SQLAlchemy to detect the JSONB mutation
+                from sqlalchemy.orm.attributes import flag_modified
+
+                flag_modified(fv, "flow_config")
+
+        db.commit()
+        if patched_count:
+            logger.info(
+                f"GC availability narration backfill — patched {patched_count} node(s) "
+                f"across {len(candidates)} flow version(s)"
+            )
+        else:
+            logger.debug(
+                "GC availability narration backfill — candidates found but no nodes needed patching"
+            )
+    except Exception:
+        db.rollback()
+        logger.exception("GC availability narration backfill — failed (non-fatal)")
+    finally:
+        db.close()
+
+
 def run_stuck_call_sweeper(skip_call_sids: Optional[set] = None, age_minutes: int = 30) -> dict:
     """Task #96: periodic safety-net that finalizes CallLog rows abandoned in any
     non-terminal status (``initiated`` / ``ringing`` / ``in_progress``).
@@ -1831,6 +1972,9 @@ def init_db():
     _backfill_silero_vad_config()
     _backfill_smart_turn_stop_secs_default()
     _backfill_billing_tool_data()
+    # Fix old GC availability flow_versions that have incorrect responseInstructions
+    # referencing nonexistent room_type_name/rate_plan_name fields.
+    _backfill_gc_availability_instructions()
     # Task #327 — one default property per resource-owning account + stamp
     # existing resources so current single-property behavior is preserved.
     _backfill_default_properties()

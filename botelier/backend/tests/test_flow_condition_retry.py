@@ -386,6 +386,252 @@ def test_live_handler_uses_neutral_and_configured_lookup_bridges():
     print("PASS: lookup bridges are neutral on success and safe on failure")
 
 
+def test_no_raw_api_data_leaks_to_llm_tool_result():
+    """Raw API response fields must NOT appear in the tool result sent to the LLM.
+
+    The function_mapper must strip extracted_variables entirely and must not
+    forward any raw API payload to OpenAI (security: prevents PII / token leakage
+    from arbitrary API responses).  voice_result is promoted to result; that is the
+    only channel for narration data to reach the LLM.
+    """
+    from types import SimpleNamespace
+
+    from botelier.voice.function_mapper import FunctionMapper
+
+    cfg = _cfg(
+        [
+            {
+                "id": "availability",
+                "type": "api_request",
+                "data": {
+                    "name": "Check Availability",
+                    "api": {
+                        "thinkingMessage": "One moment while I check availability.",
+                        "responseInstructions": "Available rooms: {{available_rooms}}",
+                    },
+                },
+            }
+        ],
+        [],
+        initial="availability",
+    )
+
+    # Simulate a result that contains sensitive fields alongside availability data.
+    # None of these raw fields should appear in the tool result.
+    api_result = {
+        "success": True,
+        "message": "Done",
+        "action": None,
+        "voice_result": "Available rooms: Superior Room, Deluxe Suite",
+        "extracted_variables": {
+            "available_rooms": ["Superior Room", "Deluxe Suite"],
+            "api_key": "sk-secret-key",          # must never reach LLM
+            "session_token": "tok_live_abc123",  # must never reach LLM
+            "rooms": [{"room_type_code": "SUP", "name": "Superior Room"}] * 50,  # large
+        },
+        "response": {"raw": "blob"},   # stripped by function_mapper
+        "data": {"also": "stripped"},  # stripped by function_mapper
+    }
+
+    callbacks = []
+
+    async def _callback(result, properties=None):
+        callbacks.append(result)
+
+    ex = FlowExecutor(cfg)
+
+    async def _handle(_function_name, _arguments):
+        return api_result
+
+    ex.handle_function_call = _handle
+
+    class _Llm:
+        async def push_frame(self, frame):
+            pass
+
+    mapper = FunctionMapper.__new__(FunctionMapper)
+    mapper._flow_executors = {"booking": ex}
+    mapper.update_llm_tools_for_flow = lambda _tool_name: None
+    handler = mapper._create_flow_function_handler("booking", "execute_availability")
+    asyncio.run(
+        handler(SimpleNamespace(arguments={}, llm=_Llm(), result_callback=_callback))
+    )
+
+    assert callbacks, "result_callback was not called"
+    tool_result = callbacks[0]
+
+    # voice_result promoted to result field — this is the only narration channel
+    assert tool_result["result"] == "Available rooms: Superior Room, Deluxe Suite"
+
+    # Raw blobs must be stripped
+    assert "extracted_variables" not in tool_result, "extracted_variables leaked to LLM"
+    assert "api_data" not in tool_result, "api_data field must not exist (security)"
+    assert "response" not in tool_result, "raw response blob leaked to LLM"
+    assert "data" not in tool_result, "raw data blob leaked to LLM"
+
+    # Spot-check sensitive field names cannot appear under any key
+    result_text = str(tool_result)
+    assert "api_key" not in result_text, "sensitive api_key leaked to LLM"
+    assert "session_token" not in result_text, "sensitive session_token leaked to LLM"
+
+    print("PASS: no raw API response fields reach the LLM tool result")
+
+
+def test_voice_result_uses_available_rooms_not_nonexistent_name_fields():
+    """voice_result must render correctly using fields that actually exist in the data.
+
+    The GuestCentric raw room_rates items have room_type_code/rate_plan_code but NOT
+    room_type_name or rate_plan_name. The responseInstructions must reference
+    available_rooms (list of names) and rooms/rates arrays for lookups, not
+    nonexistent room_type_name fields.  Also verifies that a large availability
+    payload (50 rooms) renders correctly — all data must survive substitution.
+    """
+    from botelier.flow_executor import substitute_variables
+
+    # Build a realistic large GC availability payload (50 rooms × 3 rates).
+    # This validates that there is no size-based silent dropping.
+    rooms = [
+        {"room_type_code": f"R{i:02d}", "name": f"Room Type {i}", "floor": i}
+        for i in range(1, 51)
+    ]
+    rates = [
+        {"rate_plan_code": f"RATE{j}", "name": f"Rate Plan {j}", "min_stay": j}
+        for j in range(1, 4)
+    ]
+    room_rates = [
+        {
+            "room_type_code": f"R{i:02d}",
+            "rate_plan_code": f"RATE{j}",
+            "total_price": 100.0 * i + j,
+            "currency": "EUR",
+        }
+        for i in range(1, 51)
+        for j in range(1, 4)
+    ]
+    available_rooms = [r["name"] for r in rooms]
+
+    collected = {
+        "available_rooms": available_rooms,
+        "rooms": rooms,
+        "rates": rates,
+        "room_rates": room_rates,
+    }
+
+    # Corrected GC seed responseInstructions (references real fields)
+    instructions = (
+        "ROOM AVAILABILITY RESULTS\n\n"
+        "Available room names (speak these): {{available_rooms}}\n\n"
+        "Room + rate combinations: {{room_rates}}\n"
+        "Room name lookup: {{rooms}}\n"
+        "Rate plan lookup: {{rates}}\n"
+    )
+
+    voice_result = substitute_variables(instructions, collected)
+
+    # Room names correctly resolved — even first and last
+    assert "Room Type 1" in voice_result, f"first room missing: {voice_result[:200]}"
+    assert "Room Type 50" in voice_result, f"last room missing: {voice_result[:200]}"
+
+    # Pricing data present
+    assert "101" in voice_result or "100" in voice_result, "price missing from voice_result"
+
+    # No unresolved template placeholders remain
+    assert "{{room_type_name}}" not in voice_result, "unresolved old placeholder in voice_result"
+    assert "{{rate_plan_name}}" not in voice_result, "unresolved old placeholder in voice_result"
+
+    print("PASS: voice_result renders all available_rooms data, including large payloads")
+
+
+def test_patch_gc_availability_node_fixes_old_instructions():
+    """_patch_gc_availability_node must fix exactly the broken GC availability nodes.
+
+    Old saved flow_versions contain responseInstructions that name 'room_type_name'
+    and 'rate_plan_name' as fields inside room_rates items — fields that don't
+    exist in GuestCentric's API.  The patching function must update those to the
+    corrected template and leave all other nodes untouched.
+    """
+    from botelier.database import (
+        _GC_CORRECTED_NARRATION,
+        _GC_OLD_NARRATION_MARKER,
+        _patch_gc_availability_node,
+    )
+
+    # --- Node that SHOULD be patched: GC slug + hotel_rooms + old instructions ---
+    old_ri = (
+        "AVAILABILITY DATA: {{room_rates}}\n\n"
+        "Each object in room_rates contains:\n"
+        "  room_type_name  — speak this name to the caller\n"
+        "  room_type_code  — store internally\n"
+        "  rate_plan_name  — speak this name\n"
+        "  rate_plan_code  — store internally\n"
+        "  total_price     — total price for stay\n"
+    )
+    assert _GC_OLD_NARRATION_MARKER in old_ri, "test setup: old_ri must contain the marker"
+
+    gc_node = {
+        "id": "avail-1",
+        "type": "api_request",
+        "data": {
+            "api": {
+                "integrationSlug": "guestcentric-crs",
+                "endpointId": "hotel_rooms",
+                "responseInstructions": old_ri,
+            }
+        },
+    }
+    patched = _patch_gc_availability_node(gc_node)
+    assert patched, "expected the GC availability node to be patched"
+    updated_ri = gc_node["data"]["api"]["responseInstructions"]
+    assert updated_ri == _GC_CORRECTED_NARRATION, "responseInstructions not replaced with corrected text"
+    assert _GC_OLD_NARRATION_MARKER not in updated_ri, "old marker still present after patch"
+
+    # Idempotency: running again on the already-patched node must return False
+    patched_again = _patch_gc_availability_node(gc_node)
+    assert not patched_again, "patching an already-fixed node must be a no-op"
+
+    # --- Node that must NOT be patched: wrong integration slug ---
+    other_integration_node = {
+        "id": "other-1",
+        "type": "api_request",
+        "data": {
+            "api": {
+                "integrationSlug": "opera-cloud",
+                "endpointId": "hotel_rooms",
+                "responseInstructions": old_ri,  # same old text, but different integration
+            }
+        },
+    }
+    assert not _patch_gc_availability_node(other_integration_node), \
+        "non-GC node must not be patched"
+    assert other_integration_node["data"]["api"]["responseInstructions"] == old_ri, \
+        "non-GC node was incorrectly mutated"
+
+    # --- Node that must NOT be patched: wrong endpoint ---
+    wrong_endpoint_node = {
+        "id": "search-1",
+        "type": "api_request",
+        "data": {
+            "api": {
+                "integrationSlug": "guestcentric-crs",
+                "endpointId": "search_guests",
+                "responseInstructions": old_ri,
+            }
+        },
+    }
+    assert not _patch_gc_availability_node(wrong_endpoint_node), \
+        "wrong-endpoint node must not be patched"
+
+    # --- Non-API-request node must be ignored entirely ---
+    collect_node = {
+        "id": "slot-1",
+        "type": "collect_slot",
+        "data": {"slot": {"variableKey": "check_in_date"}},
+    }
+    assert not _patch_gc_availability_node(collect_node), "non-api_request node must be ignored"
+
+    print("PASS: _patch_gc_availability_node patches exactly the old GC availability nodes")
+
+
 # ---------------------------------------------------------------------------
 # CONDITION branch resolution on advance
 # ---------------------------------------------------------------------------
