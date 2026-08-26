@@ -38,7 +38,9 @@ interface APIAccountIntegration {
       query_params?: Array<{ key: string; value: string; required?: boolean }>;
       response_mapping?: Record<string, string>;
       response_mapping_labels?: Record<string, string>;
+      source?: "seeded" | "imported";
     }>;
+    origin?: "platform_certified" | "customer_imported";
   };
   status: string;
 }
@@ -83,9 +85,18 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
 
   useEffect(() => {
     const fetchIntegrations = async () => {
+      // Do not let the backend guess an account while the dashboard context is
+      // still hydrating. A multi-account user must only ever see connections
+      // for the account currently selected in the dashboard.
+      if (!accountId) {
+        setIntegrations([]);
+        setLoadingIntegrations(false);
+        return;
+      }
       setLoadingIntegrations(true);
       try {
-        const response = await authFetch("/api/integrations/connections");
+        const query = new URLSearchParams({ account_id: accountId }).toString();
+        const response = await authFetch(`/api/integrations/connections?${query}`);
         if (response.ok) {
           const resData = await response.json();
           setIntegrations(resData.filter((i: APIAccountIntegration) => i.status === "connected"));
@@ -110,7 +121,7 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
     };
     fetchIntegrations();
     fetchSecrets();
-  }, [accountId]);
+  }, [accountId, authFetch]);
 
   // Auto-select integration + endpoint when a template pre-wires integrationSlug / endpointId
   // but leaves integrationId blank (account-specific IDs are unknown at template-author time).
@@ -174,6 +185,16 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
 
   const selectedIntegration = integrations.find(i => i.id === api.integrationId);
   const selectedEndpoint = selectedIntegration?.integration_type.endpoints.find(e => e.id === api.endpointId);
+  const endpointGroups = (selectedIntegration?.integration_type.endpoints ?? []).reduce(
+    (groups, endpoint) => {
+      const label = endpoint.source === "imported"
+        ? "Imported Operations"
+        : "Integration Endpoints";
+      (groups[label] ??= []).push(endpoint);
+      return groups;
+    },
+    {} as Record<string, APIAccountIntegration["integration_type"]["endpoints"]>
+  );
   const testableVariables = variables.filter(v => v.key);
 
   const setQueryParamOverride = (key: string, value: string) => {
@@ -537,10 +558,14 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
                 className={inputCls}
               >
                 <option value="">Select endpoint...</option>
-                {selectedIntegration.integration_type.endpoints.map((endpoint) => (
-                  <option key={endpoint.id} value={endpoint.id}>
-                    {endpoint.method} - {endpoint.name}
-                  </option>
+                {Object.entries(endpointGroups).map(([group, endpoints]) => (
+                  <optgroup key={group} label={group}>
+                    {endpoints.map((endpoint) => (
+                      <option key={endpoint.id} value={endpoint.id}>
+                        {endpoint.method} - {endpoint.name}
+                      </option>
+                    ))}
+                  </optgroup>
                 ))}
               </select>
             </div>

@@ -19,7 +19,6 @@ import {
   Variable,
   PhoneForwarded,
   PhoneOff,
-  Sparkles,
   FlaskConical,
   Upload,
   History,
@@ -152,15 +151,6 @@ const nodeTypeConfig: NodeInfo[] = [
     description: "Transfers the call to a human agent or specific department.",
     whenToUse: "Use when the guest needs human assistance or for complex requests the AI can't handle.",
     example: "\"I'll transfer you to our reservations team. Please hold.\""
-  },
-  {
-    type: "capability",
-    label: "Capability",
-    icon: <Sparkles className="h-3 w-3" />,
-    color: "bg-purple-500",
-    description: "Runs a vendor-neutral capability (search availability, look up / book / cancel a reservation, collect payment) that resolves to your connected provider at runtime.",
-    whenToUse: "Use to check availability, manage reservations, or collect payment without wiring a specific vendor endpoint — the account's connected provider is chosen automatically.",
-    example: "Searching availability for the caller's dates against whichever booking system this property is connected to."
   },
   { 
     type: "end", 

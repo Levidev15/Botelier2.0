@@ -6,7 +6,7 @@ from urllib.parse import urlencode
 from uuid import UUID
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import RedirectResponse
 from loguru import logger
 from pydantic import BaseModel
@@ -29,6 +29,7 @@ from botelier.models.integration import (
     IntegrationStatus,
     IntegrationType,
 )
+from botelier.models.operation_policy import ConnectionOperationPolicy
 from botelier.services.integration_client import (
     _validate_opera_gateway_url as _validate_opera_gateway_url_shared,
     build_auth_request_query_params,
@@ -160,6 +161,7 @@ class IntegrationEndpointDetail(BaseModel):
     query_params: List[dict] = []
     response_mapping: dict = {}
     response_mapping_labels: dict = {}
+    source: str = "seeded"
 
 
 class IntegrationTypeDetail(BaseModel):
@@ -167,6 +169,7 @@ class IntegrationTypeDetail(BaseModel):
     name: str
     slug: str
     endpoints: List[IntegrationEndpointDetail]
+    origin: str = "platform_certified"
 
 
 class AccountIntegrationWithEndpoints(BaseModel):
@@ -182,24 +185,49 @@ class AccountIntegrationWithEndpoints(BaseModel):
 
 
 @router.get("/connections", response_model=List[AccountIntegrationWithEndpoints])
-async def get_my_connections(current_user=Depends(get_current_user), db: Session = Depends(get_db)):
-    account_id = None
-    memberships = getattr(current_user, "account_memberships", None) or []
-    active = [m for m in memberships if getattr(m, "is_active", False)]
-    if active:
-        account_id = str(active[0].account_id)
+async def get_my_connections(
+    account_id: Optional[str] = Query(None),
+    current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
+):
+    """Return connected integrations for the requested account.
+
+    Flow-editor callers send their selected dashboard account.  Omitting it
+    intentionally returns no catalog rather than guessing from the first
+    active membership, which could expose another dashboard account's
+    connections to a multi-account user.
+    """
     if not account_id:
         return []
+    _assert_account_access(current_user, account_id, db)
 
     integrations = (
         db.query(AccountIntegration).filter(AccountIntegration.account_id == account_id).all()
     )
+    policies_by_connection: dict[str, dict[str, ConnectionOperationPolicy]] = {}
+    if integrations:
+        connection_ids = [i.id for i in integrations]
+        for policy in (
+            db.query(ConnectionOperationPolicy)
+            .filter(ConnectionOperationPolicy.account_integration_id.in_(connection_ids))
+            .all()
+        ):
+            policies_by_connection.setdefault(
+                str(policy.account_integration_id), {}
+            )[policy.operation_id] = policy
 
     result = []
     for i in integrations:
         endpoints = i.integration_type.get_endpoints()
         endpoint_details = []
+        endpoint_source = (
+            "imported"
+            if i.integration_type.origin == "customer_imported"
+            else "seeded"
+        )
+        connection_policies = policies_by_connection.get(str(i.id), {})
         for ep in endpoints:
+            policy = connection_policies.get(ep.get("id", ""))
             endpoint_details.append(
                 IntegrationEndpointDetail(
                     id=ep.get("id", ""),
@@ -211,8 +239,16 @@ async def get_my_connections(current_user=Depends(get_current_user), db: Session
                     response_schema=ep.get("response_schema"),
                     variables=ep.get("variables", []),
                     query_params=ep.get("query_params", []),
-                    response_mapping=ep.get("response_mapping", {}),
+                    # The API Builder's per-connection mapping takes precedence
+                    # over the type-level seed, so the flow node receives the
+                    # same projection configuration an operator tested there.
+                    response_mapping=(
+                        policy.response_mapping
+                        if policy and policy.response_mapping is not None
+                        else ep.get("response_mapping", {})
+                    ),
                     response_mapping_labels=ep.get("response_mapping_labels", {}),
+                    source=endpoint_source,
                 )
             )
 
@@ -225,6 +261,7 @@ async def get_my_connections(current_user=Depends(get_current_user), db: Session
                     name=i.integration_type.name,
                     slug=i.integration_type.slug,
                     endpoints=endpoint_details,
+                    origin=i.integration_type.origin or "platform_certified",
                 ),
                 connection_name=i.connection_name,
                 status=i.status.value,
