@@ -55,8 +55,20 @@ interface Assistant {
   tool_set_id: string | null;
   mcp_connection_id: string | null;
   mcp_enabled_tools: string[];
+  allowed_connection_ids: string[];
   sms_config: any;
   call_settings: any;
+}
+
+interface AccountConnection {
+  id: string;
+  connection_name: string | null;
+  status: string;
+  integration_type: {
+    id: string;
+    name: string;
+    slug: string;
+  };
 }
 
 interface KnowledgeBase {
@@ -137,6 +149,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
     max_tokens: 150,
     mcp_connection_id: null,
     mcp_enabled_tools: [],
+    allowed_connection_ids: [],
     call_settings: {},
   });
   
@@ -145,6 +158,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
   const [toolSets, setToolSets] = useState<ToolSet[]>([]);
   const [mcpConnections, setMcpConnections] = useState<MCPConnection[]>([]);
   const [selectedMcpTools, setSelectedMcpTools] = useState<string[]>([]);
+  const [accountConnections, setAccountConnections] = useState<AccountConnection[]>([]);
   const isFluxSttModel = isFluxModel(formData.stt_model);
   const effectiveVadEnabled = Boolean(formData.vad_enabled && !isFluxSttModel);
 
@@ -157,6 +171,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
       fetchKnowledgeBases();
       fetchToolSets();
       fetchMcpConnections();
+      fetchAccountConnections();
     }
   }, [accountId]);
 
@@ -261,6 +276,19 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
       }
     } catch (error) {
       console.error("Failed to fetch MCP connections:", error);
+    }
+  };
+
+  const fetchAccountConnections = async () => {
+    if (!accountId) return;
+    try {
+      const res = await authFetch(`/api/integrations/connections?account_id=${accountId}`);
+      if (res.ok) {
+        const data: AccountConnection[] = await res.json();
+        setAccountConnections(data.filter((c) => c.status === "connected"));
+      }
+    } catch (error) {
+      console.error("Failed to fetch account connections:", error);
     }
   };
 
@@ -561,6 +589,46 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
               </FormField>
             );
           })()}
+
+          {accountConnections.length > 0 && (
+            <FormField
+              label="Connected Integrations"
+              description="Restrict which integrations are available in this assistant's flow editor. Leave all unchecked to allow all connections."
+            >
+              <div className="space-y-2 max-h-56 overflow-y-auto p-3 bg-[#0a0a0a] border border-gray-800 rounded-lg">
+                {accountConnections.map((conn) => {
+                  const isAllowed = (formData.allowed_connection_ids || []).includes(conn.id);
+                  return (
+                    <label key={conn.id} className="flex items-center gap-3 cursor-pointer hover:bg-gray-800/50 p-2 rounded">
+                      <input
+                        type="checkbox"
+                        checked={isAllowed}
+                        onChange={(e) => {
+                          const current = formData.allowed_connection_ids || [];
+                          const updated = e.target.checked
+                            ? [...current, conn.id]
+                            : current.filter((id: string) => id !== conn.id);
+                          handleFieldChange("allowed_connection_ids", updated);
+                        }}
+                        className="h-4 w-4 rounded border-gray-700 bg-[#141414] text-blue-600 focus:ring-blue-600"
+                      />
+                      <div>
+                        <div className="text-sm font-medium">
+                          {conn.connection_name || conn.integration_type.name}
+                        </div>
+                        {conn.connection_name && (
+                          <div className="text-xs text-gray-500">{conn.integration_type.name}</div>
+                        )}
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+              {(formData.allowed_connection_ids || []).length === 0 && accountConnections.length > 0 && (
+                <p className="mt-1 text-xs text-gray-500">All connections are currently visible in the flow editor.</p>
+              )}
+            </FormField>
+          )}
         </FormSection>
         )}
 

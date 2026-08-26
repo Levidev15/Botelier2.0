@@ -48,9 +48,10 @@ interface APIAccountIntegration {
 interface Props {
   data: APIRequestNodeData;
   nodeId: string;
+  assistantId?: string;
 }
 
-export default function APIRequestNodePanel({ data, nodeId }: Props) {
+export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props) {
   const { updateNodeData, variables, toolId } = useFlowStore();
   const { authFetch } = useAuthToken();
   const { accountId } = useAccountContext();
@@ -95,7 +96,9 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
       }
       setLoadingIntegrations(true);
       try {
-        const query = new URLSearchParams({ account_id: accountId }).toString();
+        const params: Record<string, string> = { account_id: accountId };
+        if (assistantId) params.assistant_id = assistantId;
+        const query = new URLSearchParams(params).toString();
         const response = await authFetch(`/api/integrations/connections?${query}`);
         if (response.ok) {
           const resData = await response.json();
@@ -121,7 +124,7 @@ export default function APIRequestNodePanel({ data, nodeId }: Props) {
     };
     fetchIntegrations();
     fetchSecrets();
-  }, [accountId, authFetch]);
+  }, [accountId, assistantId, authFetch]);
 
   // Auto-select integration + endpoint when a template pre-wires integrationSlug / endpointId
   // but leaves integrationId blank (account-specific IDs are unknown at template-author time).

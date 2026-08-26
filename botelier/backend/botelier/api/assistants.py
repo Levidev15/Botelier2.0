@@ -75,6 +75,7 @@ class AssistantCreate(BaseModel):
     tool_set_id: Optional[str] = None
     mcp_connection_id: Optional[str] = None
     mcp_enabled_tools: Optional[List[str]] = None
+    allowed_connection_ids: Optional[List[str]] = None
     name: str
     description: Optional[str] = None
     stt_provider: str = "deepgram"
@@ -108,6 +109,7 @@ class AssistantUpdate(BaseModel):
     tool_set_id: Optional[str] = None
     mcp_connection_id: Optional[str] = None
     mcp_enabled_tools: Optional[List[str]] = None
+    allowed_connection_ids: Optional[List[str]] = None
     name: Optional[str] = None
     description: Optional[str] = None
     stt_provider: Optional[str] = None
@@ -151,6 +153,7 @@ class AssistantResponse(BaseModel):
     tool_set_id: Optional[str] = None
     mcp_connection_id: Optional[str] = None
     mcp_enabled_tools: Optional[List[str]] = None
+    allowed_connection_ids: Optional[List[str]] = None
     name: str
     description: Optional[str]
     stt_provider: str
@@ -245,6 +248,7 @@ async def create_assistant(
         tool_set_id=data.tool_set_id,
         mcp_connection_id=data.mcp_connection_id,
         mcp_enabled_tools=data.mcp_enabled_tools or [],
+        allowed_connection_ids=data.allowed_connection_ids or [],
         name=data.name,
         description=data.description,
         stt_provider=data.stt_provider,

@@ -11,7 +11,7 @@ import uuid
 from datetime import datetime
 
 from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 
 from botelier.database import Base
 
@@ -97,6 +97,10 @@ class Assistant(Base):
     # is speaking (caller audio is muted during bot speech on all STT paths).
     allow_interruptions = Column(Boolean, nullable=False, default=True, server_default="true")
 
+    # Integration connections scoped to this assistant.
+    # Empty list (default) = all account connections are available (backwards-compatible).
+    allowed_connection_ids = Column(JSONB, nullable=False, default=list, server_default="[]")
+
     # Status
     is_active = Column(Boolean, default=True)
 
@@ -158,6 +162,7 @@ class Assistant(Base):
             "vad_provider": self.vad_provider,
             "vad_config": self.vad_config or {},
             "allow_interruptions": True if self.allow_interruptions is None else self.allow_interruptions,
+            "allowed_connection_ids": self.allowed_connection_ids or [],
             "is_active": self.is_active,
             "flow_config": self.flow_config,
             "sms_config": self.sms_config or {},

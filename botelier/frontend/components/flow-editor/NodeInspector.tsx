@@ -75,7 +75,7 @@ export default function NodeInspector({ assistantId, assistantTtsProvider }: Nod
       case "collect_form":
         return <CollectFormNodePanel data={data as CollectFormNodeData} nodeId={selectedNode.id} />;
       case "api_request":
-        return <APIRequestNodePanel data={data as APIRequestNodeData} nodeId={selectedNode.id} />;
+        return <APIRequestNodePanel data={data as APIRequestNodeData} nodeId={selectedNode.id} assistantId={assistantId} />;
       case "condition":
         return <ConditionNodePanel data={data as ConditionNodeData} nodeId={selectedNode.id} />;
       case "router":

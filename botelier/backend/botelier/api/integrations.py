@@ -187,6 +187,7 @@ class AccountIntegrationWithEndpoints(BaseModel):
 @router.get("/connections", response_model=List[AccountIntegrationWithEndpoints])
 async def get_my_connections(
     account_id: Optional[str] = Query(None),
+    assistant_id: Optional[str] = Query(None, description="When supplied, only return connections assigned to this assistant (empty assignment = all connections)"),
     current_user=Depends(get_current_user),
     db: Session = Depends(get_db),
 ):
@@ -196,14 +197,39 @@ async def get_my_connections(
     intentionally returns no catalog rather than guessing from the first
     active membership, which could expose another dashboard account's
     connections to a multi-account user.
+
+    When ``assistant_id`` is supplied the results are further filtered to the
+    connections assigned to that assistant.  An assistant with an empty
+    ``allowed_connection_ids`` list sees all connections (backwards-compatible
+    default for assistants that pre-date per-assistant scoping).
     """
     if not account_id:
         return []
     _assert_account_access(current_user, account_id, db)
 
+    # Resolve assistant-level connection filter when requested.
+    allowed_ids: Optional[set] = None
+    if assistant_id:
+        from botelier.models.assistant import Assistant as AssistantModel
+        assistant_obj = (
+            db.query(AssistantModel)
+            .filter(
+                AssistantModel.id == assistant_id,
+                AssistantModel.account_id == account_id,
+            )
+            .first()
+        )
+        if assistant_obj is None:
+            raise HTTPException(status_code=404, detail="Assistant not found for this account")
+        if assistant_obj.allowed_connection_ids:
+            allowed_ids = set(str(cid) for cid in assistant_obj.allowed_connection_ids)
+
     integrations = (
         db.query(AccountIntegration).filter(AccountIntegration.account_id == account_id).all()
     )
+    # Apply per-assistant filter when a non-empty allow-list exists.
+    if allowed_ids is not None:
+        integrations = [i for i in integrations if str(i.id) in allowed_ids]
     policies_by_connection: dict[str, dict[str, ConnectionOperationPolicy]] = {}
     if integrations:
         connection_ids = [i.id for i in integrations]
