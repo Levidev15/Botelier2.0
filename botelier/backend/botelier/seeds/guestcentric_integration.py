@@ -417,6 +417,13 @@ GUESTCENTRIC_INTEGRATION = {
                 "first_pay_now": "$.room_rates[0].pay_now",
                 "first_currency": "$.room_rates[0].currency",
                 "first_meal_plan_id": "$.room_rates[0].meal_plan_prices.included.id",
+                # Template-aligned aliases — populated alongside the first_* fields
+                # so flow templates that reference these keys work after panel
+                # auto-binding (which replaces responseMapping with this seed dict).
+                "available_rooms": "$.rooms[*].name",
+                "room_rate_code":  "$.room_rates[0].room_rate_code",
+                "total_price":     "$.room_rates[0].total_price",
+                "meal_plan_id":    "$.room_rates[0].meal_plan_prices.included.id",
             },
             "response_mapping_labels": {
                 "rooms": "Available room types",
@@ -438,6 +445,10 @@ GUESTCENTRIC_INTEGRATION = {
                 "first_pay_now": "Amount due at booking time for the first rate",
                 "first_currency": "Currency of the first rate price",
                 "first_meal_plan_id": "Included meal plan ID of the first room + rate combination (needed to book)",
+                "available_rooms": "Available room names as a list — alias for $.rooms[*].name",
+                "room_rate_code":  "Room + rate combination code of the first result — alias for first_room_rate_code",
+                "total_price":     "Total stay price of the first result — alias for first_total_price",
+                "meal_plan_id":    "Included meal plan ID of the first result — alias for first_meal_plan_id",
             },
         },
         {
@@ -476,6 +487,8 @@ GUESTCENTRIC_INTEGRATION = {
                 "first_policy_rule_type": "$[0].cancellation_rules[0].type",
                 "first_policy_rule_value": "$[0].cancellation_rules[0].value",
                 "first_policy_rule_text": "$[0].cancellation_rules[0].text",
+                # Template-aligned alias
+                "cancellation_policy_id": "$[0].id",
             },
             "response_mapping_labels": {
                 "policies": "Array of cancellation policy objects",
@@ -487,6 +500,7 @@ GUESTCENTRIC_INTEGRATION = {
                 "first_policy_rule_type": "Penalty type of the first cancellation rule (e.g. Nights, Percentage)",
                 "first_policy_rule_value": "Penalty value of the first rule (e.g. '1' for one night, '50' for 50%)",
                 "first_policy_rule_text": "Human-readable description of the first cancellation rule",
+                "cancellation_policy_id": "ID of the first cancellation policy — alias for first_policy_id (used by booking templates)",
             },
         },
         {
@@ -802,12 +816,15 @@ GUESTCENTRIC_INTEGRATION = {
                 "crs_reservation_code": "$.reservations[0].crs_reservation_code",
                 "hotel_reservation_code": "$.reservations[0].hotel_reservation_code",
                 "status": "$.reservations[0].status",
+                # Template-aligned alias
+                "booking_status": "$.reservations[0].status",
             },
             "response_mapping_labels": {
                 "reservations": "Array of created reservation objects",
                 "crs_reservation_code": "CRS reservation code (primary confirmation reference)",
                 "hotel_reservation_code": "Hotel-side reservation code",
                 "status": "Reservation status (confirmed/cancelled)",
+                "booking_status": "Reservation status — alias for status (used by booking templates)",
             },
         },
         {

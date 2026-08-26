@@ -1027,7 +1027,7 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     { key: "adults",                 type: "number" as SlotType, description: "Number of adult guests (GuestCentric `adults` query param for availability)", required: true  },
     { key: "number_of_adults",       type: "number" as SlotType, description: "Number of adult guests (GuestCentric `number_of_adults` body field for booking — auto-copied from `adults`)", required: false, defaultValue: "1" },
     { key: "available_rooms",        type: "text"   as SlotType, description: "Available room names (from GuestCentric hotel rooms)",             required: false },
-    { key: "rates",                  type: "text"   as SlotType, description: "Available rate plan codes (from GuestCentric hotel rooms)",         required: false },
+    { key: "rates",                  type: "text"   as SlotType, description: "Available rate plan names (from GuestCentric hotel rooms)",        required: false },
     { key: "room_rates",             type: "text"   as SlotType, description: "Full room+rate combinations JSON (from GuestCentric hotel rooms)", required: false },
     { key: "room_type_code",         type: "text"   as SlotType, description: "Selected room type code",                                          required: true  },
     { key: "rate_plan_code",         type: "text"   as SlotType, description: "Selected rate plan code",                                          required: true  },
@@ -1052,8 +1052,10 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     { key: "crs_reservation_code",   type: "text"   as SlotType, description: "CRS reservation code (from GuestCentric)",                         required: false },
     { key: "hotel_reservation_code", type: "text"   as SlotType, description: "Hotel-side reservation code (from GuestCentric)",                  required: false },
     { key: "booking_status",         type: "text"   as SlotType, description: "Reservation status (from GuestCentric)",                           required: false },
+    { key: "retry_preference",       type: "text"   as SlotType, description: "Caller's choice when no rooms are available: 'retry' or 'give_up'", required: false },
   ],
   nodes: [
+    // ── Greeting ────────────────────────────────────────────────────────────
     {
       id: "start_1",
       type: "initial",
@@ -1065,12 +1067,15 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
           "Help callers check room availability and complete a booking. " +
           "Collect check-in and check-out dates and guest count first, then check live availability via the integration. " +
           "Present the available room types and rate plans clearly, ask the caller to choose one of each, " +
-          "then collect their name, email, and phone. Always confirm the full booking summary before submitting to GuestCentric.",
+          "then collect their name, email, phone, and mailing address. " +
+          "Always confirm the full booking summary before submitting to GuestCentric.",
         greeting:
           "Thank you for calling. I'd be happy to help you check availability and book a room. " +
           "Could I start with your desired check-in and check-out dates?",
       } as InitialNodeData,
     },
+
+    // ── Date & guest collection ──────────────────────────────────────────────
     {
       id: "collect_checkin",
       type: "collect_slot",
@@ -1080,10 +1085,10 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
         slot: {
           variableKey: "checkin",
           prompt: "What date would you like to check in?",
-          instructions: "Once the caller provides the date, store it in YYYY-MM-DD format (e.g. 2025-12-15). The date must be today or a future date.",
+          instructions: "Store the date in YYYY-MM-DD format (e.g. 2025-12-15). Must be today or a future date.",
           type: "date",
           validation: { requireFuture: true },
-          retryPrompt: "Please provide a future check-in date.",
+          retryPrompt: "Please provide a future check-in date — for example, the fifteenth of December.",
           maxRetries: 3,
           useBuiltInValidator: true,
         },
@@ -1098,15 +1103,13 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
         slot: {
           variableKey: "checkout",
           prompt: "And what date will you be checking out?",
-          instructions: "Once the caller provides the date, store it in YYYY-MM-DD format (e.g. 2025-12-18). The date must be after the check-in date.",
+          instructions: "Store in YYYY-MM-DD format. Must be strictly after the check-in date.",
           type: "date",
           validation: {
             requireFuture: true,
-            crossFieldCheck: {
-              compareWith: "checkin",
-              operator: "after",
-              errorMessage: "Check-out must be after your check-in date.",
-            },
+            // afterDateVariable is the backend-supported field for cross-slot date ordering
+            // (flow_executor.py reads afterDateVariable / after_date_variable).
+            afterDateVariable: "checkin",
           },
           retryPrompt: "Your check-out date must be after your check-in date. Could you repeat it?",
           maxRetries: 3,
@@ -1139,11 +1142,13 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
         name: "Sync Adults for Booking",
         setVariable: {
           variableKey: "number_of_adults",
-          valueType: "template",
+          valueType: "template" as const,
           value: "{{adults}}",
         },
       } as SetVariableNodeData,
     },
+
+    // ── Availability check ───────────────────────────────────────────────────
     {
       id: "check_availability",
       type: "api_request",
@@ -1151,10 +1156,8 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
       data: {
         name: "Check Availability (GuestCentric)",
         instructions:
-          "After this node completes, present the available room types clearly by name, then present the available " +
-          "rate plans. Ask the caller to choose one of each. " +
-          "If no rooms are available or this call fails, apologise and ask if they would like to try different " +
-          "dates — do NOT transfer the call.",
+          "Call the GuestCentric hotel rooms endpoint to fetch live availability. " +
+          "The responseInstructions below tell you exactly how to present the results to the caller.",
         api: {
           method: "GET",
           url: "",
@@ -1165,30 +1168,82 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
           endpointName: "Hotel Rooms & Rates",
           thinkingMessage: "Let me check room availability for those dates — one moment please.",
           responseMapping: {
-            available_rooms: "$.rooms[*].name",
-            rates:           "$.rates[*].rate_plan_name",
-            room_rates:      "$.room_rates",
+            // Full seed response_mapping — must exactly match autoMappingSource so
+            // the panel classifies this as auto-generated (not customized) and can
+            // replace it cleanly when the operator rebinds to a different endpoint.
+            rooms:                  "$.rooms",
+            rates:                  "$.rates",
+            room_rates:             "$.room_rates",
+            promotions:             "$.promotions",
+            first_room_type_code:   "$.rooms[0].room_type_code",
+            first_room_name:        "$.rooms[0].name",
+            first_room_description: "$.rooms[0].description",
+            first_room_max_persons: "$.rooms[0].max_persons",
+            first_room_max_adults:  "$.rooms[0].max_adults",
+            first_room_amenities:   "$.rooms[0].amenities",
+            first_rate_plan_code:   "$.room_rates[0].rate_plan_code",
+            first_rate_name:        "$.rates[0].name",
+            first_rate_description: "$.rates[0].description",
+            first_room_rate_code:   "$.room_rates[0].room_rate_code",
+            first_total_price:      "$.room_rates[0].total_price",
+            first_net_price:        "$.room_rates[0].net_price",
+            first_pay_now:          "$.room_rates[0].pay_now",
+            first_currency:         "$.room_rates[0].currency",
+            first_meal_plan_id:     "$.room_rates[0].meal_plan_prices.included.id",
+            // Template-aligned aliases — now in seed so they survive panel auto-bind
+            available_rooms:        "$.rooms[*].name",
+            room_rate_code:         "$.room_rates[0].room_rate_code",
+            total_price:            "$.room_rates[0].total_price",
+            meal_plan_id:           "$.room_rates[0].meal_plan_prices.included.id",
           },
           autoMappingSource: {
-            available_rooms: "$.rooms[*].name",
-            rates:           "$.rates[*].rate_plan_name",
-            room_rates:      "$.room_rates",
+            // Identical to responseMapping — equality is what the panel checks
+            // to determine whether the mapping is auto-generated vs customized.
+            rooms:                  "$.rooms",
+            rates:                  "$.rates",
+            room_rates:             "$.room_rates",
+            promotions:             "$.promotions",
+            first_room_type_code:   "$.rooms[0].room_type_code",
+            first_room_name:        "$.rooms[0].name",
+            first_room_description: "$.rooms[0].description",
+            first_room_max_persons: "$.rooms[0].max_persons",
+            first_room_max_adults:  "$.rooms[0].max_adults",
+            first_room_amenities:   "$.rooms[0].amenities",
+            first_rate_plan_code:   "$.room_rates[0].rate_plan_code",
+            first_rate_name:        "$.rates[0].name",
+            first_rate_description: "$.rates[0].description",
+            first_room_rate_code:   "$.room_rates[0].room_rate_code",
+            first_total_price:      "$.room_rates[0].total_price",
+            first_net_price:        "$.room_rates[0].net_price",
+            first_pay_now:          "$.room_rates[0].pay_now",
+            first_currency:         "$.room_rates[0].currency",
+            first_meal_plan_id:     "$.room_rates[0].meal_plan_prices.included.id",
+            available_rooms:        "$.rooms[*].name",
+            room_rate_code:         "$.room_rates[0].room_rate_code",
+            total_price:            "$.room_rates[0].total_price",
+            meal_plan_id:           "$.room_rates[0].meal_plan_prices.included.id",
           },
           responseInstructions:
-            "Availability results: {{room_rates}}\n\n" +
-            "Each JSON object in this list contains:\n" +
-            "- room_type_name: display name to speak to the caller (e.g. \"Superior Room\")\n" +
-            "- room_type_code: internal code to store as room_type_code when that room is chosen (e.g. \"SUP\")\n" +
-            "- rate_plan_name: rate plan display name (e.g. \"Best Available Rate\")\n" +
-            "- rate_plan_code: internal code to store as rate_plan_code when that plan is chosen\n" +
-            "- total_price: total stay price\n\n" +
-            "Steps:\n" +
-            "1. Extract unique room types (deduplicate by room_type_code). List each by its room_type_name.\n" +
-            "2. Extract unique rate plans (deduplicate by rate_plan_code). List each by its rate_plan_name.\n" +
-            "3. Ask the caller which room type they prefer.\n" +
-            "4. When they choose by name, find the matching room_type_code and store it — never store the display name.\n" +
-            "5. Then ask which rate plan they prefer; find and store the matching rate_plan_code.\n\n" +
-            "If the list is empty, apologise and offer to try different dates.",
+            "AVAILABILITY DATA: {{room_rates}}\n\n" +
+            "Each object in room_rates contains:\n" +
+            "  room_type_name  — speak this name to the caller\n" +
+            "  room_type_code  — store internally as room_type_code (never speak the code)\n" +
+            "  rate_plan_name  — speak this name to the caller\n" +
+            "  rate_plan_code  — store internally as rate_plan_code (never speak the code)\n" +
+            "  total_price     — total price for the full stay\n\n" +
+            "IF room_rates IS EMPTY OR NULL:\n" +
+            "  Say: 'I'm sorry, I wasn't able to find any rooms available for those dates. " +
+            "Would you like to try different check-in and check-out dates?'\n" +
+            "  Do NOT proceed to room selection.\n\n" +
+            "IF room_rates HAS RESULTS:\n" +
+            "  1. Say: 'Great news — I found [N] room type(s) available for your dates.'\n" +
+            "  2. Deduplicate by room_type_code. For each unique room type, say:\n" +
+            "     '[number]. [room_type_name]'\n" +
+            "  3. Say: 'The following rate plans are available:'\n" +
+            "  4. Deduplicate by rate_plan_code. For each unique rate plan, say:\n" +
+            "     '[number]. [rate_plan_name] — total stay price [total_price]'\n" +
+            "  5. Ask: 'Which room type would you prefer?'\n" +
+            "  Important: always speak display names; store only codes.",
           onError:
             "I wasn't able to retrieve available rooms right now. Would you like to try different check-in or check-out dates?",
           timeout: 15,
@@ -1196,24 +1251,129 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
         } as APIRequestConfig,
       } as APIRequestNodeData,
     },
+
+    // ── No-rooms branch: condition ──────────────────────────────────────────
+    {
+      id: "condition_availability",
+      type: "condition",
+      position: { x: 250, y: 750 },
+      data: {
+        name: "Rooms Available?",
+        condition: {
+          variable: "available_rooms",
+          operator: "is_empty",
+          value: "",
+          trueTarget:  "no_rooms_message",
+          falseTarget: "collect_room",
+        },
+      } as ConditionNodeData,
+    },
+
+    // ── No-rooms branch: message + router ──────────────────────────────────
+    {
+      id: "no_rooms_message",
+      type: "message",
+      position: { x: 750, y: 900 },
+      data: {
+        name: "No Availability Message",
+        message:
+          "I'm sorry — no rooms are available for your selected dates of {{checkin}} to {{checkout}}. " +
+          "Would you like to try different dates, or is there anything else I can help you with?",
+      } as MessageNodeData,
+    },
+    {
+      id: "no_rooms_router",
+      type: "router",
+      position: { x: 750, y: 1050 },
+      data: {
+        name: "Try Different Dates?",
+        instructions:
+          "Listen to the caller's response. " +
+          "If they want to try different check-in/check-out dates, choose 'retry_dates'. " +
+          "If they do not want to try again or want to end the call, choose 'give_up'.",
+        router: {
+          variable: "retry_preference",
+          options: [
+            { id: "retry_dates", value: "retry",    label: "Try different dates" },
+            { id: "give_up",     value: "give_up",  label: "End the call"        },
+          ],
+        },
+      } as RouterNodeData,
+    },
+
+    // ── No-rooms branch: date re-collection (loops back) ───────────────────
+    {
+      id: "retry_checkin",
+      type: "collect_slot",
+      position: { x: 750, y: 1200 },
+      data: {
+        name: "New Check-in Date",
+        slot: {
+          variableKey: "checkin",
+          prompt: "Of course — what new check-in date would you like to try?",
+          instructions: "Store in YYYY-MM-DD format. Must be a future date. This overwrites the previous check-in date.",
+          type: "date",
+          validation: { requireFuture: true },
+          retryPrompt: "Please provide a future check-in date.",
+          maxRetries: 3,
+          useBuiltInValidator: true,
+        },
+      } as CollectSlotNodeData,
+    },
+    {
+      id: "retry_checkout",
+      type: "collect_slot",
+      position: { x: 750, y: 1350 },
+      data: {
+        name: "New Check-out Date",
+        slot: {
+          variableKey: "checkout",
+          prompt: "And the new check-out date?",
+          instructions: "Store in YYYY-MM-DD format. Must be after the new check-in date. This overwrites the previous check-out date.",
+          type: "date",
+          validation: {
+            requireFuture: true,
+            // afterDateVariable is the backend-supported field for cross-slot date ordering
+            // (flow_executor.py reads afterDateVariable / after_date_variable).
+            afterDateVariable: "checkin",
+          },
+          retryPrompt: "Your check-out date must be after your new check-in date. Could you repeat it?",
+          maxRetries: 3,
+          useBuiltInValidator: true,
+        },
+      } as CollectSlotNodeData,
+    },
+
+    // ── No-rooms branch: give-up exit ───────────────────────────────────────
+    {
+      id: "end_no_availability",
+      type: "end",
+      position: { x: 1200, y: 1100 },
+      data: {
+        name: "No Availability — Call Ended",
+        closingMessage:
+          "Completely understand. I'm sorry we couldn't find availability for your preferred dates. " +
+          "Please don't hesitate to call back — we'd love to help you find the perfect stay. Have a wonderful day!",
+      } as EndNodeData,
+    },
+
+    // ── Success path: room & rate selection ─────────────────────────────────
     {
       id: "collect_room",
       type: "collect_slot",
-      position: { x: 250, y: 750 },
+      position: { x: 250, y: 1550 },
       data: {
         name: "Room Type Selection",
         instructions:
-          "Present the unique room types by name (from {{available_rooms}}). " +
-          "The {{room_rates}} data contains the full name→code mapping: each item has room_type_name and room_type_code. " +
-          "When the caller picks a room type by name, find the matching room_type_code in {{room_rates}} and store " +
-          "THAT CODE as room_type_code — never store the display name.",
+          "The available room types are in {{available_rooms}} (display names). " +
+          "{{room_rates}} contains the full name→code mapping (room_type_name and room_type_code per item). " +
+          "When the caller names a room type, look up its room_type_code in {{room_rates}} and store that code — " +
+          "never store the display name.",
         slot: {
           variableKey: "room_type_code",
-          prompt:
-            "Which room type would you prefer? The available options are: {{available_rooms}}. " +
-            "I will record the exact room type code for your selection.",
+          prompt: "Which room type would you prefer? The available options are: {{available_rooms}}.",
           type: "text",
-          retryPrompt: "Could you repeat which room type you'd like?",
+          retryPrompt: "Could you repeat which room type you'd like? The options are: {{available_rooms}}.",
           maxRetries: 3,
         },
       } as CollectSlotNodeData,
@@ -1221,35 +1381,34 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     {
       id: "collect_rate",
       type: "collect_slot",
-      position: { x: 250, y: 900 },
+      position: { x: 250, y: 1700 },
       data: {
         name: "Rate Plan Selection",
         instructions:
-          "Present the unique rate plans by name (from {{rates}}). " +
-          "The {{room_rates}} data contains the full name→code mapping: each item has rate_plan_name and rate_plan_code. " +
-          "When the caller picks a rate plan by name, find the matching rate_plan_code in {{room_rates}} and store " +
-          "THAT CODE as rate_plan_code — never store the display name.",
+          "The available rate plans are in {{rates}} (display names). " +
+          "{{room_rates}} contains the full name→code mapping (rate_plan_name and rate_plan_code per item). " +
+          "When the caller names a rate plan, look up its rate_plan_code in {{room_rates}} and store that code — " +
+          "never store the display name.",
         slot: {
           variableKey: "rate_plan_code",
-          prompt:
-            "And which rate plan would you like? The available plans are: {{rates}}. " +
-            "I will record the exact rate plan code for your selection.",
+          prompt: "And which rate plan would you prefer? The available plans are: {{rates}}.",
           type: "text",
-          retryPrompt: "Could you repeat which rate plan you'd like?",
+          retryPrompt: "Could you repeat which rate plan you'd like? The plans are: {{rates}}.",
           maxRetries: 3,
         },
       } as CollectSlotNodeData,
     },
+
+    // ── Confirm room rate (silent re-check) ─────────────────────────────────
     {
       id: "confirm_room_rate",
       type: "api_request",
-      position: { x: 250, y: 1050 },
+      position: { x: 250, y: 1850 },
       data: {
         name: "Confirm Room Rate (GuestCentric)",
         instructions:
-          "Re-checks availability filtered to the caller's selected room type and rate plan codes to capture the " +
-          "exact room_rate_code, total_price, and included meal_plan_id needed to book. This should return a single " +
-          "matching room + rate combination. Do not narrate this step to the caller — proceed silently.",
+          "Silent re-check of availability filtered to the caller's chosen room_type_code and rate_plan_code. " +
+          "Captures room_rate_code, total_price, and meal_plan_id needed for booking. Do NOT narrate this to the caller.",
         api: {
           method: "GET",
           url: "",
@@ -1260,22 +1419,67 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
           endpointName: "Hotel Rooms & Rates",
           thinkingMessage: "",
           responseMapping: {
-            room_rate_code: "$.room_rates[0].room_rate_code",
-            total_price:    "$.room_rates[0].total_price",
-            meal_plan_id:   "$.room_rates[0].meal_plan_prices.included.id",
+            // Full seed response_mapping — must exactly match autoMappingSource
+            rooms:                  "$.rooms",
+            rates:                  "$.rates",
+            room_rates:             "$.room_rates",
+            promotions:             "$.promotions",
+            first_room_type_code:   "$.rooms[0].room_type_code",
+            first_room_name:        "$.rooms[0].name",
+            first_room_description: "$.rooms[0].description",
+            first_room_max_persons: "$.rooms[0].max_persons",
+            first_room_max_adults:  "$.rooms[0].max_adults",
+            first_room_amenities:   "$.rooms[0].amenities",
+            first_rate_plan_code:   "$.room_rates[0].rate_plan_code",
+            first_rate_name:        "$.rates[0].name",
+            first_rate_description: "$.rates[0].description",
+            first_room_rate_code:   "$.room_rates[0].room_rate_code",
+            first_total_price:      "$.room_rates[0].total_price",
+            first_net_price:        "$.room_rates[0].net_price",
+            first_pay_now:          "$.room_rates[0].pay_now",
+            first_currency:         "$.room_rates[0].currency",
+            first_meal_plan_id:     "$.room_rates[0].meal_plan_prices.included.id",
+            available_rooms:        "$.rooms[*].name",
+            room_rate_code:         "$.room_rates[0].room_rate_code",
+            total_price:            "$.room_rates[0].total_price",
+            meal_plan_id:           "$.room_rates[0].meal_plan_prices.included.id",
           },
           autoMappingSource: {
-            room_rate_code: "$.room_rates[0].room_rate_code",
-            total_price:    "$.room_rates[0].total_price",
-            meal_plan_id:   "$.room_rates[0].meal_plan_prices.included.id",
+            // Identical to responseMapping — equality is the panel's auto-vs-custom signal
+            rooms:                  "$.rooms",
+            rates:                  "$.rates",
+            room_rates:             "$.room_rates",
+            promotions:             "$.promotions",
+            first_room_type_code:   "$.rooms[0].room_type_code",
+            first_room_name:        "$.rooms[0].name",
+            first_room_description: "$.rooms[0].description",
+            first_room_max_persons: "$.rooms[0].max_persons",
+            first_room_max_adults:  "$.rooms[0].max_adults",
+            first_room_amenities:   "$.rooms[0].amenities",
+            first_rate_plan_code:   "$.room_rates[0].rate_plan_code",
+            first_rate_name:        "$.rates[0].name",
+            first_rate_description: "$.rates[0].description",
+            first_room_rate_code:   "$.room_rates[0].room_rate_code",
+            first_total_price:      "$.room_rates[0].total_price",
+            first_net_price:        "$.room_rates[0].net_price",
+            first_pay_now:          "$.room_rates[0].pay_now",
+            first_currency:         "$.room_rates[0].currency",
+            first_meal_plan_id:     "$.room_rates[0].meal_plan_prices.included.id",
+            available_rooms:        "$.rooms[*].name",
+            room_rate_code:         "$.room_rates[0].room_rate_code",
+            total_price:            "$.room_rates[0].total_price",
+            meal_plan_id:           "$.room_rates[0].meal_plan_prices.included.id",
           },
           queryParamOverrides: {
             room_type_code: "{{room_type_code}}",
             rate_plan_code: "{{rate_plan_code}}",
           },
           responseInstructions:
-            "Do not mention this lookup to the caller. If no matching room rate is returned, apologise and offer " +
-            "to pick a different room type or rate plan.",
+            "Do NOT narrate this lookup to the caller.\n" +
+            "If room_rates is empty or room_rate_code is missing, say:\n" +
+            "  'I'm sorry, that room and rate combination doesn't appear to be available any more. " +
+            "Let me take you back to the room options so you can choose a different combination.'\n" +
+            "Then ask the caller to pick a different room type or rate plan.",
           onError:
             "I wasn't able to confirm that room and rate combination. Please choose a different room type or rate plan.",
           timeout: 15,
@@ -1283,28 +1487,51 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
         } as APIRequestConfig,
       } as APIRequestNodeData,
     },
+
+    // ── Guard: room rate found? ──────────────────────────────────────────────
+    // Prevents a booking attempt when the filtered re-check returned no match.
+    // True (empty) → back to room/rate selection; False (found) → proceed.
+    {
+      id: "condition_room_rate",
+      type: "condition",
+      position: { x: 250, y: 2000 },
+      data: {
+        name: "Room Rate Found?",
+        condition: {
+          variable: "room_rate_code",
+          operator: "is_empty",
+          value: "",
+          trueTarget:  "collect_room",
+          falseTarget: "build_hotels_array",
+        },
+      } as ConditionNodeData,
+    },
+
+    // ── Build hotels array for cancellation policy lookup ───────────────────
     {
       id: "build_hotels_array",
       type: "set_variable",
-      position: { x: 250, y: 1200 },
+      position: { x: 250, y: 2150 },
       data: {
         name: "Build Hotels Array",
         setVariable: {
           variableKey: "hotels",
-          valueType: "template",
+          valueType: "template" as const,
           value: '["{{hotel_id}}"]',
         },
       } as SetVariableNodeData,
     },
+
+    // ── Cancellation policy (silent) ────────────────────────────────────────
     {
       id: "check_cancellation_policy",
       type: "api_request",
-      position: { x: 250, y: 1350 },
+      position: { x: 250, y: 2300 },
       data: {
         name: "Get Cancellation Policy (GuestCentric)",
         instructions:
-          "Looks up the property's cancellation policy ID required by the booking endpoint. Do not narrate this " +
-          "step to the caller — proceed silently to collecting their contact details.",
+          "Silent lookup of the property's cancellation policy ID needed by the booking endpoint. " +
+          "Do NOT narrate this step — proceed directly to collecting guest contact details.",
         api: {
           method: "GET",
           url: "",
@@ -1315,23 +1542,45 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
           endpointName: "Cancellation Policies",
           thinkingMessage: "",
           responseMapping: {
-            cancellation_policy_id: "$[0].id",
+            // Full seed response_mapping — must exactly match autoMappingSource
+            policies:                    "$",
+            first_policy_id:             "$[0].id",
+            first_policy_name:           "$[0].name",
+            first_policy_teaser:         "$[0].teaser",
+            first_policy_full_text:      "$[0].cancellationPoliciesText",
+            first_policy_guarantee_text: "$[0].guarantee_text",
+            first_policy_rule_type:      "$[0].cancellation_rules[0].type",
+            first_policy_rule_value:     "$[0].cancellation_rules[0].value",
+            first_policy_rule_text:      "$[0].cancellation_rules[0].text",
+            cancellation_policy_id:      "$[0].id",
           },
           autoMappingSource: {
-            cancellation_policy_id: "$[0].id",
+            // Identical to responseMapping — equality is the panel's auto-vs-custom signal
+            policies:                    "$",
+            first_policy_id:             "$[0].id",
+            first_policy_name:           "$[0].name",
+            first_policy_teaser:         "$[0].teaser",
+            first_policy_full_text:      "$[0].cancellationPoliciesText",
+            first_policy_guarantee_text: "$[0].guarantee_text",
+            first_policy_rule_type:      "$[0].cancellation_rules[0].type",
+            first_policy_rule_value:     "$[0].cancellation_rules[0].value",
+            first_policy_rule_text:      "$[0].cancellation_rules[0].text",
+            cancellation_policy_id:      "$[0].id",
           },
-          responseInstructions: "Do not mention this lookup to the caller.",
+          responseInstructions: "Do NOT narrate this lookup. Continue silently to guest details.",
           onError:
-            "I had a technical issue retrieving the cancellation policy. I will proceed with the booking and note that the policy should be confirmed.",
+            "I had a technical issue retrieving the cancellation policy. I will proceed with the booking.",
           timeout: 15,
           retryCount: 1,
         } as APIRequestConfig,
       } as APIRequestNodeData,
     },
+
+    // ── Guest contact collection ─────────────────────────────────────────────
     {
       id: "collect_first_name",
       type: "collect_slot",
-      position: { x: 250, y: 1500 },
+      position: { x: 250, y: 2450 },
       data: {
         name: "Guest First Name",
         slot: {
@@ -1346,7 +1595,7 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     {
       id: "collect_last_name",
       type: "collect_slot",
-      position: { x: 250, y: 1650 },
+      position: { x: 250, y: 2600 },
       data: {
         name: "Guest Last Name",
         slot: {
@@ -1361,7 +1610,7 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     {
       id: "collect_email",
       type: "collect_slot",
-      position: { x: 250, y: 1800 },
+      position: { x: 250, y: 2750 },
       data: {
         name: "Guest Email",
         slot: {
@@ -1376,7 +1625,7 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     {
       id: "collect_phone",
       type: "collect_slot",
-      position: { x: 250, y: 1950 },
+      position: { x: 250, y: 2900 },
       data: {
         name: "Guest Phone",
         slot: {
@@ -1391,12 +1640,12 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     {
       id: "collect_guest_address",
       type: "collect_slot",
-      position: { x: 250, y: 2100 },
+      position: { x: 250, y: 3050 },
       data: {
         name: "Guest Address",
         slot: {
           variableKey: "guest_address",
-          prompt: "Could I get your mailing address for the reservation?",
+          prompt: "Could I get a mailing address for the reservation? Please start with the street address.",
           type: "text",
           retryPrompt: "Could you repeat your street address?",
           maxRetries: 3,
@@ -1406,12 +1655,12 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     {
       id: "collect_guest_city",
       type: "collect_slot",
-      position: { x: 250, y: 2250 },
+      position: { x: 250, y: 3200 },
       data: {
         name: "Guest City",
         slot: {
           variableKey: "guest_city",
-          prompt: "And what city is that in?",
+          prompt: "What city is that in?",
           type: "text",
           retryPrompt: "Could you repeat the city?",
           maxRetries: 3,
@@ -1421,12 +1670,12 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     {
       id: "collect_guest_postal_code",
       type: "collect_slot",
-      position: { x: 250, y: 2400 },
+      position: { x: 250, y: 3350 },
       data: {
         name: "Guest Postal Code",
         slot: {
           variableKey: "guest_postal_code",
-          prompt: "What's the postal or zip code?",
+          prompt: "And the postal or zip code?",
           type: "text",
           retryPrompt: "Could you repeat the postal code?",
           maxRetries: 3,
@@ -1436,28 +1685,31 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
     {
       id: "collect_guest_country",
       type: "collect_slot",
-      position: { x: 250, y: 2550 },
+      position: { x: 250, y: 3500 },
       data: {
         name: "Guest Country",
         slot: {
           variableKey: "guest_country",
-          prompt: "And lastly, what country are you writing from?",
+          prompt: "And lastly, what country?",
           type: "text",
           retryPrompt: "Could you repeat your country?",
           maxRetries: 3,
         },
       } as CollectSlotNodeData,
     },
+
+    // ── Confirmation ─────────────────────────────────────────────────────────
     {
       id: "confirm_details",
       type: "confirmation",
-      position: { x: 250, y: 2700 },
+      position: { x: 250, y: 3650 },
       data: {
         name: "Confirm Booking Details",
         confirmation: {
           summaryTemplate:
-            "Just to confirm: a {{room_type_code}} room on the {{rate_plan_code}} rate plan, total price " +
-            "{{total_price}}, for {{adults}} adult(s), checking in {{checkin}} and checking out {{checkout}}, " +
+            "Just to confirm: a {{room_type_code}} room on the {{rate_plan_code}} rate plan, " +
+            "total price {{total_price}}, for {{adults}} adult(s), " +
+            "checking in {{checkin}} and checking out {{checkout}}, " +
             "under {{guest_first_name}} {{guest_last_name}}.",
           confirmPrompt: "Shall I go ahead and book this reservation with GuestCentric?",
           editPrompt: "No problem — what would you like to change?",
@@ -1476,18 +1728,19 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
         },
       } as ConfirmationNodeData,
     },
+
+    // ── Booking submission ───────────────────────────────────────────────────
     {
       id: "create_booking",
       type: "api_request",
-      position: { x: 250, y: 2850 },
+      position: { x: 250, y: 3800 },
       data: {
         name: "Book Reservation (GuestCentric)",
         instructions:
-          "Submits the reservation to GuestCentric. Guest contact/address details, the room rate, meal plan, and " +
-          "cancellation policy are all collected or derived earlier in this flow. This request still requires " +
-          "hotel_name and hotel_reservations_email — set these flow variables to match your property's " +
-          "GuestCentric configuration before using this template in production. " +
-          "After this node completes, read the confirmation code back to the caller clearly, spelling it out if needed.",
+          "Submits the reservation to GuestCentric. All guest contact details, room rate, meal plan, and " +
+          "cancellation policy have been collected earlier in this flow. " +
+          "NOTE: hotel_name and hotel_reservations_email must be set in the flow variables to match your property " +
+          "before using this template in production.",
         api: {
           method: "POST",
           url: "",
@@ -1498,59 +1751,86 @@ const GUESTCENTRIC_CRS_BOOKING_TEMPLATE = {
           endpointName: "Book Reservation",
           thinkingMessage: "Creating your reservation in GuestCentric now — just a moment.",
           responseMapping: {
+            // Full seed response_mapping — must exactly match autoMappingSource
+            reservations:           "$.reservations",
             crs_reservation_code:   "$.reservations[0].crs_reservation_code",
             hotel_reservation_code: "$.reservations[0].hotel_reservation_code",
+            status:                 "$.reservations[0].status",
             booking_status:         "$.reservations[0].status",
           },
           autoMappingSource: {
+            // Identical to responseMapping — equality is the panel's auto-vs-custom signal
+            reservations:           "$.reservations",
             crs_reservation_code:   "$.reservations[0].crs_reservation_code",
             hotel_reservation_code: "$.reservations[0].hotel_reservation_code",
+            status:                 "$.reservations[0].status",
             booking_status:         "$.reservations[0].status",
           },
           responseInstructions:
-            "Tell the caller their reservation is confirmed with GuestCentric and read out their confirmation code: " +
-            "{{crs_reservation_code}}. Offer to repeat it if needed.",
+            "Say: 'Your reservation has been confirmed with GuestCentric!'\n" +
+            "Then say: 'Your confirmation code is:' and read {{crs_reservation_code}} " +
+            "one character at a time with a brief pause between each character " +
+            "(for example, if the code is ABC123 say: 'A... B... C... 1... 2... 3').\n" +
+            "If {{hotel_reservation_code}} exists and differs from {{crs_reservation_code}}, " +
+            "also say: 'Your property reference number is:' and read it character by character.\n" +
+            "Then ask: 'Would you like me to repeat the confirmation code?'\n" +
+            "Close warmly and let the caller know you look forward to welcoming them.",
           onError:
-            "I'm sorry, there was a problem submitting your reservation. Could you confirm your details are correct and I will try once more?",
+            "I'm sorry, there was a problem submitting your reservation. Could you confirm your details are correct? I will try once more.",
           timeout: 20,
           retryCount: 1,
         } as APIRequestConfig,
       } as APIRequestNodeData,
     },
+
+    // ── Success end ──────────────────────────────────────────────────────────
     {
       id: "end_success",
       type: "end",
-      position: { x: 250, y: 3000 },
+      position: { x: 250, y: 3950 },
       data: {
         name: "Booking Confirmed",
         closingMessage:
-          "Your reservation is confirmed! Your confirmation code is {{crs_reservation_code}}. " +
-          "We look forward to welcoming you. Is there anything else I can help you with?",
+          "Your reservation is confirmed! Your GuestCentric confirmation code is {{crs_reservation_code}}. " +
+          "We look forward to welcoming you. Is there anything else I can help you with today?",
       } as EndNodeData,
     },
   ],
   edges: [
-    { id: "e1",  source: "start_1",                    target: "collect_checkin"            },
-    { id: "e2",  source: "collect_checkin",             target: "collect_checkout"           },
-    { id: "e3",  source: "collect_checkout",            target: "collect_guests"             },
-    { id: "e3b", source: "collect_guests",              target: "sync_number_of_adults"      },
-    { id: "e4",  source: "sync_number_of_adults",       target: "check_availability"         },
-    { id: "e5",  source: "check_availability",          target: "collect_room"               },
-    { id: "e6",  source: "collect_room",                target: "collect_rate"               },
-    { id: "e6b", source: "collect_rate",                target: "confirm_room_rate"          },
-    { id: "e6c", source: "confirm_room_rate",           target: "build_hotels_array"         },
-    { id: "e6d", source: "build_hotels_array",          target: "check_cancellation_policy"  },
-    { id: "e7",  source: "check_cancellation_policy",   target: "collect_first_name"         },
-    { id: "e8",  source: "collect_first_name",          target: "collect_last_name"          },
-    { id: "e9",  source: "collect_last_name",           target: "collect_email"              },
-    { id: "e10", source: "collect_email",               target: "collect_phone"              },
-    { id: "e10b",source: "collect_phone",               target: "collect_guest_address"      },
-    { id: "e10c",source: "collect_guest_address",       target: "collect_guest_city"         },
-    { id: "e10d",source: "collect_guest_city",          target: "collect_guest_postal_code"  },
-    { id: "e10e",source: "collect_guest_postal_code",   target: "collect_guest_country"       },
-    { id: "e11", source: "collect_guest_country",       target: "confirm_details"            },
-    { id: "e12", source: "confirm_details",             target: "create_booking"             },
-    { id: "e13", source: "create_booking",              target: "end_success"                },
+    // Main collection path
+    { id: "e1",   source: "start_1",              target: "collect_checkin"           },
+    { id: "e2",   source: "collect_checkin",       target: "collect_checkout"          },
+    { id: "e3",   source: "collect_checkout",      target: "collect_guests"            },
+    { id: "e3b",  source: "collect_guests",        target: "sync_number_of_adults"     },
+    { id: "e4",   source: "sync_number_of_adults", target: "check_availability"        },
+    // Availability → condition branch
+    { id: "e5",   source: "check_availability",    target: "condition_availability"    },
+    { id: "e5a",  source: "condition_availability", sourceHandle: "false", target: "collect_room"          },
+    { id: "e5b",  source: "condition_availability", sourceHandle: "true",  target: "no_rooms_message"      },
+    // No-rooms branch
+    { id: "e5c",  source: "no_rooms_message",      target: "no_rooms_router"           },
+    { id: "e5d",  source: "no_rooms_router",        sourceHandle: "retry_dates", target: "retry_checkin"    },
+    { id: "e5e",  source: "no_rooms_router",        sourceHandle: "give_up",     target: "end_no_availability" },
+    { id: "e5f",  source: "retry_checkin",          target: "retry_checkout"            },
+    { id: "e5g",  source: "retry_checkout",         target: "check_availability"        }, // back-edge: retry loop
+    // Success path
+    { id: "e6",   source: "collect_room",           target: "collect_rate"              },
+    { id: "e6b",  source: "collect_rate",           target: "confirm_room_rate"         },
+    { id: "e6c",  source: "confirm_room_rate",      target: "condition_room_rate"        },
+    { id: "e6c2", source: "condition_room_rate",    sourceHandle: "true",  target: "collect_room"              }, // no match → reselect
+    { id: "e6c3", source: "condition_room_rate",    sourceHandle: "false", target: "build_hotels_array"        }, // match found → proceed
+    { id: "e6d",  source: "build_hotels_array",     target: "check_cancellation_policy" },
+    { id: "e7",   source: "check_cancellation_policy", target: "collect_first_name"     },
+    { id: "e8",   source: "collect_first_name",     target: "collect_last_name"         },
+    { id: "e9",   source: "collect_last_name",      target: "collect_email"             },
+    { id: "e10",  source: "collect_email",          target: "collect_phone"             },
+    { id: "e10b", source: "collect_phone",          target: "collect_guest_address"     },
+    { id: "e10c", source: "collect_guest_address",  target: "collect_guest_city"        },
+    { id: "e10d", source: "collect_guest_city",     target: "collect_guest_postal_code" },
+    { id: "e10e", source: "collect_guest_postal_code", target: "collect_guest_country"  },
+    { id: "e11",  source: "collect_guest_country",  target: "confirm_details"           },
+    { id: "e12",  source: "confirm_details",        target: "create_booking"            },
+    { id: "e13",  source: "create_booking",         target: "end_success"               },
   ],
 };
 

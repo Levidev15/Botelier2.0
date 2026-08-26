@@ -364,7 +364,14 @@ def _evaluate_condition(operator: str, actual: Any, expected: Any) -> bool:
     op = (operator or "").strip().lower()
 
     def _is_empty(v: Any) -> bool:
-        return v is None or str(v).strip() == ""
+        if v is None:
+            return True
+        # Native Python collections: [], {}, set()
+        if isinstance(v, (list, dict, set, tuple)):
+            return len(v) == 0
+        s = str(v).strip()
+        # Serialized empty collections stored as strings
+        return s in ("", "[]", "{}", "set()", "null", "none")
 
     if op == "is_empty":
         return _is_empty(actual)
@@ -2459,6 +2466,21 @@ class FlowExecutor:
         thinking_message = (api_config.get("thinkingMessage") or "").strip()
         method = (api_config.get("method", "GET") or "GET").upper()
 
+        # Template-applied nodes ship with integrationSlug but no integrationId
+        # (the editor panel resolves slug→ID only when the panel is opened).
+        # Resolve the slug at runtime so the integration path is taken even when
+        # the operator never opened the panel in the UI.
+        if (
+            api_source == "integration"
+            and not api_config.get("integrationId")
+            and api_config.get("integrationSlug")
+        ):
+            resolved_id = await self._resolve_integration_slug(
+                api_config["integrationSlug"]
+            )
+            if resolved_id:
+                api_config = {**api_config, "integrationId": resolved_id}
+
         # Capability nodes (Task #329) carry no HTTP method of their own — it
         # lives on the vendor endpoint resolved at runtime. Derive an effective
         # method from the registry `mutating` flag so write capabilities
@@ -2521,6 +2543,90 @@ class FlowExecutor:
         result["thinking_message"] = thinking_message
 
         return result
+
+    async def _resolve_integration_slug(self, slug: str) -> Optional[str]:
+        """Resolve an integration type slug to the account's active connection ID.
+
+        Used when a flow node was saved with ``integrationSlug`` but no
+        ``integrationId`` (e.g. templates applied without opening the editor
+        panel).
+
+        Resolution rules (matches the per-property isolation contract):
+        1. Only CONNECTED connections are considered — disconnected ones are
+           ignored even when they match the slug.
+        2. If ``self.property_id`` is set, prefer an exact property-scoped
+           connection.  If none exists, fall back to an account-global
+           connection (``property_id IS NULL``).
+        3. If multiple account-global connections match the slug, return
+           ``None`` (ambiguous — the caller must set an explicit integrationId).
+
+        Fails open — a missing slug, absent session, or unresolvable match
+        returns ``None`` so the caller falls through to the custom HTTP path
+        rather than crashing.
+        """
+        if not slug or not self.account_id or not self.db_session:
+            return None
+        try:
+            from botelier.models.integration import (
+                AccountIntegration,
+                IntegrationStatus,
+                IntegrationType,
+            )
+
+            base_q = (
+                self.db_session.query(AccountIntegration)
+                .join(
+                    IntegrationType,
+                    AccountIntegration.integration_type_id == IntegrationType.id,
+                )
+                .filter(
+                    AccountIntegration.account_id == self.account_id,
+                    AccountIntegration.status == IntegrationStatus.CONNECTED,
+                    IntegrationType.slug == slug,
+                )
+            )
+
+            # --- Step 1: exact property match ---
+            if self.property_id:
+                exact = base_q.filter(
+                    AccountIntegration.property_id == self.property_id
+                ).all()
+                if len(exact) == 1:
+                    return str(exact[0].id)
+                if len(exact) > 1:
+                    logger.debug(
+                        "flow_executor: ambiguous slug %r — %d property-scoped "
+                        "connections for property %s; cannot resolve",
+                        slug,
+                        len(exact),
+                        self.property_id,
+                    )
+                    return None
+
+            # --- Step 2: account-global connection (property_id IS NULL) ---
+            global_conns = base_q.filter(
+                AccountIntegration.property_id.is_(None)
+            ).all()
+            if len(global_conns) == 1:
+                return str(global_conns[0].id)
+            if len(global_conns) > 1:
+                logger.debug(
+                    "flow_executor: ambiguous slug %r — %d account-global "
+                    "connections for account %s; cannot resolve",
+                    slug,
+                    len(global_conns),
+                    self.account_id,
+                )
+                return None
+
+            return None
+        except Exception:
+            logger.debug(
+                "flow_executor: slug resolution failed for %r (account %s)",
+                slug,
+                self.account_id,
+            )
+            return None
 
     async def _handle_capability_request(
         self, node_id: str, node: FlowNode, api_config: dict
