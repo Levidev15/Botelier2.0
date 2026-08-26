@@ -157,7 +157,7 @@ def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str], List[str]]
                     f"API Request node '{node_name}' has unsupported method '{method}'"
                 )
             if api_source == "integration":
-                if not api.get("integrationId"):
+                if not api.get("integrationId") and not api.get("integrationSlug"):
                     _node_error(
                         f"API Request node '{node_name}' has no connected integration selected"
                     )
