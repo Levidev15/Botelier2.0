@@ -7,6 +7,7 @@ API calls, and conditions in a chat-like interface without requiring Twilio.
 
 import json
 import os
+import re
 import uuid
 from typing import Any, Optional
 
@@ -38,6 +39,46 @@ DEFAULT_SIM_MODEL = "gpt-4o-mini"
 
 OPENAI_API_KEY = os.environ.get("OPENAI_API_KEY")
 openai_client = OpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
+
+
+_QUESTION_START = re.compile(
+    r"^(?:(?:what|when|where|why|how|who|which)\b|"
+    r"(?:can|could|would|do|does|did|is|are|will|may|should)\s+"
+    r"(?:you|we|i|there)\b|tell\s+me\b|please\s+tell\s+me\b)",
+    re.IGNORECASE,
+)
+_UNCERTAIN_ANSWER = re.compile(
+    r"\b(?:i\s+don'?t\s+know|not\s+sure|no\s+idea|whatever)\b", re.IGNORECASE
+)
+
+
+def _forced_collection_function(state: "SimulationState", user_message: str) -> Optional[str]:
+    """Return the active ``collect_*`` function for an unambiguous answer.
+
+    The Test Lab should not leave a caller's direct value up to the model's
+    optional tool choice: it may acknowledge "two" in text and never save it.
+    Questions and explicit uncertainty remain conversational so the assistant
+    can answer them naturally and resume the same slot on the next turn.
+
+    Value parsing intentionally remains with the configured function schema and
+    FlowExecutor. This helper only decides whether the active required slot must
+    be collected now; validation and retry prompts stay channel-neutral.
+    """
+    text = (user_message or "").strip()
+    if not text or "?" in text or _QUESTION_START.match(text) or _UNCERTAIN_ANSWER.search(text):
+        return None
+
+    current_node = state.executor.state.get_current_node()
+    # COLLECT_FORM deliberately exposes multiple remaining slot functions so
+    # one reply can provide several values. Forcing one "next" slot would
+    # discard the other values from that reply, so preserve its existing auto
+    # selection contract.
+    if not current_node or current_node.type != NodeType.COLLECT_SLOT:
+        return None
+
+    next_slot = state.executor._get_next_slot_instructions()
+    variable = (next_slot or {}).get("variable")
+    return f"collect_{variable}" if variable else None
 
 
 class SimulationSession:
@@ -968,6 +1009,11 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
     is_ended = False
     max_iterations = 5
     last_text_content = ""
+    # Classify this user message against the slot that was active when it
+    # arrived. A tool result can advance to another slot within this loop, but
+    # that new prompt needs a fresh user turn; never reuse the old answer to
+    # force collection again.
+    initial_collection_function = _forced_collection_function(state, user_message)
 
     try:
         for iteration in range(max_iterations):
@@ -1076,6 +1122,16 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                 candidate = f"execute_{current_node.id}"
                 if candidate not in all_functions_called:
                     forced_name = candidate
+            elif (
+                iteration == 0
+                and current_node
+                and current_node.type == NodeType.COLLECT_SLOT
+            ):
+                # Direct replies to a required field must be persisted rather
+                # than left to an optional tool call. The helper deliberately
+                # returns None for questions, so "Do you allow pets?" still gets
+                # a natural answer and the active collection prompt remains.
+                forced_name = initial_collection_function
             elif current_node and current_node.type == NodeType.END:
                 # END nodes must actually end the session. "auto" lets the LLM
                 # speak the goodbye as plain text and leave the session open —
