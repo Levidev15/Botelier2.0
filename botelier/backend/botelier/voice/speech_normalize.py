@@ -91,8 +91,12 @@ def ordinal_to_words(n: int) -> str:
 
 # "3rd", "21st", "5th" — whole token only (never inside a larger word).
 _ORDINAL_RE = re.compile(r"\b(\d{1,4})(st|nd|rd|th)\b", re.IGNORECASE)
-# "3,000" / "1,250,000" — comma-grouped integers.
+# "3,000" / "1,250,000" — comma-grouped integers (no decimal cents).
 _COMMA_INT_RE = re.compile(r"\b\d{1,3}(?:,\d{3})+\b(?!\.\d)")
+# "3,000.00" / "1,500.50" — comma-grouped integers WITH decimal cents.
+# Must run BEFORE _DECIMAL_RE so the full number wins over the fragment match
+# (_DECIMAL_RE would otherwise match "000.00" at the word boundary after the comma).
+_COMMA_DECIMAL_RE = re.compile(r"\b(\d{1,3}(?:,\d{3})+)\.(\d{1,2})\b(?!\d)")
 # "320.50" — decimal amounts (spoken as "... point five zero").
 _DECIMAL_RE = re.compile(r"\b(\d{1,6})\.(\d{1,2})\b(?!\d)")
 # Plain integers of 3-6 digits with no leading zero, not part of a longer
@@ -141,6 +145,16 @@ def normalize_for_speech(text: str) -> str:
             return m.group(0)
         return number_to_words(n)
 
+    def _comma_decimal(m: re.Match) -> str:
+        n = int(m.group(1).replace(",", ""))
+        if n > _MAX_WORDS_NUMBER or _is_identifier_context(text, m.start()):
+            return m.group(0)
+        whole = number_to_words(n)
+        frac = m.group(2)
+        if frac.strip("0") == "":
+            return whole  # "3,000.00" -> "three thousand"
+        return whole + " point " + " ".join(_ONES[int(d)] for d in frac)
+
     def _decimal(m: re.Match) -> str:
         n = int(m.group(1))
         if n > _MAX_WORDS_NUMBER:
@@ -160,6 +174,7 @@ def normalize_for_speech(text: str) -> str:
         return _CURRENCY_WORDS[m.group(1)]
 
     text = _ORDINAL_RE.sub(_ordinal, text)
+    text = _COMMA_DECIMAL_RE.sub(_comma_decimal, text)
     text = _COMMA_INT_RE.sub(_comma_int, text)
     text = _DECIMAL_RE.sub(_decimal, text)
     text = _PLAIN_INT_RE.sub(_plain_int, text)

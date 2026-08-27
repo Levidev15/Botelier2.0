@@ -65,6 +65,26 @@ def test_normalize_prices_and_currency():
     )
 
 
+def test_normalize_comma_decimal_prices():
+    """Comma-grouped integers with decimal cents must be spoken as a single amount,
+    not split at the word boundary between the comma and the trailing digit run."""
+    # Zero cents: 3,000.00 -> "three thousand" (cents suppressed)
+    assert (
+        normalize_for_speech("The total is 3,000.00 EUR.")
+        == "The total is three thousand euros."
+    )
+    # Non-zero cents: fractional part expanded digit-by-digit
+    assert (
+        normalize_for_speech("That's 1,500.50 EUR")
+        == "That's one thousand five hundred point five zero euros"
+    )
+    # Larger amount with zero cents
+    assert (
+        normalize_for_speech("The rate is 10,000.00 USD")
+        == "The rate is ten thousand dollars"
+    )
+
+
 def test_normalize_leaves_phone_numbers_times_and_small_numbers_alone():
     # 7+ digit sequences (phone/confirmation numbers) read digit-by-digit — keep.
     assert normalize_for_speech("call 5551234567") == "call 5551234567"
