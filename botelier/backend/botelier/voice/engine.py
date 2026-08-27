@@ -13,6 +13,7 @@ import asyncio
 import os
 import time
 from collections.abc import Callable
+from datetime import datetime, timezone
 from typing import Any, Dict, Optional
 
 from loguru import logger
@@ -42,6 +43,10 @@ from pipecat.frames.frames import (
 )
 from pipecat.metrics.metrics import LLMUsageMetricsData
 from botelier.voice.usage_observer import UsageObserver
+from botelier.voice.prompt_context import (
+    build_runtime_system_prompt_from_parts,
+    static_prompt_prefix,
+)
 
 # Lazy imports for provider services to avoid startup issues with optional dependencies
 # Services will be imported only when actually used
@@ -89,6 +94,46 @@ def is_external_vad_effectively_enabled(config: VoiceAgentConfig) -> bool:
         and config.vad_provider == "silero"
         and not is_flux_model(config.stt_model or "")
     )
+
+
+class AssistantLocalTimeContextUpdater(FrameProcessor):
+    """Refresh only the volatile system-prompt tail before each LLM trigger.
+
+    The processor sits immediately between the user context aggregator and the
+    LLM. Every frame that can trigger an LLM invocation therefore observes a
+    current assistant-local clock, while the byte-stable assistant/KB/flow
+    prefix remains unchanged for provider prompt caching.
+    """
+
+    def __init__(self, context: LLMContext, config: VoiceAgentConfig):
+        super().__init__()
+        self._context = context
+        self._assistant_prompt = (
+            config.runtime_assistant_prompt or static_prompt_prefix(config.system_prompt)
+        )
+        self._flow_personas = list(config.runtime_flow_personas)
+        self._has_flow = config.runtime_has_flow
+        self._has_past_date_slot = config.runtime_has_past_date_slot
+        self._timezone_name = config.timezone
+
+    def refresh_context(self, now: datetime) -> None:
+        """Refresh the system message in place; exposed for deterministic tests."""
+        messages = self._context.messages
+        if not messages or messages[0].get("role") != "system":
+            return
+        messages[0]["content"] = build_runtime_system_prompt_from_parts(
+            self._assistant_prompt,
+            self._flow_personas if self._has_flow else [],
+            self._has_flow,
+            self._has_past_date_slot if self._has_flow else False,
+            self._timezone_name,
+            now=now,
+        )
+
+    async def process_frame(self, frame: Frame, direction: FrameDirection):
+        await super().process_frame(frame, direction)
+        self.refresh_context(datetime.now(timezone.utc))
+        await self.push_frame(frame, direction)
 
 
 class InterruptionTracker(FrameProcessor):
@@ -2590,6 +2635,10 @@ class VoiceEngineFactory:
             )
 
         context_aggregator = LLMContextAggregatorPair(context, user_params=user_params)
+        assistant_time_context_updater = AssistantLocalTimeContextUpdater(
+            context,
+            config,
+        )
 
         # Register function handlers with LLM
         if function_handlers:
@@ -2606,6 +2655,7 @@ class VoiceEngineFactory:
                 first_speech_tracker,  # Detects caller's first utterance (non-blocking event log)
                 idle_timeout_tracker.processor,  # Logs idle_timeout when caller goes silent too long
                 context_aggregator.user(),
+                assistant_time_context_updater,  # Refreshes volatile clock tail before each LLM turn
                 llm,
                 llm_response_capture,  # Captures complete LLM responses for transcript recovery
                 interruption_tracker,  # Observes text frames + InterruptionFrame before TTS

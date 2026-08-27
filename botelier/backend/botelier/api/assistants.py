@@ -10,9 +10,10 @@ Endpoints:
 
 from typing import List, Optional
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 from sqlalchemy.orm import Session
 
 from botelier.auth.middleware import (
@@ -32,6 +33,20 @@ from botelier.models.user import User, UserType
 from botelier.services.property_scope import property_belongs_to_account
 
 router = APIRouter(prefix="/api/assistants", tags=["assistants"])
+
+
+def _validate_iana_timezone(value: str) -> str:
+    """Validate and normalize an IANA timezone identifier."""
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError("Timezone must be a valid IANA timezone identifier")
+    timezone = value.strip()
+    if len(timezone) > 64:
+        raise ValueError("Timezone must be 64 characters or fewer")
+    try:
+        ZoneInfo(timezone)
+    except (ZoneInfoNotFoundError, ValueError, KeyError):
+        raise ValueError("Timezone must be a valid IANA timezone identifier")
+    return timezone
 
 
 def _validate_assistant_mcp_connection(
@@ -88,6 +103,7 @@ class AssistantCreate(BaseModel):
     system_prompt: str = "You are a helpful assistant."
     first_message: Optional[str] = None
     language: str = "en"
+    timezone: str = "UTC"
     temperature: Optional[float] = 0.7
     max_tokens: Optional[int] = None
     stt_config: Optional[dict] = None
@@ -99,6 +115,8 @@ class AssistantCreate(BaseModel):
     allow_interruptions: bool = True
     is_active: bool = True
     call_settings: Optional[dict] = None
+
+    _validate_timezone = field_validator("timezone")(_validate_iana_timezone)
 
 
 class AssistantUpdate(BaseModel):
@@ -122,6 +140,7 @@ class AssistantUpdate(BaseModel):
     system_prompt: Optional[str] = None
     first_message: Optional[str] = None
     language: Optional[str] = None
+    timezone: Optional[str] = None
     temperature: Optional[float] = None
     max_tokens: Optional[int] = None
     stt_config: Optional[dict] = None
@@ -135,6 +154,8 @@ class AssistantUpdate(BaseModel):
     flow_config: Optional[dict] = None
     sms_config: Optional[dict] = None
     call_settings: Optional[dict] = None
+
+    _validate_timezone = field_validator("timezone")(_validate_iana_timezone)
 
 
 class FlowConfigUpdate(BaseModel):
@@ -166,6 +187,7 @@ class AssistantResponse(BaseModel):
     system_prompt: str
     first_message: Optional[str]
     language: str
+    timezone: str = "UTC"
     temperature: Optional[float]
     max_tokens: Optional[int]
     stt_config: Optional[dict]
@@ -261,6 +283,7 @@ async def create_assistant(
         system_prompt=data.system_prompt,
         first_message=data.first_message,
         language=data.language,
+        timezone=data.timezone,
         temperature=data.temperature,
         max_tokens=data.max_tokens,
         stt_config=data.stt_config or {},

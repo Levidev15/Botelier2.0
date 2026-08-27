@@ -15,6 +15,7 @@ import { useAuthToken } from "@/lib/auth/useAuthToken";
 import PostCallQATab from "@/components/forms/PostCallQATab";
 import { useAccountFeatures } from "@/lib/hooks/useAccountFeatures";
 import GreetingCacheButton from "@/components/forms/GreetingCacheButton";
+import { TIMEZONE_OPTIONS } from "@/components/analytics/TimezonePicker";
 
 const SILERO_VAD_DEFAULTS = {
   confidence: 0.7,
@@ -48,6 +49,7 @@ interface Assistant {
   system_prompt: string | null;
   first_message: string | null;
   language: string;
+  timezone: string;
   temperature: number | null;
   max_tokens: number | null;
   is_active: boolean;
@@ -145,6 +147,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
     system_prompt: "You are a helpful hotel concierge assistant. Be friendly, professional, and helpful.",
     first_message: "Hello! Thank you for calling. How may I assist you today?",
     language: "en",
+    timezone: "UTC",
     temperature: 0.7,
     max_tokens: 150,
     mcp_connection_id: null,
@@ -1310,6 +1313,24 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
                 </p>
               </div>
             </div>
+
+            <FormField
+              label="Assistant Timezone"
+              description="Used to interpret dates and times mentioned during calls."
+            >
+              <select
+                value={formData.timezone || "UTC"}
+                onChange={(e) => handleFieldChange("timezone", e.target.value)}
+                className="w-full px-3 py-2 bg-[#1a1a1a] border border-[#333] rounded-lg text-sm text-white focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
+              >
+                {formData.timezone && !TIMEZONE_OPTIONS.some(({ value }) => value === formData.timezone) && (
+                  <option value={formData.timezone}>{formData.timezone}</option>
+                )}
+                {TIMEZONE_OPTIONS.map(({ label, value }) => (
+                  <option key={value} value={value}>{label}</option>
+                ))}
+              </select>
+            </FormField>
 
             <FormField
               label="Max Call Duration (seconds)"

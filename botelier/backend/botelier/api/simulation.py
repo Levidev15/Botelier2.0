@@ -9,6 +9,7 @@ import json
 import os
 import re
 import uuid
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -25,6 +26,9 @@ from ..models.tool import Tool, ToolType
 from ..models.tool_set import ToolSet
 from ..models.user import User
 from ..services.ssrf_safe_transport import _BLOCKED_LITERAL_HOSTS, SSRFSafeTransport
+from ..voice.prompt_context import (
+    build_runtime_system_prompt,
+)
 
 router = APIRouter(prefix="/api/simulate", tags=["Simulation"])
 
@@ -97,6 +101,8 @@ class SimulationState:
         tool_name: str = "",
         account_id: Optional[str] = None,
         kb_prompt_block: str = "",
+        assistant_prompt: str = "You are a friendly assistant.",
+        timezone: str = "UTC",
         escalation_target: Optional[str] = None,
         model: str = DEFAULT_SIM_MODEL,
         capability_schemas: Optional[list] = None,
@@ -149,6 +155,8 @@ class SimulationState:
         # at session start so the simulator mirrors live: it can answer mid-flow
         # questions from the KB and offer "talk to a human".
         self.kb_prompt_block = kb_prompt_block or ""
+        self.assistant_prompt = assistant_prompt or "You are a friendly assistant."
+        self.timezone = timezone or "UTC"
         self.escalation_target = escalation_target
         self.messages: list[dict] = []
         self.llm_messages: list[dict] = []
@@ -157,7 +165,7 @@ class SimulationState:
 
     def _init_llm_context(self):
         """Initialize LLM conversation context with system prompt."""
-        system_prompt = self.executor.get_system_prompt() + self.kb_prompt_block
+        system_prompt = self.build_system_prompt()
         initial_messages = self.executor.get_initial_messages()
         combined_greeting = " ".join(initial_messages)
 
@@ -165,6 +173,16 @@ class SimulationState:
             {"role": "system", "content": system_prompt},
             {"role": "assistant", "content": combined_greeting},
         ]
+
+    def build_system_prompt(self, now=None) -> str:
+        """Build the live-parity prompt, keeping volatile context after static content."""
+        instant = now or datetime.now(timezone.utc)
+        return build_runtime_system_prompt(
+            self.assistant_prompt + self.kb_prompt_block,
+            [self.executor],
+            self.timezone,
+            now=instant,
+        )
 
     def add_message(self, role: str, content: str, metadata: Optional[dict] = None):
         self.messages.append({"role": role, "content": content, "metadata": metadata or {}})
@@ -771,6 +789,16 @@ async def start_simulation(
     kb_prompt_block = _build_kb_prompt_block(
         assistant.knowledge_base_id if assistant else None
     )
+    assistant_prompt = (
+        assistant.system_prompt
+        if assistant and assistant.system_prompt
+        else "You are a friendly assistant."
+    )
+    assistant_timezone = (
+        (getattr(assistant, "timezone", None) or "UTC")
+        if assistant
+        else "UTC"
+    )
     capability_schemas = _build_capability_tool_schemas(db, assistant)
     # Resolve property_id first so _build_dynamic_operation_tool_schemas can apply
     # the same property-scope filter as voice / SMS.
@@ -793,6 +821,7 @@ async def start_simulation(
             flow_tool_id=str(tool.id),
             escalation_target=escalation_target,
             property_id=property_id,
+            assistant_timezone=assistant_timezone,
         )
     except Exception as e:
         logger.error(f"Failed to parse flow config: {e}")
@@ -840,6 +869,8 @@ async def start_simulation(
         tool_name=tool.name,
         account_id=sim_account_id,
         kb_prompt_block=kb_prompt_block,
+        assistant_prompt=assistant_prompt,
+        timezone=assistant_timezone,
         escalation_target=escalation_target,
         model=sim_model,
         capability_schemas=capability_schemas,
@@ -999,7 +1030,7 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
 
     state.add_llm_message("user", user_message)
 
-    updated_system_prompt = state.executor.get_system_prompt() + state.kb_prompt_block
+    updated_system_prompt = state.build_system_prompt()
     if state.llm_messages and state.llm_messages[0]["role"] == "system":
         state.llm_messages[0]["content"] = updated_system_prompt
 

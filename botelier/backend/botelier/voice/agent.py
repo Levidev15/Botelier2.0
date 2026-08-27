@@ -47,6 +47,11 @@ class VoiceAgentConfig(BaseModel):
 
     system_prompt: str = "You are a friendly assistant."
     greeting_message: str = "Hello! How can I help you today?"
+    timezone: str = "UTC"
+    runtime_assistant_prompt: Optional[str] = None
+    runtime_flow_personas: List[str] = Field(default_factory=list)
+    runtime_has_flow: bool = False
+    runtime_has_past_date_slot: bool = False
 
     enable_function_calling: bool = False
     functions: List[Dict[str, Any]] = Field(default_factory=list)

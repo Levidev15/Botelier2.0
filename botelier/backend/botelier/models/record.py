@@ -70,6 +70,11 @@ class Record(Base):
     source_channel = Column(String(10), nullable=False, default=SourceChannel.MANUAL.value)
     capture_method = Column(String(20), nullable=False, default=CaptureMethod.MANUAL.value)
 
+    # Stable key for atomic SAVE_RECORD deduplication. NULL for manual,
+    # auto-extracted, and legacy rows; PostgreSQL permits multiple NULLs while
+    # enforcing uniqueness for flow-node writes that carry a key.
+    idempotency_key = Column(String(64), nullable=True)
+
     source_call_log_id = Column(
         UUID(as_uuid=True),
         ForeignKey("call_logs.id", ondelete="SET NULL"),
@@ -96,6 +101,7 @@ class Record(Base):
         Index("ix_records_account_created", "account_id", "created_at"),
         Index("ix_records_source_call_log", "source_call_log_id"),
         Index("ix_records_source_conversation", "source_conversation_id"),
+        Index("ix_records_idempotency_key", "idempotency_key", unique=True),
     )
 
     def __repr__(self):

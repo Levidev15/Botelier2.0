@@ -8,6 +8,7 @@ This module handles:
 """
 
 import asyncio
+import hashlib
 import json
 import re
 import time
@@ -17,6 +18,7 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from typing import Any, Awaitable, Callable, Optional
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import httpx
 from loguru import logger
@@ -208,6 +210,110 @@ class FlowConfig:
     global_prompt: Optional[str] = None
 
 
+@dataclass
+class CallFlowContext:
+    """Caller facts shared by every flow executor on one call.
+
+    Values are keyed by the flow variable key.  ``revisions`` makes caller
+    corrections explicit: importing a newer caller-provided value always wins
+    over a value collected (or imported) earlier in the call.
+    """
+
+    values: dict[str, Any] = field(default_factory=dict)
+    revisions: dict[str, int] = field(default_factory=dict)
+    _next_revision: int = 0
+    _bound_slot_maps: list[tuple[dict[str, Any], dict[str, Any]]] = field(
+        default_factory=list, repr=False
+    )
+    _executors: list[Any] = field(default_factory=list, repr=False)
+    _notifying: bool = field(default=False, repr=False)
+    _pending_changes: set[str] = field(default_factory=set, repr=False)
+
+    def set_caller_value(self, key: str, value: Any) -> None:
+        self.set_caller_values({key: value})
+
+    def set_caller_values(self, values: dict[str, Any]) -> None:
+        changed: set[str] = set()
+        for key, value in values.items():
+            if key not in self.values or self.values[key] != value:
+                changed.add(key)
+            self._next_revision += 1
+            self.values[key] = value
+            self.revisions[key] = self._next_revision
+            for slots, _fallback in self._bound_slot_maps:
+                slots[key] = value
+        self._notify_executors(changed)
+
+    def _notify_executors(self, changed: set[str]) -> None:
+        """Atomically fan caller-fact changes through every bound executor."""
+        self._pending_changes.update(changed)
+        if self._notifying:
+            return
+        self._notifying = True
+        try:
+            while self._pending_changes:
+                key = self._pending_changes.pop()
+                removals: set[str] = set()
+                for executor in tuple(self._executors):
+                    removals.update(executor._on_shared_caller_fact_changed(key))
+                for removed_key in removals:
+                    if removed_key not in self.values:
+                        continue
+                    self.values.pop(removed_key, None)
+                    self.revisions.pop(removed_key, None)
+                    for slots, fallback in self._bound_slot_maps:
+                        if removed_key in fallback:
+                            slots[removed_key] = fallback[removed_key]
+                        else:
+                            slots.pop(removed_key, None)
+                    self._pending_changes.add(removed_key)
+        finally:
+            self._notifying = False
+        # Persist every executor's independently rewound node/local state. This
+        # is best-effort and deliberately scheduled only after the whole
+        # notification/removal transaction is complete.
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        for executor in tuple(self._executors):
+            loop.create_task(executor._snapshot_state())
+
+    def register_executor(self, executor: Any) -> None:
+        if not any(bound is executor for bound in self._executors):
+            self._executors.append(executor)
+
+    def restore_caller_value(self, key: str, value: Any, revision: int) -> None:
+        """Restore an explicit fact without manufacturing a newer revision."""
+        if revision < self.revisions.get(key, -1):
+            return
+        changed = key not in self.values or self.values[key] != value
+        self.values[key] = value
+        self.revisions[key] = revision
+        self._next_revision = max(self._next_revision, revision)
+        for slots, _fallback in self._bound_slot_maps:
+            slots[key] = value
+        if changed:
+            self._notify_executors({key})
+
+    def remove_caller_value(self, key: str) -> None:
+        if key in self.values:
+            self._pending_changes.add(key)
+            self.values.pop(key, None)
+            self.revisions.pop(key, None)
+            for slots, fallback in self._bound_slot_maps:
+                if key in fallback:
+                    slots[key] = fallback[key]
+                else:
+                    slots.pop(key, None)
+            self._notify_executors(set())
+
+    def bind(self, slots: dict[str, Any], fallback: dict[str, Any]) -> None:
+        if not any(bound is slots for bound, _ in self._bound_slot_maps):
+            self._bound_slot_maps.append((slots, fallback))
+        slots.update(self.values)
+
+
 _PLACEHOLDER_PATTERNS = frozenset(
     {"[not provided]", "not provided", "n/a", "none", "unknown", ""}
 )
@@ -224,13 +330,64 @@ def _is_valid_new_value(value: Any) -> bool:
     return str(value).strip().lower() not in _PLACEHOLDER_PATTERNS
 
 
+def _normalize_slot_validation(validation: Optional[dict]) -> dict:
+    """Normalize every editor/runtime cross-field spelling in one place."""
+    normalized = dict(validation or {})
+    cross_field = normalized.get("crossFieldCheck") or normalized.get(
+        "cross_field_check"
+    )
+    compare_with = None
+    operator = None
+    error_message = None
+    if isinstance(cross_field, dict):
+        compare_with = cross_field.get("compareWith") or cross_field.get(
+            "compare_with"
+        )
+        operator = cross_field.get("operator")
+        error_message = cross_field.get("errorMessage") or cross_field.get(
+            "error_message"
+        )
+    compare_with = (
+        compare_with
+        or normalized.get("afterDateVariable")
+        or normalized.get("after_date_variable")
+    )
+    if compare_with:
+        normalized["cross_field_variable"] = compare_with
+        normalized["cross_field_operator"] = (operator or "after").lower()
+        if error_message:
+            normalized["cross_field_error"] = error_message
+    return normalized
+
+
+def _cross_field_constraint(
+    validation: dict, variables: dict[str, Any]
+) -> Optional[str]:
+    compare_var = validation.get("cross_field_variable")
+    if not compare_var:
+        return None
+    operator = validation.get("cross_field_operator", "after")
+    compare_value = variables.get(compare_var)
+    return f"must be {operator} {compare_value or compare_var}"
+
+
 class FlowState:
     """Tracks the state of a conversation flow execution."""
 
-    def __init__(self, flow_config: FlowConfig):
+    def __init__(
+        self, flow_config: FlowConfig, call_context: Optional[CallFlowContext] = None
+    ):
         self.flow_config = flow_config
+        self.call_context = call_context or CallFlowContext()
         self.current_node_id: Optional[str] = flow_config.initial_node
-        self.collected_slots: dict[str, Any] = {}
+        # Flow-local working state. Defaults and derived/API outputs live only
+        # here; the shared context overlays explicit caller facts separately.
+        self.default_slots: dict[str, Any] = {
+            var.key: var.default_value
+            for var in flow_config.variables
+            if var.default_value
+        }
+        self.collected_slots: dict[str, Any] = dict(self.default_slots)
         self.pending_slot: Optional[str] = None
         self.retry_count: int = 0
         self.is_complete: bool = False
@@ -254,16 +411,18 @@ class FlowState:
         # snapshot (under the reserved "_saved_records" key) so it survives a
         # websocket dropout / reconnect on a fresh worker.
         self.saved_records: dict[str, str] = {}
+        self.derived_slots: set[str] = set()
 
-        for var in flow_config.variables:
-            if var.default_value:
-                self.collected_slots[var.key] = var.default_value
+        self.call_context.bind(self.collected_slots, self.default_slots)
 
     def get_variable(self, key: str) -> Optional[Any]:
         return self.collected_slots.get(key)
 
     def set_variable(self, key: str, value: Any) -> None:
+        if key in self.call_context.values:
+            return
         self.collected_slots[key] = value
+        self.derived_slots.add(key)
 
     def get_current_node(self) -> Optional[FlowNode]:
         if not self.current_node_id:
@@ -588,9 +747,22 @@ class FlowExecutor:
         escalation_target: Optional[str] = None,
         property_id: Optional[str] = None,
         session_factory: Optional[Callable] = None,
+        call_context: Optional[CallFlowContext] = None,
+        assistant_timezone: str = "UTC",
     ):
         self.flow_config = flow_config
-        self.state = FlowState(flow_config)
+        self.call_context = call_context or CallFlowContext()
+        self.state = FlowState(flow_config, self.call_context)
+        self.call_context.register_executor(self)
+        self.assistant_timezone = assistant_timezone or "UTC"
+        try:
+            self._timezone = ZoneInfo(self.assistant_timezone)
+        except ZoneInfoNotFoundError:
+            logger.warning(
+                f"Unknown assistant timezone {self.assistant_timezone!r}; using UTC"
+            )
+            self.assistant_timezone = "UTC"
+            self._timezone = timezone.utc
         self.speak_callback = speak_callback
         self.transfer_callback = transfer_callback
         self.end_call_callback = end_call_callback
@@ -641,6 +813,11 @@ class FlowExecutor:
         #   is still running or just finished.
         self._get_locks: dict[str, asyncio.Lock] = {}
         self._get_recent: dict[str, tuple[float, str, dict]] = {}
+        self._save_record_locks: dict[str, asyncio.Lock] = {}
+        # Calls without a stable contact/session id cannot be deduplicated across
+        # workers. Keep their fallback explicitly executor-scoped while still
+        # protecting retries/concurrency within this executor.
+        self._save_record_fallback_scope = uuid.uuid4().hex
         # Tracks whether the built-in confirm_details fallback (flows WITHOUT a
         # CONFIRMATION node) already got a positive confirmation. Once True the
         # fallback is no longer exposed, so the LLM can't loop back into
@@ -704,6 +881,13 @@ class FlowExecutor:
         slots_payload: dict[str, Any] = dict(self.state.collected_slots)
         if self.state.saved_records:
             slots_payload["_saved_records"] = self.state.saved_records
+        if self._non_get_results:
+            slots_payload["_non_get_results"] = self._non_get_results
+        if self.state.derived_slots:
+            slots_payload["_derived_slots"] = sorted(self.state.derived_slots)
+        if self.call_context.revisions:
+            slots_payload["_slot_revisions"] = self.call_context.revisions
+            slots_payload["_slot_revision_counter"] = self.call_context._next_revision
         payload = {
             "account_id": str(self.account_id) if self.account_id else None,
             "property_id": self.property_id,
@@ -812,12 +996,45 @@ class FlowExecutor:
             except (ValueError, TypeError):
                 saved_slots = {}
         if isinstance(saved_slots, dict):
+            saved_slots = dict(saved_slots)
             saved_records = saved_slots.pop("_saved_records", None)
             if isinstance(saved_records, dict):
                 self.state.saved_records.update(
                     {str(k): str(v) for k, v in saved_records.items()}
                 )
-            self.state.collected_slots.update(saved_slots)
+            non_get_results = saved_slots.pop("_non_get_results", None)
+            if isinstance(non_get_results, dict):
+                self._non_get_results.update(
+                    {
+                        str(k): dict(v)
+                        for k, v in non_get_results.items()
+                        if isinstance(v, dict)
+                    }
+                )
+            derived_slots = saved_slots.pop("_derived_slots", None)
+            if isinstance(derived_slots, list):
+                self.state.derived_slots.update(str(k) for k in derived_slots)
+            saved_revisions = saved_slots.pop("_slot_revisions", None)
+            saved_counter = saved_slots.pop("_slot_revision_counter", 0)
+            if isinstance(saved_revisions, dict):
+                for slot_key, slot_value in saved_slots.items():
+                    incoming_revision = int(saved_revisions.get(slot_key, 0) or 0)
+                    if slot_key in saved_revisions:
+                        self.call_context.restore_caller_value(
+                            slot_key, slot_value, incoming_revision
+                        )
+                    else:
+                        # Defaults and derived/API values are restored only into
+                        # this flow's working state, never into shared facts.
+                        self.state.collected_slots[slot_key] = slot_value
+                self.call_context._next_revision = max(
+                    self.call_context._next_revision, int(saved_counter or 0)
+                )
+            else:
+                # Backward compatibility for snapshots written before revision
+                # metadata existed: provenance is unknown, so fail closed and
+                # keep every value flow-local.
+                self.state.collected_slots.update(saved_slots)
         if saved_node:
             self.state.current_node_id = saved_node
         # A persisted "complete" status can mean either the graph structurally
@@ -975,7 +1192,7 @@ class FlowExecutor:
         ``call_handler``) build on these same pieces, so the two paths stay in
         lockstep.
         """
-        current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        current_date = datetime.now(self._timezone).strftime("%Y-%m-%d")
         rules = build_flow_behavioral_rules(current_date, self._has_any_past_date_slot())
         persona = self.get_flow_persona_section()
         if persona:
@@ -1040,13 +1257,13 @@ class FlowExecutor:
                     if "max" in validation:
                         constraints.append(f"maximum: {validation['max']}")
 
-                    after_date_var = validation.get("afterDateVariable") or validation.get(
-                        "after_date_variable"
-                    )
+                    after_date_var = validation.get("cross_field_variable")
                     if after_date_var:
-                        after_date_str = self.state.get_variable(after_date_var)
-                        if after_date_str:
-                            constraints.append(f"must be after {after_date_str}")
+                        constraints.append(
+                            _cross_field_constraint(
+                                validation, self.state.collected_slots
+                            )
+                        )
 
                 if var.type == SlotType.DATE:
                     require_future = (
@@ -1297,13 +1514,219 @@ class FlowExecutor:
             if node.type == NodeType.COLLECT_SLOT:
                 slot = node.data.get("slot", {})
                 if slot.get("variableKey") == var_key:
-                    return slot.get("validation")
+                    return _normalize_slot_validation(slot.get("validation"))
             elif node.type == NodeType.COLLECT_FORM:
                 slots = node.data.get("slots", [])
                 for slot in slots:
                     if slot.get("variableKey") == var_key:
-                        return slot.get("validation")
+                        return _normalize_slot_validation(slot.get("validation"))
         return None
+
+    def _slot_config_for_variable(self, var_key: str) -> Optional[dict]:
+        """Return the concrete collect-node slot config for ``var_key``."""
+        for node in self.flow_config.nodes:
+            if node.type == NodeType.COLLECT_SLOT:
+                slot = node.data.get("slot", {})
+                if slot.get("variableKey") == var_key:
+                    return slot
+            elif node.type == NodeType.COLLECT_FORM:
+                for slot in node.data.get("slots", []):
+                    if slot.get("variableKey") == var_key:
+                        return slot
+        return None
+
+    def import_caller_slots(self, values: Optional[dict[str, Any]]) -> dict:
+        """Validate and atomically import structured caller facts.
+
+        This is used by ``start_<flow>`` arguments. Invalid values never enter
+        authoritative state, and a mixed valid/invalid payload imports nothing.
+        """
+        values = values or {}
+        variables = {var.key: var for var in self.flow_config.variables}
+        errors: dict[str, str] = {}
+        normalized: dict[str, Any] = {}
+        for key in values:
+            if key not in variables:
+                errors[key] = "Unknown flow variable."
+        original_values = dict(self.state.collected_slots)
+        # Validate in declared flow order and expose earlier candidate values to
+        # later validators (notably departure.afterDateVariable=arrival).
+        for var in self.flow_config.variables:
+            key = var.key
+            if key not in values:
+                continue
+            value = values[key]
+            if not _is_valid_new_value(value):
+                errors[key] = "A real value is required."
+                continue
+            error = self._validate_slot_value(var, self._slot_config_for_variable(key), value)
+            if error:
+                errors[key] = error
+                continue
+            if var.type == SlotType.NUMBER and isinstance(value, str):
+                try:
+                    value = int(value)
+                except ValueError:
+                    pass
+            normalized[key] = value
+            self.state.collected_slots[key] = value
+        self.state.collected_slots.clear()
+        self.state.collected_slots.update(original_values)
+        if errors:
+            return {"success": False, "errors": errors, "imported": {}}
+        self.call_context.set_caller_values(normalized)
+        self.advance_past_satisfied_collects()
+        return {"success": True, "errors": {}, "imported": normalized}
+
+    def advance_past_satisfied_collects(self) -> None:
+        """Skip only collect gates already satisfied by authoritative state.
+
+        Each hop follows the real graph edge and delegates condition evaluation
+        to ``FlowState.advance_to``.  It stops at every non-collect node, so API,
+        save, router, confirmation, transfer, end, and other action gates can
+        never be bypassed by proactive slot import.
+        """
+        for _ in range(len(self.flow_config.nodes) + 1):
+            node = self.state.get_current_node()
+            if not node or node.type not in (
+                NodeType.COLLECT_SLOT,
+                NodeType.COLLECT_FORM,
+            ):
+                return
+            if self._node_has_uncollected_slot(node):
+                return
+            next_node = self.state.get_next_node(node.id)
+            if not next_node:
+                return
+            self.state.advance_to(next_node.id)
+
+    def _dependent_keys(self, changed_key: str) -> set[str]:
+        """Return transitive variables whose value derives from ``changed_key``."""
+        dependencies: dict[str, set[str]] = {}
+        for var in self.flow_config.variables:
+            validation = self._get_validation_for_variable(var.key) or {}
+            parent = validation.get("cross_field_variable")
+            if parent:
+                dependencies.setdefault(var.key, set()).add(parent)
+        for node in self.flow_config.nodes:
+            if node.type == NodeType.SET_VARIABLE:
+                config = node.data.get("setVariable", node.data.get("set_variable", {}))
+                target = config.get("variableKey", config.get("variable_key"))
+                if target:
+                    dependencies.setdefault(target, set()).update(
+                        re.findall(r"\{\{(\w+)\}\}", str(config.get("value", "")))
+                    )
+            elif node.type in (NodeType.API_REQUEST, NodeType.CAPABILITY):
+                api = node.data.get("api", {})
+                source_text = json.dumps(
+                    {
+                        "url": api.get("url"),
+                        "headers": api.get("headers"),
+                        "body": api.get("bodyTemplate", api.get("body")),
+                    },
+                    default=str,
+                )
+                inputs = set(re.findall(r"\{\{(\w+)\}\}", source_text))
+                for mapping in api.get("responseVariables", []):
+                    target = mapping.get("variableKey")
+                    if target:
+                        dependencies.setdefault(target, set()).update(inputs)
+        affected: set[str] = set()
+        frontier = {changed_key}
+        while frontier:
+            parent = frontier.pop()
+            for child, parents in dependencies.items():
+                if parent in parents and child not in affected:
+                    affected.add(child)
+                    frontier.add(child)
+        return affected
+
+    def correct_caller_slot(self, key: str, value: Any) -> Optional[str]:
+        """Apply a validated correction across every executor on this call."""
+        var = next((v for v in self.flow_config.variables if v.key == key), None)
+        if var is None:
+            return "Unknown flow variable."
+        error = self._validate_slot_value(var, self._slot_config_for_variable(key), value)
+        if error:
+            return error
+        self.call_context.set_caller_value(key, value)
+        return None
+
+    def _on_shared_caller_fact_changed(self, key: str) -> set[str]:
+        """Invalidate and rewind this flow after a shared caller-fact change.
+
+        Returns explicit dependent facts that the context must remove globally.
+        The context owns the notification queue, so this method never calls back
+        into it and cannot recurse.
+        """
+        invalidated: set[str] = set()
+        explicit_removals: set[str] = set()
+        own_keys = {var.key for var in self.flow_config.variables}
+        dependent_keys = self._dependent_keys(key)
+        if key not in own_keys and not dependent_keys:
+            return explicit_removals
+        if key in own_keys and key not in self.state.collected_slots:
+            invalidated.add(key)
+        for dependent in dependent_keys:
+            if dependent not in self.state.collected_slots:
+                continue
+            dep_var = next((v for v in self.flow_config.variables if v.key == dependent), None)
+            # Caller-entered constrained slots survive when still valid. Derived
+            # values (API/set-variable outputs) are always invalidated.
+            dep_error = (
+                self._validate_slot_value(
+                    dep_var,
+                    self._slot_config_for_variable(dependent),
+                    self.state.collected_slots[dependent],
+                )
+                if dep_var
+                else "derived"
+            )
+            if dependent in self.state.derived_slots or dep_var is None or dep_error:
+                if dependent in self.call_context.values:
+                    explicit_removals.add(dependent)
+                else:
+                    self.state.collected_slots.pop(dependent, None)
+                    self.state.derived_slots.discard(dependent)
+                invalidated.add(dependent)
+        if invalidated:
+            target = self._earliest_collect_node_for(invalidated)
+            if target:
+                self.state.graph_exhausted = False
+                self.state.advance_to(target.id)
+            self._get_recent.clear()
+        self._details_confirmed = False
+        return explicit_removals
+
+    def _earliest_collect_node_for(self, keys: set[str]) -> Optional[FlowNode]:
+        """Find the earliest reachable collect node owning any affected key."""
+        nodes = {node.id: node for node in self.flow_config.nodes}
+        distances: dict[str, int] = {}
+        queue: list[tuple[str, int]] = (
+            [(self.flow_config.initial_node, 0)]
+            if self.flow_config.initial_node
+            else []
+        )
+        while queue:
+            node_id, distance = queue.pop(0)
+            if node_id in distances and distances[node_id] <= distance:
+                continue
+            distances[node_id] = distance
+            for edge in self.flow_config.edges:
+                if edge.source == node_id:
+                    queue.append((edge.target, distance + 1))
+        candidates: list[tuple[int, int, FlowNode]] = []
+        for index, node in enumerate(self.flow_config.nodes):
+            node_keys: set[str] = set()
+            if node.type == NodeType.COLLECT_SLOT:
+                node_keys.add(node.data.get("slot", {}).get("variableKey"))
+            elif node.type == NodeType.COLLECT_FORM:
+                node_keys.update(
+                    slot.get("variableKey") for slot in node.data.get("slots", [])
+                )
+            if keys.intersection(node_keys):
+                candidates.append((distances.get(node.id, 10**9), index, node))
+        return min(candidates, default=(0, 0, None))[2]
 
     def _get_instructions_for_variable(self, var_key: str) -> Optional[str]:
         """Get the instructions for the node that collects a specific variable."""
@@ -1580,10 +2003,10 @@ class FlowExecutor:
         if not var_info:
             return None
 
-        validation = slot.get("validation") or {}
+        validation = _normalize_slot_validation(slot.get("validation"))
         constraints = []
 
-        now = datetime.now(timezone.utc)
+        now = datetime.now(self._timezone)
         current_date = now.strftime("%Y-%m-%d")
 
         if var_info.type == SlotType.NUMBER:
@@ -1593,24 +2016,16 @@ class FlowExecutor:
                 constraints.append(f"maximum: {validation['max']}")
 
         elif var_info.type == SlotType.DATE:
-            after_date_var = None
             require_future = (
                 validation.get("requireFuture", validation.get("require_future", True))
                 if validation
                 else True
             )
-            if validation:
-                after_date_var = validation.get("afterDateVariable") or validation.get(
-                    "after_date_variable"
-                )
+            after_date_var = validation.get("cross_field_variable")
             if after_date_var:
-                after_date_str = self.state.get_variable(after_date_var)
-                if after_date_str:
-                    constraints.append(f"must be after {after_date_str}")
-                elif require_future:
-                    constraints.append("must be today or later")
-                else:
-                    constraints.append("may be any date including past dates")
+                constraints.append(
+                    _cross_field_constraint(validation, self.state.collected_slots)
+                )
             elif require_future:
                 constraints.append("must be today or later")
             else:
@@ -1671,6 +2086,18 @@ class FlowExecutor:
 
         current_node = self.state.get_next_node(initial_node.id)
         while current_node:
+            if current_node.type in (NodeType.COLLECT_SLOT, NodeType.COLLECT_FORM):
+                self.state.advance_to(current_node.id)
+                if not self._node_has_uncollected_slot(current_node):
+                    next_node = self.state.get_next_node(current_node.id)
+                    if not next_node:
+                        break
+                    # advance_to evaluates CONDITION nodes server-side; continue
+                    # from the actual branch destination, not the condition
+                    # object itself.
+                    self.state.advance_to(next_node.id)
+                    current_node = self.state.get_current_node()
+                    continue
             node_message = self._get_node_message(current_node)
             if node_message:
                 messages.append(node_message)
@@ -1706,8 +2133,9 @@ class FlowExecutor:
                 return substitute_variables(intro, self.state.collected_slots)
             slots = node.data.get("slots", [])
             sorted_slots = sorted(slots, key=lambda s: s.get("order", 0))
-            if sorted_slots:
-                return sorted_slots[0].get("prompt", "")
+            for slot in sorted_slots:
+                if slot.get("variableKey") not in self.state.collected_slots:
+                    return slot.get("prompt", "")
         elif node.type == NodeType.END:
             return substitute_variables(
                 node.data.get("closingMessage", "Thank you for calling. Goodbye!"),
@@ -1982,14 +2410,10 @@ class FlowExecutor:
             }
 
         if var.type == SlotType.DATE:
-            now = datetime.now(timezone.utc)
+            now = datetime.now(self._timezone)
             current_date = now.strftime("%Y-%m-%d")
 
-            after_date_var = None
-            if validation:
-                after_date_var = validation.get("afterDateVariable") or validation.get(
-                    "after_date_variable"
-                )
+            after_date_var = validation.get("cross_field_variable")
             after_date_str = None
             if after_date_var and hasattr(self, "state"):
                 after_date_str = self.state.get_variable(after_date_var)
@@ -1997,8 +2421,10 @@ class FlowExecutor:
             require_future = validation.get(
                 "requireFuture", validation.get("require_future", True)
             )
-            if after_date_str:
-                date_constraint = f"must be after {after_date_str}"
+            if after_date_var:
+                date_constraint = _cross_field_constraint(
+                    validation, self.state.collected_slots
+                )
             elif require_future:
                 date_constraint = f"must be today ({current_date}) or later"
             else:
@@ -2237,6 +2663,28 @@ class FlowExecutor:
 
     async def _dispatch_function_call(self, function_name: str, arguments: dict) -> dict:
         """Route a function call to its concrete handler (no persistence)."""
+        action_prefixes = (
+            "execute_",
+            "route_",
+            "confirm_",
+            "set_var_",
+            "save_record_",
+            "transfer_",
+            "end_call_",
+        )
+        if function_name.startswith(action_prefixes):
+            exposed = {
+                schema.get("function", schema)["name"]
+                for schema in self.get_function_schemas()
+            }
+            if function_name not in exposed:
+                return {
+                    "success": False,
+                    "message": "That flow action is not currently reachable.",
+                    "action": None,
+                    "out_of_order": True,
+                    "current_node_id": self.state.current_node_id,
+                }
         if function_name.startswith("collect_"):
             return await self._handle_slot_collection(function_name, arguments)
         elif function_name.startswith("execute_"):
@@ -2363,7 +2811,7 @@ class FlowExecutor:
                     "current_node_id": collecting_node_id or self.state.current_node_id,
                 }
 
-            self.state.set_variable(var_key, value)
+            self.call_context.set_caller_value(var_key, value)
 
             next_node = None
             next_node_id = None
@@ -2528,7 +2976,9 @@ class FlowExecutor:
         if not var_info:
             return None
 
-        validation = (slot_config.get("validation") or {}) if slot_config else {}
+        validation = _normalize_slot_validation(
+            slot_config.get("validation") if slot_config else None
+        )
 
         if var_info.type == SlotType.NUMBER:
             try:
@@ -2544,23 +2994,33 @@ class FlowExecutor:
             if isinstance(value, str):
                 try:
                     date_value = datetime.strptime(value, "%Y-%m-%d").date()
-                    today = datetime.now(timezone.utc).date()
+                    today = datetime.now(self._timezone).date()
                     require_future = validation.get(
                         "requireFuture", validation.get("require_future", True)
                     )
                     if require_future and date_value < today:
                         return f"Date must be today or in the future (on or after {today})."
 
-                    after_date_var = validation.get("afterDateVariable") or validation.get(
-                        "after_date_variable"
-                    )
-                    if after_date_var:
-                        after_date_str = self.state.get_variable(after_date_var)
-                        if after_date_str:
+                    compare_var = validation.get("cross_field_variable")
+                    if compare_var:
+                        compare_date_str = self.state.get_variable(compare_var)
+                        if compare_date_str:
                             try:
-                                after_date = datetime.strptime(after_date_str, "%Y-%m-%d").date()
-                                if date_value <= after_date:
-                                    return f"Date must be after {after_date_str}."
+                                compare_date = datetime.strptime(
+                                    compare_date_str, "%Y-%m-%d"
+                                ).date()
+                                operator = validation.get(
+                                    "cross_field_operator", "after"
+                                )
+                                invalid = (
+                                    date_value <= compare_date
+                                    if operator in ("after", "greater")
+                                    else date_value >= compare_date
+                                )
+                                if invalid:
+                                    return validation.get("cross_field_error") or (
+                                        f"Date must be {operator} {compare_date_str}."
+                                    )
                             except ValueError:
                                 pass
                 except ValueError:
@@ -3658,7 +4118,16 @@ class FlowExecutor:
             new_value = arguments.get("new_value")
 
             if field_to_change and _is_valid_new_value(new_value):
-                self.state.collected_slots[field_to_change] = new_value
+                correction_error = self.correct_caller_slot(field_to_change, new_value)
+                if correction_error:
+                    return {
+                        "success": False,
+                        "action": None,
+                        "confirmed": False,
+                        "current_node_id": node_id,
+                        "message": correction_error,
+                        "speak_directly": True,
+                    }
                 updated_summary = (
                     substitute_variables(summary_template, self.state.collected_slots)
                     if summary_template
@@ -3899,6 +4368,45 @@ class FlowExecutor:
         return result
 
     async def _handle_save_record(self, function_name: str, arguments: dict) -> dict:
+        """Serialize SAVE_RECORD per node and reuse the winner's durable id."""
+        node_id = function_name.replace("save_record_", "")
+        lock = self._save_record_locks.setdefault(node_id, asyncio.Lock())
+        async with lock:
+            return await self._handle_save_record_locked(function_name, arguments)
+
+    def _save_record_idempotency_key(self, node_id: str) -> tuple[str, bool]:
+        """Return a stable SAVE_RECORD key and whether it is cross-worker durable."""
+        if self.flow_tool_id:
+            flow_identity = str(self.flow_tool_id)
+        else:
+            canonical_flow = {
+                "initial": self.flow_config.initial_node,
+                "nodes": sorted((n.id, n.type.value) for n in self.flow_config.nodes),
+                "variables": sorted(v.key for v in self.flow_config.variables),
+            }
+            flow_identity = hashlib.sha256(
+                json.dumps(canonical_flow, sort_keys=True).encode()
+            ).hexdigest()
+        if self.call_sid:
+            contact_scope = f"call:{self.call_sid}"
+            durable = True
+        else:
+            contact_scope = f"executor:{self._save_record_fallback_scope}"
+            durable = False
+        material = "|".join(
+            (
+                "save_record:v1",
+                str(self.account_id or ""),
+                contact_scope,
+                flow_identity,
+                node_id,
+            )
+        )
+        return hashlib.sha256(material.encode()).hexdigest(), durable
+
+    async def _handle_save_record_locked(
+        self, function_name: str, arguments: dict
+    ) -> dict:
         """Handle a SAVE_RECORD flow node (voice-only).
 
         Persists the collected flow variables as a structured Record for the
@@ -3933,6 +4441,9 @@ class FlowExecutor:
         if not node:
             return _result(False, "Save record node not found")
 
+        if node_id in self.state.saved_records:
+            return _result(True, "Record was already saved")
+
         if not self.account_id:
             logger.warning("SAVE_RECORD skipped: no account_id on executor")
             return _result(False, "Record could not be saved")
@@ -3954,6 +4465,8 @@ class FlowExecutor:
             import uuid as _uuid
 
             from botelier.models.call_log import CallLog
+            from sqlalchemy.exc import IntegrityError
+
             from botelier.models.record import CaptureMethod, Record, SourceChannel
             from botelier.models.record_type import RecordType
 
@@ -3996,6 +4509,12 @@ class FlowExecutor:
                     source_call_log_id = call_log.id
                     assistant_id = call_log.assistant_id
 
+            idempotency_key, durable_key = self._save_record_idempotency_key(node_id)
+            if not durable_key:
+                logger.warning(
+                    f"SAVE_RECORD node {node_id} has no call/session identity; "
+                    "idempotency is scoped to this executor only"
+                )
             record = Record(
                 account_id=account_uuid,
                 record_type_id=record_type_uuid,
@@ -4005,10 +4524,29 @@ class FlowExecutor:
                 capture_method=CaptureMethod.FLOW_NODE.value,
                 source_call_log_id=source_call_log_id,
                 assistant_id=assistant_id,
+                idempotency_key=idempotency_key,
             )
             record_type_name = record_type.name
             db.add(record)
-            db.commit()
+            created = True
+            try:
+                db.commit()
+            except IntegrityError:
+                # Another worker committed this exact logical save first. The
+                # unique index is the serialization point; after rollback,
+                # return that winner as a successful idempotent retry.
+                db.rollback()
+                record = (
+                    db.query(Record)
+                    .filter(
+                        Record.account_id == account_uuid,
+                        Record.idempotency_key == idempotency_key,
+                    )
+                    .first()
+                )
+                if record is None:
+                    raise
+                created = False
             # Remember the saved record so later variable changes (e.g. a
             # confirm/edit correction after the save already fired) sync back
             # into it instead of leaving the record stale.
@@ -4016,6 +4554,17 @@ class FlowExecutor:
                 self.state.saved_records[node_id] = str(record.id)
             except Exception:  # noqa: BLE001 - tracking is best-effort
                 pass
+            # Persist the idempotency marker immediately after the business
+            # commit, before any terminal speech/callback work. The outer
+            # dispatcher snapshots again, but this closes the much larger
+            # reconnect window between a successful insert and handler return.
+            await self._snapshot_state()
+            if not created:
+                logger.info(
+                    f"SAVE_RECORD: reused atomic winner for node {node_id} "
+                    f"(call_sid={self.call_sid})"
+                )
+                return _result(True, "Record was already saved")
             logger.info(
                 f"SAVE_RECORD: saved {record_type_name} record for type "
                 f"{record_type_id} (call_sid={self.call_sid})"
@@ -4350,7 +4899,16 @@ class FlowExecutor:
                 new_value = arguments.get("new_value")
 
                 if field_to_change and _is_valid_new_value(new_value):
-                    self.state.collected_slots[field_to_change] = new_value
+                    correction_error = self.correct_caller_slot(field_to_change, new_value)
+                    if correction_error:
+                        return {
+                            "success": False,
+                            "action": None,
+                            "confirmed": False,
+                            "current_node_id": confirmation_node.id,
+                            "message": correction_error,
+                            "speak_directly": True,
+                        }
                     summary_template = confirmation_data.get(
                         "summaryTemplate", confirmation_data.get("summary_template", "")
                     )
@@ -4430,7 +4988,15 @@ class FlowExecutor:
             field_to_change = arguments.get("field_to_change")
             new_value = arguments.get("new_value")
             if field_to_change and _is_valid_new_value(new_value):
-                self.state.collected_slots[field_to_change] = new_value
+                correction_error = self.correct_caller_slot(field_to_change, new_value)
+                if correction_error:
+                    return {
+                        "success": False,
+                        "message": correction_error,
+                        "action": None,
+                        "current_node_id": self.state.current_node_id,
+                        "speak_directly": True,
+                    }
                 return {
                     "success": True,
                     "message": "Got it, I've updated that. Is everything else correct?",

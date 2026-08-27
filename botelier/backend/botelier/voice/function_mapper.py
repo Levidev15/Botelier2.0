@@ -21,7 +21,13 @@ if TYPE_CHECKING:
 from twilio.base.exceptions import TwilioRestException as _TwilioRestException
 from twilio.rest import Client as TwilioClient
 
-from botelier.flow_executor import NodeType, FlowExecutor, parse_flow_config, substitute_variables
+from botelier.flow_executor import (
+    CallFlowContext,
+    NodeType,
+    FlowExecutor,
+    parse_flow_config,
+    substitute_variables,
+)
 from botelier.models.tool import Tool, ToolType
 from pipecat.adapters.schemas.function_schema import FunctionSchema
 from pipecat.adapters.schemas.tools_schema import ToolsSchema
@@ -101,6 +107,7 @@ class FunctionMapper:
         escalation_target: str = None,
         property_id: str = None,
         session_factory=None,
+        assistant_timezone: str = "UTC",
     ):
         """Initialize function mapper with call context and Twilio credentials.
 
@@ -139,9 +146,11 @@ class FunctionMapper:
         # ActionContext so integration resolution is scoped to (account, property).
         # None → legacy account-only scoping.
         self.property_id = property_id
+        self.assistant_timezone = assistant_timezone or "UTC"
 
         # Store flow executors by tool name for state persistence across turns
         self._flow_executors: Dict[str, FlowExecutor] = {}
+        self._flow_context = CallFlowContext()
 
         # Store non-flow tool schemas for inclusion in dynamic tool updates
         # These tools should always remain available even during flow execution
@@ -684,7 +693,12 @@ class FunctionMapper:
             trigger_schema = FunctionSchema(
                 name=f"start_{sanitize_function_name(tool_name)}",
                 description=f"Start the {tool_name} conversation flow",
-                properties={},
+                properties={
+                    var.key: executor._create_slot_function(var)["function"]["parameters"][
+                        "properties"
+                    ][var.key]
+                    for var in executor.flow_config.variables
+                },
                 required=[],
             )
             function_schema_objects.append(trigger_schema)
@@ -1826,6 +1840,8 @@ class FunctionMapper:
             call_sid=self.call_sid,
             property_id=self.property_id,
             session_factory=self.session_factory,
+            call_context=self._flow_context,
+            assistant_timezone=self.assistant_timezone,
         )
 
         # Store executor for this flow (we might need to access collected data)
@@ -1846,12 +1862,33 @@ class FunctionMapper:
         function_schema = {
             "name": f"start_{sanitize_function_name(tool.name)}",
             "description": f"Start the {tool.name} flow. {tool.description or ''}",
-            "parameters": {"type": "object", "properties": {}, "required": []},
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    var.key: executor._create_slot_function(var)["function"]["parameters"][
+                        "properties"
+                    ][var.key]
+                    for var in executor.flow_config.variables
+                },
+                "required": [],
+                "additionalProperties": False,
+            },
         }
 
         async def flow_trigger_handler(params: FunctionCallParams):
             """Handler for starting the flow."""
             logger.info(f"🎬 Starting flow: {tool.name}")
+
+            imported = executor.import_caller_slots(dict(params.arguments or {}))
+            if not imported["success"]:
+                await params.result_callback(
+                    {
+                        "status": "invalid_arguments",
+                        "message": "Some provided details were invalid.",
+                        "errors": imported["errors"],
+                    }
+                )
+                return
 
             # Track flow usage
             self.track_tool_usage(tool.name, is_flow=True)
@@ -1935,6 +1972,8 @@ class FunctionMapper:
                 escalation_target=self.escalation_target,
                 property_id=self.property_id,
                 session_factory=self.session_factory,
+                call_context=self._flow_context,
+                assistant_timezone=self.assistant_timezone,
             )
             # Task #330 — resume a dropped call. If this contact already has a
             # durable snapshot for this flow (websocket dropout + reconnect on a
@@ -1969,12 +2008,23 @@ class FunctionMapper:
 
         # Add trigger function
         safe_tool_name = sanitize_function_name(tool_name)
+        trigger_properties = {
+            var.key: executor._create_slot_function(var)["function"]["parameters"][
+                "properties"
+            ][var.key]
+            for var in executor.flow_config.variables
+        }
         trigger_schema = {
             "type": "function",
             "function": {
                 "name": f"start_{safe_tool_name}",
                 "description": f"Start the {tool_name} conversation flow when the customer wants to {tool.description or 'complete this task'}",
-                "parameters": {"type": "object", "properties": {}, "required": []},
+                "parameters": {
+                    "type": "object",
+                    "properties": trigger_properties,
+                    "required": [],
+                    "additionalProperties": False,
+                },
             },
         }
         function_schemas.insert(0, trigger_schema)
@@ -2517,6 +2567,17 @@ class FunctionMapper:
                 await params.result_callback({"status": "error", "message": "Flow not initialized"})
                 return
 
+            imported = executor.import_caller_slots(dict(params.arguments or {}))
+            if not imported["success"]:
+                await params.result_callback(
+                    {
+                        "status": "invalid_arguments",
+                        "message": "Some provided details were invalid.",
+                        "errors": imported["errors"],
+                    }
+                )
+                return
+
             # get_initial_messages() honours waitForResponse=false on the initial
             # node: it returns the greeting plus the first slot prompt and advances
             # the flow state to the first COLLECT node in a single call.  Speak
@@ -2525,6 +2586,7 @@ class FunctionMapper:
             # the caller hears them back-to-back without the LLM waiting for
             # input between them.
             initial_messages = executor.get_initial_messages()
+            executor.advance_past_satisfied_collects()
             spoke_any = False
             for message in initial_messages:
                 if message:

@@ -100,6 +100,10 @@ def get_db():
 # For that, see _sync_system_role_permissions() further below.
 # ---------------------------------------------------------------------------
 _ADDITIVE_MIGRATIONS = [
+    # Task #538 — atomic cross-worker SAVE_RECORD deduplication.
+    "ALTER TABLE records ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(64)",
+    """CREATE UNIQUE INDEX IF NOT EXISTS ix_records_idempotency_key
+       ON records(idempotency_key) WHERE idempotency_key IS NOT NULL""",
     # sms_conversations — handler_mode (AI vs human takeover)
     "ALTER TABLE sms_conversations ADD COLUMN IF NOT EXISTS handler_mode VARCHAR(10) NOT NULL DEFAULT 'ai'",
     # sms_conversations — first_response_at (first outbound message timestamp for response-time analytics)
@@ -771,6 +775,8 @@ WHERE answered_at IS NULL
     # the bot is speaking). Applies to both Silero-VAD and Deepgram Flux paths.
     "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS allow_interruptions BOOLEAN NOT NULL DEFAULT TRUE",
     "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS allowed_connection_ids JSONB DEFAULT '[]'",
+    # Task #538 — IANA timezone used for assistant-local date/time interpretation.
+    "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'UTC'",
     # Task #450 — Response field projection for imported API operations.
     # response_mapping: {variable_name: jsonpath} — only extracted fields sent to LLM.
     # param_ownership_overrides: {param_name: "llm"|"connection"|"fixed"} — overrides seed.

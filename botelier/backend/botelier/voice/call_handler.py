@@ -36,6 +36,7 @@ from .engine import VoiceEngineFactory, is_external_vad_effectively_enabled
 from .function_mapper import FunctionMapper
 from .greeting_cache import get_or_generate_greeting_audio
 from .prewarm import PreWarmBundle, PreWarmCache
+from .prompt_context import build_runtime_system_prompt
 
 try:
     from mcp.client.session_group import SseServerParameters, StreamableHttpParameters
@@ -753,7 +754,8 @@ class CallHandler:
                         },
                     )
 
-            # 3.5 Inject each flow tool's static system-prompt additions into the
+            # 3.5 Compose the prompt in cache-safe order: assistant + KB, static
+            # flow content, then the volatile assistant-local clock segment.
             # live LLM system prompt. FlowExecutor.get_system_prompt() is otherwise
             # only exercised by the simulator, so without this the flow's Initial-
             # node systemPrompt, global_prompt, and the behavioural rules
@@ -770,28 +772,28 @@ class CallHandler:
             # appended exactly once even when several flow tools are present.
             _flow_mapper = self.call_mappers.get(call_sid)
             _flow_executors = _flow_mapper.get_flow_executors() if _flow_mapper else []
+            _prompt_now = datetime.now(timezone.utc)
             if _flow_executors:
-                from botelier.flow_executor import build_flow_behavioral_rules
-
-                _persona_sections = []
-                for _ex in _flow_executors:
-                    _persona = _ex.get_flow_persona_section()
-                    if _persona:
-                        _persona_sections.append(_persona)
-
-                _has_past_date = any(_ex.has_past_date_slot() for _ex in _flow_executors)
-                _current_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-                _flow_additions = _persona_sections + [
-                    build_flow_behavioral_rules(_current_date, _has_past_date)
+                config.runtime_assistant_prompt = config.system_prompt
+                config.runtime_flow_personas = [
+                    persona
+                    for executor in _flow_executors
+                    if (persona := executor.get_flow_persona_section())
                 ]
-                config.system_prompt = (
-                    f"{config.system_prompt}\n\n" + "\n\n".join(_flow_additions)
+                config.runtime_has_flow = True
+                config.runtime_has_past_date_slot = any(
+                    executor.has_past_date_slot() for executor in _flow_executors
+                )
+                config.system_prompt = build_runtime_system_prompt(
+                    config.system_prompt,
+                    _flow_executors,
+                    config.timezone,
+                    now=_prompt_now,
                 )
                 logger.info(
                     f"🧩 Injected static flow system-prompt additions from "
                     f"{len(_flow_executors)} flow tool(s) into live prompt for call {call_sid}"
                 )
-
                 # Task #477 — apply per-flow-tool LLM overrides.
                 # If any flow tool has explicit LLM settings, they win over the
                 # assistant-level values (e.g. use gpt-4o for booking accuracy).
@@ -825,6 +827,11 @@ class CallHandler:
                             f"🌡️  Flow assistant {call_sid}: no explicit temperature set, "
                             "using 0.4 (structured-flow default)"
                         )
+            else:
+                config.runtime_assistant_prompt = config.system_prompt
+                config.system_prompt = build_runtime_system_prompt(
+                    config.system_prompt, [], config.timezone, now=_prompt_now
+                )
 
             # 4. Create TwilioFrameSerializer (Pipecat pattern)
             #
@@ -1778,6 +1785,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
             tts_config=assistant.tts_config or {},
             system_prompt=enhanced_prompt,
             greeting_message=assistant.first_message or "Hello! How can I help you today?",
+            timezone=getattr(assistant, "timezone", None) or "UTC",
             enable_function_calling=True,
             # Per-assistant barge-in toggle. NULL (pre-migration rows) = allowed.
             enable_interruptions=(
@@ -1915,6 +1923,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
                     account_name=account_name,
                     escalation_target=_escalation_number,
                     property_id=_property_id,
+                    assistant_timezone=config.timezone,
                     # Provide a session factory so FlowExecutor and DYNAMIC_OPERATION
                     # handlers can open their own short-lived DB sessions per API-node
                     # execution on live voice calls (where db_session is always None

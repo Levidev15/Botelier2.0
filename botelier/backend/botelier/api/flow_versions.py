@@ -9,6 +9,7 @@ Provides endpoints for managing versioned flow configurations:
 Tools are scoped through their ToolSet's account_id for multi-tenant isolation.
 """
 
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import List, Optional, Tuple
@@ -31,6 +32,24 @@ from botelier.services.capabilities.registry import capability_names
 router = APIRouter(prefix="/api/tools", tags=["flow-versions"])
 
 _API_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
+_TEMPLATE_VARIABLE_RE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
+
+
+def _template_variables(value: object) -> set[str]:
+    """Return simple flow-variable placeholders from a nested template value."""
+    if isinstance(value, str):
+        return set(_TEMPLATE_VARIABLE_RE.findall(value))
+    if isinstance(value, dict):
+        found: set[str] = set()
+        for nested in value.values():
+            found.update(_template_variables(nested))
+        return found
+    if isinstance(value, list):
+        found = set()
+        for nested in value:
+            found.update(_template_variables(nested))
+        return found
+    return set()
 
 
 def _get_flow_tool(db: Session, tool_id: str, account_id: str) -> Tool:
@@ -69,6 +88,15 @@ def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str], List[str]]
 
     nodes = flow_config.get("nodes", [])
     edges = flow_config.get("edges", [])
+    variables = flow_config.get("variables", [])
+
+    declared_variables: set[str] = set()
+    for variable in variables if isinstance(variables, list) else []:
+        key = variable.get("key") if isinstance(variable, dict) else None
+        if isinstance(key, str) and key.strip():
+            if key in declared_variables:
+                errors.append(f"Flow variable '{key}' is declared more than once")
+            declared_variables.add(key)
 
     if not nodes:
         errors.append("Flow must have at least one node")
@@ -88,13 +116,33 @@ def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str], List[str]]
         if not initial_exists:
             errors.append(f"Initial node '{initial_node_id}' does not exist in flow")
 
-    node_ids = {n.get("id") for n in nodes}
+    node_ids: set[str] = set()
+    for node in nodes:
+        node_id = node.get("id")
+        if not isinstance(node_id, str) or not node_id.strip():
+            errors.append("Every flow node must have a non-empty ID")
+        elif node_id in node_ids:
+            errors.append(f"Node ID '{node_id}' is not unique")
+            error_node_ids.append(node_id)
+        else:
+            node_ids.add(node_id)
+
+    edge_ids: set[str] = set()
     for edge in edges:
+        edge_id = edge.get("id")
+        if edge_id:
+            if edge_id in edge_ids:
+                errors.append(f"Edge ID '{edge_id}' is not unique")
+            edge_ids.add(edge_id)
         source = edge.get("source")
         target = edge.get("target")
-        if source and source not in node_ids:
+        if not source:
+            errors.append("Every edge must have a source node")
+        elif source not in node_ids:
             errors.append(f"Edge references non-existent source node: {source}")
-        if target and target not in node_ids:
+        if not target:
+            errors.append("Every edge must have a target node")
+        elif target not in node_ids:
             errors.append(f"Edge references non-existent target node: {target}")
 
     if initial_node_id and initial_node_id in node_ids:
@@ -141,12 +189,79 @@ def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str], List[str]]
             if node_id:
                 error_node_ids.append(node_id)
 
+        def _require_declared(variable_key: object, context: str) -> None:
+            if (
+                isinstance(variable_key, str)
+                and variable_key.strip()
+                and variable_key not in declared_variables
+            ):
+                _node_error(
+                    f"{context} in node '{node_name}' references undeclared variable "
+                    f"'{variable_key}'"
+                )
+
+        # Only simple {{variable}} placeholders are publish-validated. More
+        # elaborate integration/JSONPath syntax is deliberately ignored.
+        template_values: list[object] = [
+            node_data.get("systemPrompt"),
+            node_data.get("greeting"),
+            node_data.get("message"),
+            node_data.get("closingMessage"),
+            node_data.get("instructions"),
+        ]
+
         if node_type == "collect_slot":
             slot = node_data.get("slot", {})
             if not slot.get("variableKey"):
                 _node_error(f"Collect Input node '{node_name}' has no variable key")
+            else:
+                _require_declared(slot.get("variableKey"), "Collect Input")
             if not slot.get("prompt"):
                 _node_error(f"Collect Input node '{node_name}' has no prompt")
+            _require_declared(
+                (slot.get("validation") or {}).get(
+                    "afterDateVariable",
+                    (slot.get("validation") or {}).get(
+                        "after_date_variable",
+                        ((slot.get("validation") or {}).get("crossFieldCheck") or {}).get(
+                            "compareWith"
+                        ),
+                    ),
+                ),
+                "Collect Input date validation",
+            )
+            template_values.extend(
+                [slot.get("prompt"), slot.get("retryPrompt"), slot.get("instructions")]
+            )
+
+        elif node_type == "collect_form":
+            slots = node_data.get("slots", [])
+            if not isinstance(slots, list) or not slots:
+                _node_error(f"Collect Form node '{node_name}' has no inputs")
+            else:
+                seen_slot_variables: set[str] = set()
+                for slot in slots:
+                    variable_key = slot.get("variableKey") if isinstance(slot, dict) else None
+                    if not isinstance(variable_key, str) or not variable_key.strip():
+                        _node_error(
+                            f"Collect Form node '{node_name}' has an input with no variable key"
+                        )
+                        continue
+                    if variable_key in seen_slot_variables:
+                        _node_error(
+                            f"Collect Form node '{node_name}' collects variable "
+                            f"'{variable_key}' more than once"
+                        )
+                    seen_slot_variables.add(variable_key)
+                    _require_declared(variable_key, "Collect Form")
+                    template_values.extend(
+                        [
+                            slot.get("prompt"),
+                            slot.get("retryPrompt"),
+                            slot.get("instructions"),
+                        ]
+                    )
+            template_values.append(node_data.get("introMessage"))
 
         elif node_type == "api_request":
             api = node_data.get("api", {})
@@ -197,18 +312,155 @@ def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str], List[str]]
                         _node_error(
                             f"API Request node '{node_name}' has an incomplete response mapping"
                         )
+                    elif str(key) not in declared_variables:
+                        _node_error(
+                            f"API Request node '{node_name}' response mapping writes "
+                            f"undeclared variable '{key}'"
+                        )
+            template_values.extend(
+                [
+                    api.get("url"),
+                    api.get("bodyTemplate"),
+                    api.get("headers"),
+                    api.get("queryParamOverrides"),
+                    api.get("responseInstructions"),
+                    api.get("thinkingMessage"),
+                    api.get("onSuccess"),
+                    api.get("onError"),
+                    api.get("onNotFound"),
+                    api.get("onAuthError"),
+                ]
+            )
 
         elif node_type == "condition":
             condition = node_data.get("condition", {})
             if not condition.get("variable"):
                 _node_error(f"Condition node '{node_name}' has no variable to check")
+            else:
+                _require_declared(condition.get("variable"), "Condition")
+            branch_edges = [edge for edge in edges if edge.get("source") == node_id]
+            handles = [edge.get("sourceHandle") for edge in branch_edges]
+            for handle in ("true", "false"):
+                if handles.count(handle) != 1:
+                    _node_error(
+                        f"Condition node '{node_name}' must have exactly one '{handle}' branch"
+                    )
+                configured_target = condition.get(f"{handle}Target")
+                if configured_target and configured_target not in node_ids:
+                    _node_error(
+                        f"Condition node '{node_name}' {handle} target "
+                        f"'{configured_target}' does not exist"
+                    )
+                matching = [e for e in branch_edges if e.get("sourceHandle") == handle]
+                if configured_target and matching and matching[0].get("target") != configured_target:
+                    _node_error(
+                        f"Condition node '{node_name}' {handle} branch does not match "
+                        "its configured target"
+                    )
+            invalid_handles = [h for h in handles if h not in {"true", "false"}]
+            if invalid_handles:
+                _node_error(
+                    f"Condition node '{node_name}' has invalid or missing branch sourceHandle"
+                )
 
         elif node_type == "router":
             router_cfg = node_data.get("router", {})
             if not router_cfg.get("variable"):
                 _node_error(f"Router node '{node_name}' has no variable to route on")
+            else:
+                _require_declared(router_cfg.get("variable"), "Router")
             if not router_cfg.get("options"):
                 _node_error(f"Router node '{node_name}' has no routing options")
+            else:
+                option_ids = []
+                malformed_option = False
+                for option in router_cfg["options"]:
+                    option_id = option.get("id") if isinstance(option, dict) else None
+                    if not isinstance(option_id, str) or not option_id.strip():
+                        malformed_option = True
+                    else:
+                        option_ids.append(option_id)
+                if malformed_option:
+                    _node_error(f"Router node '{node_name}' has an option with no ID")
+                if len(set(option_ids)) != len(option_ids):
+                    _node_error(f"Router node '{node_name}' has duplicate option IDs")
+                branch_edges = [edge for edge in edges if edge.get("source") == node_id]
+                handles = [edge.get("sourceHandle") for edge in branch_edges]
+                for option_id in option_ids:
+                    if option_id and handles.count(option_id) != 1:
+                        _node_error(
+                            f"Router node '{node_name}' must have exactly one "
+                            f"'{option_id}' branch"
+                        )
+                if any(handle not in set(option_ids) for handle in handles):
+                    _node_error(
+                        f"Router node '{node_name}' has an invalid or missing branch sourceHandle"
+                    )
+
+        elif node_type == "confirmation":
+            confirmation = node_data.get("confirmation", {})
+            variables_to_confirm = confirmation.get(
+                "variablesToConfirm", confirmation.get("variables_to_confirm", [])
+            )
+            if not isinstance(variables_to_confirm, list) or not variables_to_confirm:
+                _node_error(
+                    f"Confirmation node '{node_name}' has no variables to confirm"
+                )
+            else:
+                valid_confirmation_variables = [
+                    key
+                    for key in variables_to_confirm
+                    if isinstance(key, str) and key.strip()
+                ]
+                if len(valid_confirmation_variables) != len(variables_to_confirm):
+                    _node_error(
+                        f"Confirmation node '{node_name}' has an invalid variable to confirm"
+                    )
+                if len(set(valid_confirmation_variables)) != len(
+                    valid_confirmation_variables
+                ):
+                    _node_error(
+                        f"Confirmation node '{node_name}' has duplicate variables to confirm"
+                    )
+                for variable_key in valid_confirmation_variables:
+                    _require_declared(variable_key, "Confirmation")
+            if not confirmation.get(
+                "summaryTemplate", confirmation.get("summary_template")
+            ):
+                _node_error(f"Confirmation node '{node_name}' has no summary template")
+            if not confirmation.get("confirmPrompt", confirmation.get("confirm_prompt")):
+                _node_error(f"Confirmation node '{node_name}' has no confirmation prompt")
+            allow_edit = confirmation.get("allowEdit", confirmation.get("allow_edit", False))
+            edit_prompt = confirmation.get("editPrompt", confirmation.get("edit_prompt"))
+            confirmation_edges = [edge for edge in edges if edge.get("source") == node_id]
+            handles = [edge.get("sourceHandle") for edge in confirmation_edges]
+            # Older published flows predate source handles and used one plain
+            # outgoing edge as the confirmed path. That shape is unambiguous
+            # and is still how the executor's compatibility fallback behaves.
+            # Multiple plain/mixed edges remain unsafe and are rejected.
+            legacy_confirmed_edge = (
+                len(confirmation_edges) == 1 and handles == [None]
+            )
+            if handles.count("confirmed") != 1 and not legacy_confirmed_edge:
+                _node_error(
+                    f"Confirmation node '{node_name}' must have exactly one 'confirmed' branch"
+                )
+            if allow_edit and not edit_prompt:
+                _node_error(
+                    f"Confirmation node '{node_name}' allows edits but has no edit prompt"
+                )
+            if not allow_edit and "edit" in handles:
+                _node_error(
+                    f"Confirmation node '{node_name}' has an edit branch but editing is disabled"
+                )
+            invalid_handles = any(
+                handle not in {"confirmed", "edit"} for handle in handles
+            )
+            if handles.count("edit") > 1 or (invalid_handles and not legacy_confirmed_edge):
+                _node_error(
+                    f"Confirmation node '{node_name}' has invalid or duplicate branch sourceHandles"
+                )
+            template_values.append(confirmation)
 
         elif node_type == "transfer":
             transfer = node_data.get("transfer", {})
@@ -217,6 +469,7 @@ def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str], List[str]]
 
         elif node_type == "set_variable":
             set_var = node_data.get("setVariable", node_data.get("set_variable", {}))
+            _require_declared(set_var.get("variableKey", set_var.get("variable_key")), "Set Variable")
             if (
                 set_var.get("valueType") == "expression"
                 or set_var.get("value_type") == "expression"
@@ -224,11 +477,14 @@ def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str], List[str]]
                 _node_error(
                     f"Set Variable node '{node_name}' uses the expression type, which is not permitted"
                 )
+            if set_var.get("valueType", set_var.get("value_type")) == "template":
+                template_values.append(set_var.get("value"))
 
         elif node_type == "save_record":
             save_rec = node_data.get("saveRecord", node_data.get("save_record", {}))
             if not save_rec.get("recordTypeId") and not save_rec.get("record_type_id"):
                 _node_error(f"Save Record node '{node_name}' has no record type selected")
+            template_values.extend([save_rec.get("mapping"), save_rec.get("status")])
 
         elif node_type == "capability":
             api_cfg = node_data.get("api", {})
@@ -239,6 +495,13 @@ def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str], List[str]]
                 _node_error(
                     f"Capability node '{node_name}' references an unknown capability "
                     f"'{capability}'"
+                )
+
+        for placeholder in sorted(_template_variables(template_values)):
+            if placeholder not in declared_variables:
+                _node_error(
+                    f"Node '{node_name}' template references undeclared variable "
+                    f"'{placeholder}'"
                 )
 
     return len(errors) == 0, errors, error_node_ids

@@ -70,6 +70,8 @@ class Assistant(Base):
     system_prompt = Column(Text, nullable=False, default="You are a helpful assistant.")
     first_message = Column(Text, nullable=True)
     language = Column(String(10), nullable=False, default="en")
+    # IANA timezone used when interpreting dates and times for this assistant.
+    timezone = Column(String(64), nullable=False, default="UTC", server_default="UTC")
 
     # Settings
     temperature = Column(Float, nullable=True, default=0.7)
@@ -153,6 +155,7 @@ class Assistant(Base):
             "system_prompt": self.system_prompt,
             "first_message": self.first_message,
             "language": self.language,
+            "timezone": self.timezone or "UTC",
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "stt_config": self.stt_config or {},
