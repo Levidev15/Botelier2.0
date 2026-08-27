@@ -11,7 +11,7 @@ import {
   useReactFlow,
   Edge,
   EdgeProps,
-  getBezierPath,
+  getSmoothStepPath,
   BaseEdge,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -47,13 +47,14 @@ function DeletableEdge({
 }: EdgeProps) {
   const deleteEdge = useFlowStore((state) => state.deleteEdge);
   
-  const [edgePath, labelX, labelY] = getBezierPath({
+  const [edgePath, labelX, labelY] = getSmoothStepPath({
     sourceX,
     sourceY,
     sourcePosition,
     targetX,
     targetY,
     targetPosition,
+    borderRadius: 8,
   });
 
   const onEdgeClick = (evt: React.MouseEvent) => {
