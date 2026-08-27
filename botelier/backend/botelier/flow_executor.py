@@ -825,6 +825,14 @@ class FlowExecutor:
         # fallback is no longer exposed, so the LLM can't loop back into
         # re-confirming already-collected info after the caller says "no thanks".
         self._details_confirmed = False
+        # Task #543 — durable-snapshot gate. Every flow executor on a call is
+        # registered with the shared CallFlowContext up front (so shared caller
+        # facts can fan out), but only flows the caller has actually entered may
+        # write flow_sessions rows. Without this gate, a caller-fact change in
+        # one flow scheduled _snapshot_state() on EVERY registered executor,
+        # persisting unrelated flows' sessions (at their first node, with the
+        # shared facts bound into their slots) that a reconnect could resume.
+        self._flow_started = False
 
     @contextmanager
     def _borrow_db_session(self):
@@ -874,6 +882,12 @@ class FlowExecutor:
         """
         key = self._snapshot_key()
         if not key:
+            return
+        # Task #543 — never persist a session for a flow the caller has not
+        # entered. Shared caller-fact fan-out schedules snapshots on every
+        # registered executor; unstarted flows must stay ephemeral so an
+        # unrelated flow's booking data never lands in their flow_sessions row.
+        if not self._flow_started:
             return
         session_key, tool_id = key
         # Ride the saved-record map inside the collected_slots JSON under a
@@ -1039,6 +1053,9 @@ class FlowExecutor:
                 self.state.collected_slots.update(saved_slots)
         if saved_node:
             self.state.current_node_id = saved_node
+        # A durable row exists, so this flow was genuinely started on a prior
+        # connection — resumed executors may keep snapshotting (Task #543).
+        self._flow_started = True
         # A persisted "complete" status can mean either the graph structurally
         # ran off its end OR a terminal action already executed — the latter
         # would mean the call already ended, so there'd be nothing to
@@ -2057,6 +2074,8 @@ class FlowExecutor:
 
     def get_greeting(self) -> str:
         """Get the initial greeting message."""
+        # Speaking the greeting means the caller entered this flow (Task #543).
+        self._flow_started = True
         for node in self.flow_config.nodes:
             if node.type == NodeType.INITIAL:
                 return node.data.get("greeting", "Hello! How can I assist you?")
@@ -2069,6 +2088,9 @@ class FlowExecutor:
         to get messages from connected nodes until one requires a response
         or reaches a node that collects input (collect_slot, end, transfer).
         """
+        # Entering the initial node means the caller started this flow — its
+        # durable snapshots are legitimate from here on (Task #543).
+        self._flow_started = True
         messages = []
         initial_node = None
 
@@ -2654,6 +2676,20 @@ class FlowExecutor:
         - action: Optional action type (transfer, end, etc.)
         """
         result = await self._dispatch_function_call(function_name, arguments)
+        # A function of THIS flow was accepted — the caller is in this flow, so
+        # its durable snapshots are legitimate from here on (Task #543). A
+        # rejected call (stale/out-of-order action, unknown function) must NOT
+        # mark the flow started: all handlers stay registered even when their
+        # schemas are not exposed, so a stray tool call aimed at an unentered
+        # flow would otherwise start persisting its session.
+        if not (
+            isinstance(result, dict)
+            and (
+                result.get("out_of_order")
+                or result.get("message") == "Unknown function"
+            )
+        ):
+            self._flow_started = True
         # Live↔simulator parity: attach the now-active node's guidance to every
         # non-terminal result so the live LLM receives per-node instructions at
         # the moment that node becomes current (the simulator gets the same

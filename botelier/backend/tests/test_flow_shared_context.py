@@ -181,6 +181,102 @@ def test_flow_start_snapshots_the_first_actionable_node():
     mapper.update_llm_tools_for_flow.assert_called_once_with("rooms")
 
 
+def test_starting_one_flow_never_persists_an_unrelated_flows_session():
+    """Task #543 — booking facts must not create/advance another flow's session.
+
+    Both executors share the call context and both are snapshottable
+    (call_sid + tool id). Starting the booking flow (import + graph entry +
+    explicit snapshot, mirroring the live trigger handler) must write only the
+    booking flow's flow_sessions row — the housekeeping executor, which the
+    caller never touched, must not persist anything even though the shared
+    fact fan-out schedules snapshots on every registered executor.
+    """
+    context = CallFlowContext()
+    written: list[dict] = []
+
+    def make(tool_id):
+        executor = FlowExecutor(
+            parse_flow_config(_booking_config()),
+            call_context=context,
+            call_sid="CA-test-543",
+            flow_tool_id=tool_id,
+            account_id=str(uuid4()),
+        )
+        executor._write_snapshot = lambda payload: written.append(payload)
+        return executor
+
+    booking = make("11111111-1111-1111-1111-111111111111")
+    housekeeping = make("22222222-2222-2222-2222-222222222222")
+
+    async def start_booking():
+        assert booking.import_caller_slots(
+            {"arrival": "2099-06-10", "departure": "2099-06-12"}
+        )["success"]
+        booking.get_initial_messages()
+        await booking._snapshot_state()
+        # Let the fan-out snapshot tasks scheduled by set_caller_values run.
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    asyncio.run(start_booking())
+
+    assert written, "the started flow must persist its own session"
+    persisted_tools = {p["tool_id"] for p in written}
+    assert persisted_tools == {"11111111-1111-1111-1111-111111111111"}
+    # Shared caller facts still flowed into housekeeping's in-memory slots
+    # (by design), but nothing durable was written for it.
+    assert housekeeping.state.collected_slots["arrival"] == "2099-06-10"
+    assert housekeeping._flow_started is False
+
+
+def test_rejected_stray_action_does_not_start_or_persist_an_unentered_flow():
+    """Task #543 — a stale/out-of-order or unknown call must not mark a flow
+    started, so neither the rejected call itself nor subsequent shared-fact
+    fan-out may persist a flow_sessions row for it.
+    """
+    context = CallFlowContext()
+    written: list[dict] = []
+
+    def make(tool_id):
+        executor = FlowExecutor(
+            parse_flow_config(_booking_config()),
+            call_context=context,
+            call_sid="CA-test-543b",
+            flow_tool_id=tool_id,
+            account_id=str(uuid4()),
+        )
+        executor._write_snapshot = lambda payload: written.append(payload)
+        return executor
+
+    booking = make("11111111-1111-1111-1111-111111111111")
+    housekeeping = make("22222222-2222-2222-2222-222222222222")
+
+    async def scenario():
+        # Stray action calls aimed at the unentered housekeeping flow: an
+        # unreachable action (handlers exist even when unexposed) and an
+        # unknown function. Both are rejected and must not start the flow.
+        stale = await housekeeping.handle_function_call("execute_book", {})
+        assert stale["success"] is False and stale.get("out_of_order")
+        unknown = await housekeeping.handle_function_call("bogus_function", {})
+        assert unknown["success"] is False
+        assert housekeeping._flow_started is False
+        assert written == []
+        # Now the caller actually starts the booking flow; fan-out still must
+        # not persist housekeeping.
+        assert booking.import_caller_slots({"arrival": "2099-06-10"})["success"]
+        booking.get_initial_messages()
+        await booking._snapshot_state()
+        await asyncio.sleep(0)
+        await asyncio.sleep(0)
+
+    asyncio.run(scenario())
+
+    assert {p["tool_id"] for p in written} == {
+        "11111111-1111-1111-1111-111111111111"
+    }
+    assert housekeeping._flow_started is False
+
+
 def test_shared_context_reuses_slots_across_executors_and_newest_caller_value_wins():
     context = CallFlowContext()
     first = FlowExecutor(parse_flow_config(_booking_config()), call_context=context)
