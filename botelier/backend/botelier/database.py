@@ -783,6 +783,9 @@ WHERE answered_at IS NULL
     "ALTER TABLE connection_operation_policies ADD COLUMN IF NOT EXISTS response_mapping JSONB",
     "ALTER TABLE connection_operation_policies ADD COLUMN IF NOT EXISTS param_ownership_overrides JSONB",
     "ALTER TABLE connection_operation_policies ADD COLUMN IF NOT EXISTS request_overrides JSONB",
+    # Account-level IANA timezone (Basic Information settings) — default for
+    # new assistants; independent of any per-assistant timezone override.
+    "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'UTC'",
 ]
 
 

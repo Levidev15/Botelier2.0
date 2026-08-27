@@ -178,6 +178,26 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
     }
   }, [accountId]);
 
+  // Pre-fill a new assistant's timezone from the account's Basic Information
+  // (Settings page) default, so multi-timezone-aware behavior (Task #538)
+  // doesn't silently default everyone to UTC.
+  useEffect(() => {
+    if (mode !== "create" || !accountId) return;
+    (async () => {
+      try {
+        const res = await authFetch(`/api/account/basic-info?account_id=${accountId}`);
+        if (res.ok) {
+          const data = await res.json();
+          if (data.timezone) {
+            setFormData((prev) => ({ ...prev, timezone: data.timezone }));
+          }
+        }
+      } catch (error) {
+        console.error("Failed to fetch account timezone default:", error);
+      }
+    })();
+  }, [mode, accountId]);
+
   const loadData = async () => {
     if (mode === "edit" && assistantId) {
       await Promise.all([fetchAssistant(), fetchProviders()]);
