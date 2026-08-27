@@ -1923,7 +1923,7 @@ You have access to the following Q&A knowledge base. Use this information to ans
                     account_name=account_name,
                     escalation_target=_escalation_number,
                     property_id=_property_id,
-                    assistant_timezone=config.timezone,
+                    assistant_timezone=assistant.timezone,
                     # Provide a session factory so FlowExecutor and DYNAMIC_OPERATION
                     # handlers can open their own short-lived DB sessions per API-node
                     # execution on live voice calls (where db_session is always None
