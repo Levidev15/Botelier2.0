@@ -56,6 +56,7 @@ from botelier.api.phone_numbers import router as phone_numbers_router
 from botelier.api.providers import router as providers_router
 from botelier.api.resolution_options import router as resolution_options_router
 from botelier.api.secrets import router as secrets_router
+from botelier.api.flow_ai import router as flow_ai_router
 from botelier.api.simulation import router as simulation_router
 from botelier.api.sms_compliance import router as sms_compliance_router
 from botelier.api.sms_pkg import router as sms_router
@@ -97,6 +98,7 @@ app.include_router(calls_router)
 app.include_router(call_logs_router)
 app.include_router(websockets_router)
 app.include_router(flow_templates_router)
+app.include_router(flow_ai_router)   # AI flow builder assistant
 app.include_router(simulation_router)
 app.include_router(invitations_router)  # Public invitation endpoints
 app.include_router(auth_router)  # Email/password auth endpoints

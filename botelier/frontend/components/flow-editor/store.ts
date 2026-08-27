@@ -57,6 +57,28 @@ export interface FlowVariable {
   choices?: string[];
 }
 
+/** Patch produced by the AI builder — nodes/edges/variables to append to the canvas. */
+export interface AIPatchNode {
+  id: string;
+  type: string;
+  position: { x: number; y: number };
+  data: Record<string, unknown>;
+}
+
+export interface AIPatchEdge {
+  id: string;
+  source: string;
+  target: string;
+  sourceHandle?: string;
+  targetHandle?: string;
+}
+
+export interface AIPatch {
+  nodes: AIPatchNode[];
+  edges: AIPatchEdge[];
+  variables: FlowVariable[];
+}
+
 export interface SlotValidation {
   pattern?: string;
   min?: number;
@@ -311,6 +333,7 @@ export interface FlowState {
   revertToVersion: (versionNumber: number, publishImmediately?: boolean) => Promise<void>;
   setDraftDescription: (description: string) => void;
   applyTemplate: (templateId: string) => void;
+  applyAIPatch: (patch: AIPatch) => void;
   clearFlow: () => void;
   
   errorNodeIds: string[];
@@ -2458,6 +2481,49 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         style: { stroke: "#3b82f6", strokeWidth: 2 },
       })),
       variables: template.variables,
+      isDirty: true,
+      errorNodeIds: [],
+    });
+  },
+
+  applyAIPatch: (patch) => {
+    const { nodes, edges, variables } = get();
+    const ts = Date.now();
+
+    // Generate fresh IDs so AI-provided IDs never clash with existing nodes
+    const idMap: Record<string, string> = {};
+    const newNodes: Node<NodeData>[] = patch.nodes.map((n, i) => {
+      nodeIdCounter += 1;
+      const freshId = `ai_${ts}_${i}_${nodeIdCounter}`;
+      idMap[n.id] = freshId;
+      return {
+        id: freshId,
+        type: n.type as NodeType,
+        position: n.position,
+        data: n.data as NodeData,
+      };
+    });
+
+    const newEdges = patch.edges.map((e, i) => ({
+      id: `ai_edge_${ts}_${i}`,
+      // Re-map AI IDs to fresh IDs; fall back to the original (edge to existing node)
+      source: idMap[e.source] ?? e.source,
+      target: idMap[e.target] ?? e.target,
+      ...(e.sourceHandle ? { sourceHandle: e.sourceHandle } : {}),
+      ...(e.targetHandle ? { targetHandle: e.targetHandle } : {}),
+      type: "deletable" as const,
+      animated: true,
+      style: { stroke: "#3b82f6", strokeWidth: 2 },
+    }));
+
+    // Append only variables that aren't already declared (preserve existing metadata)
+    const existingKeys = new Set(variables.map((v) => v.key));
+    const newVars = patch.variables.filter((v) => !existingKeys.has(v.key));
+
+    set({
+      nodes: [...nodes, ...newNodes],
+      edges: [...edges, ...newEdges],
+      variables: [...variables, ...newVars],
       isDirty: true,
       errorNodeIds: [],
     });

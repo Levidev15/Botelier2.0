@@ -21,6 +21,7 @@ import { nodeTypes } from "./nodes";
 import NodeInspector from "./NodeInspector";
 import FlowToolbar from "./FlowToolbar";
 import FlowSchemaPanel from "./FlowSchemaPanel";
+import FlowAIBuilderSidebar from "./FlowAIBuilderSidebar";
 import { FlowSimulatorSidebar } from "@/components/flow-simulator";
 import { notify } from "@/lib/notifications";
 import { X } from "lucide-react";
@@ -115,6 +116,7 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
   const [isSaving, setIsSaving] = useState(false);
   const [showSimulator, setShowSimulator] = useState(false);
   const [showSchema, setShowSchema] = useState(false);
+  const [showAIBuilder, setShowAIBuilder] = useState(false);
 
   useEffect(() => {
     loadFlow(toolId, accountId);
@@ -196,9 +198,11 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
         onSave={handleSave} 
         isSaving={isSaving} 
         showSimulator={showSimulator}
-        onToggleSimulator={() => setShowSimulator(!showSimulator)}
+        onToggleSimulator={() => { setShowSimulator(!showSimulator); setShowAIBuilder(false); setShowSchema(false); }}
         showSchema={showSchema}
-        onToggleSchema={() => setShowSchema(!showSchema)}
+        onToggleSchema={() => { setShowSchema(!showSchema); setShowAIBuilder(false); }}
+        showAIBuilder={showAIBuilder}
+        onToggleAIBuilder={() => { setShowAIBuilder(!showAIBuilder); setShowSchema(false); }}
       />
       
       <div className="flex-1 flex min-h-0">
@@ -285,6 +289,16 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
               toolName={toolName || "Flow"}
               onClose={() => setShowSimulator(false)}
               onNodeChange={setActiveNodeId}
+            />
+          </div>
+        )}
+
+        {showAIBuilder && (
+          <div className="w-80 flex-shrink-0">
+            <FlowAIBuilderSidebar
+              toolId={toolId}
+              accountId={accountId}
+              onClose={() => setShowAIBuilder(false)}
             />
           </div>
         )}

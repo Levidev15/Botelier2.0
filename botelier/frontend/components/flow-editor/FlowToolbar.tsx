@@ -28,7 +28,8 @@ import {
   Info,
   X,
   Settings,
-  Code
+  Code,
+  Sparkles,
 } from "lucide-react";
 import { useFlowStore, NodeType, AVAILABLE_TEMPLATES, FlowVersionInfo } from "./store";
 import { toast } from "sonner";
@@ -40,6 +41,8 @@ interface FlowToolbarProps {
   onToggleSimulator?: () => void;
   showSchema?: boolean;
   onToggleSchema?: () => void;
+  showAIBuilder?: boolean;
+  onToggleAIBuilder?: () => void;
 }
 
 interface NodeInfo {
@@ -174,7 +177,7 @@ function formatDate(dateStr: string | null): string {
   });
 }
 
-export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleSimulator, showSchema, onToggleSchema }: FlowToolbarProps) {
+export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleSimulator, showSchema, onToggleSchema, showAIBuilder, onToggleAIBuilder }: FlowToolbarProps) {
   const { 
     addNode, 
     isDirty, 
@@ -516,6 +519,23 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
           
           {isDirty && (
             <span className="text-xs text-yellow-500">Unsaved changes</span>
+          )}
+
+          {onToggleAIBuilder && (
+            <button
+              onClick={onToggleAIBuilder}
+              className={`
+                flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition
+                ${showAIBuilder
+                  ? "bg-purple-600 hover:bg-purple-700 text-white"
+                  : "bg-gray-700 hover:bg-gray-600 text-white"
+                }
+              `}
+              title="AI Flow Builder"
+            >
+              <Sparkles className="h-4 w-4" />
+              AI Builder
+            </button>
           )}
 
           {onToggleSchema && (
