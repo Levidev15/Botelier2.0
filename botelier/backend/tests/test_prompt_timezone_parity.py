@@ -12,6 +12,7 @@ from botelier.voice.prompt_context import (
     compose_assistant_system_prompt,
     static_prompt_prefix,
 )
+from botelier.voice.prewarm import AssistantSnapshot
 from pipecat.processors.aggregators.llm_context import LLMContext
 
 
@@ -109,6 +110,37 @@ def test_simulator_matches_live_composition_and_uses_local_date():
     assert executor.assistant_timezone == "America/Los_Angeles"
     assert "CURRENT NODE:" not in live_equivalent
     assert "Which date?" not in live_equivalent
+
+
+def test_warm_snapshot_has_the_same_business_and_timezone_prompt_context():
+    """Regression coverage for pre-warmed calls using AssistantSnapshot."""
+    snapshot = AssistantSnapshot(
+        id="assistant",
+        account_id="account",
+        name="Downtown assistant",
+        business_name="Mrs Fields – Downtown Las Vegas",
+        timezone="America/Los_Angeles",
+    )
+    executor = _executor(snapshot.timezone)
+
+    warm_prompt = build_runtime_system_prompt(
+        "ASSISTANT",
+        [executor],
+        snapshot.timezone,
+        now=FIXED_UTC,
+        business_name=snapshot.business_name,
+    )
+    cold_prompt = build_runtime_system_prompt(
+        "ASSISTANT",
+        [executor],
+        "America/Los_Angeles",
+        now=FIXED_UTC,
+        business_name="Mrs Fields – Downtown Las Vegas",
+    )
+
+    assert warm_prompt == cold_prompt
+    assert "Mrs Fields – Downtown Las Vegas" in warm_prompt
+    assert "Timezone: America/Los_Angeles" in warm_prompt
 
 
 def test_prewarm_shape_excludes_node_and_user_dynamic_text():

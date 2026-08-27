@@ -584,7 +584,7 @@ class TestZombiePipelineTeardownOnHangup:
             patch("botelier.api.calls._event_exists", return_value=True),
             patch(
                 "botelier.api.calls._maybe_enqueue_acw",
-                side_effect=lambda s, d, b: enqueued["acw"].append(s),
+                side_effect=lambda s, d, b, trigger_path="unknown": enqueued["acw"].append(s),
             ),
             patch(
                 "botelier.api.calls._maybe_enqueue_record_extraction",

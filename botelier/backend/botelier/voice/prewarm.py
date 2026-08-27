@@ -53,14 +53,21 @@ class AssistantSnapshot:
     :class:`PreWarmBundle` so the hot path never touches SQLAlchemy state
     that may have expired (Task #122).
 
-    Captured fields: ``id``, ``account_id``, ``name``, ``description``,
-    ``call_settings``, ``property_id``.
+    Captured fields: ``id``, ``account_id``, ``name``, ``business_name``,
+    ``description``, ``timezone``, ``call_settings``, ``property_id``.
     """
 
     id: str
     account_id: str
     name: str
+    # Caller-facing organization/location context. This is intentionally
+    # assistant-scoped; account names are never injected into the LLM prompt.
+    business_name: Optional[str] = None
     description: Optional[str] = None
+    # FlowExecutor needs the assistant-local IANA timezone when building a
+    # pre-warmed function mapper. Keep the UTC fallback aligned with the ORM
+    # column and the cold call path.
+    timezone: str = "UTC"
     call_settings: Optional[Dict] = field(default_factory=dict)
     property_id: Optional[str] = None
     # Task #477 — needed for the flow temperature fallback in call_handler
@@ -110,8 +117,9 @@ class PreWarmBundle:
 
     # `assistant` used to be a detached ORM row; it is now an
     # :class:`AssistantSnapshot` carrying the scalar columns the hot path
-    # actually reads (id, account_id, name, description, call_settings,
-    # property_id). See the HOT-PATH CONTRACT comment above the dataclass.
+    # actually reads (id, account_id, name, business_name, description,
+    # timezone, call_settings, property_id). See the HOT-PATH CONTRACT
+    # comment above the dataclass.
     assistant: Optional[AssistantSnapshot] = None
     config: Any = None  # VoiceAgentConfig built from the assistant
     tools: List[Any] = field(default_factory=list)
@@ -465,7 +473,9 @@ async def _build_bundle(
                 id=str(assistant.id),
                 account_id=str(assistant.account_id),
                 name=assistant.name,
+                business_name=getattr(assistant, "business_name", None),
                 description=getattr(assistant, "description", None),
+                timezone=getattr(assistant, "timezone", None) or "UTC",
                 call_settings=dict(assistant.call_settings or {}),
                 property_id=str(assistant.property_id) if assistant.property_id else None,
                 # Task #477 — flow temperature fallback needs the raw DB value

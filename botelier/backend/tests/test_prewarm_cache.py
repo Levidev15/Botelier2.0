@@ -203,6 +203,35 @@ def test_emission_hit_event_contains_legacy_and_new_keys() -> None:
     assert {"greeting_preloaded", "tools_count", "mcp_configured"} <= d.keys()
 
 
+def test_prewarm_assistant_snapshot_preserves_llm_context_fields() -> None:
+    """A warm call must carry the same assistant context that a cold call uses.
+
+    The production failure this guards against happened after a timezone was
+    added to the assistant model but omitted from this detached snapshot.
+    """
+    from botelier.voice.prewarm import AssistantSnapshot
+
+    snapshot = AssistantSnapshot(
+        id="assistant-1",
+        account_id="account-1",
+        name="Downtown assistant",
+        business_name="Mrs Fields – Downtown Las Vegas",
+        timezone="America/Los_Angeles",
+    )
+
+    assert snapshot.business_name == "Mrs Fields – Downtown Las Vegas"
+    assert snapshot.timezone == "America/Los_Angeles"
+
+
+def test_prewarm_assistant_snapshot_defaults_to_utc_without_business_context() -> None:
+    """Legacy snapshots retain safe defaults when the optional fields are absent."""
+    from botelier.voice.prewarm import AssistantSnapshot
+
+    snapshot = AssistantSnapshot(id="assistant-1", account_id="account-1", name="Assistant")
+    assert snapshot.timezone == "UTC"
+    assert snapshot.business_name is None
+
+
 def test_emission_fallback_event_contains_legacy_and_new_keys() -> None:
     d = _run_emission_block(
         prewarm_bundle=None,
