@@ -789,6 +789,7 @@ class CallHandler:
                     _flow_executors,
                     config.timezone,
                     now=_prompt_now,
+                    business_name=assistant.business_name,
                 )
                 logger.info(
                     f"🧩 Injected static flow system-prompt additions from "
@@ -830,7 +831,11 @@ class CallHandler:
             else:
                 config.runtime_assistant_prompt = config.system_prompt
                 config.system_prompt = build_runtime_system_prompt(
-                    config.system_prompt, [], config.timezone, now=_prompt_now
+                    config.system_prompt,
+                    [],
+                    config.timezone,
+                    now=_prompt_now,
+                    business_name=assistant.business_name,
                 )
 
             # 4. Create TwilioFrameSerializer (Pipecat pattern)

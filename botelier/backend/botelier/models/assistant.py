@@ -53,6 +53,10 @@ class Assistant(Base):
 
     # Basic info
     name = Column(String(255), nullable=False)
+    # Caller-facing organization/location name.  This intentionally belongs to
+    # the assistant rather than the account: one account can operate several
+    # hotels, stores, or other locations, each with its own assistant.
+    business_name = Column(String(255), nullable=True)
     description = Column(Text, nullable=True)
 
     # Voice configuration
@@ -144,6 +148,7 @@ class Assistant(Base):
             "mcp_connection_id": str(self.mcp_connection_id) if self.mcp_connection_id else None,
             "mcp_enabled_tools": self.mcp_enabled_tools or [],
             "name": self.name,
+            "business_name": self.business_name,
             "description": self.description,
             "stt_provider": self.stt_provider,
             "llm_provider": self.llm_provider,

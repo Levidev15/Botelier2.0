@@ -92,6 +92,7 @@ class AssistantCreate(BaseModel):
     mcp_enabled_tools: Optional[List[str]] = None
     allowed_connection_ids: Optional[List[str]] = None
     name: str
+    business_name: Optional[str] = None
     description: Optional[str] = None
     stt_provider: str = "deepgram"
     llm_provider: str = "openai"
@@ -129,6 +130,7 @@ class AssistantUpdate(BaseModel):
     mcp_enabled_tools: Optional[List[str]] = None
     allowed_connection_ids: Optional[List[str]] = None
     name: Optional[str] = None
+    business_name: Optional[str] = None
     description: Optional[str] = None
     stt_provider: Optional[str] = None
     llm_provider: Optional[str] = None
@@ -176,6 +178,7 @@ class AssistantResponse(BaseModel):
     mcp_enabled_tools: Optional[List[str]] = None
     allowed_connection_ids: Optional[List[str]] = None
     name: str
+    business_name: Optional[str] = None
     description: Optional[str]
     stt_provider: str
     llm_provider: str
@@ -272,6 +275,7 @@ async def create_assistant(
         mcp_enabled_tools=data.mcp_enabled_tools or [],
         allowed_connection_ids=data.allowed_connection_ids or [],
         name=data.name,
+        business_name=data.business_name,
         description=data.description,
         stt_provider=data.stt_provider,
         llm_provider=data.llm_provider,

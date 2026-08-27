@@ -64,11 +64,6 @@ class Account(Base):
     postal_code = Column(String, nullable=True)
     country = Column(String, nullable=True)
 
-    # IANA timezone for the business as a whole (e.g. used as the default when
-    # creating new assistants, and for account-level display/reporting).
-    # Individual assistants may still override this with their own timezone.
-    timezone = Column(String(64), nullable=False, default="UTC", server_default="UTC")
-
     twilio_sub_account_sid = Column(String, nullable=True)
     twilio_sub_auth_token = Column(String, nullable=True)
 

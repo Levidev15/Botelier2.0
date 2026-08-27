@@ -103,6 +103,7 @@ class SimulationState:
         kb_prompt_block: str = "",
         assistant_prompt: str = "You are a friendly assistant.",
         timezone: str = "UTC",
+        business_name: Optional[str] = None,
         escalation_target: Optional[str] = None,
         model: str = DEFAULT_SIM_MODEL,
         capability_schemas: Optional[list] = None,
@@ -157,6 +158,7 @@ class SimulationState:
         self.kb_prompt_block = kb_prompt_block or ""
         self.assistant_prompt = assistant_prompt or "You are a friendly assistant."
         self.timezone = timezone or "UTC"
+        self.business_name = business_name
         self.escalation_target = escalation_target
         self.messages: list[dict] = []
         self.llm_messages: list[dict] = []
@@ -182,6 +184,7 @@ class SimulationState:
             [self.executor],
             self.timezone,
             now=instant,
+            business_name=self.business_name,
         )
 
     def add_message(self, role: str, content: str, metadata: Optional[dict] = None):
@@ -871,6 +874,7 @@ async def start_simulation(
         kb_prompt_block=kb_prompt_block,
         assistant_prompt=assistant_prompt,
         timezone=assistant_timezone,
+        business_name=assistant.business_name,
         escalation_target=escalation_target,
         model=sim_model,
         capability_schemas=capability_schemas,

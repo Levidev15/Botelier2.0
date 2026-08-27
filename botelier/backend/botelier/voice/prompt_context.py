@@ -7,6 +7,7 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 UTC_TIMEZONE = "UTC"
 ASSISTANT_LOCAL_TIME_HEADING = "## ASSISTANT LOCAL TIME"
+BUSINESS_CONTEXT_HEADING = "## BUSINESS CONTEXT"
 
 
 def resolve_assistant_timezone(timezone_name: Optional[str]) -> tuple[str, ZoneInfo]:
@@ -43,6 +44,23 @@ def build_assistant_local_time_segment(
     )
 
 
+def build_business_context_segment(business_name: Optional[str]) -> str:
+    """Build assistant-scoped organization context for any LLM channel.
+
+    Account names are administrative tenant labels and must never be silently
+    injected into LLM prompts.  An assistant's optional business name is the
+    only caller-facing organization identity added automatically.
+    """
+    name = (business_name or "").strip()
+    if not name:
+        return ""
+    return (
+        f"{BUSINESS_CONTEXT_HEADING}\n"
+        f"You represent {name}. Treat this as the business or location the "
+        "customer contacted; use it naturally when relevant."
+    )
+
+
 def compose_assistant_system_prompt(
     static_sections: Iterable[str],
     timezone_name: Optional[str],
@@ -64,6 +82,7 @@ def build_runtime_system_prompt(
     timezone_name: Optional[str],
     *,
     now: datetime,
+    business_name: Optional[str] = None,
 ) -> str:
     """Build the identical live/Test Lab prompt from resolved runtime inputs."""
     executors = list(flow_executors)
@@ -79,6 +98,7 @@ def build_runtime_system_prompt(
         any(executor.has_past_date_slot() for executor in executors),
         timezone_name,
         now=now,
+        business_name=business_name,
     )
 
 
@@ -90,12 +110,17 @@ def build_runtime_system_prompt_from_parts(
     timezone_name: Optional[str],
     *,
     now: datetime,
+    business_name: Optional[str] = None,
 ) -> str:
     """Build a runtime prompt from serializable live-pipeline prompt parts."""
     from botelier.flow_executor import build_flow_behavioral_rules
 
     personas = [persona for persona in flow_personas if persona]
-    static_sections = [assistant_prompt, *personas]
+    static_sections = [
+        assistant_prompt,
+        build_business_context_segment(business_name),
+        *personas,
+    ]
     if has_flow:
         _, local_now = assistant_local_datetime(timezone_name, now)
         static_sections.append(

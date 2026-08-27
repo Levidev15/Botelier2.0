@@ -3,6 +3,7 @@
 import pytest
 from botelier.api.assistants import AssistantCreate, AssistantUpdate
 from botelier.models.assistant import Assistant
+from botelier.voice.prompt_context import build_business_context_segment
 from pydantic import ValidationError
 
 
@@ -45,3 +46,22 @@ def test_assistant_serialization_exposes_timezone_with_legacy_fallback():
     assistant.timezone = None
 
     assert assistant.to_dict()["timezone"] == "UTC"
+
+
+def test_business_name_is_an_optional_per_assistant_setting():
+    created = AssistantCreate(
+        account_id="account-1",
+        name="Downtown voice assistant",
+        business_name="Mrs Fields – Downtown Las Vegas",
+    )
+    assert created.business_name == "Mrs Fields – Downtown Las Vegas"
+    assert AssistantUpdate(business_name="Mrs Fields – Airport").business_name == (
+        "Mrs Fields – Airport"
+    )
+
+
+def test_only_per_assistant_business_name_is_added_to_llm_context():
+    prompt_segment = build_business_context_segment("Mrs Fields – Downtown Las Vegas")
+    assert "Mrs Fields – Downtown Las Vegas" in prompt_segment
+    assert "BUSINESS CONTEXT" in prompt_segment
+    assert build_business_context_segment(None) == ""

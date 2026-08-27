@@ -523,6 +523,9 @@ class SMSService:
 
     def _build_system_prompt(self, assistant: Assistant, sms_config: Dict[str, Any]) -> str:
         base_prompt = assistant.system_prompt or "You are a helpful assistant."
+        # Business identity is intentionally assistant-scoped.  Account names
+        # are tenant administration data and are never injected into the LLM.
+        from botelier.voice.prompt_context import build_business_context_segment
 
         kb_content = ""
         if assistant.knowledge_base_id:
@@ -531,7 +534,7 @@ class SMSService:
             except Exception as e:
                 logger.error(f"Failed to load KB for SMS assistant {assistant.id}: {e}")
 
-        prompt_parts = [base_prompt]
+        prompt_parts = [base_prompt, build_business_context_segment(assistant.business_name)]
 
         if kb_content:
             prompt_parts.append(

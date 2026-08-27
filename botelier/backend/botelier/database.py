@@ -777,15 +777,15 @@ WHERE answered_at IS NULL
     "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS allowed_connection_ids JSONB DEFAULT '[]'",
     # Task #538 — IANA timezone used for assistant-local date/time interpretation.
     "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'UTC'",
+    # Caller-facing business/location context is per assistant, never inherited
+    # from the account (an account can operate multiple locations).
+    "ALTER TABLE assistants ADD COLUMN IF NOT EXISTS business_name VARCHAR(255)",
     # Task #450 — Response field projection for imported API operations.
     # response_mapping: {variable_name: jsonpath} — only extracted fields sent to LLM.
     # param_ownership_overrides: {param_name: "llm"|"connection"|"fixed"} — overrides seed.
     "ALTER TABLE connection_operation_policies ADD COLUMN IF NOT EXISTS response_mapping JSONB",
     "ALTER TABLE connection_operation_policies ADD COLUMN IF NOT EXISTS param_ownership_overrides JSONB",
     "ALTER TABLE connection_operation_policies ADD COLUMN IF NOT EXISTS request_overrides JSONB",
-    # Account-level IANA timezone (Basic Information settings) — default for
-    # new assistants; independent of any per-assistant timezone override.
-    "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS timezone VARCHAR(64) NOT NULL DEFAULT 'UTC'",
 ]
 
 

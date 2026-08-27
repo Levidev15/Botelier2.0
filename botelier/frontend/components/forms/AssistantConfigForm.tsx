@@ -31,6 +31,7 @@ interface Assistant {
   id: string;
   account_id: string;
   name: string;
+  business_name: string | null;
   description: string | null;
   stt_provider: string;
   llm_provider: string;
@@ -177,26 +178,6 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
       fetchAccountConnections();
     }
   }, [accountId]);
-
-  // Pre-fill a new assistant's timezone from the account's Basic Information
-  // (Settings page) default, so multi-timezone-aware behavior (Task #538)
-  // doesn't silently default everyone to UTC.
-  useEffect(() => {
-    if (mode !== "create" || !accountId) return;
-    (async () => {
-      try {
-        const res = await authFetch(`/api/account/basic-info?account_id=${accountId}`);
-        if (res.ok) {
-          const data = await res.json();
-          if (data.timezone) {
-            setFormData((prev) => ({ ...prev, timezone: data.timezone }));
-          }
-        }
-      } catch (error) {
-        console.error("Failed to fetch account timezone default:", error);
-      }
-    })();
-  }, [mode, accountId]);
 
   const loadData = async () => {
     if (mode === "edit" && assistantId) {
@@ -458,6 +439,37 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
               placeholder="e.g., Front Desk Concierge"
               className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
             />
+          </FormField>
+
+          <FormField
+            label="Business / Location Name"
+            description="The business this assistant represents. This is added to the assistant’s AI context for calls and texts."
+          >
+            <input
+              type="text"
+              value={formData.business_name || ""}
+              onChange={(e) => handleFieldChange("business_name", e.target.value || null)}
+              placeholder="e.g., Mrs Fields – Downtown Las Vegas"
+              className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+            />
+          </FormField>
+
+          <FormField
+            label="Timezone"
+            description="Used for this assistant’s AI context and date/time interpretation across calls and text messages."
+          >
+            <select
+              value={formData.timezone || "UTC"}
+              onChange={(e) => handleFieldChange("timezone", e.target.value)}
+              className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+            >
+              {formData.timezone && !TIMEZONE_OPTIONS.some(({ value }) => value === formData.timezone) && (
+                <option value={formData.timezone}>{formData.timezone}</option>
+              )}
+              {TIMEZONE_OPTIONS.map(({ label, value }) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
           </FormField>
 
           <FormField label="Description">
@@ -1333,24 +1345,6 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
                 </p>
               </div>
             </div>
-
-            <FormField
-              label="Assistant Timezone"
-              description="Used to interpret dates and times mentioned during calls."
-            >
-              <select
-                value={formData.timezone || "UTC"}
-                onChange={(e) => handleFieldChange("timezone", e.target.value)}
-                className="w-full px-3 py-2 bg-[#1a1a1a] border border-[#333] rounded-lg text-sm text-white focus:ring-1 focus:ring-indigo-500 focus:border-indigo-500"
-              >
-                {formData.timezone && !TIMEZONE_OPTIONS.some(({ value }) => value === formData.timezone) && (
-                  <option value={formData.timezone}>{formData.timezone}</option>
-                )}
-                {TIMEZONE_OPTIONS.map(({ label, value }) => (
-                  <option key={value} value={value}>{label}</option>
-                ))}
-              </select>
-            </FormField>
 
             <FormField
               label="Max Call Duration (seconds)"
