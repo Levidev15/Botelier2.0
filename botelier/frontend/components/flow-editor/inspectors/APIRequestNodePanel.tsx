@@ -52,7 +52,7 @@ interface Props {
 }
 
 export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props) {
-  const { updateNodeData, variables, toolId } = useFlowStore();
+  const { updateNodeData, variables, addVariable, toolId } = useFlowStore();
   const { authFetch } = useAuthToken();
   const { accountId } = useAccountContext();
   const api = data.api || { method: "GET" as const, url: "", apiSource: "custom" as const };
@@ -73,6 +73,8 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
   const [testVariables, setTestVariables] = useState<Record<string, string>>({});
   const [testLoading, setTestLoading] = useState(false);
   const [testError, setTestError] = useState<string | null>(null);
+  // Per-row feedback for the "declare as variable" shortcut
+  const [declareStatus, setDeclareStatus] = useState<Record<number, "added" | "exists">>({});
   const [testResult, setTestResult] = useState<null | {
     success: boolean;
     status_code: number;
@@ -395,6 +397,24 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
       if (i !== index) newMapping[k] = v;
     });
     updateApi({ responseMapping: newMapping });
+  };
+
+  const handleDeclareVariable = (varKey: string, rowIndex: number) => {
+    if (!varKey.trim()) return;
+    const key = varKey.trim().toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+    if (!key) return;
+    const alreadyDeclared = variables.some((v) => v.key === key);
+    if (alreadyDeclared) {
+      // Pure no-op: do NOT call addVariable — preserve all existing metadata
+      setDeclareStatus((prev) => ({ ...prev, [rowIndex]: "exists" }));
+    } else {
+      addVariable({ key, type: "text", description: "", required: false });
+      setDeclareStatus((prev) => ({ ...prev, [rowIndex]: "added" }));
+    }
+    setTimeout(
+      () => setDeclareStatus((prev) => { const n = { ...prev }; delete n[rowIndex]; return n; }),
+      1500
+    );
   };
 
   const validateBeforeTest = () => {
@@ -950,6 +970,32 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
                       className={`${smallInputCls} flex-1`}
                       placeholder="$.data.guest.name"
                     />
+                    {/* Declare-as-variable shortcut */}
+                    <button
+                      onClick={() => handleDeclareVariable(key, i)}
+                      disabled={!key.trim()}
+                      title={
+                        declareStatus[i] === "exists"
+                          ? "Already declared"
+                          : declareStatus[i] === "added"
+                          ? "Added to Variables tab!"
+                          : "Declare as flow variable"
+                      }
+                      className={[
+                        "flex-shrink-0 text-[10px] px-1.5 py-0.5 rounded border transition-colors",
+                        declareStatus[i] === "added"
+                          ? "border-purple-500 text-purple-300 bg-purple-900/30"
+                          : declareStatus[i] === "exists"
+                          ? "border-gray-600 text-gray-400"
+                          : "border-gray-700 text-gray-500 hover:border-purple-500 hover:text-purple-400 disabled:opacity-30 disabled:cursor-not-allowed",
+                      ].join(" ")}
+                    >
+                      {declareStatus[i] === "added"
+                        ? "✓ var"
+                        : declareStatus[i] === "exists"
+                        ? "exists"
+                        : "+var"}
+                    </button>
                     <button
                       onClick={() => removeResponseMapping(i)}
                       className="text-red-400 hover:text-red-300 p-1"

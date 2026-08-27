@@ -1998,21 +1998,120 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   addVariable: (variable) => {
-    set({
-      variables: [...get().variables, variable],
-      isDirty: true,
-      errorNodeIds: [],
-    });
+    const existing = get().variables.find((v) => v.key === variable.key);
+    if (existing) {
+      // Deduplicate: merge into the existing entry rather than appending
+      set({
+        variables: get().variables.map((v) =>
+          v.key === variable.key ? { ...v, ...variable } : v
+        ),
+        isDirty: true,
+        errorNodeIds: [],
+      });
+    } else {
+      set({
+        variables: [...get().variables, variable],
+        isDirty: true,
+        errorNodeIds: [],
+      });
+    }
   },
 
   updateVariable: (key, updates) => {
-    set({
-      variables: get().variables.map((v) =>
-        v.key === key ? { ...v, ...updates } : v
-      ),
-      isDirty: true,
-      errorNodeIds: [],
-    });
+    const newKey = (updates as { key?: string }).key;
+
+    if (newKey !== undefined && newKey !== key) {
+      // Collision guard: refuse to rename to an already-declared key
+      if (get().variables.some((v) => v.key === newKey)) return;
+
+      // Helpers
+      const escRe = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      const templateRe = new RegExp(`\\{\\{${escRe(key)}\\}\\}`, "g");
+
+      const renameMappingKey = (rec: Record<string, string>): Record<string, string> =>
+        Object.fromEntries(Object.entries(rec).map(([k, v]) => [k === key ? newKey : k, v]));
+
+      // Recursively walk node data and migrate every reference
+      const migrateData = (obj: Record<string, unknown>): Record<string, unknown> => {
+        const out: Record<string, unknown> = {};
+        for (const [field, val] of Object.entries(obj)) {
+          if (typeof val === "string") {
+            // Template substitution {{key}} → {{newKey}}
+            let migrated = val.replace(templateRe, `{{${newKey}}}`);
+            // Bare-key fields used by condition, router, set_variable,
+            // and slot cross-field validation (compareWith / afterDateVariable)
+            if (
+              (
+                field === "variableKey" ||
+                field === "variable" ||
+                field === "compareWith" ||
+                field === "afterDateVariable" ||
+                field === "after_date_variable"
+              ) && val === key
+            ) {
+              migrated = newKey;
+            }
+            out[field] = migrated;
+          } else if (
+            (field === "responseMapping" || field === "autoMappingSource") &&
+            val !== null && typeof val === "object" && !Array.isArray(val)
+          ) {
+            // Rename the variable-name keys of these record objects
+            out[field] = renameMappingKey(val as Record<string, string>);
+          } else if (field === "variablesToConfirm" && Array.isArray(val)) {
+            // Confirmation nodes carry an array of bare variable names
+            out[field] = (val as string[]).map((k) => (k === key ? newKey : k));
+          } else if (Array.isArray(val)) {
+            // Recurse into arrays (slots list, router options, etc.)
+            out[field] = (val as unknown[]).map((item) =>
+              item !== null && typeof item === "object" && !Array.isArray(item)
+                ? migrateData(item as Record<string, unknown>)
+                : typeof item === "string"
+                ? item.replace(templateRe, `{{${newKey}}}`)
+                : item
+            );
+          } else if (val !== null && typeof val === "object") {
+            out[field] = migrateData(val as Record<string, unknown>);
+          } else {
+            out[field] = val;
+          }
+        }
+        return out;
+      };
+
+      const updatedNodes = get().nodes.map((n) => ({
+        ...n,
+        data: migrateData(n.data as Record<string, unknown>) as typeof n.data,
+      }));
+
+      // Also migrate selectedNode so it stays consistent with nodes —
+      // without this, a subsequent updateNodeData call would overwrite
+      // the migrated references with the stale pre-rename data.
+      const currentSelected = get().selectedNode;
+      const updatedSelected = currentSelected
+        ? {
+            ...currentSelected,
+            data: migrateData(
+              currentSelected.data as Record<string, unknown>
+            ) as typeof currentSelected.data,
+          }
+        : null;
+
+      set({
+        variables: get().variables.map((v) => (v.key === key ? { ...v, ...updates } : v)),
+        nodes: updatedNodes,
+        selectedNode: updatedSelected,
+        isDirty: true,
+        errorNodeIds: [],
+      });
+    } else {
+      // Type / description / required update — no node walk needed
+      set({
+        variables: get().variables.map((v) => (v.key === key ? { ...v, ...updates } : v)),
+        isDirty: true,
+        errorNodeIds: [],
+      });
+    }
   },
 
   deleteVariable: (key) => {
