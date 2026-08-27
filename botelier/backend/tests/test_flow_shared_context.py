@@ -691,3 +691,71 @@ def test_assistant_timezone_drives_date_guidance():
     )
     expected_today = datetime.now(ZoneInfo("Pacific/Kiritimati")).strftime("%Y-%m-%d")
     assert f"Current date: {expected_today}" in executor.get_static_system_prompt_additions()
+
+# --- Task #542: immediate-start / no-pre-interview contract ---------------
+
+_IMMEDIATE_START = "Call this IMMEDIATELY, in the same turn the customer expresses that intent"
+_NO_PRE_INTERVIEW = "do NOT ask the customer any questions first"
+
+
+def _flow_tool(name="rooms"):
+    return SimpleNamespace(
+        id=uuid4(),
+        name=name,
+        description="book a room",
+        config=_booking_config(),
+        llm_provider=None,
+        llm_model=None,
+        llm_temperature=None,
+        llm_max_tokens=None,
+    )
+
+
+def test_get_flow_functions_trigger_locks_immediate_start_wording():
+    mapper = FunctionMapper()
+    schemas, _ = mapper.get_flow_functions(_flow_tool())
+    trigger = next(
+        s["function"] for s in schemas if s["function"]["name"] == "start_rooms"
+    )
+    assert _IMMEDIATE_START in trigger["description"]
+    assert _NO_PRE_INTERVIEW in trigger["description"]
+    # All trigger parameters stay optional — nothing is required up front.
+    assert trigger["parameters"]["required"] == []
+
+
+def test_map_flow_trigger_locks_immediate_start_wording():
+    mapper = FunctionMapper()
+    schema, _ = mapper._map_flow(_flow_tool())
+    assert schema["name"] == "start_rooms"
+    assert _IMMEDIATE_START in schema["description"]
+    assert _NO_PRE_INTERVIEW in schema["description"]
+    assert schema["parameters"]["required"] == []
+
+
+def test_update_llm_tools_rebuild_locks_immediate_start_wording():
+    mapper = FunctionMapper()
+    mapper.get_flow_functions(_flow_tool())  # registers the unstarted executor
+
+    llm_context = MagicMock()
+    mapper.call_sid = "CA_test"
+    mapper.call_handler = SimpleNamespace(call_contexts={"CA_test": llm_context})
+
+    mapper.update_llm_tools_for_flow("rooms")
+
+    llm_context.set_tools.assert_called_once()
+    tools_schema = llm_context.set_tools.call_args[0][0]
+    trigger = next(
+        f for f in tools_schema.standard_tools if f.name == "start_rooms"
+    )
+    assert _IMMEDIATE_START in trigger.description
+    assert _NO_PRE_INTERVIEW in trigger.description
+    assert trigger.required == []
+
+
+def test_behavioral_rules_lock_immediate_start_rule():
+    from botelier.flow_executor import build_flow_behavioral_rules
+
+    rules = build_flow_behavioral_rules("2026-08-27", has_past_date_slot=False)
+    assert "call that flow's start function IMMEDIATELY" in rules
+    assert "before asking the caller anything" in rules
+    assert "Never interview the caller for flow details" in rules
