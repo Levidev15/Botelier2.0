@@ -712,7 +712,9 @@ def build_flow_behavioral_rules(current_date: str, has_past_date_slot: bool) -> 
 
     return f"""Current date: {current_date}
 
-You have access to a structured conversation flow (started when the caller wants to complete the corresponding task). Once a flow is active, follow these guidelines:
+You have access to a structured conversation flow (started when the caller wants to complete the corresponding task).
+CRITICAL: the moment the caller expresses intent matching a flow (e.g. wanting to make a booking), call that flow's start function IMMEDIATELY — in that same turn, before asking the caller anything. Never interview the caller for flow details (dates, party size, etc.) before starting the flow; pass along only what they already volunteered and let the flow ask for the rest in its designed order.
+Once a flow is active, follow these guidelines:
 1. Collect information in the order specified by the flow
 2. Use the provided functions to progress through the flow
 3. Follow the CURRENT NODE instructions - they tell you what to say or ask

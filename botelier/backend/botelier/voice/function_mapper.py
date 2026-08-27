@@ -708,7 +708,12 @@ class FunctionMapper:
             if not self._flow_has_started(executor):
                 trigger_schema = FunctionSchema(
                     name=f"start_{sanitize_function_name(tool_name)}",
-                    description=f"Start the {tool_name} conversation flow",
+                    description=(
+                        f"Start the {tool_name} conversation flow. Call this IMMEDIATELY, in the "
+                        "same turn the customer expresses that intent — do NOT ask the customer any "
+                        "questions first. All parameters are optional: pass only details the customer "
+                        "has already volunteered; the flow itself collects everything else in order."
+                    ),
                     properties={
                         var.key: executor._create_slot_function(var)["function"]["parameters"][
                             "properties"
@@ -1877,7 +1882,13 @@ class FunctionMapper:
         # The LLM calls this when it detects the guest wants to start this flow
         function_schema = {
             "name": f"start_{sanitize_function_name(tool.name)}",
-            "description": f"Start the {tool.name} flow. {tool.description or ''}",
+            "description": (
+                f"Start the {tool.name} flow. {tool.description or ''} "
+                "Call this IMMEDIATELY, in the same turn the customer expresses that intent — "
+                "do NOT ask the customer any questions first. All parameters are optional: pass "
+                "only details the customer has already volunteered; the flow itself collects "
+                "everything else in order."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -2037,7 +2048,13 @@ class FunctionMapper:
                 "type": "function",
                 "function": {
                     "name": f"start_{safe_tool_name}",
-                    "description": f"Start the {tool_name} conversation flow when the customer wants to {tool.description or 'complete this task'}",
+                    "description": (
+                        f"Start the {tool_name} conversation flow when the customer wants to "
+                        f"{tool.description or 'complete this task'}. Call this IMMEDIATELY, in the "
+                        "same turn the customer expresses that intent — do NOT ask the customer any "
+                        "questions first. All parameters are optional: pass only details the customer "
+                        "has already volunteered; the flow itself collects everything else in order."
+                    ),
                     "parameters": {
                         "type": "object",
                         "properties": trigger_properties,
