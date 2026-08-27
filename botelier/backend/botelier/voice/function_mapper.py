@@ -2154,6 +2154,24 @@ class FunctionMapper:
             # Give callers an immediate, safe completion bridge as soon as an API
             # result is available.  The function result remains in the LLM
             # context, so it can then present the mapped result naturally.
+            # Look ahead: will this result already produce direct caller-facing
+            # speech (a next collect prompt or a speak_directly message)? If so
+            # the caller is not at risk of silence and the success bridge below
+            # must NOT stack a second transition line on top (Task #547 — the
+            # doubled "I've completed that check…" narration).
+            _next_slot_preview = result.get("next_slot") or {}
+            _will_speak_directly = bool(
+                (result.get("collected") and str(_next_slot_preview.get("prompt") or "").strip())
+                or (
+                    # Mirrors the speak_directly gate below exactly — after an
+                    # API node the direct-response path is disabled, so it must
+                    # not count as guaranteed speech here either.
+                    not _completed_api_node
+                    and result.get("speak_directly")
+                    and str(result.get("speak_exactly") or result.get("message") or "").strip()
+                )
+            )
+
             if _completed_api_node:
                 _api_config = _completed_api_node.data.get("api", {}) or {}
                 if result.get("success"):
@@ -2161,7 +2179,22 @@ class FunctionMapper:
                     # availability search with no rooms is still a successful
                     # API request. The LLM receives the mapped result and
                     # presents the actual availability outcome next.
-                    _completion_bridge = "I've completed that check. Let me walk you through what I found."
+                    #
+                    # Task #547 — the success bridge is a silence safety net,
+                    # not designer content: it is per-node configurable via
+                    # api.onComplete (empty string suppresses it) and skipped
+                    # entirely when the result already speaks directly.
+                    if _will_speak_directly:
+                        # Direct speech is guaranteed — never stack a bridge
+                        # (default OR configured) on top of it.
+                        _completion_bridge = ""
+                    else:
+                        _on_complete = _api_config.get("onComplete")
+                        _completion_bridge = (
+                            "I've completed that check. Let me walk you through what I found."
+                            if _on_complete is None
+                            else str(_on_complete).strip()
+                        )
                 else:
                     _completion_bridge = str(
                         _api_config.get("onError")

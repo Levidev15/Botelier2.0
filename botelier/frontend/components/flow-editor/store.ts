@@ -98,6 +98,9 @@ export interface APIRequestConfig {
   retryDelay?: number;
   onSuccess?: string;
   onError?: string;
+  /** Spoken transition after the API call completes successfully.
+   *  undefined = platform default line; "" = explicitly silent. */
+  onComplete?: string;
   onNotFound?: string;
   onAuthError?: string;
   apiSource?: "custom" | "integration" | "capability";

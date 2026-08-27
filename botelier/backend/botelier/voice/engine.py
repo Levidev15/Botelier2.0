@@ -43,6 +43,40 @@ from pipecat.frames.frames import (
 )
 from pipecat.metrics.metrics import LLMUsageMetricsData
 from botelier.voice.usage_observer import UsageObserver
+from botelier.voice.speech_normalize import normalize_for_speech
+
+
+def make_normalizing_tts(base_cls):
+    """Subclass *base_cls* (a Pipecat TTS service) so every run_tts text is
+    passed through :func:`normalize_for_speech` before synthesis.
+
+    Task #547 — providers read "3000" as "thirty-zero-zero", "3rd" as
+    "third-R-D" and spell out "EUR". Normalization only runs when the service
+    is NOT in TOKEN aggregation mode, because whole-word regexes are only safe
+    on whitespace-complete text (sentence-mode run_tts receives full
+    sentences). The Deepgram wrapper handles TOKEN mode itself with word
+    buffering; other providers are constructed in sentence mode.
+    """
+
+    class _NormalizingTTS(base_cls):
+        async def run_tts(self, text, *args, **kwargs):
+            token_mode = False
+            try:
+                from pipecat.services.tts_service import TextAggregationMode
+
+                token_mode = (
+                    getattr(self, "_text_aggregation_mode", None)
+                    == TextAggregationMode.TOKEN
+                )
+            except Exception:
+                token_mode = False
+            if not token_mode:
+                text = normalize_for_speech(text)
+            async for frame in super().run_tts(text, *args, **kwargs):
+                yield frame
+
+    _NormalizingTTS.__name__ = f"Normalizing{base_cls.__name__}"
+    return _NormalizingTTS
 from botelier.voice.prompt_context import (
     build_runtime_system_prompt_from_parts,
     static_prompt_prefix,
@@ -1978,6 +2012,8 @@ class VoiceEngineFactory:
             import re as _re
             import json as _json
 
+            from .speech_normalize import normalize_for_speech as _normalize_for_speech
+
             _default_substitutions: dict[str, str] = {
                 "washcloths": "wash cloths",
                 "washcloth": "wash cloth",
@@ -2055,7 +2091,12 @@ class VoiceEngineFactory:
                 def _apply_substitutions(text: str) -> str:
                     for pattern, replacement in _sub_patterns:
                         text = pattern.sub(replacement, text)
-                    return text
+                    # Task #547 — expand numbers/ordinals/currency codes to
+                    # words ("3000" was read "thirty-zero-zero", "3rd" as
+                    # "third-R-D", "EUR" spelled out). Safe here because this
+                    # method only ever receives whitespace-complete text (the
+                    # TOKEN-mode buffering above guarantees whole words).
+                    return _normalize_for_speech(text)
 
                 async def append_to_audio_context(self, context_id, frame):
                     # Task #473 — TTS TTFB for the websocket path.  Pipecat's
@@ -2233,7 +2274,7 @@ class VoiceEngineFactory:
         elif provider == "cartesia":
             from pipecat.services.cartesia.tts import CartesiaTTSService
 
-            class _BotelierCartesiaTTSService(CartesiaTTSService):
+            class _BotelierCartesiaTTSService(make_normalizing_tts(CartesiaTTSService)):
                 """Cartesia TTS with per-context-ID completion callbacks.
 
                 Mirrors the Deepgram subclass: terminal handlers register a
@@ -2271,7 +2312,7 @@ class VoiceEngineFactory:
         elif provider == "elevenlabs":
             from pipecat.services.elevenlabs.tts import ElevenLabsTTSService
 
-            return ElevenLabsTTSService(
+            return make_normalizing_tts(ElevenLabsTTSService)(
                 api_key=api_keys.get("elevenlabs_api_key"),
                 voice_id=config.tts_voice_id,
                 sample_rate=8000,  # telephony transport is 8 kHz μ-law
@@ -2279,7 +2320,7 @@ class VoiceEngineFactory:
         elif provider == "openai":
             from pipecat.services.openai.tts import OpenAITTSService
 
-            return OpenAITTSService(
+            return make_normalizing_tts(OpenAITTSService)(
                 api_key=api_keys.get("openai_api_key"),
                 voice=config.tts_voice_id or "alloy",
                 sample_rate=8000,  # telephony transport is 8 kHz μ-law

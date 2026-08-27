@@ -19,3 +19,5 @@ description: Why per-word regex substitutions (and any whole-word text processin
 - **How to apply:** any text transform in a TTS `run_tts` override (substitutions,
   redaction, SSML-ish rewriting) must be word-boundary-safe under token streaming, or be
   applied at a layer that sees complete text.
+
+**Speech-normalization lesson:** any text transform for TTS must (a) run only on whitespace-complete text (token mode delivers sub-word fragments), (b) never raise — a failed transform kills synthesis mid-call, pass unsupported values through verbatim, and (c) leave identifier-like digit strings (confirmation numbers, 7+ digit sequences) as digits so callers can write them down. Every TTS provider path needs the transform wired separately — adding it to one wrapper silently leaves other providers unnormalized.

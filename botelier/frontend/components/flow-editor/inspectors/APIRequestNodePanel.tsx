@@ -63,7 +63,7 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
     !!(api.responseMapping && Object.keys(api.responseMapping).length > 0)
   );
   const [showResponseMessages, setShowResponseMessages] = useState(
-    !!(api.onSuccess || api.onError || api.onNotFound || api.onAuthError)
+    !!(api.onSuccess || api.onError || api.onNotFound || api.onAuthError || api.onComplete !== undefined)
   );
   const [showQueryParams, setShowQueryParams] = useState(true);
   const [integrations, setIntegrations] = useState<APIAccountIntegration[]>([]);
@@ -1014,6 +1014,31 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
                 className={inputCls}
                 placeholder="Request completed successfully"
               />
+            </div>
+            <div>
+              <label className="block text-xs text-gray-500 mb-1">After completion (spoken to the caller)</label>
+              <input
+                type="text"
+                value={api.onComplete ?? ""}
+                onChange={(e) =>
+                  updateApi({ onComplete: e.target.value === "" ? undefined : e.target.value })
+                }
+                disabled={api.onComplete === ""}
+                className={inputCls}
+                placeholder="I've completed that check. Let me walk you through what I found."
+              />
+              <label className="mt-1 flex items-center gap-2 text-xs text-gray-500">
+                <input
+                  type="checkbox"
+                  checked={api.onComplete === ""}
+                  onChange={(e) => updateApi({ onComplete: e.target.checked ? "" : undefined })}
+                />
+                Say nothing after this step completes
+              </label>
+              <p className="mt-1 text-xs text-gray-600">
+                Leave blank to keep the default line. It is skipped automatically whenever the flow
+                already speaks something next.
+              </p>
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">On error</label>

@@ -510,14 +510,79 @@ def _format_variable_value(value: Any) -> str:
     return str(value)
 
 
-def substitute_variables(template: str, variables: dict[str, Any]) -> str:
-    """Replace {{variable_name}} placeholders with actual values."""
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+_SPEAKABLE_NAME_KEYS = (
+    "name",
+    "title",
+    "label",
+    "rate_plan_name",
+    "room_name",
+    "room_type_name",
+    "plan_name",
+    "description",
+)
+
+
+def _speakable_variable_value(value: Any) -> str:
+    """Render a variable value as natural spoken text, never raw JSON/HTML.
+
+    Task #547 — collect-slot prompts are spoken verbatim by TTS on live calls
+    (the direct-speech guarantee), so a prompt interpolating a mapped API
+    result (e.g. a rate-plans array of objects) must become a short, speakable
+    summary (names joined with "and"), not compact JSON with codes,
+    restrictions objects and HTML descriptions read aloud to the caller.
+    """
+
+    def _name_of(item: Any) -> str:
+        if isinstance(item, dict):
+            for key in _SPEAKABLE_NAME_KEYS:
+                v = item.get(key)
+                if isinstance(v, str) and v.strip():
+                    return _HTML_TAG_RE.sub(" ", v).strip()
+            # No name-like field: fall back to the first scalar string value.
+            for v in item.values():
+                if isinstance(v, str) and v.strip():
+                    return _HTML_TAG_RE.sub(" ", v).strip()
+            return ""
+        if isinstance(item, list):
+            return _join_spoken([_name_of(v) for v in item])
+        return _HTML_TAG_RE.sub(" ", str(item)).strip()
+
+    def _join_spoken(parts: list[str]) -> str:
+        parts = [p for p in parts if p]
+        if not parts:
+            return ""
+        if len(parts) == 1:
+            return parts[0]
+        return ", ".join(parts[:-1]) + " and " + parts[-1]
+
+    if isinstance(value, (list, dict)):
+        spoken = _name_of(value)
+        # Structured data with nothing speakable: omit rather than dump JSON.
+        return spoken
+    return _HTML_TAG_RE.sub(" ", str(value)).strip()
+
+
+def substitute_variables(
+    template: str, variables: dict[str, Any], speakable: bool = False
+) -> str:
+    """Replace {{variable_name}} placeholders with actual values.
+
+    ``speakable=True`` is for text that is spoken verbatim to a caller
+    (collect prompts, configured success messages): structured values are
+    summarized into natural speech instead of compact JSON. Leave it False for
+    request/body/set-variable templates and LLM-context instructions, which
+    need the full data.
+    """
 
     def replace_var(match):
         var_name = match.group(1)
         value = variables.get(var_name)
         if value is None:
             return match.group(0)
+        if speakable:
+            return _speakable_variable_value(value)
         return _format_variable_value(value)
 
     return re.sub(r"\{\{(\w+)\}\}", replace_var, template)
@@ -726,7 +791,10 @@ Once a flow is active, follow these guidelines:
 9. When a function returns a "speak_exactly" field, speak that text verbatim without paraphrasing.
 10. If the caller asks a question mid-flow, answer it briefly (use the knowledge base if one is available), then continue collecting where you left off. Do not restart the flow or lose your place.
 11. When a function result includes "node_instructions", follow those instructions when composing your very next reply — they are the flow designer's directions for the step that just completed (e.g. how to confirm the value you just collected).
-12. When a function result includes "current_node_context", treat it exactly like CURRENT NODE instructions: it tells you what to say or ask next."""
+12. When a function result includes "current_node_context", treat it exactly like CURRENT NODE instructions: it tells you what to say or ask next.
+13. Never read raw JSON, code, HTML, field names, or internal ID codes aloud. When a function result contains structured data (lists of rooms, rate plans, etc.), present only the caller-relevant values — names, dates, prices — in short natural sentences.
+14. When stating a price from a function result, say the amount exactly as returned — it is the TOTAL for the whole stay unless the field name explicitly says nightly/daily. Never multiply a price by the number of nights or recompute it. State that it is the total, and say the currency as a word ("three hundred twenty euros"), never a code like "EUR".
+15. Short transition lines such as "I've completed that check" are spoken automatically by the system when needed. Never say them yourself, repeat them, or adopt them as your own phrasing — go straight to the substance of your reply."""
 
 
 class FlowExecutor:
@@ -2059,7 +2127,7 @@ class FlowExecutor:
             "type": var_info.type.value,
             "description": var_info.description,
             "prompt": substitute_variables(
-                str(slot.get("prompt") or ""), self.state.collected_slots
+                str(slot.get("prompt") or ""), self.state.collected_slots, speakable=True
             ),
             "constraints": constraints if constraints else None,
             "instructions": instructions,
@@ -2882,7 +2950,7 @@ class FlowExecutor:
                         prompt = remaining[0].get("prompt", "")
                         if prompt:
                             form_next_slot_prompt = substitute_variables(
-                                prompt, self.state.collected_slots
+                                prompt, self.state.collected_slots, speakable=True
                             )
                     else:
                         next_node = self.state.get_next_node(collecting_node_id)
@@ -3632,7 +3700,9 @@ class FlowExecutor:
                 next_node_id = node_id
 
             success_msg = config.on_success_message
-            success_msg = substitute_variables(success_msg, self.state.collected_slots)
+            success_msg = substitute_variables(
+                success_msg, self.state.collected_slots, speakable=True
+            )
 
             response_instructions = (api_config.get("responseInstructions") or "").strip()
             if response_instructions:
@@ -3819,7 +3889,9 @@ class FlowExecutor:
                 self.state.advance_to(next_node.id)
 
             success_msg = api_config.get("onSuccess", "Request completed successfully")
-            success_msg = substitute_variables(success_msg, self.state.collected_slots)
+            success_msg = substitute_variables(
+                success_msg, self.state.collected_slots, speakable=True
+            )
 
             response_instructions = (api_config.get("responseInstructions") or "").strip()
             if response_instructions:
@@ -3888,7 +3960,9 @@ class FlowExecutor:
                 next_node_id = node_id
 
             success_msg = api_config.get("onSuccess", "Request completed successfully")
-            success_msg = substitute_variables(success_msg, self.state.collected_slots)
+            success_msg = substitute_variables(
+                success_msg, self.state.collected_slots, speakable=True
+            )
 
             response_instructions = (api_config.get("responseInstructions") or "").strip()
             if response_instructions:
