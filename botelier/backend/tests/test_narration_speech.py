@@ -290,6 +290,219 @@ def test_on_complete_survives_flow_config_round_trip():
 
 
 # ---------------------------------------------------------------------------
+# Direct voice_result narration — Task #563
+#
+# When the API node returns a non-empty voice_result (the caller-facing
+# summary built from onSuccess + extracted variables, or from
+# responseInstructions), it must be spoken immediately via TTSSpeakFrame
+# instead of a generic bridge, and run_llm must be False so that the LLM
+# doesn't call the next flow tool before the caller has heard the result.
+# ---------------------------------------------------------------------------
+
+def _run_api_handler_full(api_data, api_result):
+    """Like _run_api_handler but also returns the result_callback mock."""
+    mapper = FunctionMapper()
+    executor = FlowExecutor(parse_flow_config(_api_flow_config(api_data)))
+    executor.get_initial_messages()
+    executor.state.current_node_id = "book"
+    executor.handle_function_call = AsyncMock(return_value=api_result)
+    mapper._flow_executors["rooms"] = executor
+    mapper.update_llm_tools_for_flow = lambda *_: None
+
+    params = SimpleNamespace(
+        arguments={},
+        llm=SimpleNamespace(push_frame=AsyncMock()),
+        result_callback=AsyncMock(),
+    )
+    handler = mapper._create_flow_function_handler("rooms", "execute_book")
+    asyncio.run(handler(params))
+    return _spoken_texts(params.llm.push_frame), params.result_callback
+
+
+def _result_callback_run_llm(cb: AsyncMock) -> bool:
+    """Return the effective run_llm flag from the result_callback invocation.
+
+    True when result_callback was called without explicit properties (the
+    default), False when FunctionCallResultProperties(run_llm=False) was set.
+    """
+    props = (cb.call_args.kwargs or {}).get("properties")
+    if props is not None and props.run_llm is not None:
+        return bool(props.run_llm)
+    return True  # pipecat default
+
+
+def test_voice_result_spoken_directly_when_present():
+    """voice_result from the API response is narrated immediately via TTS."""
+    spoken, _ = _run_api_handler_full(
+        {},
+        {
+            "success": True,
+            "action": None,
+            "voice_result": "Available rooms: Superior Room at one hundred ninety-nine per night.",
+        },
+    )
+    assert any("Superior Room" in t for t in spoken)
+
+
+def test_voice_result_replaces_generic_bridge():
+    """When voice_result is present the generic bridge must NOT be spoken."""
+    spoken, _ = _run_api_handler_full(
+        {},
+        {
+            "success": True,
+            "action": None,
+            "voice_result": "Available rooms: Superior Room at one hundred ninety-nine per night.",
+        },
+    )
+    assert not any("I've completed that check" in t for t in spoken)
+
+
+def test_voice_result_sets_run_llm_false():
+    """Directly-spoken voice_result must suppress the follow-up LLM turn."""
+    _, cb = _run_api_handler_full(
+        {},
+        {
+            "success": True,
+            "action": None,
+            "voice_result": "Available rooms: Superior Room at one hundred ninety-nine per night.",
+        },
+    )
+    assert _result_callback_run_llm(cb) is False
+
+
+def test_no_voice_result_still_falls_back_to_bridge():
+    """Regression: bridge fires and run_llm stays True when voice_result is absent."""
+    spoken, cb = _run_api_handler_full({}, {"success": True, "action": None})
+    assert any("I've completed that check" in t for t in spoken)
+    assert _result_callback_run_llm(cb) is True
+
+
+def test_no_voice_result_custom_bridge_still_spoken():
+    """Configured onComplete bridge still fires when there's no voice_result."""
+    spoken, cb = _run_api_handler_full(
+        {"onComplete": "Done! Let me walk you through it."},
+        {"success": True, "action": None},
+    )
+    assert spoken == ["Done! Let me walk you through it."]
+    assert _result_callback_run_llm(cb) is True
+
+
+def test_error_path_unaffected_by_voice_result_logic():
+    """Failed API calls use the error bridge; run_llm stays True for LLM recovery."""
+    spoken, cb = _run_api_handler_full({}, {"success": False, "action": None})
+    assert any("wasn't able to complete" in t for t in spoken)
+    assert _result_callback_run_llm(cb) is True
+
+
+# ---------------------------------------------------------------------------
+# Auto-fire path: collect_slot → api_request
+#
+# When a collect function advances the flow to an API_REQUEST node the mapper
+# fires execute_* immediately (the "auto-fire").  The same voice_result logic
+# must apply — callers must hear the result without a second LLM turn.
+# ---------------------------------------------------------------------------
+
+_COLLECT_AND_API_FLOW = {
+    "initial_node": "start",
+    "variables": [{"key": "arrival", "type": "date", "description": "arrival"}],
+    "nodes": [
+        {
+            "id": "start",
+            "type": "initial",
+            "data": {"greeting": "Hi", "waitForResponse": False},
+        },
+        {
+            "id": "arrival",
+            "type": "collect_slot",
+            "data": {"slot": {"variableKey": "arrival", "prompt": "Arrival?"}},
+        },
+        {
+            "id": "book",
+            "type": "api_request",
+            "data": {"api": {"method": "GET", "url": "https://api.example.com/rooms"}},
+        },
+        {"id": "end", "type": "end", "data": {}},
+    ],
+    "edges": [
+        {"id": "e1", "source": "start", "target": "arrival"},
+        {"id": "e2", "source": "arrival", "target": "book"},
+        {"id": "e3", "source": "book", "target": "end"},
+    ],
+}
+
+
+def _run_collect_then_auto_fire(api_result):
+    """Simulate collect_slot finishing → auto-fire of the API node → return results."""
+    mapper = FunctionMapper()
+    executor = FlowExecutor(parse_flow_config(_COLLECT_AND_API_FLOW))
+    executor.get_initial_messages()
+    executor.state.current_node_id = "arrival"
+
+    call_count = 0
+
+    async def _mock_handle(fn_name, args):
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            # collect_arrival succeeded — advance state to the API node.
+            executor.state.current_node_id = "book"
+            return {
+                "success": True,
+                "action": None,
+                "collected": {"arrival": "2099-07-01"},
+                "next_slot": None,
+                "message": "Got it.",
+            }
+        # Auto-fired execute_book result.
+        return api_result
+
+    executor.handle_function_call = _mock_handle
+    mapper._flow_executors["rooms"] = executor
+    mapper.update_llm_tools_for_flow = lambda *_: None
+
+    params = SimpleNamespace(
+        arguments={"arrival": "2099-07-01"},
+        llm=SimpleNamespace(push_frame=AsyncMock()),
+        result_callback=AsyncMock(),
+    )
+    handler = mapper._create_flow_function_handler("rooms", "collect_arrival")
+    asyncio.run(handler(params))
+    return _spoken_texts(params.llm.push_frame), params.result_callback
+
+
+def test_auto_fire_speaks_voice_result_immediately():
+    """collect_slot → auto-fired API: voice_result spoken directly, no bridge."""
+    spoken, _ = _run_collect_then_auto_fire(
+        {
+            "success": True,
+            "action": None,
+            "voice_result": "We have two rooms: Superior at one ninety-nine, Deluxe at two fifty-nine.",
+        }
+    )
+    assert any("Superior" in t for t in spoken)
+    assert not any("I've completed that check" in t for t in spoken)
+
+
+def test_auto_fire_sets_run_llm_false():
+    """Auto-fire with voice_result must suppress the follow-up LLM narration turn."""
+    _, cb = _run_collect_then_auto_fire(
+        {
+            "success": True,
+            "action": None,
+            "voice_result": "We have two rooms: Superior at one ninety-nine, Deluxe at two fifty-nine.",
+        }
+    )
+    assert _result_callback_run_llm(cb) is False
+
+
+def test_auto_fire_no_voice_result_falls_back_to_bridge():
+    """Auto-fire with empty voice_result still uses the bridge + run_llm=True."""
+    spoken, cb = _run_collect_then_auto_fire({"success": True, "action": None})
+    assert any("I've completed that check" in t for t in spoken)
+    assert _result_callback_run_llm(cb) is True
+
+
+# ---------------------------------------------------------------------------
 # Provider-neutral TTS normalization (Cartesia / ElevenLabs / OpenAI paths)
 # ---------------------------------------------------------------------------
 

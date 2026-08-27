@@ -2172,8 +2172,17 @@ class FunctionMapper:
                 )
             )
 
+            # Tracks whether the API result itself was spoken directly here,
+            # so _spoke_directly below starts True and run_llm=False is used.
+            _api_spoke_directly = False
             if _completed_api_node:
                 _api_config = _completed_api_node.data.get("api", {}) or {}
+                # voice_result is the caller-facing narration — either the
+                # designer's responseInstructions (with {{variable}} subs) or the
+                # auto-built "success_msg + extracted_vars" summary.  It is
+                # available here BEFORE the cleanup block that promotes it to
+                # result["result"], so read it now.
+                _voice_result = str(result.get("voice_result") or "").strip()
                 if result.get("success"):
                     # Do not infer an outcome from transport success: an
                     # availability search with no rooms is still a successful
@@ -2188,7 +2197,32 @@ class FunctionMapper:
                         # Direct speech is guaranteed — never stack a bridge
                         # (default OR configured) on top of it.
                         _completion_bridge = ""
+                    elif _voice_result:
+                        # The API returned narrable data.  Speak it immediately
+                        # rather than a generic bridge followed by an LLM turn.
+                        # Without this the LLM tends to skip narrating voice_result
+                        # and calls the next flow tool directly, leaving callers
+                        # hearing only the thinking message and never the actual
+                        # availability/result data they asked for.
+                        # Setting _api_spoke_directly=True propagates to
+                        # _spoke_directly below, which selects run_llm=False and
+                        # prevents a second LLM turn from repeating the narration.
+                        _completion_bridge = ""
+                        if hasattr(params, "llm") and params.llm is not None:
+                            try:
+                                await params.llm.push_frame(TTSSpeakFrame(text=_voice_result))
+                                logger.info(
+                                    f"🗣️ Spoke API result directly for {tool_name}: "
+                                    f"{_voice_result[:80]!r}"
+                                )
+                                _api_spoke_directly = True
+                            except Exception as _vr_err:
+                                logger.warning(
+                                    f"Could not emit API result for {tool_name}: {_vr_err}"
+                                )
                     else:
+                        # No narrable data — fall back to the configurable bridge
+                        # so the caller at least hears that the check completed.
                         _on_complete = _api_config.get("onComplete")
                         _completion_bridge = (
                             "I've completed that check. Let me walk you through what I found."
@@ -2238,7 +2272,11 @@ class FunctionMapper:
             # caller turn.
             next_slot = result.get("next_slot") or {}
             next_prompt = str(next_slot.get("prompt") or "").strip()
-            _spoke_directly = False
+            # Seed from _api_spoke_directly so that a directly-spoken API result
+            # propagates run_llm=False without being overridden by the False
+            # initialiser below.  Collection-prompt and speak_directly branches
+            # below may still set this to True independently.
+            _spoke_directly = _api_spoke_directly
             if result.get("collected") and next_prompt:
                 await params.llm.push_frame(TTSSpeakFrame(text=next_prompt))
                 logger.info(
