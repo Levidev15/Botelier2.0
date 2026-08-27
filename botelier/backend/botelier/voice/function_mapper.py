@@ -622,6 +622,19 @@ class FunctionMapper:
                 return override
         return None
 
+    @staticmethod
+    def _flow_has_started(executor: FlowExecutor) -> bool:
+        """Return whether a flow may no longer accept its start trigger."""
+        state = executor.state
+        return bool(
+            state.is_complete
+            or state.graph_exhausted
+            or (
+                state.current_node_id is not None
+                and state.current_node_id != executor.flow_config.initial_node
+            )
+        )
+
     def update_llm_tools_for_flow(self, tool_name: str):
         """Update the LLM context tools to only expose the current/next slot function.
 
@@ -689,19 +702,22 @@ class FunctionMapper:
                 )
                 function_schema_objects.append(func_schema)
 
-            # 2. Include flow trigger function
-            trigger_schema = FunctionSchema(
-                name=f"start_{sanitize_function_name(tool_name)}",
-                description=f"Start the {tool_name} conversation flow",
-                properties={
-                    var.key: executor._create_slot_function(var)["function"]["parameters"][
-                        "properties"
-                    ][var.key]
-                    for var in executor.flow_config.variables
-                },
-                required=[],
-            )
-            function_schema_objects.append(trigger_schema)
+            # 2. Only an unstarted flow may be started. Keeping this trigger
+            # after the flow entered its first graph node lets an LLM retry
+            # replay the greeting and overwrite in-progress caller facts.
+            if not self._flow_has_started(executor):
+                trigger_schema = FunctionSchema(
+                    name=f"start_{sanitize_function_name(tool_name)}",
+                    description=f"Start the {tool_name} conversation flow",
+                    properties={
+                        var.key: executor._create_slot_function(var)["function"]["parameters"][
+                            "properties"
+                        ][var.key]
+                        for var in executor.flow_config.variables
+                    },
+                    required=[],
+                )
+                function_schema_objects.append(trigger_schema)
 
             # 3. Include current flow functions (only current slot due to get_function_schemas logic)
             for schema in flow_schemas:
@@ -2006,29 +2022,32 @@ class FunctionMapper:
         # Get current function schemas for initial tool exposure (only current slot)
         function_schemas = executor.get_function_schemas()
 
-        # Add trigger function
-        safe_tool_name = sanitize_function_name(tool_name)
-        trigger_properties = {
-            var.key: executor._create_slot_function(var)["function"]["parameters"][
-                "properties"
-            ][var.key]
-            for var in executor.flow_config.variables
-        }
-        trigger_schema = {
-            "type": "function",
-            "function": {
-                "name": f"start_{safe_tool_name}",
-                "description": f"Start the {tool_name} conversation flow when the customer wants to {tool.description or 'complete this task'}",
-                "parameters": {
-                    "type": "object",
-                    "properties": trigger_properties,
-                    "required": [],
-                    "additionalProperties": False,
+        # Add a start trigger only when this executor has not already entered
+        # the graph (including a durable reconnect). Started flows expose only
+        # the function valid at their current node.
+        if not self._flow_has_started(executor):
+            safe_tool_name = sanitize_function_name(tool_name)
+            trigger_properties = {
+                var.key: executor._create_slot_function(var)["function"]["parameters"][
+                    "properties"
+                ][var.key]
+                for var in executor.flow_config.variables
+            }
+            trigger_schema = {
+                "type": "function",
+                "function": {
+                    "name": f"start_{safe_tool_name}",
+                    "description": f"Start the {tool_name} conversation flow when the customer wants to {tool.description or 'complete this task'}",
+                    "parameters": {
+                        "type": "object",
+                        "properties": trigger_properties,
+                        "required": [],
+                        "additionalProperties": False,
+                    },
                 },
-            },
-        }
-        function_schemas.insert(0, trigger_schema)
-        handlers[f"start_{safe_tool_name}"] = self._create_flow_trigger_handler(tool_name)
+            }
+            function_schemas.insert(0, trigger_schema)
+            handlers[f"start_{safe_tool_name}"] = self._create_flow_trigger_handler(tool_name)
 
         return function_schemas, handlers
 
@@ -2520,6 +2539,30 @@ class FunctionMapper:
         async def handler(params: FunctionCallParams):
             logger.info(f"🎬 Starting flow: {tool_name}")
 
+            executor = self._flow_executors.get(tool_name)
+            if not executor:
+                logger.error(f"No executor found for flow {tool_name}")
+                await params.result_callback({"status": "error", "message": "Flow not initialized"})
+                return
+
+            # Reject retries for this same flow before they can replay its
+            # greeting, re-import values, or record duplicate tool usage.
+            if self._flow_has_started(executor):
+                logger.warning(
+                    f"🚫 Rejecting duplicate start_{tool_name}: flow is already "
+                    f"in progress (node={executor.state.current_node_id!r}) for this call"
+                )
+                await params.result_callback(
+                    {
+                        "success": False,
+                        "message": (
+                            "This request is already in progress on this call — "
+                            "finish or resolve it first."
+                        ),
+                    }
+                )
+                return
+
             # Flow-switch race guard (Task #534, defense-in-depth). Both
             # flow triggers are exposed together only in the very first
             # completion, before either flow has advanced — disabling
@@ -2560,13 +2603,6 @@ class FunctionMapper:
             # Track flow usage in call logs
             self.track_tool_usage(tool_name, is_flow=True)
 
-            # Look up the stored executor
-            executor = self._flow_executors.get(tool_name)
-            if not executor:
-                logger.error(f"No executor found for flow {tool_name}")
-                await params.result_callback({"status": "error", "message": "Flow not initialized"})
-                return
-
             imported = executor.import_caller_slots(dict(params.arguments or {}))
             if not imported["success"]:
                 await params.result_callback(
@@ -2578,23 +2614,26 @@ class FunctionMapper:
                 )
                 return
 
-            # get_initial_messages() honours waitForResponse=false on the initial
-            # node: it returns the greeting plus the first slot prompt and advances
-            # the flow state to the first COLLECT node in a single call.  Speak
-            # every returned message directly via TTSSpeakFrame so both the
-            # greeting and the first question are delivered in one bot turn —
-            # the caller hears them back-to-back without the LLM waiting for
-            # input between them.
+            # get_initial_messages() always enters the flow's first graph node.
+            # With waitForResponse=true it returns only the configured greeting;
+            # with false it also returns the downstream auto-walk messages.
+            # Speak every returned message directly so the LLM does not replay
+            # the flow greeting while the correct next tools are being exposed.
             initial_messages = executor.get_initial_messages()
             executor.advance_past_satisfied_collects()
+            # The start handler bypasses handle_function_call(), so persist
+            # progress explicitly. This is best-effort like all live-flow
+            # snapshots: a write failure must not drop an active caller.
+            await executor._snapshot_state()
             spoke_any = False
             for message in initial_messages:
                 if message:
                     await params.llm.push_frame(TTSSpeakFrame(message))
                     spoke_any = True
 
-            # State is now advanced to the first COLLECT node.  Updating tools
-            # here exposes the correct collect_* functions for that node.
+            # State is now at the first unsatisfied collect node or the next
+            # mandatory action gate. Updating tools exposes only that valid
+            # next function and removes the stale start trigger.
             self.update_llm_tools_for_flow(tool_name)
 
             # Give the LLM the remaining variable list for context so it knows
@@ -2623,19 +2662,19 @@ class FunctionMapper:
                 "progress": progress,
                 "variables_to_collect": variables_to_collect,
                 "instructions": (
-                    "The greeting AND the first question have already been spoken "
-                    "to the caller. Do NOT greet again and do NOT repeat the first "
-                    "question — wait for the caller's response. Then collect the "
+                    "The configured initial messages have already been spoken "
+                    "to the caller. Do NOT greet again or repeat any of those "
+                    "messages — wait for the caller's response. Then collect the "
                     "required information by calling the collect_* functions as you "
                     "gather each value, asking for each piece naturally in "
                     "conversation."
                 ),
             }
 
-            # Same CURRENT NODE guidance the simulator injects per turn. At
-            # flow start the current node's prompt was just spoken aloud, so
-            # frame it as reference-only — otherwise the LLM re-asks the first
-            # question on the caller's first answer.
+            # Same CURRENT NODE guidance the simulator injects per turn. If a
+            # prompt was included in the initial messages, frame it as
+            # reference-only to avoid a duplicate question on the caller's
+            # first answer.
             try:
                 node_context = executor.get_current_node_context()
             except Exception:  # noqa: BLE001 - guidance is best-effort

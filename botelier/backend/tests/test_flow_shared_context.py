@@ -1,6 +1,8 @@
 """Focused coverage for Task #538 call-scoped flow context."""
 
+import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 from uuid import uuid4
 
 from botelier.flow_executor import CallFlowContext, FlowExecutor, parse_flow_config
@@ -82,6 +84,101 @@ def test_structured_import_validates_atomically_and_advances_only_to_action_gate
     assert {s["function"]["name"] for s in executor.get_function_schemas()} == {
         "execute_book"
     }
+
+
+def test_waiting_initial_enters_first_collect_without_speaking_its_prompt():
+    """waitForResponse only controls speech, never whether state enters the graph."""
+    config = _booking_config()
+    config["nodes"][0]["data"]["waitForResponse"] = True
+    executor = FlowExecutor(parse_flow_config(config))
+
+    assert executor.get_initial_messages() == ["Hello"]
+    assert executor.state.current_node_id == "arrival"
+    assert {s["function"]["name"] for s in executor.get_function_schemas()} == {
+        "collect_arrival"
+    }
+
+
+def test_waiting_initial_with_imported_slots_stops_at_api_gate():
+    """Known booking facts skip collects but cannot bypass the booking action."""
+    config = _booking_config()
+    config["nodes"][0]["data"]["waitForResponse"] = True
+    executor = FlowExecutor(parse_flow_config(config))
+
+    assert executor.import_caller_slots(
+        {"arrival": "2099-06-10", "departure": "2099-06-12"}
+    )["success"]
+    assert executor.get_initial_messages() == ["Hello"]
+    executor.advance_past_satisfied_collects()
+
+    assert executor.state.current_node_id == "book"
+    assert {s["function"]["name"] for s in executor.get_function_schemas()} == {
+        "execute_book"
+    }
+
+
+def test_started_flow_no_longer_emits_a_start_schema():
+    """A reconnect must expose the pending node, not invite a restart."""
+    mapper = FunctionMapper()
+    tool = SimpleNamespace(
+        id=uuid4(),
+        name="rooms",
+        description="book",
+        config=_booking_config(),
+        llm_provider=None,
+        llm_model=None,
+        llm_temperature=None,
+        llm_max_tokens=None,
+    )
+    initial_schemas, _ = mapper.get_flow_functions(tool)
+    assert "start_rooms" in {schema["function"]["name"] for schema in initial_schemas}
+
+    executor = mapper.get_flow_executors()[0]
+    executor.get_initial_messages()
+    resumed_schemas, _ = mapper.get_flow_functions(tool)
+    assert "start_rooms" not in {schema["function"]["name"] for schema in resumed_schemas}
+    assert "collect_arrival" in {schema["function"]["name"] for schema in resumed_schemas}
+
+
+def test_duplicate_flow_start_is_rejected_before_any_side_effect():
+    """A repeated provider tool call cannot replay a started booking flow."""
+    mapper = FunctionMapper()
+    executor = FlowExecutor(parse_flow_config(_booking_config()))
+    executor.get_initial_messages()
+    mapper._flow_executors["rooms"] = executor
+    mapper.track_tool_usage = MagicMock()
+
+    params = SimpleNamespace(result_callback=AsyncMock())
+    asyncio.run(mapper._create_flow_trigger_handler("rooms")(params))
+
+    mapper.track_tool_usage.assert_not_called()
+    params.result_callback.assert_awaited_once()
+    result = params.result_callback.await_args.args[0]
+    assert result["success"] is False
+    assert "already in progress" in result["message"]
+
+
+def test_flow_start_snapshots_the_first_actionable_node():
+    """Start-trigger progress survives worker recreation before caller input."""
+    mapper = FunctionMapper()
+    executor = FlowExecutor(parse_flow_config(_booking_config()))
+    executor._snapshot_state = AsyncMock()
+    mapper._flow_executors["rooms"] = executor
+    mapper.track_tool_usage = MagicMock()
+    mapper.update_llm_tools_for_flow = MagicMock()
+    params = SimpleNamespace(
+        arguments={},
+        llm=SimpleNamespace(push_frame=AsyncMock()),
+        result_callback=AsyncMock(),
+    )
+
+    asyncio.run(mapper._create_flow_trigger_handler("rooms")(params))
+
+    assert executor.state.current_node_id == "arrival"
+    # Slot import may snapshot its own context propagation; the trigger must
+    # still persist the post-transition state before exposing next tools.
+    assert executor._snapshot_state.await_count >= 1
+    mapper.update_llm_tools_for_flow.assert_called_once_with("rooms")
 
 
 def test_shared_context_reuses_slots_across_executors_and_newest_caller_value_wins():

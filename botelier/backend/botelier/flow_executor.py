@@ -2081,10 +2081,18 @@ class FlowExecutor:
         messages.append(initial_node.data.get("greeting", "Hello! How can I assist you?"))
 
         await_response = initial_node.data.get("waitForResponse", True)
+        # Enter the graph even when the initial greeting waits for the caller.
+        # ``waitForResponse`` controls whether we continue the auto-walk and
+        # speak downstream messages; it must not leave the state at INITIAL.
+        # Otherwise the flow trigger stays exposed and a caller's already-known
+        # slot values cannot advance to the next valid action.
+        first_node = self.state.get_next_node(initial_node.id)
         if await_response:
+            if first_node:
+                self.state.advance_to(first_node.id)
             return messages
 
-        current_node = self.state.get_next_node(initial_node.id)
+        current_node = first_node
         while current_node:
             if current_node.type in (NodeType.COLLECT_SLOT, NodeType.COLLECT_FORM):
                 self.state.advance_to(current_node.id)
