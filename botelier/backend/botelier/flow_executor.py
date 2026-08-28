@@ -3719,8 +3719,23 @@ class FlowExecutor:
 
         import asyncio
 
-        async with self._suspend_turn_lock():
-            result = await asyncio.to_thread(_run)
+        try:
+            async with self._suspend_turn_lock():
+                result = await asyncio.to_thread(_run)
+        except Exception as exc:  # noqa: BLE001 — never break a live call
+            # PaymentService raised (DB error, Stripe SDK exception, misconfiguration).
+            # The charge outcome is ambiguous; return a structured failure so the
+            # LLM can tell the caller something went wrong rather than going silent.
+            logger.error(
+                "service_backed_capability (collect_payment) raised for node %r: %s",
+                node_id, exc, exc_info=True,
+            )
+            return {
+                "success": False,
+                "message": api_config.get("onError") or "There was an issue processing your payment. Please try again.",
+                "action": None,
+                "current_node_id": node_id,
+            }
         # Turn lock reacquired — state mutations happen below.
 
         status = (result or {}).get("status")
@@ -3895,23 +3910,37 @@ class FlowExecutor:
         # Release the turn lock during the HTTP round-trip so concurrent fast
         # turns (collect_, route_, confirm_) can proceed.  Reacquired before
         # any state mutation below.
-        async with self._suspend_turn_lock():
-            with self._borrow_db_session() as db:
-                response = await ActionExecutor(db).execute_and_log(
-                    ActionExecutionRequest(
-                        context=ActionContext(
-                            account_id=self.account_id,
-                            channel="flow",
-                            call_sid=self.call_sid,
-                            flow_tool_id=self.flow_tool_id,
-                            node_id=node_id,
-                            source_label=node.data.get("name") or node_id,
-                            property_id=self.property_id,
-                        ),
-                        variables=variables if variables is not None else self.state.collected_slots,
-                        integration_config=config,
+        try:
+            async with self._suspend_turn_lock():
+                with self._borrow_db_session() as db:
+                    response = await ActionExecutor(db).execute_and_log(
+                        ActionExecutionRequest(
+                            context=ActionContext(
+                                account_id=self.account_id,
+                                channel="flow",
+                                call_sid=self.call_sid,
+                                flow_tool_id=self.flow_tool_id,
+                                node_id=node_id,
+                                source_label=node.data.get("name") or node_id,
+                                property_id=self.property_id,
+                            ),
+                            variables=variables if variables is not None else self.state.collected_slots,
+                            integration_config=config,
+                        )
                     )
-                )
+        except Exception as exc:  # noqa: BLE001 — defense-in-depth; ActionExecutor already catches most errors
+            logger.error(
+                "Unhandled exception in _handle_integration_api_request for node %r: %s",
+                node_id, exc, exc_info=True,
+            )
+            return {
+                "success": False,
+                "message": api_config.get("onError", "There was an issue processing your request"),
+                "action": None,
+                "error_type": "unknown",
+                "status_code": 0,
+                "current_node_id": node_id,
+            }
         # Turn lock reacquired — validate and mutate state atomically.
 
         if response.success:
@@ -4104,23 +4133,37 @@ class FlowExecutor:
             ActionExecutor,
         )
 
-        async with self._suspend_turn_lock():
-            with self._borrow_db_session() as db:
-                response = await ActionExecutor(db).execute_and_log(
-                    ActionExecutionRequest(
-                        context=ActionContext(
-                            account_id=self.account_id,
-                            channel="flow",
-                            call_sid=self.call_sid,
-                            flow_tool_id=self.flow_tool_id,
-                            node_id=node_id,
-                            source_label=node.data.get("name") or node_id,
-                            property_id=self.property_id,
-                        ),
-                        variables=self.state.collected_slots,
-                        legacy_config=api_config,
+        try:
+            async with self._suspend_turn_lock():
+                with self._borrow_db_session() as db:
+                    response = await ActionExecutor(db).execute_and_log(
+                        ActionExecutionRequest(
+                            context=ActionContext(
+                                account_id=self.account_id,
+                                channel="flow",
+                                call_sid=self.call_sid,
+                                flow_tool_id=self.flow_tool_id,
+                                node_id=node_id,
+                                source_label=node.data.get("name") or node_id,
+                                property_id=self.property_id,
+                            ),
+                            variables=self.state.collected_slots,
+                            legacy_config=api_config,
+                        )
                     )
-                )
+        except Exception as exc:  # noqa: BLE001 — defense-in-depth; ActionExecutor already catches most errors
+            logger.error(
+                "Unhandled exception in _handle_custom_api_request for node %r: %s",
+                node_id, exc, exc_info=True,
+            )
+            return {
+                "success": False,
+                "message": api_config.get("onError", "There was an issue processing your request"),
+                "action": None,
+                "error_type": "unknown",
+                "status_code": 0,
+                "current_node_id": node_id,
+            }
         # Turn lock reacquired.
 
         if response.success:
@@ -5182,19 +5225,57 @@ class FlowExecutor:
         pre_message = transfer_config.get("preTransferMessage", "Please hold while I transfer you.")
         transfer_mode = transfer_config.get("transferMode", "warm")
 
-        self.state.transfer_requested = True
-        self.state.transfer_target = phone_number
-        self.state.advance_to(node_id)
+        # Snapshot the current node position before releasing the turn lock.
+        # If a concurrent permitted turn advances the flow during the carrier
+        # wait, we must not roll it back by calling advance_to(node_id)
+        # unconditionally on reacquisition.  (Same post-I/O revalidation
+        # contract used by _handle_integration_api_request and friends.)
+        _pre_callback_node_id = self.state.current_node_id
 
         if self.transfer_callback:
-            # Release the turn lock while waiting for the carrier to acknowledge
-            # the transfer — this can be a slow synchronous telephony round-trip.
-            # Reacquired before returning.  No state is mutated after the callback
-            # so revalidation is not required.
-            async with self._suspend_turn_lock():
-                await self.transfer_callback(
-                    phone_number, arguments.get("reason", ""), transfer_mode=transfer_mode
+            # Attempt the callback BEFORE committing state so a carrier rejection
+            # leaves the executor in a clean, un-mutated position.  Release the
+            # turn lock during the slow telephony round-trip; reacquire before
+            # writing state below.
+            try:
+                async with self._suspend_turn_lock():
+                    await self.transfer_callback(
+                        phone_number, arguments.get("reason", ""), transfer_mode=transfer_mode
+                    )
+            except Exception as exc:
+                # Callback failed — state is NOT mutated.  Return a structured
+                # failure so the LLM can narrate the error to the caller instead
+                # of going silent.
+                logger.error(
+                    "transfer_callback raised for node %r (target=%r): %s",
+                    node_id, phone_number, exc, exc_info=True,
                 )
+                return {
+                    "success": False,
+                    "message": "The transfer could not be completed. Please try again or ask to speak with someone.",
+                    "action": None,
+                    "current_node_id": self.state.current_node_id,
+                }
+
+        # Callback succeeded (or no callback) — commit the transfer terminal
+        # signals.  These are always safe to write: the telephony platform is
+        # already executing the transfer regardless of flow position.
+        self.state.transfer_requested = True
+        self.state.transfer_target = phone_number
+
+        # Post-I/O node revalidation: only advance to the transfer node if a
+        # concurrent turn has not already moved the flow elsewhere.  Rolling
+        # back to an older node would corrupt any progress made during the
+        # carrier wait.
+        if self.state.current_node_id == _pre_callback_node_id:
+            self.state.advance_to(node_id)
+        else:
+            logger.info(
+                "_handle_transfer: flow advanced to %r during carrier wait "
+                "— skipping advance to transfer node %r; transfer signal committed",
+                self.state.current_node_id,
+                node_id,
+            )
 
         return {
             "success": True,

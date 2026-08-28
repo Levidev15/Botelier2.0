@@ -1654,3 +1654,249 @@ class TestConcurrencySafety:
         # (Actually with None key it returns before incrementing — that's fine
         # and expected; this test just verifies the attribute exists and is int.)
         assert ex._snapshot_generation == 0
+
+
+# ---------------------------------------------------------------------------
+# Exception hardening — Task #573
+# ---------------------------------------------------------------------------
+
+class TestTransferCallbackExceptionHardening:
+    """_handle_transfer must not mutate state when the transfer callback raises."""
+
+    def _transfer_config(self):
+        return {
+            "initial_node": "n1",
+            "nodes": [
+                {"id": "n1", "type": "message", "data": {"message": "Hi"}},
+                {"id": "t1", "type": "transfer", "data": {
+                    "transfer": {
+                        "phoneNumber": "+15550001111",
+                        "preTransferMessage": "Please hold.",
+                        "transferMode": "warm",
+                    }
+                }},
+            ],
+            "edges": [{"id": "e1", "source": "n1", "target": "t1"}],
+            "variables": [],
+        }
+
+    @pytest.mark.asyncio
+    async def test_transfer_callback_raises_returns_failure_result(self):
+        """A raising transfer_callback must yield success=False with action=None."""
+        cfg = parse_flow_config(self._transfer_config())
+        ex = FlowExecutor(cfg)
+
+        async def bad_callback(number, reason, transfer_mode="warm"):
+            raise RuntimeError("Twilio rejected the transfer")
+
+        ex.transfer_callback = bad_callback
+
+        result = await ex._handle_transfer("transfer_t1", {})
+
+        assert result["success"] is False
+        assert result["action"] is None, f"Expected action=None, got {result['action']!r}"
+        assert "current_node_id" in result
+
+    @pytest.mark.asyncio
+    async def test_transfer_callback_raises_leaves_state_clean(self):
+        """State must NOT be mutated when transfer_callback raises."""
+        cfg = parse_flow_config(self._transfer_config())
+        ex = FlowExecutor(cfg)
+        original_node_id = ex.state.current_node_id
+
+        async def bad_callback(number, reason, transfer_mode="warm"):
+            raise ConnectionError("carrier timeout")
+
+        ex.transfer_callback = bad_callback
+
+        await ex._handle_transfer("transfer_t1", {})
+
+        assert ex.state.transfer_requested is False, (
+            "transfer_requested must remain False when callback raises"
+        )
+        assert ex.state.transfer_target is None, (
+            "transfer_target must remain None when callback raises"
+        )
+        assert ex.state.current_node_id == original_node_id, (
+            "current_node_id must not advance when callback raises"
+        )
+
+    @pytest.mark.asyncio
+    async def test_transfer_callback_success_commits_state(self):
+        """When callback succeeds, state IS mutated and action='transfer' is returned."""
+        cfg = parse_flow_config(self._transfer_config())
+        ex = FlowExecutor(cfg)
+
+        called_with = []
+
+        async def good_callback(number, reason, transfer_mode="warm"):
+            called_with.append((number, transfer_mode))
+
+        ex.transfer_callback = good_callback
+
+        result = await ex._handle_transfer("transfer_t1", {})
+
+        assert result["success"] is True
+        assert result["action"] == "transfer"
+        assert ex.state.transfer_requested is True
+        assert ex.state.transfer_target == "+15550001111"
+        assert len(called_with) == 1
+
+    @pytest.mark.asyncio
+    async def test_no_transfer_callback_commits_state_directly(self):
+        """When there is no callback, state is committed immediately."""
+        cfg = parse_flow_config(self._transfer_config())
+        ex = FlowExecutor(cfg)
+        ex.transfer_callback = None
+
+        result = await ex._handle_transfer("transfer_t1", {})
+
+        assert result["success"] is True
+        assert result["action"] == "transfer"
+        assert ex.state.transfer_requested is True
+
+    @pytest.mark.asyncio
+    async def test_concurrent_state_mutation_during_carrier_wait_is_not_rolled_back(self):
+        """A concurrent turn that advances the flow during the carrier wait must not be rolled back.
+
+        _handle_transfer releases _turn_lock while awaiting the carrier callback.
+        If another permitted handler advances current_node_id during that window,
+        the post-callback advance_to(transfer_node) must be skipped — the newer
+        state wins, not the pre-callback transfer node position.
+
+        This is the regression test for the post-I/O revalidation fix.
+        """
+        config = {
+            "initial_node": "n1",
+            "nodes": [
+                {"id": "n1", "type": "message", "data": {"message": "Hi"}},
+                {"id": "t1", "type": "transfer", "data": {
+                    "transfer": {
+                        "phoneNumber": "+15550001111",
+                        "preTransferMessage": "Please hold.",
+                        "transferMode": "warm",
+                    }
+                }},
+                {"id": "n2", "type": "message", "data": {"message": "You said something"}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "t1"},
+                {"id": "e2", "source": "t1", "target": "n2"},
+            ],
+            "variables": [],
+        }
+        cfg = parse_flow_config(config)
+        ex = FlowExecutor(cfg)
+        ex._snapshot_state = AsyncMock()
+        ex._sync_saved_records = AsyncMock()
+        ex._get_current_node_context = MagicMock(return_value=None)
+
+        carrier_started = asyncio.Event()
+        carrier_can_finish = asyncio.Event()
+
+        async def slow_callback(number, reason, transfer_mode="warm"):
+            carrier_started.set()
+            await carrier_can_finish.wait()
+
+        ex.transfer_callback = slow_callback
+
+        # Start the transfer — it will release the lock during the carrier wait
+        t_transfer = asyncio.create_task(
+            ex.handle_function_call("transfer_t1", {})
+        )
+        await carrier_started.wait()  # lock is now released
+
+        # Simulate a concurrent turn advancing the flow to a different node
+        # (e.g. a caller-fact correction that rewound the flow, or a route_ call)
+        ex.state.current_node_id = "n2"  # concurrent mutation while lock is released
+
+        # Allow carrier to complete
+        carrier_can_finish.set()
+        result = await asyncio.wait_for(t_transfer, timeout=2.0)
+
+        # Transfer succeeded — terminal signals are written
+        assert result["success"] is True
+        assert result["action"] == "transfer"
+        assert ex.state.transfer_requested is True
+        assert ex.state.transfer_target == "+15550001111"
+
+        # The newer node (n2, set during the concurrent window) must NOT have
+        # been overwritten by advance_to("t1")
+        assert ex.state.current_node_id == "n2", (
+            f"Post-I/O advance_to rolled back concurrent mutation: "
+            f"got {ex.state.current_node_id!r}, expected 'n2'"
+        )
+
+
+class TestServiceBackedCapabilityExceptionHardening:
+    """_handle_service_backed_capability must return a structured result when PaymentService raises."""
+
+    def _capability_config(self):
+        return {
+            "initial_node": "n1",
+            "nodes": [
+                {"id": "n1", "type": "message", "data": {"message": "Hi"}},
+                {"id": "cap1", "type": "capability", "data": {
+                    "capabilityName": "collect_payment",
+                    "api": {"onError": "Payment failed. Please try again."},
+                }},
+            ],
+            "edges": [{"id": "e1", "source": "n1", "target": "cap1"}],
+            "variables": [],
+        }
+
+    @pytest.mark.asyncio
+    async def test_payment_service_raises_returns_structured_failure(self):
+        """PaymentService exception must yield success=False with a caller-safe message."""
+        from unittest.mock import patch
+
+        cfg = parse_flow_config(self._capability_config())
+        ex = FlowExecutor(cfg)
+        ex.account_id = "acct1"
+        ex.property_id = "prop1"
+        ex.call_sid = "CA123"
+        ex.flow_tool_id = "ft1"
+
+        node = cfg._node_index["cap1"]
+        api_config = node.data.get("api", {})
+
+        with patch("botelier.services.payments.PaymentService.collect_payment",
+                   side_effect=RuntimeError("Stripe SDK error")):
+            result = await ex._handle_service_backed_capability(
+                "cap1", node, api_config, "collect_payment"
+            )
+
+        assert result["success"] is False
+        assert result["action"] is None
+        assert "current_node_id" in result
+        # The error message should be caller-safe (not the raw exception)
+        assert "Stripe SDK error" not in result.get("message", ""), (
+            "Raw exception text must not be surfaced to the caller"
+        )
+
+    @pytest.mark.asyncio
+    async def test_payment_service_raises_does_not_set_payment_status(self):
+        """When PaymentService raises, payment_status variable must NOT be written."""
+        from unittest.mock import patch
+
+        cfg = parse_flow_config(self._capability_config())
+        ex = FlowExecutor(cfg)
+        ex.account_id = "acct1"
+        ex.property_id = "prop1"
+        ex.call_sid = "CA123"
+        ex.flow_tool_id = "ft1"
+
+        node = cfg._node_index["cap1"]
+        api_config = node.data.get("api", {})
+
+        assert "payment_status" not in ex.state.collected_slots
+
+        with patch("botelier.services.payments.PaymentService.collect_payment",
+                   side_effect=RuntimeError("DB connection lost")):
+            await ex._handle_service_backed_capability(
+                "cap1", node, api_config, "collect_payment"
+            )
+
+        assert "payment_status" not in ex.state.collected_slots, (
+            "payment_status must not be written when PaymentService raises"
+        )
