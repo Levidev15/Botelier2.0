@@ -11,9 +11,10 @@ import asyncio
 import hashlib
 import json
 import re
+import threading
 import time
 import uuid
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
@@ -285,7 +286,20 @@ class CallFlowContext:
         except RuntimeError:
             return
         for executor in tuple(self._executors):
-            loop.create_task(executor._snapshot_state())
+            # Cancel-and-replace: if an earlier notify already scheduled a
+            # snapshot task that hasn't run yet, cancel it — the new task will
+            # capture more-current state. If the task has already started
+            # writing (to_thread in flight), cancellation is a no-op for the
+            # thread itself, but handle_function_call also cancels the task
+            # before its own authoritative write, so the two writes capture the
+            # same-generation state and last-write-wins is safe.
+            existing = getattr(executor, "_pending_notify_snapshot", None)
+            if existing is not None and not existing.done():
+                existing.cancel()
+            task = loop.create_task(executor._snapshot_state())
+            # Guard with hasattr so non-FlowExecutor registrants are unaffected.
+            if hasattr(executor, "_pending_notify_snapshot"):
+                executor._pending_notify_snapshot = task
 
     def register_executor(self, executor: Any) -> None:
         if not any(bound is executor for bound in self._executors):
@@ -925,6 +939,14 @@ class FlowExecutor:
         self._get_locks: dict[str, asyncio.Lock] = {}
         self._get_recent: dict[str, tuple[float, str, dict]] = {}
         self._save_record_locks: dict[str, asyncio.Lock] = {}
+        # Per-execute-node entry lock acquired in handle_function_call BEFORE
+        # _turn_lock.  Serialises same-node execute_ calls at the outermost
+        # level, which keeps the per-node inner dedup locks (_non_get_locks,
+        # _get_locks) single-holder and prevents an AB-BA deadlock:
+        #   A holds inner dedup lock, releases _turn_lock via _suspend_turn_lock
+        #   B acquires _turn_lock, waits for inner dedup lock → neither proceeds.
+        # Ordering invariant (never reversed): per-node entry lock → _turn_lock.
+        self._execute_entry_locks: dict[str, asyncio.Lock] = {}
         # Calls without a stable contact/session id cannot be deduplicated across
         # workers. Keep their fallback explicitly executor-scoped while still
         # protecting retries/concurrency within this executor.
@@ -942,6 +964,28 @@ class FlowExecutor:
         # persisting unrelated flows' sessions (at their first node, with the
         # shared facts bound into their slots) that a reconnect could resume.
         self._flow_started = False
+        # Executor-wide turn lock — prevents two concurrent fast-mutating tool
+        # turns from interleaving state changes (e.g. a dropout + reconnect that
+        # delivers two collect calls simultaneously). ALL handlers (including
+        # execute_ and save_record_) acquire it; execute_/save_record_ release
+        # it during slow I/O via _suspend_turn_lock and reacquire after.  A
+        # per-node entry lock (see _execute_entry_locks / _save_record_locks) is
+        # always acquired BEFORE _turn_lock to prevent AB-BA deadlock.
+        self._turn_lock: asyncio.Lock = asyncio.Lock()
+        # Tracks the most-recent notify-driven snapshot task scheduled by
+        # CallFlowContext._notify_executors. handle_function_call cancels it
+        # before writing the authoritative post-dispatch snapshot so a delayed
+        # task that captured pre-advance state cannot overwrite the newer one.
+        self._pending_notify_snapshot: Optional[asyncio.Task] = None
+        # Monotonic write-generation counter for snapshot ordering. Incremented
+        # in the asyncio thread (single-writer) before each _snapshot_state
+        # call; read in thread-pool workers to detect and skip stale writes.
+        # CPython GIL makes int reads/writes effectively atomic across threads.
+        self._snapshot_generation: int = 0
+        # Thread-level lock that serialises _write_snapshot workers so the
+        # stale-generation check and the DB write are an atomic unit — no two
+        # workers can interleave their check-then-write on the same executor.
+        self._snapshot_write_lock: threading.Lock = threading.Lock()
 
     @contextmanager
     def _borrow_db_session(self):
@@ -971,6 +1015,33 @@ class FlowExecutor:
                     _db.close()
             return
         yield None
+
+    @asynccontextmanager
+    async def _suspend_turn_lock(self):
+        """Release the executor turn lock during slow I/O and reacquire after.
+
+        Used inside execute_, save_record_, transfer_, and end_call_ handlers
+        so the lock guards only the fast state read/advance/write sections,
+        while concurrent fast-mutating turns (collect_, route_, confirm_, etc.)
+        can proceed during network waits without head-of-line blocking.
+
+        Callers that currently hold ``self._turn_lock`` will release and
+        reacquire it around the I/O.  When the lock is not held (e.g. a handler
+        called directly in tests), the context is a no-op so the same handler
+        code works safely in both paths.
+
+        Callers MUST re-validate shared state immediately after the context
+        exits because another turn may have mutated it during the I/O.
+        """
+        if not self._turn_lock.locked():
+            # Lock is not held — no-op to support direct handler calls in tests.
+            yield
+            return
+        self._turn_lock.release()
+        try:
+            yield
+        finally:
+            await self._turn_lock.acquire()
 
     # -- Durable session state (Task #330) ----------------------------------
     def _snapshot_key(self) -> Optional[tuple[str, str]]:
@@ -1028,56 +1099,77 @@ class FlowExecutor:
                 else "active"
             ),
         }
+        # Increment the generation counter in the asyncio thread (single-writer)
+        # before passing it to the thread-pool worker. The worker checks
+        # _snapshot_generation inside _snapshot_write_lock before writing so a
+        # stale in-flight write can never overwrite a newer generation.
+        self._snapshot_generation += 1
+        gen = self._snapshot_generation
         try:
-            await asyncio.to_thread(self._write_snapshot, payload)
+            await asyncio.to_thread(self._write_snapshot, payload, gen)
         except Exception as exc:  # noqa: BLE001 - snapshot must never break a call
             logger.warning(f"Flow session snapshot failed (non-fatal): {exc}")
 
-    @staticmethod
-    def _write_snapshot(payload: dict) -> None:
-        """Upsert a single flow-session row in its own short-lived session."""
+    def _write_snapshot(self, payload: dict, gen: int) -> None:
+        """Upsert a single flow-session row in its own short-lived session.
+
+        Guards the write with ``_snapshot_write_lock`` and the generation
+        counter so a stale in-flight thread (from a notify-fan-out that fired
+        before a function-call advanced state) can never overwrite a newer
+        generation's row.  Both the check and the write are atomic relative to
+        other thread-pool workers on the same executor.
+        """
         from sqlalchemy import text as _text
 
         from botelier.database import SessionLocal
 
-        db = SessionLocal()
-        try:
-            db.execute(
-                _text(
-                    """
-                    INSERT INTO flow_sessions (
-                        id, account_id, property_id, channel, session_key,
-                        tool_id, current_node_id, collected_slots, status,
-                        created_at, updated_at
-                    ) VALUES (
-                        gen_random_uuid(),
-                        CAST(:account_id AS UUID),
-                        CAST(:property_id AS UUID),
-                        'voice',
-                        :session_key,
-                        CAST(:tool_id AS UUID),
-                        :current_node_id,
-                        CAST(:collected_slots AS JSONB),
-                        :status,
-                        now(), now()
-                    )
-                    ON CONFLICT (session_key, tool_id) DO UPDATE SET
-                        current_node_id = EXCLUDED.current_node_id,
-                        collected_slots = EXCLUDED.collected_slots,
-                        status = EXCLUDED.status,
-                        property_id = EXCLUDED.property_id,
-                        account_id = EXCLUDED.account_id,
-                        updated_at = now()
-                    """
-                ),
-                payload,
-            )
-            db.commit()
-        except Exception:
-            db.rollback()
-            raise
-        finally:
-            db.close()
+        with self._snapshot_write_lock:
+            if self._snapshot_generation > gen:
+                # A newer snapshot already completed or is about to write;
+                # this payload is stale — drop it.
+                logger.debug(
+                    f"Skipping stale snapshot write (gen={gen}, "
+                    f"current={self._snapshot_generation})"
+                )
+                return
+            db = SessionLocal()
+            try:
+                db.execute(
+                    _text(
+                        """
+                        INSERT INTO flow_sessions (
+                            id, account_id, property_id, channel, session_key,
+                            tool_id, current_node_id, collected_slots, status,
+                            created_at, updated_at
+                        ) VALUES (
+                            gen_random_uuid(),
+                            CAST(:account_id AS UUID),
+                            CAST(:property_id AS UUID),
+                            'voice',
+                            :session_key,
+                            CAST(:tool_id AS UUID),
+                            :current_node_id,
+                            CAST(:collected_slots AS JSONB),
+                            :status,
+                            now(), now()
+                        )
+                        ON CONFLICT (session_key, tool_id) DO UPDATE SET
+                            current_node_id = EXCLUDED.current_node_id,
+                            collected_slots = EXCLUDED.collected_slots,
+                            status = EXCLUDED.status,
+                            property_id = EXCLUDED.property_id,
+                            account_id = EXCLUDED.account_id,
+                            updated_at = now()
+                        """
+                    ),
+                    payload,
+                )
+                db.commit()
+            except Exception:
+                db.rollback()
+                raise
+            finally:
+                db.close()
 
     def rehydrate_from_snapshot(self) -> bool:
         """Restore in-memory state from a durable snapshot, if one exists.
@@ -2841,7 +2933,34 @@ class FlowExecutor:
         - message: str (to speak to the customer)
         - action: Optional action type (transfer, end, etc.)
         """
-        result = await self._dispatch_function_call(function_name, arguments)
+        # Deadlock-prevention: execute_/save_record_ handlers release _turn_lock
+        # during slow I/O via _suspend_turn_lock while still holding the per-node
+        # dedup lock (_non_get_locks, _get_locks, _save_record_locks).  If a
+        # concurrent same-node call acquired _turn_lock first and then waited for
+        # the per-node lock, neither could proceed (AB-BA deadlock).
+        #
+        # Fix: acquire a per-node *entry* lock BEFORE _turn_lock for execute_/
+        # save_record_ calls.  This serialises same-node calls at the outermost
+        # level; the inner dedup locks are then single-holder and safe.
+        # Invariant (never reversed): per-node entry lock → _turn_lock.
+        if function_name.startswith("execute_"):
+            _en_id = function_name[len("execute_"):]
+            _entry_lock: Optional[asyncio.Lock] = self._execute_entry_locks.setdefault(
+                _en_id, asyncio.Lock()
+            )
+        elif function_name.startswith("save_record_"):
+            _sr_id = function_name[len("save_record_"):]
+            _entry_lock = self._save_record_locks.setdefault(_sr_id, asyncio.Lock())
+        else:
+            _entry_lock = None
+
+        if _entry_lock is not None:
+            async with _entry_lock:
+                async with self._turn_lock:
+                    result = await self._dispatch_function_call(function_name, arguments)
+        else:
+            async with self._turn_lock:
+                result = await self._dispatch_function_call(function_name, arguments)
         # A function of THIS flow was accepted — the caller is in this flow, so
         # its durable snapshots are legitimate from here on (Task #543). A
         # rejected call (stale/out-of-order action, unknown function) must NOT
@@ -2870,6 +2989,14 @@ class FlowExecutor:
                 if node_context:
                     result["current_node_context"] = node_context
         await self._sync_saved_records()
+        # Cancel any pending notify-driven snapshot before writing the
+        # authoritative post-dispatch snapshot. A notify task scheduled before
+        # this dispatch captured pre-advance state; cancelling it ensures it
+        # cannot land in the DB after our write and silently rewind the flow.
+        pending = self._pending_notify_snapshot
+        if pending is not None and not pending.done():
+            pending.cancel()
+        self._pending_notify_snapshot = None
         await self._snapshot_state()
         return result
 
@@ -3592,7 +3719,9 @@ class FlowExecutor:
 
         import asyncio
 
-        result = await asyncio.to_thread(_run)
+        async with self._suspend_turn_lock():
+            result = await asyncio.to_thread(_run)
+        # Turn lock reacquired — state mutations happen below.
 
         status = (result or {}).get("status")
         message = (result or {}).get("message", "")
@@ -3605,13 +3734,22 @@ class FlowExecutor:
 
         succeeded = status in ("pending", "authorized", "captured")
         if succeeded:
-            next_node = self.state.get_next_node(node_id)
-            if next_node:
-                self.state.advance_to(next_node.id)
-                next_node_id = next_node.id
+            if self.state.current_node_id == node_id:
+                next_node = self.state.get_next_node(node_id)
+                if next_node:
+                    self.state.advance_to(next_node.id)
+                    next_node_id = next_node.id
+                else:
+                    self.state.advance_to(node_id)
+                    next_node_id = node_id
             else:
-                self.state.advance_to(node_id)
-                next_node_id = node_id
+                next_node_id = self.state.current_node_id
+                logger.info(
+                    "Service-backed capability node %r: flow advanced to %r during "
+                    "payment I/O — skipping advance, payment state applied",
+                    node_id,
+                    next_node_id,
+                )
 
             response_instructions = (api_config.get("responseInstructions") or "").strip()
             if response_instructions:
@@ -3754,22 +3892,27 @@ class FlowExecutor:
         # variable that the flow has already set.
         self._inject_connection_config_to_slots(api_config.get("integrationId", ""))
 
-        with self._borrow_db_session() as db:
-            response = await ActionExecutor(db).execute_and_log(
-                ActionExecutionRequest(
-                    context=ActionContext(
-                        account_id=self.account_id,
-                        channel="flow",
-                        call_sid=self.call_sid,
-                        flow_tool_id=self.flow_tool_id,
-                        node_id=node_id,
-                        source_label=node.data.get("name") or node_id,
-                        property_id=self.property_id,
-                    ),
-                    variables=variables if variables is not None else self.state.collected_slots,
-                    integration_config=config,
+        # Release the turn lock during the HTTP round-trip so concurrent fast
+        # turns (collect_, route_, confirm_) can proceed.  Reacquired before
+        # any state mutation below.
+        async with self._suspend_turn_lock():
+            with self._borrow_db_session() as db:
+                response = await ActionExecutor(db).execute_and_log(
+                    ActionExecutionRequest(
+                        context=ActionContext(
+                            account_id=self.account_id,
+                            channel="flow",
+                            call_sid=self.call_sid,
+                            flow_tool_id=self.flow_tool_id,
+                            node_id=node_id,
+                            source_label=node.data.get("name") or node_id,
+                            property_id=self.property_id,
+                        ),
+                        variables=variables if variables is not None else self.state.collected_slots,
+                        integration_config=config,
+                    )
                 )
-            )
+        # Turn lock reacquired — validate and mutate state atomically.
 
         if response.success:
             # responseMapping is merged into response_vars above, so all
@@ -3777,13 +3920,25 @@ class FlowExecutor:
             for var_key, value in response.extracted_variables.items():
                 self.state.set_variable(var_key, value)
 
-            next_node = self.state.get_next_node(node_id)
-            if next_node:
-                self.state.advance_to(next_node.id)
-                next_node_id = next_node.id
+            # Advance only if the flow hasn't already moved on during I/O.
+            if self.state.current_node_id == node_id:
+                next_node = self.state.get_next_node(node_id)
+                if next_node:
+                    self.state.advance_to(next_node.id)
+                    next_node_id = next_node.id
+                else:
+                    self.state.advance_to(node_id)
+                    next_node_id = node_id
             else:
-                self.state.advance_to(node_id)
-                next_node_id = node_id
+                # A concurrent fast turn already advanced the flow; report the
+                # current position without overwriting it.
+                next_node_id = self.state.current_node_id
+                logger.info(
+                    "Integration API node %r: flow advanced to %r during I/O "
+                    "— skipping advance, variables applied",
+                    node_id,
+                    next_node_id,
+                )
 
             success_msg = config.on_success_message
             success_msg = substitute_variables(
@@ -3949,30 +4104,43 @@ class FlowExecutor:
             ActionExecutor,
         )
 
-        with self._borrow_db_session() as db:
-            response = await ActionExecutor(db).execute_and_log(
-                ActionExecutionRequest(
-                    context=ActionContext(
-                        account_id=self.account_id,
-                        channel="flow",
-                        call_sid=self.call_sid,
-                        flow_tool_id=self.flow_tool_id,
-                        node_id=node_id,
-                        source_label=node.data.get("name") or node_id,
-                        property_id=self.property_id,
-                    ),
-                    variables=self.state.collected_slots,
-                    legacy_config=api_config,
+        async with self._suspend_turn_lock():
+            with self._borrow_db_session() as db:
+                response = await ActionExecutor(db).execute_and_log(
+                    ActionExecutionRequest(
+                        context=ActionContext(
+                            account_id=self.account_id,
+                            channel="flow",
+                            call_sid=self.call_sid,
+                            flow_tool_id=self.flow_tool_id,
+                            node_id=node_id,
+                            source_label=node.data.get("name") or node_id,
+                            property_id=self.property_id,
+                        ),
+                        variables=self.state.collected_slots,
+                        legacy_config=api_config,
+                    )
                 )
-            )
+        # Turn lock reacquired.
 
         if response.success:
             for var_key, value in response.extracted_variables.items():
                 self.state.set_variable(var_key, value)
 
-            next_node = self.state.get_next_node(node_id)
-            if next_node:
-                self.state.advance_to(next_node.id)
+            if self.state.current_node_id == node_id:
+                next_node = self.state.get_next_node(node_id)
+                if next_node:
+                    self.state.advance_to(next_node.id)
+                effective_node_id = next_node.id if next_node else node_id
+            else:
+                effective_node_id = self.state.current_node_id
+                next_node = None
+                logger.info(
+                    "Custom API node %r: flow advanced to %r during I/O "
+                    "— skipping advance, variables applied",
+                    node_id,
+                    effective_node_id,
+                )
 
             success_msg = api_config.get("onSuccess", "Request completed successfully")
             success_msg = substitute_variables(
@@ -3990,7 +4158,7 @@ class FlowExecutor:
                 "message": success_msg,
                 "action": None,
                 "voice_result": voice_result,
-                "current_node_id": next_node.id if next_node else node_id,
+                "current_node_id": effective_node_id,
             }
 
         return {
@@ -4574,11 +4742,15 @@ class FlowExecutor:
         return result
 
     async def _handle_save_record(self, function_name: str, arguments: dict) -> dict:
-        """Serialize SAVE_RECORD per node and reuse the winner's durable id."""
-        node_id = function_name.replace("save_record_", "")
-        lock = self._save_record_locks.setdefault(node_id, asyncio.Lock())
-        async with lock:
-            return await self._handle_save_record_locked(function_name, arguments)
+        """Serialize SAVE_RECORD per node and reuse the winner's durable id.
+
+        Lock ordering note: ``handle_function_call`` already acquired
+        ``_save_record_locks[node_id]`` (the per-node entry lock) BEFORE the
+        executor-wide ``_turn_lock``.  Re-acquiring it here would deadlock.
+        The outer entry lock + turn lock together already ensure only one
+        active coroutine per node reaches this point.
+        """
+        return await self._handle_save_record_locked(function_name, arguments)
 
     def _save_record_idempotency_key(self, node_id: str) -> tuple[str, bool]:
         """Return a stable SAVE_RECORD key and whether it is cross-worker durable."""
@@ -4656,170 +4828,219 @@ class FlowExecutor:
             logger.warning(f"SAVE_RECORD node {node_id} has no recordTypeId configured")
             return _result(False, "Record type not configured")
 
-        # Use a dedicated short-lived session so the record write is fully
-        # decoupled from any business/observability writes: on a live voice call
-        # the executor has no shared session at all, and even when one exists we
-        # must never commit/rollback unrelated pending work on it.
-        from botelier.database import SessionLocal
+        # Capture all inputs under the turn lock BEFORE releasing it.  The DB
+        # transaction runs in a thread pool (asyncio.to_thread) so it must work
+        # with a point-in-time snapshot rather than the live mutable state.
+        _idempotency_key, _durable_key = self._save_record_idempotency_key(node_id)
+        if not _durable_key:
+            logger.warning(
+                f"SAVE_RECORD node {node_id} has no call/session identity; "
+                "idempotency is scoped to this executor only"
+            )
+        _slots_snap = dict(self.state.collected_slots)
+        _account_id = self.account_id
+        _call_sid = self.call_sid
+        _flow_tool_id = self.flow_tool_id
 
-        db = SessionLocal()
-        try:
-            import uuid as _uuid
+        def _run_db() -> tuple[Optional[str], bool, str, Optional[str]]:
+            """Synchronous DB work — runs in asyncio.to_thread().
 
-            from botelier.models.call_log import CallLog
+            Returns: (record_id | None, created, record_type_name, error | None)
+            All inputs are captured from the enclosing scope at definition time;
+            none of them aliases live mutable state on the executor.
+            """
+            import uuid as _uuid_mod
+
             from sqlalchemy.exc import IntegrityError
 
+            from botelier.database import SessionLocal
+            from botelier.models.call_log import CallLog
             from botelier.models.record import CaptureMethod, Record, SourceChannel
             from botelier.models.record_type import RecordType
 
             try:
-                account_uuid = _uuid.UUID(str(self.account_id))
-                record_type_uuid = _uuid.UUID(str(record_type_id))
+                account_uuid = _uuid_mod.UUID(str(_account_id))
+                record_type_uuid = _uuid_mod.UUID(str(record_type_id))
             except (ValueError, TypeError):
                 logger.warning(f"SAVE_RECORD node {node_id}: invalid account/record_type id")
-                return _result(False, "Record could not be saved")
+                return None, False, "", "Record could not be saved"
 
-            # Tenant isolation: the record type must belong to this account.
-            record_type = (
-                db.query(RecordType)
-                .filter(
-                    RecordType.id == record_type_uuid,
-                    RecordType.account_id == account_uuid,
-                )
-                .first()
-            )
-            if record_type is None:
-                logger.warning(
-                    f"SAVE_RECORD node {node_id} references record_type "
-                    f"{record_type_id} not owned by account {self.account_id}"
-                )
-                return _result(False, "Record type not available")
-
-            # Resolve field mapping + status from the CURRENT collected slots.
-            data, status = self._resolve_record_payload(save_data, record_type)
-
-            # Link back to the originating call (best-effort).
-            source_call_log_id = None
-            assistant_id = None
-            if self.call_sid:
-                call_log = (
-                    db.query(CallLog)
-                    .filter(CallLog.call_sid == self.call_sid)
-                    .first()
-                )
-                if call_log is not None:
-                    source_call_log_id = call_log.id
-                    assistant_id = call_log.assistant_id
-
-            idempotency_key, durable_key = self._save_record_idempotency_key(node_id)
-            if not durable_key:
-                logger.warning(
-                    f"SAVE_RECORD node {node_id} has no call/session identity; "
-                    "idempotency is scoped to this executor only"
-                )
-            record = Record(
-                account_id=account_uuid,
-                record_type_id=record_type_uuid,
-                status=status,
-                data=data,
-                source_channel=SourceChannel.VOICE.value,
-                capture_method=CaptureMethod.FLOW_NODE.value,
-                source_call_log_id=source_call_log_id,
-                assistant_id=assistant_id,
-                idempotency_key=idempotency_key,
-            )
-            record_type_name = record_type.name
-            db.add(record)
-            created = True
+            db = SessionLocal()
             try:
-                db.commit()
-            except IntegrityError:
-                # Another worker committed this exact logical save first. The
-                # unique index is the serialization point; after rollback,
-                # return that winner as a successful idempotent retry.
-                db.rollback()
-                record = (
-                    db.query(Record)
+                # Tenant isolation: the record type must belong to this account.
+                record_type = (
+                    db.query(RecordType)
                     .filter(
-                        Record.account_id == account_uuid,
-                        Record.idempotency_key == idempotency_key,
+                        RecordType.id == record_type_uuid,
+                        RecordType.account_id == account_uuid,
                     )
                     .first()
                 )
-                if record is None:
-                    raise
-                created = False
-            # Remember the saved record so later variable changes (e.g. a
-            # confirm/edit correction after the save already fired) sync back
-            # into it instead of leaving the record stale.
-            try:
-                self.state.saved_records[node_id] = str(record.id)
-            except Exception:  # noqa: BLE001 - tracking is best-effort
-                pass
-            # Persist the idempotency marker immediately after the business
-            # commit, before any terminal speech/callback work. The outer
-            # dispatcher snapshots again, but this closes the much larger
-            # reconnect window between a successful insert and handler return.
-            await self._snapshot_state()
-            if not created:
-                logger.info(
-                    f"SAVE_RECORD: reused atomic winner for node {node_id} "
-                    f"(call_sid={self.call_sid})"
+                if record_type is None:
+                    logger.warning(
+                        f"SAVE_RECORD node {node_id} references record_type "
+                        f"{record_type_id} not owned by account {_account_id}"
+                    )
+                    return None, False, "", "Record type not available"
+
+                # Resolve using the slot snapshot captured before lock release.
+                data, status = self._resolve_record_payload(
+                    save_data, record_type, slots=_slots_snap
                 )
-                return _result(True, "Record was already saved")
-            logger.info(
-                f"SAVE_RECORD: saved {record_type_name} record for type "
-                f"{record_type_id} (call_sid={self.call_sid})"
+
+                # Link back to the originating call (best-effort).
+                source_call_log_id = None
+                assistant_id = None
+                if _call_sid:
+                    call_log = (
+                        db.query(CallLog)
+                        .filter(CallLog.call_sid == _call_sid)
+                        .first()
+                    )
+                    if call_log is not None:
+                        source_call_log_id = call_log.id
+                        assistant_id = call_log.assistant_id
+
+                record = Record(
+                    account_id=account_uuid,
+                    record_type_id=record_type_uuid,
+                    status=status,
+                    data=data,
+                    source_channel=SourceChannel.VOICE.value,
+                    capture_method=CaptureMethod.FLOW_NODE.value,
+                    source_call_log_id=source_call_log_id,
+                    assistant_id=assistant_id,
+                    idempotency_key=_idempotency_key,
+                )
+                record_type_name = record_type.name
+                db.add(record)
+                created = True
+                try:
+                    db.commit()
+                except IntegrityError:
+                    # Another worker committed first — reuse the winner.
+                    db.rollback()
+                    record = (
+                        db.query(Record)
+                        .filter(
+                            Record.account_id == account_uuid,
+                            Record.idempotency_key == _idempotency_key,
+                        )
+                        .first()
+                    )
+                    if record is None:
+                        raise
+                    created = False
+                return str(record.id), created, record_type_name, None
+            except Exception as exc:  # noqa: BLE001 - never break a live call
+                logger.error(f"SAVE_RECORD node {node_id} failed: {exc}", exc_info=True)
+                try:
+                    db.rollback()
+                except Exception:  # noqa: BLE001
+                    pass
+                return None, False, "", "Record could not be saved"
+            finally:
+                try:
+                    db.close()
+                except Exception:  # noqa: BLE001
+                    pass
+
+        # Release the turn lock and dispatch all synchronous DB work to a
+        # thread pool worker.  SQLAlchemy is blocking — running it directly on
+        # the event-loop thread would prevent any other coroutine from
+        # progressing even after the asyncio lock is released.
+        async with self._suspend_turn_lock():
+            _record_id, _created, _record_type_name, _io_error = (
+                await asyncio.to_thread(_run_db)
             )
-            field_summary = ", ".join(f"{k}: {v}" for k, v in data.items()) if data else ""
-            # The raw field dump is LLM context only — never spoken verbatim to
-            # a caller. SAVE_RECORD had no direct-speech guarantee at all, the
-            # same dead-air risk class as CONFIRMATION/ROUTER/SET_VARIABLE. If
-            # the node advances into real caller-facing content, speak that;
-            # otherwise speak a short, friendly, non-leaking acknowledgment so
-            # the caller is never left wondering whether the save went through.
-            # If the save silently advances straight into END/TRANSFER,
-            # actually execute that terminal action rather than merely
-            # speaking its message (Task #534 completion-review fix).
-            terminal_result = await self._maybe_execute_terminal_transition(next_node)
-            if terminal_result is not None:
-                return terminal_result
+        # Turn lock reacquired — apply state mutations.
 
-            result = _result(True, f"Saved {record_type_name} record")
-            # field_summary is kept as a local diagnostic only — it must NOT be
-            # added to the result dict because function_mapper passes results
-            # into LLM context, which risks leaking guest record data verbatim
-            # into model output or logs.
-            next_node_message, next_is_static = self._get_next_node_configured_message(next_node)
-            if next_node_message:
-                result["message"] = next_node_message
-                result["speak_directly"] = True
-                if next_is_static:
-                    result["speak_exactly"] = next_node_message
-            else:
-                result["message"] = "Got it, that's saved."
-                result["speak_directly"] = True
-            return result
-        except Exception as exc:  # noqa: BLE001 - never break a live call
-            logger.error(f"SAVE_RECORD node {node_id} failed: {exc}", exc_info=True)
-            try:
-                db.rollback()
-            except Exception:  # noqa: BLE001
-                pass
+        if _io_error:
+            return _result(False, _io_error)
+        if _record_id is None:
             return _result(False, "Record could not be saved")
-        finally:
-            try:
-                db.close()
-            except Exception:  # noqa: BLE001
-                pass
 
-    def _resolve_record_payload(self, save_data: dict, record_type) -> tuple[dict, Optional[str]]:
-        """Resolve a SAVE_RECORD node's field mapping + status against the
-        CURRENT collected slots.
+        # Remember the saved record so later variable changes (e.g. a
+        # confirm/edit correction after the save already fired) sync back
+        # into it instead of leaving the record stale.
+        try:
+            self.state.saved_records[node_id] = _record_id  # state mutation inside lock ✓
+        except Exception:  # noqa: BLE001 - tracking is best-effort
+            pass
+
+        # Persist the idempotency marker: release the turn lock so a slow
+        # snapshot DB write does not stall other handlers.  The outer
+        # dispatcher also snapshots after handle_function_call returns; this
+        # earlier call closes the reconnect window between DB commit and that
+        # outer snapshot.
+        async with self._suspend_turn_lock():
+            await self._snapshot_state()
+        # Turn lock reacquired.
+
+        if not _created:
+            logger.info(
+                f"SAVE_RECORD: reused atomic winner for node {node_id} "
+                f"(call_sid={self.call_sid})"
+            )
+            return _result(True, "Record was already saved")
+        logger.info(
+            f"SAVE_RECORD: saved {_record_type_name} record for type "
+            f"{record_type_id} (call_sid={self.call_sid})"
+        )
+        # Post-I/O state revalidation: another turn may have advanced the flow
+        # while the DB write was suspended.  Only execute the terminal
+        # transition derived BEFORE I/O if the current node still matches
+        # what we advanced to; otherwise the transition targets stale state.
+        if next_node and self.state.current_node_id != next_node_id:
+            logger.info(
+                "SAVE_RECORD node %r: flow advanced to %r during I/O "
+                "— skipping terminal transition on stale next_node %r",
+                node_id,
+                self.state.current_node_id,
+                next_node_id,
+            )
+            next_node = None
+
+        # The raw field dump is LLM context only — never spoken verbatim to a
+        # caller. If the node advances into real caller-facing content, speak
+        # that; otherwise speak a short, friendly acknowledgment.
+        # If the save silently advances straight into END/TRANSFER, actually
+        # execute that terminal action (Task #534 completion-review fix).
+        terminal_result = await self._maybe_execute_terminal_transition(next_node)
+        if terminal_result is not None:
+            return terminal_result
+
+        result = _result(True, f"Saved {_record_type_name} record")
+        # _record_type_name is kept local diagnostic only — never added to
+        # the result dict which function_mapper passes to LLM context.
+        next_node_message, next_is_static = self._get_next_node_configured_message(next_node)
+        if next_node_message:
+            result["message"] = next_node_message
+            result["speak_directly"] = True
+            if next_is_static:
+                result["speak_exactly"] = next_node_message
+        else:
+            result["message"] = "Got it, that's saved."
+            result["speak_directly"] = True
+        return result
+
+    def _resolve_record_payload(
+        self,
+        save_data: dict,
+        record_type,
+        slots: Optional[dict] = None,
+    ) -> tuple[dict, Optional[str]]:
+        """Resolve a SAVE_RECORD node's field mapping + status against slots.
+
+        ``slots`` defaults to ``self.state.collected_slots`` when not provided.
+        Pass an explicit snapshot dict when calling from a thread pool worker
+        (``asyncio.to_thread``) so the resolver uses a safe point-in-time copy
+        of the state rather than the live mutable dict.
 
         Shared by the initial save and the post-save sync so both always
         produce identical payloads for identical variable state.
         """
+        _slots = slots if slots is not None else self.state.collected_slots
         mapping = save_data.get("mapping", save_data.get("fieldMapping", {})) or {}
         valid_keys = {
             f.get("key") for f in (record_type.fields or []) if isinstance(f, dict)
@@ -4831,7 +5052,7 @@ class FlowExecutor:
             if not isinstance(template, str):
                 data[field_key] = template
                 continue
-            resolved = substitute_variables(template, self.state.collected_slots).strip()
+            resolved = substitute_variables(template, _slots).strip()
             if resolved:
                 data[field_key] = resolved
 
@@ -4839,9 +5060,7 @@ class FlowExecutor:
         status = None
         status_raw = save_data.get("status")
         if isinstance(status_raw, str) and status_raw.strip():
-            candidate = substitute_variables(
-                status_raw, self.state.collected_slots
-            ).strip()
+            candidate = substitute_variables(status_raw, _slots).strip()
             allowed = {
                 o.get("value")
                 for o in (record_type.status_options or [])
@@ -4968,9 +5187,14 @@ class FlowExecutor:
         self.state.advance_to(node_id)
 
         if self.transfer_callback:
-            await self.transfer_callback(
-                phone_number, arguments.get("reason", ""), transfer_mode=transfer_mode
-            )
+            # Release the turn lock while waiting for the carrier to acknowledge
+            # the transfer — this can be a slow synchronous telephony round-trip.
+            # Reacquired before returning.  No state is mutated after the callback
+            # so revalidation is not required.
+            async with self._suspend_turn_lock():
+                await self.transfer_callback(
+                    phone_number, arguments.get("reason", ""), transfer_mode=transfer_mode
+                )
 
         return {
             "success": True,
@@ -5005,7 +5229,10 @@ class FlowExecutor:
 
         if self.end_call_callback:
             try:
-                await self.end_call_callback(closing_message)
+                # Release the turn lock while the end-call callback runs — it
+                # may trigger telephony teardown which can be slow.
+                async with self._suspend_turn_lock():
+                    await self.end_call_callback(closing_message)
             except Exception as exc:
                 # A callback failure must not leave is_complete=True while the
                 # caller receives no result — log and continue so the result
