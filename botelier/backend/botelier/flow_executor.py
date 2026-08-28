@@ -208,6 +208,14 @@ class FlowConfig:
     edges: list[FlowEdge]
     variables: list[FlowVariable]
     global_prompt: Optional[str] = None
+    # O(1) node lookup by ID — built once at parse time in __post_init__.
+    # All code that previously scanned self.nodes with a for-loop should use
+    # this index instead.  Use field(init=False) so it is never passed as a
+    # constructor argument.
+    _node_index: dict = field(default_factory=dict, init=False, repr=False)
+
+    def __post_init__(self):
+        self._node_index = {node.id: node for node in self.nodes}
 
 
 @dataclass
@@ -368,7 +376,10 @@ def _cross_field_constraint(
         return None
     operator = validation.get("cross_field_operator", "after")
     compare_value = variables.get(compare_var)
-    return f"must be {operator} {compare_value or compare_var}"
+    # Use `is not None` so falsy-but-valid values (0, False, "") display
+    # correctly instead of being replaced by the variable name.
+    display = compare_value if compare_value is not None else compare_var
+    return f"must be {operator} {display}"
 
 
 class FlowState:
@@ -382,10 +393,12 @@ class FlowState:
         self.current_node_id: Optional[str] = flow_config.initial_node
         # Flow-local working state. Defaults and derived/API outputs live only
         # here; the shared context overlays explicit caller facts separately.
+        # Use `is not None` so falsy-but-valid defaults (0, False, "") are
+        # preserved instead of being silently dropped from the working state.
         self.default_slots: dict[str, Any] = {
             var.key: var.default_value
             for var in flow_config.variables
-            if var.default_value
+            if var.default_value is not None
         }
         self.collected_slots: dict[str, Any] = dict(self.default_slots)
         self.pending_slot: Optional[str] = None
@@ -427,10 +440,8 @@ class FlowState:
     def get_current_node(self) -> Optional[FlowNode]:
         if not self.current_node_id:
             return None
-        for node in self.flow_config.nodes:
-            if node.id == self.current_node_id:
-                return node
-        return None
+        # O(1) via the index built in FlowConfig.__post_init__
+        return self.flow_config._node_index.get(self.current_node_id)
 
     def get_next_node(self, from_node_id: str, handle: Optional[str] = None) -> Optional[FlowNode]:
         """Find the next node connected via edges."""
@@ -438,9 +449,8 @@ class FlowState:
             if edge.source == from_node_id:
                 if handle and edge.source_handle != handle:
                     continue
-                for node in self.flow_config.nodes:
-                    if node.id == edge.target:
-                        return node
+                # O(1) via the index — eliminates the inner O(N) node scan
+                return self.flow_config._node_index.get(edge.target)
         return None
 
     def has_outgoing_edge(self, node_id: str) -> bool:
@@ -492,6 +502,15 @@ class FlowState:
             if not target or target == self.current_node_id:
                 return
             self.current_node_id = target
+
+        # If we exhausted the hop cap without landing on a non-CONDITION node,
+        # the graph has a condition cycle.  Mark the flow as exhausted so the
+        # engine does not silently stall on this node forever.
+        logger.error(
+            f"_resolve_conditions: condition cycle detected — exceeded {max_hops} "
+            f"hops at node {self.current_node_id!r}; marking flow exhausted."
+        )
+        self.graph_exhausted = True
 
 
 def _format_variable_value(value: Any) -> str:
@@ -701,45 +720,67 @@ def _condition_target_id(
 
 
 def parse_flow_config(config_dict: dict) -> FlowConfig:
-    """Parse a raw flow config dict into typed FlowConfig."""
+    """Parse a raw flow config dict into typed FlowConfig.
+
+    Malformed individual nodes, edges, or variables are skipped with a warning
+    so one bad entry never aborts the entire flow parse.  Both ``KeyError``
+    (missing required field) and ``ValueError`` (unknown enum value) are caught
+    per-item; all other exceptions propagate.
+    """
     nodes = []
     for node_data in config_dict.get("nodes", []):
-        nodes.append(
-            FlowNode(
-                id=node_data["id"],
-                type=NodeType(node_data.get("type", "message")),
-                data=node_data.get("data", {}),
-                position=node_data.get("position", {"x": 0, "y": 0}),
+        try:
+            nodes.append(
+                FlowNode(
+                    id=node_data["id"],
+                    type=NodeType(node_data.get("type", "message")),
+                    data=node_data.get("data", {}),
+                    position=node_data.get("position", {"x": 0, "y": 0}),
+                )
             )
-        )
+        except (KeyError, ValueError) as exc:
+            logger.warning(f"parse_flow_config: skipping malformed node {node_data!r}: {exc}")
 
     edges = []
     for edge_data in config_dict.get("edges", []):
-        edges.append(
-            FlowEdge(
-                id=edge_data["id"],
-                source=edge_data["source"],
-                target=edge_data["target"],
-                source_handle=edge_data.get("sourceHandle"),
-                target_handle=edge_data.get("targetHandle"),
+        try:
+            edges.append(
+                FlowEdge(
+                    id=edge_data["id"],
+                    source=edge_data["source"],
+                    target=edge_data["target"],
+                    source_handle=edge_data.get("sourceHandle"),
+                    target_handle=edge_data.get("targetHandle"),
+                )
             )
-        )
+        except KeyError as exc:
+            logger.warning(f"parse_flow_config: skipping malformed edge {edge_data!r}: {exc}")
 
     variables = []
     for var_data in config_dict.get("variables", []):
-        variables.append(
-            FlowVariable(
-                key=var_data["key"],
-                type=SlotType(var_data.get("type", "text")),
-                description=var_data.get("description", ""),
-                required=var_data.get("required", True),
-                default_value=var_data.get("defaultValue"),
-                choices=var_data.get("choices"),
+        try:
+            variables.append(
+                FlowVariable(
+                    key=var_data["key"],
+                    type=SlotType(var_data.get("type", "text")),
+                    description=var_data.get("description", ""),
+                    required=var_data.get("required", True),
+                    default_value=var_data.get("defaultValue"),
+                    choices=var_data.get("choices"),
+                )
             )
-        )
+        except (KeyError, ValueError) as exc:
+            logger.warning(f"parse_flow_config: skipping malformed variable {var_data!r}: {exc}")
+
+    # Accept both snake_case (legacy) and camelCase (current editor) for the
+    # initial node so configs saved by either convention load correctly.
+    initial_node = (
+        config_dict.get("initial_node")
+        or config_dict.get("initialNode")
+    )
 
     return FlowConfig(
-        initial_node=config_dict.get("initial_node"),
+        initial_node=initial_node,
         nodes=nodes,
         edges=edges,
         variables=variables,
@@ -921,11 +962,13 @@ class FlowExecutor:
             yield self.db_session
             return
         if self.session_factory is not None:
-            _db = self.session_factory()
+            _db = None
             try:
+                _db = self.session_factory()
                 yield _db
             finally:
-                _db.close()
+                if _db is not None:
+                    _db.close()
             return
         yield None
 
@@ -1102,7 +1145,14 @@ class FlowExecutor:
             saved_counter = saved_slots.pop("_slot_revision_counter", 0)
             if isinstance(saved_revisions, dict):
                 for slot_key, slot_value in saved_slots.items():
-                    incoming_revision = int(saved_revisions.get(slot_key, 0) or 0)
+                    try:
+                        incoming_revision = int(saved_revisions.get(slot_key, 0) or 0)
+                    except (TypeError, ValueError):
+                        logger.warning(
+                            f"resume: corrupt revision for slot {slot_key!r}; "
+                            "defaulting to 0"
+                        )
+                        incoming_revision = 0
                     if slot_key in saved_revisions:
                         self.call_context.restore_caller_value(
                             slot_key, slot_value, incoming_revision
@@ -1111,8 +1161,13 @@ class FlowExecutor:
                         # Defaults and derived/API values are restored only into
                         # this flow's working state, never into shared facts.
                         self.state.collected_slots[slot_key] = slot_value
+                try:
+                    restored_counter = int(saved_counter or 0)
+                except (TypeError, ValueError):
+                    logger.warning("resume: corrupt _slot_revision_counter; defaulting to 0")
+                    restored_counter = 0
                 self.call_context._next_revision = max(
-                    self.call_context._next_revision, int(saved_counter or 0)
+                    self.call_context._next_revision, restored_counter
                 )
             else:
                 # Backward compatibility for snapshots written before revision
@@ -1787,7 +1842,7 @@ class FlowExecutor:
 
     def _earliest_collect_node_for(self, keys: set[str]) -> Optional[FlowNode]:
         """Find the earliest reachable collect node owning any affected key."""
-        nodes = {node.id: node for node in self.flow_config.nodes}
+        nodes = self.flow_config._node_index
         distances: dict[str, int] = {}
         queue: list[tuple[str, int]] = (
             [(self.flow_config.initial_node, 0)]
@@ -1845,11 +1900,9 @@ class FlowExecutor:
 
         if current_node.type == NodeType.COLLECT_FORM:
             slots = current_node.data.get("slots", [])
-            sorted_slots = sorted(slots, key=lambda s: s.get("order", 0))
-            for slot in sorted_slots:
-                var_key = slot.get("variableKey")
-                if var_key and var_key not in self.state.collected_slots:
-                    return (current_node, var_key)
+            first = self._first_uncollected_slot(slots)
+            if first:
+                return (current_node, first.get("variableKey"))
 
         visited = set()
         queue = [current_node.id]
@@ -1889,16 +1942,49 @@ class FlowExecutor:
 
         return (None, None)
 
+    # ------------------------------------------------------------------
+    # Form-slot helpers — single source of truth for "find uncollected"
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _sorted_form_slots(slots: list) -> list:
+        """Return form slot dicts sorted by configured order, skipping non-dict items.
+
+        This is the canonical ordering function used everywhere we iterate form
+        slots.  Centralising it ensures all paths (context, prompts, validation,
+        schema building) use identical ordering and skip the same bad entries.
+        """
+        return sorted(
+            (s for s in slots if isinstance(s, dict)),
+            key=lambda s: s.get("order", 0),
+        )
+
+    def _first_uncollected_slot(self, slots: list) -> Optional[dict]:
+        """Return the first form slot not yet in collected_slots, in order.
+
+        Returns ``None`` when all slots are collected or the list is empty.
+        Slots with a missing / None variableKey are silently skipped.
+        """
+        for slot in self._sorted_form_slots(slots):
+            var_key = slot.get("variableKey")
+            if var_key and var_key not in self.state.collected_slots:
+                return slot
+        return None
+
+    def _uncollected_slots(self, slots: list) -> list:
+        """Return every form slot not yet in collected_slots, in order."""
+        return [
+            s for s in self._sorted_form_slots(slots)
+            if s.get("variableKey") and s.get("variableKey") not in self.state.collected_slots
+        ]
+
     def _node_has_uncollected_slot(self, node: FlowNode) -> bool:
         """True if a collect node still has at least one uncollected slot."""
         if node.type == NodeType.COLLECT_SLOT:
-            var_key = node.data.get("slot", {}).get("variableKey")
+            var_key = (node.data.get("slot") or {}).get("variableKey")
             return bool(var_key) and var_key not in self.state.collected_slots
         if node.type == NodeType.COLLECT_FORM:
-            for slot in node.data.get("slots", []):
-                var_key = slot.get("variableKey")
-                if var_key and var_key not in self.state.collected_slots:
-                    return True
+            return self._first_uncollected_slot(node.data.get("slots", [])) is not None
         return False
 
     def _bfs_next_targets(self, node: FlowNode) -> list:
@@ -1962,7 +2048,7 @@ class FlowExecutor:
         if current.type in _SIDE_EFFECT_NODE_TYPES:
             return True
 
-        node_by_id = {n.id: n for n in self.flow_config.nodes}
+        node_by_id = self.flow_config._node_index
         visited: set = set()
         queue = list(self._bfs_next_targets(current))
 
@@ -2022,7 +2108,7 @@ class FlowExecutor:
             return {current.id}
 
         # Otherwise walk forward, stopping at the first gate on each branch.
-        node_by_id = {n.id: n for n in self.flow_config.nodes}
+        node_by_id = self.flow_config._node_index
         reachable: set = set()
         visited: set = set()
         queue = [edge.target for edge in self.flow_config.edges if edge.source == current.id]
@@ -2067,13 +2153,10 @@ class FlowExecutor:
             var_key = slot.get("variableKey")
         elif current_node.type == NodeType.COLLECT_FORM:
             slots = current_node.data.get("slots", [])
-            sorted_slots = sorted(slots, key=lambda s: s.get("order", 0))
-            for s in sorted_slots:
-                v_key = s.get("variableKey")
-                if v_key and v_key not in self.state.collected_slots:
-                    slot = s
-                    var_key = v_key
-                    break
+            first = self._first_uncollected_slot(slots)
+            if first:
+                slot = first
+                var_key = first.get("variableKey")
 
         if not slot or not var_key:
             return None
@@ -2184,8 +2267,19 @@ class FlowExecutor:
                 self.state.advance_to(first_node.id)
             return messages
 
+        # Guard against cycles: track every node ID we visit so a cycle of
+        # waitForResponse=False nodes cannot spin forever.
+        visited: set[str] = set()
         current_node = first_node
         while current_node:
+            if current_node.id in visited:
+                logger.error(
+                    f"get_initial_messages: cycle detected at node "
+                    f"{current_node.id!r} — breaking traversal."
+                )
+                break
+            visited.add(current_node.id)
+
             if current_node.type in (NodeType.COLLECT_SLOT, NodeType.COLLECT_FORM):
                 self.state.advance_to(current_node.id)
                 if not self._node_has_uncollected_slot(current_node):
@@ -2225,17 +2319,19 @@ class FlowExecutor:
         if node.type == NodeType.MESSAGE:
             return substitute_variables(node.data.get("message", ""), self.state.collected_slots)
         elif node.type == NodeType.COLLECT_SLOT:
-            slot = node.data.get("slot", {})
-            return slot.get("prompt", "")
+            slot = node.data.get("slot") or {}
+            prompt = slot.get("prompt", "")
+            # Apply speakable substitution so embedded variable references are
+            # rendered in a caller-friendly form, not left as raw {{tokens}}.
+            return substitute_variables(prompt, self.state.collected_slots, speakable=True) if prompt else ""
         elif node.type == NodeType.COLLECT_FORM:
             intro = node.data.get("introMessage", "")
             if intro:
                 return substitute_variables(intro, self.state.collected_slots)
-            slots = node.data.get("slots", [])
-            sorted_slots = sorted(slots, key=lambda s: s.get("order", 0))
-            for slot in sorted_slots:
-                if slot.get("variableKey") not in self.state.collected_slots:
-                    return slot.get("prompt", "")
+            first = self._first_uncollected_slot(node.data.get("slots", []))
+            if first:
+                prompt = first.get("prompt", "")
+                return substitute_variables(prompt, self.state.collected_slots, speakable=True) if prompt else ""
         elif node.type == NodeType.END:
             return substitute_variables(
                 node.data.get("closingMessage", "Thank you for calling. Goodbye!"),
@@ -2652,7 +2748,9 @@ class FlowExecutor:
             "variablesToConfirm", confirmation_data.get("variables_to_confirm", [])
         )
 
-        var_list = ", ".join(variables_to_confirm) if variables_to_confirm else "collected details"
+        # Coerce each item to str so non-string editor data (ints, bools) does
+        # not raise TypeError in join.
+        var_list = ", ".join(str(v) for v in variables_to_confirm) if variables_to_confirm else "collected details"
 
         resolved_summary = (
             substitute_variables(summary_template, self.state.collected_slots)
@@ -2931,20 +3029,10 @@ class FlowExecutor:
             next_node_id = None
             form_next_slot_prompt = None
             if collecting_node_id:
-                collecting_node = None
-                for n in self.flow_config.nodes:
-                    if n.id == collecting_node_id:
-                        collecting_node = n
-                        break
+                collecting_node = self.flow_config._node_index.get(collecting_node_id)
 
                 if collecting_node and collecting_node.type == NodeType.COLLECT_FORM:
-                    slots = collecting_node.data.get("slots", [])
-                    sorted_slots = sorted(slots, key=lambda s: s.get("order", 0))
-                    remaining = [
-                        s
-                        for s in sorted_slots
-                        if s.get("variableKey") not in self.state.collected_slots
-                    ]
+                    remaining = self._uncollected_slots(collecting_node.data.get("slots", []))
                     if remaining:
                         next_node_id = collecting_node_id
                         prompt = remaining[0].get("prompt", "")
@@ -2975,14 +3063,13 @@ class FlowExecutor:
             # stored so {{var}} placeholders include the fresh value.
             node_instructions = None
             if collecting_node_id:
-                for n in self.flow_config.nodes:
-                    if n.id == collecting_node_id:
-                        raw_instructions = (n.data.get("instructions") or "").strip()
-                        if raw_instructions:
-                            node_instructions = substitute_variables(
-                                raw_instructions, self.state.collected_slots
-                            )
-                        break
+                _instr_node = self.flow_config._node_index.get(collecting_node_id)
+                if _instr_node:
+                    raw_instructions = (_instr_node.data.get("instructions") or "").strip()
+                    if raw_instructions:
+                        node_instructions = substitute_variables(
+                            raw_instructions, self.state.collected_slots
+                        )
 
             result = {
                 "success": True,
@@ -3152,11 +3239,7 @@ class FlowExecutor:
         2. Integration - Uses IntegrationClient for authenticated requests to connected services
         """
         node_id = function_name.replace("execute_", "")
-        node = None
-        for n in self.flow_config.nodes:
-            if n.id == node_id:
-                node = n
-                break
+        node = self.flow_config._node_index.get(node_id)
 
         if not node:
             return {"success": False, "message": "API node not found", "action": None}
@@ -3590,6 +3673,9 @@ class FlowExecutor:
 
         response_vars = []
         for rv in api_config.get("responseVariables", []):
+            if not isinstance(rv, dict):
+                logger.warning(f"skipping non-dict responseVariable entry: {rv!r}")
+                continue
             response_vars.append(
                 ResponseVariable(
                     variable_key=rv.get("variableKey", ""),
@@ -4033,11 +4119,7 @@ class FlowExecutor:
     async def _handle_router(self, function_name: str, arguments: dict) -> dict:
         """Handle routing based on a choice value."""
         node_id = function_name.replace("route_", "")
-        node = None
-        for n in self.flow_config.nodes:
-            if n.id == node_id:
-                node = n
-                break
+        node = self.flow_config._node_index.get(node_id)
 
         if not node:
             return {
@@ -4133,10 +4215,9 @@ class FlowExecutor:
         next_node = self.state.get_next_node(node_id, handle="confirmed")
         if next_node:
             return next_node
-        node_by_id = {n.id: n for n in self.flow_config.nodes}
         for edge in self.flow_config.edges:
             if edge.source == node_id and edge.source_handle != "edit":
-                target = node_by_id.get(edge.target)
+                target = self.flow_config._node_index.get(edge.target)
                 if target:
                     return target
         return None
@@ -4144,11 +4225,7 @@ class FlowExecutor:
     async def _handle_confirmation(self, function_name: str, arguments: dict) -> dict:
         """Handle a confirmation node - customer confirms or requests edit."""
         node_id = function_name.replace("confirm_", "")
-        node = None
-        for n in self.flow_config.nodes:
-            if n.id == node_id:
-                node = n
-                break
+        node = self.flow_config._node_index.get(node_id)
 
         if not node:
             return {
@@ -4343,16 +4420,10 @@ class FlowExecutor:
             if intro:
                 resolved = substitute_variables(intro, self.state.collected_slots)
                 return (resolved, False)
-            slots = node.data.get("slots", [])
-            sorted_slots = sorted(slots, key=lambda s: s.get("order", 0))
-            uncollected = [
-                s for s in sorted_slots if s.get("variableKey") not in self.state.collected_slots
-            ]
-            if uncollected:
-                prompt = uncollected[0].get("prompt", "")
-                resolved = (
-                    substitute_variables(prompt, self.state.collected_slots) if prompt else None
-                )
+            first = self._first_uncollected_slot(node.data.get("slots", []))
+            if first:
+                prompt = first.get("prompt", "")
+                resolved = substitute_variables(prompt, self.state.collected_slots) if prompt else None
                 return (resolved, False)
             return (None, False)
         elif node.type == NodeType.CONFIRMATION:
@@ -4425,11 +4496,7 @@ class FlowExecutor:
     async def _handle_set_variable(self, function_name: str, arguments: dict) -> dict:
         """Handle setting a variable value."""
         node_id = function_name.replace("set_var_", "")
-        node = None
-        for n in self.flow_config.nodes:
-            if n.id == node_id:
-                node = n
-                break
+        node = self.flow_config._node_index.get(node_id)
 
         if not node:
             return {
@@ -4537,11 +4604,7 @@ class FlowExecutor:
         derail a live call, so we always advance to the next node.
         """
         node_id = function_name.replace("save_record_", "")
-        node = None
-        for n in self.flow_config.nodes:
-            if n.id == node_id:
-                node = n
-                break
+        node = self.flow_config._node_index.get(node_id)
 
         # Always compute the next node up front so a failure still advances.
         next_node = self.state.get_next_node(node_id) if node else None
@@ -4704,8 +4767,10 @@ class FlowExecutor:
                 return terminal_result
 
             result = _result(True, f"Saved {record_type_name} record")
-            if field_summary:
-                result["record_fields"] = field_summary
+            # field_summary is kept as a local diagnostic only — it must NOT be
+            # added to the result dict because function_mapper passes results
+            # into LLM context, which risks leaking guest record data verbatim
+            # into model output or logs.
             next_node_message, next_is_static = self._get_next_node_configured_message(next_node)
             if next_node_message:
                 result["message"] = next_node_message
@@ -4804,11 +4869,7 @@ class FlowExecutor:
         db = SessionLocal()
         try:
             for node_id, record_id in list(self.state.saved_records.items()):
-                node = None
-                for n in self.flow_config.nodes:
-                    if n.id == node_id:
-                        node = n
-                        break
+                node = self.flow_config._node_index.get(node_id)
                 if node is None:
                     continue
                 save_data = node.data.get("saveRecord", node.data.get("save_record", {}))
@@ -4868,11 +4929,7 @@ class FlowExecutor:
     async def _handle_transfer(self, function_name: str, arguments: dict) -> dict:
         """Handle a call transfer request."""
         node_id = function_name.replace("transfer_", "")
-        node = None
-        for n in self.flow_config.nodes:
-            if n.id == node_id:
-                node = n
-                break
+        node = self.flow_config._node_index.get(node_id)
 
         if not node:
             return {
@@ -4909,15 +4966,14 @@ class FlowExecutor:
         """Handle ending the call."""
         # Idempotency guard: if the call is already ending (e.g. a second LLM turn
         # arrived while EndFrame was propagating), swallow the duplicate silently.
+        # Include current_node_id so the result shape is consistent with the
+        # normal end path (mapper and tests expect it to always be present).
         if self.state.is_complete:
-            return {"success": True, "message": "", "action": "end"}
+            node_id_idem = function_name.replace("end_call_", "")
+            return {"success": True, "message": "", "action": "end", "current_node_id": node_id_idem}
 
         node_id = function_name.replace("end_call_", "")
-        node = None
-        for n in self.flow_config.nodes:
-            if n.id == node_id:
-                node = n
-                break
+        node = self.flow_config._node_index.get(node_id)
 
         closing_message = "Thank you for calling. Goodbye!"
         if node:
@@ -4929,7 +4985,13 @@ class FlowExecutor:
         self.state.advance_to(node_id)
 
         if self.end_call_callback:
-            await self.end_call_callback(closing_message)
+            try:
+                await self.end_call_callback(closing_message)
+            except Exception as exc:
+                # A callback failure must not leave is_complete=True while the
+                # caller receives no result — log and continue so the result
+                # dict is still returned to the mapper.
+                logger.error(f"end_call_callback raised: {exc}", exc_info=True)
 
         return {
             "success": True,
