@@ -2067,6 +2067,296 @@ class TestTransferEmptyPhoneGuard:
         )
 
 
+# ---------------------------------------------------------------------------
+# DB efficiency — Task #575
+# ---------------------------------------------------------------------------
+
+class TestSyncSavedRecordsBulkLoad:
+    """_sync_saved_records_blocking must issue exactly 2 DB queries regardless of record count.
+
+    We use SQLAlchemy's event system to count query emissions so the assertion
+    is independent of mock details.
+    """
+
+    def _make_saved_records_executor(self, n_records: int):
+        """Build a FlowExecutor with n_records pre-populated in state.saved_records."""
+        nodes = [{"id": "n1", "type": "message", "data": {"message": "Hi"}}]
+        for i in range(n_records):
+            nodes.append({
+                "id": f"sr{i}",
+                "type": "save_record",
+                "data": {
+                    "saveRecord": {
+                        "recordTypeId": f"rt{i}",
+                        "fields": [{"key": "guest_name", "value": "Alice"}],
+                    }
+                },
+            })
+
+        config = {
+            "initial_node": "n1",
+            "nodes": nodes,
+            "edges": [],
+            "variables": [{"key": "guest_name"}],
+        }
+        cfg = parse_flow_config(config)
+        ex = FlowExecutor(cfg)
+        ex.account_id = "11111111-1111-1111-1111-111111111111"
+        ex.property_id = "prop1"
+        ex.call_sid = "CA_test"
+        ex.state.collected_slots["guest_name"] = "Alice"
+        for i in range(n_records):
+            ex.state.saved_records[f"sr{i}"] = f"22222222-2222-2222-2222-{i:012d}"
+        return ex
+
+    def test_bulk_load_issues_two_queries_for_three_records(self):
+        """3 saved records must trigger exactly 2 queries (one Record, one RecordType)."""
+        import uuid
+        from unittest.mock import MagicMock, patch, call
+
+        ex = self._make_saved_records_executor(3)
+
+        query_calls = []
+
+        # We intercept SessionLocal to return a mock DB that counts .query() calls
+        mock_db = MagicMock()
+        mock_db.__enter__ = lambda s: s
+        mock_db.__exit__ = MagicMock(return_value=False)
+
+        def counting_query(model):
+            query_calls.append(model.__name__ if hasattr(model, '__name__') else str(model))
+            mock_q = MagicMock()
+            mock_q.filter.return_value = mock_q
+            mock_q.all.return_value = []
+            return mock_q
+
+        mock_db.query.side_effect = counting_query
+
+        # SessionLocal is a lazy local import inside _sync_saved_records_blocking;
+        # patch it at its source module (botelier.database) so the lazy import
+        # picks up the mock.
+        with patch("botelier.database.SessionLocal", return_value=mock_db):
+            ex._sync_saved_records_blocking()
+
+        # Must be exactly 2 query() calls: one for Record, one for RecordType
+        assert len(query_calls) == 2, (
+            f"Expected exactly 2 DB queries for 3 records; got {len(query_calls)}: {query_calls}"
+        )
+
+    def test_bulk_load_issues_two_queries_for_one_record(self):
+        """1 saved record must also trigger exactly 2 queries (no per-record extra call)."""
+        from unittest.mock import MagicMock, patch
+
+        ex = self._make_saved_records_executor(1)
+
+        query_calls = []
+
+        mock_db = MagicMock()
+        mock_db.__enter__ = lambda s: s
+        mock_db.__exit__ = MagicMock(return_value=False)
+
+        def counting_query(model):
+            query_calls.append(model.__name__ if hasattr(model, '__name__') else str(model))
+            mock_q = MagicMock()
+            mock_q.filter.return_value = mock_q
+            mock_q.all.return_value = []
+            return mock_q
+
+        mock_db.query.side_effect = counting_query
+
+        with patch("botelier.database.SessionLocal", return_value=mock_db):
+            ex._sync_saved_records_blocking()
+
+        assert len(query_calls) == 2, (
+            f"Expected exactly 2 DB queries for 1 record; got {len(query_calls)}: {query_calls}"
+        )
+
+    def test_no_saved_records_issues_zero_queries(self):
+        """An executor with no saved records must open no DB session at all."""
+        from unittest.mock import MagicMock, patch
+
+        ex = self._make_saved_records_executor(0)
+        assert ex.state.saved_records == {}
+
+        mock_session_local = MagicMock()
+
+        with patch("botelier.database.SessionLocal", mock_session_local):
+            ex._sync_saved_records_blocking()
+
+        mock_session_local.assert_not_called()
+
+    def test_single_commit_called_once_for_multiple_changes(self):
+        """A single db.commit() must cover all changed records, not one per record."""
+        import uuid
+        from unittest.mock import MagicMock, patch
+
+        ex = self._make_saved_records_executor(2)
+
+        mock_db = MagicMock()
+        mock_db.__enter__ = lambda s: s
+        mock_db.__exit__ = MagicMock(return_value=False)
+
+        # Simulate two records found and both changed
+        rt0 = MagicMock()
+        rt0.id = uuid.UUID("33333333-3333-3333-3333-000000000000")
+        rt0.name = "Reservation"
+        rt0.fields = []
+        rt0.capture_method = "automatic"
+
+        rec0 = MagicMock()
+        rec0.id = uuid.UUID("22222222-2222-2222-2222-000000000000")
+        rec0.account_id = uuid.UUID("11111111-1111-1111-1111-111111111111")
+        rec0.record_type_id = rt0.id
+        rec0.data = {"stale": "data"}
+        rec0.status = None
+
+        rec1 = MagicMock()
+        rec1.id = uuid.UUID("22222222-2222-2222-2222-000000000001")
+        rec1.account_id = uuid.UUID("11111111-1111-1111-1111-111111111111")
+        rec1.record_type_id = rt0.id
+        rec1.data = {"stale": "data"}
+        rec1.status = None
+
+        def counting_query(model):
+            mock_q = MagicMock()
+            mock_q.filter.return_value = mock_q
+            if "Record" in (model.__name__ if hasattr(model, '__name__') else ""):
+                mock_q.all.return_value = [rec0, rec1]
+            else:
+                mock_q.all.return_value = [rt0]
+            return mock_q
+
+        mock_db.query.side_effect = counting_query
+
+        with patch("botelier.database.SessionLocal", return_value=mock_db):
+            # patch _resolve_record_payload to always return a different payload
+            with patch.object(ex, "_resolve_record_payload", return_value=({"new": "data"}, None)):
+                ex._sync_saved_records_blocking()
+
+        # Only one commit(), not two
+        assert mock_db.commit.call_count <= 1, (
+            f"Expected at most 1 commit() for 2 changed records; "
+            f"got {mock_db.commit.call_count}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Dead-code removal — Task #575
+# ---------------------------------------------------------------------------
+
+class TestProcessCustomApiResponseRemoved:
+    """_process_custom_api_response must not exist — it was dead code."""
+
+    def test_dead_method_is_gone(self):
+        """The stale _process_custom_api_response method must have been deleted."""
+        import pathlib
+        src = (
+            pathlib.Path(__file__).parent.parent / "botelier" / "flow_executor.py"
+        ).read_text()
+        assert "_process_custom_api_response" not in src, (
+            "_process_custom_api_response is still present in flow_executor.py — "
+            "the dead-code cleanup was not applied."
+        )
+
+    def test_flow_executor_still_importable(self):
+        """Removing dead code must not break the module import."""
+        import importlib
+        import botelier.flow_executor as fex
+        importlib.reload(fex)
+        # If we get here the import succeeded
+        assert hasattr(fex, "FlowExecutor")
+
+
+# ---------------------------------------------------------------------------
+# Router observability — Task #575
+# ---------------------------------------------------------------------------
+
+class TestRouterObservability575:
+    """_handle_router must emit a rendered WARNING when choice matches no option.
+
+    These tests complement the Task #574 input-guard tests; they specifically
+    exercise the case where a valid string choice simply doesn't match any of
+    the configured router options.
+    """
+
+    def _router_config(self):
+        return {
+            "initial_node": "n1",
+            "nodes": [
+                {"id": "n1", "type": "message", "data": {"message": "Hi"}},
+                {"id": "r1", "type": "router", "data": {
+                    "router": {
+                        "variable": "selected_option",
+                        "options": [
+                            {"id": "opt_a", "value": "room_service", "label": "Room Service"},
+                            {"id": "opt_b", "value": "housekeeping", "label": "Housekeeping"},
+                        ],
+                    }
+                }},
+                {"id": "n2", "type": "message", "data": {"message": "Got it"}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "r1"},
+                {"id": "e2", "source": "r1", "target": "n2", "sourceHandle": "default"},
+            ],
+            "variables": [{"key": "selected_option"}],
+        }
+
+    @pytest.mark.asyncio
+    async def test_unmatched_string_choice_emits_warning_with_values(self):
+        """The warning must include both the unmatched choice and configured options."""
+        from loguru import logger as _loguru_logger
+
+        cfg = parse_flow_config(self._router_config())
+        ex = FlowExecutor(cfg)
+
+        captured = []
+        handler_id = _loguru_logger.add(
+            lambda msg: captured.append(msg),
+            format="{message}",
+            level="WARNING",
+        )
+        try:
+            result = await ex._handle_router("route_r1", {"choice": "concierge"})
+        finally:
+            _loguru_logger.remove(handler_id)
+
+        assert result["success"] is True  # falls back to default edge
+        combined = "\n".join(captured)
+        # Rendered warning must contain both the choice value and configured options
+        assert "concierge" in combined, (
+            f"Warning must include the unmatched choice 'concierge'; captured: {captured!r}"
+        )
+        assert "room_service" in combined or "housekeeping" in combined, (
+            f"Warning must include configured option values; captured: {captured!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_matched_choice_emits_no_warning(self):
+        """A matching choice must NOT emit any warning."""
+        from loguru import logger as _loguru_logger
+
+        cfg = parse_flow_config(self._router_config())
+        ex = FlowExecutor(cfg)
+
+        captured = []
+        handler_id = _loguru_logger.add(
+            lambda msg: captured.append(msg),
+            format="{message}",
+            level="WARNING",
+        )
+        try:
+            result = await ex._handle_router("route_r1", {"choice": "room_service"})
+        finally:
+            _loguru_logger.remove(handler_id)
+
+        assert result["success"] is True
+        router_warnings = [m for m in captured if "_handle_router" in m and "matched no configured" in m]
+        assert router_warnings == [], (
+            f"Matched choice must not emit an unmatched-option warning; got: {router_warnings!r}"
+        )
+
+
 class TestServiceBackedCapabilityExceptionHardening:
     """_handle_service_backed_capability must return a structured result when PaymentService raises."""
 

@@ -4140,6 +4140,10 @@ class FlowExecutor:
         Returns the same dict contract as ``_handle_integration_api_request``:
         ``success``, ``action``, ``voice_result`` (success) or ``error_type`` /
         ``status_code`` (failure), ``message``, ``current_node_id``.
+
+        Response shaping (variable extraction, voice result, error classification) is
+        handled entirely by ``ActionExecutor.execute_and_log``; there is no in-line
+        response-processing logic here.
         """
         from botelier.services.action_executor import (
             ActionContext,
@@ -4227,109 +4231,6 @@ class FlowExecutor:
             "status_code": response.status_code,
             "current_node_id": node_id,
         }
-
-    def _process_custom_api_response(
-        self, node_id: str, api_config: dict, response: httpx.Response
-    ) -> dict:
-        """Process response from custom API request."""
-        status_code = response.status_code
-
-        try:
-            response_data = response.json()
-        except json.JSONDecodeError:
-            response_data = response.text
-
-        if 200 <= status_code < 300:
-            newly_extracted: dict[str, Any] = {}
-
-            if api_config.get("responseVariables"):
-                for rv in api_config["responseVariables"]:
-                    var_key = rv.get("variableKey")
-                    json_path = rv.get("jsonPath")
-                    if var_key and json_path:
-                        value = self._extract_json_value(response_data, json_path)
-                        if value is not None:
-                            self.state.set_variable(var_key, value)
-                            newly_extracted[var_key] = value
-                        elif rv.get("defaultValue") is not None:
-                            self.state.set_variable(var_key, rv["defaultValue"])
-                            newly_extracted[var_key] = rv["defaultValue"]
-
-            if api_config.get("responseMapping"):
-                for var_key, json_path in api_config["responseMapping"].items():
-                    value = self._extract_json_value(response_data, json_path)
-                    if value is not None:
-                        self.state.set_variable(var_key, value)
-                        newly_extracted[var_key] = value
-
-            next_node = self.state.get_next_node(node_id)
-            if next_node:
-                self.state.advance_to(next_node.id)
-                next_node_id = next_node.id
-            else:
-                self.state.advance_to(node_id)
-                next_node_id = node_id
-
-            success_msg = api_config.get("onSuccess", "Request completed successfully")
-            success_msg = substitute_variables(
-                success_msg, self.state.collected_slots, speakable=True
-            )
-
-            response_instructions = (api_config.get("responseInstructions") or "").strip()
-            if response_instructions:
-                voice_result = substitute_variables(response_instructions, self.state.collected_slots)
-            else:
-                voice_result = _build_api_voice_result(success_msg, newly_extracted)
-
-            return {
-                "success": True,
-                "message": success_msg,
-                "action": None,
-                "voice_result": voice_result,
-                "current_node_id": next_node_id,
-            }
-
-        elif status_code == 401 or status_code == 403:
-            return {
-                "success": False,
-                "message": api_config.get(
-                    "onAuthError", "There was an authentication issue with the request"
-                ),
-                "action": None,
-                "error_type": "auth_error",
-                "status_code": status_code,
-                "current_node_id": node_id,
-            }
-
-        elif status_code == 404:
-            return {
-                "success": False,
-                "message": api_config.get("onNotFound", "The requested information was not found"),
-                "action": None,
-                "error_type": "not_found",
-                "status_code": status_code,
-                "current_node_id": node_id,
-            }
-
-        elif status_code >= 500:
-            return {
-                "success": False,
-                "message": api_config.get("onError", "The server is experiencing difficulties"),
-                "action": None,
-                "error_type": "server_error",
-                "status_code": status_code,
-                "current_node_id": node_id,
-            }
-
-        else:
-            return {
-                "success": False,
-                "message": api_config.get("onError", "There was an issue processing your request"),
-                "action": None,
-                "error_type": "unknown",
-                "status_code": status_code,
-                "current_node_id": node_id,
-            }
 
     def _extract_json_value(self, data: dict, path: str) -> Any:
         """Extract a value from a JSON response.
@@ -5169,6 +5070,12 @@ class FlowExecutor:
 
         Account-scoped on every lookup (tenant isolation); uses a dedicated
         short-lived session, mirroring ``_handle_save_record``.
+
+        Implementation note — bulk-load strategy: collecting all relevant
+        Record and RecordType rows in two queries (one per model) avoids
+        the 2N+N round trips the per-record approach produces under a flow
+        with N saved records.  All filtering and comparison happens in-memory;
+        a single commit closes out any rows that changed.
         """
         import uuid as _uuid
 
@@ -5181,35 +5088,53 @@ class FlowExecutor:
         except (ValueError, TypeError):
             return
 
+        # --- Phase 1: collect valid entries and resolve node data ---------------
+        entries: list[tuple[str, _uuid.UUID, dict]] = []
+        for node_id, record_id in list(self.state.saved_records.items()):
+            node = self.flow_config._node_index.get(node_id)
+            if node is None:
+                continue
+            try:
+                record_uuid = _uuid.UUID(str(record_id))
+            except (ValueError, TypeError):
+                continue
+            save_data = node.data.get("saveRecord", node.data.get("save_record", {}))
+            entries.append((node_id, record_uuid, save_data))
+
+        if not entries:
+            return
+
+        record_uuid_set = [record_uuid for _, record_uuid, _ in entries]
+
         db = SessionLocal()
         try:
-            for node_id, record_id in list(self.state.saved_records.items()):
-                node = self.flow_config._node_index.get(node_id)
-                if node is None:
-                    continue
-                save_data = node.data.get("saveRecord", node.data.get("save_record", {}))
+            # --- Phase 2: bulk-load all needed Record rows in one query ----------
+            records_by_id: dict[_uuid.UUID, Record] = {
+                r.id: r
+                for r in db.query(Record)
+                .filter(Record.id.in_(record_uuid_set), Record.account_id == account_uuid)
+                .all()
+            }
 
-                try:
-                    record_uuid = _uuid.UUID(str(record_id))
-                except (ValueError, TypeError):
-                    continue
-
-                record = (
-                    db.query(Record)
-                    .filter(Record.id == record_uuid, Record.account_id == account_uuid)
-                    .first()
+            # --- Phase 3: bulk-load all needed RecordType rows in one query ------
+            record_type_ids = {r.record_type_id for r in records_by_id.values()}
+            record_types_by_id: dict[_uuid.UUID, RecordType] = {
+                rt.id: rt
+                for rt in db.query(RecordType)
+                .filter(
+                    RecordType.id.in_(record_type_ids),
+                    RecordType.account_id == account_uuid,
                 )
+                .all()
+            }
+
+            # --- Phase 4: in-memory diff and mark dirty rows --------------------
+            updated_ids: list[str] = []
+            for _node_id, record_uuid, save_data in entries:
+                record = records_by_id.get(record_uuid)
                 if record is None:
                     continue
-
-                record_type = (
-                    db.query(RecordType)
-                    .filter(
-                        RecordType.id == record.record_type_id,
-                        RecordType.account_id == account_uuid,
-                    )
-                    .first()
-                )
+                record_type = record_types_by_id.get(record.record_type_id)
                 if record_type is None:
                     continue
 
@@ -5224,11 +5149,15 @@ class FlowExecutor:
                     changed = True
 
                 if changed:
-                    db.commit()
-                    logger.info(
-                        f"SAVE_RECORD sync: updated record {record_id} after "
-                        f"post-save variable change (call_sid={self.call_sid})"
-                    )
+                    updated_ids.append(str(record_uuid))
+
+            # --- Phase 5: single commit for all dirty rows ----------------------
+            if updated_ids:
+                db.commit()
+                logger.info(
+                    f"SAVE_RECORD sync: updated {len(updated_ids)} record(s) after "
+                    f"post-save variable change (call_sid={self.call_sid}): {updated_ids}"
+                )
         except Exception:
             try:
                 db.rollback()
