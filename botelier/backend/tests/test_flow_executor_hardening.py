@@ -1828,6 +1828,245 @@ class TestTransferCallbackExceptionHardening:
         )
 
 
+# ---------------------------------------------------------------------------
+# Input guard fixes — Task #574
+# ---------------------------------------------------------------------------
+
+class TestRouterChoiceInputGuard:
+    """_handle_router must handle None/non-string choice without crashing."""
+
+    def _router_config(self, options=None):
+        return {
+            "initial_node": "n1",
+            "nodes": [
+                {"id": "n1", "type": "message", "data": {"message": "Hi"}},
+                {"id": "r1", "type": "router", "data": {
+                    "router": {
+                        "variable": "selected_option",
+                        "options": options or [
+                            {"id": "opt_a", "value": "room_service", "label": "Room Service"},
+                            {"id": "opt_b", "value": "housekeeping", "label": "Housekeeping"},
+                        ],
+                    }
+                }},
+                {"id": "n2", "type": "message", "data": {"message": "Got it"}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "n1", "target": "r1"},
+                {"id": "e2", "source": "r1", "target": "n2", "sourceHandle": "opt_a"},
+                {"id": "e3", "source": "r1", "target": "n2", "sourceHandle": "default"},
+            ],
+            "variables": [{"key": "selected_option"}],
+        }
+
+    @pytest.mark.asyncio
+    async def test_null_choice_does_not_raise(self):
+        """Router called with choice=None must not raise AttributeError."""
+        cfg = parse_flow_config(self._router_config())
+        ex = FlowExecutor(cfg)
+
+        # Must not raise — JSON null becomes Python None from LLM call
+        result = await ex._handle_router("route_r1", {"choice": None})
+
+        assert isinstance(result, dict)
+        assert "success" in result
+        assert "current_node_id" in result
+
+    @pytest.mark.asyncio
+    async def test_numeric_choice_does_not_raise(self):
+        """Router called with choice=42 must not raise TypeError."""
+        cfg = parse_flow_config(self._router_config())
+        ex = FlowExecutor(cfg)
+
+        result = await ex._handle_router("route_r1", {"choice": 42})
+
+        assert isinstance(result, dict)
+        assert "success" in result
+
+    @pytest.mark.asyncio
+    async def test_matching_choice_succeeds(self):
+        """A valid matching choice still routes correctly."""
+        cfg = parse_flow_config(self._router_config())
+        ex = FlowExecutor(cfg)
+
+        result = await ex._handle_router("route_r1", {"choice": "room_service"})
+
+        assert result["success"] is True
+
+    @pytest.mark.asyncio
+    async def test_unmatched_choice_emits_warning(self):
+        """A choice matching no configured option must emit a WARNING with rendered content."""
+        from loguru import logger as _loguru_logger
+
+        cfg = parse_flow_config(self._router_config())
+        ex = FlowExecutor(cfg)
+
+        captured = []
+        handler_id = _loguru_logger.add(
+            lambda msg: captured.append(msg),
+            format="{message}",
+            level="WARNING",
+        )
+        try:
+            result = await ex._handle_router("route_r1", {"choice": "completely_unknown"})
+        finally:
+            _loguru_logger.remove(handler_id)
+
+        assert result["success"] is True  # still returns success (falls back)
+        combined = "\n".join(captured)
+        assert "completely_unknown" in combined or "matched no configured option" in combined, (
+            f"Expected rendered warning about unmatched choice; captured: {captured!r}"
+        )
+
+    @pytest.mark.asyncio
+    async def test_null_choice_emits_warning(self):
+        """A null choice must emit a WARNING with rendered content about the null value."""
+        from loguru import logger as _loguru_logger
+
+        cfg = parse_flow_config(self._router_config())
+        ex = FlowExecutor(cfg)
+
+        captured = []
+        handler_id = _loguru_logger.add(
+            lambda msg: captured.append(msg),
+            format="{message}",
+            level="WARNING",
+        )
+        try:
+            await ex._handle_router("route_r1", {"choice": None})
+        finally:
+            _loguru_logger.remove(handler_id)
+
+        combined = "\n".join(captured)
+        assert "null" in combined.lower() or "choice" in combined.lower(), (
+            f"Expected rendered warning about null choice; captured: {captured!r}"
+        )
+
+
+class TestAdvanceToUnknownNodeGuard:
+    """advance_to must log a warning and not silently accept ghost node IDs."""
+
+    def test_advance_to_unknown_id_logs_warning_and_marks_exhausted(self):
+        """advance_to with an unknown node ID must emit a rendered WARNING and set graph_exhausted."""
+        from loguru import logger as _loguru_logger
+
+        cfg = parse_flow_config(_minimal_config())
+        ex = FlowExecutor(cfg)
+
+        captured = []
+        handler_id = _loguru_logger.add(
+            lambda msg: captured.append(msg),
+            format="{message}",
+            level="WARNING",
+        )
+        try:
+            ex.state.advance_to("ghost_node_that_does_not_exist")
+        finally:
+            _loguru_logger.remove(handler_id)
+
+        # graph_exhausted is set — soft-fail, not a crash
+        assert ex.state.graph_exhausted is True
+
+        # current_node_id must NOT be updated to the ghost ID
+        assert ex.state.current_node_id != "ghost_node_that_does_not_exist", (
+            "advance_to must not set current_node_id to a nonexistent node"
+        )
+
+        combined = "\n".join(captured)
+        assert "ghost_node_that_does_not_exist" in combined or "does not exist" in combined, (
+            f"Expected rendered warning about the unknown node; captured: {captured!r}"
+        )
+
+    def test_advance_to_valid_id_still_works(self):
+        """advance_to with a real node ID must still advance normally."""
+        cfg = parse_flow_config(_minimal_config(
+            nodes=[
+                {"id": "n1", "type": "message", "data": {"message": "Hi"}},
+                {"id": "n2", "type": "message", "data": {"message": "Bye"}},
+            ],
+            edges=[{"id": "e1", "source": "n1", "target": "n2"}],
+        ))
+        ex = FlowExecutor(cfg)
+
+        ex.state.advance_to("n2")
+
+        assert ex.state.current_node_id == "n2"
+        assert ex.state.graph_exhausted is True  # n2 has no outgoing edge
+
+
+class TestTransferEmptyPhoneGuard:
+    """_handle_transfer must reject an empty phone number without mutating state."""
+
+    def _transfer_config_no_phone(self, phone=""):
+        return {
+            "initial_node": "n1",
+            "nodes": [
+                {"id": "n1", "type": "message", "data": {"message": "Hi"}},
+                {"id": "t1", "type": "transfer", "data": {
+                    "transfer": {
+                        "phoneNumber": phone,
+                        "preTransferMessage": "Please hold.",
+                        "transferMode": "warm",
+                    }
+                }},
+            ],
+            "edges": [{"id": "e1", "source": "n1", "target": "t1"}],
+            "variables": [],
+        }
+
+    @pytest.mark.asyncio
+    async def test_empty_phone_returns_failure_result(self):
+        """An empty phone number must yield success=False with action=None."""
+        cfg = parse_flow_config(self._transfer_config_no_phone(phone=""))
+        ex = FlowExecutor(cfg)
+
+        result = await ex._handle_transfer("transfer_t1", {})
+
+        assert result["success"] is False
+        assert result["action"] is None
+        assert "current_node_id" in result
+
+    @pytest.mark.asyncio
+    async def test_whitespace_only_phone_returns_failure_result(self):
+        """A whitespace-only phone number must also yield success=False."""
+        cfg = parse_flow_config(self._transfer_config_no_phone(phone="   "))
+        ex = FlowExecutor(cfg)
+
+        result = await ex._handle_transfer("transfer_t1", {})
+
+        assert result["success"] is False
+        assert result["action"] is None
+
+    @pytest.mark.asyncio
+    async def test_empty_phone_does_not_mutate_state(self):
+        """State must NOT be mutated when phone number is empty."""
+        cfg = parse_flow_config(self._transfer_config_no_phone(phone=""))
+        ex = FlowExecutor(cfg)
+        original_node_id = ex.state.current_node_id
+
+        called = []
+
+        async def callback(number, reason, transfer_mode="warm"):
+            called.append(number)
+
+        ex.transfer_callback = callback
+
+        await ex._handle_transfer("transfer_t1", {})
+
+        assert ex.state.transfer_requested is False, (
+            "transfer_requested must remain False when phone is empty"
+        )
+        assert ex.state.transfer_target is None, (
+            "transfer_target must remain None when phone is empty"
+        )
+        assert ex.state.current_node_id == original_node_id, (
+            "current_node_id must not advance when phone is empty"
+        )
+        assert called == [], (
+            "transfer_callback must NOT be invoked when phone is empty"
+        )
+
+
 class TestServiceBackedCapabilityExceptionHardening:
     """_handle_service_backed_capability must return a structured result when PaymentService raises."""
 

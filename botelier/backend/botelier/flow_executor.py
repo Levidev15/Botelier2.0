@@ -481,6 +481,20 @@ class FlowState:
         here. Resolution is deterministic and identical in live calls and the
         simulator.
         """
+        # Guard: advancing to a nonexistent node silently corrupts flow state.
+        # Log a warning so misconfigured edges are visible in logs, then still
+        # let the safe-fail path below mark graph_exhausted rather than pointing
+        # at a ghost node.
+        if node_id not in self.flow_config._node_index:
+            logger.warning(
+                f"advance_to: node {node_id!r} does not exist in this flow "
+                f"(current_node_id={self.current_node_id!r}, "
+                f"{len(self.flow_config.nodes)} nodes configured) — "
+                "keeping current position and marking flow exhausted"
+            )
+            self.graph_exhausted = True
+            return
+
         self.current_node_id = node_id
         self.pending_slot = None
         self.retry_count = 0
@@ -4343,18 +4357,38 @@ class FlowExecutor:
         router_data = node.data.get("router", {})
         variable = router_data.get("variable", "")
         options = router_data.get("options", [])
-        choice = arguments.get("choice", "")
+        raw_choice = arguments.get("choice")
+
+        # Guard: the LLM can pass JSON null (Python None) or a numeric value when
+        # the schema does not strictly enforce a non-null string.  Coerce to str
+        # so the subsequent .lower() call never raises AttributeError/TypeError.
+        if raw_choice is None:
+            logger.warning(
+                f"_handle_router node {node_id!r}: 'choice' argument is null "
+                "— treating as empty string"
+            )
+            choice = ""
+        else:
+            choice = str(raw_choice)
 
         if variable:
             self.state.set_variable(variable, choice)
 
         matched_option_id = None
         matched_label = choice
+        choice_lower = choice.lower()
         for opt in options:
-            if opt.get("value", "").lower() == choice.lower():
+            if opt.get("value", "").lower() == choice_lower:
                 matched_option_id = opt.get("id")
                 matched_label = opt.get("label", choice)
                 break
+
+        if not matched_option_id:
+            configured = [opt.get("value") for opt in options]
+            logger.warning(
+                f"_handle_router node {node_id!r}: choice {choice!r} matched no configured "
+                f"option {configured!r} — falling through to default/first-edge fallback"
+            )
 
         next_node_id = None
         if matched_option_id:
@@ -5224,6 +5258,22 @@ class FlowExecutor:
         phone_number = transfer_config.get("phoneNumber", "")
         pre_message = transfer_config.get("preTransferMessage", "Please hold while I transfer you.")
         transfer_mode = transfer_config.get("transferMode", "warm")
+
+        # Guard: forwarding an empty phone number to the PSTN/SIP carrier
+        # triggers a carrier-level error rather than a clean in-flow failure.
+        # Catch this early — before any state mutation or callback — so the
+        # operator sees a structured result and the caller hears something useful.
+        if not phone_number or not phone_number.strip():
+            logger.warning(
+                f"_handle_transfer node {node_id!r}: phone number is empty — "
+                "transfer is not configured; returning failure without mutating state"
+            )
+            return {
+                "success": False,
+                "message": "Transfer is not configured — no phone number set.",
+                "action": None,
+                "current_node_id": self.state.current_node_id,
+            }
 
         # Snapshot the current node position before releasing the turn lock.
         # If a concurrent permitted turn advances the flow during the carrier
