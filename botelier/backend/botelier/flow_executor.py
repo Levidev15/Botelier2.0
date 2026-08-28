@@ -4222,22 +4222,30 @@ class FlowExecutor:
                     return target
         return None
 
-    async def _handle_confirmation(self, function_name: str, arguments: dict) -> dict:
-        """Handle a confirmation node - customer confirms or requests edit."""
-        node_id = function_name.replace("confirm_", "")
-        node = self.flow_config._node_index.get(node_id)
+    async def _run_confirmation_logic(
+        self,
+        node: FlowNode,
+        confirmed: bool,
+        arguments: dict,
+    ) -> dict:
+        """Canonical confirmation handler — shared by both entry points.
 
-        if not node:
-            return {
-                "success": False,
-                "message": "Confirmation node not found",
-                "action": None,
-                "current_node_id": None,
-            }
+        Called by ``_handle_confirmation`` (LLM invoked ``confirm_<node_id>``)
+        and by ``_handle_confirm_details`` when a CONFIRMATION node is found in
+        the flow.  Centralising here ensures both paths:
 
-        confirmed = arguments.get("confirmed", True)
+        * use ``_confirmed_branch_next_node()`` with its edge-fallback guard
+          (so flows imported/seeded without an explicit ``confirmed``
+          sourceHandle are not silently stuck forever on the confirmation node),
+        * produce an identical result shape, and
+        * carry the ``speak_directly`` guarantee that prevents dead-air on
+          live calls.
+        """
+        node_id = node.id
         confirmation_data = node.data.get("confirmation", {})
 
+        # Read all templates upfront so the correction sub-path can re-render
+        # them after ``correct_caller_slot`` updates collected_slots.
         summary_template = confirmation_data.get(
             "summaryTemplate", confirmation_data.get("summary_template", "")
         )
@@ -4251,11 +4259,6 @@ class FlowExecutor:
             if summary_template
             else ""
         )
-        confirm_message = (
-            substitute_variables(confirm_prompt, self.state.collected_slots)
-            if confirm_prompt
-            else ""
-        )
         edit_message = (
             substitute_variables(edit_prompt, self.state.collected_slots)
             if edit_prompt
@@ -4266,14 +4269,15 @@ class FlowExecutor:
         is_static = delivery_mode == "static"
 
         if confirmed:
+            # Use the fallback-guarded helper so flows whose edges were seeded
+            # without an explicit ``confirmed`` sourceHandle still advance.
             next_node = self._confirmed_branch_next_node(node_id)
             next_node_id = next_node.id if next_node else node_id
             if next_node:
                 self.state.advance_to(next_node.id)
 
-            # If confirming silently advances straight into END/TRANSFER,
-            # actually execute that terminal action rather than merely
-            # speaking its message (Task #534 completion-review fix).
+            # If confirming lands directly on END/TRANSFER, execute it rather
+            # than merely surfacing the message text.
             terminal_result = await self._maybe_execute_terminal_transition(next_node)
             if terminal_result is not None:
                 return terminal_result
@@ -4282,7 +4286,7 @@ class FlowExecutor:
                 self._get_next_node_configured_message(next_node) if next_node else (None, False)
             )
 
-            result = {
+            result: dict = {
                 "success": True,
                 "action": None,
                 "confirmed": True,
@@ -4301,82 +4305,97 @@ class FlowExecutor:
             else:
                 result["message"] = "Thank you for confirming."
 
-            # CONFIRMATION had no direct-speech guarantee at all — a live call
-            # went silent for ~10s after this exact dispatch because nothing
-            # forces the LLM's next turn to actually speak. Every message
-            # above is operator-authored, caller-facing prompt/summary text
-            # (like a slot prompt), so speak it directly rather than hoping
-            # the model continues on its own.
+            # Operator-authored summary/prompt text must be spoken directly —
+            # without this guarantee a live call went silent for ~10s.
             result["speak_directly"] = True
-
             return result
-        else:
-            field_to_change = arguments.get("field_to_change")
-            new_value = arguments.get("new_value")
 
-            if field_to_change and _is_valid_new_value(new_value):
-                correction_error = self.correct_caller_slot(field_to_change, new_value)
-                if correction_error:
-                    return {
-                        "success": False,
-                        "action": None,
-                        "confirmed": False,
-                        "current_node_id": node_id,
-                        "message": correction_error,
-                        "speak_directly": True,
-                    }
-                updated_summary = (
-                    substitute_variables(summary_template, self.state.collected_slots)
-                    if summary_template
-                    else ""
-                )
-                updated_confirm = (
-                    substitute_variables(confirm_prompt, self.state.collected_slots)
-                    if confirm_prompt
-                    else "Is everything else correct?"
-                )
-                message = (
-                    f"{updated_summary} {updated_confirm}".strip()
-                    if updated_summary
-                    else updated_confirm
-                )
+        # Not confirmed — caller wants a change.
+        field_to_change = arguments.get("field_to_change")
+        new_value = arguments.get("new_value")
+
+        if field_to_change and _is_valid_new_value(new_value):
+            correction_error = self.correct_caller_slot(field_to_change, new_value)
+            if correction_error:
                 return {
-                    "success": True,
+                    "success": False,
                     "action": None,
                     "confirmed": False,
                     "current_node_id": node_id,
-                    "message": message,
+                    "message": correction_error,
                     "speak_directly": True,
                 }
-            elif field_to_change:
-                return {
-                    "success": True,
-                    "action": None,
-                    "confirmed": False,
-                    "current_node_id": node_id,
-                    "message": self._targeted_field_question(field_to_change),
-                    "speak_directly": True,
-                }
-
-            next_node = self.state.get_next_node(node_id, handle="edit")
-            next_node_id = next_node.id if next_node else node_id
-            if next_node:
-                self.state.advance_to(next_node.id)
-
-            terminal_result = await self._maybe_execute_terminal_transition(next_node)
-            if terminal_result is not None:
-                return terminal_result
-
-            result = {
+            # Re-render after the slot update so the new value appears inline.
+            updated_summary = (
+                substitute_variables(summary_template, self.state.collected_slots)
+                if summary_template
+                else ""
+            )
+            updated_confirm = (
+                substitute_variables(confirm_prompt, self.state.collected_slots)
+                if confirm_prompt
+                else "Is everything else correct?"
+            )
+            message = (
+                f"{updated_summary} {updated_confirm}".strip()
+                if updated_summary
+                else updated_confirm
+            )
+            return {
                 "success": True,
                 "action": None,
                 "confirmed": False,
-                "current_node_id": next_node_id,
-                "message": edit_message,
+                "current_node_id": node_id,
+                "message": message,
                 "speak_directly": True,
             }
 
-            return result
+        if field_to_change:
+            return {
+                "success": True,
+                "action": None,
+                "confirmed": False,
+                "current_node_id": node_id,
+                "message": self._targeted_field_question(field_to_change),
+                "speak_directly": True,
+            }
+
+        # No specific field named — follow the edit edge and ask the generic prompt.
+        next_node = self.state.get_next_node(node_id, handle="edit")
+        next_node_id = next_node.id if next_node else node_id
+        if next_node:
+            self.state.advance_to(next_node.id)
+
+        terminal_result = await self._maybe_execute_terminal_transition(next_node)
+        if terminal_result is not None:
+            return terminal_result
+
+        return {
+            "success": True,
+            "action": None,
+            "confirmed": False,
+            "current_node_id": next_node_id,
+            "message": edit_message,
+            "speak_directly": True,
+        }
+
+    async def _handle_confirmation(self, function_name: str, arguments: dict) -> dict:
+        """Handle a CONFIRMATION node — the LLM called ``confirm_<node_id>``.
+
+        Thin dispatcher: resolves the node then delegates all logic to
+        ``_run_confirmation_logic``.
+        """
+        node_id = function_name.replace("confirm_", "")
+        node = self.flow_config._node_index.get(node_id)
+        if not node:
+            return {
+                "success": False,
+                "message": "Confirmation node not found",
+                "action": None,
+                "current_node_id": None,
+            }
+        confirmed = arguments.get("confirmed", True)
+        return await self._run_confirmation_logic(node, confirmed, arguments)
 
     def _targeted_field_question(self, field_key: str) -> str:
         """Return a targeted correction prompt for *field_key*.
@@ -5001,163 +5020,31 @@ class FlowExecutor:
         }
 
     async def _handle_confirm_details(self, arguments: dict) -> dict:
-        """Handle confirmation - tries to find a CONFIRMATION node in the flow."""
+        """Handle the built-in ``confirm_details`` fallback (flows without a CONFIRMATION node).
+
+        This tool is only exposed to the LLM when the flow has no CONFIRMATION
+        node (``_should_expose_confirm_details``).  If a CONFIRMATION node is
+        present anyway — e.g. the LLM called the wrong function — we still
+        delegate to ``_run_confirmation_logic`` so the behaviour is identical to
+        ``_handle_confirmation`` and the edge-fallback guard is applied.
+
+        The no-node tail handles genuinely node-free flows and is intentionally
+        kept separate: it has no graph to advance, so it only updates the
+        ``_details_confirmed`` flag and returns a simple acknowledgement.
+        """
         confirmed = arguments.get("confirmed", False)
 
-        confirmation_node = None
-        for node in self.flow_config.nodes:
-            if node.type == NodeType.CONFIRMATION:
-                confirmation_node = node
-                break
-
+        # Defensive: if a CONFIRMATION node exists, use the canonical shared logic.
+        confirmation_node = next(
+            (n for n in self.flow_config.nodes if n.type == NodeType.CONFIRMATION), None
+        )
         if confirmation_node:
-            confirmation_data = confirmation_node.data.get("confirmation", {})
-            edit_prompt = confirmation_data.get(
-                "editPrompt", confirmation_data.get("edit_prompt", "")
-            )
-            edit_message = (
-                substitute_variables(edit_prompt, self.state.collected_slots)
-                if edit_prompt
-                else "What would you like to change?"
-            )
+            return await self._run_confirmation_logic(confirmation_node, confirmed, arguments)
 
-            delivery_mode = confirmation_data.get("deliveryMode", "guided")
-            is_static = delivery_mode == "static"
-
-            if confirmed:
-                next_node = self.state.get_next_node(confirmation_node.id, handle="confirmed")
-                next_node_id = next_node.id if next_node else confirmation_node.id
-                if next_node:
-                    self.state.advance_to(next_node.id)
-
-                # If confirming silently advances straight into END/TRANSFER,
-                # actually execute that terminal action rather than merely
-                # speaking its message (Task #534 completion-review fix).
-                terminal_result = await self._maybe_execute_terminal_transition(next_node)
-                if terminal_result is not None:
-                    return terminal_result
-
-                next_node_message, next_is_static = (
-                    self._get_next_node_configured_message(next_node)
-                    if next_node
-                    else (None, False)
-                )
-
-                summary_template = confirmation_data.get(
-                    "summaryTemplate", confirmation_data.get("summary_template", "")
-                )
-                summary_message = (
-                    substitute_variables(summary_template, self.state.collected_slots)
-                    if summary_template
-                    else ""
-                )
-
-                result = {
-                    "success": True,
-                    "action": "confirmed",
-                    "collected_data": self.state.collected_slots.copy(),
-                    "current_node_id": next_node_id,
-                }
-
-                if next_node_message:
-                    result["message"] = next_node_message
-                    if next_is_static:
-                        result["speak_exactly"] = next_node_message
-                elif summary_message:
-                    confirmed_text = f"Thank you for confirming. {summary_message}"
-                    result["message"] = confirmed_text
-                    if is_static:
-                        result["speak_exactly"] = confirmed_text
-                else:
-                    result["message"] = "Thank you for confirming."
-
-                # Same dead-air risk as _handle_confirmation — force the
-                # direct-speech guarantee since nothing else covers this path.
-                result["speak_directly"] = True
-
-                return result
-            else:
-                field_to_change = arguments.get("field_to_change")
-                new_value = arguments.get("new_value")
-
-                if field_to_change and _is_valid_new_value(new_value):
-                    correction_error = self.correct_caller_slot(field_to_change, new_value)
-                    if correction_error:
-                        return {
-                            "success": False,
-                            "action": None,
-                            "confirmed": False,
-                            "current_node_id": confirmation_node.id,
-                            "message": correction_error,
-                            "speak_directly": True,
-                        }
-                    summary_template = confirmation_data.get(
-                        "summaryTemplate", confirmation_data.get("summary_template", "")
-                    )
-                    confirm_prompt = confirmation_data.get(
-                        "confirmPrompt", confirmation_data.get("confirm_prompt", "")
-                    )
-                    updated_summary = (
-                        substitute_variables(summary_template, self.state.collected_slots)
-                        if summary_template
-                        else ""
-                    )
-                    updated_confirm = (
-                        substitute_variables(confirm_prompt, self.state.collected_slots)
-                        if confirm_prompt
-                        else "Is everything else correct?"
-                    )
-                    message = (
-                        f"{updated_summary} {updated_confirm}".strip()
-                        if updated_summary
-                        else updated_confirm
-                    )
-                    return {
-                        "success": True,
-                        "action": None,
-                        "confirmed": False,
-                        "current_node_id": confirmation_node.id,
-                        "message": message,
-                        "speak_directly": True,
-                    }
-                elif field_to_change:
-                    return {
-                        "success": True,
-                        "action": None,
-                        "confirmed": False,
-                        "current_node_id": confirmation_node.id,
-                        "message": self._targeted_field_question(field_to_change),
-                        "speak_directly": True,
-                    }
-
-                next_node = self.state.get_next_node(confirmation_node.id, handle="edit")
-                next_node_id = next_node.id if next_node else confirmation_node.id
-                if next_node:
-                    self.state.advance_to(next_node.id)
-
-                terminal_result = await self._maybe_execute_terminal_transition(next_node)
-                if terminal_result is not None:
-                    return terminal_result
-
-                result = {
-                    "success": True,
-                    "action": None,
-                    "confirmed": False,
-                    "current_node_id": next_node_id,
-                    "message": edit_message,
-                    "speak_directly": True,
-                }
-
-                return result
-
+        # ── No CONFIRMATION node in the flow ─────────────────────────────────
         if confirmed:
-            # Stop re-exposing the fallback after a successful confirmation so
-            # the LLM can't loop back into re-confirming the same details.
+            # Prevent the LLM from looping back into re-confirming after success.
             self._details_confirmed = True
-            # This exact path — confirm_details with no CONFIRMATION node in
-            # the flow — is what produced ~10s of dead air on a real call: the
-            # function ran, returned this message, and nothing forced the LLM
-            # to actually say it. speak_directly closes that gap.
             return {
                 "success": True,
                 "message": "Great, confirmed.",
@@ -5166,41 +5053,41 @@ class FlowExecutor:
                 "current_node_id": self.state.current_node_id,
                 "speak_directly": True,
             }
-        else:
-            field_to_change = arguments.get("field_to_change")
-            new_value = arguments.get("new_value")
-            if field_to_change and _is_valid_new_value(new_value):
-                correction_error = self.correct_caller_slot(field_to_change, new_value)
-                if correction_error:
-                    return {
-                        "success": False,
-                        "message": correction_error,
-                        "action": None,
-                        "current_node_id": self.state.current_node_id,
-                        "speak_directly": True,
-                    }
+
+        field_to_change = arguments.get("field_to_change")
+        new_value = arguments.get("new_value")
+        if field_to_change and _is_valid_new_value(new_value):
+            correction_error = self.correct_caller_slot(field_to_change, new_value)
+            if correction_error:
                 return {
-                    "success": True,
-                    "message": "Got it, I've updated that. Is everything else correct?",
-                    "action": None,
-                    "current_node_id": self.state.current_node_id,
-                    "speak_directly": True,
-                }
-            if field_to_change:
-                return {
-                    "success": True,
-                    "message": self._targeted_field_question(field_to_change),
+                    "success": False,
+                    "message": correction_error,
                     "action": None,
                     "current_node_id": self.state.current_node_id,
                     "speak_directly": True,
                 }
             return {
                 "success": True,
-                "message": "What would you like to change?",
+                "message": "Got it, I've updated that. Is everything else correct?",
                 "action": None,
                 "current_node_id": self.state.current_node_id,
                 "speak_directly": True,
             }
+        if field_to_change:
+            return {
+                "success": True,
+                "message": self._targeted_field_question(field_to_change),
+                "action": None,
+                "current_node_id": self.state.current_node_id,
+                "speak_directly": True,
+            }
+        return {
+            "success": True,
+            "message": "What would you like to change?",
+            "action": None,
+            "current_node_id": self.state.current_node_id,
+            "speak_directly": True,
+        }
 
     def get_collected_data(self) -> dict:
         """Get all collected slot values."""

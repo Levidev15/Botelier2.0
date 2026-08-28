@@ -659,6 +659,260 @@ class TestResponseVariablesIsinstanceGuard:
 # Phase 5.4 — end_call_callback exception guard
 # ---------------------------------------------------------------------------
 
+class TestConfirmationHandlerParity:
+    """Phase 8 — _run_confirmation_logic ensures both entry points are identical.
+
+    Covers:
+    - confirm_<node_id>  → _handle_confirmation  → _run_confirmation_logic
+    - confirm_details    → _handle_confirm_details → _run_confirmation_logic
+      (when a CONFIRMATION node exists in the flow)
+    - The edge fallback guard (_confirmed_branch_next_node) is applied by BOTH
+      paths (was the key bug: _handle_confirm_details used strict handle only).
+    - No-node fallback tail in _handle_confirm_details is unchanged.
+    """
+
+    def _make_confirmation_flow(self, *, with_confirmed_handle=True, summary="Room: {{room}}"):
+        """Minimal flow: collect_slot → confirmation → save_record → end.
+
+        The intermediate save_record node between confirmation and end prevents
+        ``_maybe_execute_terminal_transition`` from firing on the confirmed path,
+        so the confirmed-path result shape (with ``confirmed=True`` and the
+        summary message) is exercisable in unit tests.
+        """
+        confirmed_edge = {
+            "id": "e_confirm",
+            "source": "conf1",
+            "target": "save1",  # non-terminal next step
+        }
+        if with_confirmed_handle:
+            confirmed_edge["source_handle"] = "confirmed"
+
+        return {
+            "initial_node": "slot1",
+            "variables": [
+                # Use "text" — the valid SlotType for free-text collection
+                {"key": "room", "label": "Room", "type": "text", "required": True},
+            ],
+            "nodes": [
+                {"id": "slot1", "type": "collect_slot",
+                 "data": {"slot": {"variableKey": "room", "prompt": "Room number?"}}},
+                {
+                    "id": "conf1",
+                    "type": "confirmation",
+                    "data": {
+                        "confirmation": {
+                            "summaryTemplate": summary,
+                            "confirmPrompt": "Is that correct?",
+                            "editPrompt": "What should I fix?",
+                        }
+                    },
+                },
+                # Non-terminal middle node so the confirmed path returns the
+                # full result dict (not the terminal-transition early return).
+                {
+                    "id": "save1",
+                    "type": "save_record",
+                    "data": {"saveRecord": {"recordTypeSlug": "booking"}},
+                },
+                {"id": "end1", "type": "end",
+                 "data": {"closingMessage": "Thanks, goodbye!"}},
+            ],
+            "edges": [
+                {"id": "e1", "source": "slot1", "target": "conf1"},
+                confirmed_edge,
+                {"id": "e_edit", "source": "conf1", "target": "slot1",
+                 "source_handle": "edit"},
+                {"id": "e2", "source": "save1", "target": "end1"},
+            ],
+        }
+
+    def _executor_with_room(self, config_dict, room="101"):
+        ex = _executor(config_dict)
+        ex.state.collected_slots["room"] = room
+        ex.state.current_node_id = "conf1"
+        return ex
+
+    # ── Confirmed path ────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_confirmed_via_handle_confirmation_advances(self):
+        config = self._make_confirmation_flow()
+        ex = self._executor_with_room(config)
+        result = await ex._handle_confirmation("confirm_conf1", {"confirmed": True})
+        assert result["success"] is True
+        assert result["confirmed"] is True
+        assert result["speak_directly"] is True
+        assert result["current_node_id"] == "save1"  # advances past confirmation
+        assert result["action"] is None
+
+    @pytest.mark.asyncio
+    async def test_confirmed_via_confirm_details_produces_same_result(self):
+        """confirm_details delegates to _run_confirmation_logic — must match."""
+        config = self._make_confirmation_flow()
+        ex = self._executor_with_room(config)
+        result = await ex._handle_confirm_details({"confirmed": True})
+        # Same shape as _handle_confirmation
+        assert result["success"] is True
+        assert result["confirmed"] is True
+        assert result["speak_directly"] is True
+        assert result["current_node_id"] == "save1"
+        assert result["action"] is None
+
+    @pytest.mark.asyncio
+    async def test_confirmed_summary_message_appears_in_both_entry_points(self):
+        """Summary template is rendered and identical through both entry points."""
+        config = self._make_confirmation_flow(summary="Room: {{room}}")
+        ex_a = self._executor_with_room(config, room="205")
+        ex_b = self._executor_with_room(config, room="205")
+
+        r_a = await ex_a._handle_confirmation("confirm_conf1", {"confirmed": True})
+        r_b = await ex_b._handle_confirm_details({"confirmed": True})
+
+        assert r_a["message"] == r_b["message"]
+        assert "205" in r_a["message"]
+
+    # ── Edge fallback guard (the bug fix) ────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_edge_fallback_guard_via_confirm_details(self):
+        """confirm_details previously used strict get_next_node(handle='confirmed')
+        so flows seeded without a sourceHandle would stall here. After the merge,
+        _confirmed_branch_next_node is used, which falls back to any non-edit edge."""
+        # Flow has a confirmed edge WITHOUT sourceHandle='confirmed'
+        config = self._make_confirmation_flow(with_confirmed_handle=False)
+        ex = self._executor_with_room(config)
+
+        # Before the fix this would stall (current_node_id == "conf1").
+        # After the fix it advances to "save1" via the fallback.
+        result = await ex._handle_confirm_details({"confirmed": True})
+        assert result["current_node_id"] == "save1", (
+            "Fallback edge guard not applied by _handle_confirm_details"
+        )
+
+    @pytest.mark.asyncio
+    async def test_edge_fallback_guard_via_handle_confirmation(self):
+        """_handle_confirmation also advances correctly without sourceHandle."""
+        config = self._make_confirmation_flow(with_confirmed_handle=False)
+        ex = self._executor_with_room(config)
+        result = await ex._handle_confirmation("confirm_conf1", {"confirmed": True})
+        assert result["current_node_id"] == "save1"
+
+    # ── Edit path ─────────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_edit_path_via_handle_confirmation(self):
+        config = self._make_confirmation_flow()
+        ex = self._executor_with_room(config)
+        result = await ex._handle_confirmation("confirm_conf1", {"confirmed": False})
+        assert result["success"] is True
+        assert result["confirmed"] is False
+        assert result["speak_directly"] is True
+        assert "fix" in result["message"].lower() or "change" in result["message"].lower()
+
+    @pytest.mark.asyncio
+    async def test_edit_path_via_confirm_details_matches(self):
+        """Both entry points return the identical message and shape on edit."""
+        config = self._make_confirmation_flow()
+        ex_a = self._executor_with_room(config)
+        ex_b = self._executor_with_room(config)
+
+        r_a = await ex_a._handle_confirmation("confirm_conf1", {"confirmed": False})
+        r_b = await ex_b._handle_confirm_details({"confirmed": False})
+
+        assert r_a["message"] == r_b["message"]
+        assert r_a["speak_directly"] == r_b["speak_directly"]
+        assert r_a["success"] == r_b["success"]
+
+    # ── Correction path (field_to_change + new_value) ─────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_correction_path_via_handle_confirmation(self):
+        """A valid field correction updates the slot and returns a re-rendered summary."""
+        config = self._make_confirmation_flow(summary="Room: {{room}}")
+        ex = self._executor_with_room(config)
+        result = await ex._handle_confirmation(
+            "confirm_conf1",
+            {"confirmed": False, "field_to_change": "room", "new_value": "305"},
+        )
+        assert result["success"] is True
+        assert ex.state.collected_slots.get("room") == "305"
+        assert result["speak_directly"] is True
+        assert "305" in result["message"]  # re-rendered summary includes new value
+
+    @pytest.mark.asyncio
+    async def test_correction_path_via_confirm_details_matches(self):
+        """Both entry points produce the same correction result and update the slot."""
+        config = self._make_confirmation_flow(summary="Room: {{room}}")
+        ex_a = self._executor_with_room(config)
+        ex_b = self._executor_with_room(config)
+
+        args = {"confirmed": False, "field_to_change": "room", "new_value": "305"}
+        r_a = await ex_a._handle_confirmation("confirm_conf1", args)
+        r_b = await ex_b._handle_confirm_details(args)
+
+        assert r_a["success"] == r_b["success"]
+        assert r_a["confirmed"] == r_b["confirmed"]
+        assert r_a["speak_directly"] == r_b["speak_directly"]
+        assert r_a["message"] == r_b["message"]
+        assert ex_a.state.collected_slots["room"] == "305"
+        assert ex_b.state.collected_slots["room"] == "305"
+
+    # ── Field-only path (field_to_change, no new_value) ───────────────────────
+
+    @pytest.mark.asyncio
+    async def test_field_only_path_via_both_entry_points(self):
+        """Named field without a new value asks a targeted question via both paths."""
+        config = self._make_confirmation_flow()
+        ex_a = self._executor_with_room(config)
+        ex_b = self._executor_with_room(config)
+
+        args = {"confirmed": False, "field_to_change": "room"}
+        r_a = await ex_a._handle_confirmation("confirm_conf1", args)
+        r_b = await ex_b._handle_confirm_details(args)
+
+        assert r_a["message"] == r_b["message"]
+        assert r_a["speak_directly"] == r_b["speak_directly"]
+
+    # ── No-node fallback tail (genuinely node-free flow) ──────────────────────
+
+    @pytest.mark.asyncio
+    async def test_no_node_fallback_confirmed(self):
+        """When no CONFIRMATION node exists, confirm_details returns simple ack."""
+        config = _minimal_config(
+            nodes=[{"id": "n1", "type": "message", "data": {"message": "Hi"}}],
+            variables=[{"key": "name", "label": "Name", "type": "string", "required": True}],
+        )
+        ex = _executor(config)
+        ex.state.collected_slots["name"] = "Alice"
+        result = await ex._handle_confirm_details({"confirmed": True})
+        assert result["success"] is True
+        assert result["action"] == "confirmed"
+        assert "confirmed" in result["message"].lower() or "great" in result["message"].lower()
+        assert result["speak_directly"] is True
+        assert ex._details_confirmed is True
+
+    @pytest.mark.asyncio
+    async def test_no_node_fallback_not_confirmed_no_field(self):
+        config = _minimal_config(
+            variables=[{"key": "name", "label": "Name", "type": "string", "required": True}],
+        )
+        ex = _executor(config)
+        ex.state.collected_slots["name"] = "Alice"
+        result = await ex._handle_confirm_details({"confirmed": False})
+        assert result["success"] is True
+        assert "change" in result["message"].lower() or "would" in result["message"].lower()
+        assert result["speak_directly"] is True
+
+    @pytest.mark.asyncio
+    async def test_missing_confirmation_node_id_returns_error(self):
+        """_handle_confirmation returns a clean error dict for an unknown node."""
+        config = _minimal_config()
+        ex = _executor(config)
+        result = await ex._handle_confirmation("confirm_doesnotexist", {"confirmed": True})
+        assert result["success"] is False
+        assert result["action"] is None
+
+
 class TestSlotHelpers:
     """Phase 7 — canonical _sorted_form_slots / _first_uncollected_slot / _uncollected_slots."""
 
