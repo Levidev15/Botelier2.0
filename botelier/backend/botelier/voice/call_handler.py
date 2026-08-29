@@ -2280,6 +2280,30 @@ You have access to the following Q&A knowledge base. Use this information to ans
                 content = msg.get("content") or msg.get("text")
 
                 if role == "assistant" and msg.get("tool_calls"):
+                    # Defect A fix: OpenAI can return speech text AND a tool call
+                    # in the same message (content + tool_calls).  Emit the speech
+                    # entry FIRST so it sorts correctly relative to the action.
+                    # Without this the speech is silently dropped — the continue
+                    # below skips the normal content-emit path.
+                    if content:
+                        _tc_text = content
+                        if isinstance(_tc_text, list):
+                            _tc_parts: list[str] = []
+                            for _p in _tc_text:
+                                if isinstance(_p, dict) and _p.get("type") == "text":
+                                    _tc_parts.append(_p.get("text", ""))
+                                elif isinstance(_p, str):
+                                    _tc_parts.append(_p)
+                            _tc_text = " ".join(_tc_parts)
+                        if isinstance(_tc_text, str) and _tc_text.strip():
+                            _tc_text = _tc_text.strip()
+                            transcript.append(
+                                {
+                                    "role": "assistant",
+                                    "content": _tc_text,
+                                    "interrupted": _matches_interrupted(_tc_text),
+                                }
+                            )
                     for tc in msg["tool_calls"]:
                         if isinstance(tc, dict):
                             fn = tc.get("function", {})
@@ -2346,34 +2370,47 @@ You have access to the following Q&A knowledge base. Use this information to ans
             captured_user = self.user_turn_timestamps.get(call_sid, [])
             captured_assistant = self.pending_responses.get(call_sid, [])
 
-            user_ts_map: dict = {}
+            # Defect C fix: build four lookup maps — display-timestamp and
+            # float-elapsed, one pair per role — with first-occurrence semantics
+            # so duplicate 80-char prefixes (e.g. two partial VAD captures that
+            # start with the same text) always resolve to the earliest capture.
+            # The old code built user_ts_map / assistant_ts_map but never read
+            # them; the annotation loop below re-scanned the raw list and could
+            # pick up a stale duplicate.  Using the maps enforces the dedup.
+            user_ts_map: dict[str, str] = {}
+            user_elapsed_map: dict[str, float] = {}
             for entry in captured_user:
                 key = entry["text"][:80].lower()
                 if key not in user_ts_map:
                     user_ts_map[key] = _fmt_elapsed(entry["elapsed_s"])
+                    user_elapsed_map[key] = entry["elapsed_s"]
 
-            assistant_ts_map: dict = {}
+            assistant_ts_map: dict[str, str] = {}
+            assistant_elapsed_map: dict[str, float] = {}
             for entry in captured_assistant:
                 key = entry["text"][:80].lower()
                 if key not in assistant_ts_map:
                     assistant_ts_map[key] = _fmt_elapsed(entry["elapsed_s"])
+                    assistant_elapsed_map[key] = entry["elapsed_s"]
 
             for msg in transcript:
                 if msg.get("timestamp"):
                     continue  # already has a timestamp — leave it alone
                 content = msg.get("content", "")
                 key = content[:80].lower()
-                captured = (
-                    captured_user if msg["role"] == "user" else captured_assistant
-                )
-                for entry in captured:
-                    if entry["text"][:80].lower() == key:
-                        msg["timestamp"] = _fmt_elapsed(entry["elapsed_s"])
+                # Defect C fix: use the pre-built maps (O(1), dedup-safe)
+                # instead of a raw first-match scan of the capture list.
+                if msg["role"] == "user":
+                    if key in user_ts_map:
+                        msg["timestamp"] = user_ts_map[key]
                         # Keep this transient value only while ordering the
                         # transcript. CallLogger persists the display timestamp,
                         # never internal elapsed-time metadata.
-                        msg["_elapsed_s"] = entry["elapsed_s"]
-                        break
+                        msg["_elapsed_s"] = user_elapsed_map[key]
+                else:
+                    if key in assistant_ts_map:
+                        msg["timestamp"] = assistant_ts_map[key]
+                        msg["_elapsed_s"] = assistant_elapsed_map[key]
 
             # Merge in extra_messages BEFORE the global sort below (Task #534)
             # so they take part in the same chronological ordering as every
@@ -2382,6 +2419,23 @@ You have access to the following Q&A knowledge base. Use this information to ans
                 for _extra in extra_messages:
                     if _extra.get("_elapsed_s") is not None and not _extra.get("timestamp"):
                         _extra["timestamp"] = _fmt_elapsed(_extra["_elapsed_s"])
+                    elif (
+                        # Defect B fix: an assistant extra_message without an
+                        # elapsed anchor (e.g. a TTS-direct flow greeting that
+                        # bypassed the LLM) can still get its real capture
+                        # timestamp from pending_responses before it enters the
+                        # global sort.  Without this the tail-interpolation at
+                        # "right is None" (line below) places it just past the
+                        # last timed user turn — after the caller's reply even
+                        # though the greeting was spoken first.
+                        _extra.get("role") == "assistant"
+                        and "_elapsed_s" not in _extra
+                        and not _extra.get("timestamp")
+                    ):
+                        _ek = _extra.get("content", "")[:80].lower()
+                        if _ek in assistant_ts_map:
+                            _extra["_elapsed_s"] = assistant_elapsed_map[_ek]
+                            _extra["timestamp"] = assistant_ts_map[_ek]
                 transcript.extend(extra_messages)
 
             # --- Global sort ---

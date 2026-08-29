@@ -596,6 +596,267 @@ class TestTranscriptOrdering:
         assert recovered["interrupted"] is False
 
 
+class TestDefectFixes:
+    """Targeted regression tests for the three transcript-ordering defects."""
+
+    # ------------------------------------------------------------------ Defect A
+    def test_speech_emitted_before_action_when_content_and_tool_calls_together(self):
+        """When the LLM returns speech text AND a tool call in the same message,
+        both must appear in the transcript — speech first, action second.
+
+        Previously the ``continue`` at the tool_calls branch silently discarded
+        ``content``, so only the action entry was produced.
+        """
+        handler = _bare_handler()
+        handler.pending_responses[CALL_SID] = [
+            {"text": "I'd be happy to help. What is your check-in date?", "elapsed_s": 8.0},
+        ]
+        handler.action_timestamps[CALL_SID] = [
+            {"name": "collect_checkin", "elapsed_s": 8.1},
+        ]
+        handler.user_turn_timestamps[CALL_SID] = []
+
+        transcript, _ = handler._extract_transcript(
+            CALL_SID,
+            _ctx(
+                [
+                    {
+                        "role": "assistant",
+                        "content": "I'd be happy to help. What is your check-in date?",
+                        "tool_calls": [{"function": {"name": "collect_checkin"}}],
+                    }
+                ]
+            ),
+        )
+
+        contents = [e["content"] for e in transcript]
+        assert len(contents) == 2, f"Expected 2 entries (speech + action), got: {contents}"
+        assert contents[0] == "I'd be happy to help. What is your check-in date?", (
+            f"Speech must appear first: {contents}"
+        )
+        assert contents[1] == "[Action: collect_checkin]", (
+            f"Action must appear second: {contents}"
+        )
+
+    def test_co_generated_speech_gets_timestamp_from_pending_responses(self):
+        """Co-generated speech recovered from content+tool_calls message must receive
+        its real elapsed timestamp from pending_responses so it sorts correctly."""
+        handler = _bare_handler()
+        handler.pending_responses[CALL_SID] = [
+            {"text": "Let me confirm that for you.", "elapsed_s": 5.0},
+        ]
+        handler.action_timestamps[CALL_SID] = [
+            {"name": "confirm_booking", "elapsed_s": 5.1},
+        ]
+        handler.user_turn_timestamps[CALL_SID] = [
+            {"text": "Yes, that is correct.", "elapsed_s": 15.0},
+        ]
+
+        transcript, _ = handler._extract_transcript(
+            CALL_SID,
+            _ctx(
+                [
+                    {
+                        "role": "assistant",
+                        "content": "Let me confirm that for you.",
+                        "tool_calls": [{"function": {"name": "confirm_booking"}}],
+                    },
+                    {"role": "user", "content": "Yes, that is correct."},
+                ]
+            ),
+        )
+
+        contents = [e["content"] for e in transcript]
+        # Real-time order: speech(5s) → action(5.1s) → user(15s)
+        assert contents == [
+            "Let me confirm that for you.",
+            "[Action: confirm_booking]",
+            "Yes, that is correct.",
+        ], f"Wrong order: {contents}"
+
+    def test_content_list_format_in_tool_calls_message_is_recovered(self):
+        """Content in list form (OpenAI structured format) inside a tool_calls
+        message must also be emitted as a speech entry."""
+        handler = _bare_handler()
+        handler.pending_responses[CALL_SID] = [
+            {"text": "Great, looking that up now.", "elapsed_s": 3.0},
+        ]
+        handler.action_timestamps[CALL_SID] = [
+            {"name": "lookup_guest", "elapsed_s": 3.1},
+        ]
+        handler.user_turn_timestamps[CALL_SID] = []
+
+        transcript, _ = handler._extract_transcript(
+            CALL_SID,
+            _ctx(
+                [
+                    {
+                        "role": "assistant",
+                        "content": [{"type": "text", "text": "Great, looking that up now."}],
+                        "tool_calls": [{"function": {"name": "lookup_guest"}}],
+                    }
+                ]
+            ),
+        )
+
+        contents = [e["content"] for e in transcript]
+        assert len(contents) == 2, f"Expected speech + action: {contents}"
+        assert contents[0] == "Great, looking that up now.", f"Speech first: {contents}"
+        assert contents[1] == "[Action: lookup_guest]", f"Action second: {contents}"
+
+    # ------------------------------------------------------------------ Defect B
+    def test_untimed_extra_message_gets_timestamp_from_pending_responses(self):
+        """An assistant extra_message without ``_elapsed_s`` (e.g. a TTS-direct
+        greeting that bypassed the LLM) must pick up its real capture time from
+        ``pending_responses`` before the global sort runs.
+
+        Without the fix it fell to the ``right is None`` tail-interpolation path,
+        placing it at ``last_timed_ts + tiny_delta`` — AFTER the user reply even
+        though the greeting was spoken first.
+        """
+        handler = _bare_handler()
+        # The TTS-direct greeting was captured by on_llm_response at T=8s.
+        handler.pending_responses[CALL_SID] = [
+            {"text": "I'd be happy to assist you today.", "elapsed_s": 8.0},
+        ]
+        # User replies at T=23s — appears at context index 0 (committed early by STT).
+        handler.user_turn_timestamps[CALL_SID] = [
+            {"text": "September first.", "elapsed_s": 23.0},
+        ]
+        handler.action_timestamps[CALL_SID] = []
+
+        transcript, _ = handler._extract_transcript(
+            CALL_SID,
+            _ctx([{"role": "user", "content": "September first."}]),
+            extra_messages=[
+                {
+                    "role": "assistant",
+                    "content": "I'd be happy to assist you today.",
+                    "interrupted": False,
+                    # No _elapsed_s — simulates TTS-direct speech without anchor
+                }
+            ],
+        )
+
+        contents = [e["content"] for e in transcript]
+        assert contents == [
+            "I'd be happy to assist you today.",  # T=8s from pending_responses
+            "September first.",                   # T=23s from STT
+        ], f"Greeting must sort before user reply: {contents}"
+
+        greeting_entry = next(e for e in transcript if e["content"] == "I'd be happy to assist you today.")
+        assert greeting_entry.get("timestamp") == "0:08", (
+            f"Greeting must carry the real captured timestamp: {greeting_entry.get('timestamp')!r}"
+        )
+
+    # ------------------------------------------------------------------ Defect C
+    def test_duplicate_prefix_user_turns_first_occurrence_wins(self):
+        """When two STT captures share the same 80-char prefix (e.g. an early
+        partial capture and the full utterance later), the annotation map must
+        keep only the FIRST occurrence so the second context message does not
+        accidentally inherit the first entry's (wrong) timestamp.
+
+        The old inline scan was functionally first-match which happens to be
+        correct, but the map was dead code and offered no dedup guarantee.
+        This test locks in the first-occurrence behaviour via the maps.
+        """
+        handler = _bare_handler()
+        # Two STT captures with similar prefixes — first at T=14s, second at T=50s.
+        handler.user_turn_timestamps[CALL_SID] = [
+            {"text": "September fifth.", "elapsed_s": 14.0},   # partial / early capture
+            {"text": "September fifth, please.", "elapsed_s": 50.0},
+        ]
+        handler.pending_responses[CALL_SID] = []
+        handler.action_timestamps[CALL_SID] = []
+
+        transcript, _ = handler._extract_transcript(
+            CALL_SID,
+            _ctx(
+                [
+                    # Context has only the full utterance
+                    {"role": "user", "content": "September fifth."},
+                ]
+            ),
+        )
+
+        assert len(transcript) == 1
+        entry = transcript[0]
+        # First-occurrence (T=14s) wins — the entry's content exactly matches
+        # the first capture's text.
+        assert entry.get("timestamp") == "0:14", (
+            f"First-occurrence capture at 0:14 must win: got {entry.get('timestamp')!r}"
+        )
+
+    def test_screenshot_scenario_end_to_end_ordering(self):
+        """Regression for the exact ordering failure observed in the screenshot.
+
+        The assistant's greeting came via TTS-direct (extra_messages, no _elapsed_s).
+        Pipecat also committed the caller's reply "September first." early in the
+        LLM context — BEFORE the collect_checkin tool result.
+
+        Without the Defect B fix the greeting's tail-interpolation placed it at
+        23.0001 s (just past the user's 23 s anchor), making the transcript read:
+            start_new_booking · user "September first." · greeting · collect_checkin
+        instead of the correct chronological order.
+
+        After the fix the greeting picks up T=15 s from pending_responses and
+        sorts before the user's reply.
+        """
+        handler = _bare_handler()
+        handler.user_turn_timestamps[CALL_SID] = [
+            {"text": "I need to book a new room.", "elapsed_s": 14.0},
+            {"text": "September first.", "elapsed_s": 23.0},
+        ]
+        # Speech captured by on_llm_response at T=15s.
+        handler.pending_responses[CALL_SID] = [
+            {"text": "I'd be happy to assist. What is your check-in date?", "elapsed_s": 15.0},
+        ]
+        handler.action_timestamps[CALL_SID] = [
+            {"name": "start_new_booking", "elapsed_s": 14.1},
+            {"name": "collect_checkin", "elapsed_s": 23.5},  # fires after user speaks
+        ]
+
+        # LLM context: STT commits "September first." BEFORE the collect_checkin
+        # tool result (Pipecat early commit). The greeting comes via TTS-direct
+        # and is not in the LLM context — it arrives as extra_messages without
+        # _elapsed_s, triggering the Defect B tail-interpolation bug.
+        transcript, _ = handler._extract_transcript(
+            CALL_SID,
+            _ctx(
+                [
+                    {"role": "user", "content": "I need to book a new room."},
+                    {
+                        "role": "assistant",
+                        "tool_calls": [{"function": {"name": "start_new_booking"}}],
+                    },
+                    # Committed early by STT — appears before collect_checkin in context
+                    {"role": "user", "content": "September first."},
+                    {
+                        "role": "assistant",
+                        "tool_calls": [{"function": {"name": "collect_checkin"}}],
+                    },
+                ]
+            ),
+            extra_messages=[
+                {
+                    "role": "assistant",
+                    "content": "I'd be happy to assist. What is your check-in date?",
+                    "interrupted": False,
+                    # No _elapsed_s — simulates TTS-direct greeting (Defect B target)
+                }
+            ],
+        )
+
+        contents = [e["content"] for e in transcript]
+        assert contents == [
+            "I need to book a new room.",                           # T=14.0s
+            "[Action: start_new_booking]",                          # T=14.1s
+            "I'd be happy to assist. What is your check-in date?", # T=15.0s (Defect B fix)
+            "September first.",                                      # T=23.0s
+            "[Action: collect_checkin]",                            # T=23.5s
+        ], f"Wrong ordering in screenshot scenario: {contents}"
+
+
 def _tracker(hits: list) -> InterruptionTracker:
     """InterruptionTracker with pipeline push stubbed out for unit testing."""
     tracker = InterruptionTracker(on_interruption=hits.append)
