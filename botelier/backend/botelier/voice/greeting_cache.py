@@ -174,8 +174,11 @@ async def get_or_generate_greeting_audio(
 
     # Always generate at 8 kHz linear16 PCM, no container, mono.
     # The TwilioFrameSerializer handles PCM→μ-law encoding during playback.
+    #
+    # Flux TTS uses /v2/speak; Aura uses /v1/speak.  Detect by voice-name prefix.
+    speak_version = "v2" if model.startswith("flux-") else "v1"
     url = (
-        "https://api.deepgram.com/v1/speak"
+        f"https://api.deepgram.com/{speak_version}/speak"
         f"?model={model}&encoding=linear16&sample_rate=8000&container=none"
     )
     headers = {

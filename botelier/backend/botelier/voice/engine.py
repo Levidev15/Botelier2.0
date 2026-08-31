@@ -2271,6 +2271,187 @@ class VoiceEngineFactory:
                 encoding=encoding,
                 text_aggregation_mode=text_aggregation_mode,
             )
+        elif provider == "deepgram-flux":
+            from pipecat.services.deepgram.flux.tts_base import DeepgramFluxTTSService
+
+            # _BotelierDeepgramFluxTTSService mirrors the Aura subclass but uses
+            # the Flux /v2/speak endpoint.  Key differences from Aura:
+            #
+            # - Flux sends "Interrupt" for barge-in (not "Clear")
+            # - Turn end is signalled by "SpeechMetadata" (not "Flushed")
+            # - Disconnect closes the socket directly (no "Close" message)
+            # - Conversation context is implicit: Flux maintains acoustic state
+            #   across turns on the same persistent WebSocket connection, so
+            #   proper-noun pronunciation improves throughout the call without
+            #   any explicit context-passing.
+            import re as _re
+            import json as _json
+
+            from .speech_normalize import normalize_for_speech as _normalize_for_speech
+
+            _default_substitutions: dict[str, str] = {
+                "washcloths": "wash cloths",
+                "washcloth": "wash cloth",
+                "spelled": "spelt",
+                "spells": "spells",
+            }
+            _flux_word_substitutions: dict[str, str] = {
+                **_default_substitutions,
+                **config.tts_config.get("word_substitutions", {}),
+            }
+            _flux_sub_patterns: list[tuple[_re.Pattern, str]] = [
+                (_re.compile(r"\b" + _re.escape(word) + r"\b", _re.IGNORECASE), replacement)
+                for word, replacement in _flux_word_substitutions.items()
+            ]
+
+            _FLUX_CLAUSE_BOUNDARY_RE = _re.compile(r"[.,;:!?…\n]['\")\]]*\s")
+            try:
+                _flux_token_send_min_chars = max(
+                    0, int(float(config.tts_config.get("token_send_min_chars", 24) or 0))
+                )
+            except (TypeError, ValueError):
+                logger.warning(
+                    f"Invalid tts_config.token_send_min_chars value "
+                    f"{config.tts_config.get('token_send_min_chars')!r} — falling back to 24"
+                )
+                _flux_token_send_min_chars = 24
+
+            class _BotelierDeepgramFluxTTSService(DeepgramFluxTTSService):
+                """Deepgram Flux TTS with Botelier-specific enhancements.
+
+                Adds the same three layers as the Aura subclass:
+                1. TTSUsageMetrics: records character counts for billing.
+                2. Word-boundary substitution in TOKEN mode: buffers sub-word
+                   LLM tokens until whitespace, then applies whole-word regexes
+                   and numeric normalisation before sending to Flux.
+                3. Per-context-ID completion callbacks: terminal handlers
+                   (transfer, hangup) register a callback so the action fires
+                   exactly when that utterance's audio finishes, not at the
+                   next BotStoppedSpeakingFrame.
+                """
+
+                def __init__(self, *args, **kwargs):
+                    super().__init__(*args, **kwargs)
+                    self._word_buffer: dict[str, str] = {}
+                    self._send_buffer: dict[str, str] = {}
+                    self._token_send_min_chars = _flux_token_send_min_chars
+                    self._context_done_callbacks: dict[str, Callable] = {}
+
+                @staticmethod
+                def _apply_substitutions(text: str) -> str:
+                    for pattern, replacement in _flux_sub_patterns:
+                        text = pattern.sub(replacement, text)
+                    return _normalize_for_speech(text)
+
+                async def append_to_audio_context(self, context_id, frame):
+                    # TTFB: stop the metric on the first audio chunk (mirrors Aura).
+                    if isinstance(frame, TTSAudioRawFrame):
+                        await self.stop_ttfb_metrics()
+                    await super().append_to_audio_context(context_id, frame)
+
+                async def run_tts(self, text: str, context_id: str):
+                    await self.start_tts_usage_metrics(text)
+
+                    from pipecat.services.tts_service import TextAggregationMode
+
+                    if self._text_aggregation_mode != TextAggregationMode.TOKEN:
+                        async for frame in super().run_tts(
+                            self._apply_substitutions(text), context_id
+                        ):
+                            yield frame
+                        return
+
+                    # TOKEN mode — same batching strategy as Aura.
+                    pending = self._word_buffer.pop(context_id, "") + text
+                    ws_pos = max(pending.rfind(" "), pending.rfind("\n"), pending.rfind("\t"))
+                    if ws_pos >= 0:
+                        complete = pending[: ws_pos + 1]
+                        self._word_buffer[context_id] = pending[ws_pos + 1 :]
+                    else:
+                        complete = ""
+                        self._word_buffer[context_id] = pending
+
+                    if complete:
+                        batch = self._send_buffer.pop(context_id, "") + complete
+                        if (
+                            self._token_send_min_chars <= 0
+                            or len(batch) >= self._token_send_min_chars
+                            or _FLUX_CLAUSE_BOUNDARY_RE.search(batch)
+                        ):
+                            async for frame in super().run_tts(
+                                self._apply_substitutions(batch), context_id
+                            ):
+                                yield frame
+                        else:
+                            self._send_buffer[context_id] = batch
+
+                async def flush_audio(self, context_id: str | None = None):
+                    # Drain word + send buffers before telling Flux to flush.
+                    ctx = context_id if context_id is not None else self._turn_context_id
+                    partial = ""
+                    if ctx is not None:
+                        partial = self._send_buffer.pop(ctx, "") + self._word_buffer.pop(ctx, "")
+                    if partial and self._websocket:
+                        _payload = _json.dumps(
+                            {"type": "Speak", "text": self._apply_substitutions(partial)}
+                        )
+                        for _attempt in (1, 2):
+                            try:
+                                await self._websocket.send(_payload)
+                                break
+                            except Exception as e:
+                                logger.error(
+                                    f"{self} error flushing Flux buffer "
+                                    f"(attempt {_attempt}/2, {len(partial)} chars, ctx={ctx}): {e}"
+                                )
+                    await super().flush_audio(context_id)
+
+                async def on_audio_context_interrupted(self, context_id: str):
+                    # Clear buffers then send Interrupt (handled by parent Flux service).
+                    self._word_buffer.clear()
+                    self._send_buffer.clear()
+                    self._context_done_callbacks.pop(context_id, None)
+                    await super().on_audio_context_interrupted(context_id)
+
+                def register_context_done_callback(
+                    self, context_id: str, callback: Callable
+                ) -> None:
+                    self._context_done_callbacks[context_id] = callback
+
+                async def on_audio_context_completed(self, context_id: str):
+                    cb = self._context_done_callbacks.pop(context_id, None)
+                    if cb is not None:
+                        asyncio.create_task(cb())
+                    await super().on_audio_context_completed(context_id)
+
+            from pipecat.services.tts_service import TextAggregationMode
+
+            flux_voice = config.tts_voice_id or "flux-heather-en"
+            flux_sample_rate = config.tts_config.get("sample_rate", 8000)
+            if flux_sample_rate != 8000:
+                logger.warning(
+                    f"tts_config.sample_rate={flux_sample_rate} does not match the 8 kHz "
+                    f"telephony transport — clamping to 8000. Fix the assistant's "
+                    f"tts_config to silence this warning."
+                )
+                flux_sample_rate = 8000
+
+            _flux_mode_str = config.tts_config.get("text_aggregation_mode", "token")
+            flux_text_aggregation_mode = (
+                TextAggregationMode.TOKEN
+                if _flux_mode_str == "token"
+                else TextAggregationMode.SENTENCE
+            )
+
+            return _BotelierDeepgramFluxTTSService(
+                api_key=api_keys.get("deepgram_api_key"),
+                sample_rate=flux_sample_rate,
+                encoding="linear16",
+                text_aggregation_mode=flux_text_aggregation_mode,
+                settings=DeepgramFluxTTSService.Settings(
+                    voice=flux_voice,
+                ),
+            )
         elif provider == "cartesia":
             from pipecat.services.cartesia.tts import CartesiaTTSService
 

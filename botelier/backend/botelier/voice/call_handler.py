@@ -1325,7 +1325,7 @@ class CallHandler:
             # Instead we hand the bytes to ``GreetingAudioInjector`` which is
             # wired into the pipeline downstream of STT.
             _greeting_played_from_cache = False
-            if config.tts_provider.lower() == "deepgram" and api_keys.get("deepgram_api_key"):
+            if config.tts_provider.lower() in ("deepgram", "deepgram-flux") and api_keys.get("deepgram_api_key"):
                 try:
                     # Task #111 — prefer the pre-warmed bytes when the
                     # pre-warm task already fetched them. Fall back to an
@@ -1339,7 +1339,12 @@ class CallHandler:
                             f"({len(_audio)} bytes) — skipping inline fetch"
                         )
                     else:
-                        _voice = config.tts_voice_id or "aura-2-helena-en"
+                        _default_voice = (
+                            "flux-heather-en"
+                            if config.tts_provider.lower() == "deepgram-flux"
+                            else "aura-2-helena-en"
+                        )
+                        _voice = config.tts_voice_id or _default_voice
                         _tts_cfg = {"voice": _voice}
                         _audio = await get_or_generate_greeting_audio(
                             greeting_text=config.greeting_message,

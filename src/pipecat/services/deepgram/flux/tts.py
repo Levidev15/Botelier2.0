@@ -4,20 +4,18 @@
 # SPDX-License-Identifier: BSD 2-Clause License
 #
 
-"""Deepgram Flux services (STT and TTS)."""
+"""Deepgram Flux TTS service (WebSocket transport, /v2/speak).
 
-from pipecat.services.deepgram.flux.stt import (
-    DeepgramFluxSTTService,
-    DeepgramFluxSTTSettings,
-)
+Re-exports :class:`DeepgramFluxTTSService` and :class:`DeepgramFluxTTSSettings`
+from :mod:`tts_base` so callers can import from either location.
+"""
+
 from pipecat.services.deepgram.flux.tts_base import (
     DeepgramFluxTTSService,
     DeepgramFluxTTSSettings,
 )
 
 __all__ = [
-    "DeepgramFluxSTTService",
-    "DeepgramFluxSTTSettings",
     "DeepgramFluxTTSService",
     "DeepgramFluxTTSSettings",
 ]

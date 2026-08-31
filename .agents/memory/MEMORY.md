@@ -41,3 +41,4 @@
 - [Replit default webview/preview port selection](replit-default-webview-port.md) — `[[ports]]` file order + `exposeLocalhost` flags can override a workflow's `outputType=webview`; reorder/dedupe ports, never strip `exposeLocalhost` from a localhost-only bind.
 - [Call-scoped flow facts and replay safety](call-scoped-flow-facts.md) — share only explicit caller facts across flows; keep defaults/derived values local, and make side effects atomically idempotent across workers.
 - [Confirmation handler merge](confirmation-handler-merge.md) — `_run_confirmation_logic` is the canonical handler; both entry points delegate; edge-fallback guard must use `_confirmed_branch_next_node()` not strict `get_next_node`.
+- [Deepgram Flux TTS integration](deepgram-flux-tts.md) — /v2/speak, Interrupt not Clear, SpeechMetadata = turn end; pip pipecat 1.5.0 needs manual file copy for dev.

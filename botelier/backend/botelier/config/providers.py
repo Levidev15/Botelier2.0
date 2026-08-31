@@ -66,6 +66,7 @@ class TTSProvider(str, Enum):
     SPEECHMATICS = "speechmatics"
     RIVA = "riva"
     SARVAM = "sarvam"
+    DEEPGRAM_FLUX = "deepgram-flux"
 
 
 class ProviderConfig(BaseModel):
@@ -255,6 +256,60 @@ TTS_PROVIDERS: Dict[TTSProvider, TTSConfig] = {
         ],
         supports_emotion=False,
         supports_speed_control=True,
+        supports_pitch_control=False,
+    ),
+    TTSProvider.DEEPGRAM_FLUX: TTSConfig(
+        provider_type="tts",
+        display_name="Deepgram Flux",
+        description="Conversation-aware TTS — reads the whole call for better pronunciation",
+        requires_api_key=True,
+        supported_languages=["en"],
+        default_model="flux",
+        available_models=["flux"],
+        available_voices=[
+            # Featured voices (best all-rounders for customer service / IVR)
+            {"id": "flux-alexis-en", "name": "Alexis (American Female, Adult)", "gender": "female"},
+            {"id": "flux-haley-en", "name": "Haley (American Female, Young Adult)", "gender": "female"},
+            {"id": "flux-heather-en", "name": "Heather (American Female, Young)", "gender": "female"},
+            {"id": "flux-sienna-en", "name": "Sienna (American Female, Young Adult)", "gender": "female"},
+            {"id": "flux-hannah-en", "name": "Hannah (American Female, Young)", "gender": "female"},
+            {"id": "flux-brooke-en", "name": "Brooke (American Female, Young)", "gender": "female"},
+            {"id": "flux-miles-en", "name": "Miles (American Male, Adult)", "gender": "male"},
+            {"id": "flux-cole-en", "name": "Cole (American Male, Young)", "gender": "male"},
+            {"id": "flux-cliff-en", "name": "Cliff (American Male, Mature)", "gender": "male"},
+            {"id": "flux-kit-en", "name": "Kit (British Male, Young Adult)", "gender": "male"},
+            {"id": "flux-colin-en", "name": "Colin (British Male, Adult)", "gender": "male"},
+            {"id": "flux-gemma-en", "name": "Gemma (British Female, Young)", "gender": "female"},
+            {"id": "flux-sean-en", "name": "Sean (British Male, Mature)", "gender": "male"},
+            # More voices — American English
+            {"id": "flux-bree-en", "name": "Bree (American Female, Mature)", "gender": "female"},
+            {"id": "flux-brittany-en", "name": "Brittany (American Female, Mature)", "gender": "female"},
+            {"id": "flux-bruce-en", "name": "Bruce (American Male, Adult)", "gender": "male"},
+            {"id": "flux-donovan-en", "name": "Donovan (American Male, Adult)", "gender": "male"},
+            {"id": "flux-drew-en", "name": "Drew (American Male, Adult)", "gender": "male"},
+            {"id": "flux-elise-en", "name": "Elise (American Female, Adult)", "gender": "female"},
+            {"id": "flux-kelsey-en", "name": "Kelsey (American Female, Young Adult)", "gender": "female"},
+            {"id": "flux-marcus-en", "name": "Marcus (American Male, Adult)", "gender": "male"},
+            {"id": "flux-meghan-en", "name": "Meghan (American Female, Adult)", "gender": "female"},
+            {"id": "flux-paige-en", "name": "Paige (American Female, Young Adult)", "gender": "female"},
+            {"id": "flux-wade-en", "name": "Wade (American Male, Adult)", "gender": "male"},
+            {"id": "flux-wes-en", "name": "Wes (American Male, Adult)", "gender": "male"},
+            # British English
+            {"id": "flux-conor-en", "name": "Conor (British Male, Mature)", "gender": "male"},
+            {"id": "flux-jack-en", "name": "Jack (British Male, Adult)", "gender": "male"},
+            {"id": "flux-rufus-en", "name": "Rufus (British Male, Adult)", "gender": "male"},
+            {"id": "flux-tanner-en", "name": "Tanner (British Male, Adult)", "gender": "male"},
+            # International English accents
+            {"id": "flux-maeve-en", "name": "Maeve (Irish Female, Adult)", "gender": "female"},
+            {"id": "flux-sharon-en", "name": "Sharon (Australian Female, Young)", "gender": "female"},
+            {"id": "flux-kai-en", "name": "Kai (Singaporean Male, Young Adult)", "gender": "male"},
+            {"id": "flux-marcelo-en", "name": "Marcelo (Filipino Male, Young Adult)", "gender": "male"},
+            {"id": "flux-meena-en", "name": "Meena (Indian Female, Adult)", "gender": "female"},
+            {"id": "flux-naveen-en", "name": "Naveen (Indian Male, Adult)", "gender": "male"},
+            {"id": "flux-priya-en", "name": "Priya (Indian Female, Adult)", "gender": "female"},
+        ],
+        supports_emotion=False,
+        supports_speed_control=False,
         supports_pitch_control=False,
     ),
     TTSProvider.CARTESIA: TTSConfig(
