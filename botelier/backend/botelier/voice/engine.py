@@ -1874,6 +1874,8 @@ class VoiceEngineFactory:
                         profanity_filter=config.stt_config.get("profanity_filter", True),
                         interim_results=True,
                         endpointing=config.stt_config.get("endpointing", 500),
+                        keyterm=config.stt_config.get("keyterm", []),
+                        numerals=config.stt_config.get("numerals", False),
                     ),
                 )
                 ttfs_override = config.stt_config.get("ttfs_p99_latency")

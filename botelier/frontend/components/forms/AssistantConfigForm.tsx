@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { ArrowLeft, Info, Mic, MessageSquare, Volume2, Activity, ClipboardCheck, Smartphone, PhoneCall } from "lucide-react";
 import Link from "next/link";
@@ -165,6 +165,23 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
   const [accountConnections, setAccountConnections] = useState<AccountConnection[]>([]);
   const isFluxSttModel = isFluxModel(formData.stt_model);
   const effectiveVadEnabled = Boolean(formData.vad_enabled && !isFluxSttModel);
+  const isDeepgramTtsProvider = formData.tts_provider === "deepgram" || formData.tts_provider === "deepgram-flux";
+
+  // Word substitution rows — synced from assistant.tts_config on load, managed locally.
+  const [wordSubRows, setWordSubRows] = useState<{id: number; word: string; spoken: string}[]>([]);
+  const wordSubNextId = useRef(0);
+
+  const updateWordSubs = (rows: {id: number; word: string; spoken: string}[]) => {
+    setWordSubRows(rows);
+    const obj: Record<string, string> = {};
+    for (const row of rows) {
+      if (row.word.trim()) obj[row.word.trim()] = row.spoken;
+    }
+    handleFieldChange("tts_config", { ...formData.tts_config, word_substitutions: obj });
+  };
+
+  // Keyterm tag input helpers — stored in stt_config.keyterm (string[]).
+  const [keytermInput, setKeytermInput] = useState("");
 
   useEffect(() => {
     loadData();
@@ -178,6 +195,23 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
       fetchAccountConnections();
     }
   }, [accountId]);
+
+  // Sync word substitution rows when assistant data loads.
+  useEffect(() => {
+    const subs = assistant?.tts_config?.word_substitutions;
+    if (subs && typeof subs === "object" && !Array.isArray(subs)) {
+      const rows = Object.entries(subs).map(([word, spoken], i) => ({
+        id: i,
+        word,
+        spoken: String(spoken),
+      }));
+      wordSubNextId.current = rows.length;
+      setWordSubRows(rows);
+    } else {
+      setWordSubRows([]);
+      wordSubNextId.current = 0;
+    }
+  }, [assistant]);
 
   const loadData = async () => {
     if (mode === "edit" && assistantId) {
@@ -493,7 +527,7 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
               rows={3}
               className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm resize-none"
             />
-            {mode === "edit" && assistantId && formData.tts_provider === "deepgram" && (
+            {mode === "edit" && assistantId && isDeepgramTtsProvider && (
               <GreetingCacheButton
                 assistantId={assistantId}
                 hasUnsavedChanges={
@@ -846,6 +880,110 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
               </FormField>
             ) : null;
           })()}
+
+          {/* Deepgram / Deepgram Flux TTS tuning */}
+          {isDeepgramTtsProvider && (
+            <div className="border-t border-gray-700 pt-6 mt-2">
+              <h3 className="text-sm font-semibold text-gray-200 mb-1">Voice Tuning</h3>
+              <p className="text-xs text-gray-500 mb-5">Fine-tune how this assistant speaks. Defaults work well for most setups.</p>
+              <div className="space-y-6">
+
+                <FormField
+                  label="Response Delivery Mode"
+                  description="Token: starts speaking as soon as the first words are ready — lowest latency. Sentence: waits for a full sentence before speaking — better prosody and pronunciation context for proper nouns."
+                >
+                  <select
+                    value={formData.tts_config?.text_aggregation_mode || "token"}
+                    onChange={(e) => handleFieldChange("tts_config", { ...formData.tts_config, text_aggregation_mode: e.target.value })}
+                    className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                  >
+                    <option value="token">Token — lower latency</option>
+                    <option value="sentence">Sentence — better prosody</option>
+                  </select>
+                </FormField>
+
+                {(formData.tts_config?.text_aggregation_mode || "token") === "token" && (
+                  <FormField
+                    label="Response Chunk Size (chars)"
+                    description="Minimum characters buffered before sending to Deepgram in Token mode. Lower = faster first syllable; higher = fewer audio fragments and smoother playback. Default: 24."
+                  >
+                    <input
+                      type="number"
+                      min="0"
+                      max="200"
+                      step="8"
+                      value={formData.tts_config?.token_send_min_chars ?? 24}
+                      onChange={(e) => handleFieldChange("tts_config", { ...formData.tts_config, token_send_min_chars: parseInt(e.target.value) || 0 })}
+                      className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                    />
+                  </FormField>
+                )}
+
+                <FormField
+                  label="Pronunciation Dictionary"
+                  description="Override how specific words are spoken — useful for hotel names, guest names, and hospitality terms the voice engine mispronounces. e.g. Nguyễn → Win, Le Méridien → Luh Muh-ree-dyen."
+                >
+                  <div className="space-y-2">
+                    {wordSubRows.length > 0 && (
+                      <div className="flex gap-2 mb-1 px-1">
+                        <span className="flex-1 text-xs text-gray-500 font-medium uppercase tracking-wide">Word</span>
+                        <span className="flex-1 text-xs text-gray-500 font-medium uppercase tracking-wide">Spoken as</span>
+                        <span className="w-6" />
+                      </div>
+                    )}
+                    {wordSubRows.map((row) => (
+                      <div key={row.id} className="flex gap-2 items-center">
+                        <input
+                          type="text"
+                          value={row.word}
+                          placeholder="Word"
+                          onChange={(e) => {
+                            const updated = wordSubRows.map((r) =>
+                              r.id === row.id ? { ...r, word: e.target.value } : r
+                            );
+                            updateWordSubs(updated);
+                          }}
+                          className="flex-1 px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                        />
+                        <span className="text-gray-600 text-sm flex-shrink-0">→</span>
+                        <input
+                          type="text"
+                          value={row.spoken}
+                          placeholder="Spoken as"
+                          onChange={(e) => {
+                            const updated = wordSubRows.map((r) =>
+                              r.id === row.id ? { ...r, spoken: e.target.value } : r
+                            );
+                            updateWordSubs(updated);
+                          }}
+                          className="flex-1 px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                        />
+                        <button
+                          type="button"
+                          onClick={() => updateWordSubs(wordSubRows.filter((r) => r.id !== row.id))}
+                          className="text-gray-600 hover:text-red-400 transition text-lg leading-none px-1 flex-shrink-0"
+                          aria-label="Remove entry"
+                        >
+                          ×
+                        </button>
+                      </div>
+                    ))}
+                    <button
+                      type="button"
+                      onClick={() => {
+                        const newId = wordSubNextId.current++;
+                        updateWordSubs([...wordSubRows, { id: newId, word: "", spoken: "" }]);
+                      }}
+                      className="mt-1 text-sm text-blue-400 hover:text-blue-300 transition font-medium"
+                    >
+                      + Add word
+                    </button>
+                  </div>
+                </FormField>
+
+              </div>
+            </div>
+          )}
         </FormSection>
         )}
 
@@ -885,77 +1023,265 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
             }}
           />
 
-          {formData.stt_provider === "deepgram" && 
-           formData.stt_model && 
-           formData.stt_model.includes("flux") && 
-           providers.stt.deepgram?.flux_params && (
-            <>
-              <div className="border-t border-gray-700 pt-6 mt-6">
-                <h3 className="text-sm font-semibold text-gray-200 mb-4">Deepgram Flux Parameters</h3>
-                <div className="space-y-6">
-                  <FormField
-                    label="EOT Threshold"
-                    description="End-of-Turn threshold (0.0-1.0). Controls when the model considers speech complete. Default: 0.7"
-                  >
-                    <input
-                      type="number"
-                      min="0"
-                      max="1"
-                      step="0.1"
-                      value={formData.stt_config?.eot_threshold ?? 0.7}
-                      onChange={(e) => {
-                        const newConfig = { ...formData.stt_config, eot_threshold: parseFloat(e.target.value) };
-                        handleFieldChange("stt_config", newConfig);
-                      }}
-                      className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                    />
-                  </FormField>
+          {/* ── Deepgram Flux STT advanced settings ── */}
+          {formData.stt_provider === "deepgram" && isFluxSttModel && (
+            <div className="border-t border-gray-700 pt-6 mt-6">
+              <h3 className="text-sm font-semibold text-gray-200 mb-1">Flux Turn Detection</h3>
+              <p className="text-xs text-gray-500 mb-5">Flux uses acoustic + textual cues to detect when the caller has finished speaking. Adjust these when callers are being cut off too early or the assistant waits too long.</p>
+              <div className="space-y-6">
 
-                  <FormField
-                    label="EOT Timeout (ms)"
-                    description="End-of-Turn timeout in milliseconds (1000-10000). How long to wait before considering speech ended. Default: 5000"
-                  >
-                    <input
-                      type="number"
-                      min="1000"
-                      max="10000"
-                      step="500"
-                      value={formData.stt_config?.eot_timeout_ms ?? 5000}
-                      onChange={(e) => {
-                        const newConfig = { ...formData.stt_config, eot_timeout_ms: parseInt(e.target.value) };
-                        handleFieldChange("stt_config", newConfig);
-                      }}
-                      className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                    />
-                  </FormField>
+                <FormField
+                  label="EOT Threshold"
+                  description="Confidence required (0.0–1.0) before Flux declares end-of-turn. Higher = waits for more certainty before handing back to the AI. Default: 0.7."
+                >
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={formData.stt_config?.eot_threshold ?? 0.7}
+                    onChange={(e) => handleFieldChange("stt_config", { ...formData.stt_config, eot_threshold: parseFloat(e.target.value) })}
+                    className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                  />
+                </FormField>
 
-                  <FormField
-                    label="Eager EOT Threshold"
-                    description="Eager End-of-Turn threshold (0.0-1.0). Optional. Enables faster turn detection for shorter utterances."
-                  >
-                    <input
-                      type="number"
-                      min="0"
-                      max="1"
-                      step="0.1"
-                      value={formData.stt_config?.eager_eot_threshold ?? ""}
-                      onChange={(e) => {
-                        const value = e.target.value;
-                        const newConfig = { ...formData.stt_config };
-                        if (value === "") {
-                          delete newConfig.eager_eot_threshold;
-                        } else {
-                          newConfig.eager_eot_threshold = parseFloat(value);
-                        }
-                        handleFieldChange("stt_config", newConfig);
-                      }}
-                      placeholder="Optional"
-                      className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
-                    />
-                  </FormField>
-                </div>
+                <FormField
+                  label="EOT Timeout (ms)"
+                  description="Maximum silence after speech before Flux forces end-of-turn regardless of confidence. Default: 5000 ms."
+                >
+                  <input
+                    type="number"
+                    min="1000"
+                    max="10000"
+                    step="500"
+                    value={formData.stt_config?.eot_timeout_ms ?? 5000}
+                    onChange={(e) => handleFieldChange("stt_config", { ...formData.stt_config, eot_timeout_ms: parseInt(e.target.value) })}
+                    className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                  />
+                </FormField>
+
+                <FormField
+                  label="Eager EOT Threshold"
+                  description="Optional (0.0–1.0). When set, Flux fires an early end-of-turn for short utterances ('yes', 'no', 'okay') before the main EOT timeout. Leave blank to disable."
+                >
+                  <input
+                    type="number"
+                    min="0"
+                    max="1"
+                    step="0.05"
+                    value={formData.stt_config?.eager_eot_threshold ?? ""}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      const cfg = { ...formData.stt_config };
+                      if (v === "") { delete cfg.eager_eot_threshold; } else { cfg.eager_eot_threshold = parseFloat(v); }
+                      handleFieldChange("stt_config", cfg);
+                    }}
+                    placeholder="Optional"
+                    className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                  />
+                </FormField>
+
+                <FormField
+                  label="Interrupt Min Words"
+                  description="Number of words the caller must say before an interruption cuts the assistant off. Prevents breath sounds and background noise from triggering barge-in. 0 = interrupt on any sound, 1–3 recommended for noisy lines. Default: 1."
+                >
+                  <input
+                    type="number"
+                    min="0"
+                    max="5"
+                    step="1"
+                    value={formData.stt_config?.interrupt_min_words ?? 1}
+                    onChange={(e) => handleFieldChange("stt_config", { ...formData.stt_config, interrupt_min_words: parseInt(e.target.value) })}
+                    className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                  />
+                </FormField>
+
+                <FormField
+                  label="Keyterms"
+                  description="Words and phrases Deepgram will give extra weight to — hotel and brand names, room types, local landmarks. Press Enter or comma after each term."
+                >
+                  <div>
+                    <div className="flex flex-wrap gap-2 p-3 bg-[#0a0a0a] border border-gray-800 rounded-lg min-h-[48px] items-start cursor-text"
+                         onClick={(e) => (e.currentTarget.querySelector("input") as HTMLInputElement)?.focus()}>
+                      {(formData.stt_config?.keyterm || []).map((term: string) => (
+                        <span key={term} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-[#1e2a3a] text-blue-300 text-xs font-medium rounded-full border border-blue-500/20 flex-shrink-0">
+                          {term}
+                          <button type="button" onClick={(e) => { e.stopPropagation(); handleFieldChange("stt_config", { ...formData.stt_config, keyterm: (formData.stt_config?.keyterm || []).filter((k: string) => k !== term) }); }} className="text-blue-300/60 hover:text-red-400 transition leading-none text-base">×</button>
+                        </span>
+                      ))}
+                      <input
+                        type="text"
+                        value={keytermInput}
+                        placeholder={(formData.stt_config?.keyterm || []).length === 0 ? "e.g. Marriott, Grand Suite, Le Méridien…" : "Add term…"}
+                        onChange={(e) => setKeytermInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if ((e.key === "Enter" || e.key === ",") && keytermInput.trim()) {
+                            e.preventDefault();
+                            const term = keytermInput.trim().replace(/,+$/, "");
+                            if (term && !(formData.stt_config?.keyterm || []).includes(term)) {
+                              handleFieldChange("stt_config", { ...formData.stt_config, keyterm: [...(formData.stt_config?.keyterm || []), term] });
+                            }
+                            setKeytermInput("");
+                          } else if (e.key === "Backspace" && !keytermInput && (formData.stt_config?.keyterm || []).length > 0) {
+                            handleFieldChange("stt_config", { ...formData.stt_config, keyterm: (formData.stt_config?.keyterm || []).slice(0, -1) });
+                          }
+                        }}
+                        onBlur={() => {
+                          if (keytermInput.trim()) {
+                            const term = keytermInput.trim();
+                            if (!(formData.stt_config?.keyterm || []).includes(term)) {
+                              handleFieldChange("stt_config", { ...formData.stt_config, keyterm: [...(formData.stt_config?.keyterm || []), term] });
+                            }
+                            setKeytermInput("");
+                          }
+                        }}
+                        className="flex-1 min-w-[160px] bg-transparent text-sm text-gray-200 outline-none placeholder-gray-600 py-1"
+                      />
+                    </div>
+                    <p className="mt-1.5 text-xs text-gray-600">Press Enter or comma to add · Backspace removes the last term</p>
+                  </div>
+                </FormField>
+
+                <FormField
+                  label="STT Latency Override (ms)"
+                  description="Advanced: overrides the post-VAD silence window the pipeline waits for Deepgram to return a transcript. Leave blank for the automatic default (~350 ms). Only raise this if callers on high-latency networks are being cut off."
+                >
+                  <input
+                    type="number"
+                    min="100"
+                    max="2000"
+                    step="50"
+                    value={formData.stt_config?.ttfs_p99_latency ?? ""}
+                    placeholder="Default (~350)"
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      const cfg = { ...formData.stt_config };
+                      if (v === "") { delete cfg.ttfs_p99_latency; } else { cfg.ttfs_p99_latency = parseFloat(v); }
+                      handleFieldChange("stt_config", cfg);
+                    }}
+                    className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                  />
+                </FormField>
+
               </div>
-            </>
+            </div>
+          )}
+
+          {/* ── Standard Deepgram STT advanced settings ── */}
+          {formData.stt_provider === "deepgram" && !isFluxSttModel && formData.stt_model && (
+            <div className="border-t border-gray-700 pt-6 mt-6">
+              <h3 className="text-sm font-semibold text-gray-200 mb-1">Advanced STT Settings</h3>
+              <p className="text-xs text-gray-500 mb-5">Defaults work well for most setups. Adjust endpointing and keyterms first if you notice issues.</p>
+              <div className="space-y-6">
+
+                <FormField
+                  label="Endpointing (ms)"
+                  description="Silence duration Deepgram waits before declaring the utterance finished. Lower = AI responds faster; higher = more forgiving on pauses mid-sentence. Default: 500 ms."
+                >
+                  <input
+                    type="number"
+                    min="0"
+                    max="3000"
+                    step="100"
+                    value={formData.stt_config?.endpointing ?? 500}
+                    onChange={(e) => handleFieldChange("stt_config", { ...formData.stt_config, endpointing: parseInt(e.target.value) })}
+                    className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                  />
+                </FormField>
+
+                <FormField label="Transcript Processing">
+                  <div className="grid grid-cols-2 gap-x-8 gap-y-3 pt-1">
+                    {([
+                      { key: "smart_format", label: "Smart Format", def: true, tip: "Formats dates, currency, and addresses automatically." },
+                      { key: "punctuate", label: "Punctuate", def: true, tip: "Adds punctuation to transcripts." },
+                      { key: "profanity_filter", label: "Profanity Filter", def: true, tip: "Replaces profanity with asterisks." },
+                      { key: "numerals", label: "Convert Numerals", def: false, tip: "Converts spoken numbers to digits — e.g. 'three fifty' → '350'." },
+                    ] as { key: string; label: string; def: boolean; tip: string }[]).map(({ key, label, def, tip }) => (
+                      <label key={key} title={tip} className="flex items-center gap-2.5 cursor-pointer group">
+                        <div className="relative flex-shrink-0">
+                          <input
+                            type="checkbox"
+                            className="sr-only peer"
+                            checked={formData.stt_config?.[key] ?? def}
+                            onChange={(e) => handleFieldChange("stt_config", { ...formData.stt_config, [key]: e.target.checked })}
+                          />
+                          <div className="w-9 h-5 bg-gray-700 rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-gray-300 after:border after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-blue-600" />
+                        </div>
+                        <span className="text-sm text-gray-300 group-hover:text-white transition">{label}</span>
+                      </label>
+                    ))}
+                  </div>
+                </FormField>
+
+                <FormField
+                  label="Keyterms"
+                  description="Words and phrases Deepgram gives extra recognition weight to — hotel names, room types, local landmarks, and brand-specific vocabulary."
+                >
+                  <div>
+                    <div className="flex flex-wrap gap-2 p-3 bg-[#0a0a0a] border border-gray-800 rounded-lg min-h-[48px] items-start cursor-text"
+                         onClick={(e) => (e.currentTarget.querySelector("input") as HTMLInputElement)?.focus()}>
+                      {(formData.stt_config?.keyterm || []).map((term: string) => (
+                        <span key={term} className="inline-flex items-center gap-1.5 px-2.5 py-1 bg-[#1e2a3a] text-blue-300 text-xs font-medium rounded-full border border-blue-500/20 flex-shrink-0">
+                          {term}
+                          <button type="button" onClick={(e) => { e.stopPropagation(); handleFieldChange("stt_config", { ...formData.stt_config, keyterm: (formData.stt_config?.keyterm || []).filter((k: string) => k !== term) }); }} className="text-blue-300/60 hover:text-red-400 transition leading-none text-base">×</button>
+                        </span>
+                      ))}
+                      <input
+                        type="text"
+                        value={keytermInput}
+                        placeholder={(formData.stt_config?.keyterm || []).length === 0 ? "e.g. Marriott, Grand Suite, Le Méridien…" : "Add term…"}
+                        onChange={(e) => setKeytermInput(e.target.value)}
+                        onKeyDown={(e) => {
+                          if ((e.key === "Enter" || e.key === ",") && keytermInput.trim()) {
+                            e.preventDefault();
+                            const term = keytermInput.trim().replace(/,+$/, "");
+                            if (term && !(formData.stt_config?.keyterm || []).includes(term)) {
+                              handleFieldChange("stt_config", { ...formData.stt_config, keyterm: [...(formData.stt_config?.keyterm || []), term] });
+                            }
+                            setKeytermInput("");
+                          } else if (e.key === "Backspace" && !keytermInput && (formData.stt_config?.keyterm || []).length > 0) {
+                            handleFieldChange("stt_config", { ...formData.stt_config, keyterm: (formData.stt_config?.keyterm || []).slice(0, -1) });
+                          }
+                        }}
+                        onBlur={() => {
+                          if (keytermInput.trim()) {
+                            const term = keytermInput.trim();
+                            if (!(formData.stt_config?.keyterm || []).includes(term)) {
+                              handleFieldChange("stt_config", { ...formData.stt_config, keyterm: [...(formData.stt_config?.keyterm || []), term] });
+                            }
+                            setKeytermInput("");
+                          }
+                        }}
+                        className="flex-1 min-w-[160px] bg-transparent text-sm text-gray-200 outline-none placeholder-gray-600 py-1"
+                      />
+                    </div>
+                    <p className="mt-1.5 text-xs text-gray-600">Press Enter or comma to add · Backspace removes the last term</p>
+                  </div>
+                </FormField>
+
+                <FormField
+                  label="STT Latency Override (ms)"
+                  description="Advanced: overrides the post-VAD silence window the pipeline waits for Deepgram to return a transcript. Leave blank for the automatic default (~350 ms). Only raise this if callers on high-latency networks are being cut off before their last word is transcribed."
+                >
+                  <input
+                    type="number"
+                    min="100"
+                    max="2000"
+                    step="50"
+                    value={formData.stt_config?.ttfs_p99_latency ?? ""}
+                    placeholder="Default (~350)"
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      const cfg = { ...formData.stt_config };
+                      if (v === "") { delete cfg.ttfs_p99_latency; } else { cfg.ttfs_p99_latency = parseFloat(v); }
+                      handleFieldChange("stt_config", cfg);
+                    }}
+                    className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 text-sm"
+                  />
+                </FormField>
+
+              </div>
+            </div>
           )}
         </FormSection>
         )}
