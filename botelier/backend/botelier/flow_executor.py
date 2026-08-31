@@ -3372,6 +3372,19 @@ class FlowExecutor:
 
         return None
 
+    def _resolve_api_edge(self, node_id: str, *, success: bool) -> "Optional[FlowNode]":
+        """Resolve the next node for an API REQUEST / CAPABILITY node.
+
+        Prefers the ``success`` or ``error`` sourceHandle when the builder drew
+        one; falls back to the first unhandled outgoing edge so flows drawn
+        without explicit handle labels continue to work as before.
+        """
+        preferred = "success" if success else "error"
+        node = self.state.get_next_node(node_id, handle=preferred)
+        if node is None:
+            node = self.state.get_next_node(node_id)
+        return node
+
     async def _handle_api_request(self, function_name: str, arguments: dict) -> dict:
         """Execute an API request.
 
@@ -3420,6 +3433,11 @@ class FlowExecutor:
                 node_id,
                 _slug,
             )
+            failed_node = self._resolve_api_edge(node_id, success=False)
+            failed_node_id = node_id
+            if failed_node and self.state.current_node_id == node_id:
+                self.state.advance_to(failed_node.id)
+                failed_node_id = failed_node.id
             return {
                 "success": False,
                 "message": api_config.get(
@@ -3427,7 +3445,7 @@ class FlowExecutor:
                     "I'm unable to reach that service right now. Please try again shortly.",
                 ),
                 "action": None,
-                "current_node_id": node_id,
+                "current_node_id": failed_node_id,
             }
 
         # Capability nodes (Task #329) carry no HTTP method of their own — it
@@ -3630,20 +3648,30 @@ class FlowExecutor:
         capability_name = api_config.get("capability")
 
         if not self.account_id:
+            failed_node = self._resolve_api_edge(node_id, success=False)
+            failed_node_id = node_id
+            if failed_node and self.state.current_node_id == node_id:
+                self.state.advance_to(failed_node.id)
+                failed_node_id = failed_node.id
             return {
                 "success": False,
                 "message": "Capability calls require account context",
                 "action": None,
-                "current_node_id": node_id,
+                "current_node_id": failed_node_id,
             }
 
         spec = get_capability(capability_name)
         if spec is None:
+            failed_node = self._resolve_api_edge(node_id, success=False)
+            failed_node_id = node_id
+            if failed_node and self.state.current_node_id == node_id:
+                self.state.advance_to(failed_node.id)
+                failed_node_id = failed_node.id
             return {
                 "success": False,
                 "message": f"Unknown capability '{capability_name}'.",
                 "action": None,
-                "current_node_id": node_id,
+                "current_node_id": failed_node_id,
             }
 
         # Service-backed capabilities (e.g. collect_payment) do not resolve to a
@@ -3659,11 +3687,16 @@ class FlowExecutor:
             resolver = CapabilityResolver(db, self.account_id, self.property_id)
             resolution = resolver.resolve(capability_name)
             if resolution is None:
+                failed_node = self._resolve_api_edge(node_id, success=False)
+                failed_node_id = node_id
+                if failed_node and self.state.current_node_id == node_id:
+                    self.state.advance_to(failed_node.id)
+                    failed_node_id = failed_node.id
                 return {
                     "success": False,
                     "message": "That capability is not available right now.",
                     "action": None,
-                    "current_node_id": node_id,
+                    "current_node_id": failed_node_id,
                 }
 
             # Inject the resolved connection's config constants (hotel_name, currency,
@@ -3744,11 +3777,16 @@ class FlowExecutor:
                 "service_backed_capability (collect_payment) raised for node %r: %s",
                 node_id, exc, exc_info=True,
             )
+            failed_node = self._resolve_api_edge(node_id, success=False)
+            failed_node_id = node_id
+            if failed_node and self.state.current_node_id == node_id:
+                self.state.advance_to(failed_node.id)
+                failed_node_id = failed_node.id
             return {
                 "success": False,
                 "message": api_config.get("onError") or "There was an issue processing your payment. Please try again.",
                 "action": None,
-                "current_node_id": node_id,
+                "current_node_id": failed_node_id,
             }
         # Turn lock reacquired — state mutations happen below.
 
@@ -3764,7 +3802,7 @@ class FlowExecutor:
         succeeded = status in ("pending", "authorized", "captured")
         if succeeded:
             if self.state.current_node_id == node_id:
-                next_node = self.state.get_next_node(node_id)
+                next_node = self._resolve_api_edge(node_id, success=True)
                 if next_node:
                     self.state.advance_to(next_node.id)
                     next_node_id = next_node.id
@@ -3796,11 +3834,16 @@ class FlowExecutor:
                 "current_node_id": next_node_id,
             }
 
+        failed_node = self._resolve_api_edge(node_id, success=False)
+        failed_node_id = node_id
+        if failed_node and self.state.current_node_id == node_id:
+            self.state.advance_to(failed_node.id)
+            failed_node_id = failed_node.id
         return {
             "success": False,
             "message": api_config.get("onError") or message,
             "action": None,
-            "current_node_id": node_id,
+            "current_node_id": failed_node_id,
         }
 
     async def _handle_integration_api_request(
@@ -3831,11 +3874,16 @@ class FlowExecutor:
         )
 
         if not self.account_id:
+            failed_node = self._resolve_api_edge(node_id, success=False)
+            failed_node_id = node_id
+            if failed_node and self.state.current_node_id == node_id:
+                self.state.advance_to(failed_node.id)
+                failed_node_id = failed_node.id
             return {
                 "success": False,
                 "message": "Integration API calls require account context",
                 "action": None,
-                "current_node_id": node_id,
+                "current_node_id": failed_node_id,
             }
 
         response_vars = []
@@ -3947,13 +3995,18 @@ class FlowExecutor:
                 "Unhandled exception in _handle_integration_api_request for node %r: %s",
                 node_id, exc, exc_info=True,
             )
+            failed_node = self._resolve_api_edge(node_id, success=False)
+            failed_node_id = node_id
+            if failed_node and self.state.current_node_id == node_id:
+                self.state.advance_to(failed_node.id)
+                failed_node_id = failed_node.id
             return {
                 "success": False,
                 "message": api_config.get("onError", "There was an issue processing your request"),
                 "action": None,
                 "error_type": "unknown",
                 "status_code": 0,
-                "current_node_id": node_id,
+                "current_node_id": failed_node_id,
             }
         # Turn lock reacquired — validate and mutate state atomically.
 
@@ -3965,7 +4018,7 @@ class FlowExecutor:
 
             # Advance only if the flow hasn't already moved on during I/O.
             if self.state.current_node_id == node_id:
-                next_node = self.state.get_next_node(node_id)
+                next_node = self._resolve_api_edge(node_id, success=True)
                 if next_node:
                     self.state.advance_to(next_node.id)
                     next_node_id = next_node.id
@@ -4005,13 +4058,19 @@ class FlowExecutor:
             error_msg = get_llm_friendly_error_message(response, config)
             error_msg = substitute_variables(error_msg, self.state.collected_slots)
 
+            failed_node = self._resolve_api_edge(node_id, success=False)
+            failed_node_id = node_id
+            if failed_node and self.state.current_node_id == node_id:
+                self.state.advance_to(failed_node.id)
+                failed_node_id = failed_node.id
+
             return {
                 "success": False,
                 "message": error_msg,
                 "action": None,
                 "error_type": response.error_type.value,
                 "status_code": response.status_code,
-                "current_node_id": node_id,
+                "current_node_id": failed_node_id,
             }
 
     def _substitute_secrets(self, text: str) -> str:
@@ -4174,13 +4233,18 @@ class FlowExecutor:
                 "Unhandled exception in _handle_custom_api_request for node %r: %s",
                 node_id, exc, exc_info=True,
             )
+            failed_node = self._resolve_api_edge(node_id, success=False)
+            failed_node_id = node_id
+            if failed_node and self.state.current_node_id == node_id:
+                self.state.advance_to(failed_node.id)
+                failed_node_id = failed_node.id
             return {
                 "success": False,
                 "message": api_config.get("onError", "There was an issue processing your request"),
                 "action": None,
                 "error_type": "unknown",
                 "status_code": 0,
-                "current_node_id": node_id,
+                "current_node_id": failed_node_id,
             }
         # Turn lock reacquired.
 
@@ -4189,7 +4253,7 @@ class FlowExecutor:
                 self.state.set_variable(var_key, value)
 
             if self.state.current_node_id == node_id:
-                next_node = self.state.get_next_node(node_id)
+                next_node = self._resolve_api_edge(node_id, success=True)
                 if next_node:
                     self.state.advance_to(next_node.id)
                 effective_node_id = next_node.id if next_node else node_id
@@ -4222,6 +4286,11 @@ class FlowExecutor:
                 "current_node_id": effective_node_id,
             }
 
+        failed_node = self._resolve_api_edge(node_id, success=False)
+        failed_node_id = node_id
+        if failed_node and self.state.current_node_id == node_id:
+            self.state.advance_to(failed_node.id)
+            failed_node_id = failed_node.id
         return {
             "success": False,
             "message": response.error_message
@@ -4229,7 +4298,7 @@ class FlowExecutor:
             "action": None,
             "error_type": response.error_type.value,
             "status_code": response.status_code,
-            "current_node_id": node_id,
+            "current_node_id": failed_node_id,
         }
 
     def _extract_json_value(self, data: dict, path: str) -> Any:
