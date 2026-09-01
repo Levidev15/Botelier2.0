@@ -187,6 +187,65 @@ def _client_with(integ):
     return client
 
 
+# ── GuestCentric currency connection_config (Task #599) ────────────────────────
+#
+# A node's queryParamOverrides once hardcoded currency="USD" for a property
+# that only supports EUR, causing a live-call 422 "Currency not supported".
+# The systemic fix is an optional connection_config.currency field (mirroring
+# hotelId) instead of a per-node literal: set, it resolves {{currency}};
+# unset, _build_url must omit the optional param rather than sending the
+# unresolved "{{currency}}" placeholder or an empty value.
+
+
+@pytest.mark.asyncio
+async def test_guestcentric_currency_resolves_from_connection_config(monkeypatch):
+    integ = _guestcentric_integration(auth_method="basic_auth")
+    integ.set_connection_config({"currency": "EUR"})
+    client = _client_with(integ)
+    captured = _install_capture(monkeypatch, _json_response({"rooms": []}))
+
+    config = IntegrationAPIConfig(
+        integration_id=str(integ.id),
+        endpoint_id="hotel_rooms",
+        method="GET",
+    )
+    result = await client.execute_request(
+        config,
+        {"hotel_id": "H1", "checkin": "2026-10-01", "checkout": "2026-10-03", "adults": 2},
+    )
+
+    assert result.success is True
+    req = captured[0]
+    query = parse_qs(str(req.url).split("?", 1)[1])
+    assert query["currency"] == ["EUR"]
+
+
+@pytest.mark.asyncio
+async def test_guestcentric_currency_omitted_when_not_configured(monkeypatch):
+    """No connection_config.currency set -> the optional {{currency}} query
+    param must be dropped entirely, never sent as the literal placeholder or
+    an empty string, so GuestCentric falls back to the property's own
+    configured default rather than rejecting an unsupported currency."""
+    integ = _guestcentric_integration(auth_method="basic_auth")
+    client = _client_with(integ)
+    captured = _install_capture(monkeypatch, _json_response({"rooms": []}))
+
+    config = IntegrationAPIConfig(
+        integration_id=str(integ.id),
+        endpoint_id="hotel_rooms",
+        method="GET",
+    )
+    result = await client.execute_request(
+        config,
+        {"hotel_id": "H1", "checkin": "2026-10-01", "checkout": "2026-10-03", "adults": 2},
+    )
+
+    assert result.success is True
+    req = captured[0]
+    query = parse_qs(str(req.url).split("?", 1)[1])
+    assert "currency" not in query
+
+
 # ── Opera data-request parity ─────────────────────────────────────────────────
 
 

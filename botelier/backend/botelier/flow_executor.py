@@ -4218,6 +4218,12 @@ class FlowExecutor:
                 "action": None,
                 "error_type": response.error_type.value,
                 "status_code": response.status_code,
+                # Raw underlying error text (e.g. "Currency not supported"),
+                # distinct from `message` which is the LLM/caller-facing
+                # wording. Lets operators see the real failure reason on the
+                # call detail page without reading integration_call_logs
+                # directly.
+                "error_detail": response.error_message,
                 "current_node_id": failed_node_id,
             }
 

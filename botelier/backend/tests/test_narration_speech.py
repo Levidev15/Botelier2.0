@@ -296,6 +296,54 @@ def test_error_bridge_still_speaks_on_failure():
     assert any("wasn't able to complete" in t for t in spoken)
 
 
+def test_api_failure_logs_call_event_with_real_error_detail():
+    """Task #599 — an API node failure must log an `api_request_failed`
+    CallEvent carrying the real underlying error, even though the caller only
+    ever hears the generic/onError bridge text."""
+    from unittest.mock import MagicMock
+
+    mapper = FunctionMapper()
+    mock_queue = MagicMock()
+    mapper.set_event_queue(mock_queue)
+
+    executor = FlowExecutor(parse_flow_config(_api_flow_config({})))
+    executor.get_initial_messages()
+    executor.state.current_node_id = "book"
+    executor.handle_function_call = AsyncMock(
+        return_value={
+            "success": False,
+            "action": None,
+            "status_code": 422,
+            "error_type": "validation_error",
+            "error_detail": "Currency not supported",
+            "message": "There was an issue with the information provided.",
+        }
+    )
+    mapper._flow_executors["rooms"] = executor
+    mapper.update_llm_tools_for_flow = lambda *_: None
+
+    params = SimpleNamespace(
+        arguments={},
+        llm=SimpleNamespace(push_frame=AsyncMock()),
+        result_callback=AsyncMock(),
+    )
+    handler = mapper._create_flow_function_handler("rooms", "execute_book")
+    asyncio.run(handler(params))
+
+    mock_queue.log.assert_called_once()
+    call_args = mock_queue.log.call_args
+    assert call_args.args[0] == "api_request_failed"
+    assert call_args.kwargs["severity"] == "error"
+    details = call_args.kwargs["details"]
+    assert details["node_id"] == "book"
+    assert details["status_code"] == 422
+    assert details["error_type"] == "validation_error"
+    # The raw provider reason is preserved for operators, distinct from
+    # whatever generic text the caller heard via the onError bridge.
+    assert details["error_detail"] == "Currency not supported"
+    assert details["onerror_configured"] is False
+
+
 def test_on_complete_survives_flow_config_round_trip():
     """A saved node's api.onComplete (including explicit "") must reload intact."""
     config = _api_flow_config({"onComplete": ""})

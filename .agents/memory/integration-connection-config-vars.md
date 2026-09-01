@@ -23,9 +23,13 @@ When connecting a GuestCentric (or similar) integration, store these fields in `
 - `hotel_id` — the property's GuestCentric hotel ID
 - `hotel_name` — used in booking payloads
 - `hotel_reservations_email` — used in booking payloads
-- `currency` (optional) — default currency (EUR or USD); falls back to GuestCentric default (EUR) if absent
+- `currency` (optional, `guestcentric-crs.required_fields`, `storage: "connection_config"`) — the property's actual configured currency; when unset, `_build_url` omits the optional `{{currency}}` query param entirely (never sends the literal placeholder or an empty value) and GuestCentric applies its own per-property default.
 
 The GuestCentric credentials already support `hotelId` via `basic_auth_query_params` (appended to every request as `?hotelId=...`), but the PATH variable `{{hotel_id}}` is resolved from credentials AND now also from connection_config.
+
+## Lesson: don't hardcode a per-property constant as a node's queryParamOverrides literal
+
+A "Check Availability" node once hardcoded `queryParamOverrides: {"currency": "USD"}` for a property that only supports EUR, causing a live-call HTTP 422 "Currency not supported" — the value the node designer guessed didn't match this property's real configuration. A node-level literal override can silently diverge from the connection's actual per-property constraints and has no per-property validation. Prefer exposing the value via `connection_config` + injection (as above) so it's configured once per connection and reused everywhere, rather than typed into an individual node.
 
 ## Double-log note
 

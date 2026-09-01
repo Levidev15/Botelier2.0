@@ -485,7 +485,7 @@ class FunctionMapper:
         details: dict = None,
     ) -> None:
         """Log a pipeline event via the event queue (non-blocking)."""
-        if self._event_queue is not None:
+        if getattr(self, "_event_queue", None) is not None:
             self._event_queue.log(
                 event_type, event_source=event_source, severity=severity, details=details
             )
@@ -2290,6 +2290,25 @@ class FunctionMapper:
                         _api_config.get("onError")
                         or "I'm sorry, I wasn't able to complete that check. Please try again."
                     ).strip()
+                    # Surface the real failure reason (status code + raw
+                    # provider error) into the call's event timeline so an
+                    # operator reviewing the call afterward can see e.g.
+                    # "422: Currency not supported" without reading
+                    # integration_call_logs directly — the caller only ever
+                    # hears the generic/onError bridge above.
+                    self.log_event(
+                        "api_request_failed",
+                        event_source="app",
+                        severity="error",
+                        details={
+                            "node_id": _completed_api_node.id,
+                            "node_name": _completed_api_node.data.get("name"),
+                            "status_code": result.get("status_code"),
+                            "error_type": result.get("error_type"),
+                            "error_detail": result.get("error_detail") or result.get("message"),
+                            "onerror_configured": bool(_api_config.get("onError")),
+                        },
+                    )
                 if _completion_bridge and hasattr(params, "llm") and params.llm is not None:
                     try:
                         await params.llm.push_frame(TTSSpeakFrame(text=_completion_bridge))

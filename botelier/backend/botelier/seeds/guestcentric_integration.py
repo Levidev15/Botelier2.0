@@ -63,6 +63,15 @@ GUESTCENTRIC_INTEGRATION = {
             "required": False,
             "storage": "connection_config",
         },
+        {
+            "key": "currency",
+            "label": "Default Currency",
+            "type": "text",
+            "placeholder": "EUR",
+            "description": "Currency code this property's rates are actually loaded in (check the Hotel Currencies endpoint if unsure). Stored as a connection setting and automatically resolves {{currency}} on pricing endpoints. Leave blank to use GuestCentric's own per-property default rather than guessing — the CRS rejects a currency the property isn't configured for (HTTP 422 'Currency not supported').",
+            "required": False,
+            "storage": "connection_config",
+        },
     ],
     "endpoints": [
         {

@@ -1046,6 +1046,14 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
           {showResponseMessages ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
           Response messages
           <span className="text-xs text-gray-600 font-normal">optional</span>
+          {!api.onError && (
+            <span
+              className="flex items-center gap-1 text-[10px] text-yellow-500 bg-yellow-900/30 rounded px-1.5 py-0.5 font-normal"
+              title='No "On error" message configured — callers will hear a generic fallback if this call fails.'
+            >
+              <AlertCircle className="w-3 h-3" /> Generic error fallback
+            </span>
+          )}
         </button>
 
         {showResponseMessages && (
@@ -1095,6 +1103,14 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
                 className={inputCls}
                 placeholder="There was an issue processing your request"
               />
+              {!api.onError && (
+                <p className="text-xs text-yellow-500 mt-1 flex items-center gap-1">
+                  <AlertCircle className="w-3 h-3 flex-shrink-0" />
+                  Blank — if this call fails, callers will hear a generic "I&apos;m sorry, I
+                  wasn&apos;t able to complete that check" message. Configure a message
+                  tailored to this step.
+                </p>
+              )}
             </div>
             <div>
               <label className="block text-xs text-gray-500 mb-1">On not found (404)</label>

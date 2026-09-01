@@ -400,6 +400,58 @@ class TestIntegrationApiRouting:
         assert ex.state.current_node_id == "f_node"
 
     @pytest.mark.asyncio
+    async def test_integration_failure_carries_raw_error_detail(self):
+        """The result dict must carry the raw provider error text separately from
+        the LLM-facing `message`, so callers hear the (possibly generic) bridge
+        while operators can see the real failure reason (Task #599)."""
+        cfg = _api_flow_with_handles(api_source="integration")
+        ex = _executor_at(cfg, "api")
+        ex.account_id = "00000000-0000-0000-0000-000000000001"
+        _attach_no_op_locks(ex)
+        ex._inject_connection_config_to_slots = lambda integration_id: None
+        ex._substitute_secrets = lambda text: text or ""
+
+        node = ex.flow_config._node_index["api"]
+        api_config_dict = {
+            "apiSource": "integration",
+            "integrationId": "fake-int-id",
+            "endpointId": "fake-ep",
+            "method": "GET",
+            "onSuccess": "OK",
+            "onError": "",  # blank — caller gets the generic fallback bridge
+            "responseVariables": [],
+        }
+        node.data["api"] = api_config_dict
+
+        mock_resp = MagicMock()
+        mock_resp.success = False
+        mock_resp.error_message = "Currency not supported"
+        mock_resp.error_type = MagicMock()
+        mock_resp.error_type.value = "validation_error"
+        mock_resp.status_code = 422
+
+        with (
+            patch(
+                "botelier.services.action_executor.ActionExecutor.execute_and_log",
+                new_callable=AsyncMock,
+                return_value=mock_resp,
+            ),
+            patch(
+                "botelier.services.integration_client.get_llm_friendly_error_message",
+                return_value="There was an issue with the information provided: Currency not supported",
+            ),
+        ):
+            result = await ex._handle_integration_api_request("api", node, api_config_dict)
+
+        assert result["success"] is False
+        assert result["status_code"] == 422
+        assert result["error_type"] == "validation_error"
+        # Raw underlying reason is preserved verbatim for operator-facing surfaces...
+        assert result["error_detail"] == "Currency not supported"
+        # ...distinct from the LLM/caller-facing wording in `message`.
+        assert result["message"] != result["error_detail"]
+
+    @pytest.mark.asyncio
     async def test_integration_exception_advances_to_failed_node(self):
         """An unhandled exception inside _handle_integration_api_request still routes
         to the 'failed' edge rather than leaving the executor stuck on the API node."""

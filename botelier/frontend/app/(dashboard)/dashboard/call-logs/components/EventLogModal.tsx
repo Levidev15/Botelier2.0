@@ -48,6 +48,7 @@ const EVENT_LABELS: Record<string, string> = {
   call_ended: "Call Ended",
   idle_timeout: "Idle Timeout",
   pipeline_error: "Pipeline Error",
+  api_request_failed: "API Request Failed",
 };
 
 const SEVERITY_DOT: Record<string, string> = {

@@ -2,7 +2,7 @@
 
 import { memo } from "react";
 import { Handle, Position } from "@xyflow/react";
-import { Globe, Grip, ArrowRightLeft } from "lucide-react";
+import { Globe, Grip, ArrowRightLeft, AlertTriangle } from "lucide-react";
 import { APIRequestNodeData } from "../store";
 
 interface APIRequestNodeProps {
@@ -78,6 +78,16 @@ function APIRequestNode({ data, selected }: APIRequestNodeProps) {
               <div className="flex items-center gap-1 text-xs text-orange-400/70">
                 <ArrowRightLeft className="h-3 w-3" />
                 <span>Maps {Object.keys(api.responseMapping).length} fields</span>
+              </div>
+            )}
+
+            {!api.onError && (
+              <div
+                className="flex items-center gap-1 text-xs text-yellow-500"
+                title='No "On error" message configured — a generic fallback is spoken on failure.'
+              >
+                <AlertTriangle className="h-3 w-3" />
+                <span>Generic error fallback</span>
               </div>
             )}
           </>
