@@ -556,6 +556,47 @@ class FunctionMapper:
         """
         self._non_flow_tool_schemas.append(schema_dict)
 
+    def _capture_direct_speech(self, text: str) -> None:
+        """Anchor text spoken via a direct ``TTSSpeakFrame`` push with a real
+        elapsed-time capture, so ``_extract_transcript`` can place it in its
+        true chronological position instead of guessing by array position.
+
+        Flow collection prompts, API ``thinkingMessage``, API completion
+        bridges (``onComplete``/``onError``), and direct flow responses all
+        bypass the LLM completion cycle by pushing ``TTSSpeakFrame`` straight
+        into the pipeline. ``context_aggregator.assistant()`` sits at the very
+        end of the pipeline (after TTS) and only flushes its buffered text
+        once the *next* real LLM completion is committed — so this text can
+        land in the raw context array merged with, or behind, a message that
+        was actually generated after the caller's next reply. Without a real
+        timestamp here, ``_extract_transcript``'s interpolation has no way to
+        know that and can order the question after its own answer (Task
+        #598). Recording it here mirrors ``on_llm_response`` exactly, so the
+        same prefix-matched annotation + global chronological sort that
+        already fixes up genuine LLM turns also fixes up these direct pushes.
+
+        Guarded with getattr so tests that construct FunctionMapper via
+        __new__ without setting call_handler/call_sid don't crash, and so the
+        simulator (no call_handler, no TTS) is unaffected.
+        """
+        _ch = getattr(self, "call_handler", None)
+        _cs = getattr(self, "call_sid", None)
+        if not (_ch and _cs) or not text:
+            return
+        _resp_list = getattr(_ch, "pending_responses", {}).get(_cs)
+        if _resp_list is None:
+            return
+        from datetime import datetime as _dt
+
+        _start = getattr(_ch, "call_start_times", {}).get(_cs)
+        _now = _dt.utcnow()
+        _resp_list.append(
+            {
+                "text": text,
+                "elapsed_s": (_now - _start).total_seconds() if _start else 0.0,
+            }
+        )
+
     def _record_action_timestamp(self, function_name: str) -> None:
         """Append an elapsed-time entry for a tool invocation to action_timestamps.
 
@@ -1925,6 +1966,7 @@ class FunctionMapper:
 
             # Speak the greeting
             await params.llm.push_frame(TTSSpeakFrame(greeting))
+            self._capture_direct_speech(greeting)
 
             # Return flow info to LLM so it knows what to collect
             progress = executor.get_progress()
@@ -2104,6 +2146,7 @@ class FunctionMapper:
                     if hasattr(params, "llm") and params.llm is not None:
                         try:
                             await params.llm.push_frame(TTSSpeakFrame(text=_thinking))
+                            self._capture_direct_speech(_thinking)
                             logger.debug(f"🗣️ Thinking message for {tool_name}: {_thinking!r}")
                         except Exception as _tm_err:
                             logger.warning(f"Could not emit thinking message for {tool_name}: {_tm_err}")
@@ -2139,6 +2182,7 @@ class FunctionMapper:
                 ).strip()
                 if _thinking and hasattr(params, "llm") and params.llm is not None:
                     await params.llm.push_frame(TTSSpeakFrame(text=_thinking))
+                    self._capture_direct_speech(_thinking)
                 logger.info(
                     f"▶️ Running pending API node for flow {tool_name} immediately "
                     f"after collection: {_api_function}"
@@ -2217,6 +2261,7 @@ class FunctionMapper:
                         if hasattr(params, "llm") and params.llm is not None:
                             try:
                                 await params.llm.push_frame(TTSSpeakFrame(text=_voice_result))
+                                self._capture_direct_speech(_voice_result)
                                 logger.info(
                                     f"🗣️ Spoke API result directly for {tool_name}: "
                                     f"{_voice_result[:80]!r}"
@@ -2248,6 +2293,7 @@ class FunctionMapper:
                 if _completion_bridge and hasattr(params, "llm") and params.llm is not None:
                     try:
                         await params.llm.push_frame(TTSSpeakFrame(text=_completion_bridge))
+                        self._capture_direct_speech(_completion_bridge)
                         logger.info(
                             f"🗣️ Spoke API completion bridge for {tool_name}: "
                             f"{'success' if result.get('success') else 'error'}"
@@ -2290,6 +2336,7 @@ class FunctionMapper:
             _spoke_directly = _api_spoke_directly
             if result.get("collected") and next_prompt:
                 await params.llm.push_frame(TTSSpeakFrame(text=next_prompt))
+                self._capture_direct_speech(next_prompt)
                 logger.info(
                     f"🗣️ Spoke next flow prompt for {tool_name}: "
                     f"{next_slot.get('variable')!r}"
@@ -2312,6 +2359,7 @@ class FunctionMapper:
                 _direct_text = str(result.get("speak_exactly") or result.get("message") or "").strip()
                 if _direct_text:
                     await params.llm.push_frame(TTSSpeakFrame(text=_direct_text))
+                    self._capture_direct_speech(_direct_text)
                     logger.info(
                         f"🗣️ Spoke direct flow response for {tool_name} "
                         f"({function_name}): {_direct_text!r}"
@@ -2734,6 +2782,7 @@ class FunctionMapper:
             for message in initial_messages:
                 if message:
                     await params.llm.push_frame(TTSSpeakFrame(message))
+                    self._capture_direct_speech(message)
                     spoke_any = True
 
             # State is now at the first unsatisfied collect node or the next

@@ -492,6 +492,108 @@ def test_configured_onComplete_bridge_used_instead_of_default_for_auto_summary()
     assert spoken == ["One moment while I check that for you."]
 
 
+class _FakeCallHandler:
+    """Minimal stand-in exposing exactly what _capture_direct_speech reads."""
+
+    def __init__(self):
+        from datetime import datetime
+
+        self.call_sid = "CA_test_598"
+        self.call_start_times = {self.call_sid: datetime.utcnow()}
+        self.pending_responses = {self.call_sid: []}
+
+
+def _run_api_handler_with_call_handler(api_data, api_result):
+    """Like _run_api_handler_full, but wired to a fake call_handler so direct
+    TTSSpeakFrame pushes get captured into pending_responses (Task #598)."""
+    call_handler = _FakeCallHandler()
+    mapper = FunctionMapper()
+    mapper.call_handler = call_handler
+    mapper.call_sid = call_handler.call_sid
+    executor = FlowExecutor(parse_flow_config(_api_flow_config(api_data)))
+    executor.get_initial_messages()
+    executor.state.current_node_id = "book"
+    executor.handle_function_call = AsyncMock(return_value=api_result)
+    mapper._flow_executors["rooms"] = executor
+    mapper.update_llm_tools_for_flow = lambda *_: None
+
+    params = SimpleNamespace(
+        arguments={},
+        llm=SimpleNamespace(push_frame=AsyncMock()),
+        result_callback=AsyncMock(),
+    )
+    handler = mapper._create_flow_function_handler("rooms", "execute_book")
+    asyncio.run(handler(params))
+    captured_texts = [c["text"] for c in call_handler.pending_responses[call_handler.call_sid]]
+    return _spoken_texts(params.llm.push_frame), captured_texts
+
+
+class TestDirectSpeechCapturedForTranscriptOrdering:
+    """Task #598 — every direct TTSSpeakFrame push from the flow function
+    handler must also be captured with a real elapsed-time anchor into
+    call_handler.pending_responses, exactly like a genuine LLM completion.
+    _extract_transcript's prefix-matched annotation + global chronological
+    sort (see test_interrupted_transcript.py::TestDefectFixes) already
+    restores correct order GIVEN such a capture; without one, Pipecat's
+    context aggregator can commit this text merged with — or behind — a
+    later message, and no timestamp means the sort can't undo that."""
+
+    def test_success_bridge_is_captured(self):
+        spoken, captured = _run_api_handler_with_call_handler(
+            {}, {"success": True, "action": None}
+        )
+        assert any("I've completed that check" in t for t in spoken)
+        assert captured == spoken
+
+    def test_next_flow_prompt_is_captured(self):
+        spoken, captured = _run_api_handler_with_call_handler(
+            {},
+            {
+                "success": True,
+                "action": None,
+                "collected": {"arrival": "2099-06-10"},
+                "next_slot": {"variable": "departure", "prompt": "And your departure date?"},
+            },
+        )
+        assert spoken == ["And your departure date?"]
+        assert captured == spoken
+
+    def test_designer_voice_result_is_captured(self):
+        spoken, captured = _run_api_handler_with_call_handler(
+            {},
+            {
+                "success": True,
+                "action": None,
+                "voice_result": "We have a Family room available.",
+                "voice_result_is_auto_summary": False,
+            },
+        )
+        assert spoken == ["We have a Family room available."]
+        assert captured == spoken
+
+    def test_auto_summary_bridge_fallback_is_captured_not_the_raw_digest(self):
+        """The raw digest itself is never spoken (Task #601), but whatever
+        DOES get spoken instead (the completion bridge) must still be
+        captured so its real position in the transcript is correct."""
+        spoken, captured = _run_api_handler_with_call_handler(
+            {},
+            {
+                "success": True,
+                "action": None,
+                "voice_result": "Request completed successfully. Extracted data — x: 1",
+                "voice_result_is_auto_summary": True,
+            },
+        )
+        assert spoken == captured
+        assert not any("Extracted data" in t for t in captured)
+
+    def test_no_crash_when_call_handler_unset(self):
+        """The simulator and bare-constructed mappers have no call_handler —
+        capture must be a silent no-op, not a crash."""
+        spoken, _ = _run_api_handler_full({}, {"success": True, "action": None})
+        assert any("I've completed that check" in t for t in spoken)
+
+
 def test_designer_response_instructions_are_still_spoken_directly():
     """Regression: explicit voice_result_is_auto_summary=False (genuine
     designer responseInstructions) must still be spoken immediately, exactly
