@@ -920,6 +920,66 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
                 )}
 
                 <FormField
+                  label="Speaking Rate"
+                  description="Adjust how fast the assistant speaks. 0 = default. Negative = slower, positive = faster. Range: −1 (50% slower) to +1 (50% faster)."
+                >
+                  <div className="space-y-2">
+                    <div className="flex items-center gap-4">
+                      <input
+                        type="range"
+                        min="-1"
+                        max="1"
+                        step="0.05"
+                        value={formData.tts_config?.speed ?? 0}
+                        onChange={(e) => handleFieldChange("tts_config", { ...formData.tts_config, speed: parseFloat(e.target.value) })}
+                        className="flex-1 accent-blue-600"
+                      />
+                      <span className="text-sm font-mono text-gray-300 w-14 text-right tabular-nums">
+                        {((formData.tts_config?.speed ?? 0) >= 0 ? "+" : "") + Number(formData.tts_config?.speed ?? 0).toFixed(2)}
+                      </span>
+                    </div>
+                    <div className="flex justify-between text-xs text-gray-600 px-0.5">
+                      <span>−1 slower</span>
+                      <span>0 default</span>
+                      <span>+1 faster</span>
+                    </div>
+                  </div>
+                </FormField>
+
+                {(formData.tts_voice || "").includes("aura-2") && (
+                  <FormField
+                    label="Expressivity"
+                    description="Controls how expressive the voice sounds. Aura 2 voices only."
+                  >
+                    <div className="flex gap-2">
+                      {([
+                        { value: 0, label: "0", sub: "Flat" },
+                        { value: 1, label: "1", sub: "Natural" },
+                        { value: 2, label: "2", sub: "Expressive" },
+                      ] as { value: number; label: string; sub: string }[]).map(({ value, label, sub }) => {
+                        const current = formData.tts_config?.expressivity ?? 1;
+                        const isActive = current === value;
+                        return (
+                          <button
+                            key={value}
+                            type="button"
+                            onClick={() => handleFieldChange("tts_config", { ...formData.tts_config, expressivity: value })}
+                            className={`flex-1 flex flex-col items-center gap-0.5 py-2.5 px-3 rounded-lg border text-sm font-medium transition ${
+                              isActive
+                                ? "border-blue-500 bg-blue-600/10 text-blue-300"
+                                : "border-gray-700 bg-[#141414] text-gray-400 hover:border-gray-600 hover:text-gray-300"
+                            }`}
+                          >
+                            <span className="text-base font-semibold">{label}</span>
+                            <span className="text-xs opacity-75">{sub}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </FormField>
+                )}
+
+                <FormField
                   label="Pronunciation Dictionary"
                   description="Override how specific words are spoken — useful for hotel names, guest names, and hospitality terms the voice engine mispronounces. e.g. Nguyễn → Win, Le Méridien → Luh Muh-ree-dyen."
                 >

@@ -2047,6 +2047,22 @@ class VoiceEngineFactory:
                 )
                 _token_send_min_chars = 24
 
+            # Speaking rate: 0.0 = Deepgram default (omitted from URL).
+            # Range −1.0 (50% slower) to +1.0 (50% faster).
+            try:
+                _tts_speed = float(config.tts_config.get("speed", 0) or 0)
+            except (TypeError, ValueError):
+                _tts_speed = 0.0
+            # Expressivity: Aura 2 voices only. 1 = default (omitted from URL);
+            # 0 = flat, 2 = highly expressive.
+            _raw_expressivity = config.tts_config.get("expressivity")
+            try:
+                _tts_expressivity = (
+                    int(_raw_expressivity) if _raw_expressivity is not None else None
+                )
+            except (TypeError, ValueError):
+                _tts_expressivity = None
+
             class _BotelierDeepgramTTSService(DeepgramTTSService):
                 """Deepgram TTS with Botelier-specific enhancements.
 
@@ -2082,12 +2098,56 @@ class VoiceEngineFactory:
                     # threshold dispatches them as ONE Speak request.
                     self._send_buffer: dict[str, str] = {}
                     self._token_send_min_chars = _token_send_min_chars
+                    self._tts_speed = _tts_speed
+                    self._tts_expressivity = _tts_expressivity
                     # One-shot callbacks keyed by context_id.
                     # Registered by terminal handlers (transfer, end-call) so they
                     # fire on the EXACT utterance's audio completion rather than on
                     # the next BotStoppedSpeakingFrame (which Deepgram emits spuriously
                     # between sentences, causing pre-fire clipping bugs).
                     self._context_done_callbacks: dict[str, Callable] = {}
+
+                async def _connect_websocket(self):
+                    """Connect to Deepgram, injecting speed and expressivity URL params."""
+                    from websockets.asyncio.client import connect as _ws_connect
+                    from websockets.protocol import State
+                    try:
+                        if self._websocket and self._websocket.state is State.OPEN:
+                            return
+                        logger.debug("Connecting to Deepgram WebSocket")
+                        params = [
+                            f"model={self._settings.voice}",
+                            f"encoding={self._encoding}",
+                            f"sample_rate={self.sample_rate}",
+                        ]
+                        if self._mip_opt_out is not None:
+                            params.append(f"mip_opt_out={str(self._mip_opt_out).lower()}")
+                        if self._tts_speed:
+                            params.append(f"speed={self._tts_speed}")
+                        if self._tts_expressivity is not None and self._tts_expressivity != 1:
+                            params.append(f"expressivity={self._tts_expressivity}")
+                        url = f"{self._base_url}/v1/speak?{'&'.join(params)}"
+                        headers = {"Authorization": f"Token {self._api_key}"}
+                        websocket = await _ws_connect(url, additional_headers=headers)
+                        self._websocket = websocket
+                        response_headers = (
+                            websocket.response.headers if websocket.response else {}
+                        )
+                        dg_headers = {
+                            k: v
+                            for k, v in response_headers.items()
+                            if k.startswith("dg-")
+                        }
+                        logger.debug(
+                            f"{self}: Websocket connection initialized: "
+                            f"{{'headers': {dg_headers}}}"
+                        )
+                        await self._call_event_handler("on_connected")
+                    except Exception as e:
+                        logger.error(f"{self} exception: {e}")
+                        await self.push_error_frame(ErrorFrame(error=f"{self} error: {e}"))
+                        self._websocket = None
+                        await self._call_event_handler("on_connection_error", f"{e}")
 
                 @staticmethod
                 def _apply_substitutions(text: str) -> str:
@@ -2318,6 +2378,12 @@ class VoiceEngineFactory:
                 )
                 _flux_token_send_min_chars = 24
 
+            # Speaking rate for Flux (expressivity is not supported on /v2/speak).
+            try:
+                _flux_tts_speed = float(config.tts_config.get("speed", 0) or 0)
+            except (TypeError, ValueError):
+                _flux_tts_speed = 0.0
+
             class _BotelierDeepgramFluxTTSService(DeepgramFluxTTSService):
                 """Deepgram Flux TTS with Botelier-specific enhancements.
 
@@ -2337,7 +2403,48 @@ class VoiceEngineFactory:
                     self._word_buffer: dict[str, str] = {}
                     self._send_buffer: dict[str, str] = {}
                     self._token_send_min_chars = _flux_token_send_min_chars
+                    self._tts_speed = _flux_tts_speed
                     self._context_done_callbacks: dict[str, Callable] = {}
+
+                async def _connect_websocket(self):
+                    """Connect to Deepgram Flux, injecting speed URL param."""
+                    from websockets.asyncio.client import connect as _ws_connect
+                    from websockets.protocol import State
+                    try:
+                        if self._websocket and self._websocket.state is State.OPEN:
+                            return
+                        logger.debug("Connecting to Deepgram Flux WebSocket (/v2/speak)")
+                        params = [
+                            f"model={self._settings.voice}",
+                            f"encoding={self._encoding}",
+                            f"sample_rate={self.sample_rate}",
+                        ]
+                        if self._mip_opt_out is not None:
+                            params.append(f"mip_opt_out={str(self._mip_opt_out).lower()}")
+                        if self._tts_speed:
+                            params.append(f"speed={self._tts_speed}")
+                        url = f"{self._base_url}/v2/speak?{'&'.join(params)}"
+                        headers = {"Authorization": f"Token {self._api_key}"}
+                        websocket = await _ws_connect(url, additional_headers=headers)
+                        self._websocket = websocket
+                        response_headers = (
+                            websocket.response.headers if websocket.response else {}
+                        )
+                        dg_headers = {
+                            k: v
+                            for k, v in response_headers.items()
+                            if k.startswith("dg-")
+                        }
+                        logger.debug(
+                            f"{self}: Flux WebSocket connected: "
+                            f"{{'headers': {dg_headers}}}"
+                        )
+                        await self._call_event_handler("on_connected")
+                    except Exception as e:
+                        logger.error(f"{self} exception: {e}")
+                        await self.push_error_frame(ErrorFrame(error=f"{self} error: {e}"))
+                        self._websocket = None
+                        await self._call_event_handler("on_connection_error", f"{e}")
 
                 @staticmethod
                 def _apply_substitutions(text: str) -> str:
