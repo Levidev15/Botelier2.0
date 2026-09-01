@@ -2177,12 +2177,18 @@ class FunctionMapper:
             _api_spoke_directly = False
             if _completed_api_node:
                 _api_config = _completed_api_node.data.get("api", {}) or {}
-                # voice_result is the caller-facing narration — either the
-                # designer's responseInstructions (with {{variable}} subs) or the
-                # auto-built "success_msg + extracted_vars" summary.  It is
-                # available here BEFORE the cleanup block that promotes it to
-                # result["result"], so read it now.
+                # voice_result is either designer-authored responseInstructions
+                # (with {{variable}} subs) — genuine caller-facing narration —
+                # or, when that's blank, an auto-built "success_msg + extracted
+                # field: value" digest.  The digest is LLM CONTEXT ONLY: it is a
+                # raw internal data dump ("Extracted data — room_price: 8000,
+                # 7500; ...") and must never be spoken to a caller verbatim
+                # (Task #601). voice_result_is_auto_summary distinguishes the
+                # two so only genuine designer narration is ever pushed to TTS
+                # here; the digest still reaches the LLM via result["result"]
+                # below so it can narrate the data naturally on its own turn.
                 _voice_result = str(result.get("voice_result") or "").strip()
+                _voice_result_is_auto_summary = bool(result.get("voice_result_is_auto_summary"))
                 if result.get("success"):
                     # Do not infer an outcome from transport success: an
                     # availability search with no rooms is still a successful
@@ -2197,8 +2203,8 @@ class FunctionMapper:
                         # Direct speech is guaranteed — never stack a bridge
                         # (default OR configured) on top of it.
                         _completion_bridge = ""
-                    elif _voice_result:
-                        # The API returned narrable data.  Speak it immediately
+                    elif _voice_result and not _voice_result_is_auto_summary:
+                        # Genuine designer narration.  Speak it immediately
                         # rather than a generic bridge followed by an LLM turn.
                         # Without this the LLM tends to skip narrating voice_result
                         # and calls the next flow tool directly, leaving callers
@@ -2221,8 +2227,13 @@ class FunctionMapper:
                                     f"Could not emit API result for {tool_name}: {_vr_err}"
                                 )
                     else:
-                        # No narrable data — fall back to the configurable bridge
-                        # so the caller at least hears that the check completed.
+                        # No narrable (speakable) data — either nothing was
+                        # returned, or the only thing available is the raw
+                        # extracted-data digest, which must stay LLM-context-only.
+                        # Fall back to the configurable bridge so the caller at
+                        # least hears that the check completed, then let a real
+                        # LLM turn narrate the data (result["result"] still
+                        # carries it — see the cleanup block below).
                         _on_complete = _api_config.get("onComplete")
                         _completion_bridge = (
                             "I've completed that check. Let me walk you through what I found."
@@ -2602,7 +2613,13 @@ class FunctionMapper:
             # add noise, promote voice_result → result, but preserve all control
             # fields (speak_exactly, next_slot, out_of_order, etc.) that
             # slot-collection handlers set and the LLM needs to read.
-            for _blob_key in ("response", "data", "extracted_variables", "response_instructions"):
+            for _blob_key in (
+                "response",
+                "data",
+                "extracted_variables",
+                "response_instructions",
+                "voice_result_is_auto_summary",
+            ):
                 result.pop(_blob_key, None)
             if "voice_result" in result:
                 result["result"] = result.pop("voice_result")

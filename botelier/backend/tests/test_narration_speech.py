@@ -415,6 +415,102 @@ def test_error_path_unaffected_by_voice_result_logic():
 
 
 # ---------------------------------------------------------------------------
+# Raw extracted-data digest must never be spoken verbatim — Task #601
+#
+# When responseInstructions is blank, flow_executor falls back to a compact
+# "success_msg. Extracted data — field: value; ..." digest so the LLM still
+# has the data to narrate.  That digest is flagged
+# voice_result_is_auto_summary=True precisely so FunctionMapper never pushes
+# it to TTS the way it does genuine designer-authored responseInstructions.
+# ---------------------------------------------------------------------------
+
+_RAW_DIGEST = (
+    "Request completed successfully. Extracted data — room_price: 8000, 7500; "
+    "rooms_name: Double, Family; room_currency: EUR"
+)
+
+
+def test_auto_summary_voice_result_is_never_spoken_verbatim():
+    spoken, _ = _run_api_handler_full(
+        {},
+        {
+            "success": True,
+            "action": None,
+            "voice_result": _RAW_DIGEST,
+            "voice_result_is_auto_summary": True,
+        },
+    )
+    assert not any("Extracted data" in t for t in spoken)
+    assert not any("room_price" in t for t in spoken)
+
+
+def test_auto_summary_falls_back_to_completion_bridge():
+    """The digest is suppressed from TTS, but the caller must still hear
+    *something* — the normal silence-safety bridge — instead of dead air."""
+    spoken, cb = _run_api_handler_full(
+        {},
+        {
+            "success": True,
+            "action": None,
+            "voice_result": _RAW_DIGEST,
+            "voice_result_is_auto_summary": True,
+        },
+    )
+    assert any("I've completed that check" in t for t in spoken)
+    # run_llm stays True so a real LLM turn narrates the digest naturally —
+    # the digest itself still reaches the LLM via result["result"].
+    assert _result_callback_run_llm(cb) is True
+
+
+def test_auto_summary_still_reaches_llm_context_for_narration():
+    """The digest must not vanish — it stays in result['result'] so the LLM
+    can compose natural narration from the real extracted data."""
+    _, cb = _run_api_handler_full(
+        {},
+        {
+            "success": True,
+            "action": None,
+            "voice_result": _RAW_DIGEST,
+            "voice_result_is_auto_summary": True,
+        },
+    )
+    passed_result = cb.call_args.args[0]
+    assert passed_result["result"] == _RAW_DIGEST
+    assert "voice_result_is_auto_summary" not in passed_result
+
+
+def test_configured_onComplete_bridge_used_instead_of_default_for_auto_summary():
+    spoken, _ = _run_api_handler_full(
+        {"onComplete": "One moment while I check that for you."},
+        {
+            "success": True,
+            "action": None,
+            "voice_result": _RAW_DIGEST,
+            "voice_result_is_auto_summary": True,
+        },
+    )
+    assert spoken == ["One moment while I check that for you."]
+
+
+def test_designer_response_instructions_are_still_spoken_directly():
+    """Regression: explicit voice_result_is_auto_summary=False (genuine
+    designer responseInstructions) must still be spoken immediately, exactly
+    like the Task #563 behavior this fix must not regress."""
+    spoken, cb = _run_api_handler_full(
+        {},
+        {
+            "success": True,
+            "action": None,
+            "voice_result": "We have a Family room available for five adults.",
+            "voice_result_is_auto_summary": False,
+        },
+    )
+    assert any("Family room available" in t for t in spoken)
+    assert not any("I've completed that check" in t for t in spoken)
+    assert _result_callback_run_llm(cb) is False
+
+
+# ---------------------------------------------------------------------------
 # Auto-fire path: collect_slot → api_request
 #
 # When a collect function advances the flow to an API_REQUEST node the mapper

@@ -439,6 +439,104 @@ class TestIntegrationApiRouting:
 # ---------------------------------------------------------------------------
 
 
+class TestVoiceResultAutoSummaryFlag:
+    """Task #601 — a raw extracted-data digest must never look like designer
+    narration to FunctionMapper.  ``voice_result_is_auto_summary`` marks
+    ``voice_result`` as LLM-context-only whenever it was auto-built from
+    ``_build_api_voice_result`` (no ``responseInstructions`` configured), and
+    False whenever it is genuine, designer-authored narration."""
+
+    @pytest.mark.asyncio
+    async def test_custom_api_no_response_instructions_flags_auto_summary(self):
+        cfg = _api_flow_with_handles()
+        ex = _executor_at(cfg, "api")
+        _attach_no_op_locks(ex)
+
+        node = ex.flow_config._node_index["api"]
+        api_config_dict = dict(node.data["api"])
+        node.data["api"] = api_config_dict  # no "responseInstructions" key
+
+        mock_resp = MagicMock()
+        mock_resp.success = True
+        mock_resp.extracted_variables = {"room_price": [8000, 7500], "rooms_name": ["Double", "Family"]}
+
+        with patch(
+            "botelier.services.action_executor.ActionExecutor.execute_and_log",
+            new_callable=AsyncMock,
+            return_value=mock_resp,
+        ):
+            result = await ex._handle_custom_api_request("api", node, api_config_dict)
+
+        assert result["success"] is True
+        assert result["voice_result_is_auto_summary"] is True
+        assert "Extracted data" in result["voice_result"]
+        assert "room_price" in result["voice_result"]
+
+    @pytest.mark.asyncio
+    async def test_custom_api_with_response_instructions_not_flagged(self):
+        """Designer-authored responseInstructions must never be flagged as an
+        auto-summary — it is genuine caller-facing narration."""
+        cfg = _api_flow_with_handles()
+        ex = _executor_at(cfg, "api")
+        _attach_no_op_locks(ex)
+
+        node = ex.flow_config._node_index["api"]
+        api_config_dict = dict(node.data["api"])
+        api_config_dict["responseInstructions"] = "We found a great room for you."
+        node.data["api"] = api_config_dict
+
+        mock_resp = MagicMock()
+        mock_resp.success = True
+        mock_resp.extracted_variables = {"room_price": 8000}
+
+        with patch(
+            "botelier.services.action_executor.ActionExecutor.execute_and_log",
+            new_callable=AsyncMock,
+            return_value=mock_resp,
+        ):
+            result = await ex._handle_custom_api_request("api", node, api_config_dict)
+
+        assert result["success"] is True
+        assert result["voice_result_is_auto_summary"] is False
+        assert result["voice_result"] == "We found a great room for you."
+
+    @pytest.mark.asyncio
+    async def test_integration_api_no_response_instructions_flags_auto_summary(self):
+        cfg = _api_flow_with_handles(api_source="integration")
+        ex = _executor_at(cfg, "api")
+        ex.account_id = "00000000-0000-0000-0000-000000000001"
+        _attach_no_op_locks(ex)
+        ex._inject_connection_config_to_slots = lambda integration_id: None
+        ex._substitute_secrets = lambda text: text or ""
+
+        node = ex.flow_config._node_index["api"]
+        api_config_dict = {
+            "apiSource": "integration",
+            "integrationId": "fake-int-id",
+            "endpointId": "fake-ep",
+            "method": "GET",
+            "onSuccess": "Request completed successfully",
+            "onError": "Fail",
+            "responseVariables": [],
+        }
+        node.data["api"] = api_config_dict
+
+        mock_resp = MagicMock()
+        mock_resp.success = True
+        mock_resp.extracted_variables = {"room_price": [8000, 7500], "rooms_name": ["Double", "Family"]}
+
+        with patch(
+            "botelier.services.action_executor.ActionExecutor.execute_and_log",
+            new_callable=AsyncMock,
+            return_value=mock_resp,
+        ):
+            result = await ex._handle_integration_api_request("api", node, api_config_dict)
+
+        assert result["success"] is True
+        assert result["voice_result_is_auto_summary"] is True
+        assert "Extracted data" in result["voice_result"]
+
+
 class TestServiceBackedCapabilityRouting:
     """Payment capability exception routes to the 'failed' edge, not stuck on node."""
 

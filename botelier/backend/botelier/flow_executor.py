@@ -3992,6 +3992,12 @@ class FlowExecutor:
           (with ``{{variables}}`` substituted) **or** a compact extracted-data
           summary when ``responseInstructions`` is blank.  This is what the LLM
           reads as the tool result after ``FunctionMapper`` promotes it to ``result``.
+        - ``voice_result_is_auto_summary`` (bool) — True when ``voice_result`` is
+          the raw field-name/value digest built because no ``responseInstructions``
+          was configured. FunctionMapper must NEVER speak this text verbatim to a
+          caller (it is LLM context only, for the model to narrate naturally);
+          only designer-authored ``responseInstructions`` (False) may be spoken
+          directly.
         - ``message`` (str) — human-readable status (onSuccess / onError text).
         - ``current_node_id`` (str) — node the flow advanced to.
         - Error-only keys: ``error_type``, ``status_code``.
@@ -4178,14 +4184,22 @@ class FlowExecutor:
             response_instructions = (api_config.get("responseInstructions") or "").strip()
             if response_instructions:
                 voice_result = substitute_variables(response_instructions, self.state.collected_slots)
+                voice_result_is_auto_summary = False
             else:
+                # No designer-authored narration configured: fall back to a
+                # compact field-name/value digest of the extracted variables.
+                # This is LLM CONTEXT ONLY (so it can narrate naturally next
+                # turn) — never caller-facing speech. voice_result_is_auto_summary
+                # tells FunctionMapper not to push this text to TTS verbatim.
                 voice_result = _build_api_voice_result(success_msg, response.extracted_variables)
+                voice_result_is_auto_summary = True
 
             return {
                 "success": True,
                 "message": success_msg,
                 "action": None,
                 "voice_result": voice_result,
+                "voice_result_is_auto_summary": voice_result_is_auto_summary,
                 "current_node_id": next_node_id,
             }
         else:
@@ -4331,8 +4345,9 @@ class FlowExecutor:
         """Handle direct custom URL API request through ActionExecutor.
 
         Returns the same dict contract as ``_handle_integration_api_request``:
-        ``success``, ``action``, ``voice_result`` (success) or ``error_type`` /
-        ``status_code`` (failure), ``message``, ``current_node_id``.
+        ``success``, ``action``, ``voice_result`` + ``voice_result_is_auto_summary``
+        (success) or ``error_type`` / ``status_code`` (failure), ``message``,
+        ``current_node_id``.
 
         Response shaping (variable extraction, voice result, error classification) is
         handled entirely by ``ActionExecutor.execute_and_log``; there is no in-line
@@ -4409,14 +4424,22 @@ class FlowExecutor:
             response_instructions = (api_config.get("responseInstructions") or "").strip()
             if response_instructions:
                 voice_result = substitute_variables(response_instructions, self.state.collected_slots)
+                voice_result_is_auto_summary = False
             else:
+                # No designer-authored narration configured: fall back to a
+                # compact field-name/value digest of the extracted variables.
+                # This is LLM CONTEXT ONLY (so it can narrate naturally next
+                # turn) — never caller-facing speech. voice_result_is_auto_summary
+                # tells FunctionMapper not to push this text to TTS verbatim.
                 voice_result = _build_api_voice_result(success_msg, response.extracted_variables)
+                voice_result_is_auto_summary = True
 
             return {
                 "success": True,
                 "message": success_msg,
                 "action": None,
                 "voice_result": voice_result,
+                "voice_result_is_auto_summary": voice_result_is_auto_summary,
                 "current_node_id": effective_node_id,
             }
 

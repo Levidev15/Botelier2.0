@@ -43,3 +43,4 @@
 - [Confirmation handler merge](confirmation-handler-merge.md) — `_run_confirmation_logic` is the canonical handler; both entry points delegate; edge-fallback guard must use `_confirmed_branch_next_node()` not strict `get_next_node`.
 - [Deepgram Flux TTS integration](deepgram-flux-tts.md) — /v2/speak, Interrupt not Clear, SpeechMetadata = turn end; pip pipecat 1.5.0 needs manual file copy for dev.
 - [MESSAGE node advance gating](message-node-advance-gating.md) — MESSAGE nodes expose no LLM function; a dead-end message chain lets the LLM fabricate outcomes before hanging up unless gated like end_call.
+- [API voice_result narration boundary](api-voice-result-narration-boundary.md) — one shared `voice_result` field held both genuine designer narration and a raw internal data-digest fallback; split by an explicit `voice_result_is_auto_summary` flag, not by non-emptiness.
