@@ -345,11 +345,15 @@ def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str], List[str]]
             template_values.extend(
                 [
                     intro,
-                    item_template,
                     config.get("outroText"),
                     config.get("noResultsText"),
                 ]
             )
+            # The per-item template has its own variable namespace at runtime:
+            # dict fields from each API array item, plus {{index}}/{{item}}.
+            # Those fields are intentionally not flow variables, so applying
+            # the generic declared-variable check to this string would reject
+            # the documented {{room_name}} / {{price}} use case.
 
         elif node_type == "condition":
             condition = node_data.get("condition", {})

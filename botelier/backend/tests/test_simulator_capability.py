@@ -92,9 +92,6 @@ def _make_simulation_state(
         account_id="00000000-0000-0000-0000-000000000001",
         db_session=None,
     )
-    executor.state.collected_slots["check_in_date"] = "2026-08-01"
-    executor.state.current_node_id = node_id
-
     state = SimulationState(
         tool_id="tool-sim-test-001",
         executor=executor,
@@ -102,6 +99,12 @@ def _make_simulation_state(
         account_id="00000000-0000-0000-0000-000000000001",
         model="gpt-4o-mini",
     )
+    # SimulationState initializes the greeting through get_initial_messages(),
+    # which resets the executor to its first actionable node. Position this
+    # test fixture afterwards so capability tests truly exercise the capability
+    # branch rather than the preceding collection node.
+    executor.state.collected_slots["check_in_date"] = "2026-08-01"
+    executor.state.current_node_id = node_id
     return state
 
 

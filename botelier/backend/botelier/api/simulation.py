@@ -942,9 +942,30 @@ async def simulate_message(
 
     if request.function_call:
         try:
+            # API_RESPONSE is normally rendered and spoken by the live voice
+            # mapper before it calls the continuation. In Test Lab there is no
+            # Pipecat mapper, so render it here before the continuation moves
+            # the flow pointer away from the node.
+            direct_api_response_text = None
+            if request.function_call.startswith("continue_response_"):
+                pending = executor.state.get_current_node()
+                if pending and pending.type == NodeType.API_RESPONSE:
+                    direct_api_response_text = executor._render_api_response_text(pending)
+
             result = await executor.handle_function_call(
                 request.function_call, request.function_args or {}
             )
+            if direct_api_response_text and result.get("success"):
+                result = {
+                    **result,
+                    "message": direct_api_response_text,
+                    "speak_directly": True,
+                    "speak_exactly": direct_api_response_text,
+                }
+            else:
+                result, direct_api_response_text = await _present_pending_api_response(
+                    executor, result
+                )
             function_called = request.function_call
             function_result = result
 
@@ -1016,6 +1037,51 @@ async def simulate_message(
     )
 
 
+async def _present_pending_api_response(executor, result: dict) -> tuple[dict, Optional[str]]:
+    """Render and advance a pending API_RESPONSE node in Test Lab.
+
+    The live Pipecat function mapper performs the equivalent work after an
+    API request completes. Keeping Test Lab on the FlowExecutor renderer and
+    its ``continue_response_*`` handler prevents simulator-only presentation
+    behavior from drifting from real calls.
+    """
+    pending = executor.state.get_current_node()
+    if not pending or pending.type != NodeType.API_RESPONSE:
+        return result, None
+
+    try:
+        spoken_text = executor._render_api_response_text(pending)
+    except Exception:  # noqa: BLE001 — do not hide the preceding API result
+        logger.exception(
+            "Could not render API_RESPONSE node %s in Test Lab", pending.id
+        )
+        return result, None
+
+    continuation = await executor.handle_function_call(
+        f"continue_response_{pending.id}", {}
+    )
+    if not continuation.get("success"):
+        logger.warning(
+            "Could not advance Test Lab past API_RESPONSE node %s: %s",
+            pending.id,
+            continuation.get("message"),
+        )
+        return result, None
+
+    return (
+        {
+            **result,
+            "message": spoken_text,
+            "speak_directly": True,
+            "speak_exactly": spoken_text,
+            "api_response_presented": True,
+            "api_response_has_results": continuation.get("has_results"),
+            "current_node_id": continuation.get("current_node_id"),
+        },
+        spoken_text,
+    )
+
+
 async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
     """Process user message with OpenAI LLM using function calling.
 
@@ -1044,6 +1110,7 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
     is_ended = False
     max_iterations = 5
     last_text_content = ""
+    direct_api_response_text = None
     # Classify this user message against the slot that was active when it
     # arrived. A tool result can advance to another slot within this loop, but
     # that new prompt needs a fresh user turn; never reuse the old answer to
@@ -1274,6 +1341,12 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                             function_name, function_args
                         )
 
+                    result, presented_text = await _present_pending_api_response(
+                        state.executor, result
+                    )
+                    if presented_text:
+                        direct_api_response_text = presented_text
+
                     all_functions_called.append(function_name)
                     all_function_results.append(result)
 
@@ -1295,6 +1368,21 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                             "content": json.dumps(result),
                         }
                     )
+
+                # API_RESPONSE owns the immediate caller-facing narration.
+                # Return it directly instead of asking the LLM for another
+                # turn, matching the live mapper's run_llm=False behavior.
+                if direct_api_response_text:
+                    last_result = all_function_results[-1] if all_function_results else {}
+                    return {
+                        "response": direct_api_response_text,
+                        "function_called": all_functions_called[-1]
+                        if all_functions_called
+                        else None,
+                        "function_result": last_result,
+                        "is_ended": is_ended,
+                        "save_record_events": save_record_events,
+                    }
 
                 if is_ended:
                     last_result = all_function_results[-1] if all_function_results else {}

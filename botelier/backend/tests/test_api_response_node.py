@@ -1,4 +1,4 @@
-"""Tests for the API_RESPONSE node — rendering, auto-execution, and flow advance.
+"""Tests for the API_RESPONSE node — rendering, routing, and simulator parity.
 
 Covers:
   1. render_text — array iteration with dict items
@@ -20,10 +20,13 @@ from botelier.flow_executor import (
     FlowExecutor,
     NodeType,
     FlowNode,
+    FlowEdge,
     FlowConfig,
     FlowVariable,
     FlowState,
 )
+from botelier.api.flow_versions import validate_flow_config
+from botelier.api.simulation import _present_pending_api_response
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
@@ -33,11 +36,13 @@ def _make_node(node_id: str, node_type: str, data: dict) -> FlowNode:
     return node
 
 
-def _make_executor(nodes: list[FlowNode], variables=None, current_node_id=None) -> FlowExecutor:
+def _make_executor(
+    nodes: list[FlowNode], variables=None, current_node_id=None, edges=None
+) -> FlowExecutor:
     """Build a minimal FlowExecutor for unit-testing node methods."""
     flow_config = FlowConfig(
         nodes=nodes,
-        edges=[],
+        edges=edges or [],
         variables=variables or [],
         initial_node=nodes[0].id if nodes else None,
         global_prompt="",
@@ -172,24 +177,77 @@ def test_render_text_json_string_array():
     assert "Twin at 180." in text
 
 
-# ── 6. _handle_api_response — advances flow to next node ─────────────────────
+# ── 6. _handle_api_response — routes on result state ─────────────────────────
 
 @pytest.mark.asyncio
-async def test_handle_api_response_advances_flow():
-    resp_node = _make_node("resp6", "api_response", {"responsePresentation": {}})
-    next_node = _make_node("end6", "end", {"closingMessage": "Goodbye"})
-    executor = _make_executor([resp_node, next_node], current_node_id="resp6")
-
-    # Wire a fake edge
-    mock_next = MagicMock()
-    mock_next.id = "end6"
-    executor.state.get_next_node = MagicMock(return_value=mock_next)
-    executor.state.advance_to = MagicMock()
+async def test_handle_api_response_routes_empty_array_to_no_results():
+    resp_node = _make_node("resp6", "api_response", {
+        "responsePresentation": {"arrayVariable": "rooms"}
+    })
+    results_node = _make_node("results6", "message", {"message": "Rooms"})
+    empty_node = _make_node("empty6", "message", {"message": "No rooms"})
+    executor = _make_executor(
+        [resp_node, results_node, empty_node],
+        current_node_id="resp6",
+        edges=[
+            # A success edge first verifies no-results cannot fall through
+            # simply because it was the first graph edge.
+            FlowEdge("has", "resp6", "results6", source_handle="has_results"),
+            FlowEdge("empty", "resp6", "empty6", source_handle="no_results"),
+        ],
+    )
+    executor.state.collected_slots["rooms"] = []
 
     result = await executor._handle_api_response("continue_response_resp6", {})
 
     assert result["success"] is True
-    executor.state.advance_to.assert_called_once_with("end6")
+    assert result["has_results"] is False
+    assert executor.state.current_node_id == "empty6"
+
+
+@pytest.mark.asyncio
+async def test_handle_api_response_uses_only_unlabelled_legacy_fallback():
+    """A missing no-results edge may not fall through into a has-results edge."""
+    resp_node = _make_node("resp6b", "api_response", {
+        "responsePresentation": {"arrayVariable": "rooms"}
+    })
+    results_node = _make_node("results6b", "message", {})
+    executor = _make_executor(
+        [resp_node, results_node],
+        current_node_id="resp6b",
+        edges=[FlowEdge("has", "resp6b", "results6b", source_handle="has_results")],
+    )
+    executor.state.collected_slots["rooms"] = []
+
+    result = await executor._handle_api_response("continue_response_resp6b", {})
+
+    assert result["success"] is True
+    assert executor.state.current_node_id == "resp6b"
+
+
+@pytest.mark.asyncio
+async def test_handle_api_response_rejects_stale_node():
+    resp_node = _make_node("resp6c", "api_response", {"responsePresentation": {}})
+    other_node = _make_node("other6c", "message", {})
+    executor = _make_executor([resp_node, other_node], current_node_id="other6c")
+
+    result = await executor._handle_api_response("continue_response_resp6c", {})
+
+    assert result["success"] is False
+    assert result["out_of_order"] is True
+    assert executor.state.current_node_id == "other6c"
+
+
+@pytest.mark.asyncio
+async def test_dispatch_gates_response_continuation_like_other_actions():
+    resp_node = _make_node("resp6d", "api_response", {"responsePresentation": {}})
+    executor = _make_executor([resp_node], current_node_id="resp6d")
+    executor.get_function_schemas = MagicMock(return_value=[])
+
+    result = await executor._dispatch_function_call("continue_response_resp6d", {})
+
+    assert result["success"] is False
+    assert result["out_of_order"] is True
 
 
 # ── 7. get_function_schemas — exposes continue_response when current ──────────
@@ -251,3 +309,63 @@ def test_flows_without_api_response_unaffected():
     names = [s["function"]["name"] for s in schemas]
 
     assert not any(n.startswith("continue_response_") for n in names)
+
+
+# ── 10. publish validation — per-item fields are not flow variables ──────────
+
+def test_publish_validation_accepts_api_response_item_fields():
+    flow = {
+        "initial_node": "start",
+        "variables": [{"key": "rooms", "type": "text"}],
+        "nodes": [
+            {"id": "start", "type": "initial", "data": {}},
+            {
+                "id": "present",
+                "type": "api_response",
+                "data": {
+                    "name": "Present rooms",
+                    "responsePresentation": {
+                        "arrayVariable": "rooms",
+                        "itemTemplate": (
+                            "Option {{index}}: {{room_name}} — {{price}} per night."
+                        ),
+                    },
+                },
+            },
+        ],
+        "edges": [{"id": "e1", "source": "start", "target": "present"}],
+    }
+
+    valid, errors, _ = validate_flow_config(flow)
+
+    assert valid is True
+    assert not errors
+
+
+# ── 11. Test Lab parity — render then advance ────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_simulator_presents_pending_api_response_and_advances():
+    pending = _make_node("resp11", "api_response", {"responsePresentation": {}})
+    executor = MagicMock()
+    executor.state.get_current_node.return_value = pending
+    executor._render_api_response_text.return_value = "One room is available."
+    executor.handle_function_call = AsyncMock(
+        return_value={
+            "success": True,
+            "has_results": True,
+            "current_node_id": "next11",
+        }
+    )
+
+    result, spoken = await _present_pending_api_response(
+        executor, {"success": True, "message": "Raw API result"}
+    )
+
+    assert spoken == "One room is available."
+    assert result["message"] == "One room is available."
+    assert result["speak_directly"] is True
+    assert result["api_response_has_results"] is True
+    executor.handle_function_call.assert_awaited_once_with(
+        "continue_response_resp11", {}
+    )

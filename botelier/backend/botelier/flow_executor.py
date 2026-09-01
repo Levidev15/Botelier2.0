@@ -469,6 +469,18 @@ class FlowState:
                 return self.flow_config._node_index.get(edge.target)
         return None
 
+    def get_unlabelled_next_node(self, from_node_id: str) -> Optional[FlowNode]:
+        """Find a legacy/default edge with no explicit source handle.
+
+        This differs from ``get_next_node(..., handle=None)``, which means
+        "accept any edge" and can accidentally select a different labelled
+        branch solely because it appeared first in the graph.
+        """
+        for edge in self.flow_config.edges:
+            if edge.source == from_node_id and not edge.source_handle:
+                return self.flow_config._node_index.get(edge.target)
+        return None
+
     def has_outgoing_edge(self, node_id: str) -> bool:
         """Whether any edge leaves ``node_id`` — i.e. the graph continues from here."""
         return any(edge.source == node_id for edge in self.flow_config.edges)
@@ -3148,6 +3160,7 @@ class FlowExecutor:
             "transfer_",
             "end_call_",
             "continue_flow_",
+            "continue_response_",
         )
         if function_name.startswith(action_prefixes):
             exposed = {
@@ -3352,8 +3365,16 @@ class FlowExecutor:
         """
         node_id = function_name[len("continue_response_"):]
         node = self.flow_config._node_index.get(node_id)
-        if not node:
+        if not node or node.type != NodeType.API_RESPONSE:
             return {"success": False, "message": "Unknown response node", "action": None}
+        if self.state.current_node_id != node_id:
+            return {
+                "success": False,
+                "message": "That API response is not currently ready to continue.",
+                "action": None,
+                "out_of_order": True,
+                "current_node_id": self.state.current_node_id,
+            }
 
         has_results = self._api_response_has_results(node)
         handle = "has_results" if has_results else "no_results"
@@ -3362,7 +3383,7 @@ class FlowExecutor:
         # flows built before dual-handle support still advance normally.
         next_node = self.state.get_next_node(node_id, handle=handle)
         if not next_node:
-            next_node = self.state.get_next_node(node_id)
+            next_node = self.state.get_unlabelled_next_node(node_id)
 
         if next_node:
             self.state.advance_to(next_node.id)
