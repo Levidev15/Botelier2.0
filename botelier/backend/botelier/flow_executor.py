@@ -50,6 +50,7 @@ class NodeType(str, Enum):
     TRANSFER = "transfer"
     END = "end"
     API_RESPONSE = "api_response"
+    OPTION_PICKER = "option_picker"
 
 
 # Action-node types whose LLM functions must be gated to the reachable flow
@@ -67,6 +68,7 @@ _ACTION_NODE_TYPES = frozenset(
         NodeType.SAVE_RECORD,
         NodeType.TRANSFER,
         NodeType.END,
+        NodeType.OPTION_PICKER,
     }
 )
 
@@ -82,6 +84,7 @@ _SIDE_EFFECT_NODE_TYPES = frozenset(
         NodeType.CONFIRMATION,
         NodeType.SET_VARIABLE,
         NodeType.SAVE_RECORD,
+        NodeType.OPTION_PICKER,
     }
 )
 
@@ -623,6 +626,37 @@ def _speakable_variable_value(value: Any) -> str:
         # Structured data with nothing speakable: omit rather than dump JSON.
         return spoken
     return _HTML_TAG_RE.sub(" ", str(value)).strip()
+
+
+def _get_by_path(value: Any, path: str) -> Any:
+    """Resolve a dot-notation path against a nested dict/list structure.
+
+    Used by the OPTION_PICKER handler to pull a field out of the caller's
+    selected item (e.g. ``"rate.code"`` or ``"images.0.url"``). Each segment
+    is tried as a dict key first, then — only when the segment is a plain
+    integer — as a list index. Returns ``None`` the moment any segment is
+    missing/out of range rather than raising, since a mapped offer's fields
+    are inherently optional per-item and a missing field must simply write
+    ``None`` into the bound variable, not blow up the whole selection.
+    """
+    if not path:
+        return value
+    current = value
+    for segment in path.split("."):
+        if isinstance(current, dict):
+            if segment not in current:
+                return None
+            current = current[segment]
+        elif isinstance(current, list):
+            if not segment.lstrip("-").isdigit():
+                return None
+            index = int(segment)
+            if index < 0 or index >= len(current):
+                return None
+            current = current[index]
+        else:
+            return None
+    return current
 
 
 def substitute_variables(
@@ -1732,6 +1766,30 @@ class FlowExecutor:
                 f"to the caller. Call `{fn_name}` NOW to acknowledge and advance the flow."
             )
 
+        elif current_node.type == NodeType.OPTION_PICKER:
+            config = current_node.data.get("optionPicker", {}) or {}
+            fn_name = f"select_option_{current_node.id}"
+            prompt = (config.get("prompt") or "").strip()
+            items = self._resolve_option_picker_items(config)
+            if prompt:
+                resolved_prompt = substitute_variables(prompt, self.state.collected_slots)
+                context_lines.append(
+                    f'CURRENT NODE: Ask the customer (if not already clear from context): "{resolved_prompt}"'
+                )
+            if items:
+                context_lines.append(
+                    f"There are {len(items)} option(s) to choose from. Once the caller "
+                    "clearly indicates which one they want — by name or by position "
+                    f'("the first one", "the second option") — call `{fn_name}` with '
+                    "that ordinal and/or label. Never guess: if it's unclear which one "
+                    "they mean, ask them to clarify first."
+                )
+            else:
+                context_lines.append(
+                    f"CURRENT NODE: Option Picker — no options are currently available "
+                    f"to select from. Do not call `{fn_name}` yet."
+                )
+
         # Every other node type: surface the node's typed instructions so the
         # editor's per-node guidance is honored while that node is active —
         # on live calls exactly as in the simulator (API/CAPABILITY nodes
@@ -2483,6 +2541,7 @@ class FlowExecutor:
                 NodeType.COLLECT_FORM,
                 NodeType.END,
                 NodeType.TRANSFER,
+                NodeType.OPTION_PICKER,
             ]:
                 break
 
@@ -2520,6 +2579,10 @@ class FlowExecutor:
         elif node.type == NodeType.TRANSFER:
             transfer = node.data.get("transfer", {})
             return transfer.get("preTransferMessage", "Please hold while I transfer you.")
+        elif node.type == NodeType.OPTION_PICKER:
+            config = node.data.get("optionPicker", {}) or {}
+            prompt = config.get("prompt", "")
+            return substitute_variables(prompt, self.state.collected_slots, speakable=True) if prompt else ""
         return None
 
     def get_function_schemas(self) -> list[dict]:
@@ -2607,6 +2670,8 @@ class FlowExecutor:
                 functions.append(self._create_transfer_function(node))
             elif node.type == NodeType.END:
                 functions.append(self._create_end_function(node))
+            elif node.type == NodeType.OPTION_PICKER:
+                functions.append(self._create_option_picker_function(node))
 
         # Give a "stuck" waiting MESSAGE node (see
         # _get_pending_message_advance_node) an explicit, real function to
@@ -2713,6 +2778,9 @@ class FlowExecutor:
                 functions.append(func_schema)
             elif node.type == NodeType.END:
                 func_schema = self._create_end_function(node)
+                functions.append(func_schema)
+            elif node.type == NodeType.OPTION_PICKER:
+                func_schema = self._create_option_picker_function(node)
                 functions.append(func_schema)
             elif (
                 node.type == NodeType.MESSAGE
@@ -3157,6 +3225,7 @@ class FlowExecutor:
             "end_call_",
             "continue_flow_",
             "continue_response_",
+            "select_option_",
         )
         if function_name.startswith(action_prefixes):
             exposed = {
@@ -3193,6 +3262,8 @@ class FlowExecutor:
             return await self._handle_message_continue(function_name, arguments)
         elif function_name.startswith("continue_response_"):
             return await self._handle_api_response(function_name, arguments)
+        elif function_name.startswith("select_option_"):
+            return await self._handle_option_picker(function_name, arguments)
         else:
             return {"success": False, "message": "Unknown function", "action": None}
 
@@ -3393,6 +3464,315 @@ class FlowExecutor:
             "action": None,
             "current_node_id": self.state.current_node_id,
         }
+
+    def _create_option_picker_function(self, node: FlowNode) -> dict:
+        """Create a function schema for an OPTION_PICKER node.
+
+        Exposes ``ordinal`` (1-based position in the presented list) and
+        ``label`` (the caller's spoken description) as alternative ways to
+        resolve the same underlying choice — the handler tries ordinal
+        first, then falls back to label matching. When the source array is
+        already resolvable, bounding ``ordinal`` to the live item count
+        gives the LLM a concrete range instead of letting it guess.
+        """
+        config = node.data.get("optionPicker", {}) or {}
+        node_name = node.data.get("name") or "option"
+        items = self._resolve_option_picker_items(config)
+
+        ordinal_schema: dict = {
+            "type": "integer",
+            "description": (
+                "The 1-based position of the caller's choice in the presented "
+                "list (e.g. 2 for \"the second one\")."
+            ),
+        }
+        if items:
+            ordinal_schema["minimum"] = 1
+            ordinal_schema["maximum"] = len(items)
+
+        return {
+            "type": "function",
+            "function": {
+                "name": f"select_option_{node.id}",
+                "description": (
+                    f"Record the caller's selection for {node_name}. Call this only "
+                    "once the caller's choice is clear — by position (\"the first "
+                    "one\") or by name. Provide ordinal, label, or both. Never guess "
+                    "if the caller hasn't actually indicated which one they want."
+                ),
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "ordinal": ordinal_schema,
+                        "label": {
+                            "type": "string",
+                            "description": (
+                                "The caller's spoken name for the chosen item, as "
+                                "close to verbatim as possible."
+                            ),
+                        },
+                    },
+                    "required": [],
+                },
+            },
+        }
+
+    def _resolve_option_picker_items(self, config: dict) -> list:
+        """Resolve an OPTION_PICKER node's source array to a concrete list.
+
+        Mirrors the array resolution used by API_RESPONSE nodes: the configured
+        variable may hold a real list or a JSON-encoded string (both are valid
+        shapes produced by response-mapping). Returns [] for anything else so
+        callers can treat "no items" and "not yet resolved" identically.
+        """
+        source_var = (config.get("sourceVariable") or "").strip()
+        if not source_var:
+            return []
+        raw = self.state.collected_slots.get(source_var)
+        if isinstance(raw, list):
+            return raw
+        if isinstance(raw, str):
+            try:
+                parsed = json.loads(raw)
+                if isinstance(parsed, list):
+                    return parsed
+            except Exception:
+                pass
+        return []
+
+    def _resolve_option_picker_choice(
+        self, items: list, config: dict, arguments: dict
+    ) -> tuple[Optional[tuple[int, Any]], bool]:
+        """Resolve the caller's spoken choice to exactly one (index, item) pair.
+
+        Tries ``ordinal`` first (deterministic 1-based position), then falls
+        back to ``label`` matched against each item's ``labelPath`` field —
+        first an exact case-insensitive match, then a substring match at each
+        stage. Returns ``(None, True)`` when a stage matches more than one
+        item (genuinely ambiguous — this never guesses), and ``(None, False)``
+        when nothing matches at all or the arguments were unusable.
+        """
+        raw_ordinal = arguments.get("ordinal")
+        if isinstance(raw_ordinal, bool):
+            raw_ordinal = None  # bool is an int subclass in Python — reject it
+        if isinstance(raw_ordinal, (int, float)):
+            ordinal = int(raw_ordinal)
+            if 1 <= ordinal <= len(items):
+                return (ordinal - 1, items[ordinal - 1]), False
+
+        raw_label = arguments.get("label")
+        label_path = (config.get("labelPath") or "").strip()
+        if isinstance(raw_label, str) and raw_label.strip() and label_path:
+            needle = raw_label.strip().lower()
+
+            def _label_of(item: Any) -> Optional[str]:
+                value = _get_by_path(item, label_path)
+                return value.strip().lower() if isinstance(value, str) else None
+
+            exact = [
+                (i, it) for i, it in enumerate(items) if _label_of(it) == needle
+            ]
+            if len(exact) == 1:
+                return exact[0], False
+            if len(exact) > 1:
+                return None, True
+
+            contains = [
+                (i, it)
+                for i, it in enumerate(items)
+                if (lambda lbl: lbl is not None and needle in lbl)(_label_of(it))
+            ]
+            if len(contains) == 1:
+                return contains[0], False
+            if len(contains) > 1:
+                return None, True
+
+        return None, False
+
+    @staticmethod
+    def _option_picker_max_retries(config: dict) -> int:
+        """Resolve the retry budget for an OPTION_PICKER (editor ``maxRetries``, default 3)."""
+        raw = (config or {}).get("maxRetries")
+        if isinstance(raw, int) and raw > 0:
+            return raw
+        return 3
+
+    def _handle_option_picker_retry_exhaustion(self, node_id: str, node_name: str) -> dict:
+        """Give up on a selection after ``maxRetries`` failed attempts.
+
+        Mirrors ``_handle_retry_exhaustion``'s priority order (fallback branch
+        → escalation → graceful end) so an Option Picker that can't resolve
+        the caller's choice degrades exactly like a stuck slot collection,
+        never leaving the call stuck in a silent retry loop.
+        """
+        fallback_target = None
+        for edge in self.flow_config.edges:
+            if edge.source == node_id and edge.source_handle == "fallback":
+                fallback_target = edge.target
+                break
+
+        if fallback_target:
+            self.state.advance_to(fallback_target)
+            return {
+                "success": False,
+                "action": None,
+                "retry_exhausted": True,
+                "current_node_id": self.state.current_node_id,
+                "message": f"I'm having trouble narrowing down your {node_name.lower()}. Let's move on.",
+            }
+
+        if self.escalation_target:
+            self.state.transfer_requested = True
+            self.state.transfer_target = self.escalation_target
+            return {
+                "success": False,
+                "action": "transfer",
+                "target": self.escalation_target,
+                "transfer_mode": "warm",
+                "retry_exhausted": True,
+                "message": (
+                    f"I'm having trouble narrowing down your {node_name.lower()}. "
+                    "Let me connect you with someone who can help."
+                ),
+            }
+
+        self.state.is_complete = True
+        return {
+            "success": False,
+            "action": "end",
+            "retry_exhausted": True,
+            "message": (
+                f"I'm sorry, I wasn't able to confirm your {node_name.lower()}. "
+                "Please try again later or reach out to us for help."
+            ),
+        }
+
+    async def _handle_option_picker(self, function_name: str, arguments: dict) -> dict:
+        """Bind the caller's chosen item from a presented list to flow variables.
+
+        Resolves the caller's choice (by 1-based ordinal, by spoken label, or
+        both) against the node's configured source array, then atomically
+        writes every configured ``writes`` mapping from the single matched
+        item — every declared destination variable is (re)written on every
+        successful call, including ``None`` for a field the chosen item
+        doesn't have. That makes re-selection (the caller changes their mind
+        and this node fires again later) safe by construction: a later choice
+        can never leave behind a stale field from an earlier one, without any
+        extra bookkeeping of "what was bound last time".
+        """
+        node_id = function_name[len("select_option_"):]
+        node = self.flow_config._node_index.get(node_id)
+        if not node or node.type != NodeType.OPTION_PICKER:
+            return {"success": False, "message": "Unknown option picker node", "action": None}
+
+        if self.state.current_node_id != node_id:
+            return {
+                "success": False,
+                "message": "That selection is not currently available.",
+                "action": None,
+                "out_of_order": True,
+                "current_node_id": self.state.current_node_id,
+            }
+
+        config = node.data.get("optionPicker", {}) or {}
+        items = self._resolve_option_picker_items(config)
+        node_name = node.data.get("name") or "option"
+
+        if not items:
+            # Structural problem (the upstream step produced no options), not a
+            # caller mistake — never charged against the retry budget.
+            logger.warning(
+                f"_handle_option_picker node {node_id!r}: source variable "
+                f"{config.get('sourceVariable')!r} resolved to no items"
+            )
+            return {
+                "success": False,
+                "action": None,
+                "current_node_id": node_id,
+                "message": "I don't have any options to choose from right now.",
+            }
+
+        match, ambiguous = self._resolve_option_picker_choice(items, config, arguments)
+
+        if match is None:
+            self.state.retry_count += 1
+            if self.state.retry_count >= self._option_picker_max_retries(config):
+                return self._handle_option_picker_retry_exhaustion(node_id, node_name)
+            if ambiguous:
+                retry_message = (
+                    "More than one option matches that — could you give me the "
+                    "number of the one you'd like?"
+                )
+            else:
+                retry_prompt = (config.get("retryPrompt") or "").strip()
+                retry_message = (
+                    substitute_variables(retry_prompt, self.state.collected_slots)
+                    if retry_prompt
+                    else "I didn't catch which option you'd like — could you repeat that, by name or number?"
+                )
+            return {
+                "success": False,
+                "action": None,
+                "current_node_id": node_id,
+                "message": retry_message,
+            }
+
+        index, item = match
+
+        # Build the full write-set before touching any state. If resolving a
+        # path were ever to raise, nothing would have been written yet — the
+        # same all-or-nothing guarantee the router/confirmation handlers rely
+        # on for their own state mutations.
+        writes = config.get("writes", []) or []
+        bound: dict[str, Any] = {}
+        for entry in writes:
+            var_key = (entry or {}).get("variableKey")
+            if not var_key:
+                continue
+            bound[var_key] = _get_by_path(item, entry.get("path", ""))
+
+        for var_key, value in bound.items():
+            self.state.set_variable(var_key, value)
+
+        self.state.retry_count = 0
+
+        next_node = self.state.get_next_node(node_id, handle="selected")
+        if not next_node:
+            next_node = self.state.get_unlabelled_next_node(node_id)
+        next_node_id = next_node.id if next_node else node_id
+        if next_node:
+            self.state.advance_to(next_node.id)
+
+        # If selecting lands straight on END/TRANSFER, execute it rather than
+        # merely surfacing its message text (Task #534 completion-review fix,
+        # applied here for consistency with router/confirmation/set_variable).
+        terminal_result = await self._maybe_execute_terminal_transition(next_node)
+        if terminal_result is not None:
+            return terminal_result
+
+        result: dict = {
+            "success": True,
+            "action": None,
+            "current_node_id": next_node_id,
+            "selected_index": index + 1,
+            "bound": bound,
+        }
+
+        next_node_message, is_static = (
+            self._get_next_node_configured_message(next_node) if next_node else (None, False)
+        )
+        if next_node_message:
+            result["message"] = next_node_message
+            result["speak_directly"] = True
+            if is_static:
+                result["speak_exactly"] = next_node_message
+        else:
+            label_path = (config.get("labelPath") or "").strip()
+            label = _get_by_path(item, label_path) if label_path else None
+            confirm_label = label if isinstance(label, str) and label else f"option {index + 1}"
+            result["message"] = f"Got it — {confirm_label}."
+
+        return result
 
     async def _handle_message_continue(self, function_name: str, arguments: dict) -> dict:
         """Advance past a "stuck" waiting MESSAGE node (Task #600).
@@ -5086,6 +5466,11 @@ class FlowExecutor:
         elif node.type in (NodeType.API_REQUEST, NodeType.CAPABILITY):
             api_config = node.data.get("api", {})
             return (api_config.get("onSuccess", None), False)
+        elif node.type == NodeType.OPTION_PICKER:
+            config = node.data.get("optionPicker", {}) or {}
+            prompt = (config.get("prompt") or "").strip()
+            resolved = substitute_variables(prompt, self.state.collected_slots) if prompt else None
+            return (resolved, False)
 
         return (None, False)
 

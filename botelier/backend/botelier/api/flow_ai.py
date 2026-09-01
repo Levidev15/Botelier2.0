@@ -31,10 +31,11 @@ VALID_NODE_TYPES = {
     "initial", "message", "collect_slot", "collect_form",
     "api_request", "condition", "router", "confirmation",
     "set_variable", "save_record", "transfer", "end",
+    "option_picker",
 }
 
 NODE_SCHEMA_TEXT = """
-NODE TYPES (12 usable types):
+NODE TYPES (13 usable types):
 • initial — Greeting node. Fields: name, systemPrompt (global AI persona), greeting (what AI says first), waitForResponse (bool). Only one per flow.
 • message — Speak a message. Fields: name, message (text, supports {{variable}}), waitForResponse (bool).
 • collect_slot — Ask for one piece of info. Fields: name, slot.variableKey (bare name), slot.prompt, slot.type (text|date|number|phone|email|time|choice), slot.retryPrompt, slot.maxRetries (int).
@@ -47,6 +48,7 @@ NODE TYPES (12 usable types):
 • save_record — Save a structured CRM/PMS record. Fields: name, saveRecord.recordTypeId, saveRecord.recordTypeName, saveRecord.mapping (object: field → "{{variable}}"), saveRecord.status.
 • transfer — Transfer the call. Fields: name, transfer.phoneNumber (supports {{variable}}), transfer.preTransferMessage, transfer.warmTransfer (bool).
 • end — End the call. Fields: name, closingMessage.
+• option_picker — Let the caller pick exactly one item from a list an earlier api_request already produced (e.g. choosing one room rate from several options), and bind chosen fields to variables in one atomic step. Fields: name, optionPicker.sourceVariable (bare name of the array variable), optionPicker.labelPath (dot-path to the item's spoken-label field, e.g. "name"), optionPicker.prompt (what to ask the caller), optionPicker.retryPrompt, optionPicker.maxRetries (int), optionPicker.writes (array of {variableKey (bare name), path (dot-path into the chosen item, e.g. "rate.code")}). Edges: sourceHandle "selected" → after a valid pick; sourceHandle "fallback" → optional, after repeated failed attempts.
 
 VARIABLES: Declared separately. Referenced as {{varName}} in text/template fields, or as bare varName in condition.variable, router.variable, slot.variableKey, setVariable.variableKey, confirmation.variablesToConfirm.
 VARIABLE TYPES: text, number, date, phone, email, time, choice.

@@ -30,6 +30,7 @@ import {
   Settings,
   Code,
   Sparkles,
+  ListChecks,
 } from "lucide-react";
 import { useFlowStore, NodeType, AVAILABLE_TEMPLATES, FlowVersionInfo } from "./store";
 import { toast } from "sonner";
@@ -172,6 +173,15 @@ const nodeTypeConfig: NodeInfo[] = [
     description: "Ends the conversation with a closing message. Every flow path should end with this node.",
     whenToUse: "Use to gracefully close the conversation after completing the guest's request.",
     example: "\"Thank you for booking with us! Your confirmation number is 12345. Goodbye!\""
+  },
+  {
+    type: "option_picker",
+    label: "Option Picker",
+    icon: <ListChecks className="h-3 w-3" />,
+    color: "bg-teal-500",
+    description: "Lets the caller pick exactly one item from a list you already presented, and binds the fields you choose to flow variables in one atomic step.",
+    whenToUse: "Place after an API Response (or any node that produces a list) whenever the caller needs to choose one option — a room rate, a service tier, a delivery slot — before continuing. Works the same for any kind of list, not just rooms.",
+    example: "Caller says \"the second one\" or \"the Deluxe King\" after hearing room rates — the picker binds room_type, rate_code, and price together from that single choice."
   },
 ];
 

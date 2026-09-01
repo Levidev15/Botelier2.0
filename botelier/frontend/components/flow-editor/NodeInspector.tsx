@@ -18,6 +18,7 @@ import {
   TransferNodeData,
   CapabilityNodeData,
   EndNodeData,
+  OptionPickerNodeData,
   NodeType,
 } from "./store";
 
@@ -36,6 +37,7 @@ import SaveRecordNodePanel from "./inspectors/SaveRecordNodePanel";
 import TransferNodePanel from "./inspectors/TransferNodePanel";
 import CapabilityNodePanel from "./inspectors/CapabilityNodePanel";
 import EndNodePanel from "./inspectors/EndNodePanel";
+import OptionPickerNodePanel from "./inspectors/OptionPickerNodePanel";
 
 type Tab = "properties" | "variables" | "instructions";
 
@@ -59,6 +61,7 @@ const nodeAccentColors: Record<string, string> = {
   transfer:     "border-cyan-500",
   capability:   "border-purple-500",
   end:          "border-red-500",
+  option_picker: "border-teal-500",
 };
 
 const nodeTypeLabels: Record<string, string> = {
@@ -76,6 +79,7 @@ const nodeTypeLabels: Record<string, string> = {
   transfer:     "Transfer",
   capability:   "Capability",
   end:          "End",
+  option_picker: "Option Picker",
 };
 
 export default function NodeInspector({
@@ -143,6 +147,8 @@ export default function NodeInspector({
         return <CapabilityNodePanel data={data as CapabilityNodeData} nodeId={selectedNode.id} />;
       case "end":
         return <EndNodePanel data={data as EndNodeData} nodeId={selectedNode.id} />;
+      case "option_picker":
+        return <OptionPickerNodePanel data={data as OptionPickerNodeData} nodeId={selectedNode.id} />;
       default:
         return <p className="text-gray-400 text-sm">Unknown node type</p>;
     }

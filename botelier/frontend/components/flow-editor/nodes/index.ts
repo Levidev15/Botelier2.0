@@ -12,6 +12,7 @@ export { default as SaveRecordNode } from "./SaveRecordNode";
 export { default as TransferNode } from "./TransferNode";
 export { default as CapabilityNode } from "./CapabilityNode";
 export { default as EndNode } from "./EndNode";
+export { default as OptionPickerNode } from "./OptionPickerNode";
 
 import InitialNode from "./InitialNode";
 import MessageNode from "./MessageNode";
@@ -27,6 +28,7 @@ import SaveRecordNode from "./SaveRecordNode";
 import TransferNode from "./TransferNode";
 import CapabilityNode from "./CapabilityNode";
 import EndNode from "./EndNode";
+import OptionPickerNode from "./OptionPickerNode";
 
 export const nodeTypes = {
   initial: InitialNode,
@@ -43,4 +45,5 @@ export const nodeTypes = {
   transfer: TransferNode,
   capability: CapabilityNode,
   end: EndNode,
+  option_picker: OptionPickerNode,
 };

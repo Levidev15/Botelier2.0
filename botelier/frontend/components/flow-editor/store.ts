@@ -185,6 +185,26 @@ export interface TransferConfig {
   transferMode?: "warm" | "cold";
 }
 
+export interface OptionPickerWrite {
+  /** Bare flow-variable name to write the resolved field into. */
+  variableKey: string;
+  /** Dot-path into the selected item (e.g. "rate.code", "images.0.url"). Empty = whole item. */
+  path: string;
+}
+
+export interface OptionPickerConfig {
+  /** Bare name of the flow variable holding the array of choosable items. */
+  sourceVariable: string;
+  /** Dot-path to the field used to match a spoken label and to confirm the pick back to the caller. */
+  labelPath: string;
+  /** What to ask the caller (supports {{variable}}). */
+  prompt: string;
+  retryPrompt?: string;
+  maxRetries?: number;
+  /** Which fields of the chosen item bind to which flow variables — applied atomically, in full, on every selection. */
+  writes: OptionPickerWrite[];
+}
+
 export type NodeType = 
   | "initial" 
   | "message" 
@@ -199,6 +219,7 @@ export type NodeType =
   | "save_record"
   | "transfer" 
   | "capability"
+  | "option_picker"
   | "end";
 
 export interface BaseNodeData {
@@ -289,6 +310,10 @@ export interface TransferNodeData extends BaseNodeData {
 
 export interface EndNodeData extends BaseNodeData {
   closingMessage?: string;
+}
+
+export interface OptionPickerNodeData extends BaseNodeData {
+  optionPicker: OptionPickerConfig;
 }
 
 export type NodeData = BaseNodeData;
@@ -520,6 +545,19 @@ const getDefaultNodeData = (type: NodeType): NodeData => {
         },
       } as CapabilityNodeData;
 
+    case "option_picker":
+      return {
+        name: "Pick Option",
+        optionPicker: {
+          sourceVariable: "",
+          labelPath: "",
+          prompt: "",
+          retryPrompt: "",
+          maxRetries: 3,
+          writes: [],
+        },
+      } as OptionPickerNodeData;
+
     default:
       return { name: "Node" };
   }
@@ -533,6 +571,8 @@ const getNodeStyle = (type: NodeType) => {
       return { stroke: "#6366f1", strokeWidth: 2 };
     case "capability":
       return { stroke: "#a855f7", strokeWidth: 2 };
+    case "option_picker":
+      return { stroke: "#0d9488", strokeWidth: 2 };
     default:
       return { stroke: "#3b82f6", strokeWidth: 2 };
   }

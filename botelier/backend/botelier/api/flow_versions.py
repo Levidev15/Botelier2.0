@@ -520,6 +520,62 @@ def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str], List[str]]
                     f"'{capability}'"
                 )
 
+        elif node_type == "option_picker":
+            picker_cfg = node_data.get("optionPicker", {})
+            source_variable = picker_cfg.get("sourceVariable")
+            if not source_variable:
+                _node_error(f"Option Picker node '{node_name}' has no source array variable")
+            else:
+                _require_declared(source_variable, "Option Picker")
+            if not picker_cfg.get("labelPath"):
+                _node_error(
+                    f"Option Picker node '{node_name}' has no label field configured "
+                    "for matching spoken choices"
+                )
+            writes = picker_cfg.get("writes")
+            if not isinstance(writes, list) or not writes:
+                _node_error(f"Option Picker node '{node_name}' writes no flow variables")
+            else:
+                write_keys = []
+                malformed_write = False
+                for entry in writes:
+                    key = entry.get("variableKey") if isinstance(entry, dict) else None
+                    if not isinstance(key, str) or not key.strip():
+                        malformed_write = True
+                        continue
+                    write_keys.append(key)
+                    _require_declared(key, "Option Picker")
+                if malformed_write:
+                    _node_error(
+                        f"Option Picker node '{node_name}' has a write with no destination variable"
+                    )
+                if len(set(write_keys)) != len(write_keys):
+                    _node_error(
+                        f"Option Picker node '{node_name}' writes the same variable more than once"
+                    )
+            picker_edges = [edge for edge in edges if edge.get("source") == node_id]
+            handles = [edge.get("sourceHandle") for edge in picker_edges]
+            # A single plain edge with no sourceHandle is treated as the
+            # "selected" path (mirrors the confirmation node's legacy-edge
+            # compatibility, and the executor's own unlabelled-edge fallback).
+            legacy_selected_edge = len(picker_edges) == 1 and handles == [None]
+            if handles.count("selected") != 1 and not legacy_selected_edge:
+                _node_error(
+                    f"Option Picker node '{node_name}' must have exactly one 'selected' branch"
+                )
+            if handles.count("fallback") > 1:
+                _node_error(
+                    f"Option Picker node '{node_name}' has more than one 'fallback' branch"
+                )
+            invalid_handles = any(
+                handle not in {"selected", "fallback"} for handle in handles
+            )
+            if invalid_handles and not legacy_selected_edge:
+                _node_error(
+                    f"Option Picker node '{node_name}' has an invalid branch sourceHandle"
+                )
+            template_values.append(picker_cfg)
+
         for placeholder in sorted(_template_variables(template_values)):
             if placeholder not in declared_variables:
                 _node_error(

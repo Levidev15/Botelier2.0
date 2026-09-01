@@ -1242,6 +1242,13 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
                 candidate = f"end_call_{current_node.id}"
                 if candidate not in all_functions_called:
                     forced_name = candidate
+            elif current_node and current_node.type == NodeType.OPTION_PICKER:
+                # Same stall risk as API_REQUEST: "auto" lets the LLM narrate
+                # ("Great, I'll book the first one...") instead of actually
+                # calling select_option_<id>, leaving the pick unbound.
+                candidate = f"select_option_{current_node.id}"
+                if candidate not in all_functions_called:
+                    forced_name = candidate
 
             if forced_name and forced_name in exposed_names:
                 tool_choice = {"type": "function", "function": {"name": forced_name}}
