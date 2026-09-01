@@ -35,34 +35,38 @@ def format_mapped_response(values: Mapping[str, Any]) -> str:
         if len(arrays) == 1:
             key, items = arrays[0]
             lines = [_label(key) + ":"]
-            lines.extend(
-                f"{index}. {_format_value(item)}"
-                for index, item in enumerate(items, start=1)
-                if _format_value(item)
-            )
-            sections.append("\n".join(lines))
+            lines.extend(_format_list_items(items, indent=3))
+            if len(lines) > 1:
+                sections.append("\n".join(lines))
         else:
-            lines = ["Results:"]
+            records: list[str] = []
             for index in range(max_items):
-                fields = [
-                    f"{_label(key)}: {_format_value(items[index])}"
-                    for key, items in arrays
-                    if index < len(items) and _format_value(items[index])
-                ]
+                fields: list[str] = []
+                for key, items in arrays:
+                    if index < len(items):
+                        fields.extend(
+                            _format_field_lines(
+                                _label(key),
+                                items[index],
+                                indent=3,
+                            )
+                        )
                 if fields:
-                    lines.append(f"{index + 1}. " + "; ".join(fields))
-            sections.append("\n".join(lines))
+                    records.append("\n".join([f"{index + 1}.", *fields]))
+            if records:
+                sections.append("Results:\n\n" + "\n\n".join(records))
 
     if scalars:
-        scalar_text = "; ".join(
-            f"{_label(key)}: {_format_value(value)}"
-            for key, value in scalars
-            if _format_value(value)
-        )
-        if scalar_text:
-            sections.append(f"Shared data: {scalar_text}" if arrays else scalar_text)
+        scalar_lines: list[str] = []
+        for key, value in scalars:
+            scalar_lines.extend(
+                _format_field_lines(_label(key), value, indent=3 if arrays else 0)
+            )
+        if scalar_lines:
+            prefix = "Shared data:\n" if arrays else ""
+            sections.append(prefix + "\n".join(scalar_lines))
 
-    return "\n".join(section for section in sections if section).strip()
+    return "\n\n".join(section for section in sections if section).strip()
 
 
 def _label(key: Any) -> str:
@@ -70,21 +74,60 @@ def _label(key: Any) -> str:
     return re.sub(r"[_\-\s]+", " ", str(key)).strip().capitalize()
 
 
-def _format_value(value: Any) -> str:
-    """Recursively format a mapped value without emitting raw JSON or HTML."""
+def _format_field_lines(label: str, value: Any, *, indent: int) -> list[str]:
+    """Render one field and its nested values as structured display lines."""
+    prefix = " " * indent
     if value is None:
-        return ""
+        return []
+
+    if isinstance(value, Mapping):
+        child_lines: list[str] = []
+        for key, item in value.items():
+            child_lines.extend(
+                _format_field_lines(_label(key), item, indent=indent + 3)
+            )
+        return [f"{prefix}{label}:", *child_lines] if child_lines else []
+
+    if isinstance(value, list):
+        item_lines = _format_list_items(value, indent=indent + 2)
+        return [f"{prefix}{label}:", *item_lines] if item_lines else []
+
+    text = _format_scalar(value)
+    return [f"{prefix}{label}: {text}"] if text else []
+
+
+def _format_list_items(items: list[Any], *, indent: int) -> list[str]:
+    """Render a list as readable bullets, preserving nested maps and lists."""
+    prefix = " " * indent
+    lines: list[str] = []
+
+    for item in items:
+        if isinstance(item, Mapping):
+            fields: list[str] = []
+            for key, nested_value in item.items():
+                fields.extend(
+                    _format_field_lines(_label(key), nested_value, indent=indent + 2)
+                )
+            if fields:
+                lines.append(f"{prefix}- {fields[0].lstrip()}")
+                lines.extend(fields[1:])
+        elif isinstance(item, list):
+            nested_items = _format_list_items(item, indent=indent + 2)
+            if nested_items:
+                lines.append(f"{prefix}-")
+                lines.extend(nested_items)
+        else:
+            text = _format_scalar(item)
+            if text:
+                lines.append(f"{prefix}- {text}")
+
+    return lines
+
+
+def _format_scalar(value: Any) -> str:
+    """Convert a non-container API value into display text."""
     if isinstance(value, str):
         return _clean_text(value)
-    if isinstance(value, Mapping):
-        return "; ".join(
-            f"{_label(key)}: {_format_value(item)}"
-            for key, item in value.items()
-            if _format_value(item)
-        )
-    if isinstance(value, list):
-        items = [_format_value(item) for item in value]
-        return "; ".join(item for item in items if item)
     return str(value)
 
 

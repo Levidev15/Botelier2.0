@@ -25,11 +25,16 @@ def test_parallel_arrays_are_joined_by_index_and_keep_missing_tail_data():
         }
     )
 
-    assert "1. Cancellation id: 9999; Cancellation name: Non-refundable" in projection
-    assert "Cancellation rules: Value: 100; Type: Percentage; Text: Non refundable" in projection
-    assert "Cancellation policies text: 48 hours" in projection
-    assert "5. Cancellation id: 10003; Cancellation name: Flexible Cancelation" in projection
-    assert "Results:" in projection
+    assert "Results:\n\n1." in projection
+    assert "   Cancellation id: 9999\n   Cancellation name: Non-refundable" in projection
+    assert (
+        "   Cancellation rules:\n"
+        "     - Value: 100\n"
+        "       Type: Percentage\n"
+        "       Text: Non refundable"
+    ) in projection
+    assert "   Cancellation policies text: 48 hours" in projection
+    assert "\n\n5.\n   Cancellation id: 10003\n   Cancellation name: Flexible Cancelation" in projection
 
 
 def test_regular_values_and_single_arrays_remain_readable():
@@ -40,10 +45,8 @@ def test_regular_values_and_single_arrays_remain_readable():
         }
     )
 
-    assert "Available rooms:" in projection
-    assert "1. King" in projection
-    assert "2. Suite" in projection
-    assert "Shared data: Hotel name: Harbor House" in projection
+    assert "Available rooms:\n   - King\n   - Suite" in projection
+    assert "Shared data:\n   Hotel name: Harbor House" in projection
 
 
 def test_nested_objects_are_readable_without_json_syntax():
@@ -56,7 +59,13 @@ def test_nested_objects_are_readable_without_json_syntax():
         }
     )
 
-    assert projection == "Policy: Name: Flexible; Rule: Before days: 2; Text: No fee"
+    assert projection == (
+        "Policy:\n"
+        "   Name: Flexible\n"
+        "   Rule:\n"
+        "      Before days: 2\n"
+        "      Text: No fee"
+    )
     assert "{" not in projection
 
 
@@ -70,6 +79,8 @@ def test_llm_fallback_uses_the_same_mapped_response_projection():
         },
     )
 
-    assert result.startswith("Cancellation policies found.\nResults:")
-    assert "1. Cancellation id: 9999; Cancellation name: Non-refundable" in result
-    assert "2. Cancellation id: 10003; Cancellation name: Flexible Cancelation" in result
+    assert result.startswith("Cancellation policies found.\nResults:\n\n1.")
+    assert "1.\n   Cancellation id: 9999\n   Cancellation name: Non-refundable" in result
+    assert (
+        "2.\n   Cancellation id: 10003\n   Cancellation name: Flexible Cancelation"
+    ) in result
