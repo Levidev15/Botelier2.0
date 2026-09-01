@@ -2047,21 +2047,17 @@ class VoiceEngineFactory:
                 )
                 _token_send_min_chars = 24
 
-            # Speaking rate: 0.0 = Deepgram default (omitted from URL).
-            # Range −1.0 (50% slower) to +1.0 (50% faster).
-            try:
-                _tts_speed = float(config.tts_config.get("speed", 0) or 0)
-            except (TypeError, ValueError):
-                _tts_speed = 0.0
-            # Expressivity: Aura 2 voices only. 1 = default (omitted from URL);
-            # 0 = flat, 2 = highly expressive.
-            _raw_expressivity = config.tts_config.get("expressivity")
-            try:
-                _tts_expressivity = (
-                    int(_raw_expressivity) if _raw_expressivity is not None else None
-                )
-            except (TypeError, ValueError):
-                _tts_expressivity = None
+            # Speaking rate and expressivity — resolved via the shared helper
+            # so the live engine and the greeting prewarm/cache REST path
+            # (greeting_cache.py) apply identical coercion, clamping, and
+            # capability-boundary (expressivity = Aura 2 only) rules.
+            from .tts_tuning import resolve_tts_speed, resolve_tts_expressivity
+
+            _aura_voice_for_tuning = config.tts_voice_id or "aura-2-helena-en"
+            _tts_speed = resolve_tts_speed(config.tts_config)
+            _tts_expressivity = resolve_tts_expressivity(
+                config.tts_config, _aura_voice_for_tuning
+            )
 
             class _BotelierDeepgramTTSService(DeepgramTTSService):
                 """Deepgram TTS with Botelier-specific enhancements.
@@ -2286,7 +2282,7 @@ class VoiceEngineFactory:
 
             from pipecat.services.tts_service import TextAggregationMode
 
-            voice = config.tts_voice_id or "aura-2-helena-en"
+            voice = _aura_voice_for_tuning
             # Twilio Media Streams require 8 kHz audio; tell Deepgram to encode at
             # 8000 Hz so no downstream resampling is needed before the Twilio
             # serialiser μ-law-encodes it for transmission.
@@ -2378,20 +2374,15 @@ class VoiceEngineFactory:
                 )
                 _flux_token_send_min_chars = 24
 
-            # Speaking rate and expressivity for Flux.
-            try:
-                _flux_tts_speed = float(config.tts_config.get("speed", 0) or 0)
-            except (TypeError, ValueError):
-                _flux_tts_speed = 0.0
-            _raw_flux_expressivity = config.tts_config.get("expressivity")
-            try:
-                _flux_tts_expressivity = (
-                    int(_raw_flux_expressivity)
-                    if _raw_flux_expressivity is not None
-                    else None
-                )
-            except (TypeError, ValueError):
-                _flux_tts_expressivity = None
+            # Speaking rate for Flux. Expressivity is NOT supported on Flux —
+            # Deepgram only documents it for Aura 2 — so resolve_tts_expressivity
+            # is never called here; the shared helper's capability boundary
+            # would return None for a Flux voice anyway, but Flux has no
+            # concept of "expressivity" in its protocol at all, so we don't
+            # even carry a field for it.
+            from .tts_tuning import resolve_tts_speed
+
+            _flux_tts_speed = resolve_tts_speed(config.tts_config)
 
             class _BotelierDeepgramFluxTTSService(DeepgramFluxTTSService):
                 """Deepgram Flux TTS with Botelier-specific enhancements.
@@ -2413,11 +2404,14 @@ class VoiceEngineFactory:
                     self._send_buffer: dict[str, str] = {}
                     self._token_send_min_chars = _flux_token_send_min_chars
                     self._tts_speed = _flux_tts_speed
-                    self._tts_expressivity = _flux_tts_expressivity
                     self._context_done_callbacks: dict[str, Callable] = {}
 
                 async def _connect_websocket(self):
-                    """Connect to Deepgram Flux, injecting speed and expressivity URL params."""
+                    """Connect to Deepgram Flux, injecting the speed URL param.
+
+                    Expressivity is intentionally never sent to Flux — Deepgram
+                    does not document that parameter for the /v2/speak endpoint.
+                    """
                     from websockets.asyncio.client import connect as _ws_connect
                     from websockets.protocol import State
                     try:
@@ -2433,8 +2427,6 @@ class VoiceEngineFactory:
                             params.append(f"mip_opt_out={str(self._mip_opt_out).lower()}")
                         if self._tts_speed:
                             params.append(f"speed={self._tts_speed}")
-                        if self._tts_expressivity is not None and self._tts_expressivity != 1:
-                            params.append(f"expressivity={self._tts_expressivity}")
                         url = f"{self._base_url}/v2/speak?{'&'.join(params)}"
                         headers = {"Authorization": f"Token {self._api_key}"}
                         websocket = await _ws_connect(url, additional_headers=headers)

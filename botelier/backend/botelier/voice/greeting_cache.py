@@ -47,13 +47,28 @@ def _get_cache_dir() -> str:
 def _cache_key(greeting_text: str, tts_config: dict) -> str:
     """Deterministic cache key from greeting text and TTS configuration.
 
-    Incorporates ``model``, ``voice``, fixed ``"8000"`` sample-rate, and fixed
-    ``"linear16"`` encoding.  The cache always stores 8 kHz linear16 PCM
-    regardless of the runtime encoding the assistant may use.
+    Incorporates ``model``, ``voice``, fixed ``"8000"`` sample-rate, fixed
+    ``"linear16"`` encoding, and the resolved ``speed``/``expressivity``
+    tuning values.  The cache always stores 8 kHz linear16 PCM regardless of
+    the runtime encoding the assistant may use — but speed/expressivity DO
+    change what's synthesised, so they must be part of the key: otherwise
+    changing an assistant's speaking rate or expressivity would keep serving
+    stale audio generated under the old settings.
     """
+    from .tts_tuning import build_tuning_params, resolve_tts_expressivity, resolve_tts_speed
+
+    tts_config = tts_config or {}
     model = tts_config.get("voice") or tts_config.get("model") or "aura-2-helena-en"
     voice = tts_config.get("voice") or "aura-2-helena-en"
-    raw = f"{greeting_text}|{model}|{voice}|8000|linear16"
+    speed = resolve_tts_speed(tts_config)
+    expressivity = resolve_tts_expressivity(tts_config, voice)
+    # Hash the same tuning params that actually get sent on the wire (via
+    # build_tuning_params) rather than the raw resolved values — settings
+    # that are functionally equivalent (e.g. expressivity unset vs.
+    # explicit 1, the provider default) must hash identically so they don't
+    # create redundant cache entries for audio that would sound the same.
+    tuning = "&".join(build_tuning_params(speed, expressivity))
+    raw = f"{greeting_text}|{model}|{voice}|8000|linear16|{tuning}"
     return hashlib.sha256(raw.encode()).hexdigest()
 
 
@@ -166,20 +181,35 @@ async def get_or_generate_greeting_audio(
 
         return await asyncio.to_thread(_read_cache)
 
+    from .tts_tuning import build_tuning_params, resolve_tts_expressivity, resolve_tts_speed
+
     model = tts_config.get("voice") or tts_config.get("model") or "aura-2-helena-en"
-    logger.info(
-        f"🎙️ Cache MISS — calling Deepgram TTS REST "
-        f"(model={model}, sr=8000/linear16, key={key[:8]}…)"
-    )
+    voice = tts_config.get("voice") or "aura-2-helena-en"
 
     # Always generate at 8 kHz linear16 PCM, no container, mono.
     # The TwilioFrameSerializer handles PCM→μ-law encoding during playback.
     #
     # Flux TTS uses /v2/speak; Aura uses /v1/speak.  Detect by voice-name prefix.
     speak_version = "v2" if model.startswith("flux-") else "v1"
+
+    # Speed/expressivity must mirror the live engine (engine.py) exactly, or
+    # the cached greeting audibly diverges from the rest of the call. Uses
+    # the same shared resolver — resolve_tts_expressivity already enforces
+    # the Aura-2-only capability boundary, so Flux/Aura-1 voices never get
+    # an expressivity param here either.
+    speed = resolve_tts_speed(tts_config)
+    expressivity = resolve_tts_expressivity(tts_config, voice)
+    tuning_params = build_tuning_params(speed, expressivity)
+    tuning_qs = ("&" + "&".join(tuning_params)) if tuning_params else ""
+
+    logger.info(
+        f"🎙️ Cache MISS — calling Deepgram TTS REST "
+        f"(model={model}, sr=8000/linear16, speed={speed}, expressivity={expressivity}, key={key[:8]}…)"
+    )
+
     url = (
         f"https://api.deepgram.com/{speak_version}/speak"
-        f"?model={model}&encoding=linear16&sample_rate=8000&container=none"
+        f"?model={model}&encoding=linear16&sample_rate=8000&container=none{tuning_qs}"
     )
     headers = {
         "Authorization": f"Token {api_key}",

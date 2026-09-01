@@ -550,7 +550,7 @@ async def _build_bundle(
             _voice = bundle.config.tts_voice_id or "aura-2-helena-en"
             _pcm = await get_or_generate_greeting_audio(
                 greeting_text=bundle.config.greeting_message,
-                tts_config={"voice": _voice},
+                tts_config={**(bundle.config.tts_config or {}), "voice": _voice},
                 api_key=deepgram_api_key,
                 assistant_id=str(bundle.assistant.id),
             )

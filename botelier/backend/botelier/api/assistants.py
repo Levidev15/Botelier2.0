@@ -522,7 +522,7 @@ async def get_greeting_cache_status(
 
     effective_text = greeting_text or assistant.first_message or "Hello! How can I help you today?"
     _voice = assistant.tts_voice or "aura-2-helena-en"
-    tts_cfg = {"voice": _voice}
+    tts_cfg = {**(assistant.tts_config or {}), "voice": _voice}
     status = get_cache_status(effective_text, tts_cfg, assistant_id=assistant_id)
     return {
         "cached": status["cached"],
@@ -577,7 +577,7 @@ async def cache_assistant_greeting(
 
     effective_text = greeting_text or assistant.first_message or "Hello! How can I help you today?"
     _voice = assistant.tts_voice or "aura-2-helena-en"
-    tts_cfg = {"voice": _voice}
+    tts_cfg = {**(assistant.tts_config or {}), "voice": _voice}
 
     try:
         await get_or_generate_greeting_audio(

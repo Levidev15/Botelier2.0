@@ -946,10 +946,10 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
                   </div>
                 </FormField>
 
-                {isDeepgramTtsProvider && (
+                {formData.tts_provider === "deepgram" && (formData.tts_voice || "").includes("aura-2") && (
                   <FormField
                     label="Expressivity"
-                    description="Controls how expressive the voice sounds. Range: 0 (flat) · 1 (natural) · 2 (highly expressive)."
+                    description="Controls how expressive the voice sounds. Aura 2 voices only. Range: 0 (flat) · 1 (natural) · 2 (highly expressive)."
                   >
                     <div className="flex gap-2">
                       {([

@@ -1345,7 +1345,7 @@ class CallHandler:
                             else "aura-2-helena-en"
                         )
                         _voice = config.tts_voice_id or _default_voice
-                        _tts_cfg = {"voice": _voice}
+                        _tts_cfg = {**(config.tts_config or {}), "voice": _voice}
                         _audio = await get_or_generate_greeting_audio(
                             greeting_text=config.greeting_message,
                             tts_config=_tts_cfg,
