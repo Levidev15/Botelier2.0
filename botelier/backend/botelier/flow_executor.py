@@ -2125,9 +2125,18 @@ class FlowExecutor:
         function (e.g. save_record, api_request, confirmation) before it can end the
         call — preventing it from skipping required steps via the global end_call.
         The flow's own end_call_<node_id> is still exposed via get_function_schemas().
+
+        Also True while sitting on a "stuck" MESSAGE node (see
+        ``_get_pending_message_advance_node``): a waiting MESSAGE node with no
+        reachable collect/action node ahead gives the LLM nothing concrete to
+        call, which otherwise leaves it free to improvise (including
+        fabricating a completed outcome) before reaching for the global
+        end_call. Task #600.
         """
         current = self.state.get_current_node()
-        return current is not None and current.type in _ACTION_NODE_TYPES
+        if current is not None and current.type in _ACTION_NODE_TYPES:
+            return True
+        return self._get_pending_message_advance_node() is not None
 
     def has_pending_side_effect_downstream(self) -> bool:
         """Return True if a side-effect node exists on any reachable path ahead.
@@ -2244,6 +2253,51 @@ class FlowExecutor:
                     queue.append(target)
 
         return reachable
+
+    def _get_pending_message_advance_node(self) -> Optional[FlowNode]:
+        """Return the current node when it is a "stuck" waiting MESSAGE node.
+
+        MESSAGE nodes expose no LLM-callable function of their own — their
+        content is delivered purely through node-context guidance in the
+        system prompt. That is harmless as long as a COLLECT_SLOT/COLLECT_FORM
+        or action node (SAVE_RECORD, API_REQUEST, CONFIRMATION, END, TRANSFER,
+        etc.) is reachable ahead: the LLM has something concrete to call once
+        it finishes delivering the message, and calling it implicitly carries
+        the flow state forward past every MESSAGE node in between.
+
+        But when a waiting MESSAGE node (``waitForResponse`` true) leads only
+        to more MESSAGE/CONDITION nodes and nothing the engine can expose —
+        no reachable collect node, no reachable action node — the LLM has
+        *no* flow tool to call. Nothing then ever advances
+        ``current_node_id`` past this point, so the model is left to
+        freelance: invent its own follow-up questions, or narrate a
+        fabricated outcome (e.g. "your booking is confirmed") before falling
+        back to the global end_call. This was the root cause of Task #600's
+        fake-confirmation bug — the flow's configured "disabled" message was
+        never reachable, spoken, or advanced past.
+
+        Returns the current node (so callers can build/gate an explicit
+        ``continue_flow_<id>`` function for it), or None when the LLM
+        already has a real function to call, or the current node is not a
+        waiting MESSAGE node.
+        """
+        current = self.state.get_current_node()
+        if not current or current.type != NodeType.MESSAGE:
+            return None
+        if not current.data.get("waitForResponse", True):
+            return None
+        # A node with no outgoing edge has nothing to advance to — landing on
+        # it already marks the flow exhausted (FlowState.advance_to), so no
+        # further tool call is needed to "unstick" it; requiring one would
+        # gate end_call forever with nothing left for the LLM to call.
+        if not self.state.has_outgoing_edge(current.id):
+            return None
+        next_collect_node, _ = self._find_next_reachable_collect_slot()
+        if next_collect_node is not None:
+            return None
+        if self._get_reachable_action_node_ids():
+            return None
+        return current
 
     def _get_next_slot_instructions(self) -> Optional[dict]:
         """Get instructions for the next slot to collect, with dynamic constraints based on collected values."""
@@ -2534,6 +2588,14 @@ class FlowExecutor:
             elif node.type == NodeType.END:
                 functions.append(self._create_end_function(node))
 
+        # Give a "stuck" waiting MESSAGE node (see
+        # _get_pending_message_advance_node) an explicit, real function to
+        # call so the LLM is never left improvising with zero flow tools —
+        # the root structural cause of Task #600's fake-confirmation bug.
+        pending_message_node = self._get_pending_message_advance_node()
+        if pending_message_node is not None:
+            functions.append(self._create_message_continue_function(pending_message_node))
+
         has_confirmation_node = any(
             node.type == NodeType.CONFIRMATION for node in self.flow_config.nodes
         )
@@ -2626,6 +2688,18 @@ class FlowExecutor:
             elif node.type == NodeType.END:
                 func_schema = self._create_end_function(node)
                 functions.append(func_schema)
+            elif (
+                node.type == NodeType.MESSAGE
+                and node.data.get("waitForResponse", True)
+                and self.state.has_outgoing_edge(node.id)
+            ):
+                # Registered unconditionally for every waiting MESSAGE node
+                # that has somewhere to advance to (handler must exist);
+                # get_function_schemas() only exposes it when the node is
+                # actually "stuck" (see _get_pending_message_advance_node).
+                # Terminal MESSAGE nodes (no outgoing edge) never need this —
+                # arriving there already marks the flow exhausted.
+                functions.append(self._create_message_continue_function(node))
 
         has_confirmation_node = any(
             node.type == NodeType.CONFIRMATION for node in self.flow_config.nodes
@@ -2933,6 +3007,32 @@ class FlowExecutor:
             },
         }
 
+    def _create_message_continue_function(self, node: FlowNode) -> dict:
+        """Create a function schema that advances past a waiting MESSAGE node.
+
+        Exposed only when the node is "stuck" (see
+        ``_get_pending_message_advance_node``) — the LLM otherwise has no
+        flow tool to call once it has delivered the message and heard the
+        caller's reply. Calling it moves the flow to whatever comes next
+        (or marks the flow exhausted when this was the last node), instead
+        of leaving the model to improvise or fabricate an outcome.
+        """
+        return {
+            "type": "function",
+            "function": {
+                "name": f"continue_flow_{node.id}",
+                "description": (
+                    "Call this immediately after you have delivered the current "
+                    "message above (and received any reply from the caller), so "
+                    "the flow can proceed. Call it every time you reach this "
+                    "point — do not skip it, and do not describe any outcome "
+                    "(such as a completed booking or reservation) that this "
+                    "function does not itself confirm."
+                ),
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        }
+
     async def handle_function_call(self, function_name: str, arguments: dict) -> dict:
         """Handle a function call from the LLM, then durably snapshot state.
 
@@ -3024,6 +3124,7 @@ class FlowExecutor:
             "save_record_",
             "transfer_",
             "end_call_",
+            "continue_flow_",
         )
         if function_name.startswith(action_prefixes):
             exposed = {
@@ -3056,8 +3157,41 @@ class FlowExecutor:
             return await self._handle_transfer(function_name, arguments)
         elif function_name.startswith("end_call_"):
             return await self._handle_end_call(function_name, arguments)
+        elif function_name.startswith("continue_flow_"):
+            return await self._handle_message_continue(function_name, arguments)
         else:
             return {"success": False, "message": "Unknown function", "action": None}
+
+    async def _handle_message_continue(self, function_name: str, arguments: dict) -> dict:
+        """Advance past a "stuck" waiting MESSAGE node (Task #600).
+
+        The node itself carries no data to record — this simply acknowledges
+        that its message was delivered and moves the flow to whatever comes
+        next, or marks the flow exhausted when this was the last node.
+        Reachability (the node must currently be the pending one) is already
+        enforced by the ``exposed`` check in ``_dispatch_function_call``.
+        """
+        node_id = function_name[len("continue_flow_"):]
+        node = self.flow_config._node_index.get(node_id)
+        if not node:
+            return {"success": False, "message": "Unknown flow node", "action": None}
+
+        next_node = self.state.get_next_node(node_id)
+        if next_node:
+            self.state.advance_to(next_node.id)
+        else:
+            # No outgoing edge — this was the last node in the graph.
+            # advance_to() marks the flow exhausted when it lands somewhere
+            # with no further edges, so re-affirming the current position
+            # reuses that exact, already-tested logic.
+            self.state.advance_to(node_id)
+
+        return {
+            "success": True,
+            "message": "Continued.",
+            "action": None,
+            "current_node_id": self.state.current_node_id,
+        }
 
     async def _handle_slot_collection(self, function_name: str, arguments: dict) -> dict:
         """Handle collecting a slot value."""
