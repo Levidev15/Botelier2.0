@@ -1,11 +1,12 @@
-"""Tests for TTS speed/expressivity controls (Task #595).
+"""Tests for TTS speed/expressivity controls.
 
 Covers:
-  - Aura branch (_BotelierDeepgramTTSService): speed/expressivity read from
-    tts_config, appended to the /v1/speak WebSocket URL, and omitted at
-    default values.
-  - Flux branch (_BotelierDeepgramFluxTTSService): same behaviour against
-    /v2/speak.
+  - Aura branch (_BotelierDeepgramTTSService): speed read from tts_config and
+    appended to the /v1/speak WebSocket URL. Expressivity is NOT sent to Aura —
+    Deepgram documents it as a Flux-only Beta parameter.
+  - Flux branch (_BotelierDeepgramFluxTTSService): speed AND expressivity read
+    from tts_config and appended to the /v2/speak URL. Range is [-2, 2];
+    default (0) is omitted so unmodified assistants never send an override.
   - Invalid tts_config values fall back to the documented defaults instead
     of raising.
 """
@@ -81,7 +82,7 @@ async def _connect_and_capture_url(svc, module_path: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Aura (/v1/speak)
+# Aura (/v1/speak) — speed only; expressivity is not supported on Aura
 # ---------------------------------------------------------------------------
 
 
@@ -119,35 +120,31 @@ class TestAuraSpeedAndExpressivity:
         assert "speed=" not in url
 
     @pytest.mark.asyncio
-    async def test_expressivity_0_flat_is_appended(self):
-        svc = _make_aura_tts({"expressivity": 0})
-        url = await _connect_and_capture_url(svc, "websockets.asyncio.client")
-        assert "expressivity=0" in url
+    async def test_expressivity_never_sent_to_aura_regardless_of_config(self):
+        # Expressivity is a Flux-only Beta parameter; Aura must never receive
+        # it even when an assistant's tts_config contains a value (e.g.
+        # migrated from an old save).
+        for expr_value in (0, 1, 2, -1):
+            svc = _make_aura_tts({"expressivity": expr_value})
+            url = await _connect_and_capture_url(svc, "websockets.asyncio.client")
+            assert "expressivity=" not in url, (
+                f"Aura must not send expressivity={expr_value} to /v1/speak"
+            )
 
     @pytest.mark.asyncio
-    async def test_expressivity_2_expressive_is_appended(self):
-        svc = _make_aura_tts({"expressivity": 2})
-        url = await _connect_and_capture_url(svc, "websockets.asyncio.client")
-        assert "expressivity=2" in url
-
-    @pytest.mark.asyncio
-    async def test_expressivity_1_default_is_omitted(self):
-        svc = _make_aura_tts({"expressivity": 1})
-        url = await _connect_and_capture_url(svc, "websockets.asyncio.client")
-        assert "expressivity=" not in url
-
-    @pytest.mark.asyncio
-    async def test_both_params_together(self):
+    async def test_speed_still_works_when_expressivity_configured(self):
+        # Expressivity in config must not suppress speed for Aura.
         svc = _make_aura_tts({"speed": 0.3, "expressivity": 2})
         url = await _connect_and_capture_url(svc, "websockets.asyncio.client")
         assert "speed=0.3" in url
-        assert "expressivity=2" in url
+        assert "expressivity=" not in url
 
     def test_invalid_speed_value_falls_back_to_zero(self):
         svc = _make_aura_tts({"speed": "not-a-number"})
         assert svc._tts_speed == 0.0
 
     def test_invalid_expressivity_value_falls_back_to_none(self):
+        # Aura resolver always returns None; bad values must also give None.
         svc = _make_aura_tts({"expressivity": "not-a-number"})
         assert svc._tts_expressivity is None
 
@@ -158,7 +155,7 @@ class TestAuraSpeedAndExpressivity:
 
 
 # ---------------------------------------------------------------------------
-# Flux (/v2/speak)
+# Flux (/v2/speak) — speed AND expressivity (Beta, -2 to 2)
 # ---------------------------------------------------------------------------
 
 
@@ -174,13 +171,14 @@ def _make_flux_tts(tts_config=None):
     )
 
 
-class TestFluxSpeed:
+class TestFluxSpeedAndExpressivity:
     @pytest.mark.asyncio
-    async def test_defaults_omit_speed_from_url(self):
+    async def test_defaults_omit_both_params_from_url(self):
         svc = _make_flux_tts({})
         url = await _connect_and_capture_url(svc, "websockets.asyncio.client")
         assert "/v2/speak" in url
         assert "speed=" not in url
+        assert "expressivity=" not in url
 
     @pytest.mark.asyncio
     async def test_nonzero_speed_is_appended(self):
@@ -189,19 +187,56 @@ class TestFluxSpeed:
         assert "speed=-0.4" in url
 
     @pytest.mark.asyncio
-    async def test_expressivity_is_never_sent_to_flux(self):
-        # Deepgram does not document expressivity for /v2/speak — Flux must
-        # never carry this parameter, even if an assistant's tts_config has
-        # a stale/API-provided expressivity value from before this
-        # capability boundary was enforced.
+    async def test_expressivity_positive_animated_is_appended(self):
+        svc = _make_flux_tts({"expressivity": 2})
+        url = await _connect_and_capture_url(svc, "websockets.asyncio.client")
+        assert "expressivity=2" in url
+
+    @pytest.mark.asyncio
+    async def test_expressivity_negative_calm_is_appended(self):
+        svc = _make_flux_tts({"expressivity": -2})
+        url = await _connect_and_capture_url(svc, "websockets.asyncio.client")
+        assert "expressivity=-2" in url
+
+    @pytest.mark.asyncio
+    async def test_expressivity_minus_one_subdued_is_appended(self):
+        svc = _make_flux_tts({"expressivity": -1})
+        url = await _connect_and_capture_url(svc, "websockets.asyncio.client")
+        assert "expressivity=-1" in url
+
+    @pytest.mark.asyncio
+    async def test_expressivity_default_zero_is_omitted(self):
+        # 0 is the Deepgram Flux default — omit it so unmodified assistants
+        # never send a redundant override.
         svc = _make_flux_tts({"expressivity": 0})
         url = await _connect_and_capture_url(svc, "websockets.asyncio.client")
         assert "expressivity=" not in url
-        assert not hasattr(svc, "_tts_expressivity")
+
+    @pytest.mark.asyncio
+    async def test_expressivity_unset_is_omitted(self):
+        svc = _make_flux_tts({})
+        url = await _connect_and_capture_url(svc, "websockets.asyncio.client")
+        assert "expressivity=" not in url
+
+    @pytest.mark.asyncio
+    async def test_speed_and_expressivity_together(self):
+        svc = _make_flux_tts({"speed": -0.2, "expressivity": -2})
+        url = await _connect_and_capture_url(svc, "websockets.asyncio.client")
+        assert "speed=-0.2" in url
+        assert "expressivity=-2" in url
 
     def test_invalid_speed_value_falls_back_to_zero(self):
         svc = _make_flux_tts({"speed": None})
         assert svc._tts_speed == 0.0
+
+    def test_invalid_expressivity_value_falls_back_to_none(self):
+        svc = _make_flux_tts({"expressivity": "not-a-number"})
+        assert svc._tts_expressivity is None
+
+    def test_missing_config_defaults_to_no_overrides(self):
+        svc = _make_flux_tts(None)
+        assert svc._tts_speed == 0.0
+        assert svc._tts_expressivity is None
 
 
 # ---------------------------------------------------------------------------
@@ -217,23 +252,47 @@ class TestSharedResolverClampingAndCapabilityBoundary:
         assert resolve_tts_speed({"speed": -9.0}) == -1.0
         assert resolve_tts_speed({"speed": 0.25}) == 0.25
 
-    def test_expressivity_is_clamped_to_supported_range(self):
+    def test_expressivity_is_clamped_to_flux_range(self):
         from botelier.voice.tts_tuning import resolve_tts_expressivity
 
-        assert resolve_tts_expressivity({"expressivity": 99}, "aura-2-helena-en") == 2
-        assert resolve_tts_expressivity({"expressivity": -5}, "aura-2-helena-en") == 0
+        # Values beyond [-2, 2] are clamped, not rejected.
+        assert resolve_tts_expressivity({"expressivity": 99}, "flux-haley-en") == 2
+        assert resolve_tts_expressivity({"expressivity": -99}, "flux-haley-en") == -2
 
-    def test_expressivity_is_none_for_non_aura2_voices(self):
+    def test_expressivity_is_none_for_non_flux_voices(self):
         from botelier.voice.tts_tuning import resolve_tts_expressivity
 
+        # Expressivity is Flux-only; Aura, Aura-2, and blank must return None.
+        assert resolve_tts_expressivity({"expressivity": 2}, "aura-2-helena-en") is None
         assert resolve_tts_expressivity({"expressivity": 2}, "aura-asteria-en") is None
-        assert resolve_tts_expressivity({"expressivity": 2}, "flux-alexis-en") is None
         assert resolve_tts_expressivity({"expressivity": 2}, "") is None
+        assert resolve_tts_expressivity({"expressivity": 2}, None) is None
 
-    def test_expressivity_applies_for_aura2_voices(self):
+    def test_expressivity_applies_for_flux_voices(self):
         from botelier.voice.tts_tuning import resolve_tts_expressivity
 
-        assert resolve_tts_expressivity({"expressivity": 2}, "aura-2-helena-en") == 2
+        assert resolve_tts_expressivity({"expressivity": -1}, "flux-alexis-en") == -1
+        assert resolve_tts_expressivity({"expressivity": 2}, "flux-haley-en") == 2
+
+    def test_expressivity_none_when_unset_for_flux(self):
+        from botelier.voice.tts_tuning import resolve_tts_expressivity
+
+        assert resolve_tts_expressivity({}, "flux-alexis-en") is None
+
+    def test_build_tuning_params_omits_zero_expressivity(self):
+        from botelier.voice.tts_tuning import build_tuning_params
+
+        # 0 is the Flux provider default — omit it.
+        params = build_tuning_params(0.0, 0)
+        assert "expressivity=" not in " ".join(params)
+
+    def test_build_tuning_params_includes_nonzero_expressivity(self):
+        from botelier.voice.tts_tuning import build_tuning_params
+
+        assert "expressivity=-2" in build_tuning_params(0.0, -2)
+        assert "expressivity=2" in build_tuning_params(0.0, 2)
+        assert "expressivity=-1" in build_tuning_params(0.0, -1)
+        assert "expressivity=1" in build_tuning_params(0.0, 1)
 
 
 # ---------------------------------------------------------------------------
@@ -246,40 +305,42 @@ class TestGreetingCacheSpeedExpressivityParity:
     def test_cache_key_changes_with_speed(self):
         from botelier.voice.greeting_cache import _cache_key
 
-        base = _cache_key("Hello!", {"voice": "aura-2-helena-en"})
-        faster = _cache_key("Hello!", {"voice": "aura-2-helena-en", "speed": 0.5})
+        base = _cache_key("Hello!", {"voice": "flux-haley-en"})
+        faster = _cache_key("Hello!", {"voice": "flux-haley-en", "speed": 0.5})
         assert base != faster
 
-    def test_cache_key_changes_with_expressivity(self):
+    def test_cache_key_changes_with_expressivity_for_flux(self):
+        from botelier.voice.greeting_cache import _cache_key
+
+        # Default (no expressivity) vs. expressivity=-2 must produce different keys.
+        base = _cache_key("Hello!", {"voice": "flux-haley-en"})
+        calm = _cache_key("Hello!", {"voice": "flux-haley-en", "expressivity": -2})
+        assert base != calm
+
+    def test_cache_key_ignores_expressivity_for_aura_voice(self):
+        # Expressivity is not sent to Aura, so any expressivity value in
+        # tts_config must not perturb the cache key for Aura voices.
         from botelier.voice.greeting_cache import _cache_key
 
         base = _cache_key("Hello!", {"voice": "aura-2-helena-en"})
-        flat = _cache_key("Hello!", {"voice": "aura-2-helena-en", "expressivity": 0})
-        assert base != flat
-
-    def test_cache_key_ignores_expressivity_for_non_aura2_voice(self):
-        # resolve_tts_expressivity returns None for non-Aura-2 voices, so an
-        # expressivity value on e.g. a Flux tts_config must not perturb the
-        # key (there's nothing for it to affect).
-        from botelier.voice.greeting_cache import _cache_key
-
-        base = _cache_key("Hello!", {"voice": "flux-alexis-en"})
         with_expressivity = _cache_key(
-            "Hello!", {"voice": "flux-alexis-en", "expressivity": 2}
+            "Hello!", {"voice": "aura-2-helena-en", "expressivity": 2}
         )
         assert base == with_expressivity
 
-    def test_cache_key_stable_for_default_values(self):
+    def test_cache_key_stable_for_default_expressivity_zero_on_flux(self):
+        # Explicit expressivity=0 must match the implicit default (no key set)
+        # since 0 is the Flux provider default and is omitted from the wire.
         from botelier.voice.greeting_cache import _cache_key
 
-        implicit_default = _cache_key("Hello!", {"voice": "aura-2-helena-en"})
-        explicit_default = _cache_key(
-            "Hello!", {"voice": "aura-2-helena-en", "speed": 0, "expressivity": 1}
+        implicit = _cache_key("Hello!", {"voice": "flux-haley-en"})
+        explicit_zero = _cache_key(
+            "Hello!", {"voice": "flux-haley-en", "speed": 0, "expressivity": 0}
         )
-        assert implicit_default == explicit_default
+        assert implicit == explicit_zero
 
     @pytest.mark.asyncio
-    async def test_rest_call_includes_speed_and_expressivity_for_aura(self, tmp_path, monkeypatch):
+    async def test_rest_call_sends_expressivity_for_flux(self, tmp_path, monkeypatch):
         from botelier.voice import greeting_cache
 
         monkeypatch.setattr(greeting_cache, "_CACHE_DIR", str(tmp_path))
@@ -310,47 +371,50 @@ class TestGreetingCacheSpeedExpressivityParity:
 
         await greeting_cache.get_or_generate_greeting_audio(
             "Hello!",
-            {"voice": "aura-2-helena-en", "speed": 0.5, "expressivity": 0},
-            api_key="test-key",
-        )
-        assert "speed=0.5" in captured["url"]
-        assert "expressivity=0" in captured["url"]
-
-    @pytest.mark.asyncio
-    async def test_rest_call_never_sends_expressivity_for_flux(self, tmp_path, monkeypatch):
-        from botelier.voice import greeting_cache
-
-        monkeypatch.setattr(greeting_cache, "_CACHE_DIR", str(tmp_path))
-
-        captured = {}
-
-        class _FakeResponse:
-            content = b"\x00\x01" * 200
-
-            def raise_for_status(self):
-                pass
-
-        class _FakeAsyncClient:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            async def __aenter__(self):
-                return self
-
-            async def __aexit__(self, *args):
-                return False
-
-            async def post(self, url, headers=None, json=None):
-                captured["url"] = url
-                return _FakeResponse()
-
-        monkeypatch.setattr(greeting_cache.httpx, "AsyncClient", _FakeAsyncClient)
-
-        await greeting_cache.get_or_generate_greeting_audio(
-            "Hello!",
-            {"voice": "flux-alexis-en", "speed": 0.3, "expressivity": 2},
+            {"voice": "flux-haley-en", "speed": 0.3, "expressivity": -2},
             api_key="test-key",
         )
         assert "/v2/speak" in captured["url"]
         assert "speed=0.3" in captured["url"]
+        assert "expressivity=-2" in captured["url"]
+
+    @pytest.mark.asyncio
+    async def test_rest_call_never_sends_expressivity_for_aura(self, tmp_path, monkeypatch):
+        # Aura (/v1/speak) must not receive an expressivity param even if
+        # tts_config has one stored.
+        from botelier.voice import greeting_cache
+
+        monkeypatch.setattr(greeting_cache, "_CACHE_DIR", str(tmp_path))
+
+        captured = {}
+
+        class _FakeResponse:
+            content = b"\x00\x01" * 200
+
+            def raise_for_status(self):
+                pass
+
+        class _FakeAsyncClient:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, *args):
+                return False
+
+            async def post(self, url, headers=None, json=None):
+                captured["url"] = url
+                return _FakeResponse()
+
+        monkeypatch.setattr(greeting_cache.httpx, "AsyncClient", _FakeAsyncClient)
+
+        await greeting_cache.get_or_generate_greeting_audio(
+            "Hello!",
+            {"voice": "aura-2-helena-en", "speed": 0.5, "expressivity": 2},
+            api_key="test-key",
+        )
+        assert "/v1/speak" in captured["url"]
+        assert "speed=0.5" in captured["url"]
         assert "expressivity=" not in captured["url"]

@@ -7,8 +7,11 @@ the ``speed`` and ``expressivity`` knobs so the live WebSocket engine
 cached/prewarmed greeting — the first thing every caller hears — can
 silently diverge from the rest of the call.
 
-Capability boundary: Deepgram only documents ``expressivity`` for Aura 2
-voices. Aura 1 and Flux voices must never receive it.
+Capability boundary: Deepgram documents ``expressivity`` (Beta) for Flux TTS
+voices only (/v2/speak, both streaming and batch).  Aura and Aura-2 voices
+(/v1/speak) do not support it.  The parameter shifts a Flux voice's delivery
+register along a calm-to-animated axis (-2 calm → 0 natural default → 2
+animated).
 """
 
 from typing import Optional
@@ -26,12 +29,13 @@ def resolve_tts_speed(tts_config: dict) -> float:
 
 
 def resolve_tts_expressivity(tts_config: dict, voice: str) -> Optional[int]:
-    """Coerce and clamp ``tts_config['expressivity']`` to [0, 2].
+    """Coerce and clamp ``tts_config['expressivity']`` to [-2, 2].
 
-    Returns ``None`` when unset, invalid, or when *voice* is not an Aura 2
-    voice (expressivity is not a supported parameter outside Aura 2).
+    Returns ``None`` when unset, invalid, or when *voice* is not a Flux voice.
+    Expressivity is a Flux-only Beta parameter; Aura and Aura-2 voices do not
+    support it on /v1/speak.
     """
-    if not voice or "aura-2" not in voice:
+    if not voice or not voice.startswith("flux-"):
         return None
     raw = (tts_config or {}).get("expressivity")
     if raw is None:
@@ -40,16 +44,16 @@ def resolve_tts_expressivity(tts_config: dict, voice: str) -> Optional[int]:
         value = int(raw)
     except (TypeError, ValueError):
         return None
-    return max(0, min(2, value))
+    return max(-2, min(2, value))
 
 
 def build_tuning_params(speed: float, expressivity: Optional[int]) -> list[str]:
     """Build the ``speed=``/``expressivity=`` URL query fragments, omitting
-    values that equal the provider default (0 for speed, 1 for
+    values that equal the provider default (0 for speed, 0 for
     expressivity) so unmodified assistants never send an override."""
     params: list[str] = []
     if speed:
         params.append(f"speed={speed}")
-    if expressivity is not None and expressivity != 1:
+    if expressivity is not None and expressivity != 0:
         params.append(f"expressivity={expressivity}")
     return params

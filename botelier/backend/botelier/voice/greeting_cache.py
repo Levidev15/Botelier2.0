@@ -194,9 +194,9 @@ async def get_or_generate_greeting_audio(
 
     # Speed/expressivity must mirror the live engine (engine.py) exactly, or
     # the cached greeting audibly diverges from the rest of the call. Uses
-    # the same shared resolver — resolve_tts_expressivity already enforces
-    # the Aura-2-only capability boundary, so Flux/Aura-1 voices never get
-    # an expressivity param here either.
+    # the same shared resolver — resolve_tts_expressivity enforces the
+    # Flux-only capability boundary, so Aura/Aura-2 voices never carry an
+    # expressivity param, and Flux voices use the corrected [-2, 2] range.
     speed = resolve_tts_speed(tts_config)
     expressivity = resolve_tts_expressivity(tts_config, voice)
     tuning_params = build_tuning_params(speed, expressivity)

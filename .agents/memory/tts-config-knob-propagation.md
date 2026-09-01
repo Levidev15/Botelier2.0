@@ -33,3 +33,11 @@ that also matches sibling models/voices which don't support it. Prefer
 centralizing the coercion + capability-boundary + range-clamping logic for
 such a knob in one shared helper used by every construction path, so the
 boundary can't drift out of sync between call sites.
+
+**Concrete example — expressivity:** the code originally gated expressivity
+on `"aura-2" in voice` (Deepgram's old attribution). When Deepgram later
+released it as a Flux-only Beta feature (`-2 calm → 0 default → 2 animated`
+on `/v2/speak`), Aura-2 explicitly lost it. The capability boundary in
+`resolve_tts_expressivity` now checks `voice.startswith("flux-")`. This also
+changed the "default to omit" value from `1` to `0`, which required a
+corresponding update to `build_tuning_params`.

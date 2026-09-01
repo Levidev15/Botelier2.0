@@ -946,18 +946,20 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
                   </div>
                 </FormField>
 
-                {formData.tts_provider === "deepgram" && (formData.tts_voice || "").includes("aura-2") && (
+                {formData.tts_provider === "deepgram-flux" && (
                   <FormField
-                    label="Expressivity"
-                    description="Controls how expressive the voice sounds. Aura 2 voices only. Range: 0 (flat) · 1 (natural) · 2 (highly expressive)."
+                    label="Expressivity (Beta)"
+                    description="Shifts the voice's delivery register. Flux voices only. −2 = calm/steady · 0 = natural default · 2 = animated/wide pitch range."
                   >
                     <div className="flex gap-2">
                       {([
-                        { value: 0, label: "0", sub: "Flat" },
-                        { value: 1, label: "1", sub: "Natural" },
-                        { value: 2, label: "2", sub: "Expressive" },
+                        { value: -2, label: "−2", sub: "Calm" },
+                        { value: -1, label: "−1", sub: "Subdued" },
+                        { value: 0, label: "0", sub: "Natural" },
+                        { value: 1, label: "+1", sub: "Animated" },
+                        { value: 2, label: "+2", sub: "Very animated" },
                       ] as { value: number; label: string; sub: string }[]).map(({ value, label, sub }) => {
-                        const current = formData.tts_config?.expressivity ?? 1;
+                        const current = formData.tts_config?.expressivity ?? 0;
                         const isActive = current === value;
                         return (
                           <button

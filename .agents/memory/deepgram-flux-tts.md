@@ -24,5 +24,11 @@ Flux TTS uses `/v2/speak` (not `/v1/speak`), sends `Interrupt` for barge-in (not
 ## Conversation context
 Flux is conversation-aware through the **persistent WebSocket connection** — no explicit transcript-passing is needed. The connection stays open for the call duration and Flux maintains acoustic state internally.
 
+## Expressivity (Beta)
+Flux supports `expressivity` as a connection query param (`-2` calm → `0` default → `2` animated); Aura/Aura-2 do NOT. Omit when `== 0` (the provider default). `resolve_tts_expressivity` in `tts_tuning.py` enforces this boundary by checking `voice.startswith("flux-")`.
+
+## Speed scale mismatch
+Deepgram Flux expects speed as a **discrete multiplier** (`0.85`, `0.9` … `1.15` in 0.05 steps), not the internal −1..+1 offset our UI exposes. Sending an out-of-range value returns `SPEED_NOT_SUPPORTED`. Aura `/v1/speak` uses a different (relative offset) scale that our code already handles correctly — the mismatch is Flux-specific.
+
 ## Voices
 36 voices, format `flux-{name}-en`. Featured for IVR: alexis, haley, heather (female); miles, cole (male). All listed in `providers.py` `DEEPGRAM_FLUX` config.
