@@ -652,20 +652,16 @@ def substitute_variables(
 def _build_api_voice_result(success_msg: str, extracted_vars: dict[str, Any]) -> str:
     """Fallback voice result for API nodes whose ``responseInstructions`` is blank.
 
-    Returns *success_msg* plus a compact, bounded summary of every extracted
-    variable so the LLM has the data it needs without seeing the raw API
-    response body.  At most 6 variables are included; values longer than 200
-    characters are truncated with an ellipsis.
+    Returns *success_msg* plus the display-only mapped-response projection. The
+    original values remain unchanged in flow state; this is solely what the LLM
+    reads when no designer-authored Voice result script is configured.
     """
     if not extracted_vars:
         return success_msg
-    lines: list[str] = []
-    for key, value in list(extracted_vars.items())[:6]:
-        formatted = _format_variable_value(value)
-        if len(formatted) > 200:
-            formatted = formatted[:197] + "..."
-        lines.append(f"{key}: {formatted}")
-    return f"{success_msg}. Extracted data — {'; '.join(lines)}"
+    from botelier.services.response_projection import format_mapped_response
+
+    projection = format_mapped_response(extracted_vars)
+    return f"{success_msg}.\n{projection}" if projection else success_msg
 
 
 def _coerce_number(value: Any) -> Optional[float]:

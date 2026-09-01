@@ -554,7 +554,15 @@ async def test_operation(
     mapping_diagnostics = None
     if effective_mapping:
         extracted = result.extracted_variables or {}
-        projected = {k: v for k, v in extracted.items() if v is not None}
+        # Keep mapping values untouched for execution, but return the exact
+        # readable projection the LLM receives when an API operation runs.
+        # This makes the test panel an honest preview instead of displaying
+        # disconnected parallel arrays that no caller or model can use easily.
+        from botelier.services.response_projection import format_mapped_response
+
+        projected = format_mapped_response(
+            {key: value for key, value in extracted.items() if value is not None}
+        ) or None
         mapping_diagnostics = [
             {
                 "variable": str(key),

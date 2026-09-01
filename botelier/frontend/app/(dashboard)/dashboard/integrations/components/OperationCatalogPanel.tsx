@@ -82,7 +82,7 @@ export default function OperationCatalogPanel({
 
   const [testParams, setTestParams] = useState<Record<string, string>>({});
   const [testing, setTesting] = useState(false);
-  const [testProjected, setTestProjected] = useState<Record<string, unknown> | null>(null);
+  const [testProjected, setTestProjected] = useState<string | null>(null);
   const [suggestedMappings, setSuggestedMappings] = useState<Array<{
     variable_key: string;
     json_path: string;
@@ -104,7 +104,7 @@ export default function OperationCatalogPanel({
     success: boolean;
     status_code: number | null;
     data: unknown;
-    projected: Record<string, unknown> | null;
+    projected: string | null;
     error_message: string | null;
     latency_ms: number | null;
     warnings: string[];
@@ -919,7 +919,7 @@ function TestTab({
     success: boolean;
     status_code: number | null;
     data: unknown;
-    projected: Record<string, unknown> | null;
+    projected: string | null;
     error_message: string | null;
     latency_ms: number | null;
     warnings: string[];
@@ -1046,11 +1046,11 @@ function TestTab({
               ))}
             </div>
           )}
-          {result.projected != null && Object.keys(result.projected).length > 0 && (
+          {result.projected?.trim() && (
             <div>
               <p className="text-xs text-green-500 mb-1">Projected (what LLM sees)</p>
               <pre className="text-xs bg-[#0a0a0a] border border-green-900 rounded p-3 text-green-300 overflow-x-auto max-h-48 whitespace-pre-wrap">
-                {JSON.stringify(result.projected, null, 2)}
+                {result.projected}
               </pre>
             </div>
           )}
@@ -1112,7 +1112,7 @@ function FieldsTab({
   variables: Array<{ name: string; ownership?: string }>;
   onSave: () => void;
   saving: boolean;
-  testProjected: Record<string, unknown> | null;
+  testProjected: string | null;
   suggestedMappings: SuggestionItem[];
   aiSuggestions: SuggestionItem[];
   generatingAI: boolean;
@@ -1283,13 +1283,13 @@ function FieldsTab({
         )}
       </div>
 
-      {testProjected != null && Object.keys(testProjected).length > 0 && (
+      {testProjected?.trim() && (
         <div>
           <p className="text-xs text-green-500 mb-1">
             Last test — projected output (what the LLM would receive)
           </p>
           <pre className="text-xs bg-[#0a0a0a] border border-green-900 rounded p-3 text-green-300 overflow-x-auto max-h-48 whitespace-pre-wrap">
-            {JSON.stringify(testProjected, null, 2)}
+            {testProjected}
           </pre>
         </div>
       )}
