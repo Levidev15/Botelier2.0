@@ -66,11 +66,36 @@ function APIResponseNode({ data, selected }: APIResponseNodeProps) {
         )}
       </div>
 
-      <Handle
-        type="source"
-        position={Position.Bottom}
-        className="!w-3 !h-3 !bg-amber-500 !border-2 !border-amber-300"
-      />
+      {/* Two output handles — only shown when an array variable is wired */}
+      {cfg.arrayVariable ? (
+        <>
+          <div className="flex justify-between px-3 pb-1.5 pt-0.5">
+            <span className="text-[9px] text-green-400/70 font-medium">Has results</span>
+            <span className="text-[9px] text-red-400/60 font-medium">No results</span>
+          </div>
+          <Handle
+            type="source"
+            position={Position.Bottom}
+            id="has_results"
+            style={{ left: "28%" }}
+            className="!w-3 !h-3 !bg-green-500 !border-2 !border-green-300"
+          />
+          <Handle
+            type="source"
+            position={Position.Bottom}
+            id="no_results"
+            style={{ left: "72%" }}
+            className="!w-3 !h-3 !bg-red-500 !border-2 !border-red-300"
+          />
+        </>
+      ) : (
+        <Handle
+          type="source"
+          position={Position.Bottom}
+          id="has_results"
+          className="!w-3 !h-3 !bg-amber-500 !border-2 !border-amber-300"
+        />
+      )}
     </div>
   );
 }

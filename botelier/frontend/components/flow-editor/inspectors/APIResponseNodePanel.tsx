@@ -390,6 +390,37 @@ export default function APIResponseNodePanel({ data, nodeId }: Props) {
         </div>
       )}
 
+      {/* ── Output paths ─────────────────────────────────────────────────── */}
+      {cfg.arrayVariable && (
+        <div className="rounded-lg border border-gray-700/60 bg-gray-900/40 p-3 space-y-2">
+          <p className="text-xs font-medium text-gray-400">Output paths</p>
+          <div className="space-y-1.5">
+            <div className="flex items-start gap-2">
+              <span className="mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full bg-green-500 border-2 border-green-300" />
+              <div>
+                <p className="text-xs font-medium text-green-400">Has results</p>
+                <p className="text-[11px] text-gray-500">
+                  The array variable had at least one item — results were spoken.
+                </p>
+              </div>
+            </div>
+            <div className="flex items-start gap-2">
+              <span className="mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full bg-red-500 border-2 border-red-300" />
+              <div>
+                <p className="text-xs font-medium text-red-400">No results</p>
+                <p className="text-[11px] text-gray-500">
+                  The array was empty or not found — the no-results text was spoken.
+                  Wire this to a transfer, a follow-up question, or an end node.
+                </p>
+              </div>
+            </div>
+          </div>
+          <p className="text-[11px] text-gray-600 border-t border-gray-700/50 pt-2">
+            If neither handle is connected, the flow continues on any unlabelled edge (backward-compatible with single-output flows).
+          </p>
+        </div>
+      )}
+
       {/* ── How it works callout ─────────────────────────────────────────── */}
       <div className="bg-amber-900/10 border border-amber-700/30 rounded-lg p-3 text-xs text-amber-300/70 space-y-1">
         <p className="font-medium text-amber-300/90">How it works</p>

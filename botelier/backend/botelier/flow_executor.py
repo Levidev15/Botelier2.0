@@ -3315,20 +3315,55 @@ class FlowExecutor:
             },
         }
 
+    def _api_response_has_results(self, node: FlowNode) -> bool:
+        """Return True when the node's array variable resolves to a non-empty list.
+
+        Used by ``_handle_api_response`` to pick the correct output handle
+        (``has_results`` vs ``no_results``) for branching.  Fixed-narration
+        mode (no arrayVariable configured) is treated as "has results" so the
+        flow always continues forward on the default path.
+        """
+        import json as _json
+
+        config = node.data.get("responsePresentation", {}) or {}
+        array_var = (config.get("arrayVariable") or "").strip()
+        if not array_var:
+            # No array variable — fixed narration, always "has results".
+            return True
+        raw = self.state.collected_slots.get(array_var)
+        if isinstance(raw, list):
+            return len(raw) > 0
+        if isinstance(raw, str):
+            try:
+                parsed = _json.loads(raw)
+                if isinstance(parsed, list):
+                    return len(parsed) > 0
+            except Exception:
+                pass
+        return False
+
     async def _handle_api_response(self, function_name: str, arguments: dict) -> dict:
         """Advance the flow past an API_RESPONSE node.
 
-        The narration has already been delivered (by function_mapper on live
-        calls, or by the simulation engine in the simulator). This handler
-        simply moves the flow pointer to the next node — mirroring
-        ``_handle_message_continue`` for MESSAGE nodes.
+        Routes via the ``has_results`` or ``no_results`` source handle so
+        designers can wire different downstream paths for each case.  Falls
+        back to any unlabelled edge for backward compatibility with flows
+        built before dual-handle support was added.
         """
         node_id = function_name[len("continue_response_"):]
         node = self.flow_config._node_index.get(node_id)
         if not node:
             return {"success": False, "message": "Unknown response node", "action": None}
 
-        next_node = self.state.get_next_node(node_id)
+        has_results = self._api_response_has_results(node)
+        handle = "has_results" if has_results else "no_results"
+
+        # Try the specific handle first; fall back to an unlabelled edge so
+        # flows built before dual-handle support still advance normally.
+        next_node = self.state.get_next_node(node_id, handle=handle)
+        if not next_node:
+            next_node = self.state.get_next_node(node_id)
+
         if next_node:
             self.state.advance_to(next_node.id)
         else:
@@ -3337,6 +3372,7 @@ class FlowExecutor:
         return {
             "success": True,
             "message": "Response presented.",
+            "has_results": has_results,
             "action": None,
             "current_node_id": self.state.current_node_id,
         }
