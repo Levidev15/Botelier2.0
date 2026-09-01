@@ -9,6 +9,7 @@ import {
   CollectSlotNodeData,
   CollectFormNodeData,
   APIRequestNodeData,
+  APIResponseNodeData,
   ConditionNodeData,
   RouterNodeData,
   ConfirmationNodeData,
@@ -26,6 +27,7 @@ import MessageNodePanel from "./inspectors/MessageNodePanel";
 import CollectSlotNodePanel from "./inspectors/CollectSlotNodePanel";
 import CollectFormNodePanel from "./inspectors/CollectFormNodePanel";
 import APIRequestNodePanel from "./inspectors/APIRequestNodePanel";
+import APIResponseNodePanel from "./inspectors/APIResponseNodePanel";
 import ConditionNodePanel from "./inspectors/ConditionNodePanel";
 import RouterNodePanel from "./inspectors/RouterNodePanel";
 import ConfirmationNodePanel from "./inspectors/ConfirmationNodePanel";
@@ -48,6 +50,7 @@ const nodeAccentColors: Record<string, string> = {
   collect_slot: "border-purple-500",
   collect_form: "border-violet-500",
   api_request:  "border-orange-500",
+  api_response: "border-amber-500",
   condition:    "border-yellow-500",
   router:       "border-indigo-500",
   confirmation: "border-emerald-500",
@@ -64,6 +67,7 @@ const nodeTypeLabels: Record<string, string> = {
   collect_slot: "Collect Input",
   collect_form: "Collect Form",
   api_request:  "API Request",
+  api_response: "API Response",
   condition:    "Condition",
   router:       "Router",
   confirmation: "Confirmation",
@@ -114,6 +118,13 @@ export default function NodeInspector({
             data={data as APIRequestNodeData}
             nodeId={selectedNode.id}
             assistantId={assistantId}
+          />
+        );
+      case "api_response":
+        return (
+          <APIResponseNodePanel
+            data={data as APIResponseNodeData}
+            nodeId={selectedNode.id}
           />
         );
       case "condition":

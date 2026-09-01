@@ -332,6 +332,25 @@ def validate_flow_config(flow_config: dict) -> Tuple[bool, List[str], List[str]]
                 ]
             )
 
+        elif node_type == "api_response":
+            config = node_data.get("responsePresentation", {}) or {}
+            array_var = (config.get("arrayVariable") or "").strip()
+            intro = config.get("introText") or ""
+            item_template = config.get("itemTemplate") or ""
+            if array_var and array_var not in declared_variables:
+                _node_error(
+                    f"API Response node '{node_name}' references undeclared array "
+                    f"variable '{array_var}'"
+                )
+            template_values.extend(
+                [
+                    intro,
+                    item_template,
+                    config.get("outroText"),
+                    config.get("noResultsText"),
+                ]
+            )
+
         elif node_type == "condition":
             condition = node_data.get("condition", {})
             if not condition.get("variable"):

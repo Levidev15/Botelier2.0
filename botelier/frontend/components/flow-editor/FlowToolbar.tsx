@@ -110,6 +110,15 @@ const nodeTypeConfig: NodeInfo[] = [
     whenToUse: "Use to integrate with your booking system, CRM, or other hotel services.",
     example: "Calling your reservation system to check room availability for the selected dates."
   },
+  {
+    type: "api_response",
+    label: "API Response",
+    icon: <Globe className="h-3 w-3" />,
+    color: "bg-amber-500",
+    description: "Speaks API results (including room lists and arrays) directly to the caller without an LLM narration turn.",
+    whenToUse: "Place immediately after an API Request node when you want the platform to read out results — especially lists — directly and reliably.",
+    example: "After fetching available rooms, read each option aloud: 'Option 1: Deluxe King — 250 per night. Option 2: Suite — 400 per night.'"
+  },
   { 
     type: "condition", 
     label: "Condition", 

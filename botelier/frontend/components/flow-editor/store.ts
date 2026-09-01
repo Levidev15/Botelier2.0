@@ -190,7 +190,8 @@ export type NodeType =
   | "message" 
   | "collect_slot"
   | "collect_form"
-  | "api_request" 
+  | "api_request"
+  | "api_response"
   | "condition" 
   | "router"
   | "confirmation"
@@ -237,6 +238,23 @@ export interface CollectFormNodeData extends BaseNodeData {
 
 export interface APIRequestNodeData extends BaseNodeData {
   api: APIRequestConfig;
+}
+
+export interface APIResponseConfig {
+  /** Key of a flow variable that holds the array of items to iterate over. */
+  arrayVariable?: string;
+  /** Spoken before the item list. Supports {{variable}} substitution. */
+  introText?: string;
+  /** Per-item template. Use {{fieldName}} for dict fields; {{index}} for ordinal; {{item}} for scalars. */
+  itemTemplate?: string;
+  /** Spoken after all items. */
+  outroText?: string;
+  /** Spoken when the array is empty or the variable is not set. */
+  noResultsText?: string;
+}
+
+export interface APIResponseNodeData extends BaseNodeData {
+  responsePresentation: APIResponseConfig;
 }
 
 // A Capability node reuses the `api` sub-object shape (apiSource: "capability")
@@ -409,7 +427,19 @@ const getDefaultNodeData = (type: NodeType): NodeData => {
           retryCount: 0,
         },
       } as APIRequestNodeData;
-    
+
+    case "api_response":
+      return {
+        name: "Present Results",
+        responsePresentation: {
+          arrayVariable: "",
+          introText: "",
+          itemTemplate: "",
+          outroText: "",
+          noResultsText: "No results were found.",
+        },
+      } as APIResponseNodeData;
+
     case "condition":
       return {
         name: "Check Condition",

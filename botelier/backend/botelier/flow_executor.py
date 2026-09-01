@@ -49,6 +49,7 @@ class NodeType(str, Enum):
     SAVE_RECORD = "save_record"
     TRANSFER = "transfer"
     END = "end"
+    API_RESPONSE = "api_response"
 
 
 # Action-node types whose LLM functions must be gated to the reachable flow
@@ -59,6 +60,7 @@ _ACTION_NODE_TYPES = frozenset(
     {
         NodeType.API_REQUEST,
         NodeType.CAPABILITY,
+        NodeType.API_RESPONSE,
         NodeType.ROUTER,
         NodeType.CONFIRMATION,
         NodeType.SET_VARIABLE,
@@ -1712,6 +1714,16 @@ class FlowExecutor:
             if node_instructions:
                 context_lines.append(f"Additional instructions: {node_instructions}")
 
+        elif current_node.type == NodeType.API_RESPONSE:
+            config = current_node.data.get("responsePresentation", {}) or {}
+            fn_name = f"continue_response_{current_node.id}"
+            array_var = (config.get("arrayVariable") or "").strip()
+            desc = f"array '{array_var}'" if array_var else "the API result"
+            context_lines.append(
+                f"CURRENT NODE: API Response — {desc} has already been spoken directly "
+                f"to the caller. Call `{fn_name}` NOW to acknowledge and advance the flow."
+            )
+
         # Every other node type: surface the node's typed instructions so the
         # editor's per-node guidance is honored while that node is active —
         # on live calls exactly as in the simulator (API/CAPABILITY nodes
@@ -2596,6 +2608,12 @@ class FlowExecutor:
         if pending_message_node is not None:
             functions.append(self._create_message_continue_function(pending_message_node))
 
+        # API_RESPONSE nodes expose a continue_response_<id> function so the
+        # LLM (or simulator) can explicitly advance past the narration step.
+        pending_response_node = self._get_pending_api_response_node()
+        if pending_response_node is not None:
+            functions.append(self._create_api_response_continue_function(pending_response_node))
+
         has_confirmation_node = any(
             node.type == NodeType.CONFIRMATION for node in self.flow_config.nodes
         )
@@ -2700,6 +2718,11 @@ class FlowExecutor:
                 # Terminal MESSAGE nodes (no outgoing edge) never need this —
                 # arriving there already marks the flow exhausted.
                 functions.append(self._create_message_continue_function(node))
+            elif node.type == NodeType.API_RESPONSE:
+                # Registered for every API_RESPONSE node (handler must always
+                # exist); get_function_schemas() only exposes it when the node
+                # is actually current (_get_pending_api_response_node).
+                functions.append(self._create_api_response_continue_function(node))
 
         has_confirmation_node = any(
             node.type == NodeType.CONFIRMATION for node in self.flow_config.nodes
@@ -3159,8 +3182,164 @@ class FlowExecutor:
             return await self._handle_end_call(function_name, arguments)
         elif function_name.startswith("continue_flow_"):
             return await self._handle_message_continue(function_name, arguments)
+        elif function_name.startswith("continue_response_"):
+            return await self._handle_api_response(function_name, arguments)
         else:
             return {"success": False, "message": "Unknown function", "action": None}
+
+    def _render_api_response_text(self, node: FlowNode) -> str:
+        """Render the complete spoken narration for an API_RESPONSE node.
+
+        Iterates over the configured array variable (parsed as JSON if stored
+        as a string), applies the per-item template to each element, and
+        returns the combined text: intro → item narrations → outro.  Falls
+        back to ``noResultsText`` when the array is empty or not found.
+        """
+        import json as _json
+
+        config = node.data.get("responsePresentation", {}) or {}
+        array_var = (config.get("arrayVariable") or "").strip()
+        intro = substitute_variables(
+            (config.get("introText") or "").strip(), self.state.collected_slots
+        )
+        item_template = (config.get("itemTemplate") or "").strip()
+        outro = substitute_variables(
+            (config.get("outroText") or "").strip(), self.state.collected_slots
+        )
+        no_results = substitute_variables(
+            (config.get("noResultsText") or "No results were found.").strip(),
+            self.state.collected_slots,
+        )
+
+        items: list = []
+        if array_var:
+            raw = self.state.collected_slots.get(array_var)
+            if isinstance(raw, list):
+                items = raw
+            elif isinstance(raw, str):
+                try:
+                    parsed = _json.loads(raw)
+                    if isinstance(parsed, list):
+                        items = parsed
+                except Exception:
+                    pass
+
+        if not items:
+            if array_var:
+                # Array variable configured but resolved to empty/None —
+                # the caller should hear the no-results message.
+                return no_results
+            # No array variable configured at all — speak intro + outro as a
+            # fixed narration (e.g. "Your booking is confirmed. Goodbye!").
+            direct_parts = [p for p in [intro, outro] if p]
+            return " ".join(direct_parts) if direct_parts else no_results
+
+        parts: list[str] = []
+        if intro:
+            parts.append(intro)
+
+        for i, item in enumerate(items):
+            if item_template:
+                rendered = self._substitute_template_variables_indexed(
+                    item_template, item, self.state.collected_slots, i
+                )
+                if rendered:
+                    parts.append(rendered)
+            else:
+                # Fallback: render item as a natural string.
+                if isinstance(item, dict):
+                    kv = ", ".join(
+                        f"{k}: {_speakable_variable_value(v)}"
+                        for k, v in list(item.items())[:5]
+                    )
+                    parts.append(kv)
+                else:
+                    parts.append(_speakable_variable_value(item))
+
+        if outro:
+            parts.append(outro)
+
+        return " ".join(p for p in parts if p)
+
+    def _substitute_template_variables_indexed(
+        self,
+        template: str,
+        item: Any,
+        variables: dict,
+        index: int,
+    ) -> str:
+        """Substitute ``{{variable}}`` refs in a per-item loop template.
+
+        Merges the item's own fields (when it is a dict) into the substitution
+        namespace on top of the flow's collected slots.  Special tokens:
+        ``{{index}}`` → 1-based ordinal, ``{{item}}`` → str(item) for
+        non-dict items.
+        """
+        merged: dict[str, Any] = dict(variables)
+        merged["index"] = str(index + 1)
+        if isinstance(item, dict):
+            merged.update({k: v for k, v in item.items()})
+        else:
+            merged["item"] = item
+        return substitute_variables(template, merged, speakable=True)
+
+    def _get_pending_api_response_node(self) -> Optional[FlowNode]:
+        """Return the current node when it is an API_RESPONSE node.
+
+        Used by ``get_function_schemas`` to expose ``continue_response_<id>``
+        so the LLM (or simulator) can explicitly advance past the presentation
+        step when the function_mapper auto-execution path is not in play (e.g.
+        in the simulator where the LLM must explicitly call the function after
+        the narration is delivered).
+        """
+        current = self.state.get_current_node()
+        if current and current.type == NodeType.API_RESPONSE:
+            return current
+        return None
+
+    def _create_api_response_continue_function(self, node: FlowNode) -> dict:
+        """Create a function schema that advances past an API_RESPONSE node."""
+        config = node.data.get("responsePresentation", {}) or {}
+        array_var = (config.get("arrayVariable") or "").strip()
+        array_desc = f" presenting '{array_var}'" if array_var else ""
+        return {
+            "type": "function",
+            "function": {
+                "name": f"continue_response_{node.id}",
+                "description": (
+                    f"Call this after the API response has been presented to the caller"
+                    f"{array_desc}. The platform will have already spoken the result "
+                    "directly — call this function to acknowledge and advance the flow."
+                ),
+                "parameters": {"type": "object", "properties": {}, "required": []},
+            },
+        }
+
+    async def _handle_api_response(self, function_name: str, arguments: dict) -> dict:
+        """Advance the flow past an API_RESPONSE node.
+
+        The narration has already been delivered (by function_mapper on live
+        calls, or by the simulation engine in the simulator). This handler
+        simply moves the flow pointer to the next node — mirroring
+        ``_handle_message_continue`` for MESSAGE nodes.
+        """
+        node_id = function_name[len("continue_response_"):]
+        node = self.flow_config._node_index.get(node_id)
+        if not node:
+            return {"success": False, "message": "Unknown response node", "action": None}
+
+        next_node = self.state.get_next_node(node_id)
+        if next_node:
+            self.state.advance_to(next_node.id)
+        else:
+            self.state.advance_to(node_id)
+
+        return {
+            "success": True,
+            "message": "Response presented.",
+            "action": None,
+            "current_node_id": self.state.current_node_id,
+        }
 
     async def _handle_message_continue(self, function_name: str, arguments: dict) -> dict:
         """Advance past a "stuck" waiting MESSAGE node (Task #600).

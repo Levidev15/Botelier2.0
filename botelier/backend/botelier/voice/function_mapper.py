@@ -2190,6 +2190,39 @@ class FunctionMapper:
                 result = await executor.handle_function_call(_api_function, {})
                 _completed_api_node = _current_node
 
+            # ── API_RESPONSE auto-execution ──────────────────────────────────
+            # If the flow just landed on an API_RESPONSE node (from the direct
+            # execute_ call or from the chained API_REQUEST above), render the
+            # narration text now, speak it directly, and advance past the node.
+            # This suppresses any further bridge / LLM narration turn since the
+            # API_RESPONSE node owns all post-fetch speech.
+            _current_node_now = executor.state.get_current_node()
+            _api_response_spoke = False
+            if _current_node_now and _current_node_now.type == NodeType.API_RESPONSE:
+                _resp_text = executor._render_api_response_text(_current_node_now)
+                if _resp_text and hasattr(params, "llm") and params.llm is not None:
+                    try:
+                        await params.llm.push_frame(TTSSpeakFrame(text=_resp_text))
+                        self._capture_direct_speech(_resp_text)
+                        logger.info(
+                            f"🗣️ API_RESPONSE node spoke directly for {tool_name}: "
+                            f"{_resp_text[:80]!r}"
+                        )
+                        _api_response_spoke = True
+                    except Exception as _resp_err:
+                        logger.warning(
+                            f"Could not speak API_RESPONSE text for {tool_name}: {_resp_err}"
+                        )
+                # Advance the flow regardless of TTS success.
+                try:
+                    await executor.handle_function_call(
+                        f"continue_response_{_current_node_now.id}", {}
+                    )
+                except Exception as _adv_err:
+                    logger.warning(
+                        f"Could not advance past API_RESPONSE node for {tool_name}: {_adv_err}"
+                    )
+
             # The lookup's detailed presentation still comes from the LLM: its
             # response instructions may contain structured data that must not be
             # read verbatim.  However, the thinking message above is spoken
@@ -2218,7 +2251,9 @@ class FunctionMapper:
 
             # Tracks whether the API result itself was spoken directly here,
             # so _spoke_directly below starts True and run_llm=False is used.
-            _api_spoke_directly = False
+            # _api_response_spoke is True when the API_RESPONSE auto-execution
+            # block above already spoke the narration directly.
+            _api_spoke_directly = _api_response_spoke
             if _completed_api_node:
                 _api_config = _completed_api_node.data.get("api", {}) or {}
                 # voice_result is either designer-authored responseInstructions
