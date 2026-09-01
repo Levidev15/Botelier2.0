@@ -53,6 +53,24 @@ const TEST_STATUS_BADGE: Record<string, { label: string; cls: string }> = {
 const RISK_LEVELS = ["read", "write", "financial", "destructive", "admin", "sensitive"];
 const CHANNELS = ["voice", "sms", "flow", "test"];
 
+/**
+ * Accept the normal API string and defensively decode one JSON-encoded layer.
+ *
+ * A proxy or stale client bundle can occasionally surface a JSON string such
+ * as `"Results:\n\n1.…"` rather than the decoded text. Decode only a valid
+ * JSON string so genuine API content is never altered.
+ */
+function decodeProjectedText(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+
+  try {
+    const decoded = JSON.parse(value);
+    return typeof decoded === "string" ? decoded : value;
+  } catch {
+    return value;
+  }
+}
+
 export default function OperationCatalogPanel({
   accountId,
   connectionId,
@@ -276,16 +294,17 @@ export default function OperationCatalogPanel({
       );
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Test failed");
+      const projected = decodeProjectedText(data.projected);
       setTestResult({
         success: data.success,
         status_code: data.status_code,
         data: data.data,
-        projected: data.projected ?? null,
+        projected,
         error_message: data.error_message,
         latency_ms: data.latency_ms,
         warnings: Array.isArray(data.warnings) ? data.warnings : [],
       });
-      if (data.projected) setTestProjected(data.projected);
+      if (projected) setTestProjected(projected);
       if (data.success && Array.isArray(data.suggested_mappings)) {
         setSuggestedMappings(data.suggested_mappings);
       }
