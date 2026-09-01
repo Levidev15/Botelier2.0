@@ -2378,11 +2378,20 @@ class VoiceEngineFactory:
                 )
                 _flux_token_send_min_chars = 24
 
-            # Speaking rate for Flux (expressivity is not supported on /v2/speak).
+            # Speaking rate and expressivity for Flux.
             try:
                 _flux_tts_speed = float(config.tts_config.get("speed", 0) or 0)
             except (TypeError, ValueError):
                 _flux_tts_speed = 0.0
+            _raw_flux_expressivity = config.tts_config.get("expressivity")
+            try:
+                _flux_tts_expressivity = (
+                    int(_raw_flux_expressivity)
+                    if _raw_flux_expressivity is not None
+                    else None
+                )
+            except (TypeError, ValueError):
+                _flux_tts_expressivity = None
 
             class _BotelierDeepgramFluxTTSService(DeepgramFluxTTSService):
                 """Deepgram Flux TTS with Botelier-specific enhancements.
@@ -2404,10 +2413,11 @@ class VoiceEngineFactory:
                     self._send_buffer: dict[str, str] = {}
                     self._token_send_min_chars = _flux_token_send_min_chars
                     self._tts_speed = _flux_tts_speed
+                    self._tts_expressivity = _flux_tts_expressivity
                     self._context_done_callbacks: dict[str, Callable] = {}
 
                 async def _connect_websocket(self):
-                    """Connect to Deepgram Flux, injecting speed URL param."""
+                    """Connect to Deepgram Flux, injecting speed and expressivity URL params."""
                     from websockets.asyncio.client import connect as _ws_connect
                     from websockets.protocol import State
                     try:
@@ -2423,6 +2433,8 @@ class VoiceEngineFactory:
                             params.append(f"mip_opt_out={str(self._mip_opt_out).lower()}")
                         if self._tts_speed:
                             params.append(f"speed={self._tts_speed}")
+                        if self._tts_expressivity is not None and self._tts_expressivity != 1:
+                            params.append(f"expressivity={self._tts_expressivity}")
                         url = f"{self._base_url}/v2/speak?{'&'.join(params)}"
                         headers = {"Authorization": f"Token {self._api_key}"}
                         websocket = await _ws_connect(url, additional_headers=headers)
