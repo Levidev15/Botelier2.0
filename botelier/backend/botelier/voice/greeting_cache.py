@@ -60,7 +60,7 @@ def _cache_key(greeting_text: str, tts_config: dict) -> str:
     tts_config = tts_config or {}
     model = tts_config.get("voice") or tts_config.get("model") or "aura-2-helena-en"
     voice = tts_config.get("voice") or "aura-2-helena-en"
-    speed = resolve_tts_speed(tts_config)
+    speed = resolve_tts_speed(tts_config, voice)
     expressivity = resolve_tts_expressivity(tts_config, voice)
     # Hash the same tuning params that actually get sent on the wire (via
     # build_tuning_params) rather than the raw resolved values — settings
@@ -197,7 +197,7 @@ async def get_or_generate_greeting_audio(
     # the same shared resolver — resolve_tts_expressivity enforces the
     # Flux-only capability boundary, so Aura/Aura-2 voices never carry an
     # expressivity param, and Flux voices use the corrected [-2, 2] range.
-    speed = resolve_tts_speed(tts_config)
+    speed = resolve_tts_speed(tts_config, voice)
     expressivity = resolve_tts_expressivity(tts_config, voice)
     tuning_params = build_tuning_params(speed, expressivity)
     tuning_qs = ("&" + "&".join(tuning_params)) if tuning_params else ""

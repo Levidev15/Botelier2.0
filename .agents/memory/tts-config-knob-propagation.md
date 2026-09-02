@@ -34,10 +34,28 @@ centralizing the coercion + capability-boundary + range-clamping logic for
 such a knob in one shared helper used by every construction path, so the
 boundary can't drift out of sync between call sites.
 
-**Concrete example — expressivity:** the code originally gated expressivity
-on `"aura-2" in voice` (Deepgram's old attribution). When Deepgram later
-released it as a Flux-only Beta feature (`-2 calm → 0 default → 2 animated`
-on `/v2/speak`), Aura-2 explicitly lost it. The capability boundary in
-`resolve_tts_expressivity` now checks `voice.startswith("flux-")`. This also
-changed the "default to omit" value from `1` to `0`, which required a
-corresponding update to `build_tuning_params`.
+**Expressivity:** Flux-only Beta on `/v2/speak`. `resolve_tts_expressivity`
+checks `voice.startswith("flux-")`. Range −2 to 2; default 0 is omitted.
+
+## Deepgram Flux speed format — multiplier, not delta
+
+Flux `/v2/speak` uses `speed` as a **multiplier** (`0.5`–`1.5`, `0.05`
+increments, default `1.0`). Out-of-range or unknown parameters are
+**rejected** at WebSocket upgrade time, silencing the voice. The old UI
+stored speed as a **delta** (`-1.0` to `+1.0`, 0 = default).
+
+`resolve_tts_speed(tts_config, voice)` now dispatches on `voice`:
+- **Flux** (`voice.startswith("flux-")`): raw value ≥ 0.5 → multiplier
+  as-is; raw < 0.5 (legacy delta) → `1.0 + raw/2`; result clamped to
+  [0.5, 1.5], rounded to 0.05; 1.0 → sentinel 0.0 (omit).
+- **Aura/non-Flux**: legacy delta format, clamped to [-1.0, +1.0].
+
+Always pass `voice` when calling `resolve_tts_speed` so both code paths
+(live WebSocket engine and greeting cache REST) apply the correct format.
+The cache key naturally invalidates when the resolved speed changes (key
+is built from `build_tuning_params(speed, expressivity)`, which uses the
+resolved value, not the raw stored value).
+
+**Why:** Deepgram rejects unknown/out-of-range params at connection time —
+a negative delta like -0.3 reaches Deepgram as-is and kills the WebSocket
+upgrade → voice goes silent for the entire call.

@@ -2102,7 +2102,7 @@ class VoiceEngineFactory:
             from .tts_tuning import resolve_tts_speed, resolve_tts_expressivity
 
             _aura_voice_for_tuning = config.tts_voice_id or "aura-2-helena-en"
-            _tts_speed = resolve_tts_speed(config.tts_config)
+            _tts_speed = resolve_tts_speed(config.tts_config, _aura_voice_for_tuning)
             _tts_expressivity = resolve_tts_expressivity(
                 config.tts_config, _aura_voice_for_tuning
             )
@@ -2429,7 +2429,9 @@ class VoiceEngineFactory:
             # for non-Flux voices and clamping to [-2, 2] for Flux voices.
             from .tts_tuning import resolve_tts_speed, resolve_tts_expressivity
 
-            _flux_tts_speed = resolve_tts_speed(config.tts_config)
+            _flux_tts_speed = resolve_tts_speed(
+                config.tts_config, config.tts_voice_id or "flux-haley-en"
+            )
             _flux_tts_expressivity = resolve_tts_expressivity(
                 config.tts_config, config.tts_voice_id or "flux-haley-en"
             )

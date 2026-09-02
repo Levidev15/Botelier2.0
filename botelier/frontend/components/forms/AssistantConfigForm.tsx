@@ -919,32 +919,34 @@ export default function AssistantConfigForm({ mode, assistantId }: AssistantConf
                   </FormField>
                 )}
 
+                {formData.tts_provider === "deepgram-flux" && (
                 <FormField
                   label="Speaking Rate"
-                  description="Adjust how fast the assistant speaks. 0 = default. Negative = slower, positive = faster. Range: −1 (50% slower) to +1 (50% faster)."
+                  description="Speech-rate multiplier. 1.0× = normal · 0.5× to 1.5× in 0.05 steps. Flux only — Aura speaking rate is tracked separately."
                 >
                   <div className="space-y-2">
                     <div className="flex items-center gap-4">
                       <input
                         type="range"
-                        min="-1"
-                        max="1"
+                        min="0.5"
+                        max="1.5"
                         step="0.05"
-                        value={formData.tts_config?.speed ?? 0}
+                        value={Math.max(0.5, Math.min(1.5, formData.tts_config?.speed || 1.0))}
                         onChange={(e) => handleFieldChange("tts_config", { ...formData.tts_config, speed: parseFloat(e.target.value) })}
                         className="flex-1 accent-blue-600"
                       />
                       <span className="text-sm font-mono text-gray-300 w-14 text-right tabular-nums">
-                        {((formData.tts_config?.speed ?? 0) >= 0 ? "+" : "") + Number(formData.tts_config?.speed ?? 0).toFixed(2)}
+                        {Number(Math.max(0.5, Math.min(1.5, formData.tts_config?.speed || 1.0))).toFixed(2)}×
                       </span>
                     </div>
                     <div className="flex justify-between text-xs text-gray-600 px-0.5">
-                      <span>−1 slower</span>
-                      <span>0 default</span>
-                      <span>+1 faster</span>
+                      <span>0.5× slower</span>
+                      <span>1.0× default</span>
+                      <span>1.5× faster</span>
                     </div>
                   </div>
                 </FormField>
+                )}
 
                 {formData.tts_provider === "deepgram-flux" && (
                   <FormField
