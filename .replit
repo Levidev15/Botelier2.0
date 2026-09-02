@@ -33,6 +33,18 @@ args = "test-mcp-server"
 task = "workflow.run"
 args = "botelier-docs"
 
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "backend-tests"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "all-backend-tests"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "backend-tests-excl-preexisting"
+
 [[workflows.workflow]]
 name = "botelier-dashboard"
 author = "agent"
@@ -80,6 +92,39 @@ outputType = "console"
 task = "shell.exec"
 args = "npm run start --prefix docs-site -- --port 3003"
 waitForPort = 3003
+
+[[workflows.workflow]]
+name = "backend-tests"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd botelier/backend && python -m pytest tests/test_acw_service.py tests/test_flow_function_gating.py tests/test_tts_word_substitution.py tests/test_flow_endcall_decline_gating.py -x -q 2>&1"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "all-backend-tests"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd botelier/backend && python -m pytest tests/ -x -q --tb=short 2>&1"
+
+[workflows.workflow.metadata]
+isValidation = true
+
+[[workflows.workflow]]
+name = "backend-tests-excl-preexisting"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "cd botelier/backend && python -m pytest tests/ -q --tb=short --deselect tests/test_call_logs_export_tz.py::test_export_without_tz_includes_both_utc_day_calls 2>&1"
+
+[workflows.workflow.metadata]
+isValidation = true
 
 [[ports]]
 localPort = 3000

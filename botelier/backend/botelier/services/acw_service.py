@@ -695,17 +695,53 @@ def run_acw_in_thread(call_log_id: UUID, trigger_path: str = "unknown") -> Dict[
 
     Creates and owns its own DB session so it is safe to call from any thread
     (including a thread-pool executor) without sharing a session across threads.
-    Re-checks ``acw_completed_at`` before starting to handle races between
-    concurrent background tasks.
+
+    Uses a Postgres advisory lock keyed on the call_log_id to ensure only one
+    concurrent worker runs ACW for the same call.  The read-then-check guard
+    used previously (``if acw_completed_at``) is a TOCTOU race: both the
+    connect_complete and status_callback trigger paths may arrive within
+    milliseconds of each other, read ``None`` simultaneously, and both proceed
+    to run a full ACW pass.  The advisory lock (``pg_try_advisory_lock``)
+    collapses those concurrent workers to exactly one without blocking and
+    without requiring a schema change.
+
+    Task #397 semantics are preserved: rows stamped with a terminal skip state
+    (llm_error, classification_invalid, …) remain re-runnable by the manual QA
+    endpoint; the "already completed" short-circuit only fires for clean
+    completions (``acw_completed_at IS NOT NULL AND acw_skip_reason IS NULL``).
     """
+    import hashlib
+
     from botelier.database import SessionLocal
+    from sqlalchemy import text
+
+    # Derive a stable 31-bit positive integer from the call_log UUID so we
+    # can use it as a Postgres session-level advisory lock key.  sha256 is
+    # deterministic; the mask keeps the value within pg_try_advisory_lock's
+    # valid int8 range.
+    lock_key = int(hashlib.sha256(str(call_log_id).encode()).hexdigest()[:16], 16) % (
+        2**31
+    )
 
     db = SessionLocal()
     try:
+        # Try to acquire an exclusive advisory lock.  Returns True immediately
+        # if the lock is free; False if another session already holds it.
+        acquired = db.execute(
+            text("SELECT pg_try_advisory_lock(:key)"), {"key": lock_key}
+        ).scalar()
+        if not acquired:
+            logger.debug(
+                f"ACW thread: advisory lock held by another worker for "
+                f"{call_log_id}, skipping (trigger_path={trigger_path})"
+            )
+            return {"skipped": True, "reason": "concurrent_run"}
+
         call_log = db.query(CallLog).filter(CallLog.id == call_log_id).first()
         if not call_log:
             logger.warning(f"ACW thread: call log {call_log_id} not found")
             return {"error": "call_log_not_found"}
+
         # Task #397 — a row is only "already completed" when it finished
         # cleanly (no skip reason). Rows stamped with a terminal skip state
         # (llm_error, classification_invalid, no_transcript, ...) stay
@@ -717,11 +753,18 @@ def run_acw_in_thread(call_log_id: UUID, trigger_path: str = "unknown") -> Dict[
         if call_log.acw_completed_at and not call_log.acw_skip_reason:
             logger.debug(f"ACW thread: already completed for {call_log_id}, skipping")
             return {"skipped": True, "reason": "already_completed"}
+
         return run_acw(call_log, db, trigger_path=trigger_path)
     except Exception as e:
         logger.exception(f"ACW thread runner failed for {call_log_id}: {e}")
         return {"error": str(e)}
     finally:
+        # Release the advisory lock and close the session.  pg_advisory_unlock
+        # is a no-op if the lock was never acquired (acquired=False path above).
+        try:
+            db.execute(text("SELECT pg_advisory_unlock(:key)"), {"key": lock_key})
+        except Exception:
+            pass
         db.close()
 
 

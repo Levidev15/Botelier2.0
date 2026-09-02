@@ -530,8 +530,17 @@ class FunctionMapper:
             )
             await asyncio.sleep(3.0)
 
-    def track_tool_usage(self, tool_name: str, is_flow: bool = False):
-        """Record tool usage in call log."""
+    def track_tool_usage(
+        self, tool_name: str, is_flow: bool = False, flow_id: Optional[str] = None
+    ):
+        """Record tool usage in call log.
+
+        Args:
+            tool_name: Name of the tool or flow.
+            is_flow: True when this is a flow tool (not a standalone tool).
+            flow_id: UUID string of the flow tool; persisted to call_logs.flow_id
+                     so each call log links to the exact flow that ran it.
+        """
         if not self.call_sid:
             return
         try:
@@ -542,7 +551,10 @@ class FunctionMapper:
             try:
                 call_logger = CallLogger(db)
                 call_logger.record_tool_usage(
-                    call_sid=self.call_sid, tool_name=tool_name, is_flow=is_flow
+                    call_sid=self.call_sid,
+                    tool_name=tool_name,
+                    is_flow=is_flow,
+                    flow_id=flow_id,
                 )
             finally:
                 db.close()
@@ -1958,8 +1970,8 @@ class FunctionMapper:
                 )
                 return
 
-            # Track flow usage
-            self.track_tool_usage(tool.name, is_flow=True)
+            # Track flow usage (pass tool.id so call_logs.flow_id is populated)
+            self.track_tool_usage(tool.name, is_flow=True, flow_id=str(tool.id))
 
             # Get greeting from the flow
             greeting = executor.get_greeting()
@@ -2807,8 +2819,12 @@ class FunctionMapper:
                     )
                     return
 
-            # Track flow usage in call logs
-            self.track_tool_usage(tool_name, is_flow=True)
+            # Track flow usage in call logs (executor holds the tool UUID)
+            self.track_tool_usage(
+                tool_name,
+                is_flow=True,
+                flow_id=getattr(executor, "flow_tool_id", None),
+            )
 
             imported = executor.import_caller_slots(dict(params.arguments or {}))
             if not imported["success"]:

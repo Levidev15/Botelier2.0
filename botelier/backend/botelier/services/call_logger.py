@@ -748,13 +748,22 @@ class CallLogger:
                 f"abandoned for call {call_sid}"
             )
 
-    def record_tool_usage(self, call_sid: str, tool_name: str, is_flow: bool = False) -> bool:
+    def record_tool_usage(
+        self,
+        call_sid: str,
+        tool_name: str,
+        is_flow: bool = False,
+        flow_id: Optional[str] = None,
+    ) -> bool:
         """Record that a tool or flow was used during a call.
 
         Args:
             call_sid: Twilio call SID
             tool_name: Name of the tool or flow
             is_flow: True if this is a flow, False if a regular tool
+            flow_id: UUID of the flow tool (only meaningful when is_flow=True).
+                     Persisted to call_logs.flow_id so calls can be linked back
+                     to the exact flow that ran them.
 
         Returns:
             True if update was successful
@@ -769,6 +778,17 @@ class CallLogger:
             if is_flow:
                 if not call_log.flow_name:
                     call_log.flow_name = tool_name
+                # Persist the flow UUID so the call log links to the exact
+                # flow tool that ran — was always NULL before this fix.
+                if flow_id and not call_log.flow_id:
+                    try:
+                        from uuid import UUID as _UUID
+
+                        call_log.flow_id = _UUID(str(flow_id))
+                    except (ValueError, AttributeError):
+                        logger.warning(
+                            f"record_tool_usage: invalid flow_id {flow_id!r} for call {call_sid}"
+                        )
             else:
                 if not call_log.tool_name:
                     call_log.tool_name = tool_name

@@ -5520,6 +5520,22 @@ class FlowExecutor:
                 "current_node_id": None,
             }
 
+        # Guard: reject calls to a set_var node that is no longer the active
+        # node.  The dispatch-level exposure check already tries to prevent
+        # this, but if the LLM held a stale tool list (e.g. a cached context
+        # from before the last flow advance) a spurious call can still arrive.
+        # Without this guard the node would silently re-fire and re-advance the
+        # flow — the root cause of the double set_var invocation observed on a
+        # live call after the confirmation had already completed.
+        if self.state.current_node_id != node_id:
+            return {
+                "success": False,
+                "message": "That step is no longer active.",
+                "action": None,
+                "out_of_order": True,
+                "current_node_id": self.state.current_node_id,
+            }
+
         set_var_data = node.data.get("setVariable", node.data.get("set_variable", {}))
         var_key = set_var_data.get("variableKey", set_var_data.get("variable_key", ""))
         value_type = set_var_data.get("valueType", set_var_data.get("value_type", "static"))
@@ -5623,6 +5639,18 @@ class FlowExecutor:
         """
         node_id = function_name.replace("save_record_", "")
         node = self.flow_config._node_index.get(node_id)
+
+        # Guard: reject calls to a save_record node that is no longer active.
+        # Mirrors the set_var and option_picker guards — a stale LLM tool list
+        # could let this fire after the flow has already advanced past it.
+        if node and self.state.current_node_id != node_id:
+            return {
+                "success": False,
+                "message": "That step is no longer active.",
+                "action": None,
+                "out_of_order": True,
+                "current_node_id": self.state.current_node_id,
+            }
 
         # Always compute the next node up front so a failure still advances.
         next_node = self.state.get_next_node(node_id) if node else None

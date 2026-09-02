@@ -48,3 +48,6 @@
 - [TTS config knob propagation](tts-config-knob-propagation.md) — live-engine TTS knobs (speed, expressivity, etc.) also need adding to greeting_cache.py's separate REST path + cache key; UI gating must check the specific voice/model, not a shared provider boolean.
 - [Mapped parallel-array response projection](mapped-parallel-array-response-projection.md) — LLM/test previews join top-level arrays by index (longest wins); retain incomplete test records while preserving raw mapped variables.
 - [New flow_executor NodeType checklist](flow-executor-new-node-type.md) — many dispatch sites (schema builder, simulator tool_choice, frontend) must update together; a missing one fails silently, not loudly; selection nodes rewrite outputs atomically.
+- [Spent-node dispatch guard](spent-node-guard.md) — every action-node handler needs current_node_id==node_id check or stale LLM tool list re-fires the handler; guard pattern + test file documented.
+- [ACW advisory lock](acw-advisory-lock.md) — pg_try_advisory_lock replaces read-before-write in run_acw_in_thread; prevents connect_complete+status_callback race that double-ran full ACW.
+- [TTS aggregation mode](tts-aggregation-mode.md) — explicit "sentence" in tts_config overrides "token" default and causes audible gaps; diagnose with DB query before assuming engine bug.

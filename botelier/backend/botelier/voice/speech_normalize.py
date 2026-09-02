@@ -14,6 +14,21 @@ regex applied to a sub-word fragment would silently no-op or corrupt words.
 
 import re
 
+# ---------------------------------------------------------------------------
+# Spelled-out letter sequences — e.g. "C-O-R-E-Y" or "c-n-o-m-m-a-e-a"
+#
+# Flux (and other neural TTS providers) mispronounce hyphen-separated single
+# letters: a sequence like "C-O-R-E-Y" causes the provider to double the
+# adjacent letter at each hyphen boundary, so callers hear "C-O-R-E-E-Y".
+# Converting to period-separated form ("C. O. R. E. Y.") gives the provider
+# clear pause cues between letters without the doubling artefact.
+#
+# The pattern matches ONLY runs where every segment between hyphens is a
+# single letter, so compound words like "twenty-one", "e-mail", "t-shirt",
+# and "x-ray" are NOT matched (their hyphenated segments have 2+ letters).
+# ---------------------------------------------------------------------------
+_SPELLED_LETTERS_RE = re.compile(r"\b([A-Za-z](?:-[A-Za-z])+)\b")
+
 _ONES = [
     "zero", "one", "two", "three", "four", "five", "six", "seven", "eight",
     "nine", "ten", "eleven", "twelve", "thirteen", "fourteen", "fifteen",
@@ -126,14 +141,26 @@ def _is_identifier_context(text: str, start: int) -> bool:
 
 
 def normalize_for_speech(text: str) -> str:
-    """Expand ordinals, comma-grouped/plain integers, decimals, and ISO
-    currency codes into spoken words. Input must be whitespace-complete text.
+    """Expand ordinals, comma-grouped/plain integers, decimals, ISO currency
+    codes, and hyphen-spelled letter sequences into spoken words.  Input must
+    be whitespace-complete text.
 
     Never raises: any value outside the supported range (or in an
     identifier context such as "confirmation number is 123456") is left
     exactly as written so synthesis is never interrupted.
     """
-    if not text or not any(ch.isdigit() or ch.isupper() for ch in text):
+    if not text:
+        return text
+
+    # Expand spelled-out letter sequences before any other substitution so
+    # that "C-O-R-E-Y" → "C. O. R. E. Y." and the remaining patterns never
+    # see the hyphens (which could interfere with numeric range detection).
+    if _SPELLED_LETTERS_RE.search(text):
+        text = _SPELLED_LETTERS_RE.sub(
+            lambda m: m.group(0).replace("-", ". ") + ".", text
+        )
+
+    if not any(ch.isdigit() or ch.isupper() for ch in text):
         return text
 
     def _ordinal(m: re.Match) -> str:
