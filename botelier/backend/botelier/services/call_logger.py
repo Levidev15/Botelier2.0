@@ -443,18 +443,25 @@ class CallLogger:
                 CallStatus.NO_ANSWER.value,
                 CallStatus.CANCELED.value,
             }
-            # Idempotency for forced paths: if a safety-net path is invoked
-            # against a row that is already in a terminal state AND already
-            # has an ended_at, there is no work to do and NO finalization_forced
-            # event is emitted. The event signals *real* safety-net usage
-            # (i.e. this call path actually performed the terminal transition),
-            # so emitting on a no-op would inflate the leak-rate dashboard
-            # with healthy calls where a later Twilio retry raced a clean
-            # finalization. Silent no-op is the right semantics here.
-            if forced_by and prior_status in _terminal and call_log.ended_at is not None:
+            # Universal idempotency guard: if the call is already in a terminal
+            # state AND ended_at is stamped, all finalization work is done —
+            # return immediately regardless of caller.
+            #
+            # Root cause fixed: three converging teardown paths fire on every
+            # clean call end (connect-complete webhook, Twilio status callback,
+            # pipeline teardown).  Previously guarded only when forced_by was
+            # set, letting all three execute the full billing/status/leg logic
+            # every time.
+            #
+            # The finalization_forced event signals *real* safety-net usage
+            # (i.e. this path actually performed the terminal transition), so
+            # it must NOT be emitted on a no-op.  Returning before any event
+            # emission code preserves that contract unchanged.
+            if prior_status in _terminal and call_log.ended_at is not None:
                 logger.debug(
-                    f"complete_call(forced_by={forced_by}) silent no-op for {call_sid}: "
+                    f"complete_call silent no-op for {call_sid}: "
                     f"already terminal ({prior_status}) with ended_at set"
+                    + (f" (forced_by={forced_by})" if forced_by else "")
                 )
                 return True
 

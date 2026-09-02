@@ -1918,18 +1918,24 @@ class FunctionMapper:
             assistant_timezone=self.assistant_timezone,
         )
 
-        # Store executor for this flow (we might need to access collected data)
-        if not hasattr(self, "_flow_executors"):
-            self._flow_executors = {}
-        self._flow_executors[tool.name] = executor
-        # Task #477 — stash any per-flow LLM overrides on the executor so
-        # call_handler can read them without needing the original tool object.
-        executor._llm_override = {
-            "llm_provider": getattr(tool, "llm_provider", None),
-            "llm_model": getattr(tool, "llm_model", None),
-            "llm_temperature": getattr(tool, "llm_temperature", None),
-            "llm_max_tokens": getattr(tool, "llm_max_tokens", None),
-        }
+        # IMPORTANT: do NOT store this executor in _flow_executors.
+        #
+        # The authoritative executor for a live call is created (and optionally
+        # rehydrated from a reconnect snapshot) inside get_flow_functions().
+        # If _map_flow() stored its executor here, two bugs could silently occur:
+        #
+        #   A. map_tool_to_function() runs before get_flow_functions():
+        #      get_flow_functions() finds the pre-stored executor and reuses it
+        #      (line 2039), skipping rehydrate_from_snapshot() → reconnected
+        #      callers lose their flow progress.
+        #
+        #   B. get_flow_functions() runs before map_tool_to_function():
+        #      _map_flow() overwrites the rehydrated executor with a fresh
+        #      one → same loss of progress.
+        #
+        # _llm_override is already stamped by get_flow_functions() at line 2071
+        # for every executor it creates, so omitting it here is safe.
+        # The executor below is ephemeral — used only to build the schema.
 
         # Return main flow trigger function
         # The LLM calls this when it detects the guest wants to start this flow
@@ -1956,39 +1962,28 @@ class FunctionMapper:
         }
 
         async def flow_trigger_handler(params: FunctionCallParams):
-            """Handler for starting the flow."""
-            logger.info(f"🎬 Starting flow: {tool.name}")
+            """Stub — non-empty flows MUST go through get_flow_functions().
 
-            imported = executor.import_caller_slots(dict(params.arguments or {}))
-            if not imported["success"]:
-                await params.result_callback(
-                    {
-                        "status": "invalid_arguments",
-                        "message": "Some provided details were invalid.",
-                        "errors": imported["errors"],
-                    }
-                )
-                return
+            This handler is returned by _map_flow() / map_tool_to_function() but
+            MUST NEVER fire during a live call.  get_flow_functions() registers the
+            correct _create_flow_trigger_handler() closure (with run_llm=False,
+            duplicate-start guard, snapshot rehydration, and tool rebuild) as the
+            live handler.  If this stub fires it means the registration order broke
+            and the LLM received a stale, wrong start trigger.
 
-            # Track flow usage (pass tool.id so call_logs.flow_id is populated)
-            self.track_tool_usage(tool.name, is_flow=True, flow_id=str(tool.id))
-
-            # Get greeting from the flow
-            greeting = executor.get_greeting()
-
-            # Speak the greeting
-            await params.llm.push_frame(TTSSpeakFrame(greeting))
-            self._capture_direct_speech(greeting)
-
-            # Return flow info to LLM so it knows what to collect
-            progress = executor.get_progress()
-
+            The stub logs a prominent error so the bug is immediately visible in
+            production logs and returns a soft error to the caller rather than
+            silently running the wrong greeting/greeting-less code path.
+            """
+            logger.error(
+                f"Legacy _map_flow trigger fired for non-empty flow {tool.name!r}. "
+                "Expected _create_flow_trigger_handler() to be registered by "
+                "get_flow_functions(). Check tool registration order in call_handler."
+            )
             await params.result_callback(
                 {
-                    "status": "flow_started",
-                    "message": greeting,
-                    "next_action": "collect_information",
-                    "progress": progress,
+                    "status": "error",
+                    "message": "Unable to start this flow right now — please try again.",
                 }
             )
 

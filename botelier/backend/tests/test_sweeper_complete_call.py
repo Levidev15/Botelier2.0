@@ -304,3 +304,100 @@ class TestEventWriteFailureDoesNotBlockDisposition:
                     details={"k": "v"},
                     call_started_at=datetime.utcnow(),
                 )
+
+
+class TestCompleteCallUniversalIdempotency:
+    """Universal terminal idempotency guard — covers the triple-teardown bug
+    where connect-complete webhook, Twilio status callback, and pipeline
+    teardown all called complete_call() for the same already-terminal call.
+
+    Previously guarded only for forced_by paths; the fix makes it universal.
+    """
+
+    def _make_terminal_call_log(self, status_value):
+        """Return a CallLog already in a terminal state with ended_at set."""
+        cl = _make_call_log()
+        cl.status = status_value
+        cl.ended_at = datetime.utcnow() - timedelta(seconds=5)
+        cl.ai_greeting_completed = True
+        return cl
+
+    def test_normal_path_is_no_op_when_already_completed(self):
+        """A second complete_call() with no forced_by on a COMPLETED row
+        must return True immediately without touching billing or status."""
+        call_log = self._make_terminal_call_log(CallStatus.COMPLETED.value)
+        original_status = call_log.status
+        original_ended_at = call_log.ended_at
+        leg = _make_ai_leg(call_log)
+        db = _make_db(call_log, [leg])
+
+        result = CallLogger(db).complete_call(call_log.call_sid)
+
+        assert result is True, "Must return True (idempotent success)"
+        assert call_log.status == original_status, "Status must not change"
+        assert call_log.ended_at == original_ended_at, "ended_at must not be overwritten"
+        # Commit must NOT be called — the row was not mutated.
+        db.commit.assert_not_called()
+
+    def test_normal_path_is_no_op_when_already_ended_early(self):
+        """An ENDED_EARLY row with ended_at also short-circuits cleanly."""
+        call_log = self._make_terminal_call_log(CallStatus.ENDED_EARLY.value)
+        original_ended_at = call_log.ended_at
+        db = _make_db(call_log, [])
+
+        result = CallLogger(db).complete_call(call_log.call_sid)
+
+        assert result is True
+        assert call_log.ended_at == original_ended_at
+        db.commit.assert_not_called()
+
+    def test_forced_path_is_also_no_op_when_already_terminal(self):
+        """Forced paths (sweeper, finally_defensive) remain idempotent on
+        already-terminal rows — same behaviour as before, now covered by the
+        universal guard rather than the forced_by-specific one."""
+        call_log = self._make_terminal_call_log(CallStatus.COMPLETED.value)
+        original_ended_at = call_log.ended_at
+        leg = _make_ai_leg(call_log)
+        db = _make_db(call_log, [leg])
+
+        result = CallLogger(db).complete_call(
+            call_log.call_sid,
+            forced_by="sweeper",
+            sweeper_age_seconds=300,
+        )
+
+        assert result is True
+        assert call_log.ended_at == original_ended_at, "ended_at must not be touched"
+        db.commit.assert_not_called()
+
+    def test_non_terminal_without_ended_at_still_finalizes(self):
+        """A call that is terminal but lacks ended_at must still finalize
+        (edge case: status was set terminal externally without ended_at)."""
+        call_log = _make_call_log()
+        call_log.status = CallStatus.COMPLETED.value
+        call_log.ended_at = None  # terminal status but no ended_at yet
+        call_log.ai_greeting_completed = True
+        leg = _make_ai_leg(call_log)
+        db = _make_db(call_log, [leg])
+
+        result = CallLogger(db).complete_call(call_log.call_sid)
+
+        assert result is True
+        # ended_at must now be stamped by the finalization logic
+        assert call_log.ended_at is not None, "ended_at must be set by finalization"
+
+    def test_in_progress_call_finalizes_normally(self):
+        """An IN_PROGRESS call must still go through full finalization —
+        the guard must not fire for non-terminal rows."""
+        call_log = _make_call_log()
+        call_log.status = CallStatus.IN_PROGRESS.value
+        call_log.ended_at = None
+        call_log.ai_greeting_completed = True
+        leg = _make_ai_leg(call_log)
+        db = _make_db(call_log, [leg])
+
+        result = CallLogger(db).complete_call(call_log.call_sid)
+
+        assert result is True
+        assert call_log.status == CallStatus.COMPLETED.value
+        assert call_log.ended_at is not None
