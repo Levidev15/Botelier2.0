@@ -932,6 +932,7 @@ class FlowExecutor:
         session_factory: Optional[Callable] = None,
         call_context: Optional[CallFlowContext] = None,
         assistant_timezone: str = "UTC",
+        flow_version_id: Optional[str] = None,
     ):
         self.flow_config = flow_config
         self.call_context = call_context or CallFlowContext()
@@ -964,6 +965,14 @@ class FlowExecutor:
         # every integration resolution is scoped to (account_id, property_id).
         # None → legacy / account-only scoping.
         self.property_id = str(property_id) if property_id else None
+        # Published flow version at executor-creation time. Written to every
+        # flow_sessions snapshot so rehydrate_from_snapshot can detect a
+        # version change (operator published a new flow between the caller's
+        # dropout and reconnect) and start fresh rather than resuming a node
+        # that no longer exists in the live flow.
+        self.flow_version_id: Optional[str] = (
+            str(flow_version_id) if flow_version_id else None
+        )
         # Assistant-level "talk to a human" fallback number. When set, a slot that
         # exhausts its retries (with no wired fallback branch) escalates here
         # instead of dead-ending. None → escalation disabled (fail closed).
@@ -997,6 +1006,13 @@ class FlowExecutor:
         self._get_locks: dict[str, asyncio.Lock] = {}
         self._get_recent: dict[str, tuple[float, str, dict]] = {}
         self._save_record_locks: dict[str, asyncio.Lock] = {}
+        # Per-save_record-node creation lock acquired inside _handle_save_record
+        # to serialise concurrent direct callers (e.g., simultaneous retries or
+        # test paths that bypass handle_function_call's entry lock).  Uses a
+        # SEPARATE dict from _save_record_locks so handle_function_call can
+        # hold _save_record_locks[node_id] and then call _handle_save_record
+        # without a same-lock deadlock.
+        self._save_record_creation_locks: dict[str, asyncio.Lock] = {}
         # Per-execute-node entry lock acquired in handle_function_call BEFORE
         # _turn_lock.  Serialises same-node execute_ calls at the outermost
         # level, which keeps the per-node inner dedup locks (_non_get_locks,
@@ -1149,6 +1165,7 @@ class FlowExecutor:
             "property_id": self.property_id,
             "session_key": session_key,
             "tool_id": tool_id,
+            "flow_version_id": self.flow_version_id,
             "current_node_id": self.state.current_node_id,
             "collected_slots": json.dumps(slots_payload, default=str),
             "status": (
@@ -1197,8 +1214,8 @@ class FlowExecutor:
                         """
                         INSERT INTO flow_sessions (
                             id, account_id, property_id, channel, session_key,
-                            tool_id, current_node_id, collected_slots, status,
-                            created_at, updated_at
+                            tool_id, flow_version_id, current_node_id,
+                            collected_slots, status, created_at, updated_at
                         ) VALUES (
                             gen_random_uuid(),
                             CAST(:account_id AS UUID),
@@ -1206,6 +1223,7 @@ class FlowExecutor:
                             'voice',
                             :session_key,
                             CAST(:tool_id AS UUID),
+                            CAST(:flow_version_id AS UUID),
                             :current_node_id,
                             CAST(:collected_slots AS JSONB),
                             :status,
@@ -1217,6 +1235,7 @@ class FlowExecutor:
                             status = EXCLUDED.status,
                             property_id = EXCLUDED.property_id,
                             account_id = EXCLUDED.account_id,
+                            flow_version_id = EXCLUDED.flow_version_id,
                             updated_at = now()
                         """
                     ),
@@ -1251,7 +1270,8 @@ class FlowExecutor:
                 row = db.execute(
                     _text(
                         """
-                        SELECT current_node_id, collected_slots, status
+                        SELECT current_node_id, collected_slots, status,
+                               flow_version_id
                         FROM flow_sessions
                         WHERE session_key = :session_key
                           AND tool_id = CAST(:tool_id AS UUID)
@@ -1266,7 +1286,28 @@ class FlowExecutor:
         if not row:
             return False
 
-        saved_node, saved_slots, saved_status = row[0], row[1], row[2]
+        saved_node, saved_slots, saved_status, saved_version_id = (
+            row[0], row[1], row[2], row[3]
+        )
+
+        # Version guard: if the snapshot was written by a different published
+        # version than the one this executor was created from, the flow graph
+        # may have changed — nodes the snapshot points to might not exist.
+        # Fail closed: start fresh so the caller re-enters the (possibly
+        # restructured) flow cleanly.  Both sides must have a version for
+        # the check to be meaningful; NULL on either side means unknown
+        # (pre-feature snapshots) → allow rehydrate for backwards compat.
+        if (
+            self.flow_version_id
+            and saved_version_id
+            and str(saved_version_id) != self.flow_version_id
+        ):
+            logger.warning(
+                f"Flow snapshot version mismatch for {self.flow_tool_id!r}: "
+                f"snapshot={saved_version_id} executor={self.flow_version_id} — "
+                "starting caller fresh (flow may have been republished mid-call)"
+            )
+            return False
         if isinstance(saved_slots, str):
             try:
                 saved_slots = json.loads(saved_slots)
@@ -5587,13 +5628,23 @@ class FlowExecutor:
     async def _handle_save_record(self, function_name: str, arguments: dict) -> dict:
         """Serialize SAVE_RECORD per node and reuse the winner's durable id.
 
-        Lock ordering note: ``handle_function_call`` already acquired
-        ``_save_record_locks[node_id]`` (the per-node entry lock) BEFORE the
-        executor-wide ``_turn_lock``.  Re-acquiring it here would deadlock.
-        The outer entry lock + turn lock together already ensure only one
-        active coroutine per node reaches this point.
+        ``handle_function_call`` acquires ``_save_record_locks[node_id]`` (entry
+        lock) BEFORE ``_turn_lock``.  Acquiring the same lock here would deadlock
+        that path.
+
+        Instead, ``_save_record_creation_locks`` (a SEPARATE per-node dict) is
+        used here to serialise concurrent direct callers — simultaneous retries,
+        test code, or any path that reaches this method without going through
+        ``handle_function_call``.  For the normal ``handle_function_call`` path
+        the entry lock already guarantees single-holder, so the creation lock is
+        always uncontested there — no extra latency, no deadlock.
         """
-        return await self._handle_save_record_locked(function_name, arguments)
+        node_id = function_name[len("save_record_"):]
+        creation_lock = self._save_record_creation_locks.setdefault(
+            node_id, asyncio.Lock()
+        )
+        async with creation_lock:
+            return await self._handle_save_record_locked(function_name, arguments)
 
     def _save_record_idempotency_key(self, node_id: str) -> tuple[str, bool]:
         """Return a stable SAVE_RECORD key and whether it is cross-worker durable."""
@@ -5640,6 +5691,22 @@ class FlowExecutor:
         node_id = function_name.replace("save_record_", "")
         node = self.flow_config._node_index.get(node_id)
 
+        # Idempotency check — MUST come before the spent-node guard so a
+        # concurrent call or reconnected caller always gets the cached "already
+        # saved" result even if the flow has advanced past this node.  The flow
+        # may not be at node_id anymore (current_node_id differs), but the
+        # outcome is still correct: the record IS saved, no side effect repeats.
+        if node_id in self.state.saved_records:
+            next_node = self.state.get_next_node(node_id) if node else None
+            next_node_id = next_node.id if next_node else node_id
+            return {
+                "success": True,
+                "message": "Record was already saved",
+                "action": None,
+                "record_saved": True,
+                "current_node_id": next_node_id,
+            }
+
         # Guard: reject calls to a save_record node that is no longer active.
         # Mirrors the set_var and option_picker guards — a stale LLM tool list
         # could let this fire after the flow has already advanced past it.
@@ -5669,9 +5736,6 @@ class FlowExecutor:
 
         if not node:
             return _result(False, "Save record node not found")
-
-        if node_id in self.state.saved_records:
-            return _result(True, "Record was already saved")
 
         if not self.account_id:
             logger.warning("SAVE_RECORD skipped: no account_id on executor")

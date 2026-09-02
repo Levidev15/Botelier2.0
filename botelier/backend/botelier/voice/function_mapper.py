@@ -2050,6 +2050,11 @@ class FunctionMapper:
                 session_factory=self.session_factory,
                 call_context=self._flow_context,
                 assistant_timezone=self.assistant_timezone,
+                flow_version_id=(
+                    str(tool.published_version_id)
+                    if getattr(tool, "published_version_id", None)
+                    else None
+                ),
             )
             # Task #330 — resume a dropped call. If this contact already has a
             # durable snapshot for this flow (websocket dropout + reconnect on a

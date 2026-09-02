@@ -202,7 +202,7 @@ def test_starting_one_flow_never_persists_an_unrelated_flows_session():
             flow_tool_id=tool_id,
             account_id=str(uuid4()),
         )
-        executor._write_snapshot = lambda payload: written.append(payload)
+        executor._write_snapshot = lambda payload, gen: written.append(payload)
         return executor
 
     booking = make("11111111-1111-1111-1111-111111111111")
@@ -245,7 +245,7 @@ def test_rejected_stray_action_does_not_start_or_persist_an_unentered_flow():
             flow_tool_id=tool_id,
             account_id=str(uuid4()),
         )
-        executor._write_snapshot = lambda payload: written.append(payload)
+        executor._write_snapshot = lambda payload, gen: written.append(payload)
         return executor
 
     booking = make("11111111-1111-1111-1111-111111111111")
@@ -520,6 +520,7 @@ def test_rehydrated_saved_record_short_circuits_retry():
         "save",
         {"_saved_records": {"save": "record-id"}},
         "active",
+        None,  # flow_version_id — NULL for pre-feature snapshots
     )
     executor = FlowExecutor(
         parse_flow_config(

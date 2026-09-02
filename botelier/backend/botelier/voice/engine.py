@@ -1301,9 +1301,23 @@ class TtsAudioGapTracker(FrameProcessor):
                     self._gap_count += 1
                     if gap_s > self._max_gap_s:
                         self._max_gap_s = gap_s
+                    try:
+                        from pipecat.services.tts_service import (
+                            TextAggregationMode as _TAM2,
+                        )
+
+                        _dbg_advice = (
+                            " — synthesis micro-burst; increase tts_config.token_send_min_chars"
+                            if self._text_aggregation_mode == _TAM2.TOKEN
+                            else " — consider switching text_aggregation_mode to 'token'"
+                        )
+                    except Exception:
+                        _dbg_advice = (
+                            " — consider switching text_aggregation_mode to 'token'"
+                        )
                     logger.debug(
                         f"TTS audio gap {gap_s * 1000:.1f}ms detected between consecutive "
-                        f"TTSAudioRawFrames — consider switching text_aggregation_mode to 'token'"
+                        f"TTSAudioRawFrames{_dbg_advice}"
                     )
             self._last_audio_t = now
 
