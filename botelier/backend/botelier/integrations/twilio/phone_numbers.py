@@ -118,6 +118,8 @@ class PhoneNumberManager:
         voice_url: Optional[str] = None,
         voice_method: str = "POST",
         status_callback: Optional[str] = None,
+        sms_url: Optional[str] = None,
+        sms_method: str = "POST",
     ) -> Dict[str, Any]:
         """Purchase a phone number for the hotel's sub-account.
 
@@ -127,6 +129,8 @@ class PhoneNumberManager:
             voice_url: Webhook URL for incoming calls
             voice_method: HTTP method for voice_url (default: "POST")
             status_callback: URL for call status updates
+            sms_url: Webhook URL for incoming SMS messages
+            sms_method: HTTP method for sms_url (default: "POST")
 
         Returns:
             Purchased number details:
@@ -151,6 +155,10 @@ class PhoneNumberManager:
 
             if status_callback:
                 purchase_params["status_callback"] = status_callback
+
+            if sms_url:
+                purchase_params["sms_url"] = sms_url
+                purchase_params["sms_method"] = sms_method
 
             # Purchase the number
             purchased = self.client.client.incoming_phone_numbers.create(**purchase_params)

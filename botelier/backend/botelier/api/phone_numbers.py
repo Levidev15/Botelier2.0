@@ -24,7 +24,7 @@ from botelier.auth.middleware import (
     get_current_user,
     get_hotel_context,
 )
-from botelier.config.domain import get_voice_webhook_base_url
+from botelier.config.domain import get_public_base_url, get_voice_webhook_base_url
 from botelier.database import get_db
 from botelier.integrations.twilio.phone_numbers import PhoneNumberManager
 from botelier.models.account import Account
@@ -196,12 +196,20 @@ async def purchase_phone_number(
         voice_url = f"{base_url}/api/calls/incoming"
         status_callback = f"{base_url}/api/calls/status"
 
+        # SMS webhook uses the same public base as the existing sms-config endpoint.
+        # Configured at purchase time so the number is SMS-ready immediately — no
+        # separate manual enable step required.
+        sms_base_url = get_public_base_url()
+        sms_url = f"{sms_base_url}/api/sms/webhook"
+
         purchased = manager.purchase_number(
             phone_number=request.phone_number,
             friendly_name=request.friendly_name,
             voice_url=voice_url,
             voice_method="POST",
             status_callback=status_callback,
+            sms_url=sms_url,
+            sms_method="POST",
         )
 
         country_code = "US"
@@ -213,6 +221,7 @@ async def purchase_phone_number(
             twilio_sid=purchased["sid"],
             account_id=request.account_id,
             is_active=True,
+            sms_enabled=True,
         )
 
         db.add(phone_number)
@@ -518,13 +527,25 @@ async def reconfigure_phone_number_webhooks(
         voice_url = f"{base_url}/api/calls/incoming"
         status_callback = f"{base_url}/api/calls/status"
 
+        # Re-apply SMS webhook alongside voice so a single reconfigure call
+        # brings the number fully up-to-date regardless of its purchase date.
+        sms_base_url = get_public_base_url()
+        sms_url = f"{sms_base_url}/api/sms/webhook"
+
         result = manager.update_number_config(
             phone_number_sid=phone_number.twilio_sid,
             voice_url=voice_url,
             voice_method="POST",
             status_callback=status_callback,
             status_callback_method="POST",
+            sms_url=sms_url,
+            sms_method="POST",
         )
+
+        # Ensure the DB flag reflects the Twilio state after reconfigure.
+        if not phone_number.sms_enabled:
+            phone_number.sms_enabled = True
+            db.commit()
 
         _sync_phone_number_recording(phone_number=phone_number, account=account, db=db)
 
@@ -532,6 +553,7 @@ async def reconfigure_phone_number_webhooks(
             "message": "Phone number webhooks reconfigured",
             "voice_url": voice_url,
             "status_callback": status_callback,
+            "sms_url": sms_url,
             "twilio_result": result,
         }
 
