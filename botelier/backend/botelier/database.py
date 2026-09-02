@@ -128,6 +128,23 @@ _ADDITIVE_MIGRATIONS = [
     "ALTER TABLE tools ADD COLUMN IF NOT EXISTS llm_temperature FLOAT",
     "ALTER TABLE tools ADD COLUMN IF NOT EXISTS llm_max_tokens INTEGER",
     "CREATE INDEX IF NOT EXISTS ix_call_billing_items_call_leg_id ON call_billing_items(call_leg_id)",
+    # Idempotent dedup guard: keep only the earliest inbound_call billing row per
+    # call_log_id and delete any later duplicates produced by the complete_call
+    # race condition (fixed by the advisory-lock change).  Uses a window function
+    # so it is a no-op when no duplicates exist, and safe to re-run on every startup.
+    """DELETE FROM call_billing_items
+       WHERE id IN (
+           SELECT id FROM (
+               SELECT id,
+                      ROW_NUMBER() OVER (
+                          PARTITION BY call_log_id
+                          ORDER BY created_at
+                      ) AS rn
+               FROM call_billing_items
+               WHERE item_type = 'inbound_call'
+           ) sub
+           WHERE rn > 1
+       )""",
     """CREATE UNIQUE INDEX IF NOT EXISTS uq_call_billing_inbound_per_call
        ON call_billing_items(call_log_id) WHERE item_type = 'inbound_call'""",
     """CREATE UNIQUE INDEX IF NOT EXISTS uq_call_billing_transfer_per_leg
