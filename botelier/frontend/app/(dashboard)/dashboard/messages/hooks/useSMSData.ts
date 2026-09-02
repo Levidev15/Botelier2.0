@@ -4,6 +4,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { notify } from "@/lib/notifications";
+import { useSSEEvent } from "@/contexts/SMSStreamContext";
 
 // ---------------------------------------------------------------------------
 // Types
@@ -184,7 +185,6 @@ export function useSMSData() {
   const presenceIntervalRef   = useRef<NodeJS.Timeout | null>(null);
   const lastPresenceConvIdRef = useRef<string | null>(null);
   const fileInputRef          = useRef<HTMLInputElement>(null);
-  const eventSourceRef        = useRef<EventSource | null>(null);
   const selectedConvIdRef     = useRef<string | null>(null);
   const conversationsRef      = useRef<Conversation[]>([]);
 
@@ -388,170 +388,154 @@ export function useSMSData() {
   }, [accountId]);
 
   // ---------------------------------------------------------------------------
-  // SSE — only depends on accountId; callbacks come from refs to avoid restarts
+  // SSE event handlers — the EventSource is owned by SMSStreamProvider so
+  // this hook subscribes to the shared connection instead of opening its own.
+  // All mutable state is accessed via refs; setters are stable — so every
+  // handler can be declared with [] deps (or no useCallback at all, since
+  // useSSEEvent keeps a handlerRef internally anyway).
   // ---------------------------------------------------------------------------
 
-  useEffect(() => {
-    if (!accountId) return;
+  const handleNewMessage = useCallback((event: MessageEvent) => {
+    try {
+      const data = JSON.parse(event.data) as {
+        conversation_id: string;
+        customer_number: string;
+        preview: string;
+        account_id: string;
+      };
 
-    // EventSource cannot send Authorization headers, so the JWT is
-    // passed as a `?token=` query param. Backend validates it the same
-    // way as `Authorization: Bearer` and verifies account membership.
-    const sseToken =
-      (typeof window !== "undefined" && window.localStorage.getItem("botelier_token")) || "";
-    if (!sseToken) return;
-    const es = new EventSource(
-      `/api/sms/stream?account_id=${accountId}&token=${encodeURIComponent(sseToken)}`
-    );
-    eventSourceRef.current = es;
+      // Snapshot current list synchronously so we can decide on side-effects
+      // *outside* the state updater (updaters must be pure — no side-effects).
+      const currentConversations = conversationsRef.current ?? [];
+      const existing  = currentConversations.find(c => c.id === data.conversation_id);
+      const isNew     = !existing;
+      const wasClosed = existing?.status === "closed";
 
-    const handleNewMessage = (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data) as {
-          conversation_id: string;
-          customer_number: string;
-          preview: string;
-          account_id: string;
-        };
+      setConversations(prev => {
+        if (isNew) return prev;
 
-        // Snapshot current list synchronously so we can decide on side-effects
-        // *outside* the state updater (updaters must be pure — no side-effects).
-        const currentConversations = conversationsRef.current ?? [];
-        const existing = currentConversations.find(c => c.id === data.conversation_id);
-        const isNew    = !existing;
-        const wasClosed = existing?.status === "closed";
-
-        setConversations(prev => {
-          if (isNew) return prev;
-
-          const updated = prev.map(c =>
-            c.id === data.conversation_id
-              ? {
-                  ...c,
-                  has_unread: selectedConvIdRef.current !== data.conversation_id,
-                  last_message_preview: data.preview,
-                  last_message_at: new Date().toISOString(),
-                  // Optimistically reopen if closed — the backend always reopens
-                  // a closed conversation when a new inbound message arrives.
-                  // A follow-up fetch will sync the correct handler_mode from the server.
-                  ...(wasClosed ? { status: "active", handler_mode: "ai" as const, needs_attention: false } : {}),
-                }
-              : c
-          );
-
-          return [...updated].sort(
-            (a, b) =>
-              new Date(b.last_message_at ?? 0).getTime() -
-              new Date(a.last_message_at ?? 0).getTime()
-          );
-        });
-
-        // Side-effects run outside the updater so React doesn't suppress them.
-        // For new/reopened conversations we fetch just that one card — avoids
-        // replacing the entire list which re-renders (and blinks) every card.
-        if (isNew || wasClosed) {
-          fetchSingleIntoListRef.current?.(data.conversation_id);
-        }
-
-        if (selectedConvIdRef.current === data.conversation_id) {
-          fetchConversationRef.current?.(data.conversation_id);
-        }
-
-        const ns = notifSettingsRef.current;
-        if (document.hidden && ns.sound_enabled) {
-          playTone(ns.sound_type);
-        }
-        if (ns.visual_enabled) {
-          notify.info(`New message from ${data.customer_number}`);
-        }
-      } catch {}
-    };
-
-    const handleNewReply = (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data) as {
-          conversation_id: string;
-          customer_number: string;
-          preview: string;
-        };
-
-        setConversations(prev =>
-          prev.map(c =>
-            c.id === data.conversation_id
-              ? { ...c, last_message_preview: data.preview, last_message_at: new Date().toISOString() }
-              : c
-          )
+        const updated = prev.map(c =>
+          c.id === data.conversation_id
+            ? {
+                ...c,
+                has_unread: selectedConvIdRef.current !== data.conversation_id,
+                last_message_preview: data.preview,
+                last_message_at: new Date().toISOString(),
+                // Optimistically reopen if closed — the backend always reopens
+                // a closed conversation when a new inbound message arrives.
+                // A follow-up fetch will sync the correct handler_mode from the server.
+                ...(wasClosed ? { status: "active", handler_mode: "ai" as const, needs_attention: false } : {}),
+              }
+            : c
         );
 
-        if (selectedConvIdRef.current === data.conversation_id) {
-          fetchConversationRef.current?.(data.conversation_id);
-        }
-      } catch {}
-    };
-
-    const handleHandoffRequested = (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data) as {
-          conversation_id: string;
-          customer_number: string;
-          account_id: string;
-          last_ai_message: string;
-        };
-
-        setConversations(prev =>
-          prev.map(c =>
-            c.id === data.conversation_id
-              ? { ...c, handler_mode: "human" as const, needs_attention: true }
-              : c
-          )
+        return [...updated].sort(
+          (a, b) =>
+            new Date(b.last_message_at ?? 0).getTime() -
+            new Date(a.last_message_at ?? 0).getTime()
         );
+      });
 
-        notify.warning(`AI escalated: ${data.customer_number} needs an agent`);
+      // Side-effects run outside the updater so React doesn't suppress them.
+      // For new/reopened conversations we fetch just that one card — avoids
+      // replacing the entire list which re-renders (and blinks) every card.
+      if (isNew || wasClosed) {
+        fetchSingleIntoListRef.current?.(data.conversation_id);
+      }
 
-        if (selectedConvIdRef.current === data.conversation_id) {
-          fetchConversationRef.current?.(data.conversation_id);
-        }
-      } catch {}
-    };
+      if (selectedConvIdRef.current === data.conversation_id) {
+        fetchConversationRef.current?.(data.conversation_id);
+      }
 
-    const handleHandlerChanged = (event: MessageEvent) => {
-      try {
-        const data = JSON.parse(event.data) as {
-          conversation_id: string;
-          handler_mode: "ai" | "human";
-          needs_attention: boolean;
-        };
+      const ns = notifSettingsRef.current;
+      if (document.hidden && ns.sound_enabled) {
+        playTone(ns.sound_type);
+      }
+      if (ns.visual_enabled) {
+        notify.info(`New message from ${data.customer_number}`);
+      }
+    } catch {}
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-        setConversations(prev =>
-          prev.map(c =>
-            c.id === data.conversation_id
-              ? { ...c, handler_mode: data.handler_mode, needs_attention: data.needs_attention }
-              : c
-          )
-        );
+  const handleNewReply = useCallback((event: MessageEvent) => {
+    try {
+      const data = JSON.parse(event.data) as {
+        conversation_id: string;
+        customer_number: string;
+        preview: string;
+      };
 
-        setSelectedConv(prev =>
-          prev?.id === data.conversation_id
-            ? { ...prev, handler_mode: data.handler_mode, needs_attention: data.needs_attention }
-            : prev
-        );
-      } catch {}
-    };
+      setConversations(prev =>
+        prev.map(c =>
+          c.id === data.conversation_id
+            ? { ...c, last_message_preview: data.preview, last_message_at: new Date().toISOString() }
+            : c
+        )
+      );
 
-    es.addEventListener("new_message", handleNewMessage);
-    es.addEventListener("new_reply", handleNewReply);
-    es.addEventListener("handoff_requested", handleHandoffRequested);
-    es.addEventListener("handler_changed", handleHandlerChanged);
+      if (selectedConvIdRef.current === data.conversation_id) {
+        fetchConversationRef.current?.(data.conversation_id);
+      }
+    } catch {}
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
-    es.onerror = () => {
-      console.debug("SMS SSE connection interrupted, reconnecting...");
-    };
+  const handleHandoffRequested = useCallback((event: MessageEvent) => {
+    try {
+      const data = JSON.parse(event.data) as {
+        conversation_id: string;
+        customer_number: string;
+        account_id: string;
+        last_ai_message: string;
+      };
 
-    return () => {
-      es.close();
-      eventSourceRef.current = null;
-    };
-  }, [accountId]); // Only accountId — all callbacks via refs
+      setConversations(prev =>
+        prev.map(c =>
+          c.id === data.conversation_id
+            ? { ...c, handler_mode: "human" as const, needs_attention: true }
+            : c
+        )
+      );
+
+      notify.warning(`AI escalated: ${data.customer_number} needs an agent`);
+
+      if (selectedConvIdRef.current === data.conversation_id) {
+        fetchConversationRef.current?.(data.conversation_id);
+      }
+    } catch {}
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const handleHandlerChanged = useCallback((event: MessageEvent) => {
+    try {
+      const data = JSON.parse(event.data) as {
+        conversation_id: string;
+        handler_mode: "ai" | "human";
+        needs_attention: boolean;
+      };
+
+      setConversations(prev =>
+        prev.map(c =>
+          c.id === data.conversation_id
+            ? { ...c, handler_mode: data.handler_mode, needs_attention: data.needs_attention }
+            : c
+        )
+      );
+
+      setSelectedConv(prev =>
+        prev?.id === data.conversation_id
+          ? { ...prev, handler_mode: data.handler_mode, needs_attention: data.needs_attention }
+          : prev
+      );
+    } catch {}
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  useSSEEvent("new_message",        handleNewMessage);
+  useSSEEvent("new_reply",          handleNewReply);
+  useSSEEvent("handoff_requested",  handleHandoffRequested);
+  useSSEEvent("handler_changed",    handleHandlerChanged);
 
   // ---------------------------------------------------------------------------
   // Initial data load + filter re-fetch

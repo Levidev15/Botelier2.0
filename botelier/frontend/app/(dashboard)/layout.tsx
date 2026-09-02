@@ -4,18 +4,37 @@ import { Bot, Phone, BarChart, Key, Users, Wrench, BookOpen, Shield, LogOut, Arr
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRouter } from "next/navigation";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { usePermissions } from "@/lib/auth/usePermissions";
 import { useTheme } from "@/lib/theme/ThemeContext";
 import { AccountFeaturesProvider } from "@/contexts/AccountFeaturesContext";
+import { SMSStreamProvider, useSSEEvent } from "@/contexts/SMSStreamContext";
+
+// ---------------------------------------------------------------------------
+// Root layout — wraps everything in the shared SSE connection so that any
+// descendant can subscribe to SMS events without opening its own EventSource.
+// ---------------------------------------------------------------------------
 
 export default function DashboardLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  return (
+    <SMSStreamProvider>
+      <DashboardLayoutInner>{children}</DashboardLayoutInner>
+    </SMSStreamProvider>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Inner layout — all nav, auth, and badge logic lives here so it can call
+// useSSEEvent() (which requires being inside SMSStreamProvider).
+// ---------------------------------------------------------------------------
+
+function DashboardLayoutInner({ children }: { children: React.ReactNode }) {
   const { token, loading: tokenLoading, authFetch } = useAuthToken();
   const { accountId, accountName, isAdminSession, exitAccount, loading: accountLoading } = useAccountContext();
   const { can, isPlatformAdmin } = usePermissions();
@@ -25,7 +44,6 @@ export default function DashboardLayout({
   const pathname = usePathname();
   const [userInfo, setUserInfo] = useState<any>(null);
   const [pendingHandoffs, setPendingHandoffs] = useState(0);
-  const handoffPollRef = useRef<NodeJS.Timeout | null>(null);
 
   const handleExitAccount = () => {
     exitAccount();
@@ -39,9 +57,6 @@ export default function DashboardLayout({
   };
 
   // Redirect unauthenticated users once localStorage has been read.
-  // Firing this in useEffect (not render) keeps navigation out of the render
-  // phase. The render gate below shows the spinner while the redirect is in
-  // flight, preventing any flash of dashboard content.
   useEffect(() => {
     if (tokenLoading || accountLoading) return;
     if (!token) {
@@ -49,9 +64,7 @@ export default function DashboardLayout({
     }
   }, [tokenLoading, accountLoading, token, router]);
 
-  // Fetch user info as soon as the token is confirmed — no longer gated on
-  // the intermediate authChecked state, which previously added one extra
-  // render cycle before this fetch could start.
+  // Fetch user info as soon as the token is confirmed.
   useEffect(() => {
     if (tokenLoading || accountLoading || !token) return;
     fetchUserInfo();
@@ -84,9 +97,9 @@ export default function DashboardLayout({
     }
   };
 
-  const fetchPendingHandoffs = async (accountId: string) => {
+  const fetchPendingHandoffs = async (acctId: string) => {
     try {
-      const res = await authFetch(`/api/sms/pending-handoffs?account_id=${accountId}`);
+      const res = await authFetch(`/api/sms/pending-handoffs?account_id=${acctId}`);
       if (res.ok) {
         const data = await res.json();
         setPendingHandoffs(data.count ?? 0);
@@ -94,22 +107,25 @@ export default function DashboardLayout({
     } catch {}
   };
 
-  // Pending handoffs poll — starts immediately alongside fetchUserInfo once
-  // the token and account context are both available. Cleans up on accountId
-  // change (account switch) or auth loss.
+  // Initial count — fetched once when auth is ready.
+  // SSE events (below) keep it current after that; no recurring poll needed.
   useEffect(() => {
     if (!accountId || tokenLoading || accountLoading || !token) return;
-
     fetchPendingHandoffs(accountId);
-
-    handoffPollRef.current = setInterval(() => {
-      fetchPendingHandoffs(accountId);
-    }, 30_000);
-
-    return () => {
-      if (handoffPollRef.current) clearInterval(handoffPollRef.current);
-    };
   }, [accountId, tokenLoading, accountLoading, token]);
+
+  // Badge updates via SSE — replaces the old 30-second setInterval.
+  // useSSEEvent keeps a ref to the latest handler so accountId is always current.
+  useSSEEvent("handoff_requested", () => {
+    if (accountId) fetchPendingHandoffs(accountId);
+  });
+  useSSEEvent("handler_changed", (event: MessageEvent) => {
+    try {
+      const { handler_mode } = JSON.parse(event.data);
+      // Refetch when an agent hands back to AI — that resolves the handoff.
+      if (handler_mode === "ai" && accountId) fetchPendingHandoffs(accountId);
+    } catch {}
+  });
 
   // Show spinner while localStorage is being read, or while a redirect to
   // /login is in flight. Both conditions resolve quickly (no network call).
@@ -292,6 +308,10 @@ export default function DashboardLayout({
     </div>
   );
 }
+
+// ---------------------------------------------------------------------------
+// NavItem
+// ---------------------------------------------------------------------------
 
 function NavItem({
   href,
