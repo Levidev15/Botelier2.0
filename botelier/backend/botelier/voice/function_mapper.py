@@ -1809,18 +1809,44 @@ class FunctionMapper:
         """Map send SMS tool to Pipecat function.
 
         Sends an SMS to the caller's number using the account's Twilio
-        sub-account credentials (or platform defaults as fallback).  The
-        configured ``message_body`` is interpolated at send-time with:
+        sub-account credentials (or platform defaults as fallback).
+
+        The LLM may pass a ``message`` argument with the full SMS body (ideal
+        for dynamic content like checkout URLs).  When omitted, the tool falls
+        back to the static ``message_body`` template configured on the tool,
+        which supports these placeholders:
           {caller_number}  — the inbound caller's E.164 number
           {caller_name}    — caller name if available, otherwise "Caller"
           {account_name}   — the business name from the account record
+
+        Placeholders are applied to both the dynamic message and the template
+        so static templates can still personalise the message.
         """
         message_body_template: str = (tool.config or {}).get("message_body", "")
 
         function_schema = {
             "name": sanitize_function_name(tool.name),
-            "description": tool.description or "Send an SMS to the caller",
-            "parameters": {"type": "object", "properties": {}, "required": []},
+            "description": (
+                tool.description
+                or "Send an SMS text message to the caller. "
+                "Use this whenever the caller needs a link, URL, checkout page, "
+                "or any information that should not be read aloud on a phone call."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "description": (
+                            "The full SMS body to send to the caller. "
+                            "Include any URLs or links here — do NOT read them aloud. "
+                            "Example: 'Here is your checkout link: https://example.com/cart/abc123'. "
+                            "If omitted, the pre-configured default message is sent."
+                        ),
+                    }
+                },
+                "required": [],
+            },
         }
 
         mapper = self
@@ -1847,9 +1873,24 @@ class FunctionMapper:
 
             account_name = mapper.account_name or "Business"
 
-            body = message_body_template.replace("{caller_number}", caller_number)
+            # Dynamic message from the LLM takes priority over the static template.
+            # This allows the LLM to send checkout URLs, product links, etc. that it
+            # received from a tool result — without reading them aloud over the phone.
+            dynamic_message: str = ((params.arguments or {}).get("message") or "").strip()
+            body = dynamic_message if dynamic_message else message_body_template
+
+            # Apply template placeholders on both paths so personalisation works
+            # whether the LLM provides a message or the static template is used.
+            body = body.replace("{caller_number}", caller_number)
             body = body.replace("{caller_name}", "Caller")
             body = body.replace("{account_name}", account_name)
+
+            if not body:
+                logger.warning(
+                    f"[send_sms] Empty message body for call {mapper.call_sid}; skipping send"
+                )
+                await params.result_callback({"status": "skipped", "reason": "empty message body"})
+                return
 
             try:
                 message = mapper.twilio_client.messages.create(
@@ -1860,6 +1901,7 @@ class FunctionMapper:
                 logger.info(
                     f"[send_sms] Sent SMS {message.sid} from {business_number} to {caller_number} "
                     f"on call {mapper.call_sid}"
+                    + (" [dynamic]" if dynamic_message else " [template]")
                 )
                 await params.result_callback({"status": "sent", "message_sid": message.sid})
             except Exception as exc:

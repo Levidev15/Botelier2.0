@@ -5,14 +5,92 @@ Task #547 — on live calls the TTS provider read "3000" as "thirty-zero-zero",
 These helpers expand such tokens to words BEFORE the text reaches the
 synthesizer.
 
+Also provides :func:`sanitize_voice_text` which strips markdown formatting and
+raw URLs before synthesis.  LLMs frequently format product listings with
+Markdown links (``[Name](https://…)``) and bullet points that are illegible
+when spoken aloud.  This runs as the first step inside
+:func:`normalize_for_speech` so every TTS path benefits automatically.
+
 IMPORTANT: callers must only pass whitespace-complete text (whole words).
 In TOKEN aggregation mode the TTS wrapper buffers sub-word fragments to
 whitespace boundaries before applying any substitution (see engine.py
 `_BotelierDeepgramTTSService`); this module relies on that guarantee — a
 regex applied to a sub-word fragment would silently no-op or corrupt words.
+
+TOKEN mode correctness for markdown stripping
+---------------------------------------------
+URLs contain no whitespace, so they always arrive as a single complete token
+and are stripped cleanly.  Markdown link bracket characters (``[``, ``]``)
+arrive as token prefixes/suffixes and are stripped individually:
+
+  ``[Triple``          →  ``Triple``
+  ``Chocolate``        →  ``Chocolate``
+  ``Pint](https://…)`` →  ``Pint``   (URL stripped first, then brackets)
 """
 
 import re
+
+# ---------------------------------------------------------------------------
+# Markdown / URL sanitization — voice safety net
+# ---------------------------------------------------------------------------
+
+# Full bare URL: https:// or http:// followed by any non-whitespace run.
+_URL_RE = re.compile(r"https?://\S*", re.IGNORECASE)
+
+# Markdown emphasis / inline-code markers (standalone **, *, __, _, `).
+_MD_EMPHASIS_RE = re.compile(r"\*{1,3}|_{1,3}|`+")
+
+# Markdown heading markers at the start of a line: ## Title → Title.
+_MD_HEADING_RE = re.compile(r"^#{1,6}\s*", re.MULTILINE)
+
+# Markdown unordered-list bullets at the start of a line: "- item" or "* item".
+_MD_BULLET_RE = re.compile(r"^[\-\*•]\s+", re.MULTILINE)
+
+
+def sanitize_voice_text(text: str) -> str:
+    """Strip markdown and URLs from *text* before it reaches the TTS engine.
+
+    This is the voice safety net for when the LLM produces markdown-formatted
+    responses (product lists with hyperlinks, bold prices, bullet points, etc.)
+    that would be read verbatim and sound unintelligible over the phone.
+
+    The primary fix is the system-prompt rule that instructs the LLM never to
+    include URLs or markdown in voice responses.  This function is the fallback
+    for any that slip through.
+
+    Safe to call on partial TOKEN-mode chunks — see module docstring.
+    Never raises.
+    """
+    if not text:
+        return text
+
+    # 1. Strip bare URLs entirely (no-op on non-URL text).
+    text = _URL_RE.sub("", text)
+
+    # 2. Clean up markdown-link artifacts left after URL removal.
+    #    "Pint](https://…)" → after step 1 → "Pint]()" → strip to "Pint".
+    #    Also handles "](" that preceded a URL now gone.
+    text = text.replace("]()", "")
+    text = text.replace("](", "")
+
+    # 3. Remove square brackets used in markdown link syntax.
+    #    "[Triple" → "Triple",  "Pint]" → "Pint".
+    text = text.replace("[", "").replace("]", "")
+
+    # 4. Strip emphasis markers (**, *, __, _, `).
+    text = _MD_EMPHASIS_RE.sub("", text)
+
+    # 5. Strip heading markers at line start (## Introduction → Introduction).
+    text = _MD_HEADING_RE.sub("", text)
+
+    # 6. Strip list bullet markers at line start (- Item → Item, * Item → Item).
+    text = _MD_BULLET_RE.sub("", text)
+
+    # 7. Collapse double-spaces introduced by removals.
+    if "  " in text:
+        text = re.sub(r"  +", " ", text)
+
+    return text.strip()
 
 # ---------------------------------------------------------------------------
 # Spelled-out letter sequences — e.g. "C-O-R-E-Y" or "c-n-o-m-m-a-e-a"
@@ -145,10 +223,20 @@ def normalize_for_speech(text: str) -> str:
     codes, and hyphen-spelled letter sequences into spoken words.  Input must
     be whitespace-complete text.
 
+    Also strips markdown formatting and bare URLs via :func:`sanitize_voice_text`
+    before any numeric expansion — so URL digits never trigger false
+    number-to-word conversion.
+
     Never raises: any value outside the supported range (or in an
     identifier context such as "confirmation number is 123456") is left
     exactly as written so synthesis is never interrupted.
     """
+    if not text:
+        return text
+
+    # Strip markdown and URLs first so their digits/symbols don't interfere
+    # with the numeric normalization patterns below.
+    text = sanitize_voice_text(text)
     if not text:
         return text
 

@@ -9,6 +9,30 @@ UTC_TIMEZONE = "UTC"
 ASSISTANT_LOCAL_TIME_HEADING = "## ASSISTANT LOCAL TIME"
 BUSINESS_CONTEXT_HEADING = "## BUSINESS CONTEXT"
 
+# ---------------------------------------------------------------------------
+# Voice phone-call formatting rules — injected into every runtime prompt.
+#
+# These supplement the assistant's own system_prompt with phone-specific
+# formatting constraints.  They are deliberately placed as an independent
+# section (not embedded in the assistant record) so they apply universally
+# without the assistant author needing to remember them.
+# ---------------------------------------------------------------------------
+_VOICE_CALL_GUIDELINES = """\
+## VOICE CALL RULES
+You are on a PHONE CALL. The caller cannot see text — they can only hear you.
+
+FORMATTING — always follow these:
+- NEVER say URLs, web addresses, or links aloud. The caller cannot write down long URLs.
+- NEVER use markdown: no asterisks, no dashes as bullets, no numbered lists, no hashtag headings.
+- Keep every response to 2–3 short spoken sentences. Callers cannot replay audio.
+- When listing options, name them conversationally: "We have the Double Chocolate bar and the Peanut Butter Chocolate — which sounds good?" — not a numbered list.
+
+LINKS & SMS — always follow these:
+- When the caller needs a link (checkout, product page, return policy, etc.), say "I'll text that link to you" and immediately call the SMS tool with the full URL in the message.
+- After sending an SMS, confirm it plainly: "Done, I've sent that to your phone." Do NOT read the URL aloud.
+- Only say you cannot send a text if the SMS tool is not available in your tool list.\
+"""
+
 
 def resolve_assistant_timezone(timezone_name: Optional[str]) -> tuple[str, ZoneInfo]:
     """Resolve an IANA timezone, explicitly falling back to UTC."""
@@ -118,6 +142,10 @@ def build_runtime_system_prompt_from_parts(
     personas = [persona for persona in flow_personas if persona]
     static_sections = [
         assistant_prompt,
+        # Voice call formatting rules always follow the assistant's own prompt
+        # so they supplement — not replace — any formatting guidance the
+        # assistant author already included.
+        _VOICE_CALL_GUIDELINES,
         build_business_context_segment(business_name),
         *personas,
     ]
