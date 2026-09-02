@@ -803,6 +803,11 @@ WHERE answered_at IS NULL
     "ALTER TABLE connection_operation_policies ADD COLUMN IF NOT EXISTS response_mapping JSONB",
     "ALTER TABLE connection_operation_policies ADD COLUMN IF NOT EXISTS param_ownership_overrides JSONB",
     "ALTER TABLE connection_operation_policies ADD COLUMN IF NOT EXISTS request_overrides JSONB",
+    # Per-account email sender identity — used by the SEND_EMAIL tool so each
+    # account can brand outgoing emails with their own From name/address.
+    # NULL means fall back to the platform default (EMAIL_FROM_DEFAULT env var).
+    "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email_from VARCHAR(255)",
+    "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email_from_name VARCHAR(255)",
 ]
 
 

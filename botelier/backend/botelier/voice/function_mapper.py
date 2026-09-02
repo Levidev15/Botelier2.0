@@ -1913,9 +1913,192 @@ class FunctionMapper:
         return function_schema, send_sms_handler
 
     def _map_send_email(self, tool: Tool) -> tuple[Dict[str, Any], Callable]:
-        """Map send email tool to Pipecat function."""
-        # Placeholder - implement when email integration is ready
-        raise NotImplementedError("Email sending not yet implemented")
+        """Map send email tool to Pipecat function.
+
+        Sends an email via SendGrid on behalf of the account. The LLM must
+        supply the recipient's ``to`` address (obtained however it likes —
+        asked the caller, retrieved from a PMS result, read from a flow
+        variable, etc.). ``subject`` and ``message`` are optional: when
+        omitted, the tool's configured ``default_subject`` and
+        ``message_body`` template are used.
+
+        Sender identity resolution order:
+          1. Tool-level ``from_email`` / ``from_name`` in config (rare override)
+          2. Account-level ``email_from`` / ``email_from_name`` DB columns
+          3. Platform defaults from EMAIL_FROM_DEFAULT / EMAIL_FROM_NAME_DEFAULT
+
+        Template placeholders supported in ``message_body`` (config default):
+          {account_name}  — the business name from the account record
+        """
+        cfg = tool.config or {}
+        default_subject: str = cfg.get("default_subject", "")
+        message_body_template: str = cfg.get("message_body", "")
+        # Optional per-tool sender override (most accounts won't set this)
+        tool_from_email: str = cfg.get("from_email", "")
+        tool_from_name: str = cfg.get("from_name", "")
+
+        function_schema = {
+            "name": sanitize_function_name(tool.name),
+            "description": (
+                tool.description
+                or "Send an email to a guest or caller. "
+                "Use this to deliver booking confirmations, links, information, "
+                "or any content the caller asked to have emailed to them. "
+                "You must obtain the recipient's email address before calling this tool."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "to": {
+                        "type": "string",
+                        "description": (
+                            "Recipient email address. You must have this value before "
+                            "calling the tool — ask the caller if you don't have it."
+                        ),
+                    },
+                    "subject": {
+                        "type": "string",
+                        "description": (
+                            "Email subject line. If omitted, the pre-configured "
+                            "default subject is used."
+                        ),
+                    },
+                    "message": {
+                        "type": "string",
+                        "description": (
+                            "Full email body to send. Include any URLs, links, or "
+                            "details here — do NOT read URLs aloud on the call. "
+                            "If omitted, the pre-configured default message is used."
+                        ),
+                    },
+                },
+                "required": ["to"],
+            },
+        }
+
+        mapper = self
+
+        async def send_email_handler(params: FunctionCallParams):
+            mapper.track_tool_usage(tool.name)
+
+            args = params.arguments or {}
+            to_address: str = (args.get("to") or "").strip()
+            dynamic_subject: str = (args.get("subject") or "").strip()
+            dynamic_message: str = (args.get("message") or "").strip()
+
+            if not to_address:
+                logger.warning(
+                    "[send_email] LLM did not provide a 'to' address for call %s; skipping",
+                    mapper.call_sid,
+                )
+                await params.result_callback(
+                    {"status": "skipped", "reason": "no recipient email address provided"}
+                )
+                return
+
+            # Resolve effective subject — LLM value wins over config default
+            effective_subject = dynamic_subject or default_subject or "Message from " + (mapper.account_name or "us")
+
+            account_name = mapper.account_name or "Business"
+
+            # Resolve effective body — LLM value wins over config template
+            if dynamic_message:
+                effective_body = dynamic_message
+            else:
+                effective_body = message_body_template.replace("{account_name}", account_name)
+
+            if not effective_body:
+                logger.warning(
+                    "[send_email] Empty message body for call %s; skipping send",
+                    mapper.call_sid,
+                )
+                await params.result_callback(
+                    {"status": "skipped", "reason": "empty message body"}
+                )
+                return
+
+            # Resolve sender — tool config → account DB → platform env default
+            resolved_from_email = tool_from_email or None
+            resolved_from_name = tool_from_name or None
+
+            if not resolved_from_email and mapper.account_id:
+                try:
+                    from ..models.account import Account
+
+                    # Prefer an already-open session (simulator / API contexts);
+                    # fall back to session_factory for live voice calls where
+                    # db_session is None (closed before the call pipeline starts).
+                    _existing_db = getattr(mapper, "db_session", None)
+                    if _existing_db is not None:
+                        acc = _existing_db.query(Account).filter(Account.id == mapper.account_id).first()
+                        if acc:
+                            resolved_from_email = acc.email_from or None
+                            resolved_from_name = resolved_from_name or acc.email_from_name or None
+                    elif mapper.session_factory:
+                        with mapper.session_factory() as _db:
+                            acc = _db.query(Account).filter(Account.id == mapper.account_id).first()
+                            if acc:
+                                resolved_from_email = acc.email_from or None
+                                resolved_from_name = resolved_from_name or acc.email_from_name or None
+                except Exception as _acc_err:
+                    logger.warning(
+                        "[send_email] Could not look up account sender config for %s: %s",
+                        mapper.account_id,
+                        _acc_err,
+                    )
+
+            # email_service falls back to EMAIL_FROM_DEFAULT if resolved_from_email is None.
+            # Run the synchronous SendGrid HTTP call in a worker thread so it cannot
+            # block the Pipecat voice event loop while waiting on a slow API response.
+            # A 30-second timeout caps the worst case (network hang, SendGrid outage).
+            from botelier.services.email_service import send_email as _send_email
+
+            try:
+                success = await asyncio.wait_for(
+                    asyncio.get_event_loop().run_in_executor(
+                        None,
+                        lambda: _send_email(
+                            to_addresses=[to_address],
+                            subject=effective_subject,
+                            body_text=effective_body,
+                            from_email=resolved_from_email,
+                            from_name=resolved_from_name,
+                        ),
+                    ),
+                    timeout=30.0,
+                )
+            except asyncio.TimeoutError:
+                logger.error(
+                    "[send_email] SendGrid request timed out after 30s for call %s to %s",
+                    mapper.call_sid,
+                    to_address,
+                )
+                await params.result_callback(
+                    {"status": "failed", "reason": "email delivery timed out"}
+                )
+                return
+
+            if success:
+                logger.info(
+                    "[send_email] Sent email to %s (subject: '%s') on call %s",
+                    to_address,
+                    effective_subject,
+                    mapper.call_sid,
+                )
+                await params.result_callback(
+                    {"status": "sent", "to": to_address, "subject": effective_subject}
+                )
+            else:
+                logger.warning(
+                    "[send_email] Delivery failed for call %s to %s",
+                    mapper.call_sid,
+                    to_address,
+                )
+                await params.result_callback(
+                    {"status": "failed", "reason": "email delivery failed — check SENDGRID_API_KEY and sender config"}
+                )
+
+        return function_schema, send_email_handler
 
     def _map_flow(self, tool: Tool) -> tuple[Dict[str, Any], Callable]:
         """Map a conversation flow tool to Pipecat function.

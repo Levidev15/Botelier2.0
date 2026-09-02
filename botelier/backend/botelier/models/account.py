@@ -78,6 +78,13 @@ class Account(Base):
 
     feature_flags = Column(JSONB, nullable=False, server_default="{}")
 
+    # Per-account email sender identity (optional).  When set, emails sent on
+    # behalf of this account use this From address/name instead of the platform
+    # default (EMAIL_FROM_DEFAULT / EMAIL_FROM_NAME_DEFAULT env vars).
+    # Must be on a SendGrid-verified domain.
+    email_from = Column(String, nullable=True)
+    email_from_name = Column(String, nullable=True)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, nullable=True, onupdate=datetime.utcnow)
 
