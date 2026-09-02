@@ -100,9 +100,9 @@ def _run_refresh(monkeypatch, response_factory):
         owns_session=True,
     )
     _install_token_response(monkeypatch, response_factory)
-    ok = asyncio.get_event_loop().run_until_complete(
-        OperaCloudAdapter().refresh_oauth(ctx)
-    )
+    # asyncio.run() creates a fresh event loop each call, so these sync tests
+    # remain isolated from any event-loop teardown by pytest-asyncio.
+    ok = asyncio.run(OperaCloudAdapter().refresh_oauth(ctx))
     return ok, integration, db
 
 
