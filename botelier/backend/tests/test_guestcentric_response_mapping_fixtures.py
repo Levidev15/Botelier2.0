@@ -7,56 +7,22 @@ Each fixture mirrors the structure documented in swagger.yaml; any path that
 yields None here would yield None in a real flow and silently break the
 variable that depends on it.
 """
-import re
 import pytest
 
 from botelier.seeds.guestcentric_integration import GUESTCENTRIC_INTEGRATION
+from botelier.services.integration_runtime.jsonpath import extract_json_value
 
 
 # ---------------------------------------------------------------------------
-# Minimal JSONPath resolver (covers the subset used in GC mappings)
-# Handles: $ | $.f | $[0] | $.a[0].b | $.a[0].b.c | $[0].f | $[0].f[0].g
+# JSONPath resolver — delegates to the production implementation so that these
+# tests validate exactly the same logic that runs in live flows.  The
+# production resolver supports: $ root, dot/bracket keys, numeric indices,
+# and [*] wildcards (returns a flat deduplicated list).
 # ---------------------------------------------------------------------------
 
 def _resolve(data, path: str):
-    """Resolve a simple JSONPath against *data* and return the value or None."""
-    if path == "$":
-        return data
-
-    # Tokenise: strip leading "$", then split on "." or "[" boundaries
-    tokens = []
-    remainder = path.lstrip("$").lstrip(".")
-    for part in re.split(r"\.(?!\d)", remainder):
-        if not part:
-            continue
-        # e.g. "cancellation_rules[0]" or "cancellation_rules[0].type"
-        m = re.match(r"^([a-zA-Z_][a-zA-Z0-9_]*)(?:\[(\d+)\])?$", part)
-        if m:
-            tokens.append(("key", m.group(1)))
-            if m.group(2) is not None:
-                tokens.append(("idx", int(m.group(2))))
-        elif part.startswith("[") and part.endswith("]"):
-            tokens.append(("idx", int(part[1:-1])))
-        else:
-            # Fallback: split on "[" to handle camelCase + index
-            subparts = re.split(r"\[", part)
-            tokens.append(("key", subparts[0]))
-            for sp in subparts[1:]:
-                tokens.append(("idx", int(sp.rstrip("]"))))
-
-    current = data
-    for kind, val in tokens:
-        if current is None:
-            return None
-        if kind == "key":
-            if not isinstance(current, dict):
-                return None
-            current = current.get(val)
-        else:
-            if not isinstance(current, list) or len(current) <= val:
-                return None
-            current = current[val]
-    return current
+    """Resolve a JSONPath against *data* using the shared production extractor."""
+    return extract_json_value(data, path)
 
 
 def _endpoint(slug: str) -> dict:
