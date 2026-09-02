@@ -64,6 +64,7 @@ from botelier.api.team import router as team_router
 from botelier.api.tool_sets import router as tool_sets_router
 from botelier.api.websockets import router as websockets_router
 from botelier.database import SessionLocal, init_db, run_stuck_call_sweeper
+from botelier.services.notification_broadcaster import broadcaster
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -137,6 +138,9 @@ async def startup_event():
     print(f"📊 Database: {os.environ.get('DATABASE_URL', 'Not configured')[:50]}...")
     init_db()
     print("✅ Database initialized")
+
+    await broadcaster.start()
+    print("✅ SMS broadcaster started (Postgres LISTEN/NOTIFY)")
 
     # Fail fast: resolve the credential master key (Azure Key Vault or env var)
     # at boot so a misconfigured / unreachable Key Vault stops the container
@@ -230,6 +234,9 @@ async def shutdown_event():
         await finalize_active_calls_on_shutdown(SessionLocal)
     except Exception as e:
         print(f"⚠️  shutdown finalizer raised: {e}")
+
+    await broadcaster.stop()
+    print("✅ SMS broadcaster stopped")
 
     for attr, label in (
         ("_stuck_call_sweeper_task", "Stuck-call sweeper"),
