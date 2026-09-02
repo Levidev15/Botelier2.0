@@ -44,7 +44,7 @@ interface FormErrors {
 }
 
 const DEFAULT_DESCRIPTION =
-  "Send an email to the caller when they ask for a confirmation, link, or information by email.";
+  "Send a custom email when the caller asks to receive information by email.";
 
 const TEMPLATE_VARIABLES = [
   { label: "{account_name}", hint: "Your business name" },
@@ -189,7 +189,7 @@ export default function SendEmailForm({ onSuccess, onCancel, tool, accountId, to
         <div>
           <h3 className="font-semibold">{isEditMode ? "Edit" : "Create"} Send Email Tool</h3>
           <p className="text-sm text-gray-400">
-            Email a guest mid-call — confirmations, links, booking details, and more
+            Send a custom email with information from the conversation
           </p>
         </div>
       </div>
@@ -203,7 +203,7 @@ export default function SendEmailForm({ onSuccess, onCancel, tool, accountId, to
           type="text"
           value={formData.name}
           onChange={(e) => handleChange("name", e.target.value)}
-          placeholder="e.g., send_booking_confirmation"
+          placeholder="e.g., send_custom_email"
           className={`w-full px-4 py-3 bg-[#141414] border ${
             errors.name ? "border-red-500" : "border-gray-800"
           } rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent`}
@@ -245,7 +245,7 @@ export default function SendEmailForm({ onSuccess, onCancel, tool, accountId, to
           type="text"
           value={formData.default_subject}
           onChange={(e) => handleChange("default_subject", e.target.value)}
-          placeholder="e.g., Your booking confirmation"
+          placeholder="e.g., Information you requested"
           className="w-full px-4 py-3 bg-[#141414] border border-gray-800 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent"
         />
         <p className="text-xs text-gray-500 mt-1">
@@ -277,14 +277,14 @@ export default function SendEmailForm({ onSuccess, onCancel, tool, accountId, to
           id="email-message-body"
           value={formData.message_body}
           onChange={(e) => handleChange("message_body", e.target.value)}
-          placeholder={"e.g., Hi, thanks for calling {account_name}! Here are your booking details…"}
+          placeholder={"e.g., Here is the information you requested during our conversation."}
           rows={5}
           className={`w-full px-4 py-3 bg-[#141414] border ${
             errors.message_body ? "border-red-500" : "border-gray-800"
           } rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent resize-none font-mono text-sm`}
         />
         <p className="text-xs text-gray-500 mt-1">
-          Sent when the AI doesn&apos;t compose its own message. Use the button above to insert variables.
+          The AI must provide the email body when it calls this tool. This required template remains a safety fallback for older or manual calls.
         </p>
         {errors.message_body && (
           <p className="text-xs text-red-500 mt-1">{errors.message_body}</p>
@@ -306,7 +306,7 @@ export default function SendEmailForm({ onSuccess, onCancel, tool, accountId, to
               type="text"
               value={formData.from_name}
               onChange={(e) => handleChange("from_name", e.target.value)}
-              placeholder="e.g., Grand Hotel"
+              placeholder="e.g., Customer Support"
               className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent"
             />
           </div>
@@ -316,7 +316,7 @@ export default function SendEmailForm({ onSuccess, onCancel, tool, accountId, to
               type="email"
               value={formData.from_email}
               onChange={(e) => handleChange("from_email", e.target.value)}
-              placeholder="e.g., concierge@hotel.com"
+              placeholder="e.g., support@example.com"
               className={`w-full px-3 py-2 bg-[#141414] border ${
                 errors.from_email ? "border-red-500" : "border-gray-800"
               } rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent`}

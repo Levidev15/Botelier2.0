@@ -7,7 +7,7 @@ Covers:
   4. SendGrid non-2xx response returns False.
   5. _map_send_email handler passes correct args to send_email.
   6. LLM-supplied subject and message override tool config defaults.
-  7. Tool config defaults apply when LLM omits optional fields.
+  7. Configured subject remains available when the LLM omits the optional subject.
   8. Missing 'to' arg returns skipped result (no send attempted).
   9. Account-level email_from/email_from_name are used when set.
  10. Empty message body returns skipped result.
@@ -249,6 +249,15 @@ class TestSendEmailHandler:
         _run(handler(params))
         return params._result
 
+    def test_message_is_required_in_llm_schema(self):
+        """The LLM must provide the email body for every SEND_EMAIL call."""
+        from botelier.voice.function_mapper import FunctionMapper
+
+        mapper = _make_mapper()
+        schema, _ = mapper._map_send_email(_make_tool())
+
+        assert "message" in schema["parameters"]["required"]
+
     def test_lm_values_override_config_defaults(self):
         """LLM-supplied subject/message must take priority over tool config."""
         tool = _make_tool(
@@ -286,12 +295,12 @@ class TestSendEmailHandler:
         sent_mail = mock_instance.send.call_args[0][0]
         assert sent_mail.subject.get() == "LLM subject"
 
-    def test_config_defaults_used_when_llm_omits_optional_fields(self):
-        """When LLM omits subject/message, tool config defaults must be applied."""
+    def test_config_body_remains_compatibility_fallback(self):
+        """Existing configured bodies remain a fallback for non-LLM callers."""
         tool = _make_tool(
             config={
                 "default_subject": "Your stay details",
-                "message_body": "Hello from {account_name}!",
+                    "message_body": "Configured fallback body",
             }
         )
         mapper = _make_mapper(account_name="Grand Hotel")
@@ -314,9 +323,8 @@ class TestSendEmailHandler:
         assert result["status"] == "sent"
         assert result["subject"] == "Your stay details"
         sent_mail = mock_instance.send.call_args[0][0]
-        # Check body was interpolated
         plain_content = sent_mail.contents[0].get()["value"]
-        assert "Grand Hotel" in plain_content
+        assert plain_content == "Configured fallback body"
 
     def test_missing_to_returns_skipped(self):
         """Handler must return skipped (not raise) when 'to' is absent."""
@@ -373,7 +381,9 @@ class TestSendEmailHandler:
                 {"SENDGRID_API_KEY": "sg-key", "EMAIL_FROM_DEFAULT": "platform@botelier.io"},
             ):
                 result = self._call_handler(
-                    mapper, tool, {"to": "guest@hotel.com"}
+                    mapper,
+                    tool,
+                    {"to": "guest@hotel.com", "message": "Hello from the front desk."},
                 )
 
         assert result["status"] == "sent"
@@ -411,7 +421,9 @@ class TestSendEmailHandler:
                 {"SENDGRID_API_KEY": "sg-key", "EMAIL_FROM_DEFAULT": "platform@botelier.io"},
             ):
                 result = self._call_handler(
-                    mapper, tool, {"to": "guest@hotel.com"}
+                    mapper,
+                    tool,
+                    {"to": "guest@hotel.com", "message": "Here is the information you requested."},
                 )
 
         assert result["status"] == "sent"
@@ -436,7 +448,9 @@ class TestSendEmailHandler:
                 {"SENDGRID_API_KEY": "sg-key", "EMAIL_FROM_DEFAULT": "bot@botelier.io"},
             ):
                 result = self._call_handler(
-                    mapper, tool, {"to": "guest@hotel.com"}
+                    mapper,
+                    tool,
+                    {"to": "guest@hotel.com", "message": "Your requested information is attached."},
                 )
 
         assert result["status"] == "failed"

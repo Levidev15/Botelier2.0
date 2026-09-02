@@ -1916,19 +1916,16 @@ class FunctionMapper:
         """Map send email tool to Pipecat function.
 
         Sends an email via SendGrid on behalf of the account. The LLM must
-        supply the recipient's ``to`` address (obtained however it likes —
-        asked the caller, retrieved from a PMS result, read from a flow
-        variable, etc.). ``subject`` and ``message`` are optional: when
-        omitted, the tool's configured ``default_subject`` and
-        ``message_body`` template are used.
+        supply the recipient's ``to`` address and the complete ``message``
+        body (obtained or composed however it likes — from the caller, an
+        API result, a flow variable, or conversation context). ``subject``
+        is optional and falls back to the configured default.
 
         Sender identity resolution order:
           1. Tool-level ``from_email`` / ``from_name`` in config (rare override)
           2. Account-level ``email_from`` / ``email_from_name`` DB columns
           3. Platform defaults from EMAIL_FROM_DEFAULT / EMAIL_FROM_NAME_DEFAULT
 
-        Template placeholders supported in ``message_body`` (config default):
-          {account_name}  — the business name from the account record
         """
         cfg = tool.config or {}
         default_subject: str = cfg.get("default_subject", "")
@@ -1941,9 +1938,9 @@ class FunctionMapper:
             "name": sanitize_function_name(tool.name),
             "description": (
                 tool.description
-                or "Send an email to a guest or caller. "
-                "Use this to deliver booking confirmations, links, information, "
-                "or any content the caller asked to have emailed to them. "
+                or "Send an email to a recipient. "
+                "Use this to deliver requested information, links, summaries, "
+                "or any other content that should be sent by email. "
                 "You must obtain the recipient's email address before calling this tool."
             ),
             "parameters": {
@@ -1966,13 +1963,14 @@ class FunctionMapper:
                     "message": {
                         "type": "string",
                         "description": (
-                            "Full email body to send. Include any URLs, links, or "
-                            "details here — do NOT read URLs aloud on the call. "
-                            "If omitted, the pre-configured default message is used."
+                            "Full email body to send. This is required. Compose it "
+                            "from the conversation context and include any requested "
+                            "URLs, links, or details here — do NOT read URLs aloud "
+                            "on the call."
                         ),
                     },
                 },
-                "required": ["to"],
+                "required": ["to", "message"],
             },
         }
 
@@ -1999,13 +1997,13 @@ class FunctionMapper:
             # Resolve effective subject — LLM value wins over config default
             effective_subject = dynamic_subject or default_subject or "Message from " + (mapper.account_name or "us")
 
+            # The function schema requires the LLM to provide the complete
+            # body. Preserve the configured template only as a compatibility
+            # fallback for existing records or non-LLM/manual callers.
             account_name = mapper.account_name or "Business"
-
-            # Resolve effective body — LLM value wins over config template
-            if dynamic_message:
-                effective_body = dynamic_message
-            else:
-                effective_body = message_body_template.replace("{account_name}", account_name)
+            effective_body = dynamic_message or message_body_template.replace(
+                "{account_name}", account_name
+            )
 
             if not effective_body:
                 logger.warning(
