@@ -53,3 +53,4 @@
 - [TTS aggregation mode](tts-aggregation-mode.md) — explicit "sentence" in tts_config overrides "token" default and causes audible gaps; diagnose with DB query before assuming engine bug.
 - [complete_call triple-teardown idempotency](complete-call-idempotency.md) — three teardown paths converge on every clean call end; guard must be universal (not forced_by-only) to prevent triple billing/status/leg writes.
 - [_map_flow executor store vs get_flow_functions](map-flow-executor-store.md) — _map_flow must NOT store its ephemeral schema-building executor in _flow_executors; it would overwrite or pre-empt the rehydrated executor that get_flow_functions() creates.
+- [TtsAudioGapTracker mode-aware advice](tts-gap-tracker-mode.md) — gap tracker needs text_aggregation_mode at construction to emit correct advice; caplog/capfd don't capture loguru — patch engine.logger.info directly in tests.

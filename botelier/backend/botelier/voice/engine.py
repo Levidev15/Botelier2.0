@@ -1199,13 +1199,17 @@ class TtsAudioGapTracker(FrameProcessor):
     _GAP_THRESHOLD_S: float = 0.030  # 30 ms — measurement threshold
     _AUDIBLE_GAP_S: float = 0.100  # 100 ms — caller-audible stutter threshold
 
-    def __init__(self, timing_state: dict = None, event_queue=None, **kwargs):
+    def __init__(self, timing_state: dict = None, event_queue=None, text_aggregation_mode=None, **kwargs):
         super().__init__(**kwargs)
         self._last_audio_t: float = 0.0
         self._timing_state = timing_state if timing_state is not None else {}
         self._event_queue = event_queue
         self._gap_count: int = 0
         self._max_gap_s: float = 0.0
+        # Current TTS aggregation mode — used to emit mode-specific advice in
+        # the caller-audible INFO summary so operators get actionable guidance
+        # rather than a suggestion to switch modes they are already using.
+        self._text_aggregation_mode = text_aggregation_mode
         # Turn index of the RESPONSE whose audio gaps are being aggregated.
         # Captured at LLMFullResponseStartFrame — the flush happens at the
         # NEXT response start, by which time UserTurnCapture has already
@@ -1227,7 +1231,31 @@ class TtsAudioGapTracker(FrameProcessor):
                 f">{self._GAP_THRESHOLD_S * 1000:.0f}ms, worst {_max_ms:.0f}ms"
             )
             if _audible:
-                logger.info(_msg + " (caller-audible)")
+                # Append mode-specific advice so operators get actionable
+                # guidance rather than "switch to token" on a call that is
+                # already in token mode.
+                try:
+                    from pipecat.services.tts_service import TextAggregationMode as _TAM
+
+                    if self._text_aggregation_mode == _TAM.TOKEN:
+                        _advice = (
+                            " — gaps are synthesis micro-bursts; consider increasing "
+                            "tts_config.token_send_min_chars to batch more text per request"
+                        )
+                    elif self._text_aggregation_mode == _TAM.SENTENCE:
+                        _advice = (
+                            " — sentence mode sends one full sentence per TTS request; "
+                            "consider switching text_aggregation_mode to 'token' in TTS config"
+                        )
+                    else:
+                        # Mode unknown (older callers / non-Deepgram providers).
+                        _advice = (
+                            " — consider switching text_aggregation_mode to 'token' in TTS config"
+                        )
+                except Exception:
+                    _advice = " — consider switching text_aggregation_mode to 'token'"
+
+                logger.info(_msg + " (caller-audible)" + _advice)
                 if self._event_queue is not None:
                     self._event_queue.log(
                         "tts_audio_gap",
@@ -1237,6 +1265,12 @@ class TtsAudioGapTracker(FrameProcessor):
                             "turn_index": _turn_index,
                             "gap_count": self._gap_count,
                             "max_gap_ms": int(_max_ms),
+                            "aggregation_mode": (
+                                self._text_aggregation_mode.value
+                                if self._text_aggregation_mode is not None
+                                and hasattr(self._text_aggregation_mode, "value")
+                                else str(self._text_aggregation_mode)
+                            ),
                         },
                     )
             else:
@@ -2745,7 +2779,20 @@ class VoiceEngineFactory:
         # Detect intra-turn audio gaps >30ms between consecutive TTSAudioRawFrames.
         # Off by default in production (LOG_LEVEL=INFO); enable by raising to DEBUG.
         # Resets on LLMFullResponseStartFrame to prevent cross-turn false positives.
-        tts_audio_gap_tracker = TtsAudioGapTracker(timing_state=_timing_state)
+        # Pass the current aggregation mode so _flush_turn_summary can emit
+        # mode-specific advice (token → increase token_send_min_chars;
+        # sentence → switch to token; unknown → generic hint).
+        try:
+            from pipecat.services.tts_service import TextAggregationMode as _TAM
+
+            _gap_mode_str = config.tts_config.get("text_aggregation_mode", "token")
+            _gap_agg_mode = _TAM.TOKEN if _gap_mode_str == "token" else _TAM.SENTENCE
+        except Exception:
+            _gap_agg_mode = None
+        tts_audio_gap_tracker = TtsAudioGapTracker(
+            timing_state=_timing_state,
+            text_aggregation_mode=_gap_agg_mode,
+        )
 
         # Log greeting_completed on the first BotStoppedSpeakingFrame (greeting TTS done).
         # Placed between TTS and tts_completion_watcher; both see the same frame.
