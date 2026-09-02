@@ -244,9 +244,11 @@ def test_live_handler_runs_pending_api_once_after_collection():
     )
 
     assert calls == ["collect_adults", "execute_book"]
+    # FunctionMapper now speaks voice_result directly when voice_result_is_auto_summary
+    # is False (genuine designer content), rather than emitting a neutral bridge first.
     assert [frame.text for frame in llm.frames] == [
         "One moment while I check.",
-        "I've completed that check. Let me walk you through what I found.",
+        "Your booking is confirmed.",
     ]
     assert callbacks[0][0]["result"] == "Your booking is confirmed."
     print("PASS: live handler executes pending API once after collection")
@@ -318,7 +320,7 @@ def test_live_handler_speaks_lookup_error_after_waiting_greeting():
 
 
 def test_live_handler_uses_neutral_and_configured_lookup_bridges():
-    """Empty successful searches and raw errors must not be misrepresented/spoken."""
+    """API results and errors must be spoken correctly without leaking raw internals."""
     from types import SimpleNamespace
 
     from botelier.voice.function_mapper import FunctionMapper
@@ -353,8 +355,10 @@ def test_live_handler_uses_neutral_and_configured_lookup_bridges():
 
     for api_result, expected_bridge in [
         (
+            # FunctionMapper speaks voice_result directly when voice_result_is_auto_summary
+            # is False (genuine content), so the last frame IS the voice_result itself.
             {"success": True, "message": "Request completed", "voice_result": "No rooms found."},
-            "I've completed that check. Let me walk you through what I found.",
+            "No rooms found.",
         ),
         (
             {

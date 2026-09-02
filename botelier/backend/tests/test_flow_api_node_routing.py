@@ -521,8 +521,10 @@ class TestVoiceResultAutoSummaryFlag:
 
         assert result["success"] is True
         assert result["voice_result_is_auto_summary"] is True
-        assert "Extracted data" in result["voice_result"]
-        assert "room_price" in result["voice_result"]
+        # format_mapped_response renders parallel arrays as numbered Records blocks;
+        # "Extracted data:" prefix no longer used — check the projection format instead.
+        assert "Results" in result["voice_result"]
+        assert "Room price" in result["voice_result"]
 
     @pytest.mark.asyncio
     async def test_custom_api_with_response_instructions_not_flagged(self):
@@ -586,7 +588,8 @@ class TestVoiceResultAutoSummaryFlag:
 
         assert result["success"] is True
         assert result["voice_result_is_auto_summary"] is True
-        assert "Extracted data" in result["voice_result"]
+        # format_mapped_response renders parallel arrays as numbered Records blocks.
+        assert "Results" in result["voice_result"]
 
 
 class TestServiceBackedCapabilityRouting:
