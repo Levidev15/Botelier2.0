@@ -86,20 +86,95 @@ def _merge_voice_mcp_tools(
     return filtered_tools, colliding_names
 
 
-async def _mcp_isolated_tool_call(params, server_params, mcpc_class) -> None:
+def _detect_and_strip_ucp_meta(schema) -> bool:
+    """Detect a Universal Commerce Protocol ``meta.ucp-agent.profile``
+    envelope in an MCP tool schema and strip it from what the LLM sees.
+
+    Shopify (and other UCP-compliant commerce MCP servers) require every
+    UCP-shaped tool call — ``search_catalog``, ``get_cart``,
+    ``create_checkout``, etc. — to carry a ``meta.ucp-agent.profile`` URI
+    identifying the calling agent, so the merchant server can fetch it and
+    negotiate capabilities. No LLM can reasonably invent a valid profile
+    URI from a voice conversation, and leaving it in the exposed schema as
+    a *required* field just invites the model to hallucinate one, which the
+    merchant server then rejects with a ``profile_malformed`` error. Botelier
+    injects a fixed, self-hosted profile automatically instead (see
+    ``UCP_AGENT_PROFILE_PATH`` and the per-call wrapper in the MCP setup
+    block) and hides ``meta`` from the LLM-facing schema entirely.
+
+    Returns True (and mutates ``schema`` in place) if this tool needs the
+    injection.
+    """
+    properties = schema.properties if isinstance(schema.properties, dict) else None
+    meta_prop = properties.get("meta") if properties else None
+    if not isinstance(meta_prop, dict):
+        return False
+    ucp_agent = meta_prop.get("properties", {}).get("ucp-agent", {})
+    if not isinstance(ucp_agent, dict) or "profile" not in ucp_agent.get("properties", {}):
+        return False
+    properties.pop("meta", None)
+    if isinstance(schema.required, list) and "meta" in schema.required:
+        schema.required.remove("meta")
+    return True
+
+
+def _describe_mcp_transport_error(exc: BaseException) -> Optional[str]:
+    """Walk a (possibly nested) ExceptionGroup for the concrete transport
+    failure so logs show the real reason instead of an opaque cancellation.
+
+    The ``mcp`` SDK's streamable-http transport calls
+    ``httpx.Response.raise_for_status()`` inside a TaskGroup child task. An
+    HTTP error response (e.g. a 422 from a malformed/rejected UCP request)
+    therefore surfaces to the caller as a bare ``asyncio.CancelledError`` —
+    the whole TaskGroup is cancelled — and the *real* status code/body is
+    only reachable via the ExceptionGroup that ``client.close()`` re-raises
+    while tearing down the same already-failed transport.
+    """
+    import httpx
+
+    stack = [exc]
+    first_seen: Optional[BaseException] = None
+    while stack:
+        current = stack.pop()
+        if first_seen is None:
+            first_seen = current
+        if isinstance(current, httpx.HTTPStatusError):
+            body = ""
+            try:
+                body = current.response.text[:300]
+            except Exception:
+                pass
+            return f"HTTP {current.response.status_code} from {current.request.url}: {body}"
+        if isinstance(current, BaseExceptionGroup):
+            stack.extend(current.exceptions)
+    if first_seen is not None:
+        return f"{type(first_seen).__name__}: {first_seen}"
+    return None
+
+
+async def _mcp_isolated_tool_call(
+    params, server_params, mcpc_class, ucp_meta: Optional[dict] = None
+) -> None:
     """Execute one MCP tool call in an isolated asyncio.Task.
 
     Each invocation opens a fresh connection so the transport's AnyIO cancel
     scope is confined to the isolated task and cannot propagate upward into
     the WebSocket handler.
 
+    ``ucp_meta``, when provided, is merged into the call arguments as
+    ``meta`` unless the caller (LLM) already supplied one — see
+    ``_detect_and_strip_ucp_meta``.
+
     Two distinct cancellation paths are handled:
 
     * **Child cancelled (server-side transport close)** — the isolated task's
       AnyIO cancel scope fires (e.g. Streamable-HTTP closes after every
-      response).  ``asyncio.current_task().cancelling()`` is 0 because the
-      *parent* task was never asked to cancel.  We convert this to a fallback
-      "Sorry" response so the call survives.
+      response, or the server returned a non-2xx status that the SDK's
+      transport never surfaces cleanly).
+      ``asyncio.current_task().cancelling()`` is 0 because the *parent* task
+      was never asked to cancel.  We convert this to a fallback "Sorry"
+      response so the call survives, and log the real error detail
+      (extracted via ``_describe_mcp_transport_error``) when available.
 
     * **Parent cancelled (pipeline teardown)** — Pipecat asks the parent
       function-handler task to stop (caller hangs up, idle timeout, etc.).
@@ -107,14 +182,18 @@ async def _mcp_isolated_tool_call(params, server_params, mcpc_class) -> None:
       then **re-raise** the ``CancelledError`` so Pipecat can finish cleanly.
       ``result_callback`` is *not* invoked in this path.
     """
+    _diag: Dict[str, Optional[str]] = {}
 
     async def _isolated() -> str:
         client = mcpc_class(server_params=server_params)
         await client.start()
         try:
+            arguments = params.arguments
+            if ucp_meta and isinstance(arguments, dict) and "meta" not in arguments:
+                arguments = {**arguments, "meta": ucp_meta}
             results = await client._active_session.call_tool(
                 params.function_name,
-                arguments=params.arguments,
+                arguments=arguments,
             )
             response = ""
             if results and hasattr(results, "content") and results.content:
@@ -125,15 +204,17 @@ async def _mcp_isolated_tool_call(params, server_params, mcpc_class) -> None:
         finally:
             try:
                 await client.close()
-            except (Exception, asyncio.CancelledError):
+            except (Exception, asyncio.CancelledError) as _close_exc:
                 # CancelledError is BaseException (not Exception) in Python
                 # 3.11+.  The Streamable-HTTP server closes its connection
                 # immediately after returning each tool response; when
                 # exit_stack.aclose() then tries to tear down the already-
                 # closed AnyIO transport it fires the cancel scope and raises
-                # CancelledError.  Suppressing it here ensures the computed
-                # return value is not overridden by a cleanup-only exception.
-                pass
+                # CancelledError. Suppressing it here ensures the computed
+                # return value is not overridden by a cleanup-only exception,
+                # but we first capture whatever real error it's wrapping
+                # (e.g. an HTTP error response) for diagnostics.
+                _diag["detail"] = _describe_mcp_transport_error(_close_exc)
 
     _task = asyncio.create_task(_isolated())
     try:
@@ -144,11 +225,15 @@ async def _mcp_isolated_tool_call(params, server_params, mcpc_class) -> None:
             # Parent pipeline task is being cancelled — propagate; do NOT
             # call result_callback so Pipecat teardown is not delayed.
             raise
-        # Child's AnyIO scope fired (server-side transport close) — return
-        # a graceful fallback so the live call continues.
+        # Child's AnyIO scope fired (server-side transport close, or an
+        # uncaught HTTP error inside the SDK's transport) — return a
+        # graceful fallback so the live call continues.
+        _detail = _diag.get("detail")
         logger.error(
             f"MCP tool '{params.function_name}' isolated call cancelled "
-            "(server-side transport close); returning fallback"
+            "(server-side transport close"
+            + (f": {_detail}" if _detail else "")
+            + "); returning fallback"
         )
         # Only wait for cleanup if the task is still running.  When the
         # child's CancelledError came from its own AnyIO scope the task is
@@ -730,6 +815,30 @@ class CallHandler:
                     all_tools_schema = (
                         await _mcp_client_for_pipeline.get_tools_schema()
                     )
+
+                    # Universal Commerce Protocol (UCP) tools — e.g. Shopify's
+                    # search_catalog/get_cart/create_checkout — require a
+                    # meta.ucp-agent.profile URI in every call. Strip that
+                    # envelope from the LLM-facing schema (no model can invent
+                    # a valid profile URI) and remember which tools need it so
+                    # the per-call wrapper below can inject it automatically.
+                    ucp_tool_names: set[str] = {
+                        _tool.name
+                        for _tool in (all_tools_schema.standard_tools or [])
+                        if _detect_and_strip_ucp_meta(_tool)
+                    }
+                    _ucp_profile_url: Optional[str] = None
+                    if ucp_tool_names:
+                        from ..config.domain import get_public_base_url as _get_ucp_base_url
+
+                        _ucp_profile_url = (
+                            f"{_get_ucp_base_url()}/api/ucp/agent-profile.json"
+                        )
+                        logger.info(
+                            f"UCP tools detected ({sorted(ucp_tool_names)}); "
+                            f"will inject meta.ucp-agent.profile={_ucp_profile_url}"
+                        )
+
                     # Close the discovery connection immediately.
                     #
                     # A persistent SSE/Streamable-HTTP transport held open in
@@ -754,13 +863,24 @@ class CallHandler:
                         params,
                         _rp=_mcp_rp,
                         _mcpc=_mcp_cls,
+                        _ucp_names=ucp_tool_names,
+                        _ucp_url=_ucp_profile_url,
                     ) -> None:
                         """Delegate to module-level _mcp_isolated_tool_call.
 
                         Captures server_params and mcpc_class via default args so
-                        the closure remains safe across loop iterations.
+                        the closure remains safe across loop iterations. Tools
+                        that require a UCP meta.ucp-agent.profile envelope get
+                        it injected automatically (see _detect_and_strip_ucp_meta).
                         """
-                        await _mcp_isolated_tool_call(params, _rp, _mcpc)
+                        _ucp_meta = (
+                            {"ucp-agent": {"profile": _ucp_url}}
+                            if _ucp_url and params.function_name in _ucp_names
+                            else None
+                        )
+                        await _mcp_isolated_tool_call(
+                            params, _rp, _mcpc, ucp_meta=_ucp_meta
+                        )
 
                     filtered_tools, colliding_names = _merge_voice_mcp_tools(
                         function_schemas,

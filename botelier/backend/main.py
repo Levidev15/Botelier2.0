@@ -63,6 +63,7 @@ from botelier.api.sms_compliance import router as sms_compliance_router
 from botelier.api.sms_pkg import router as sms_router
 from botelier.api.team import router as team_router
 from botelier.api.tool_sets import router as tool_sets_router
+from botelier.api.ucp_profile import router as ucp_profile_router
 from botelier.api.websockets import router as websockets_router
 from botelier.database import SessionLocal, init_db, run_stuck_call_sweeper
 from botelier.services.notification_broadcaster import broadcaster
@@ -117,6 +118,7 @@ app.include_router(actions_router)  # Reusable no-code action library
 app.include_router(secrets_router)  # Account secrets (encrypted API key store)
 app.include_router(tool_sets_router)  # Tool collection management
 app.include_router(mcp_connections_router)  # MCP server connections for dynamic tools
+app.include_router(ucp_profile_router)  # Public UCP agent profile for commerce MCP negotiation
 app.include_router(api_tester_router)  # API testing proxy for tool configuration
 app.include_router(sms_router)  # SMS AI conversations
 app.include_router(sms_compliance_router)  # SMS A2P 10DLC compliance
