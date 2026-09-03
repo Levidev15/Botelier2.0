@@ -541,7 +541,7 @@ def send_email_via_gmail(
             resp = _requests.post(url, json={"raw": raw}, headers=headers, timeout=timeout)
             if resp.status_code in (200, 202):
                 logger.info(
-                    "send_email_via_gmail: delivered '%s' to %s (status %s)",
+                    "send_email_via_gmail: delivered '{}' to {} (status {})",
                     subject,
                     addr,
                     resp.status_code,
@@ -556,7 +556,7 @@ def send_email_via_gmail(
                 )
             else:
                 logger.error(
-                    "send_email_via_gmail: Gmail API returned %s for '%s' to %s: %s",
+                    "send_email_via_gmail: Gmail API returned {} for '{}' to {}: {}",
                     resp.status_code,
                     subject,
                     addr,
@@ -567,7 +567,7 @@ def send_email_via_gmail(
             raise
         except Exception as exc:
             logger.error(
-                "send_email_via_gmail: failed to deliver '%s' to %s — %s",
+                "send_email_via_gmail: failed to deliver '{}' to {} — {}",
                 subject,
                 addr,
                 exc,
@@ -614,7 +614,7 @@ def send_email_via_microsoft(
             # 202 Accepted is the normal success response from Graph
             if resp.status_code in (200, 202):
                 logger.info(
-                    "send_email_via_microsoft: delivered '%s' to %s (status %s)",
+                    "send_email_via_microsoft: delivered '{}' to {} (status {})",
                     subject,
                     addr,
                     resp.status_code,
@@ -629,7 +629,7 @@ def send_email_via_microsoft(
                 )
             else:
                 logger.error(
-                    "send_email_via_microsoft: Graph API returned %s for '%s' to %s: %s",
+                    "send_email_via_microsoft: Graph API returned {} for '{}' to {}: {}",
                     resp.status_code,
                     subject,
                     addr,
@@ -640,7 +640,7 @@ def send_email_via_microsoft(
             raise
         except Exception as exc:
             logger.error(
-                "send_email_via_microsoft: failed to deliver '%s' to %s — %s",
+                "send_email_via_microsoft: failed to deliver '{}' to {} — {}",
                 subject,
                 addr,
                 exc,
