@@ -103,8 +103,11 @@ function EmailAccountsTab({ accountId }: { accountId: string }) {
         return;
       }
       const data = await resp.json();
-      // Redirect to provider consent page
-      window.location.href = data.authorization_url;
+      // Open the provider consent page in a new tab so it is never loaded
+      // inside an iframe (Microsoft/Google refuse iframe embedding via
+      // X-Frame-Options: DENY). After OAuth completes the callback redirects
+      // back to this app in that same tab.
+      window.open(data.authorization_url, "_blank", "noopener,noreferrer");
     } catch {
       notify.error("Failed to start email connection");
     } finally {

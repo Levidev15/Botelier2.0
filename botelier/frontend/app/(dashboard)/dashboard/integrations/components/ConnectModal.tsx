@@ -95,9 +95,11 @@ export default function ConnectModal({
           return;
         }
 
-        // Navigate the browser to the provider consent screen.
-        // Completion happens at /dashboard/integrations/oauth/complete.
-        window.location.href = data.authorization_url;
+        // Open the provider consent screen in a new tab so it is never
+        // loaded inside an iframe (Microsoft/Google block iframe embedding
+        // via X-Frame-Options: DENY). The OAuth callback redirects back to
+        // /dashboard/integrations/oauth/complete in that same new tab.
+        window.open(data.authorization_url, "_blank", "noopener,noreferrer");
         return;
       }
 
