@@ -71,6 +71,46 @@ def estimate_playback_secs(text: str | None) -> float:
     return max(_PLAYBACK_MIN_SECS, min(_PLAYBACK_MAX_SECS, est))
 
 
+def _normalize_spoken_email(address: str) -> str:
+    """Normalize a voice-collected email address into a sendable form.
+
+    When callers spell their email over the phone, STT produces forms like
+    ``"c n o m m a e a at gmail dot com"`` instead of
+    ``"cnommaea@gmail.com"``.  This function applies the three common spoken-
+    email patterns so the LLM does not need to perform the conversion itself:
+
+    1. ``" at "`` (word, surrounded by spaces) → ``@``
+    2. ``" dot "`` (word, surrounded by spaces) → ``.``
+    3. Single-letter tokens in the local part (before ``@``) joined without
+       spaces — handles letter-by-letter spelling.
+
+    The function is idempotent: a correctly formatted address passes through
+    unchanged.
+    """
+    addr = address.lower().strip().rstrip(".")
+    if not addr:
+        return addr
+
+    # 1. Spoken "at" → @
+    addr = _re_tool_name.sub(r"\bat\b", "@", addr)
+    # 2. Spoken "dot" → .
+    addr = _re_tool_name.sub(r"\bdot\b", ".", addr)
+    # Remove any whitespace that crept around the newly substituted @ or .
+    addr = _re_tool_name.sub(r"\s*@\s*", "@", addr)
+    addr = _re_tool_name.sub(r"\s*\.\s*", ".", addr)
+
+    # 3. If the local part (before @) consists entirely of single-character
+    #    tokens separated by spaces, join them — e.g. "c n o m" → "cnom".
+    if "@" in addr:
+        local, _, domain = addr.partition("@")
+        tokens = local.split()
+        if tokens and all(len(t) == 1 for t in tokens):
+            local = "".join(tokens)
+        addr = f"{local}@{domain}"
+
+    return addr.strip()
+
+
 class FunctionMapper:
     """Maps database tool configurations to executable Pipecat functions.
 
@@ -1980,7 +2020,7 @@ class FunctionMapper:
             mapper.track_tool_usage(tool.name)
 
             args = params.arguments or {}
-            to_address: str = (args.get("to") or "").strip()
+            to_address: str = _normalize_spoken_email((args.get("to") or "").strip())
             dynamic_subject: str = (args.get("subject") or "").strip()
             dynamic_message: str = (args.get("message") or "").strip()
 
