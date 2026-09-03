@@ -63,3 +63,28 @@ carry a `meta` key. Cart/checkout capability extensions (fulfillment,
 discount, buyer_consent) beyond the base set are unverified — a
 negotiation failure there will now show the real error via the
 diagnostics above instead of an opaque cancellation.
+
+## Three independent MCP tool-calling implementations — a fix to one does not cover the others
+
+This codebase does not have a single shared MCP client. Voice
+(`botelier/voice/call_handler.py`, per-call isolated task), the Test Lab
+simulator (`botelier/api/simulation.py`), and SMS
+(`botelier/services/sms_service.py`) each call MCP tools through their own
+code path. Simulator and SMS both go through the persistent-session
+`services/mcp_client.py::MCPClient` — a different class from voice's
+per-call `_mcp_isolated_tool_call`.
+
+**Why this matters:** the UCP detection/stripping/injection fix above was
+applied only to the voice path. As of the fix, `MCPClient` has zero UCP
+awareness, so a Shopify UCP tool (e.g. `search_catalog`) invoked from a
+Test Lab simulation or an SMS conversation still fails with the
+opaque/fallback error the voice path used to have. This was a deliberate
+scope decision (user declined to extend it), not an oversight — confirmed
+still unfixed as of 2026-09-03.
+
+**How to apply:** before assuming any MCP-related fix (UCP or otherwise)
+is complete, grep for all three call sites, not just the one you were
+pointed at. If UCP support is ever extended to simulator/SMS, the
+detect/strip/inject logic will need a `MCPClient`-shaped equivalent (its
+`discover_tools()`/`execute_tool()` lifecycle differs from voice's
+per-call isolation).
