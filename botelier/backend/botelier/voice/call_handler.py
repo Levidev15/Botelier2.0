@@ -86,6 +86,83 @@ def _merge_voice_mcp_tools(
     return filtered_tools, colliding_names
 
 
+async def _mcp_isolated_tool_call(params, server_params, mcpc_class) -> None:
+    """Execute one MCP tool call in an isolated asyncio.Task.
+
+    Each invocation opens a fresh connection so the transport's AnyIO cancel
+    scope is confined to the isolated task and cannot propagate upward into
+    the WebSocket handler.
+
+    Two distinct cancellation paths are handled:
+
+    * **Child cancelled (server-side transport close)** — the isolated task's
+      AnyIO cancel scope fires (e.g. Streamable-HTTP closes after every
+      response).  ``asyncio.current_task().cancelling()`` is 0 because the
+      *parent* task was never asked to cancel.  We convert this to a fallback
+      "Sorry" response so the call survives.
+
+    * **Parent cancelled (pipeline teardown)** — Pipecat asks the parent
+      function-handler task to stop (caller hangs up, idle timeout, etc.).
+      ``asyncio.current_task().cancelling()`` is > 0.  We cancel the child,
+      then **re-raise** the ``CancelledError`` so Pipecat can finish cleanly.
+      ``result_callback`` is *not* invoked in this path.
+    """
+
+    async def _isolated() -> str:
+        client = mcpc_class(server_params=server_params)
+        await client.start()
+        try:
+            results = await client._active_session.call_tool(
+                params.function_name,
+                arguments=params.arguments,
+            )
+            response = ""
+            if results and hasattr(results, "content") and results.content:
+                for _chunk in results.content:
+                    if hasattr(_chunk, "text") and _chunk.text:
+                        response += _chunk.text
+            return response or "Sorry, could not call the mcp tool"
+        finally:
+            try:
+                await client.close()
+            except Exception:
+                pass
+
+    _task = asyncio.create_task(_isolated())
+    try:
+        _resp = await _task
+    except asyncio.CancelledError:
+        _task.cancel()
+        if asyncio.current_task().cancelling() > 0:
+            # Parent pipeline task is being cancelled — propagate; do NOT
+            # call result_callback so Pipecat teardown is not delayed.
+            raise
+        # Child's AnyIO scope fired (server-side transport close) — return
+        # a graceful fallback so the live call continues.
+        logger.error(
+            f"MCP tool '{params.function_name}' isolated call cancelled "
+            "(server-side transport close); returning fallback"
+        )
+        # Only wait for cleanup if the task is still running.  When the
+        # child's CancelledError came from its own AnyIO scope the task is
+        # already done, and shielding a done-cancelled future immediately
+        # re-raises CancelledError (which BaseException, not Exception,
+        # so a bare `except Exception` would miss it).
+        if not _task.done():
+            try:
+                await asyncio.wait_for(asyncio.shield(_task), timeout=2.0)
+            except (Exception, asyncio.CancelledError):
+                pass
+        _resp = "Sorry, could not call the mcp tool"
+    except Exception as _mcp_err:
+        logger.error(
+            f"MCP tool '{params.function_name}' isolated call failed: {_mcp_err}"
+        )
+        _task.cancel()
+        _resp = "Sorry, could not call the mcp tool"
+    await params.result_callback(_resp)
+
+
 def _fetch_call_log_retry(call_sid: str):
     """Synchronous helper: open a fresh DB session, query for the CallLog,
     optionally stamp answered_at, then close the session.
@@ -646,19 +723,50 @@ class CallHandler:
                     all_tools_schema = (
                         await _mcp_client_for_pipeline.get_tools_schema()
                     )
+                    # Close the discovery connection immediately.
+                    #
+                    # A persistent SSE/Streamable-HTTP transport held open in
+                    # the WebSocket handler's AnyIO scope means any server-side
+                    # transport close — e.g. the Shopify Streamable-HTTP endpoint
+                    # closes the connection after every tool response — propagates
+                    # an AnyIO cancel-scope teardown to the WebSocket handler and
+                    # drops the live call.
+                    #
+                    # Fix: each tool invocation opens a fresh connection inside
+                    # its own asyncio.create_task().  The isolated task owns the
+                    # transport's AnyIO scope; when teardown fires it cancels only
+                    # that task, not the WebSocket handler.
+                    await _mcp_client_for_pipeline.close()
+                    _mcp_client_for_pipeline = None
+
+                    # Capture server params and class for the per-call wrapper.
+                    _mcp_rp = _server_params
+                    _mcp_cls = PipecatMCPClient
+
+                    async def _mcp_per_call_wrapper(
+                        params,
+                        _rp=_mcp_rp,
+                        _mcpc=_mcp_cls,
+                    ) -> None:
+                        """Delegate to module-level _mcp_isolated_tool_call.
+
+                        Captures server_params and mcpc_class via default args so
+                        the closure remains safe across loop iterations.
+                        """
+                        await _mcp_isolated_tool_call(params, _rp, _mcpc)
 
                     filtered_tools, colliding_names = _merge_voice_mcp_tools(
                         function_schemas,
                         function_handlers,
                         list(all_tools_schema.standard_tools or []),
                         set(mcp_enabled_tools),
-                        _mcp_client_for_pipeline._tool_wrapper,
+                        _mcp_per_call_wrapper,
                     )
 
                     # Wrap each MCP handler with call-scoped timestamp recording.
-                    # _merge_voice_mcp_tools uses a single shared _tool_wrapper for
-                    # every MCP tool; we replace each entry with a per-name wrapper
-                    # so [Action: <mcp_tool>] entries participate in the global sort
+                    # _merge_voice_mcp_tools uses a single shared handler for every
+                    # MCP tool; we replace each entry with a per-name wrapper so
+                    # [Action: <mcp_tool>] entries participate in the global sort
                     # with real elapsed times instead of falling back to interpolation.
                     # Closures capture _fn/_raw by value (default args) so the loop
                     # body is safe.  action_timestamps[call_sid] is initialised before
@@ -702,17 +810,17 @@ class CallHandler:
                         )
 
                     if filtered_tools:
-                        # Store immediately so any later pipeline-construction
-                        # failure is still covered by the outer final teardown.
-                        self.call_mcp_clients[call_sid] = _mcp_client_for_pipeline
+                        # Per-call reconnect mode: no persistent MCP client to
+                        # register for teardown.  Each tool invocation opens and
+                        # closes its own isolated connection, so there is nothing
+                        # to clean up when the call ends.
                         logger.info(
                             f"🔌 Added {len(filtered_tools)} MCP tools to initial "
                             f"voice LLM context for call {call_sid}: "
                             f"{[tool.name for tool in filtered_tools]}"
                         )
                     else:
-                        await _mcp_client_for_pipeline.close()
-                        _mcp_client_for_pipeline = None
+                        # _mcp_client_for_pipeline is already closed above.
                         logger.warning(
                             "No non-colliding MCP tools matched enabled list: "
                             f"{mcp_enabled_tools}"

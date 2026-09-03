@@ -30,6 +30,20 @@ inside one coroutine. If the public service boundary is synchronous, bridge
 once around that whole coroutine rather than once per connect/execute/close
 operation.
 
+**Live-call AnyIO scope isolation (critical):** Never hold a persistent
+`MCPClient` session open for the duration of the WebSocket handler task.
+The SSE/Streamable-HTTP transport's AnyIO cancel scope lives in whichever task
+entered it.  When the MCP server closes the transport (e.g. Streamable-HTTP
+closes after every response), the cancel propagates to the WebSocket handler
+and drops the call.  Fix: close the discovery connection immediately after
+`get_tools_schema()`, then use `_mcp_isolated_tool_call` (module-level in
+`call_handler.py`) for per-tool-call reconnect inside `asyncio.create_task()`.
+Distinguish parent-cancelled (`asyncio.current_task().cancelling() > 0` → re-raise)
+from child-cancelled (server-side transport close → fallback string).
+Note: `except Exception` does NOT catch `asyncio.CancelledError` (it is a
+`BaseException`); use `except (Exception, asyncio.CancelledError)` when
+cleaning up after an already-done task in this path.
+
 Streamable HTTP transport failures may hide the real network error inside an
 AnyIO `ExceptionGroup`, or cancel initialization before the nested exception is
 returned to the caller.
