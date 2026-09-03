@@ -2031,11 +2031,29 @@ class FunctionMapper:
                 def _do_send_connected():
                     _db_session = getattr(mapper, "db_session", None)
 
+                    # Bind the connection to the executing account to prevent
+                    # a crafted connection_id from reaching another tenant's
+                    # OAuth mailbox (broken-access-control guard).
+                    _account_id_str = getattr(mapper, "account_id", None)
+                    if not _account_id_str:
+                        raise ValueError(
+                            "No account context available — cannot send via connected sender."
+                        )
+                    try:
+                        _account_uuid = uuid.UUID(str(_account_id_str))
+                    except (ValueError, AttributeError):
+                        raise ValueError(
+                            "Invalid account context — cannot send via connected sender."
+                        )
+
                     def _run(db):
                         _conn = (
                             db.query(_AI)
                             .options(_jl(_AI.integration_type))
-                            .filter(_AI.id == uuid.UUID(connection_id))
+                            .filter(
+                                _AI.id == uuid.UUID(connection_id),
+                                _AI.account_id == _account_uuid,  # ownership guard
+                            )
                             .first()
                         )
                         if not _conn:
@@ -2048,6 +2066,7 @@ class FunctionMapper:
                             to_addresses=[to_address],
                             subject=effective_subject,
                             body_text=effective_body,
+                            db=db,  # passed for proactive token refresh
                         )
 
                     if _db_session is not None:
