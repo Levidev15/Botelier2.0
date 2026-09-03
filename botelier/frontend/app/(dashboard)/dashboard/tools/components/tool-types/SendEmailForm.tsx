@@ -1,9 +1,11 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Mail } from "lucide-react";
+import { Mail, Link, Loader2 } from "lucide-react";
 import { notify } from "@/lib/notifications";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
+
+// ── Types ────────────────────────────────────────────────────────────────────
 
 interface Tool {
   id: string;
@@ -13,10 +15,21 @@ interface Tool {
   config: {
     default_subject?: string;
     message_body?: string;
+    // Legacy typed-address fields (still honoured when connection_id is absent)
     from_name?: string;
     from_email?: string;
+    // Connected sender (preferred)
+    connection_id?: string;
   };
   is_active: boolean;
+}
+
+interface EmailSender {
+  id: string;
+  connection_name: string;
+  provider: string;
+  email: string;
+  status: string;
 }
 
 interface SendEmailFormProps {
@@ -32,6 +45,8 @@ interface FormData {
   description: string;
   default_subject: string;
   message_body: string;
+  connection_id: string; // "" = platform sender
+  // Legacy override fields (visible only when connection_id is "")
   from_name: string;
   from_email: string;
 }
@@ -43,14 +58,22 @@ interface FormErrors {
   from_email?: string;
 }
 
+// ── Constants ────────────────────────────────────────────────────────────────
+
 const DEFAULT_DESCRIPTION =
   "Send a custom email when the caller asks to receive information by email.";
 
-const TEMPLATE_VARIABLES = [
-  { label: "{account_name}", hint: "Your business name" },
-];
+const TEMPLATE_VARIABLES = [{ label: "{account_name}", hint: "Your business name" }];
 
-export default function SendEmailForm({ onSuccess, onCancel, tool, accountId, toolSetId }: SendEmailFormProps) {
+// ── Component ─────────────────────────────────────────────────────────────────
+
+export default function SendEmailForm({
+  onSuccess,
+  onCancel,
+  tool,
+  accountId,
+  toolSetId,
+}: SendEmailFormProps) {
   const isEditMode = !!tool;
   const { authFetch } = useAuthToken();
 
@@ -59,13 +82,29 @@ export default function SendEmailForm({ onSuccess, onCancel, tool, accountId, to
     description: DEFAULT_DESCRIPTION,
     default_subject: "",
     message_body: "",
+    connection_id: "",
     from_name: "",
     from_email: "",
   });
 
   const [saving, setSaving] = useState(false);
   const [errors, setErrors] = useState<FormErrors>({});
+  const [senders, setSenders] = useState<EmailSender[]>([]);
+  const [loadingSenders, setLoadingSenders] = useState(false);
 
+  // Fetch connected email senders for the dropdown
+  useEffect(() => {
+    if (!accountId) return;
+    setLoadingSenders(true);
+    authFetch(`/api/settings/email-senders?account_id=${accountId}`)
+      .then((r) => r.ok ? r.json() : { connections: [] })
+      .then((d) => setSenders(d.connections ?? []))
+      .catch(() => setSenders([]))
+      .finally(() => setLoadingSenders(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [accountId]);
+
+  // Populate form on edit
   useEffect(() => {
     if (tool) {
       setFormData({
@@ -73,24 +112,25 @@ export default function SendEmailForm({ onSuccess, onCancel, tool, accountId, to
         description: tool.description || DEFAULT_DESCRIPTION,
         default_subject: tool.config?.default_subject || "",
         message_body: tool.config?.message_body || "",
+        connection_id: tool.config?.connection_id || "",
         from_name: tool.config?.from_name || "",
         from_email: tool.config?.from_email || "",
       });
     }
   }, [tool]);
 
+  const usingConnected = formData.connection_id !== "";
+
   const validateForm = (): boolean => {
     const newErrors: FormErrors = {};
-    if (!formData.name.trim()) {
-      newErrors.name = "Tool name is required";
-    }
-    if (!formData.description.trim()) {
-      newErrors.description = "Trigger description is required";
-    }
-    if (!formData.message_body.trim()) {
-      newErrors.message_body = "Default message body is required";
-    }
-    if (formData.from_email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.from_email.trim())) {
+    if (!formData.name.trim()) newErrors.name = "Tool name is required";
+    if (!formData.description.trim()) newErrors.description = "Trigger description is required";
+    if (!formData.message_body.trim()) newErrors.message_body = "Default message body is required";
+    if (
+      !usingConnected &&
+      formData.from_email.trim() &&
+      !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.from_email.trim())
+    ) {
       newErrors.from_email = "Must be a valid email address";
     }
     setErrors(newErrors);
@@ -107,8 +147,15 @@ export default function SendEmailForm({ onSuccess, onCancel, tool, accountId, to
         message_body: formData.message_body.trim(),
       };
       if (formData.default_subject.trim()) config.default_subject = formData.default_subject.trim();
-      if (formData.from_name.trim()) config.from_name = formData.from_name.trim();
-      if (formData.from_email.trim()) config.from_email = formData.from_email.trim();
+
+      if (usingConnected) {
+        config.connection_id = formData.connection_id;
+        // Clear any legacy typed-address fields so there is no ambiguity
+        // (the connected account's address is used automatically).
+      } else {
+        if (formData.from_name.trim()) config.from_name = formData.from_name.trim();
+        if (formData.from_email.trim()) config.from_email = formData.from_email.trim();
+      }
 
       const payload = {
         name: formData.name.trim(),
@@ -120,22 +167,16 @@ export default function SendEmailForm({ onSuccess, onCancel, tool, accountId, to
       };
 
       const scopeParam = toolSetId ? `tool_set_id=${toolSetId}` : `account_id=${accountId}`;
-      const url = isEditMode
-        ? `/api/tools/${tool!.id}?${scopeParam}`
-        : "/api/tools";
+      const url = isEditMode ? `/api/tools/${tool!.id}?${scopeParam}` : "/api/tools";
       const method = isEditMode ? "PUT" : "POST";
 
-      const response = await authFetch(url, {
-        method,
-        body: JSON.stringify(payload),
-      });
+      const response = await authFetch(url, { method, body: JSON.stringify(payload) });
 
       if (!response.ok) {
         const errorData = await response.json();
         let errorMsg = `Failed to ${isEditMode ? "update" : "create"} tool`;
-        if (typeof errorData.detail === "string") {
-          errorMsg = errorData.detail;
-        } else if (Array.isArray(errorData.detail)) {
+        if (typeof errorData.detail === "string") errorMsg = errorData.detail;
+        else if (Array.isArray(errorData.detail)) {
           errorMsg = errorData.detail.map((e: any) => e.msg || e.message || JSON.stringify(e)).join(", ");
         }
         throw new Error(errorMsg);
@@ -149,7 +190,7 @@ export default function SendEmailForm({ onSuccess, onCancel, tool, accountId, to
       notify.error(
         error instanceof Error
           ? error.message
-          : `Failed to ${isEditMode ? "update" : "create"} tool. Please try again.`
+          : `Failed to ${isEditMode ? "update" : "create"} tool. Please try again.`,
       );
     } finally {
       setSaving(false);
@@ -158,9 +199,7 @@ export default function SendEmailForm({ onSuccess, onCancel, tool, accountId, to
 
   const handleChange = <K extends keyof FormData>(field: K, value: FormData[K]) => {
     setFormData({ ...formData, [field]: value });
-    if (errors[field as keyof FormErrors]) {
-      setErrors({ ...errors, [field]: undefined });
-    }
+    if (errors[field as keyof FormErrors]) setErrors({ ...errors, [field]: undefined });
   };
 
   const insertVariable = (variable: string) => {
@@ -180,8 +219,12 @@ export default function SendEmailForm({ onSuccess, onCancel, tool, accountId, to
     }, 0);
   };
 
+  // Find the label for the currently selected sender
+  const selectedSender = senders.find((s) => s.id === formData.connection_id);
+
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
+      {/* Header */}
       <div className="flex items-center gap-3 pb-4 border-b border-gray-800">
         <div className="w-12 h-12 rounded-lg bg-blue-600/20 flex items-center justify-center">
           <Mail className="text-blue-400" size={24} />
@@ -238,9 +281,7 @@ export default function SendEmailForm({ onSuccess, onCancel, tool, accountId, to
 
       {/* Default subject */}
       <div>
-        <label className="block text-sm font-medium mb-2">
-          Default Subject Line
-        </label>
+        <label className="block text-sm font-medium mb-2">Default Subject Line</label>
         <input
           type="text"
           value={formData.default_subject}
@@ -284,50 +325,123 @@ export default function SendEmailForm({ onSuccess, onCancel, tool, accountId, to
           } rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent resize-none font-mono text-sm`}
         />
         <p className="text-xs text-gray-500 mt-1">
-          The AI must provide the email body when it calls this tool. This required template remains a safety fallback for older or manual calls.
+          The AI must provide the email body when it calls this tool. This template remains a
+          safety fallback for older or manual calls.
         </p>
         {errors.message_body && (
           <p className="text-xs text-red-500 mt-1">{errors.message_body}</p>
         )}
       </div>
 
-      {/* Optional sender override */}
+      {/* Sender */}
       <div className="border border-gray-800 rounded-lg p-4 space-y-4">
         <div>
-          <p className="text-sm font-medium">Sender Override <span className="text-gray-500 font-normal">(optional)</span></p>
+          <p className="text-sm font-medium">Send From</p>
           <p className="text-xs text-gray-500 mt-0.5">
-            Overrides the account-level sender for this tool only. Leave blank to use your account&apos;s default sender.
+            Choose which email account to send from.{" "}
+            {senders.length === 0 && !loadingSenders && (
+              <>
+                No connected accounts yet.{" "}
+                <a
+                  href="/dashboard/settings?tab=email"
+                  className="text-blue-400 hover:underline inline-flex items-center gap-1"
+                >
+                  Connect one in Settings <Link size={10} />
+                </a>
+              </>
+            )}
           </p>
         </div>
-        <div className="grid grid-cols-2 gap-3">
-          <div>
-            <label className="block text-xs font-medium mb-1 text-gray-400">From Name</label>
-            <input
-              type="text"
-              value={formData.from_name}
-              onChange={(e) => handleChange("from_name", e.target.value)}
-              placeholder="e.g., Customer Support"
-              className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent"
-            />
+
+        {loadingSenders ? (
+          <div className="flex items-center gap-2 text-sm text-gray-500">
+            <Loader2 size={14} className="animate-spin" />
+            Loading connected accounts…
           </div>
+        ) : (
           <div>
-            <label className="block text-xs font-medium mb-1 text-gray-400">From Email</label>
-            <input
-              type="email"
-              value={formData.from_email}
-              onChange={(e) => handleChange("from_email", e.target.value)}
-              placeholder="e.g., support@example.com"
-              className={`w-full px-3 py-2 bg-[#141414] border ${
-                errors.from_email ? "border-red-500" : "border-gray-800"
-              } rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent`}
-            />
-            {errors.from_email && (
-              <p className="text-xs text-red-500 mt-1">{errors.from_email}</p>
+            <label className="block text-xs font-medium mb-1.5 text-gray-400">
+              Sender Account
+            </label>
+            <select
+              value={formData.connection_id}
+              onChange={(e) => handleChange("connection_id", e.target.value)}
+              className="w-full px-3 py-2.5 bg-[#141414] border border-gray-800 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent"
+            >
+              <option value="">Platform sender (default)</option>
+              {senders
+                .filter((s) => s.status === "connected")
+                .map((s) => (
+                  <option key={s.id} value={s.id}>
+                    {s.email || s.connection_name}
+                  </option>
+                ))}
+              {senders.filter((s) => s.status !== "connected").length > 0 && (
+                <optgroup label="Disconnected (reconnect in Settings)">
+                  {senders
+                    .filter((s) => s.status !== "connected")
+                    .map((s) => (
+                      <option key={s.id} value={s.id} disabled>
+                        {s.email || s.connection_name} — {s.status}
+                      </option>
+                    ))}
+                </optgroup>
+              )}
+            </select>
+            {usingConnected && selectedSender && (
+              <p className="text-xs text-green-400 mt-1">
+                Emails will be sent from {selectedSender.email || selectedSender.connection_name}.
+              </p>
+            )}
+            {!usingConnected && (
+              <p className="text-xs text-gray-500 mt-1">
+                Uses the platform&apos;s shared sender address. Connect a Gmail or Microsoft account
+                in{" "}
+                <a href="/dashboard/settings?tab=email" className="text-blue-400 hover:underline">
+                  Settings &gt; Email
+                </a>{" "}
+                to send from your own address.
+              </p>
             )}
           </div>
-        </div>
+        )}
+
+        {/* Legacy typed-address override — shown only when no connected account is selected */}
+        {!usingConnected && (
+          <div className="grid grid-cols-2 gap-3 pt-2 border-t border-gray-800">
+            <div>
+              <label className="block text-xs font-medium mb-1 text-gray-400">From Name</label>
+              <input
+                type="text"
+                value={formData.from_name}
+                onChange={(e) => handleChange("from_name", e.target.value)}
+                placeholder="e.g., Customer Support"
+                className="w-full px-3 py-2 bg-[#141414] border border-gray-800 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent"
+              />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1 text-gray-400">From Email</label>
+              <input
+                type="email"
+                value={formData.from_email}
+                onChange={(e) => handleChange("from_email", e.target.value)}
+                placeholder="e.g., support@example.com"
+                className={`w-full px-3 py-2 bg-[#141414] border ${
+                  errors.from_email ? "border-red-500" : "border-gray-800"
+                } rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-600 focus:border-transparent`}
+              />
+              {errors.from_email && (
+                <p className="text-xs text-red-500 mt-1">{errors.from_email}</p>
+              )}
+            </div>
+            <p className="col-span-2 text-xs text-gray-600">
+              Optional. Overrides the account-level sender address for this tool only.
+            </p>
+          </div>
+        )}
       </div>
 
+      {/* Action buttons */}
       <div className="flex gap-3 pt-2">
         <button
           type="submit"
@@ -335,8 +449,12 @@ export default function SendEmailForm({ onSuccess, onCancel, tool, accountId, to
           className="flex-1 px-4 py-3 bg-blue-600 hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed text-white rounded-lg transition-colors font-medium"
         >
           {saving
-            ? isEditMode ? "Saving..." : "Creating..."
-            : isEditMode ? "Save Changes" : "Create Tool"}
+            ? isEditMode
+              ? "Saving…"
+              : "Creating…"
+            : isEditMode
+              ? "Save Changes"
+              : "Create Tool"}
         </button>
         <button
           type="button"

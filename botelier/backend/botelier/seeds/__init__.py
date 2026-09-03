@@ -133,6 +133,31 @@ def seed_all_integrations(db: Session) -> None:
     except ImportError as exc:
         logger.warning(f"Could not import guestcentric seed: {exc}")
 
+    # Email sender integrations — these have no meaningful endpoints_config so
+    # they are seeded but NOT passed to verify_seed (which would flag the
+    # placeholder endpoint as incomplete).
+    email_seeds = []
+    try:
+        from botelier.seeds.gmail_sender_integration import seed_gmail_sender_integration
+
+        email_seeds.append(("gmail-sender", seed_gmail_sender_integration))
+    except ImportError as exc:
+        logger.warning(f"Could not import gmail sender seed: {exc}")
+
+    try:
+        from botelier.seeds.microsoft_sender_integration import seed_microsoft_sender_integration
+
+        email_seeds.append(("microsoft-sender", seed_microsoft_sender_integration))
+    except ImportError as exc:
+        logger.warning(f"Could not import microsoft sender seed: {exc}")
+
+    for name, fn in email_seeds:
+        try:
+            fn(db)
+            logger.debug(f"Seed '{name}' completed")
+        except Exception as exc:
+            logger.error(f"Seed '{name}' failed (non-fatal): {exc}")
+
     for name, slug, fn in seeds:
         try:
             fn(db)

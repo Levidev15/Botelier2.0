@@ -1,6 +1,6 @@
 "use client";
 
-import { Bot, Phone, BarChart, Key, Users, Wrench, BookOpen, Shield, LogOut, ArrowLeft, Building2, Plug, MessageSquare, TrendingUp, MessageCircle, Sun, Moon, DollarSign, ClipboardList, CreditCard } from "lucide-react";
+import { Bot, Phone, BarChart, Key, Users, Wrench, BookOpen, Shield, LogOut, ArrowLeft, Building2, Plug, MessageSquare, TrendingUp, MessageCircle, Sun, Moon, DollarSign, ClipboardList, CreditCard, Settings } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useRouter } from "next/navigation";
@@ -233,6 +233,9 @@ function DashboardLayoutInner({ children }: { children: React.ReactNode }) {
             </div>
           </div>
 
+          <NavItem href="/dashboard/settings" icon={<Settings className="h-5 w-5" />} active={isActive("/dashboard/settings") && !isActive("/dashboard/settings/payment-page")}>
+            Settings
+          </NavItem>
           <NavItem href="/dashboard/sms-compliance" icon={<Shield className="h-5 w-5" />} active={isActive("/dashboard/sms-compliance")}>
             SMS Compliance
           </NavItem>

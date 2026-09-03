@@ -808,6 +808,9 @@ WHERE answered_at IS NULL
     # NULL means fall back to the platform default (EMAIL_FROM_DEFAULT env var).
     "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email_from VARCHAR(255)",
     "ALTER TABLE accounts ADD COLUMN IF NOT EXISTS email_from_name VARCHAR(255)",
+    # Category column distinguishes email sender connections from PMS integrations
+    # without slug-prefix matching. NULL = legacy row (treated as pms/data-query).
+    "ALTER TABLE integration_types ADD COLUMN IF NOT EXISTS category VARCHAR(32)",
 ]
 
 

@@ -69,14 +69,21 @@ export default function OAuthCompletePage() {
       if (resp.ok) {
         const data = await resp.json();
         const name = data.integration_name || data.integration_slug || "Integration";
+        const slug: string = data.integration_slug || "";
         setStatus("success");
         setMessage(`${name} connected successfully`);
+
+        // Email sender connections belong in Settings > Email, not in the
+        // general Integrations page.
+        const isEmailSender = slug.startsWith("email-sender-");
         setTimeout(() => {
-          router.replace(
-            `/dashboard/integrations?integration_connected=${encodeURIComponent(
-              data.integration_slug || "",
-            )}`,
-          );
+          if (isEmailSender) {
+            router.replace("/dashboard/settings?tab=email&connected=1");
+          } else {
+            router.replace(
+              `/dashboard/integrations?integration_connected=${encodeURIComponent(slug)}`,
+            );
+          }
         }, 2000);
       } else {
         const data = await resp.json().catch(() => ({}));

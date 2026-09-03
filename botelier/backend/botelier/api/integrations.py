@@ -1421,6 +1421,11 @@ def _build_authorization_url(
     scope = credentials.get("scope") or auth_config.get("scope")
     if scope:
         params["scope"] = scope
+    # Allow seeds to declare provider-specific extra params (e.g. Google's
+    # access_type=offline&prompt=consent to force a refresh token).
+    extra = auth_config.get("extra_authorize_params", {})
+    if isinstance(extra, dict):
+        params.update(extra)
     separator = "&" if "?" in authorize_url else "?"
     return f"{authorize_url}{separator}{urlencode(params)}"
 
@@ -1623,6 +1628,43 @@ class OAuthCompleteRequest(BaseModel):
     error: Optional[str] = None
 
 
+async def _fetch_email_sender_email(slug: str, access_token: str) -> Optional[str]:
+    """Fetch the authenticated user's email address from the provider after OAuth.
+
+    Called inline inside oauth_complete for email-sender-* slugs.  Defined here
+    (not in email_senders.py) to avoid a circular import — email_senders.py
+    imports helpers from this module.
+    """
+    _USERINFO: dict = {
+        "email-sender-gmail": (
+            "https://www.googleapis.com/oauth2/v2/userinfo",
+            "email",
+            None,
+        ),
+        "email-sender-microsoft": (
+            "https://graph.microsoft.com/v1.0/me",
+            "mail",
+            "userPrincipalName",
+        ),
+    }
+    if slug not in _USERINFO:
+        return None
+    url, field, fallback = _USERINFO[slug]
+    try:
+        async with httpx.AsyncClient(
+            transport=SSRFSafeTransport(), timeout=10.0
+        ) as client:
+            resp = await client.get(
+                url, headers={"Authorization": f"Bearer {access_token}"}
+            )
+        if resp.status_code == 200:
+            data = resp.json()
+            return data.get(field) or (data.get(fallback) if fallback else None)
+    except Exception as exc:
+        logger.warning(f"[_fetch_email_sender_email] {slug}: {exc}")
+    return None
+
+
 @router.post("/oauth/complete")
 async def oauth_complete(
     request: OAuthCompleteRequest,
@@ -1745,9 +1787,30 @@ async def oauth_complete(
         integration.status = IntegrationStatus.CONNECTED
         integration.connected_at = datetime.utcnow()
         integration.last_error = None
+
+        # For email sender connections, fetch and cache the authenticated email
+        # address so the Settings > Email tab can show it without an extra call.
+        _it_slug = integration.integration_type.slug if integration.integration_type else ""
+        if _it_slug.startswith("email-sender-"):
+            try:
+                _sender_email = await _fetch_email_sender_email(
+                    _it_slug, result["access_token"]
+                )
+                if _sender_email:
+                    conn_config["email"] = _sender_email
+                    # Auto-name the connection with the actual email address
+                    # (overrides the generic "Gmail Sender" / "Microsoft Sender"
+                    # placeholder set at connect-start time).
+                    integration.connection_name = _sender_email
+            except Exception as _exc:
+                logger.warning(
+                    f"[oauth_complete] Could not fetch sender email for "
+                    f"{integration.id}: {_exc}"
+                )
+
         integration.set_connection_config(conn_config)
         db.commit()
-        slug = integration.integration_type.slug if integration.integration_type else ""
+        slug = _it_slug
         logger.info(f"Completed OAuth2 connection for integration {integration.id}")
         return {
             "status": "connected",

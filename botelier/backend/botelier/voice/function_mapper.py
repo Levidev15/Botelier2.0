@@ -2015,6 +2015,81 @@ class FunctionMapper:
                 )
                 return
 
+            # ── Connected email sender path ──────────────────────────────────
+            # When the tool is configured with a specific connected sender
+            # (Gmail / Microsoft), route through that account instead of the
+            # legacy SendGrid path.  Failures are reported to the LLM as a
+            # tool result so the caller hears a clear error rather than silence.
+            connection_id = cfg.get("connection_id", "").strip()
+            if connection_id:
+                from botelier.models.integration import AccountIntegration as _AI
+                from botelier.services.email_service import (
+                    send_email_via_connection as _send_via_conn,
+                )
+                from sqlalchemy.orm import joinedload as _jl
+
+                def _do_send_connected():
+                    _db_session = getattr(mapper, "db_session", None)
+
+                    def _run(db):
+                        _conn = (
+                            db.query(_AI)
+                            .options(_jl(_AI.integration_type))
+                            .filter(_AI.id == uuid.UUID(connection_id))
+                            .first()
+                        )
+                        if not _conn:
+                            raise ValueError(
+                                "The configured email sender was not found. "
+                                "Please reconfigure the SEND_EMAIL tool in Settings."
+                            )
+                        return _send_via_conn(
+                            _conn,
+                            to_addresses=[to_address],
+                            subject=effective_subject,
+                            body_text=effective_body,
+                        )
+
+                    if _db_session is not None:
+                        return _run(_db_session)
+                    if mapper.session_factory:
+                        with mapper.session_factory() as _db:
+                            return _run(_db)
+                    raise ValueError("No database session available for email send.")
+
+                try:
+                    _ok = await asyncio.wait_for(
+                        asyncio.get_event_loop().run_in_executor(None, _do_send_connected),
+                        timeout=30.0,
+                    )
+                    if _ok:
+                        logger.info(
+                            "[send_email] Sent via connected account to %s on call %s",
+                            to_address,
+                            mapper.call_sid,
+                        )
+                        await params.result_callback(
+                            {"status": "sent", "to": to_address, "subject": effective_subject}
+                        )
+                    else:
+                        await params.result_callback(
+                            {"status": "failed", "reason": "email delivery failed via connected account"}
+                        )
+                except asyncio.TimeoutError:
+                    await params.result_callback(
+                        {"status": "failed", "reason": "email delivery timed out"}
+                    )
+                except ValueError as _ve:
+                    logger.warning("[send_email] Connected sender error: %s", _ve)
+                    await params.result_callback({"status": "failed", "reason": str(_ve)})
+                except Exception as _exc:
+                    logger.error("[send_email] Connected sender unexpected error: %s", _exc)
+                    await params.result_callback(
+                        {"status": "failed", "reason": "unexpected error during email delivery"}
+                    )
+                return
+            # ── End connected email sender path ──────────────────────────────
+
             # Resolve sender — tool config → account DB → platform env default
             resolved_from_email = tool_from_email or None
             resolved_from_name = tool_from_name or None

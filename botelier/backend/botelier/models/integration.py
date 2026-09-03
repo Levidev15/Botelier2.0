@@ -91,6 +91,11 @@ class IntegrationType(Base):
 
     documentation_url = Column(String, nullable=True)
 
+    # Integration category — used to distinguish email_sender connections from
+    # PMS / data-query integrations without relying on slug-prefix matching.
+    # NULL = legacy row (treat as pms / data-query).
+    category = Column(String(32), nullable=True)  # email_sender | pms | etc.
+
     # Universal Adapter — provenance
     origin = Column(
         String(32), nullable=False, default="platform_certified"
