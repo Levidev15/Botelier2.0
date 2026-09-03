@@ -235,3 +235,41 @@ async def test_empty_content_returns_fallback():
     await _mcp_isolated_tool_call(params, server_params=object(), mcpc_class=MockClass)
 
     params.result_callback.assert_awaited_once_with("Sorry, could not call the mcp tool")
+
+
+# ---------------------------------------------------------------------------
+# 7. close() raises CancelledError — real result must NOT be discarded
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_close_cancellederror_does_not_discard_real_result():
+    """Regression: Streamable-HTTP server closes the connection immediately
+    after returning each tool response.  exit_stack.aclose() then hits the
+    already-closed AnyIO transport and raises CancelledError.  Because
+    CancelledError is a BaseException (not Exception), a bare
+    `except Exception: pass` misses it and the exception overrides the
+    computed return value.  The fix catches (Exception, CancelledError) so
+    the real result survives."""
+    params = _make_params("search_catalog", {"query": "protein"})
+
+    mock_result = MagicMock()
+    mock_result.content = [_make_content("Whey protein, 2 lb bag")]
+
+    mock_session = AsyncMock()
+    mock_session.call_tool = AsyncMock(return_value=mock_result)
+
+    mock_client = MagicMock()
+    mock_client.start = AsyncMock()
+    # close() raises CancelledError — simulating AnyIO transport teardown
+    # against an already-closed Streamable-HTTP connection.
+    mock_client.close = AsyncMock(
+        side_effect=asyncio.CancelledError("transport already closed")
+    )
+    mock_client._active_session = mock_session
+    MockClass = MagicMock(return_value=mock_client)
+
+    # Must not raise, and must return the *real* tool result, not the fallback.
+    await _mcp_isolated_tool_call(params, server_params=object(), mcpc_class=MockClass)
+
+    params.result_callback.assert_awaited_once_with("Whey protein, 2 lb bag")

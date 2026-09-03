@@ -125,7 +125,14 @@ async def _mcp_isolated_tool_call(params, server_params, mcpc_class) -> None:
         finally:
             try:
                 await client.close()
-            except Exception:
+            except (Exception, asyncio.CancelledError):
+                # CancelledError is BaseException (not Exception) in Python
+                # 3.11+.  The Streamable-HTTP server closes its connection
+                # immediately after returning each tool response; when
+                # exit_stack.aclose() then tries to tear down the already-
+                # closed AnyIO transport it fires the cancel scope and raises
+                # CancelledError.  Suppressing it here ensures the computed
+                # return value is not overridden by a cleanup-only exception.
                 pass
 
     _task = asyncio.create_task(_isolated())
