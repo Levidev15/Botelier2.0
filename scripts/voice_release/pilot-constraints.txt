@@ -1,0 +1,2 @@
+# Exact public release artifact; preserve the extras declared by backend requirements.
+pipecat-ai @ https://files.pythonhosted.org/packages/41/05/c7daebbf0fc59fd6106e34e52a255727443c1db49d046f7ed0bd9dcb6e4e/pipecat_ai-1.5.0-py3-none-any.whl#sha256=6089ac7ec418b310975c9c16dd472c16f99838810aae707d669b4f6f5981cf8a

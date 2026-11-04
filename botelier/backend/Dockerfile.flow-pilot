@@ -1,0 +1,50 @@
+# syntax=docker/dockerfile:1.7
+# CANDIDATE ONLY: this is not the production Dockerfile or a production image.
+# Match the verified local release + explicit Flux additions; do not shadow the
+# release with the older complete src/pipecat tree.
+FROM python:3.11-slim AS builder
+WORKDIR /build
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc g++ libffi-dev && rm -rf /var/lib/apt/lists/*
+COPY botelier/backend/requirements.txt ./requirements.txt
+COPY scripts/voice_release/pilot-constraints.txt ./pilot-constraints.txt
+RUN pip install --no-cache-dir --prefix=/install \
+    --constraint pilot-constraints.txt --report=/install/voice-install-report.json \
+    -r requirements.txt \
+    && pip freeze --path /install/lib/python3.11/site-packages \
+       > /install/voice-resolved-requirements.txt
+RUN find /install -type f -name '*.pyc' -delete
+
+FROM python:3.11-slim
+LABEL botelier.runtime.profile="native-flows-pilot"
+LABEL botelier.runtime.production-eligible="false"
+WORKDIR /app
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libgomp1 ca-certificates && rm -rf /var/lib/apt/lists/*
+COPY --from=builder /install /usr/local
+
+# These are the only local changes found relative to the installed wheel RECORD.
+# The separate source-integrity check rejects undeclared or changed Python files.
+COPY src/pipecat/services/deepgram/flux/__init__.py /usr/local/lib/python3.11/site-packages/pipecat/services/deepgram/flux/__init__.py
+COPY src/pipecat/services/deepgram/flux/tts.py /usr/local/lib/python3.11/site-packages/pipecat/services/deepgram/flux/tts.py
+COPY src/pipecat/services/deepgram/flux/tts_base.py /usr/local/lib/python3.11/site-packages/pipecat/services/deepgram/flux/tts_base.py
+COPY scripts/voice_release/pilot-runtime.json /opt/voice-runtime/pilot-runtime.json
+
+# Public tokenizer data is hash-pinned and provisioned at build time. The runtime
+# compatibility test has no network and must not download missing assets.
+ADD --checksum=sha256:e57f64187974277726a3417ca6f181ec5403676c717672eef6a748a7b20e0106 https://raw.githubusercontent.com/nltk/nltk_data/gh-pages/packages/tokenizers/punkt_tab.zip /tmp/punkt_tab.zip
+RUN python -c "from zipfile import ZipFile; ZipFile('/tmp/punkt_tab.zip').extractall('/opt/nltk_data/tokenizers')" \
+    && rm /tmp/punkt_tab.zip
+ENV NLTK_DATA="/opt/nltk_data"
+ENV PYTHONDONTWRITEBYTECODE="1"
+ENV HF_HUB_OFFLINE="1"
+ENV TRANSFORMERS_OFFLINE="1"
+ENV HF_HUB_DISABLE_TELEMETRY="1"
+ENV DO_NOT_TRACK="1"
+
+COPY botelier/backend/ .
+RUN mkdir -p uploads/greeting_cache uploads/mms \
+    && useradd -m -u 1000 botelier && chown -R botelier:botelier /app
+USER botelier
+EXPOSE 8000
+CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000", "--log-level", "info", "--timeout-keep-alive", "75", "--ws-ping-interval", "20", "--ws-ping-timeout", "30"]

@@ -23,6 +23,8 @@ docs/
 .agents/
 .replit
 replit.nix
+.worktrees/
+generated-artifacts/
 
 # Python caches
 **/__pycache__/

@@ -1,0 +1,9 @@
+{
+  "package_version": "1.5.0",
+  "wheel_sha256": "6089ac7ec418b310975c9c16dd472c16f99838810aae707d669b4f6f5981cf8a",
+  "overlays": {
+    "services/deepgram/flux/__init__.py": "53b20d98190d8ab957d204fbcc68d09adb563bb1bcff5eb2bf11b30789c17bc7",
+    "services/deepgram/flux/tts.py": "73dce520cdb02febddc79c055458ab11c81b2cbddedf24a906780eeda28d85d1",
+    "services/deepgram/flux/tts_base.py": "11a7e5aa4e1a77877f50797ccc90e6be94e09e4ebd550df51621538ed4271f86"
+  }
+}

@@ -1,0 +1,158 @@
+name: Voice flow candidate — build and offline checks only
+
+# No environment, Azure login, registry login, image push, call routing or secrets.
+on:
+  push:
+    branches: [main, "candidate/**"]
+    paths:
+      - "botelier/backend/**"
+      - "src/pipecat/**"
+      - "scripts/voice_release/**"
+      - "tests/voice_release/**"
+      - "examples/features/botelier-flow-trial/**"
+      - ".github/workflows/deploy-voice.yml"
+      - ".github/workflows/voice-flow-candidate.yml"
+      - ".dockerignore"
+  pull_request:
+    paths:
+      - "botelier/backend/**"
+      - "src/pipecat/**"
+      - "scripts/voice_release/**"
+      - "tests/voice_release/**"
+      - "examples/features/botelier-flow-trial/**"
+      - ".github/workflows/*.yml"
+      - ".dockerignore"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: voice-flow-candidate-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  candidate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check release policy, provenance checker and workflow separation
+        run: |
+          python -m pip install PyYAML==6.0.3
+          python -B -m unittest discover -s tests/voice_release -v
+      - name: Lint the changed workflows
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo:ro" -w /repo \
+            rhysd/actionlint:1.7.7 \
+            .github/workflows/deploy-voice.yml \
+            .github/workflows/voice-flow-candidate.yml
+      - name: Build the separate candidate image
+        env:
+          IMAGE: voice-flow-candidate:${{ github.sha }}
+        run: |
+          docker build -f botelier/backend/Dockerfile.flow-pilot \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" -t "$IMAGE" .
+      - name: Verify exact release sources plus declared Flux overlays offline
+        env:
+          IMAGE: voice-flow-candidate:${{ github.sha }}
+        run: |
+          docker run --rm --network none --read-only \
+            -v "$GITHUB_WORKSPACE/scripts/voice_release:/checks:ro" \
+            --entrypoint python "$IMAGE" -B /checks/verify_sources.py \
+            --package-root /usr/local/lib/python3.11/site-packages/pipecat \
+            --manifest /opt/voice-runtime/pilot-runtime.json
+      - name: Probe native APIs without application imports or provider access
+        env:
+          IMAGE: voice-flow-candidate:${{ github.sha }}
+        run: |
+          docker run --rm --network none --read-only \
+            --tmpfs /tmp:rw,nosuid,nodev,size=256m \
+            -v "$GITHUB_WORKSPACE/examples/features/botelier-flow-trial:/ci/examples/features/botelier-flow-trial:ro" \
+            --entrypoint env "$IMAGE" -i \
+            PATH=/usr/local/bin:/usr/bin:/bin HOME=/tmp NLTK_DATA=/opt/nltk_data \
+            PYTHONDONTWRITEBYTECODE=1 LOGURU_LEVEL=ERROR \
+            python -B /ci/examples/features/botelier-flow-trial/guard.py \
+            --target wheel \
+            --package-root /usr/local/lib/python3.11/site-packages/pipecat \
+            --profile native --probe
+      - name: Prepare test tools outside the image
+        run: python -m pip install --target "$RUNNER_TEMP/voice-test-tools" pytest==9.0.3
+      - name: Run the native characterization suite in that image, offline
+        env:
+          IMAGE: voice-flow-candidate:${{ github.sha }}
+        run: |
+          docker run --rm --network none --read-only \
+            --tmpfs /tmp:rw,nosuid,nodev,size=256m \
+            -v "$GITHUB_WORKSPACE/examples/features/botelier-flow-trial:/ci/examples/features/botelier-flow-trial:ro" \
+            -v "$RUNNER_TEMP/voice-test-tools:/test-tools:ro" \
+            --entrypoint env "$IMAGE" -i \
+            PATH=/usr/local/bin:/usr/bin:/bin HOME=/tmp NLTK_DATA=/opt/nltk_data \
+            PYTHONPATH=/test-tools PYTHONDONTWRITEBYTECODE=1 \
+            PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 LOGURU_LEVEL=ERROR \
+            python -B /ci/examples/features/botelier-flow-trial/guard.py \
+            --target wheel \
+            --package-root /usr/local/lib/python3.11/site-packages/pipecat \
+            --tests /ci/examples/features/botelier-flow-trial/test_runtime_gate.py \
+            /ci/examples/features/botelier-flow-trial/test_native_contracts.py
+      - name: Export dependency provenance without starting the app
+        env:
+          IMAGE: voice-flow-candidate:${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/voice-candidate-provenance
+        run: |
+          mkdir -p "$OUTPUT_DIR"
+          container=$(docker create "$IMAGE")
+          trap 'docker rm "$container" >/dev/null' EXIT
+          docker cp "$container:/usr/local/voice-install-report.json" "$OUTPUT_DIR/"
+          docker cp "$container:/usr/local/voice-resolved-requirements.txt" "$OUTPUT_DIR/"
+          docker cp "$container:/opt/voice-runtime/pilot-runtime.json" "$OUTPUT_DIR/"
+      - name: Retain the exact checked candidate for an approved staging rehearsal
+        id: export_candidate_image
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/candidate/'))
+        env:
+          IMAGE: voice-flow-candidate:${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/voice-candidate-image
+        run: |
+          mkdir -p "$OUTPUT_DIR"
+          docker save "$IMAGE" | gzip -1 > "$OUTPUT_DIR/image.tar.gz"
+          python - <<'PY'
+          import json, os, pathlib, subprocess
+          image = json.loads(subprocess.check_output(
+              ["docker", "image", "inspect", os.environ["IMAGE"]], text=True))[0]
+          labels = image.get("Config", {}).get("Labels", {})
+          if (
+              labels.get("org.opencontainers.image.revision") != os.environ["GITHUB_SHA"]
+              or labels.get("botelier.runtime.profile") != "native-flows-pilot"
+              or labels.get("botelier.runtime.production-eligible") != "false"
+          ):
+              raise SystemExit("Candidate image provenance or ineligibility label mismatch")
+          metadata = {
+              "image_id": image["Id"], "commit": os.environ["GITHUB_SHA"],
+              "profile": "native-flows-pilot", "production_eligible": False,
+          }
+          (pathlib.Path(os.environ["OUTPUT_DIR"]) / "image-meta.json").write_text(
+              json.dumps(metadata, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voice-candidate-provenance-${{ github.sha }}
+          path: ${{ runner.temp }}/voice-candidate-provenance/
+          retention-days: 7
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        if: github.event_name == 'workflow_dispatch' || (github.event_name == 'push' && startsWith(github.ref, 'refs/heads/candidate/'))
+        with:
+          name: voice-candidate-image-${{ github.sha }}
+          path: ${{ runner.temp }}/voice-candidate-image/
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error

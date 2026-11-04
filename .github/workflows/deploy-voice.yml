@@ -1,86 +1,235 @@
-name: Deploy Voice Backend to Azure Container Apps
+name: Voice backend — explicit production release
 
+# No push, PR or candidate event may release production.
 on:
-  push:
-    branches:
-      - main
-    paths:
-      - "botelier/backend/**"
-      - "src/pipecat/**"
-
   workflow_dispatch:
+    inputs:
+      approved_commit:
+        description: Full 40-character main commit approved for this release
+        required: true
+        type: string
+      calls_drained:
+        description: Pause new calls and drain active calls before environment approval
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+defaults:
+  run:
+    shell: bash
 
 jobs:
-  build-and-deploy:
+  build:
+    name: Build and check the unchanged legacy production profile
     runs-on: ubuntu-latest
-
+    timeout-minutes: 30
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Check release policy and workflow separation
+        run: |
+          python -m pip install PyYAML==6.0.3
+          python -B -m unittest discover -s tests/voice_release -v
+      - name: Lint the changed workflows
+        run: |
+          docker run --rm -v "$GITHUB_WORKSPACE:/repo:ro" -w /repo \
+            rhysd/actionlint:1.7.7 \
+            .github/workflows/deploy-voice.yml \
+            .github/workflows/voice-flow-candidate.yml
+      - name: Build the legacy image without registry or Azure credentials
+        env:
+          IMAGE: voice-legacy:${{ github.sha }}
+        run: |
+          docker build -f botelier/backend/Dockerfile \
+            --label "org.opencontainers.image.revision=$GITHUB_SHA" \
+            --label botelier.runtime.profile=legacy \
+            -t "$IMAGE" .
+      - name: Verify legacy import provenance offline
+        env:
+          IMAGE: voice-legacy:${{ github.sha }}
+        run: |
+          docker run --rm --network none --read-only \
+            --tmpfs /tmp:rw,nosuid,nodev,size=128m \
+            -v "$GITHUB_WORKSPACE/examples/features/botelier-flow-trial:/ci/examples/features/botelier-flow-trial:ro" \
+            --entrypoint env "$IMAGE" -i \
+            PATH=/usr/local/bin:/usr/bin:/bin HOME=/tmp PYTHONPATH=/app/src \
+            PYTHONDONTWRITEBYTECODE=1 LOGURU_LEVEL=ERROR \
+            python -B /ci/examples/features/botelier-flow-trial/guard.py \
+            --target vendored --package-root /app/src/pipecat --profile legacy --probe
+      - name: Export the exact checked image
+        id: export_checked_image
+        env:
+          IMAGE: voice-legacy:${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/voice-release
+        run: |
+          mkdir -p "$OUTPUT_DIR"
+          docker save "$IMAGE" | gzip -1 > "$OUTPUT_DIR/image.tar.gz"
+          python - <<'PY'
+          import json, os, pathlib, subprocess
+          image = json.loads(subprocess.check_output(
+              ["docker", "image", "inspect", os.environ["IMAGE"]], text=True))[0]
+          metadata = {
+              "image_id": image["Id"], "commit": os.environ["GITHUB_SHA"],
+              "profile": "legacy",
+          }
+          (pathlib.Path(os.environ["OUTPUT_DIR"]) / "image-meta.json").write_text(
+              json.dumps(metadata, sort_keys=True))
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: voice-production-${{ github.sha }}
+          path: ${{ runner.temp }}/voice-release/
+          retention-days: 1
+          compression-level: 0
+          if-no-files-found: error
 
-      - name: Log in to Azure
+  release:
+    name: Reviewed production cutover — maintenance window required
+    needs: [build]
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: voice-production
+    concurrency:
+      group: voice-production
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      deployments: read
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Verify actual GitHub environment protection before Azure authentication
+        id: authorize_release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          APPROVED_SHA: ${{ inputs.approved_commit }}
+          CALLS_DRAINED: ${{ toJSON(inputs.calls_drained) }}
+          CHECKS_RESULT: ${{ needs.build.result }}
+          METADATA_DIR: ${{ runner.temp }}/voice-policy
+        run: |
+          mkdir -p "$METADATA_DIR"
+          trap 'rm -f "$METADATA_DIR/environment.json" "$METADATA_DIR/branches.json" "$METADATA_DIR/request.json"' EXIT
+          gh api -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$GITHUB_REPOSITORY/environments/voice-production" \
+            > "$METADATA_DIR/environment.json"
+          gh api -H "X-GitHub-Api-Version: 2022-11-28" \
+            "repos/$GITHUB_REPOSITORY/environments/voice-production/deployment-branch-policies?per_page=100" \
+            > "$METADATA_DIR/branches.json"
+          python - <<'PY'
+          import json, os, pathlib
+          directory = pathlib.Path(os.environ["METADATA_DIR"])
+          request = {
+              "target": "production", "event_name": os.environ["GITHUB_EVENT_NAME"],
+              "ref": os.environ["GITHUB_REF"], "sha": os.environ["GITHUB_SHA"],
+              "approved_sha": os.environ["APPROVED_SHA"],
+              "calls_drained": json.loads(os.environ["CALLS_DRAINED"]),
+              "checks_passed": os.environ["CHECKS_RESULT"] == "success",
+              "environment": json.loads((directory / "environment.json").read_text()),
+              "branch_policies": json.loads((directory / "branches.json").read_text()),
+          }
+          (directory / "request.json").write_text(json.dumps(request))
+          PY
+          python -B scripts/voice_release/authorize.py < "$METADATA_DIR/request.json"
+      - uses: actions/download-artifact@v4
+        with:
+          name: voice-production-${{ github.sha }}
+          path: ${{ runner.temp }}/voice-release
+      - name: Load and verify the checked image — never rebuild during promotion
+        id: verify_checked_image
+        env:
+          IMAGE: voice-legacy:${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/voice-release
+        run: |
+          gzip -dc "$OUTPUT_DIR/image.tar.gz" | docker load
+          python - <<'PY'
+          import json, os, pathlib, subprocess
+          metadata = json.loads(
+              (pathlib.Path(os.environ["OUTPUT_DIR"]) / "image-meta.json").read_text())
+          image = json.loads(subprocess.check_output(
+              ["docker", "image", "inspect", os.environ["IMAGE"]], text=True))[0]
+          labels = image.get("Config", {}).get("Labels", {})
+          valid = (
+              metadata.get("image_id") == image["Id"]
+              and metadata.get("commit") == os.environ["GITHUB_SHA"]
+              and metadata.get("profile") == "legacy"
+              and labels.get("org.opencontainers.image.revision") == os.environ["GITHUB_SHA"]
+              and labels.get("botelier.runtime.profile") == "legacy"
+          )
+          if not valid:
+              raise SystemExit("Checked-image identity or legacy profile mismatch")
+          PY
+      - name: Authenticate to Azure only after authorization and image checks
         uses: azure/login@v2
         with:
           creds: ${{ secrets.AZURE_CREDENTIALS }}
-
-      - name: Install Azure Container Apps CLI extension
-        run: az extension add --name containerapp --upgrade -y
-
-      - name: Log in to Azure Container Registry
+      - name: Authenticate to the existing container registry
         uses: azure/docker-login@v1
         with:
           login-server: ${{ secrets.ACR_LOGIN_SERVER }}
           username: ${{ secrets.ACR_USERNAME }}
           password: ${{ secrets.ACR_PASSWORD }}
-
-      # Build context is repo root so the Dockerfile can COPY both
-      # botelier/backend/ and src/pipecat/ (which lives at repo root level).
-      - name: Build and push Docker image
+      - name: Push that image and select its immutable registry digest
+        id: image
+        env:
+          REGISTRY: ${{ secrets.ACR_LOGIN_SERVER }}
+          IMAGE: voice-legacy:${{ github.sha }}
         run: |
-          IMAGE="${{ secrets.ACR_LOGIN_SERVER }}/botelier-voice"
-          docker build \
-            -f botelier/backend/Dockerfile \
-            -t "$IMAGE:${{ github.sha }}" \
-            -t "$IMAGE:latest" \
-            .
-          docker push "$IMAGE:${{ github.sha }}"
-          docker push "$IMAGE:latest"
-
-      - name: Deploy to Azure Container Apps
+          remote="$REGISTRY/botelier-voice:$GITHUB_SHA"
+          docker tag "$IMAGE" "$remote"
+          docker push "$remote"
+          python - <<'PY'
+          import json, os, re, subprocess
+          repository = os.environ["REGISTRY"] + "/botelier-voice"
+          local = json.loads(subprocess.check_output(
+              ["docker", "image", "inspect", os.environ["IMAGE"]], text=True))[0]
+          pushed = json.loads(subprocess.check_output(
+              ["docker", "image", "inspect", repository + ":" + os.environ["GITHUB_SHA"]],
+              text=True))[0]
+          candidates = [
+              value for value in pushed.get("RepoDigests", [])
+              if re.fullmatch(re.escape(repository) + r"@sha256:[0-9a-f]{64}", value)
+          ]
+          if pushed["Id"] != local["Id"] or len(candidates) != 1:
+              raise SystemExit("Cannot prove the checked image's registry digest")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write("reference=" + candidates[0] + "\n")
+          PY
+      - name: Update the existing app without scaling or routing changes
+        env:
+          APP_NAME: ${{ secrets.ACA_APP_NAME }}
+          RESOURCE_GROUP: ${{ secrets.ACA_RESOURCE_GROUP }}
+          IMAGE_REFERENCE: ${{ steps.image.outputs.reference }}
         run: |
-          # min/max-replicas pinned to 1 on every deploy: call state (CallHandler,
-          # pipeline registry, pre-warm cache) is process-local, so >1 replica
-          # misroutes Twilio callbacks and scale-in kills live calls. Enforcing
-          # it here also brings pre-existing apps (created with max-replicas 10)
-          # into compliance. See scripts/azure-voice-setup.sh.
-          az containerapp update \
-            --name ${{ secrets.ACA_APP_NAME }} \
-            --resource-group ${{ secrets.ACA_RESOURCE_GROUP }} \
-            --image "${{ secrets.ACR_LOGIN_SERVER }}/botelier-voice:${{ github.sha }}" \
-            --min-replicas 1 \
-            --max-replicas 1
-          echo "Deployed scale config:"
-          az containerapp show \
-            --name ${{ secrets.ACA_APP_NAME }} \
-            --resource-group ${{ secrets.ACA_RESOURCE_GROUP }} \
-            --query "properties.template.scale" -o json
-
-      - name: Wait for deployment and verify health
+          az extension add --name containerapp --upgrade -y
+          # Process-local call state still requires exactly one replica.
+          # The reviewer must keep new inbound calls paused through health checks.
+          az containerapp update --name "$APP_NAME" --resource-group "$RESOURCE_GROUP" \
+            --image "$IMAGE_REFERENCE" --min-replicas 1 --max-replicas 1
+      - name: Verify health before the operator restores inbound routing
+        env:
+          APP_NAME: ${{ secrets.ACA_APP_NAME }}
+          RESOURCE_GROUP: ${{ secrets.ACA_RESOURCE_GROUP }}
         run: |
-          APP="${{ secrets.ACA_APP_NAME }}"
-          RG="${{ secrets.ACA_RESOURCE_GROUP }}"
-          FQDN=$(az containerapp show --name "$APP" --resource-group "$RG" \
-                   --query "properties.configuration.ingress.fqdn" -o tsv)
-
-          echo "Polling https://$FQDN/api/health ..."
-          for i in $(seq 1 12); do
-            HTTP=$(curl -s -o /dev/null -w "%{http_code}" "https://$FQDN/api/health" || true)
-            if [ "$HTTP" = "200" ]; then
-              echo "Health check passed (attempt $i)"
+          fqdn=$(az containerapp show --name "$APP_NAME" --resource-group "$RESOURCE_GROUP" \
+            --query properties.configuration.ingress.fqdn -o tsv)
+          test -n "$fqdn"
+          for attempt in $(seq 1 12); do
+            if curl --fail --silent --show-error --max-time 10 "https://$fqdn/api/health"; then
               exit 0
             fi
-            echo "Attempt $i: HTTP $HTTP — waiting 15s..."
-            sleep 15
+            sleep 10
           done
-          echo "Health check did not pass after 3 minutes — check Azure portal logs"
+          echo "Health failed. Keep routing paused and use the reviewed rollback procedure."
           exit 1
