@@ -10,6 +10,12 @@ GitHub `main` in `Levidev15/Botelier2.0`. Only pilot preparation and its offline
 fixtures are included; unrelated unpublished workspace changes are not exported.
 The running application, production Dockerfile, backend requirements, production
 voice source and existing editor are unchanged.
+
+The branch is currently local. GitHub rejected publication because the current
+OAuth authorization lacks `workflow` scope. No candidate branch or CI run was
+created. Reconnect GitHub through Replit's personal integrations and approve the
+requested workflow access before retrying the candidate-only push. Do not use
+the existing production deployment workflow as a substitute.
 Prepared workflow safeguards do not protect GitHub until separately reviewed and
 applied there; the existing production automation remains unchanged.
 
