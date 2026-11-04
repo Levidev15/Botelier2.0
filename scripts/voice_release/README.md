@@ -2,20 +2,18 @@
 
 ## Status
 
-**This document defines the safety checkpoint, not a release approval. Actual
-container, provider-startup and Azure results require separate recorded evidence.**
+**Preparation is not release approval. Actual image, provider-startup and Azure
+results require separate recorded evidence; local imports do not close the gate.**
 
-The CI candidate is isolated on `candidate/azure-flow-image-checks`, based on
-GitHub `main` in `Levidev15/Botelier2.0`. Only pilot preparation and its offline
-fixtures are included; unrelated unpublished workspace changes are not exported.
-The running application, production Dockerfile, backend requirements, production
-voice source and existing editor are unchanged.
+The CI candidate is published on `candidate/azure-flow-image-checks`, based on
+GitHub `main` in `Levidev15/Botelier2.0`. Only pilot preparation and offline fixtures
+are included; unrelated unpublished workspace changes are not exported. The
+running application, production Dockerfile, backend requirements, production voice
+source and existing editor are unchanged.
 
-The branch is currently local. GitHub rejected publication because the current
-OAuth authorization lacks `workflow` scope. No candidate branch or CI run was
-created. Reconnect GitHub through Replit's personal integrations and approve the
-requested workflow access before retrying the candidate-only push. Do not use
-the existing production deployment workflow as a substitute.
+GitHub workflow-file authorization and candidate publication have been verified.
+This does not authorize a merge to `main`, production workflow dispatch, Azure
+provisioning, provider calls or any live traffic change.
 Prepared workflow safeguards do not protect GitHub until separately reviewed and
 applied there; the existing production automation remains unchanged.
 
@@ -110,20 +108,17 @@ The candidate job:
 
 A **candidate-branch push or manual** run additionally retains that exact checked
 image and its image ID, commit and explicit production-ineligibility metadata for
-one day. Main-branch push and PR checks do not retain a large image. This also
-allows the first candidate check without registering a new manual workflow on
-production `main`. If the artifact expires, build and check a new candidate; do
-not silently rebuild under old evidence.
+one day. Main-branch push and PR checks do not retain a large image. If the artifact
+expires, build and check a new candidate; do not silently rebuild under old evidence.
 
 Even a green candidate workflow does not replace the application/provider
 startup and voice-customization checks above. Those must pass before declaring
 the full runtime gate complete or implementing/activating the native adapter.
 
-This workspace cannot execute Docker. Use managed Git and GitHub CLI access for
-the repository and CI; never extract or print credentials. The API connector's
-credential broker may be unavailable even when those managed clients work.
-Record actual image-run results separately rather than inferring them from
-connector status or a successful local import.
+This workspace cannot execute Docker. Container checks run on GitHub Actions.
+Managed Git and the GitHub CLI can work even if the connector SDK is unavailable;
+never extract or print credentials. Record actual run results separately, and
+do not infer image or voice compatibility from successful authorization.
 
 ## Proposed production safeguards — not activated
 
