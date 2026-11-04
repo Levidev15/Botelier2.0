@@ -11,7 +11,7 @@ COPY scripts/voice_release/pilot-constraints.txt ./pilot-constraints.txt
 # URL constraints combined with extras require pip >=26.1 (pypa/pip#12018).
 # Pin the builder's resolver; do not change production or application requirements.
 RUN python -m pip install --no-cache-dir pip==26.3
-RUN pip install --no-cache-dir --prefix=/install \
+RUN mkdir -p /install && pip install --no-cache-dir --prefix=/install \
     --constraint pilot-constraints.txt --report=/install/voice-install-report.json \
     -r requirements.txt \
     && pip freeze --path /install/lib/python3.11/site-packages \
