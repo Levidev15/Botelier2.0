@@ -75,7 +75,11 @@ def load_function_mapper():
 
         database.SessionLocal = forbidden_session
         sys.modules["botelier.database"] = database
-    return importlib.import_module("botelier.voice.function_mapper")
+    # urllib3 probes IPv6 by binding a loopback socket while Twilio imports it.
+    # No networking is available in this trial; declare that capability absent
+    # rather than permitting bind() or swallowing a guard denial.
+    with patch("socket.has_ipv6", False):
+        return importlib.import_module("botelier.voice.function_mapper")
 
 
 @contextmanager

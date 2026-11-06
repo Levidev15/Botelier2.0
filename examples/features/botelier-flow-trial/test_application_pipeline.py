@@ -123,7 +123,10 @@ def test_application_mapper_refresh_replaces_stale_tool_in_actual_live_context()
         result = make_pipeline()
         llm, context = result[2], result[4]
         try:
-            mapper_module = load_function_mapper()
+            # The image host can support IPv6. Import-time capability detection
+            # must still stay offline inside the fixture's I/O boundary.
+            with patch("socket.has_ipv6", True):
+                mapper_module = load_function_mapper()
             mapper = mapper_module.FunctionMapper(
                 call_sid="offline-call", account_id="offline-account",
                 call_handler=SimpleNamespace(call_contexts={"offline-call": context}),

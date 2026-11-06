@@ -37,6 +37,9 @@ image, not this document. The CI log and retained evidence determine pass/fail.
 - OpenAI's OS-header fingerprint uses a fixed test host string. That metadata
   probe otherwise executes `uname` on some hosts. The subprocess guard remains
   enabled, and the actual request builder and JSON serializer are not replaced.
+- During the carrier SDK import only, IPv6 capability is declared absent.
+  Otherwise urllib3 probes it by binding a loopback socket on IPv6-capable hosts.
+  Socket binding remains forbidden; no guard denial is ignored.
 
 The Python guard is not an OS sandbox. CI additionally runs with `--network none`,
 `--read-only`, clean environment variables, read-only test mounts and a temporary
