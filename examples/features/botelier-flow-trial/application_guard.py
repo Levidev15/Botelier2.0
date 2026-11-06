@@ -23,10 +23,12 @@ FORBIDDEN_IMPORTS = (
 
 
 class NoLiveApplicationServices(importlib.abc.MetaPathFinder):
+    forbidden_imports = FORBIDDEN_IMPORTS
+
     def find_spec(self, fullname, path=None, target=None):
         if any(
             fullname == name or fullname.startswith(name + ".")
-            for name in FORBIDDEN_IMPORTS
+            for name in self.forbidden_imports
         ):
             guard.deny("live_application_or_database_import")
         return None
@@ -38,7 +40,7 @@ def application_audit(event, args):
     guard.audit(event, args)
 
 
-def self_test(backend):
+def self_test(backend, forbidden_import="botelier.voice.call_handler"):
     import socket
 
     # Keep the pure-stdlib guard test from running the eager voice initializer.
@@ -51,7 +53,7 @@ def self_test(backend):
         lambda: open(backend / "unsafe-compatibility-output", "w"),
         lambda: subprocess.Popen([sys.executable, "-c", "raise SystemExit(99)"]),
         lambda: __import__("botelier.database"),
-        lambda: __import__("botelier.voice.call_handler"),
+        lambda: __import__(forbidden_import),
     )
     for operation in checks:
         try:
@@ -63,7 +65,12 @@ def self_test(backend):
     print(json.dumps({"guard_self_test": "passed", "expected_denials": 6}))
 
 
-def main():
+def main(
+    *,
+    import_policy=NoLiveApplicationServices,
+    scope="actual_components_not_server_or_live_provider_startup",
+    self_test_import="botelier.voice.call_handler",
+):
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend-root", type=Path, required=True)
     parser.add_argument("--package-root", type=Path, required=True)
@@ -84,11 +91,11 @@ def main():
     sys.dont_write_bytecode = True
     guard.DIAGNOSTICS = args.diagnose
     sys.addaudithook(application_audit)
-    sys.meta_path.insert(0, NoLiveApplicationServices())
+    sys.meta_path.insert(0, import_policy())
     sys.path[:0] = [str(package.parent), str(backend)]
 
     if args.self_test:
-        self_test(backend)
+        self_test(backend, self_test_import)
         return 0
 
     import pipecat
@@ -99,7 +106,7 @@ def main():
     print(json.dumps({
         "application_backend": str(backend),
         "pipecat_package": str(package),
-        "scope": "actual_components_not_server_or_live_provider_startup",
+        "scope": scope,
     }, sort_keys=True))
     result = pytest.main([
         "-q", "--tb=short", "--noconftest", "-p", "no:cacheprovider",

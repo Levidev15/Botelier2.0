@@ -612,6 +612,19 @@ class FirstUserSpeechTracker(FrameProcessor):
         await self.push_frame(frame, direction)
 
 
+class _CallIdleFrameProcessor(IdleFrameProcessor):
+    """Release both the upstream idle timer and base frame-processing tasks."""
+
+    async def cleanup(self):
+        try:
+            await super().cleanup()
+        finally:
+            # Pinned Pipecat's IdleFrameProcessor omits its base cleanup.
+            # Keep the application-owned processor's complete teardown here,
+            # without modifying the verified SDK installation.
+            await FrameProcessor.cleanup(self)
+
+
 class IdleTimeoutTracker:
     """Thin wrapper that builds an IdleFrameProcessor whose callback logs an
     idle_timeout event via an injected CallEventQueue.
@@ -629,7 +642,7 @@ class IdleTimeoutTracker:
         self._event_queue = None
         self._timeout = timeout
         self._cancelled = asyncio.Event()
-        self.processor = IdleFrameProcessor(
+        self.processor = _CallIdleFrameProcessor(
             callback=self._on_idle,
             timeout=timeout,
         )

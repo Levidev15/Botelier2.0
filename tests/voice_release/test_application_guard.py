@@ -20,7 +20,7 @@ class ApplicationGuardTests(unittest.TestCase):
         }
         env.update(extra_env or {})
         args = [sys.executable, "-B", str(TRIAL / script)]
-        if script == "application_guard.py":
+        if script in {"application_guard.py", "lifecycle_guard.py"}:
             args += ["--backend-root", str(ROOT / "botelier/backend")]
         else:
             args += ["--target", "wheel"]
@@ -49,6 +49,21 @@ class ApplicationGuardTests(unittest.TestCase):
         result = self.run_guard(script="guard.py")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(result.stdout)["expected_denials"], 4)
+
+    def test_lifecycle_mode_keeps_network_process_secrets_and_server_database_denied(self):
+        result = self.run_guard(script="lifecycle_guard.py")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["expected_denials"], 6)
+
+    def test_lifecycle_mode_rejects_inherited_credentials_before_import(self):
+        marker = "synthetic-value-not-a-credential"
+        result = self.run_guard(
+            script="lifecycle_guard.py",
+            extra_env={"UNEXPECTED_COMPATIBILITY_CREDENTIAL": marker},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("env -i", result.stderr)
+        self.assertNotIn(marker, result.stderr + result.stdout)
 
 
 if __name__ == "__main__":
