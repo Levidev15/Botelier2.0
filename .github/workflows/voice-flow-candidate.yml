@@ -104,6 +104,39 @@ jobs:
             --package-root /usr/local/lib/python3.11/site-packages/pipecat \
             --tests /ci/examples/features/botelier-flow-trial/test_runtime_gate.py \
             /ci/examples/features/botelier-flow-trial/test_native_contracts.py
+      - name: Exercise actual application voice components in that image, offline
+        id: application_compatibility
+        env:
+          IMAGE: voice-flow-candidate:${{ github.sha }}
+          EVIDENCE: ${{ runner.temp }}/voice-application-evidence
+        run: |
+          mkdir -p "$EVIDENCE"
+          printf '{"commit":"%s","network":"none","server_boot_tested":false}\n' \
+            "$GITHUB_SHA" > "$EVIDENCE/checkpoint.json"
+          docker run --rm --network none --read-only \
+            --tmpfs /tmp:rw,nosuid,nodev,size=256m \
+            -v "$GITHUB_WORKSPACE/examples/features/botelier-flow-trial:/ci/examples/features/botelier-flow-trial:ro" \
+            -v "$RUNNER_TEMP/voice-test-tools:/test-tools:ro" \
+            --entrypoint env "$IMAGE" -i \
+            PATH=/usr/local/bin:/usr/bin:/bin HOME=/tmp NLTK_DATA=/opt/nltk_data \
+            PYTHONPATH=/test-tools PYTHONDONTWRITEBYTECODE=1 \
+            PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 LOGURU_LEVEL=ERROR \
+            python -B /ci/examples/features/botelier-flow-trial/application_guard.py \
+            --backend-root /app \
+            --package-root /usr/local/lib/python3.11/site-packages/pipecat \
+            --tests /ci/examples/features/botelier-flow-trial/test_application_stt.py \
+            /ci/examples/features/botelier-flow-trial/test_application_pipeline.py \
+            /ci/examples/features/botelier-flow-trial/test_application_tts.py \
+            /ci/examples/features/botelier-flow-trial/test_application_terminal.py \
+            2>&1 | tee "$EVIDENCE/application-compatibility.log"
+      - name: Retain application compatibility evidence even on failure
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: voice-application-compatibility-${{ github.sha }}
+          path: ${{ runner.temp }}/voice-application-evidence/
+          retention-days: 7
+          if-no-files-found: ignore
       - name: Export dependency provenance without starting the app
         env:
           IMAGE: voice-flow-candidate:${{ github.sha }}

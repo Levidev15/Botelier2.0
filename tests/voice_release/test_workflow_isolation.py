@@ -63,3 +63,26 @@ class WorkflowIsolationTests(unittest.TestCase):
         self.assertFalse(any(
             step.get("uses", "").startswith("azure/") for step in build["steps"]
         ))
+
+    def test_actual_application_checks_cannot_be_ignored_or_access_network(self):
+        candidate = load("voice-flow-candidate.yml")
+        steps = candidate["jobs"]["candidate"]["steps"]
+        check = next(step for step in steps
+                     if step.get("id") == "application_compatibility")
+        self.assertNotIn("continue-on-error", check)
+        for required in (
+            "--network none", "--read-only", '--entrypoint env "$IMAGE" -i',
+            "application_guard.py", "--backend-root /app",
+            "test_application_terminal.py",
+        ):
+            self.assertIn(required, check["run"])
+        export = next(i for i, step in enumerate(steps)
+                      if step.get("id") == "export_candidate_image")
+        self.assertLess(steps.index(check), export)
+
+    def test_application_failure_evidence_is_retained_without_weakening_gate(self):
+        steps = load("voice-flow-candidate.yml")["jobs"]["candidate"]["steps"]
+        evidence = next(step for step in steps
+                        if step.get("name", "").startswith("Retain application compatibility"))
+        self.assertEqual(evidence["if"], "always()")
+        self.assertTrue(evidence["uses"].startswith("actions/upload-artifact@"))

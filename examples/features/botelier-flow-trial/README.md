@@ -1,8 +1,11 @@
 # Offline Pipecat Flows compatibility trial
 
-This is an **isolated engineering trial**, not a Botelier runtime, migration,
-saved-JSON adapter or production fix. Nothing here is imported by the backend.
-No dependency, application, workflow or deployment setting is changed.
+This is an **isolated engineering trial**, not an activated Botelier runtime,
+saved-JSON adapter or production rollout. The backend does not import this harness.
+The candidate workflow now runs framework-only and actual-application checks.
+The application checkpoint includes one candidate-only fix: importing `ErrorFrame`
+for the custom Deepgram connection-error handlers. Main and production are not
+changed by these checks.
 
 ## Current decision
 
@@ -16,7 +19,9 @@ active voice runtime.
 Wheel-only characterization exercises **real FlowManager, schemas, callbacks,
 frames and LLMContext**, with test doubles for pipeline scheduling and context
 delivery. It makes no model, HTTP/MCP, database, TTS or telephony calls.
-It does not run a real pipeline, LLM service, aggregator or playback transport.
+That framework-only suite does not run a real pipeline, LLM service, aggregator or
+playback transport. The separate application suite exercises the real factories,
+services and selected handlers; see [its scope and limits](APPLICATION_CHECKPOINT.md).
 
 ## Run from the project root
 
@@ -29,7 +34,7 @@ tries to download it. The network guard blocks such attempts.
 ```bash
 TRIAL="$PWD/examples/features/botelier-flow-trial"
 CLEAN=(env -i PATH="$PATH" HOME=/tmp/botelier-native-flow-trial \
-  PYTHONPATH="$PWD/.pythonlibs/lib/python3.11/site-packages" \
+  PYTHONPATH="/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages" \
   PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
   HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \
   DO_NOT_TRACK=1 LOGURU_LEVEL=ERROR NLTK_DATA=/home/runner/nltk_data)
@@ -45,6 +50,10 @@ CLEAN=(env -i PATH="$PATH" HOME=/tmp/botelier-native-flow-trial \
 # Four deliberately denied operations; separate from ordinary zero-denial runs.
 "${CLEAN[@]}" python -B "$TRIAL/guard.py" --target wheel --self-test
 ```
+
+For a different host, replace the explicit site-packages and public tokenizer
+cache paths with existing installations. CI tests the dependencies inside the
+checked candidate image plus a separately mounted pytest installation.
 
 `--diagnose` prints safe import stack locations for denied operations.
 Generated test files stay under `/tmp/botelier-native-flow-trial`.
@@ -80,3 +89,19 @@ four denial paths; ordinary probes/tests must report zero blocked attempts.
 See `.local/tasks/flow-engine-trial-report.md` for the measured result and
 deferred representative-flow requirements. Runtime alignment must be separately
 reviewed and tested before resuming a saved-definition/business adapter.
+
+## Actual application component checkpoint
+
+```bash
+"${CLEAN[@]}" python -B "$TRIAL/application_guard.py" \
+  --backend-root "$PWD/botelier/backend" \
+  --package-root /home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/pipecat \
+  --tests "$TRIAL/test_application_stt.py" "$TRIAL/test_application_pipeline.py" \
+  "$TRIAL/test_application_tts.py" "$TRIAL/test_application_terminal.py"
+```
+
+This command must pass **and** report `APPLICATION_GUARD_BLOCKED_ATTEMPTS=0`.
+A caught guard denial still fails the command. The original framework guard is
+unchanged and continues to reject all application imports. CI adds read-only
+mounts and disabled networking around the application guard and retains its log
+even when a test fails.
