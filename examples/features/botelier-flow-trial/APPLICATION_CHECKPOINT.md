@@ -15,7 +15,7 @@ then imports the actual application code from that same image.
 | Speech → hangup | Actual end-call handler with real `FunctionCallParams`, native direct-speech dispatch, real completion/mark watchers and `_finalize_call_end` | No hangup on enqueue, early stop, completed synthesis alone, or wrong mark. Exactly one hangup/EndFrame after matching playback acknowledgement. Interrupted goodbye does not end the call. No extra LLM generation. |
 | Failure paths | Actual custom Aura/Flux connect-error handlers and carrier mark waiter | Both providers must emit an ErrorFrame and connection-error notification, not a NameError. Unacknowledged carrier marks time out and remove their waiter. |
 
-There are 30 component cases, plus the three lifecycle cases below. Results
+There are 30 component cases, plus the 14 lifecycle cases below. Results
 belong to the exact checked commit and image, not this document. The CI log and
 retained evidence determine pass/fail.
 
@@ -37,6 +37,31 @@ call state and no newly created asynchronous tasks left running.
 
 This is a no-tools/no-MCP, no-recording, cache-miss, Flux STT/OpenAI/Flux TTS
 fixture. It does not certify the remaining call/flow combinations.
+
+## Startup, interruption and retained-callback slice
+
+Eleven additional cases extend the actual coordinator/native-worker harness:
+- Caller hangup before task registration records and consumes its pending
+  cancellation; hangup during provider startup uses the registered worker.
+  Both must terminate and dispose resources without a completed greeting or
+  streaming model request.
+- Hangup while greeting audio is buffered must not mark that speech as heard.
+- Barge-in enabled emits one provider Interrupt and carrier clear, marks the
+  interrupted reply, then answers the next finalized turn once. Disabled
+  interruptions preserve the current speech without clearing or replaying it.
+- Five retained callbacks (LLM response, user turn, interruption, greeting and
+  first speech) cannot recreate state or reopen persistence after shutdown.
+  Each is also invoked during a subsequent real synthetic call with the same
+  SID to check that old callbacks cannot mutate the replacement generation.
+- A separate ownership-input check replaces a running call's capture buffer
+  while its callback scope is still open. Old callbacks must reject that
+  ownership change. Removing only the identity check reproduced stale writes;
+  this is not a claim of full concurrent reconnect-handler certification.
+
+All lifecycle cases require no unexpected error logs, leftover call-created
+tasks or unexpected guard denials. Synthetic usage chunks verify that real
+model-token/TTS usage still reaches the persistence handoff; actual billing
+remains outside this checkpoint.
 
 ## Boundaries replaced by test fixtures
 
@@ -75,6 +100,14 @@ fixture. It does not certify the remaining call/flow combinations.
   a broken input path. Provider transcription and PCM remain synthetic.
 - Greeting disk/HTTP cache access is a forced cache miss. Its actual TTS fallback
   runs; cache-hit/prewarm-bundle and recording paths are not covered.
+- Startup gates are at the greeting-cache/provider socket boundaries. The
+  cancellation tests then complete the fake provider handshake; they do not
+  establish bounded recovery from a permanently stalled external provider.
+  Held speech uses synthetic PCM with its SpeechMetadata withheld until
+  explicit completion or interruption. No production sleep/retry is added.
+- Genuine retained callback functions are invoked as delayed work; their bodies
+  are not copied into test helpers. Any wrongly started tasks are awaited so a
+  regression cannot escape behind fixture teardown.
 
 The Python guard is not an OS sandbox. CI additionally runs with `--network none`,
 `--read-only`, clean environment variables, read-only test mounts and a temporary
@@ -96,6 +129,18 @@ application-owned subclass calls both cleanups, leaving the verified vendor
 files unchanged. Tests require actual task disposal, not just a finished-worker
 flag or stopped event callbacks. The fix remains candidate-only.
 
+The race tests reproduced late callbacks raising KeyError, recreating deleted
+interruption/greeting-task state and starting fresh status I/O. The candidate
+binds those five callbacks to their capture generation and closes their scope
+before final cleanup awaits. Current-call callbacks still capture normal turns,
+greetings and caller speech; delayed old callbacks cannot update a successor.
+
+Pre-start cancellation also exposed native RTVI receiving zero-valued bootstrap
+metrics before its StartFrame. The candidate disables only initial empty metric
+injection. Real service metrics and usage stay enabled, with nonzero synthetic
+LLM token counts and TTS character counts checked at the actual save handoff.
+No vendor source or dependency is modified for either fix.
+
 ## What a pass does not establish
 
 - No full FastAPI server boot, customer database, Azure staging environment,
@@ -103,9 +148,11 @@ flag or stopped event callbacks. The fix remains candidate-only.
 - The continuous synthetic worker path above does not prove real provider,
   carrier playback or production behavior. Authenticated webhook delivery is
   not exercised by calling the handler's cancellation method.
-- Interrupted/direct-prompt/tool transcript reconciliation, early hangup/races,
-  the complete transfer handler, carrier failure recovery, reconnects and every
-  assistant/provider configuration remain to be checked.
+- The interruption slice covers the stated synthetic turn and callbacks, not
+  exhaustive timing races or real acoustics. Direct-prompt/tool transcript
+  reconciliation, permanent provider stalls, exceptional termination, complete
+  transfer handling, carrier recovery, concurrent reconnects and every
+  assistant/provider configuration still need separate checks.
 - API/MCP requests, booking writes, SMS and payment links are not executed.
 - No saved-definition compiler, deterministic native flow controller, UI
   controls, node-order fix or migration is activated.

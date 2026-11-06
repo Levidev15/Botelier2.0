@@ -16,6 +16,8 @@ from application_support import RecordingSocket
 GREETING = "Hello, this is the offline fixture."
 QUESTION = "I need the fixture status."
 ANSWER = "Your fixture is ready."
+CORRECTION = "Actually, check the other fixture."
+REVISED_ANSWER = "The other fixture is ready."
 PRIVATE_PROMPT = "Private fixture instructions. Never read these aloud."
 CALL_SID = "offline-lifecycle-call"
 STREAM_SID = "offline-lifecycle-stream"
@@ -174,29 +176,55 @@ class Carrier:
 
 
 class SynthesizerSocket(RecordingSocket):
+    def __init__(self, hold_turn=None):
+        super().__init__()
+        self.hold_turn = hold_turn
+        self.flush_count = 0
+        self.pending_metadata = None
+
     async def send(self, payload):
         await super().send(payload)
-        if self.sent[-1].get("type") == "Flush":
+        kind = self.sent[-1].get("type")
+        if kind == "Interrupt":
+            # A cancelled provider utterance cannot complete a later context.
+            self.pending_metadata = None
+        elif kind == "Flush":
             # Provider response only: real SDK handles context completion,
             # PCM framing, output timing and BotStoppedSpeakingFrame.
-            self._incoming.put_nowait(b"\0" * 1280)
-            self._incoming.put_nowait({
-                "type": "SpeechMetadata", "audio_duration_ms": 80,
-            })
+            self.flush_count += 1
+            hold = self.flush_count == self.hold_turn
+            duration_ms = 2000 if hold else 80
+            self._incoming.put_nowait(b"\0" * (duration_ms * 16))
+            metadata = {
+                "type": "SpeechMetadata", "audio_duration_ms": duration_ms,
+            }
+            if hold:
+                self.pending_metadata = metadata
+            else:
+                self._incoming.put_nowait(metadata)
+
+    async def complete_speech(self):
+        assert self.pending_metadata is not None, "No provider speech is held"
+        metadata, self.pending_metadata = self.pending_metadata, None
+        await self.deliver(metadata)
 
 
 class Providers:
-    def __init__(self):
+    def __init__(self, *, hold_stt=False, hold_tts_turn=None):
         self.stt = RecordingSocket([{"type": "Connected"}])
-        self.tts = SynthesizerSocket()
+        self.tts = SynthesizerSocket(hold_turn=hold_tts_turn)
         self.stt_connected = asyncio.Event()
         self.tts_connected = asyncio.Event()
+        self.release_stt = asyncio.Event()
+        if not hold_stt:
+            self.release_stt.set()
         self.requests = []
 
     async def connect_stt(self, url, **kwargs):
         if not url.startswith("wss://api.deepgram.com/v2/listen?"):
             guard.deny("unexpected_lifecycle_stt_destination")
         self.stt_connected.set()
+        await self.release_stt.wait()
         return self.stt
 
     async def connect_tts(self, url, **kwargs):
@@ -226,8 +254,12 @@ class Providers:
                 }],
                 "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
             })
+        turn = sum(bool(item.get("stream")) for item in self.requests)
+        if turn > 2:
+            guard.deny("unexpected_lifecycle_model_retry_or_extra_turn")
+        answer = (ANSWER, REVISED_ANSWER)[turn - 1]
         chunks = [
-            {"delta": {"role": "assistant", "content": ANSWER}, "finish_reason": None},
+            {"delta": {"role": "assistant", "content": answer}, "finish_reason": None},
             {"delta": {}, "finish_reason": "stop"},
         ]
         content = "".join(
@@ -236,20 +268,27 @@ class Providers:
                 "choices": [{"index": 0, **chunk}],
             }) + "\n\n"
             for chunk in chunks
-        ) + "data: [DONE]\n\n"
+        )
+        content += "data: " + json.dumps({
+            **base, "object": "chat.completion.chunk", "choices": [],
+            "usage": {
+                "prompt_tokens": 11, "completion_tokens": 7, "total_tokens": 18,
+            },
+        }) + "\n\ndata: [DONE]\n\n"
         return httpx.Response(
             200, headers={"content-type": "text/event-stream"}, content=content,
         )
 
-    async def user_turn(self):
-        common = {
-            "type": "TurnInfo", "turn_index": 0,
+    async def user_event(self, event, text="", turn_index=0):
+        await self.stt.deliver({
+            "type": "TurnInfo", "turn_index": turn_index, "event": event,
+            "transcript": text,
             "audio_window_start": 0.0, "audio_window_end": 1.0,
             "words": [
-                {"word": word, "confidence": 0.99} for word in QUESTION.split()
+                {"word": word, "confidence": 0.99} for word in text.split()
             ],
-        }
-        await self.stt.deliver(
-            {**common, "event": "StartOfTurn", "transcript": ""},
-            {**common, "event": "EndOfTurn", "transcript": QUESTION},
-        )
+        })
+
+    async def user_turn(self, text=QUESTION, turn_index=0, *, final=True):
+        await self.user_event("StartOfTurn", turn_index=turn_index)
+        await self.user_event("EndOfTurn" if final else "Update", text, turn_index)

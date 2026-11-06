@@ -3,7 +3,7 @@
 import asyncio
 from contextlib import ExitStack, suppress
 import importlib
-from unittest.mock import AsyncMock, patch
+from unittest.mock import patch
 
 import httpx
 
@@ -12,15 +12,25 @@ from lifecycle_io import CALL_SID, STREAM_SID, Carrier, Providers, Records
 
 
 class OfflineCall:
-    def __init__(self):
+    def __init__(
+        self, *, handler=None, hold_greeting=False, hold_stt=False,
+        hold_tts_turn=None, interruptions=True,
+    ):
         load_function_mapper()
         self.module = importlib.import_module("botelier.voice.call_handler")
-        self.handler = self.module.CallHandler()
+        self.handler = handler if handler is not None else self.module.CallHandler()
         self.records = Records()
+        self.records.assistant.allow_interruptions = interruptions
         self.carrier = Carrier()
-        self.providers = Providers()
+        self.providers = Providers(hold_stt=hold_stt, hold_tts_turn=hold_tts_turn)
+        self.greeting_requested = asyncio.Event()
+        self.release_greeting = asyncio.Event()
+        if not hold_greeting:
+            self.release_greeting.set()
         self.started = asyncio.Event()
         self.finished = asyncio.Event()
+        self.callbacks = {}
+        self.errors = []
         self.created = None
         self.queue = None
         self.run_task = None
@@ -29,6 +39,11 @@ class OfflineCall:
 
     async def __aenter__(self):
         module = self.module
+        sink = module.logger.add(
+            lambda message: self.errors.append(message.record["message"]),
+            level="ERROR",
+        )
+        self.patches.callback(module.logger.remove, sink)
         database = importlib.import_module("botelier.database")
         flux = importlib.import_module("pipecat.services.deepgram.flux.stt")
         initial_session = self.records.session()
@@ -36,6 +51,11 @@ class OfflineCall:
 
         def factory(*args, **kwargs):
             assert initial_session.closed, "Setup DB session survived into the worker"
+            self.callbacks = {
+                name: kwargs[name] for name in (
+                    "on_llm_response", "on_user_turn", "on_interruption",
+                )
+            }
             result = real_factory(*args, **kwargs)
             self.created = result
 
@@ -57,6 +77,11 @@ class OfflineCall:
         async def http_boundary(transport, request):
             return await self.providers.http(request)
 
+        async def greeting_cache(**kwargs):
+            self.greeting_requested.set()
+            await self.release_greeting.wait()
+            return None
+
         # complete_call is synchronous; preserve its worker-thread boundary.
         def complete(logger, **kwargs):
             return self.records.complete_call(logger, **kwargs)
@@ -66,7 +91,7 @@ class OfflineCall:
             (module, "SessionLocal", self.records.session),
             (module.CallHandler, "_get_api_keys", lambda _: dict(API_KEYS)),
             (module.CallLogger, "complete_call", complete),
-            (module, "get_or_generate_greeting_audio", AsyncMock(return_value=None)),
+            (module, "get_or_generate_greeting_audio", greeting_cache),
             (module.VoiceEngineFactory, "create_pipeline", factory),
             (flux, "websocket_connect", self.providers.connect_stt),
             (httpx.AsyncHTTPTransport, "handle_async_request", http_boundary),
@@ -117,8 +142,20 @@ class OfflineCall:
             if task not in self.baseline_tasks and not task.done()
         ]
 
+    def assert_clean(self):
+        assert self.created[1].has_finished()
+        assert not self.handler.is_pipeline_active(CALL_SID)
+        assert all(session.closed for session in self.records.sessions)
+        for name, state in vars(self.handler).items():
+            if isinstance(state, dict):
+                assert CALL_SID not in state, f"Leaked coordinator state: {name}"
+        assert self.remaining_tasks() == [], "Call left background tasks running"
+        assert not self.errors, f"Call logged unexpected errors: {self.errors}"
+
     async def __aexit__(self, *exc):
         try:
+            self.release_greeting.set()
+            self.providers.release_stt.set()
             if self.carrier.stream_task is not None:
                 self.carrier.stream_task.cancel()
                 with suppress(asyncio.CancelledError):

@@ -79,8 +79,12 @@ def test_real_coordinator_worker_runs_a_turn_saves_transcript_and_cleans_up(endi
             assert call.queue.is_stopped
             assert call.queue._task is None
             assert all(session.closed for session in call.records.sessions)
+            assert call.records.call.caller_spoke is True
             assert len(call.records.saved) == 1
             assert call.records.saved[0]["call_sid"] == CALL_SID
+            assert call.records.saved[0]["llm_prompt_tokens"] == 11
+            assert call.records.saved[0]["llm_completion_tokens"] == 7
+            assert call.records.saved[0]["tts_characters"] > 0
             transcript = call.records.saved[0]["transcript"]
             assert [(item["role"], item["content"]) for item in transcript] == [
                 ("assistant", GREETING), ("user", QUESTION), ("assistant", ANSWER),
@@ -91,5 +95,5 @@ def test_real_coordinator_worker_runs_a_turn_saves_transcript_and_cleans_up(endi
             assert not any(
                 item["event_type"] == "pipeline_error" for item in call.records.events
             )
-            assert call.remaining_tasks() == [], "Call left background tasks running"
+            call.assert_clean()
     asyncio.run(scenario())

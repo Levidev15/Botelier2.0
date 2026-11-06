@@ -435,6 +435,7 @@ class CallHandler:
             4. Create FastAPIWebsocketTransport with ALREADY-ACCEPTED websocket
             5. Build pipeline and run (Pipecat handles remaining messages)
         """
+        _capture_open = False
         try:
             logger.info(f"📞 Call {call_sid}: {to_number}")
 
@@ -1144,8 +1145,25 @@ class CallHandler:
             )
 
             # 6. Create Pipecat pipeline with function calling support
+            # Retained processor callbacks belong to this call generation,
+            # not merely its SID. Shutdown closes the scope before any await;
+            # a replacement pipeline must never receive this one's late data.
+            _response_buffer = []
+            _user_turn_buffer = []
+            self.pending_responses[call_sid] = _response_buffer
+            self.user_turn_timestamps[call_sid] = _user_turn_buffer
+            _capture_open = True
+
+            def _capture_is_current():
+                return (
+                    _capture_open
+                    and self.pending_responses.get(call_sid) is _response_buffer
+                )
+
             # Create interruption callback to track interrupted responses
             def on_interruption(content: str):
+                if not _capture_is_current():
+                    return
                 self.mark_response_interrupted(call_sid, content)
 
             # Monotonic clock reference used for per-stage latency logging in the
@@ -1158,13 +1176,14 @@ class CallHandler:
             # can (a) annotate committed assistant messages with their generation
             # timestamps, and (b) recover responses the LLM context never committed
             # (caller hung up mid-generation).
-            self.pending_responses[call_sid] = []
             self.action_timestamps[call_sid] = []
 
             def on_llm_response(text: str, timestamp: datetime):
+                if not _capture_is_current():
+                    return
                 start = self.call_start_times.get(call_sid)
                 elapsed_s = (timestamp - start).total_seconds() if start else 0.0
-                self.pending_responses[call_sid].append(
+                _response_buffer.append(
                     {
                         "text": text,
                         "elapsed_s": elapsed_s,
@@ -1177,12 +1196,12 @@ class CallHandler:
             # Create user turn capture callback.
             # Called by UserTurnCapture for each finalized user utterance, giving us
             # the elapsed time from call start when the STT finalized each turn.
-            self.user_turn_timestamps[call_sid] = []
-
             def on_user_turn(text: str, timestamp: datetime):
+                if not _capture_is_current():
+                    return
                 start = self.call_start_times.get(call_sid)
                 elapsed_s = (timestamp - start).total_seconds() if start else 0.0
-                self.user_turn_timestamps[call_sid].append(
+                _user_turn_buffer.append(
                     {
                         "text": text,
                         "elapsed_s": elapsed_s,
@@ -1404,6 +1423,8 @@ class CallHandler:
                 _handler = self  # capture for closure — track task handle per call
 
                 async def _on_greeting_completed():
+                    if not _capture_is_current():
+                        return
                     # Clear STT mute gate the moment the greeting finishes playing.
                     # This is the exact point MuteUntilFirstBotComplete releases and
                     # STT begins accepting audio. VadSuspicionTracker can now fire
@@ -1457,6 +1478,8 @@ class CallHandler:
                 _speech_call_sid = call_sid  # capture for closure
 
                 async def _on_first_user_speech():
+                    if not _capture_is_current():
+                        return
                     def _sync_mark_caller_spoke():
                         from ..services.call_logger import CallLogger as _CallLogger
 
@@ -1693,6 +1716,7 @@ class CallHandler:
                 except Exception as save_error:
                     logger.error(f"Failed to save transcript on error: {save_error}")
         finally:
+            _capture_open = False
             # Stop the idle timer immediately — must run before flush_and_stop() to
             # close the asyncio scheduling window between runner.run(task) returning
             # and the first await inside flush_and_stop().  IdleTimeoutTracker.stop()

@@ -3093,6 +3093,10 @@ class VoiceEngineFactory:
             params=PipelineParams(
                 enable_metrics=True,
                 enable_usage_metrics=True,
+                # A pre-start cancel releases the native startup wait before
+                # RTVI is ready. Do not inject zero-value bootstrap metrics;
+                # real per-service timing and usage metrics remain enabled.
+                send_initial_empty_metrics=False,
             ),
             observers=[usage_observer],
         )
