@@ -363,9 +363,11 @@ class CallHandler:
         self.call_mappers: dict[str, FunctionMapper] = {}
         self.call_contexts: dict[str, Any] = {}
         self.call_start_times: dict[str, datetime] = {}
+        self.greeting_timestamps: dict[str, dict] = {}
         self.interrupted_responses: dict[
             str, set
         ] = {}  # call_sid -> set of interrupted message contents
+        self.response_interruptions: dict[str, list[dict]] = {}
         self.pending_responses: dict[
             str, list[dict]
         ] = {}  # call_sid -> list of {text, timestamp} per LLM turn (ALL turns, for timestamp lookup + incomplete recovery)
@@ -1155,6 +1157,7 @@ class CallHandler:
             _user_turn_buffer = []
             self.pending_responses[call_sid] = _response_buffer
             self.user_turn_timestamps[call_sid] = _user_turn_buffer
+            self.response_interruptions[call_sid] = []
             _capture_open = True
 
             def _capture_is_current():
@@ -1630,6 +1633,12 @@ class CallHandler:
                         f"Greeting cache failed, falling back to TTSSpeakFrame: {_cache_err}"
                     )
 
+            self.greeting_timestamps[call_sid] = {
+                "text": config.greeting_message,
+                "elapsed_s": (
+                    datetime.utcnow() - self.call_start_times[call_sid]
+                ).total_seconds(),
+            }
             if not _greeting_played_from_cache:
                 await task.queue_frames([TTSSpeakFrame(text=config.greeting_message)])
 
@@ -1818,8 +1827,10 @@ class CallHandler:
                 del self.call_contexts[call_sid]
             if call_sid in self.call_start_times:
                 del self.call_start_times[call_sid]
+            self.greeting_timestamps.pop(call_sid, None)
             if call_sid in self.interrupted_responses:
                 del self.interrupted_responses[call_sid]
+            self.response_interruptions.pop(call_sid, None)
             if call_sid in self.pending_responses:
                 del self.pending_responses[call_sid]
             if call_sid in self.user_turn_timestamps:
@@ -1976,6 +1987,15 @@ class CallHandler:
             # matching in _extract_transcript is prefix-tolerant in both
             # directions — a fixed-length key can never match reliably.
             self.interrupted_responses[call_sid].add(content.strip())
+            # Text alone cannot identify a particular utterance: a later reply
+            # may repeat the same words, or share the same opening sentence.
+            events = getattr(self, "response_interruptions", {}).get(call_sid)
+            if events is not None:
+                start = self.call_start_times.get(call_sid)
+                events.append({
+                    "text": content.strip(),
+                    "elapsed_s": (datetime.utcnow() - start).total_seconds() if start else 0.0,
+                })
             logger.debug(f"🛑 Marked interrupted: {content.strip()[:50]}...")
 
     async def _create_agent_config(self, assistant: Assistant) -> VoiceAgentConfig:
@@ -2646,54 +2666,88 @@ You have access to the following Q&A knowledge base. Use this information to ans
                 total = max(0, int(elapsed_s))
                 return f"{total // 60}:{total % 60:02d}"
 
-            # Build text-prefix → elapsed-timestamp lookup maps from the capture
-            # buffers.  Matching by the first 80 chars of text is reliable: two
-            # different messages are extremely unlikely to share the same 80-char
-            # prefix within a single call.
             captured_user = self.user_turn_timestamps.get(call_sid, [])
             captured_assistant = self.pending_responses.get(call_sid, [])
+            captures = {"user": captured_user, "assistant": captured_assistant}
+            consumed = {"user": set(), "assistant": set()}
+            interruption_events = getattr(self, "response_interruptions", {}).get(call_sid)
 
-            # Defect C fix: build four lookup maps — display-timestamp and
-            # float-elapsed, one pair per role — with first-occurrence semantics
-            # so duplicate 80-char prefixes (e.g. two partial VAD captures that
-            # start with the same text) always resolve to the earliest capture.
-            # The old code built user_ts_map / assistant_ts_map but never read
-            # them; the annotation loop below re-scanned the raw list and could
-            # pick up a stale duplicate.  Using the maps enforces the dedup.
-            user_ts_map: dict[str, str] = {}
-            user_elapsed_map: dict[str, float] = {}
-            for entry in captured_user:
-                key = entry["text"][:80].lower()
-                if key not in user_ts_map:
-                    user_ts_map[key] = _fmt_elapsed(entry["elapsed_s"])
-                    user_elapsed_map[key] = entry["elapsed_s"]
+            def _same_prefix(first: str, second: str) -> bool:
+                first, second = first.strip().lower(), second.strip().lower()
+                shared = min(len(first), len(second), 80)
+                return first == second or (
+                    shared >= 12 and first[:shared] == second[:shared]
+                )
 
-            assistant_ts_map: dict[str, str] = {}
-            assistant_elapsed_map: dict[str, float] = {}
-            for entry in captured_assistant:
-                key = entry["text"][:80].lower()
-                if key not in assistant_ts_map:
-                    assistant_ts_map[key] = _fmt_elapsed(entry["elapsed_s"])
-                    assistant_elapsed_map[key] = entry["elapsed_s"]
+            def _find_capture(role: str, text: str):
+                # Consume occurrences, not text keys. Prefer the full text so
+                # different endings after a shared 80-character prefix stay
+                # separate; retain prefix fallback for spoken-only commits.
+                available = [
+                    (index, capture)
+                    for index, capture in enumerate(captures[role])
+                    if index not in consumed[role]
+                ]
+                exact = [
+                    pair for pair in available
+                    if pair[1]["text"].strip().lower() == text.strip().lower()
+                ]
+                matching = exact or [
+                    pair for pair in available if _same_prefix(pair[1]["text"], text)
+                ]
+                if not matching:
+                    return None
+                index, capture = matching[0]
+                consumed[role].add(index)
+                return index, capture
+
+            def _timed_interruption(text: str, start: float) -> bool:
+                if interruption_events is None:
+                    return _matches_interrupted(text)
+                end = min(
+                    (
+                        item["elapsed_s"] for item in captured_assistant
+                        if item["elapsed_s"] > start
+                    ),
+                    default=float("inf"),
+                )
+                return any(
+                    start <= event["elapsed_s"] < end
+                    and _same_prefix(text, event["text"])
+                    for event in interruption_events
+                )
+
+            def _capture_was_interrupted(index: int) -> bool:
+                capture = captured_assistant[index]
+                return _timed_interruption(capture["text"], capture["elapsed_s"])
+
+            # The opening greeting bypasses LLM capture. Give only its actual
+            # committed first entry its own anchor, rather than letting it
+            # consume a later LLM reply that happens to repeat the same words.
+            opening = getattr(self, "greeting_timestamps", {}).get(call_sid)
+            if opening and transcript:
+                first = transcript[0]
+                if (
+                    first["role"] == "assistant"
+                    and first["content"] == opening["text"]
+                ):
+                    first["_elapsed_s"] = opening["elapsed_s"]
+                    first["timestamp"] = _fmt_elapsed(opening["elapsed_s"])
+                    first["interrupted"] = _timed_interruption(
+                        opening["text"], opening["elapsed_s"],
+                    )
 
             for msg in transcript:
                 if msg.get("timestamp"):
                     continue  # already has a timestamp — leave it alone
                 content = msg.get("content", "")
-                key = content[:80].lower()
-                # Defect C fix: use the pre-built maps (O(1), dedup-safe)
-                # instead of a raw first-match scan of the capture list.
-                if msg["role"] == "user":
-                    if key in user_ts_map:
-                        msg["timestamp"] = user_ts_map[key]
-                        # Keep this transient value only while ordering the
-                        # transcript. CallLogger persists the display timestamp,
-                        # never internal elapsed-time metadata.
-                        msg["_elapsed_s"] = user_elapsed_map[key]
-                else:
-                    if key in assistant_ts_map:
-                        msg["timestamp"] = assistant_ts_map[key]
-                        msg["_elapsed_s"] = assistant_elapsed_map[key]
+                match = _find_capture(msg["role"], content)
+                if match is not None:
+                    index, capture = match
+                    msg["timestamp"] = _fmt_elapsed(capture["elapsed_s"])
+                    msg["_elapsed_s"] = capture["elapsed_s"]
+                    if msg["role"] == "assistant":
+                        msg["interrupted"] = _capture_was_interrupted(index)
 
             # Merge in extra_messages BEFORE the global sort below (Task #534)
             # so they take part in the same chronological ordering as every
@@ -2715,10 +2769,11 @@ You have access to the following Q&A knowledge base. Use this information to ans
                         and "_elapsed_s" not in _extra
                         and not _extra.get("timestamp")
                     ):
-                        _ek = _extra.get("content", "")[:80].lower()
-                        if _ek in assistant_ts_map:
-                            _extra["_elapsed_s"] = assistant_elapsed_map[_ek]
-                            _extra["timestamp"] = assistant_ts_map[_ek]
+                        match = _find_capture("assistant", _extra.get("content", ""))
+                        if match is not None:
+                            _, capture = match
+                            _extra["_elapsed_s"] = capture["elapsed_s"]
+                            _extra["timestamp"] = _fmt_elapsed(capture["elapsed_s"])
                 transcript.extend(extra_messages)
 
             # --- Global sort ---
@@ -2802,18 +2857,21 @@ You have access to the following Q&A knowledge base. Use this information to ans
             if captured_assistant:
                 last_capture = captured_assistant[-1]
                 captured_text = last_capture["text"]
-                captured_key = captured_text[:80].lower()
                 captured_elapsed = last_capture["elapsed_s"]
 
                 # Skip if the response was already committed to the LLM context.
-                already_committed = any(
-                    entry["role"] == "assistant"
-                    and entry.get("content", "")[:80].lower() == captured_key
-                    for entry in transcript
+                already_committed = (
+                    len(captured_assistant) - 1 in consumed["assistant"]
+                    or any(
+                        entry["role"] == "assistant"
+                        and entry.get("content", "").strip().lower() == captured_text.strip().lower()
+                        and entry.get("_elapsed_s") == captured_elapsed
+                        for entry in transcript
+                    )
                 )
 
                 if not already_committed:
-                    if _matches_interrupted(captured_text):
+                    if _capture_was_interrupted(len(captured_assistant) - 1):
                         # Generated but interruption cancelled it before it was
                         # spoken; appending would show the AI "saying" something
                         # the caller never heard — skip.

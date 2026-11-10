@@ -142,6 +142,7 @@ jobs:
           docker run --rm --network none --read-only \
             --tmpfs /tmp:rw,nosuid,nodev,size=256m \
             -v "$GITHUB_WORKSPACE/examples/features/botelier-flow-trial:/ci/examples/features/botelier-flow-trial:ro" \
+            -v "$GITHUB_WORKSPACE/botelier/backend/tests:/ci/legacy-transcripts:ro" \
             -v "$RUNNER_TEMP/voice-test-tools:/test-tools:ro" \
             --entrypoint env "$IMAGE" -i \
             PATH=/usr/local/bin:/usr/bin:/bin HOME=/tmp NLTK_DATA=/opt/nltk_data \
@@ -154,6 +155,13 @@ jobs:
             --tests /ci/examples/features/botelier-flow-trial/test_application_lifecycle.py \
             /ci/examples/features/botelier-flow-trial/test_application_lifecycle_races.py \
             /ci/examples/features/botelier-flow-trial/test_application_failures.py \
+            /ci/examples/features/botelier-flow-trial/test_application_transcripts.py \
+            /ci/legacy-transcripts/test_interrupted_transcript.py::TestMarkResponseInterrupted \
+            /ci/legacy-transcripts/test_interrupted_transcript.py::TestInterruptedMarking \
+            /ci/legacy-transcripts/test_interrupted_transcript.py::TestIncompleteRecoverySkip \
+            /ci/legacy-transcripts/test_interrupted_transcript.py::TestTranscriptOrdering \
+            /ci/legacy-transcripts/test_interrupted_transcript.py::TestDefectFixes \
+            /ci/legacy-transcripts/test_flow_speech_transcript_ordering.py \
             2>&1 | tee "$EVIDENCE/application-lifecycle.log"
       - name: Retain application compatibility evidence even on failure
         if: always()

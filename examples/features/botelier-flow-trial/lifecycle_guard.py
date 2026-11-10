@@ -15,9 +15,16 @@ class LifecycleServices(NoLiveApplicationServices):
     )
 
 
+def prepare_tests():
+    from application_support import load_function_mapper
+
+    load_function_mapper()
+
+
 if __name__ == "__main__":
     raise SystemExit(main(
         import_policy=LifecycleServices,
         scope="real_call_coordinator_and_worker_not_server_or_live_providers",
         self_test_import="botelier.api",
+        prepare_tests=prepare_tests,
     ))

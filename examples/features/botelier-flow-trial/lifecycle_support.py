@@ -15,7 +15,7 @@ from lifecycle_io import CALL_SID, STREAM_SID, Carrier, Providers, Records
 class OfflineCall:
     def __init__(
         self, *, handler=None, hold_greeting=False, hold_stt=False,
-        hold_tts_turn=None, interruptions=True, providers=None,
+        hold_tts_turn=None, interruptions=True, providers=None, tool_setup=None,
     ):
         load_function_mapper()
         self.module = importlib.import_module("botelier.voice.call_handler")
@@ -26,6 +26,7 @@ class OfflineCall:
         self.providers = providers if providers is not None else Providers(
             hold_stt=hold_stt, hold_tts_turn=hold_tts_turn,
         )
+        self.tool_setup = tool_setup
         self.greeting_requested = asyncio.Event()
         self.release_greeting = asyncio.Event()
         if not hold_greeting:
@@ -73,6 +74,13 @@ class OfflineCall:
                     "on_llm_response", "on_user_turn", "on_interruption",
                 )
             }
+            if self.tool_setup is not None:
+                # A synthetic catalogue, not a replacement mapper or runner.
+                # Never overwrite tools loaded by the actual coordinator.
+                assert not kwargs.get("function_schemas")
+                assert not kwargs.get("function_handlers")
+                schemas, handlers = self.tool_setup(self)
+                kwargs.update(function_schemas=schemas, function_handlers=handlers)
             result = real_factory(*args, **kwargs)
             self.created = result
 

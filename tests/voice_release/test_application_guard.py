@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import unittest
 
 
@@ -64,6 +65,39 @@ class ApplicationGuardTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("env -i", result.stderr)
         self.assertNotIn(marker, result.stderr + result.stdout)
+
+    def test_fixture_preparation_runs_under_database_and_server_import_denial(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            package = Path(temporary) / "pipecat"
+            package.mkdir()
+            (package / "__init__.py").write_text("# Guard-unit fixture, not runtime evidence.\n")
+            for target in ("botelier.database", "botelier.api"):
+                with self.subTest(target=target):
+                    program = (
+                        "from application_guard import main\n"
+                        "from lifecycle_guard import LifecycleServices\n"
+                        "def prepare():\n"
+                        f"    __import__({target!r})\n"
+                        "main(import_policy=LifecycleServices, prepare_tests=prepare)\n"
+                    )
+                    result = subprocess.run(
+                        [
+                            sys.executable, "-B", "-c", program,
+                            "--backend-root", str(ROOT / "botelier/backend"),
+                            "--package-root", str(package), "--tests", "unused.py",
+                        ],
+                        env={
+                            "PATH": os.environ["PATH"],
+                            "PYTHONPATH": str(TRIAL),
+                            "PYTHONDONTWRITEBYTECODE": "1",
+                        },
+                        text=True, capture_output=True, timeout=20, check=False,
+                    )
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(
+                        "OFFLINE TRIAL GUARD: live_application_or_database_import",
+                        result.stderr,
+                    )
 
 
 if __name__ == "__main__":

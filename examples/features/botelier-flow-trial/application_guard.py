@@ -70,6 +70,7 @@ def main(
     import_policy=NoLiveApplicationServices,
     scope="actual_components_not_server_or_live_provider_startup",
     self_test_import="botelier.voice.call_handler",
+    prepare_tests=None,
 ):
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend-root", type=Path, required=True)
@@ -101,6 +102,10 @@ def main(
     import pipecat
     if Path(pipecat.__file__).resolve().parent != package:
         raise RuntimeError("The voice tests loaded a different Pipecat source")
+    # Trusted fixture setup runs under the already-installed I/O/import guards,
+    # after environment/source validation and before pytest can import tests.
+    if prepare_tests is not None:
+        prepare_tests()
     import pytest
 
     print(json.dumps({

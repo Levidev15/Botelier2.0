@@ -101,13 +101,13 @@ def test_persistent_stt_startup_failure_exits_after_one_retry(interruptions):
 
 @pytest.mark.parametrize("fault,error,expected_errors", [
     ("llm_rejected_once", "Error during completion: Error code: 400", [
-        r"OpenAILLMService#\d+ exception \(.+:\d+\): "
+        r"SpeechPreservingOpenAILLMService#\d+ exception \(.+:\d+\): "
         r"Error during completion: Error code: 400 - \{'error': "
         r"\{'message': 'offline model request refused', 'type': 'invalid_request_error', "
         r"'param': None, 'code': 'offline_refusal'\}\}",
     ]),
     ("llm_stream_timeout", "LLM completion timeout", [
-        r"OpenAILLMService#\d+ exception \(.+:\d+\): LLM completion timeout",
+        r"SpeechPreservingOpenAILLMService#\d+ exception \(.+:\d+\): LLM completion timeout",
     ]),
 ])
 def test_failed_model_turn_is_not_invented_and_next_final_turn_can_recover(fault, error, expected_errors):

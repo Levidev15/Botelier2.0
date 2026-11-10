@@ -248,7 +248,8 @@ class LLMResponseCapture(FrameProcessor):
     ``on_llm_response(text, timestamp)`` is called.  The handler stores the
     response in a per-call buffer that is consulted at transcript-save time to
     recover responses that the LLM context never committed (caller hung up
-    mid-generation).
+    mid-generation). The timestamp anchors the response start: a tool may
+    execute before the response-end frame drains through the pipeline.
 
     Uses a TextFrame check (superclass of LLMTextFrame) gated by _in_response so
     it works across all LLM providers that may emit generic TextFrame tokens.
@@ -265,6 +266,7 @@ class LLMResponseCapture(FrameProcessor):
         super().__init__(**kwargs)
         self._buffer: str = ""
         self._in_response: bool = False
+        self._response_timestamp = None
         self._on_llm_response = on_llm_response
         self._on_llm_start = on_llm_start
         self._call_start_mono = call_start_mono
@@ -275,8 +277,11 @@ class LLMResponseCapture(FrameProcessor):
         await super().process_frame(frame, direction)
 
         if isinstance(frame, LLMFullResponseStartFrame):
+            from datetime import datetime as _dt
+
             self._buffer = ""
             self._in_response = True
+            self._response_timestamp = _dt.utcnow()
             self._llm_turn_start_mono = time.monotonic()
             self._timing_state["t_llm_start"] = self._llm_turn_start_mono
             _elapsed_ms = (
@@ -323,7 +328,7 @@ class LLMResponseCapture(FrameProcessor):
                 try:
                     from datetime import datetime as _dt
 
-                    self._on_llm_response(text, _dt.utcnow())
+                    self._on_llm_response(text, self._response_timestamp or _dt.utcnow())
                 except Exception:
                     logger.exception("LLMResponseCapture: error in on_llm_response callback")
 
@@ -1988,7 +1993,7 @@ class VoiceEngineFactory:
 
         if provider == "openai":
             from pipecat.services.openai.base_llm import BaseOpenAILLMService
-            from pipecat.services.openai.llm import OpenAILLMService
+            from .openai_stream import SpeechPreservingOpenAILLMService as OpenAILLMService
 
             # Task #106 — explicit cache routing.
             #

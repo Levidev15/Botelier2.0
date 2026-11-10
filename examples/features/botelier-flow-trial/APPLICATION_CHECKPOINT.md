@@ -15,7 +15,9 @@ then imports the actual application code from that same image.
 | Speech → hangup | Actual end-call handler with real `FunctionCallParams`, native direct-speech dispatch, real completion/mark watchers and `_finalize_call_end` | No hangup on enqueue, early stop, completed synthesis alone, or wrong mark. Exactly one hangup/EndFrame after matching playback acknowledgement. Interrupted goodbye does not end the call. No extra LLM generation. |
 | Failure paths | Actual custom Aura/Flux connect-error handlers and carrier mark waiter | Both providers must emit an ErrorFrame and connection-error notification, not a NameError. Unacknowledged carrier marks time out and remove their waiter. |
 
-There are 30 component cases, plus 30 lifecycle cases below. Results
+There are 30 component cases, 41 lifecycle cases and 28 selected legacy
+extractor/mapper regression cases below. The lifecycle command runs the latter
+two groups together; it must not be described as 69 whole-call cases. Results
 belong to the exact checked commit and image, not this document. The CI log and
 retained evidence determine pass/fail.
 
@@ -150,6 +152,43 @@ provider sockets and warmup clients, no surviving call-created tasks, closed
 sessions/event queues, removed call state and zero unexpected guard denials.
 All provider/carrier audio and records remain synthetic.
 
+## Offline transcript slice
+
+Eleven new cases run through the real coordinator and native worker:
+- Repeated caller and assistant utterances retain their individual chronological
+  positions. The opening greeting has its own anchor even when a later model
+  reply intentionally repeats its words.
+- Interrupting one reply marks that occurrence, not a later completed reply
+  with identical words or the same long opening sentence.
+- The real legacy flow trigger speaks its initial messages with and without a
+  model preface. Direct prompts precede the next caller answer, occur once and
+  suppress an unnecessary post-function model completion.
+- A preface plus a tool call, result and model narration retain their order.
+  Model transport fixtures cover separate deltas, one delta containing both
+  text and a tool call, and usage attached to that mixed delta. Usage is counted
+  once. Raw tool-result data reaches the model but not speech or conversation
+  transcript text.
+- Hangup after a mixed delta while its HTTP stream is blocked cancels and closes
+  the real SDK/HTTP reader. The fault gate remains unset, no unfinished tool is
+  executed, and no completed result is fabricated.
+
+The synthetic tool catalogue is supplied at the factory configuration boundary,
+without replacing the factory, native dispatcher or timestamp wrapper. Direct
+flow speech executes actual `FunctionMapper` and ephemeral `FlowExecutor`
+handlers. Lookup business data and persistence are fakes. This does not certify
+tool-catalogue authorization/loading, durable flow snapshots or API/MCP calls.
+
+The same guarded image run also exercises 28 selected existing regression cases
+from the interrupted-transcript and flow-speech-ordering tests. Those tests use
+assembled contexts and/or fake business results: they are extractor/mapper
+regressions, not additional actual-worker replays. Their asynchronous bare
+processor tests are not included; live interruption is covered by the worker
+cases instead. No legacy assertion is weakened.
+Fixture preparation runs before collection but only after environment/source
+validation and installation of the existing I/O/import guards. A separate
+stdlib safety regression proves database and server imports are still denied
+during that preparation; collection order does not justify allowing either.
+
 ## Minimal candidate application changes
 
 Both custom Deepgram connection-error paths referenced `ErrorFrame` without
@@ -190,6 +229,21 @@ operation deadline. Idle/terminal callback shutdown remains before the first
 cleanup await. Warmup failure stays optional and never substitutes for a real
 conversation turn.
 
+Transcript checks reproduced text-key timestamp reuse, a call-wide interrupted
+text set labelling later replies, opening-greeting collisions, and response-end
+timestamps moving a preface behind the tool it introduced. The candidate consumes
+capture occurrences, records timed interruption events, separately anchors only
+the committed opening greeting and timestamps model responses at their start.
+All added state is call-owned, removed on cleanup and omitted from saved data.
+Legacy extractor inputs without timed interruption events retain their fallback.
+
+A valid mixed text/tool SSE delta also reproduced dropped speech in the pinned
+OpenAI consumer's mutually exclusive branches. A small application-owned stream
+adapter splits that delta into text followed by tool information. Native tool
+dispatch, model requests and context ownership are retained, usage/finish
+metadata is emitted once, and nested iterator/HTTP close propagates on cancel.
+Vendor sources, the three reviewed overlays and dependencies are unchanged.
+
 ## What a pass does not establish
 
 - No full FastAPI server boot, customer database, Azure staging environment,
@@ -197,9 +251,9 @@ conversation turn.
 - The continuous synthetic worker path above does not prove real provider,
   carrier playback or production behavior. Authenticated webhook delivery is
   not exercised by calling the handler's cancellation method.
-- The interruption slice covers the stated synthetic turn and callbacks, not
-  exhaustive timing races or real acoustics. Direct-prompt/tool transcript
-  reconciliation, other exceptional termination, complete transfer handling,
+- The interruption/transcript slices cover the stated synthetic turns and
+  callbacks, not exhaustive timing races, every coalesced/word-stamped text
+  shape or real acoustics. Other exceptional termination, complete transfer handling,
   carrier recovery, concurrent reconnects and every
   assistant/provider configuration still need separate checks.
 - Stalled-provider checks above prove bounded disposal after hangup, not
