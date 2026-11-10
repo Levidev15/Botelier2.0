@@ -54,7 +54,8 @@ def _build_webhook_url(request: Request, path: str) -> str:
 
     fallback_host = request.headers.get("X-Forwarded-Host") or request.headers.get("Host", "")
     base = get_public_base_url(fallback_host=fallback_host)
-    return f"{base}{path}"
+    query = request.url.query
+    return f"{base}{path}{'?' + query if query else ''}"
 
 
 def validate_twilio_signature(
@@ -65,8 +66,9 @@ def validate_twilio_signature(
 ) -> tuple[bool, str]:
     """Validate the `X-Twilio-Signature` header.
 
-    Returns `(is_valid, validated_url)`.  The URL is included so callers
-    can log it on failure to diagnose proxy / host mismatches.
+    Returns `(is_valid, diagnostic_url)`. The diagnostic URL omits query
+    values; callers may log the origin/path to diagnose proxy mismatches.
+    Signature validation still covers the complete, unmodified query string.
 
     When `auth_token` is empty, validation fails closed and `(False, url)` is
     returned — mirrors the `sms_pkg/webhook.py` fail-closed contract and the
@@ -76,13 +78,14 @@ def validate_twilio_signature(
     Twilio webhooks.
     """
     url = _build_webhook_url(request, path)
+    diagnostic_url = url.partition("?")[0]
 
     if not auth_token:
         logger.warning(
             f"Twilio signature validation failed — no auth token configured ({path}). "
             f"Set TWILIO_AUTH_TOKEN (or a per-account sub-account token)."
         )
-        return False, url
+        return False, diagnostic_url
 
     try:
         from twilio.request_validator import RequestValidator
@@ -90,23 +93,13 @@ def validate_twilio_signature(
         validator = RequestValidator(auth_token)
         signature = request.headers.get("X-Twilio-Signature", "")
 
-        # Diagnostic — logs enough to confirm header arrival and token usage
-        # without leaking the full values. Remove once signature validation is stable.
-        logger.info(
-            f"[twilio-sig-debug] path={path} "
-            f"sig_present={'yes' if signature else 'NO — HEADER MISSING'} "
-            f"sig_len={len(signature)} "
-            f"sig_prefix={signature[:8] if signature else ''} "
-            f"token_prefix={auth_token[:8] if auth_token else ''} "
-            f"form_keys={sorted(dict(form_data).keys())} "
-            f"url={url}"
-        )
-
-        is_valid = validator.validate(url, dict(form_data), signature)
-        return is_valid, url
+        # GET query fields are already covered by the URL, not POST parameters.
+        parameters = {} if request.method == "GET" else dict(form_data)
+        is_valid = validator.validate(url, parameters, signature)
+        return is_valid, diagnostic_url
     except Exception as exc:
-        logger.warning(f"Twilio signature validation error on {path}: {exc}")
-        return False, url
+        logger.warning(f"Twilio signature validation error on {path}: {type(exc).__name__}")
+        return False, diagnostic_url
 
 
 def get_call_auth_token(
@@ -118,14 +111,13 @@ def get_call_auth_token(
 ) -> str:
     """Resolve which Twilio auth token to validate against.
 
-    Voice webhooks may carry either `To` (incoming) or `CallSid` /
-    `ParentCallSid` (status, connect-complete, transfer-status).  We
-    prefer the hotel sub-account token where possible, falling back to
-    the platform-level `TWILIO_AUTH_TOKEN` env var when the hotel-level
-    token is not configured (or no resolution path is available).
+    Known call/leg ownership is authoritative; ``To`` can be a transfer
+    destination owned by a different account. Both supplied SIDs must agree
+    on one parent call. Only an unresolved new call may use its phone number.
+    Database lookup failures never fall through to another account's token.
     """
     from ..models.account import Account
-    from ..models.call_log import CallLog
+    from ..models.call_log import CallLeg, CallLog
     from ..models.phone_number import PhoneNumber
 
     # Query only the columns we need — never load a full Account ORM object here.
@@ -135,84 +127,64 @@ def get_call_auth_token(
     # the current Python enum definitions.  Selecting a single String column avoids
     # that entirely and is also more efficient.
 
-    if to_number:
-        try:
+    try:
+        owners = {}
+        for sid in (call_sid, parent_call_sid):
+            if not sid:
+                continue
+            log_row = (
+                db.query(CallLog.id, CallLog.account_id)
+                .filter(CallLog.call_sid == sid)
+                .first()
+            )
+            if not log_row:
+                leg_row = (
+                    db.query(CallLeg.call_log_id)
+                    .filter(CallLeg.call_sid == sid)
+                    .first()
+                )
+                if leg_row:
+                    log_row = (
+                        db.query(CallLog.id, CallLog.account_id)
+                        .filter(CallLog.id == leg_row.call_log_id)
+                        .first()
+                    )
+                    if not log_row:
+                        return ""
+            if log_row:
+                owners[log_row.id] = log_row.account_id
+            elif sid == parent_call_sid and owners:
+                return ""
+        if len(owners) > 1:
+            logger.warning("Twilio callback rejected: call and parent ownership disagree")
+            return ""
+        account_id = next(iter(owners.values()), None)
+        if account_id is None and to_number:
             phone_row = (
                 db.query(PhoneNumber.account_id)
                 .filter(PhoneNumber.phone_number == to_number)
                 .first()
             )
-            logger.info(
-                f"[auth-diag] to_number={to_number!r} "
-                f"phone_found={phone_row is not None} "
-                f"account_id={phone_row.account_id if phone_row else 'N/A'}"
-            )
-            if phone_row:
-                token_row = (
-                    db.query(Account.twilio_sub_auth_token)
-                    .filter(Account.id == phone_row.account_id)
-                    .first()
-                )
-                has_token = bool(token_row and token_row.twilio_sub_auth_token)
-                logger.info(
-                    f"[auth-diag] account_id={phone_row.account_id} "
-                    f"token_row_found={token_row is not None} "
-                    f"has_token={has_token} "
-                    f"token_prefix={token_row.twilio_sub_auth_token[:8] if has_token else 'EMPTY/NULL'}"
-                )
-                if has_token:
-                    return token_row.twilio_sub_auth_token
-        except Exception:
-            logger.warning(
-                f"get_call_auth_token: DB lookup via to_number={to_number} failed",
-                exc_info=True,
-            )
-            try:
-                db.rollback()
-            except Exception:
-                pass
-
-    for sid in (call_sid, parent_call_sid):
-        if not sid:
-            continue
-        try:
-            log_row = (
-                db.query(CallLog.account_id)
-                .filter(CallLog.call_sid == sid)
+            account_id = phone_row.account_id if phone_row else None
+        if account_id is not None:
+            token_row = (
+                db.query(Account.twilio_sub_auth_token)
+                .filter(Account.id == account_id)
                 .first()
             )
-            logger.info(
-                f"[auth-diag] call_sid={sid!r} "
-                f"call_log_found={log_row is not None} "
-                f"account_id={log_row.account_id if log_row else 'N/A'}"
-            )
-            if log_row:
-                token_row = (
-                    db.query(Account.twilio_sub_auth_token)
-                    .filter(Account.id == log_row.account_id)
-                    .first()
-                )
-                has_token = bool(token_row and token_row.twilio_sub_auth_token)
-                logger.info(
-                    f"[auth-diag] call_sid={sid} account_id={log_row.account_id} "
-                    f"token_row_found={token_row is not None} has_token={has_token}"
-                )
-                if has_token:
-                    return token_row.twilio_sub_auth_token
+            if not token_row:
+                return ""
+            if token_row.twilio_sub_auth_token:
+                return token_row.twilio_sub_auth_token
+    except Exception:
+        logger.warning("Twilio callback rejected: ownership lookup unavailable")
+        try:
+            db.rollback()
         except Exception:
-            logger.warning(
-                f"get_call_auth_token: DB lookup via call_sid={sid} failed",
-                exc_info=True,
-            )
-            try:
-                db.rollback()
-            except Exception:
-                pass
+            pass
+        return ""
 
-    logger.warning(
-        f"get_call_auth_token: could not resolve sub-account token "
-        f"(to_number={to_number}, call_sid={call_sid}) — falling back to TWILIO_AUTH_TOKEN env var"
-    )
+    # Preserve platform-owned numbers/accounts without a sub-account token.
     return os.environ.get("TWILIO_AUTH_TOKEN", "")
 
 

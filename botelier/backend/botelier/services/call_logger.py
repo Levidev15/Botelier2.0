@@ -27,6 +27,17 @@ _FORCED_BY_SOURCES = {"sweeper", "webhook_safety_net", "finally_defensive", "shu
 # imports it any more.
 
 
+def _ordered_callback_status(current, incoming):
+    """Ignore regressions, while allowing late terminal duration reconciliation."""
+    terminal = {"completed", "ended_early", "failed", "busy", "no_answer", "canceled"}
+    progression = {"queued": 0, "initiated": 1, "ringing": 2, "in_progress": 3}
+    if current in terminal:
+        return current if incoming in terminal else None
+    if progression.get(incoming, 4) < progression.get(current, 0):
+        return None
+    return incoming
+
+
 class CallLogger:
     """Centralized service for managing call log records.
 
@@ -188,7 +199,8 @@ class CallLogger:
             return False
 
     def update_status(
-        self, call_sid: str, status: str, duration_seconds: Optional[int] = None
+        self, call_sid: str, status: str, duration_seconds: Optional[int] = None,
+        *, raise_on_error: bool = False,
     ) -> bool:
         """Update call log status from Twilio callback or WebSocket event.
 
@@ -223,7 +235,11 @@ class CallLogger:
                 "canceled": CallStatus.CANCELED.value,
             }
 
-            new_status = status_mapping.get(status, status)
+            new_status = _ordered_callback_status(
+                call_log.status, status_mapping.get(status, status),
+            )
+            if new_status is None:
+                return False
             call_log.status = new_status
 
             if status == "in-progress" and not call_log.answered_at:
@@ -270,7 +286,9 @@ class CallLogger:
             )
 
             if ai_leg:
-                ai_leg.status = new_status
+                ai_status = _ordered_callback_status(ai_leg.status, new_status)
+                if ai_status is not None:
+                    ai_leg.status = ai_status
                 if status in ("completed", "busy", "failed", "no-answer", "canceled"):
                     if not ai_leg.ended_at:
                         ai_leg.ended_at = datetime.utcnow()
@@ -287,6 +305,8 @@ class CallLogger:
         except Exception as e:
             logger.exception(f"Error updating call status: {e}")
             self.db.rollback()
+            if raise_on_error:
+                raise
             return False
 
     def _write_event_inline(
@@ -1010,6 +1030,7 @@ class CallLogger:
         duration_seconds: Optional[int] = None,
         parent_call_sid: str = None,
         to_number: str = None,
+        *, raise_on_error: bool = False,
     ) -> bool:
         """Update a specific call leg's status.
 
@@ -1039,6 +1060,19 @@ class CallLogger:
 
             new_status = status_mapping.get(status, status)
 
+            # Resolve/lock the parent first for both linked and not-yet-linked
+            # legs. A globally known child must never mutate a different parent.
+            call_log = None
+            if parent_call_sid:
+                call_log = (
+                    self.db.query(CallLog)
+                    .filter(CallLog.call_sid == parent_call_sid)
+                    .with_for_update()
+                    .first()
+                )
+                if not call_log:
+                    return False
+
             # First try to find leg by call_sid
             leg = (
                 self.db.query(CallLeg)
@@ -1048,14 +1082,9 @@ class CallLogger:
             )
 
             # If not found, try to find by parent call + participant (transfer-to number)
-            call_log = None
-            if not leg and parent_call_sid and to_number:
-                call_log = (
-                    self.db.query(CallLog)
-                    .filter(CallLog.call_sid == parent_call_sid)
-                    .with_for_update()
-                    .first()
-                )
+            if leg and call_log and leg.call_log_id != call_log.id:
+                return False
+            if not leg and call_log and to_number:
                 if call_log:
                     leg = (
                         self.db.query(CallLeg)
@@ -1081,6 +1110,10 @@ class CallLogger:
                 logger.warning(f"Call leg not found for SID: {leg_call_sid}")
                 return False
 
+            incoming_status = new_status
+            new_status = _ordered_callback_status(leg.status, incoming_status)
+            if new_status is None or new_status != incoming_status:
+                return False
             leg.status = new_status
 
             # Mark in_progress when call is answered
@@ -1090,7 +1123,8 @@ class CallLogger:
             # Mark ended and calculate duration when call ends
             if status in ("completed", "busy", "failed", "no-answer", "canceled"):
                 if leg.leg_type in (LegType.TRANSFER_EXTERNAL.value, LegType.TRANSFER_SIP.value):
-                    leg.ended_at = datetime.utcnow()
+                    if not leg.ended_at:
+                        leg.ended_at = datetime.utcnow()
                     if not call_log and parent_call_sid:
                         call_log = self.get_call_log(parent_call_sid)
                     if not call_log:
@@ -1131,6 +1165,8 @@ class CallLogger:
         except Exception as e:
             logger.exception(f"Error updating leg status: {e}")
             self.db.rollback()
+            if raise_on_error:
+                raise
             return False
 
     def create_transfer_leg_from_callback(

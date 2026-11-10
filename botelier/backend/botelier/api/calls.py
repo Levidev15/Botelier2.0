@@ -8,11 +8,13 @@ Also handles call status updates and creates call log records for analytics.
 
 import asyncio
 import os
+import re
 import uuid
 from datetime import datetime
 from typing import Optional
+from urllib.parse import urlsplit, urlunsplit
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request, Response
 from loguru import logger
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -46,7 +48,9 @@ def _get_call_handler():
     return _ws_get()
 
 
-def _event_exists(db: Session, call_log_id, event_type: str) -> bool:
+def _event_exists(
+    db: Session, call_log_id, event_type: str, child_call_sid: Optional[str] = None,
+) -> bool:
     """Return True if a call event of the given type already exists for this call.
 
     Used to prevent duplicate events when both the pipeline path and the Twilio
@@ -54,11 +58,86 @@ def _event_exists(db: Session, call_log_id, event_type: str) -> bool:
     by the pipeline at WebSocket connect and may also arrive via the Twilio
     in-progress status callback in production).
     """
-    return (
-        db.query(CallEvent)
-        .filter(CallEvent.call_log_id == call_log_id, CallEvent.event_type == event_type)
-        .first()
-        is not None
+    query = db.query(CallEvent).filter(
+        CallEvent.call_log_id == call_log_id, CallEvent.event_type == event_type,
+    )
+    if child_call_sid is None:
+        return query.first() is not None
+    return any(
+        isinstance(event.details, dict)
+        and event.details.get("ChildCallSid") == child_call_sid
+        for event in query.all()
+    )
+
+
+def _write_transfer_event_once(db: Session, **values):
+    """Serialize a parent's callback event check/write, keyed by child and type."""
+    parent = (
+        db.query(CallLog.id).filter(CallLog.id == values["call_log_id"])
+        .with_for_update().first()
+    )
+    if parent and not _event_exists(
+        db, values["call_log_id"], values["event_type"],
+        values["details"]["ChildCallSid"],
+    ):
+        _write_event(db, **values, raise_on_error=True)
+    elif parent:
+        # Release the deduplication lock before Starlette runs background jobs,
+        # which may open another session and update this same call.
+        db.commit()
+
+
+def _callback_duration(raw) -> Optional[int]:
+    # duration_seconds is an SQL Integer. Reject bad signed input before writes,
+    # rather than clipping it to zero or acknowledging an internal parse error.
+    if raw in (None, ""):
+        return None
+    if (
+        not isinstance(raw, str) or not raw.isascii() or not raw.isdecimal()
+        or len(raw) > 10 or int(raw) > 2**31 - 1
+    ):
+        raise HTTPException(status_code=422, detail="Invalid call duration")
+    return int(raw)
+
+
+def _validate_callback_status(status: str):
+    if status not in {
+        "queued", "initiated", "ringing", "in-progress",
+        "completed", "busy", "failed", "no-answer", "canceled",
+    }:
+        raise HTTPException(status_code=422, detail="Invalid call status")
+
+
+def _recording_media_url(url: str, recording_sid: str) -> str:
+    """Allow only the identified Twilio recording, never an arbitrary fetch URL."""
+    try:
+        parts = urlsplit(url)
+        path = parts.path.rstrip("/")
+        if path.endswith((".mp3", ".wav")):
+            path = path[:-4]
+        valid = (
+            re.fullmatch(r"RE[0-9a-fA-F]{32}", recording_sid)
+            and parts.scheme == "https"
+            and parts.username is None and parts.password is None
+            and parts.port in (None, 443)
+            and re.fullmatch(r"api(?:\.[a-z0-9-]+){0,2}\.twilio\.com", parts.hostname or "")
+            and not parts.query and not parts.fragment
+            and re.fullmatch(
+                r"/2010-04-01/Accounts/AC[0-9a-fA-F]{32}/Recordings/"
+                + re.escape(recording_sid), path,
+            )
+        )
+        if valid:
+            return urlunsplit(("https", parts.netloc, path + ".mp3", "", ""))
+    except ValueError:
+        pass
+    raise HTTPException(status_code=422, detail="Invalid recording media location")
+
+
+def _callback_failure_response() -> Response:
+    return Response(
+        status_code=503, media_type="application/json",
+        content='{"status":"error","message":"Unable to process carrier callback"}',
     )
 
 
@@ -174,6 +253,7 @@ def _write_event(
     severity: str = "info",
     details: dict = None,
     call_started_at: datetime = None,
+    raise_on_error: bool = False,
 ):
     """Write a call event directly to the database.
 
@@ -181,8 +261,8 @@ def _write_event(
     transfer_connected, transfer_ended) which arrive via async HTTP handlers
     that are completely separate from the WebSocket pipeline — await here is safe.
 
-    Non-fatal: errors are logged but never raised so the webhook response is
-    always returned to Twilio.
+    Best-effort by default. Lifecycle callbacks opt into propagation so a
+    persistence failure is not acknowledged as successfully received.
     """
     try:
         now = datetime.utcnow()
@@ -211,6 +291,8 @@ def _write_event(
             db.rollback()
         except Exception:
             pass
+        if raise_on_error:
+            raise
 
 
 @router.post("/incoming")
@@ -546,7 +628,8 @@ async def call_status_callback(
         )
 
         call_logger = CallLogger(db)
-        duration_seconds = int(call_duration) if call_duration else None
+        _validate_callback_status(call_status)
+        duration_seconds = _callback_duration(call_duration)
 
         if parent_call_sid:
             logger.info(f"Child call detected - Parent: {parent_call_sid}")
@@ -556,20 +639,23 @@ async def call_status_callback(
                 to_number=to_number or "",
                 status=call_status,
             )
-            call_logger.update_leg_status(
+            updated = call_logger.update_leg_status(
                 leg_call_sid=call_sid,
                 status=call_status,
                 duration_seconds=duration_seconds,
                 parent_call_sid=parent_call_sid,
                 to_number=to_number,
+                raise_on_error=True,
             )
+            if not updated:
+                return {"status": "received"}
 
             # Log transfer_connected / transfer_ended for parent call
             parent_log = call_logger.get_call_log(parent_call_sid)
             if parent_log:
                 _TERMINAL = {"completed", "no-answer", "busy", "failed", "canceled"}
                 if call_status == "in-progress":
-                    _write_event(
+                    _write_transfer_event_once(
                         db,
                         call_log_id=parent_log.id,
                         event_type="transfer_connected",
@@ -580,7 +666,7 @@ async def call_status_callback(
                     )
                 elif call_status in _TERMINAL:
                     answered_by = str(form_data.get("AnsweredBy", "")) or None
-                    _write_event(
+                    _write_transfer_event_once(
                         db,
                         call_log_id=parent_log.id,
                         event_type="transfer_ended",
@@ -636,7 +722,10 @@ async def call_status_callback(
                             f"webhook_safety_net complete_call failed for {call_sid}: {_sn_err}"
                         )
 
-            call_logger.update_status(call_sid, call_status, duration_seconds)
+            if not call_logger.update_status(
+                call_sid, call_status, duration_seconds, raise_on_error=True,
+            ):
+                return {"status": "received"}
             if call_status in _TERMINAL_TWILIO:
                 call_logger.update_leg_status(
                     leg_call_sid=call_sid,
@@ -693,6 +782,7 @@ async def call_status_callback(
                             severity="info",
                             details={"CallStatus": call_status},
                             call_started_at=call_log.started_at,
+                            raise_on_error=True,
                         )
                 elif call_status in _TERMINAL:
                     if not _event_exists(db, call_log.id, "call_ended"):
@@ -722,6 +812,7 @@ async def call_status_callback(
                                 "ended_by": ended_by,
                             },
                             call_started_at=call_log.started_at,
+                            raise_on_error=True,
                         )
 
             # Task #295: A plain caller hangup usually triggers ONLY this
@@ -786,9 +877,11 @@ async def call_status_callback(
 
         return {"status": "received"}
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.exception(f"Error handling call status callback: {e}")
-        return {"status": "error", "message": str(e)}
+        logger.error(f"Call status callback persistence failed: {type(e).__name__}")
+        return _callback_failure_response()
 
 
 def _maybe_enqueue_acw(
@@ -885,7 +978,7 @@ async def connect_complete(
     Uses CallLogger service for status updates and saves conversation transcript.
     """
     try:
-        form_data = await request.form()
+        form_data = request.query_params if request.method == "GET" else await request.form()
         call_sid = str(form_data.get("CallSid", ""))
 
         # --- Twilio signature validation (Task #138) ---
@@ -1032,15 +1125,19 @@ async def transfer_status_callback(
         )
 
         if call_status:
+            _validate_callback_status(call_status)
             call_logger = CallLogger(db)
-            duration_seconds = int(call_duration) if call_duration else None
-            call_logger.update_leg_status(
+            duration_seconds = _callback_duration(call_duration)
+            updated = call_logger.update_leg_status(
                 leg_call_sid=call_sid,
                 status=call_status,
                 duration_seconds=duration_seconds,
                 parent_call_sid=parent_call_sid,
                 to_number=to_number,
+                raise_on_error=True,
             )
+            if not updated:
+                return {"status": "received"}
 
             # Log transfer_connected / transfer_ended on parent call.
             # Only query the parent record when we will actually write an event —
@@ -1052,7 +1149,7 @@ async def transfer_status_callback(
                 parent_log = call_logger.get_call_log(parent_call_sid)
                 if parent_log:
                     if call_status == "in-progress":
-                        _write_event(
+                        _write_transfer_event_once(
                             db,
                             call_log_id=parent_log.id,
                             event_type="transfer_connected",
@@ -1063,7 +1160,7 @@ async def transfer_status_callback(
                         )
                     elif call_status in _TERMINAL:
                         answered_by = str(form_data.get("AnsweredBy", "")) or None
-                        _write_event(
+                        _write_transfer_event_once(
                             db,
                             call_log_id=parent_log.id,
                             event_type="transfer_ended",
@@ -1092,9 +1189,11 @@ async def transfer_status_callback(
 
         return {"status": "received"}
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.exception(f"Error handling transfer status callback: {e}")
-        return {"status": "error", "message": str(e)}
+        logger.error(f"Transfer status callback persistence failed: {type(e).__name__}")
+        return _callback_failure_response()
 
 
 def _validate_recording_webhook_signature(
@@ -1109,7 +1208,8 @@ async def recording_status_callback(request: Request, db: Session = Depends(get_
     """Twilio recording status callback.
 
     Twilio POSTs here when a call recording's status changes.
-    Validates the X-Twilio-Signature before processing to prevent replay attacks.
+    Validates the X-Twilio-Signature before processing. Signatures authenticate
+    the sender; duplicate delivery is handled separately and is not a nonce.
     When status is 'completed', saves the recording URL and SID to the call log.
 
     Twilio sends these fields (as form data):
@@ -1144,10 +1244,20 @@ async def recording_status_callback(request: Request, db: Session = Depends(get_
             f"Status: {recording_status}"
         )
 
-        if recording_status == "completed" and call_sid and recording_url:
-            media_url = recording_url.rstrip("/") + ".mp3"
-            call_log = db.query(CallLog).filter(CallLog.call_sid == call_sid).first()
+        if recording_status == "completed":
+            if not call_sid or not recording_url or not recording_sid:
+                raise HTTPException(status_code=422, detail="Missing recording identifiers")
+            media_url = _recording_media_url(recording_url, recording_sid)
+            call_log = (
+                db.query(CallLog).filter(CallLog.call_sid == call_sid)
+                .with_for_update().first()
+            )
             if call_log:
+                if call_log.recording_sid and call_log.recording_sid != recording_sid:
+                    logger.warning("Recording callback conflict: existing recording retained")
+                    return {"status": "ignored", "reason": "recording_conflict"}
+                if (call_log.recording_sid, call_log.recording_url) == (recording_sid, media_url):
+                    return {"status": "received"}
                 call_log.recording_url = media_url
                 call_log.recording_sid = recording_sid
                 db.commit()
@@ -1157,9 +1267,12 @@ async def recording_status_callback(request: Request, db: Session = Depends(get_
 
         return {"status": "received"}
 
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.exception(f"Error handling recording status callback: {e}")
-        return {"status": "error", "message": str(e)}
+        db.rollback()
+        logger.error(f"Recording status callback persistence failed: {type(e).__name__}")
+        return _callback_failure_response()
 
 
 @router.get("/{call_id}/recording")

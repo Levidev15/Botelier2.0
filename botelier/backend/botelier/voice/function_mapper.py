@@ -222,6 +222,9 @@ class FunctionMapper:
         # it to the saved transcript.  TTSSpeakFrame bypasses the LLM context, so
         # the message would otherwise be invisible to the ACW LLM.
         self._pending_pre_transfer_message: Optional[str] = None
+        # Shared by every transfer tool/flow in this call. An uncertain remote
+        # side effect cannot be retried safely just because another turn asks.
+        self._transfer_state: Optional[str] = None
 
         # CallEventQueue — injected by CallHandler after pipeline initialization.
         # Used to log pipeline events non-blockingly.
@@ -551,8 +554,44 @@ class FunctionMapper:
             )
         await params.llm.push_frame(frame)
 
-    async def _complete_transfer(self, params, succeeded):
+    async def _claim_transfer(self, params):
+        if self._transfer_state is None:
+            self._transfer_state = "pending"
+            return True
+        worker = getattr(params, "pipeline_worker", None)
+        if (
+            (worker is not None and worker.has_finished())
+            or (self._tts_completion_watcher is not None
+                and self._tts_completion_watcher.is_closing)
+        ):
+            return False
+        status = self._transfer_state
+        message = (
+            "The earlier connection request is unconfirmed. I won't send another "
+            "transfer request. How else can I help?"
+            if status == "unconfirmed"
+            else "A connection request is already pending. I won't send a second one."
+        )
+        await params.result_callback(
+            {"status": status, "message": message, "retry_safe": False},
+            properties=FunctionCallResultProperties(run_llm=False),
+        )
+        await params.llm.push_frame(TTSSpeakFrame(message))
+        return False
+
+    @staticmethod
+    def _is_definite_transfer_rejection(error):
+        status = getattr(error, "status", None)
+        return (
+            isinstance(error, _TwilioRestException)
+            and isinstance(status, int) and 400 <= status < 500 and status != 408
+        )
+
+    async def _complete_transfer(self, params, succeeded, *, uncertain=False):
         """Finish tool bookkeeping without starting another model generation."""
+        self._transfer_state = (
+            "accepted" if succeeded else "unconfirmed" if uncertain else None
+        )
         worker = getattr(params, "pipeline_worker", None)
         if (
             (worker is not None and worker.has_finished())
@@ -568,7 +607,7 @@ class FunctionMapper:
         )
         await params.result_callback(
             {
-                "status": "transferred" if succeeded else "failed",
+                "status": "transferred" if succeeded else "unconfirmed" if uncertain else "failed",
                 "message": message,
                 # A transport error cannot prove the remote side effect did
                 # not happen. Never recommend a blind retry from this result.
@@ -1061,6 +1100,8 @@ class FunctionMapper:
             # Track tool usage
             self.track_tool_usage(tool.name)
 
+            if not await self._claim_transfer(params):
+                return
             # Log transfer_initiated event (non-blocking)
             self.log_event(
                 "transfer_initiated",
@@ -1088,6 +1129,7 @@ class FunctionMapper:
                 continues executing the TwiML it received (warm <Dial> or cold REFER).
                 """
                 _transfer_succeeded = False
+                _transfer_uncertain = False
                 try:
                     if self.twilio_client and self.call_sid:
                         try:
@@ -1361,12 +1403,14 @@ class FunctionMapper:
                                 finally:
                                     db.close()
 
+                            _transfer_uncertain = True
                             await _asyncio.to_thread(
                                 lambda: _twilio_cap.calls(_call_sid_cap).update(
                                     twiml=transfer_twiml
                                 )
                             )
                             _transfer_succeeded = True
+                            _transfer_uncertain = False
                             await _asyncio.to_thread(_db_record_accepted_transfer)
                             logger.info(
                                 f"✅ {'Cold SIP REFER' if transfer_mode == 'cold' else 'Warm'} transfer "
@@ -1380,6 +1424,8 @@ class FunctionMapper:
                                     f"{type(e).__name__}"
                                 )
                             else:
+                                if self._is_definite_transfer_rejection(e):
+                                    _transfer_uncertain = False
                                 logger.error(
                                     f"❌ Twilio transfer failed for call {self.call_sid}: {e}"
                                 )
@@ -1404,7 +1450,9 @@ class FunctionMapper:
                     # the conversation.  If the call is truly gone (404), Twilio
                     # will close the WebSocket on its side and the transport will
                     # push EndFrame naturally.
-                    await self._complete_transfer(params, _transfer_succeeded)
+                    await self._complete_transfer(
+                        params, _transfer_succeeded, uncertain=_transfer_uncertain,
+                    )
 
             # Record what will be spoken so _execute_transfer can append it to
             # the saved transcript (TTSSpeakFrame bypasses the LLM context).
@@ -2820,6 +2868,8 @@ class FunctionMapper:
 
             # Handle special actions
             if result.get("action") == "transfer":
+                if not await self._claim_transfer(params):
+                    return
                 target = result.get("target")
                 flow_transfer_mode = result.get("transfer_mode", "warm")
                 # The announcement the LLM/flow speaks before the transfer —
@@ -2861,6 +2911,7 @@ class FunctionMapper:
                         - No ORM object leaves the thread.
                         """
                         _flow_transfer_succeeded = False
+                        _flow_transfer_uncertain = False
                         try:
                             await self._await_twilio_playback_mark(
                                 "flow-transfer", expected_speech_text=_flow_transfer_msg
@@ -3053,12 +3104,14 @@ class FunctionMapper:
                                     _db.close()
                                 return True
 
+                            _flow_transfer_uncertain = True
                             await _asyncio_flow.to_thread(
                                 lambda: _cap_twilio.calls(_cap_call_sid).update(
                                     twiml=_cap_twiml
                                 )
                             )
                             _flow_transfer_succeeded = True
+                            _flow_transfer_uncertain = False
                             await _asyncio_flow.to_thread(_db_flow_record_accepted_transfer)
 
                         except Exception as e:
@@ -3067,11 +3120,16 @@ class FunctionMapper:
                                     f"Accepted flow transfer follow-up failed: {type(e).__name__}"
                                 )
                             else:
+                                if self._is_definite_transfer_rejection(e):
+                                    _flow_transfer_uncertain = False
                                 logger.error(f"Flow transfer failed: {e}")
                         finally:
-                            if not _flow_transfer_succeeded:
+                            if not _flow_transfer_succeeded and not _flow_transfer_uncertain:
                                 await _clear_rejected_flow_transfer()
-                            await self._complete_transfer(params, _flow_transfer_succeeded)
+                            await self._complete_transfer(
+                                params, _flow_transfer_succeeded,
+                                uncertain=_flow_transfer_uncertain,
+                            )
 
                     await self._queue_transfer_announcement(
                         params, _execute_flow_transfer, _flow_transfer_msg, flow=True,

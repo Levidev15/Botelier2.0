@@ -95,6 +95,22 @@ class WorkflowIsolationTests(unittest.TestCase):
             "--network none", "--read-only", '--entrypoint env "$IMAGE" -i',
             "lifecycle_guard.py", "test_application_transfers.py",
             "test_application_recordings.py",
+            "test_application_transfer_retries.py",
+        ):
+            self.assertIn(required, check["run"])
+        export = next(i for i, step in enumerate(steps)
+                      if step.get("id") == "export_candidate_image")
+        self.assertLess(steps.index(check), export)
+
+    def test_callback_checks_are_isolated_and_required_before_image_export(self):
+        steps = load("voice-flow-candidate.yml")["jobs"]["candidate"]["steps"]
+        check = next(step for step in steps if step.get("id") == "application_callbacks")
+        self.assertNotIn("continue-on-error", check)
+        for required in (
+            "--network none", "--read-only", '--entrypoint env "$IMAGE" -i',
+            "callback_guard.py", "--backend-root /app",
+            "test_application_callbacks.py", "test_application_callback_delivery.py",
+            "test_application_callback_lifecycle.py",
         ):
             self.assertIn(required, check["run"])
         export = next(i for i, step in enumerate(steps)

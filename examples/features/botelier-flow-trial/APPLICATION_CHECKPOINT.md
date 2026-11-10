@@ -16,12 +16,15 @@ then imports the actual application code from that same image.
 | Failure paths | Actual custom Aura/Flux connect-error handlers and carrier mark waiter | Both providers must emit an ErrorFrame and connection-error notification, not a NameError. Unacknowledged carrier marks time out and remove their waiter. |
 | Speech → transfer | Actual tool and legacy-flow handlers, native worker, Flux speech contexts, carrier mark watcher and Twilio HTTP request preparation | Warm/cold handoffs wait for their actual announcement and matching mark. Rejection returns a structured failure and permits another caller turn. Shutdown cannot approve a pending handoff. |
 | Recording → handoff/disposal | Actual recording-start service, real recording-stop SDK and call-owned tasks | Account entitlement and assistant toggle are both required. Pending startup cannot race past a transfer or survive coordinator cleanup. Recording HTTP errors remain optional failures. |
+| Signed callback → state/worker | Actual ASGI router, token resolver, Twilio validator and status services | Correct account/parent binding, signed queries, duplicate/late delivery, recording validation and a real worker cancelled only by its owner's authenticated hangup. |
+| Repeated model tool → handoff | Actual native second model turn and both transfer entry points | An unconfirmed request blocks a second SDK update in the current mapper. A definite rejection permits an explicitly requested new attempt. A merely parent-bound callback cannot unlock uncertainty. |
 
-There are 30 component cases, 81 lifecycle cases and 28 selected legacy
-extractor/mapper regression cases below. The lifecycle command runs the latter
-two groups together; it must not be described as 109 whole-call cases. Results
-belong to the exact checked commit and image, not this document. The CI log and
-retained evidence determine pass/fail.
+There are 30 component cases, 87 lifecycle cases and 28 selected legacy
+extractor/mapper regressions. The lifecycle command runs the latter two groups
+together; its 115 cases must not be described as 115 whole-call replays.
+A separate callback process runs 49 router/service cases and four native-worker
+integrations. Results belong to the exact checked commit and image, not this
+document. CI logs and retained evidence determine pass/fail.
 
 ## First whole-call slice
 
@@ -97,6 +100,16 @@ remains outside this checkpoint.
   initializer. The component launcher still denies CallHandler import; the
   separate lifecycle launcher narrowly admits that real module, not the API
   server/database. Engine, agent, mapper, executor and coordinator use real files.
+- A separate callback launcher admits only `api.calls` and `api._twilio_auth`
+  through a test-only API namespace. It mounts the actual router in an in-process
+  FastAPI app, never boots `main`, and uses real form parsing, token resolution
+  and Twilio signature validation. Unused dashboard JWT dependencies are replaced
+  with always-denying functions; customer/session authentication is not certified.
+  Status mutations and event decisions remain real. An enumerated synthetic
+  session models filters, staged writes, rollback and lock-release intent, not
+  PostgreSQL isolation/locking. Billing persistence and external background jobs
+  are explicit boundaries. Unrelated API imports, server startup, real databases,
+  network, subprocesses and credentials remain denied.
 - OpenAI's OS-header fingerprint uses a fixed test host string. That metadata
   probe otherwise executes `uname` on some hosts. The subprocess guard remains
   enabled, and the actual request builder and JSON serializer are not replaced.
@@ -216,10 +229,12 @@ graph ordering, start authorization or a new native controller.
   A new real finalized STT turn gets a second model reply; its request contains
   no unfinished transfer tool. Missing carrier configuration also stays usable.
   Failure speech says the connection could not be confirmed, and the result
-  does not recommend a blind retry. A timeout is not proof that the remote
-  update did not happen: authoritative callback reconciliation and protection
-  against an explicitly requested retry after an ambiguous outcome remain
-  untested and must be resolved before production rollout.
+  does not recommend a blind retry. HTTP 500/transport timeouts now produce an
+  explicit `unconfirmed` result and quarantine further handoffs in the current
+  mapper. An actual second model turn cannot repeat that SDK update. HTTP 400
+  rejection can instead be followed by an explicit caller-requested successful
+  attempt. Durable attempt identity/reconciliation and worker-restart protection
+  remain release gates; a per-mapper guard is not a distributed guarantee.
 - Hangup during announcement or while waiting for a mark must discard the
   deferred action. Releasing waiters during shutdown is not a playback ACK.
   An already-sent held carrier update is instead awaited, without blocking the
@@ -242,8 +257,49 @@ graph ordering, start authorization or a new native controller.
 Injected failures retain their exact expected error patterns. All cases require
 finished native workers, closed synthetic sessions/queues, cleared call state,
 no surviving call-created tasks and no unexpected guarded operations.
-Authenticated recording-status/transfer webhooks, real recording downloads,
-database writes, AI-leg billing and cold-transfer ACW are not exercised.
+The separate callback slice below now exercises signed recording/transfer
+webhooks. Real recording downloads, database writes, AI-leg billing and
+cold-transfer ACW are not exercised.
+
+## Offline signed-callback and retry slice
+
+The callback process uses actual POST routes for `/status`, `/connect-complete`,
+`/transfer-status` and `/recording-status`, plus the registered connect-complete
+GET route. Signatures are computed locally with literal synthetic tokens and
+checked by the real Twilio SDK, not an authentication mock.
+
+- Known call/leg ownership wins over the destination number. Inconsistent
+  child/parent bindings, foreign signatures and unavailable ownership lookups
+  cannot mutate records or cancel another worker. A new incoming call can still
+  resolve its assigned number before a call log exists.
+- Signature validation includes the exact public query string. GET query fields
+  are not also treated as POST parameters. Diagnostic URLs omit query values;
+  token/signature prefixes are no longer logged.
+- Late progress cannot reopen terminal parent, transfer or AI legs. Duplicate
+  transfer completion keeps one event per child/type and preserves the original
+  end time. Conflicting terminal child events cannot rewrite a confirmed result
+  or its duration. Late authoritative inbound duration still reaches the billing
+  boundary without erasing `ended_early` classification.
+- Event check/write takes the parent lock and releases it before background
+  work, including on a duplicate. This is checked at the synthetic transaction
+  boundary; PostgreSQL concurrency remains unproven.
+- Invalid statuses/durations and untrusted/mismatched recording locations are
+  rejected before mutation. Valid base/MP3/WAV recording URLs normalize once.
+  Same-recording repeats are idempotent. A conflicting recording ID is flagged
+  and cannot silently overwrite the existing one; multiple recording segments
+  need an explicit model/policy rather than last-callback-wins behavior.
+- Injected status/leg/recording and event-write failures return a generic 503,
+  not an internal error wrapped in HTTP 200. A failed event write can be retried.
+  These cases establish the stated handler paths with synthetic rollback, not
+  every persistence failure, the cold finalizer, or database durability.
+- One signed parent hangup cancels the real worker through the actual route,
+  without manually calling its cancellation method; its replay adds no end
+  event. A foreign signature leaves that real worker active. Two additional
+  tool/flow integrations prove that a signed child callback matching a parent,
+  but not a persisted attempt identity, cannot unlock an unconfirmed handoff.
+
+All deliberate fault logs remain visible and are matched explicitly. No
+real provider, telephony, business API/MCP, SMS or payment-link request occurs.
 
 ## Minimal candidate application changes
 
@@ -305,7 +361,9 @@ generic 400 responses being treated as successful termination, and a native
 worker that remained running after an EndFrame was pushed mid-pipeline. The
 candidate now records only accepted handoffs, supplies a truthful final tool
 result with `run_llm=False`, and ends the worker through its source queue.
-Failed handoffs clear their owned legacy-flow transfer flag and remain usable.
+Definite rejection clears the owned legacy-flow transfer flag. An ambiguous
+issued request instead preserves its intent and is blocked from repeat dispatch
+in the current mapper; conversation turns still complete normally.
 The Twilio SDK HTTP client has an explicit ten-second request timeout; this is
 not a strict whole-operation deadline or a retry/failover policy.
 
@@ -327,13 +385,15 @@ phone route, credentials, dependency or vendor source is changed.
 
 - No full FastAPI server boot, customer database, Azure staging environment,
   phone route, paid speech/model request or acoustic quality check is exercised.
-- The continuous synthetic worker path above does not prove real provider,
-  carrier playback or production behavior. Authenticated webhook delivery is
-  not exercised by calling the handler's cancellation method.
+- The continuous synthetic worker path above does not prove live provider,
+  carrier playback or production behavior. The separate signed ASGI callback
+  checks establish the stated route/auth/worker interactions, not delivery from
+  Twilio through Azure/proxies or full-server initialization.
 - The interruption/transcript slices cover the stated synthetic turns and
   callbacks, not exhaustive timing races, every coalesced/word-stamped text
-  shape or real acoustics. Authenticated transfer/recording callbacks, complete
-  carrier recovery, concurrent reconnects and every
+  shape or real acoustics. Complete carrier recovery, persisted attempt
+  reconciliation, callback-before-registration/commit races, worker restarts,
+  concurrent reconnects, PostgreSQL transaction behavior and every
   assistant/provider configuration still need separate checks.
 - Stalled-provider checks above prove bounded disposal after hangup, not
   autonomous failover or a response deadline while the caller stays connected.
@@ -343,6 +403,10 @@ phone route, credentials, dependency or vendor source is changed.
 - API/MCP requests, booking writes, SMS and payment links are not executed.
 - No saved-definition compiler, deterministic native flow controller, UI
   controls, node-order fix or migration is activated.
+- No new global rate limit, request-body limit or health endpoint is introduced.
+  Existing server/edge overload controls and full-server readiness are outside
+  this isolated checkpoint; SDK request timeouts and callback input/admission
+  checks are not a substitute for those release checks.
 - Existing deprecation warnings are visible. Their presence is not approval to
   upgrade the SDK or replace speech-context classes in this checkpoint.
 

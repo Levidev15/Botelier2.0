@@ -102,9 +102,11 @@ def test_transfer_waits_for_announcement_and_matching_playback_mark(mode, source
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("status", [400, 404, 500, "timeout"])
+@pytest.mark.parametrize("status,want_status", [
+    (400, "failed"), (404, "failed"), (500, "unconfirmed"), ("timeout", "unconfirmed"),
+])
 @pytest.mark.parametrize("source", ["tool", "flow"])
-def test_rejected_transfer_does_not_persist_a_success_or_end_the_worker(status, source):
+def test_rejected_transfer_does_not_persist_a_success_or_end_the_worker(status, want_status, source):
     """A generic carrier error is not proof of transfer or of an already-ended call."""
     async def scenario():
         async with TransferCall(outcome=status, source=source) as call:
@@ -113,13 +115,13 @@ def test_rejected_transfer_does_not_persist_a_success_or_end_the_worker(status, 
             await call.wait_until(lambda: len(call.marks()) == 1)
             call.acknowledge(call.marks()[0]["mark"]["name"])
             await call.wait_until(lambda: call.http.updated.is_set())
-            await call.wait_until(lambda: has_transfer_result(call, "failed"))
+            await call.wait_until(lambda: has_transfer_result(call, want_status))
             assert call.records.transfers == [], "Rejected transfer was recorded as successful"
             assert call.records.call.has_transfer is False
             assert not call.finished.is_set()
             if source == "flow":
                 state = call.mapper._flow_executors["fixture"].state
-                assert not state.transfer_requested
+                assert state.transfer_requested is (want_status == "unconfirmed")
             await call.providers.user_turn(CORRECTION, turn_index=1)
             await wait_for_reply(call, RESUME_ANSWER)
             requests = [item for item in call.providers.requests if item.get("stream")]

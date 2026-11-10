@@ -105,3 +105,21 @@ A caught guard denial still fails the command. The original framework guard is
 unchanged and continues to reject all application imports. CI adds read-only
 mounts and disabled networking around the application guard and retains its log
 even when a test fails.
+
+## Signed callback checkpoint
+
+```bash
+"${CLEAN[@]}" python -B "$TRIAL/callback_guard.py" \
+  --backend-root "$PWD/botelier/backend" \
+  --package-root /home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/pipecat \
+  --tests "$TRIAL/test_application_callbacks.py" \
+  "$TRIAL/test_application_callback_delivery.py" \
+  "$TRIAL/test_application_callback_lifecycle.py"
+```
+
+Run guards sequentially: they share a temporary output directory. This separate
+launcher admits the real calls router and signature helper, not the full server
+or unrelated APIs. Dashboard JWT dependencies always deny, database/provider I/O
+is synthetic, and real Twilio request validation is retained. A pass requires
+zero unexpected guard denials. See `APPLICATION_CHECKPOINT.md` for the exact
+scope, unconfirmed-transfer protection and remaining recovery/production gates.
