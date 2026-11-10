@@ -3,6 +3,7 @@
 import asyncio
 from contextlib import ExitStack, suppress
 import importlib
+import re
 from unittest.mock import patch
 
 import httpx
@@ -14,7 +15,7 @@ from lifecycle_io import CALL_SID, STREAM_SID, Carrier, Providers, Records
 class OfflineCall:
     def __init__(
         self, *, handler=None, hold_greeting=False, hold_stt=False,
-        hold_tts_turn=None, interruptions=True,
+        hold_tts_turn=None, interruptions=True, providers=None,
     ):
         load_function_mapper()
         self.module = importlib.import_module("botelier.voice.call_handler")
@@ -22,7 +23,9 @@ class OfflineCall:
         self.records = Records()
         self.records.assistant.allow_interruptions = interruptions
         self.carrier = Carrier()
-        self.providers = Providers(hold_stt=hold_stt, hold_tts_turn=hold_tts_turn)
+        self.providers = providers if providers is not None else Providers(
+            hold_stt=hold_stt, hold_tts_turn=hold_tts_turn,
+        )
         self.greeting_requested = asyncio.Event()
         self.release_greeting = asyncio.Event()
         if not hold_greeting:
@@ -31,6 +34,8 @@ class OfflineCall:
         self.finished = asyncio.Event()
         self.callbacks = {}
         self.errors = []
+        self.pipeline_errors = []
+        self.warmup_clients = []
         self.created = None
         self.queue = None
         self.run_task = None
@@ -46,6 +51,18 @@ class OfflineCall:
         self.patches.callback(module.logger.remove, sink)
         database = importlib.import_module("botelier.database")
         flux = importlib.import_module("pipecat.services.deepgram.flux.stt")
+        # Load the pipeline client's original SDK binding before monitoring the
+        # independent cache-warmer's constructor. Both clients remain real.
+        importlib.import_module("pipecat.services.openai.llm")
+        import openai
+
+        real_warmup_client = openai.AsyncOpenAI
+
+        def warmup_client(*args, **kwargs):
+            client = real_warmup_client(*args, **kwargs)
+            self.warmup_clients.append(client)
+            return client
+
         initial_session = self.records.session()
         real_factory = module.VoiceEngineFactory.create_pipeline
 
@@ -72,6 +89,10 @@ class OfflineCall:
             async def finished(worker, frame):
                 self.finished.set()
 
+            @result[1].event_handler("on_pipeline_error")
+            async def failed(worker, frame):
+                self.pipeline_errors.append(frame)
+
             return result
 
         async def http_boundary(transport, request):
@@ -95,6 +116,7 @@ class OfflineCall:
             (module.VoiceEngineFactory, "create_pipeline", factory),
             (flux, "websocket_connect", self.providers.connect_stt),
             (httpx.AsyncHTTPTransport, "handle_async_request", http_boundary),
+            (openai, "AsyncOpenAI", warmup_client),
         ):
             self.patches.enter_context(patch.object(target, name, replacement))
         self.patches.enter_context(patch(
@@ -142,7 +164,7 @@ class OfflineCall:
             if task not in self.baseline_tasks and not task.done()
         ]
 
-    def assert_clean(self):
+    def assert_clean(self, *, expected_errors=()):
         assert self.created[1].has_finished()
         assert not self.handler.is_pipeline_active(CALL_SID)
         assert all(session.closed for session in self.records.sessions)
@@ -150,12 +172,24 @@ class OfflineCall:
             if isinstance(state, dict):
                 assert CALL_SID not in state, f"Leaked coordinator state: {name}"
         assert self.remaining_tasks() == [], "Call left background tasks running"
-        assert not self.errors, f"Call logged unexpected errors: {self.errors}"
+        remaining_errors = list(self.errors)
+        for pattern in expected_errors:
+            matches = [
+                message for message in remaining_errors
+                if re.fullmatch(pattern, message)
+            ]
+            assert matches, (
+                f"Missing expected error matching {pattern!r}; got {self.errors}"
+            )
+            remaining_errors.remove(matches[0])
+        assert not remaining_errors, f"Call logged unexpected errors: {remaining_errors}"
 
     async def __aexit__(self, *exc):
         try:
             self.release_greeting.set()
             self.providers.release_stt.set()
+            if hasattr(self.providers, "release_blocked_io"):
+                self.providers.release_blocked_io()
             if self.carrier.stream_task is not None:
                 self.carrier.stream_task.cancel()
                 with suppress(asyncio.CancelledError):
@@ -173,4 +207,17 @@ class OfflineCall:
             if self.created is not None:
                 await self.created[2]._client.close()
         finally:
+            # A failing disposal assertion must not let orphaned I/O outlive its
+            # patches. This is emergency fixture cleanup, never passing evidence.
+            tasks = [
+                task for task in asyncio.all_tasks()
+                if task not in self.baseline_tasks and task is not asyncio.current_task()
+                and not task.done()
+            ]
+            for task in tasks:
+                task.cancel()
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+            for client in self.warmup_clients:
+                await client.close()
             self.patches.close()

@@ -15,7 +15,7 @@ then imports the actual application code from that same image.
 | Speech → hangup | Actual end-call handler with real `FunctionCallParams`, native direct-speech dispatch, real completion/mark watchers and `_finalize_call_end` | No hangup on enqueue, early stop, completed synthesis alone, or wrong mark. Exactly one hangup/EndFrame after matching playback acknowledgement. Interrupted goodbye does not end the call. No extra LLM generation. |
 | Failure paths | Actual custom Aura/Flux connect-error handlers and carrier mark waiter | Both providers must emit an ErrorFrame and connection-error notification, not a NameError. Unacknowledged carrier marks time out and remove their waiter. |
 
-There are 30 component cases, plus the 14 lifecycle cases below. Results
+There are 30 component cases, plus 30 lifecycle cases below. Results
 belong to the exact checked commit and image, not this document. The CI log and
 retained evidence determine pass/fail.
 
@@ -101,18 +101,54 @@ remains outside this checkpoint.
 - Greeting disk/HTTP cache access is a forced cache miss. Its actual TTS fallback
   runs; cache-hit/prewarm-bundle and recording paths are not covered.
 - Startup gates are at the greeting-cache/provider socket boundaries. The
-  cancellation tests then complete the fake provider handshake; they do not
-  establish bounded recovery from a permanently stalled external provider.
+  earlier race slice completes the fake handshake after hangup; the separate
+  provider-failure slice below never releases its stalled I/O before asserting
+  disposal. A queued cancellation is not treated as completed disposal.
   Held speech uses synthetic PCM with its SpeechMetadata withheld until
-  explicit completion or interruption. No production sleep/retry is added.
+  explicit completion or interruption, without application sleeps or speech retries.
 - Genuine retained callback functions are invoked as delayed work; their bodies
   are not copied into test helpers. Any wrongly started tasks are awaited so a
   regression cannot escape behind fixture teardown.
+- Failure tests observe actual worker error events and retain every ERROR log.
+  They accept only an exact multiset of patterns for deliberately injected
+  errors; any additional error still fails. Emergency fixture teardown cancels
+  surviving tasks before restoring I/O patches, but never counts as evidence
+  that the application disposed of them.
 
 The Python guard is not an OS sandbox. CI additionally runs with `--network none`,
 `--read-only`, clean environment variables, read-only test mounts and a temporary
 filesystem. Unexpected guard denials fail the checkpoint even if the application
 catches them. Guard self-tests deliberately exercise their own denial paths.
+
+## Offline provider-failure slice
+
+Sixteen additional cases use the same actual coordinator and worker:
+- Initial STT/TTS connection refusal must reach the real worker error event.
+  Transient refusal recovers through the actual service and produces one reply.
+- Repeated initial STT failure gets one startup retry, then a fatal error that
+  actually ends the AI worker without a caller hangup. This is tested with
+  interruptions enabled and disabled; it is not a retry loop or mid-call
+  reconnect-policy change.
+- A rejected model request and a timed-out SSE stream cannot invent a reply;
+  a new finalized user turn can recover. Only the successful model usage reaches
+  the save handoff.
+- A provider-rejected synthesis reports its real error and disposes of the
+  unfinished speech context on hangup. This does not claim automatic TTS
+  failover or certify that generated transcript text was audible.
+- Hangup disposes of seven deliberately stalled I/O paths: STT connect,
+  STT server confirmation, TTS connect, model response headers, model stream,
+  speech metadata and independent prompt-cache warmup. No gate is released to
+  manufacture success. Tests allow the native 20-second cancellation-drain
+  deadline plus bounded scheduling margin; this is not a low-latency guarantee.
+- Optional cache warmup failure cannot abort normal conversation. The warmer
+  closes its actual SDK client, is cancelled by its owning call at shutdown,
+  and has a five-second whole-operation deadline. A stalled warmer independently
+  times out while the conversation worker remains active.
+
+Checks require the known error events, exactly one save handoff, closed opened
+provider sockets and warmup clients, no surviving call-created tasks, closed
+sessions/event queues, removed call state and zero unexpected guard denials.
+All provider/carrier audio and records remain synthetic.
 
 ## Minimal candidate application changes
 
@@ -141,6 +177,19 @@ injection. Real service metrics and usage stay enabled, with nonzero synthetic
 LLM token counts and TTS character counts checked at the actual save handoff.
 No vendor source or dependency is modified for either fix.
 
+The provider-failure slice reproduced a Flux startup failure that returned
+nonfatally with no socket: native `run_stt` then silently discarded every packet.
+An application-owned Flux subclass now makes one initial retry and reports a
+fatal failure if no socket exists after it. Both word-gated and noninterruptible
+paths use the same startup policy; native mid-call reconnect behavior is unchanged.
+
+The separate prompt-cache task also outlived its call, and its client stayed open
+even after an ordinary failed warmup. It is now call-owned, cancelled and awaited
+before event-queue teardown, and uses an async client context within a five-second
+operation deadline. Idle/terminal callback shutdown remains before the first
+cleanup await. Warmup failure stays optional and never substitutes for a real
+conversation turn.
+
 ## What a pass does not establish
 
 - No full FastAPI server boot, customer database, Azure staging environment,
@@ -150,9 +199,14 @@ No vendor source or dependency is modified for either fix.
   not exercised by calling the handler's cancellation method.
 - The interruption slice covers the stated synthetic turn and callbacks, not
   exhaustive timing races or real acoustics. Direct-prompt/tool transcript
-  reconciliation, permanent provider stalls, exceptional termination, complete
-  transfer handling, carrier recovery, concurrent reconnects and every
+  reconciliation, other exceptional termination, complete transfer handling,
+  carrier recovery, concurrent reconnects and every
   assistant/provider configuration still need separate checks.
+- Stalled-provider checks above prove bounded disposal after hangup, not
+  autonomous failover or a response deadline while the caller stays connected.
+  The independent warmup deadline is the explicitly tested exception. Hostile
+  I/O that suppresses task cancellation, real provider latency and every error/
+  retry/status-code combination are not certified.
 - API/MCP requests, booking writes, SMS and payment links are not executed.
 - No saved-definition compiler, deterministic native flow controller, UI
   controls, node-order fix or migration is activated.

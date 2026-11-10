@@ -302,12 +302,14 @@ async def _prewarm_llm_cache(
     try:
         import openai as _openai
 
-        _client = _openai.AsyncOpenAI(api_key=api_key)
-        await _client.chat.completions.create(
-            model=model,
-            messages=[{"role": "system", "content": system_prompt}],
-            max_tokens=1,
-        )
+        # Cache warming is optional. Bound the entire SDK operation (including
+        # retries), and close its independent client on success, error or cancel.
+        async with asyncio.timeout(5.0), _openai.AsyncOpenAI(api_key=api_key) as _client:
+            await _client.chat.completions.create(
+                model=model,
+                messages=[{"role": "system", "content": system_prompt}],
+                max_tokens=1,
+            )
         _duration_ms = int((_time.monotonic() - _t_start) * 1000)
         logger.info(
             f"🔥 LLM prompt cache pre-warmed for call {call_sid} (model={model}, {_duration_ms}ms)"
@@ -436,6 +438,7 @@ class CallHandler:
             5. Build pipeline and run (Pipecat handles remaining messages)
         """
         _capture_open = False
+        _llm_prewarm_task = None
         try:
             logger.info(f"📞 Call {call_sid}: {to_number}")
 
@@ -1637,14 +1640,15 @@ class CallHandler:
             # Result: first-turn TTFB drops from ~1.9 s (cold) to ~0.6 s (warm).
             _openai_key = api_keys.get("openai_api_key")
             if config.llm_provider.lower() == "openai" and _openai_key:
-                asyncio.create_task(
+                _llm_prewarm_task = asyncio.create_task(
                     _prewarm_llm_cache(
                         system_prompt=config.system_prompt,
                         model=config.llm_model,
                         api_key=_openai_key,
                         call_sid=call_sid,
                         event_queue=self.call_event_queues.get(call_sid),
-                    )
+                    ),
+                    name=f"llm_cache_prewarm:{call_sid}",
                 )
 
             logger.info(
@@ -1717,6 +1721,10 @@ class CallHandler:
                     logger.error(f"Failed to save transcript on error: {save_error}")
         finally:
             _capture_open = False
+            # This call owns the optional warmup, including its HTTP client.
+            # Do not let it keep requesting/retrying after its call has ended.
+            if _llm_prewarm_task is not None:
+                _llm_prewarm_task.cancel()
             # Stop the idle timer immediately — must run before flush_and_stop() to
             # close the asyncio scheduling window between runner.run(task) returning
             # and the first await inside flush_and_stop().  IdleTimeoutTracker.stop()
@@ -1740,6 +1748,17 @@ class CallHandler:
                 if mark_watcher is not None:
                     mark_watcher.clear_pending()
                     logger.debug(f"Cleared pending Twilio mark waits for call {call_sid}")
+            # Stop idle/terminal callbacks above before the first cleanup await.
+            if _llm_prewarm_task is not None:
+                try:
+                    await _llm_prewarm_task
+                except asyncio.CancelledError:
+                    pass
+                except Exception as _warmup_err:
+                    logger.warning(
+                        f"LLM warmup cleanup failed for {call_sid}: "
+                        f"{type(_warmup_err).__name__}"
+                    )
             # Flush and stop the event queue
             if call_sid in self.call_event_queues:
                 try:

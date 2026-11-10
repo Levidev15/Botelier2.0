@@ -153,6 +153,7 @@ jobs:
             --package-root /usr/local/lib/python3.11/site-packages/pipecat \
             --tests /ci/examples/features/botelier-flow-trial/test_application_lifecycle.py \
             /ci/examples/features/botelier-flow-trial/test_application_lifecycle_races.py \
+            /ci/examples/features/botelier-flow-trial/test_application_failures.py \
             2>&1 | tee "$EVIDENCE/application-lifecycle.log"
       - name: Retain application compatibility evidence even on failure
         if: always()

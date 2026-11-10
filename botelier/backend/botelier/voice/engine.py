@@ -1788,6 +1788,26 @@ class VoiceEngineFactory:
                     keyterm=config.stt_config.get("keyterm", []),
                 )
 
+                class _BotelierFluxSTTService(DeepgramFluxSTTService):
+                    """Do not leave startup running with no recognition socket."""
+
+                    async def start(self, frame):
+                        await super().start(frame)
+                        if self._websocket is not None:
+                            return
+                        # Flux reports a failed initial connect as nonfatal, but
+                        # run_stt then drops every packet without reconnecting.
+                        # One startup retry permits transient recovery; repeated
+                        # failure must stop this unusable AI leg, not wait for
+                        # the caller to hang up. Mid-call retries stay native.
+                        logger.warning(f"{self}: Retrying initial STT connection once")
+                        await self._connect()
+                        if self._websocket is None:
+                            await self.push_error(
+                                "Speech recognition unavailable after startup retry",
+                                fatal=True,
+                            )
+
                 # Word-gated barge-in for the interruptions-ON path.
                 #
                 # Flux fires StartOfTurn on ANY detected speech onset — breaths,
@@ -1835,7 +1855,7 @@ class VoiceEngineFactory:
 
                 if config.enable_interruptions and flux_min_words > 0 and _flux_hooks_present:
 
-                    class _GatedFluxSTTService(DeepgramFluxSTTService):
+                    class _GatedFluxSTTService(_BotelierFluxSTTService):
                         """Flux STT that defers interruption until real words arrive."""
 
                         def __init__(self, *args, interrupt_min_words: int = 1, **kwargs):
@@ -1895,7 +1915,7 @@ class VoiceEngineFactory:
                         settings=flux_settings,
                     )
 
-                return DeepgramFluxSTTService(
+                return _BotelierFluxSTTService(
                     api_key=api_keys.get("deepgram_api_key"),
                     ttfs_p99_latency=flux_ttfs,
                     # Gate broadcast_interruption() in _handle_start_of_turn.
