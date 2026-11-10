@@ -1,5 +1,7 @@
 """Preserve speech alongside tools without replacing native OpenAI dispatch."""
 
+from pipecat.frames.frames import LLMFullResponseStartFrame, TextFrame
+from pipecat.processors.frame_processor import FrameDirection
 from pipecat.services.openai.llm import OpenAILLMService
 
 
@@ -43,5 +45,16 @@ class _TextAndToolStream:
 
 
 class SpeechPreservingOpenAILLMService(OpenAILLMService):
+    async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
+        if direction == FrameDirection.DOWNSTREAM:
+            if isinstance(frame, LLMFullResponseStartFrame):
+                self.current_response_frame_id = frame.id
+                self.current_response_text = ""
+            elif isinstance(frame, TextFrame):
+                self.current_response_text = (
+                    getattr(self, "current_response_text", "") + frame.text
+                )
+        await super().push_frame(frame, direction)
+
     async def get_chat_completions(self, context):
         return _TextAndToolStream(await super().get_chat_completions(context))

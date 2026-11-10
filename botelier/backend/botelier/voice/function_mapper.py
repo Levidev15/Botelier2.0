@@ -19,6 +19,7 @@ from ..utils import sanitize_function_name
 if TYPE_CHECKING:
     from .call_handler import CallHandler
 from twilio.base.exceptions import TwilioRestException as _TwilioRestException
+from twilio.http.http_client import TwilioHttpClient
 from twilio.rest import Client as TwilioClient
 
 from botelier.flow_executor import (
@@ -235,7 +236,10 @@ class FunctionMapper:
         self.twilio_auth_token = twilio_auth_token or os.environ.get("TWILIO_AUTH_TOKEN")
 
         if self.twilio_account_sid and self.twilio_auth_token:
-            self.twilio_client = TwilioClient(self.twilio_account_sid, self.twilio_auth_token)
+            self.twilio_client = TwilioClient(
+                self.twilio_account_sid, self.twilio_auth_token,
+                http_client=TwilioHttpClient(timeout=10),
+            )
             logger.info(
                 f"✅ Twilio client initialized for call {call_sid} (Account: {self.twilio_account_sid[:10]}...)"
             )
@@ -305,6 +309,11 @@ class FunctionMapper:
             # announcement may still be playing.  Treat it as degraded, never
             # as permission to proceed immediately.
             _reason = f"mark send/wait raised: {_mark_err}"
+        if (
+            self._tts_completion_watcher is not None
+            and self._tts_completion_watcher.is_closing
+        ):
+            return False
         if _reason is not None:
             _est = estimate_playback_secs(expected_speech_text)
             logger.warning(
@@ -504,6 +513,80 @@ class FunctionMapper:
             f"using {_delay:.1f}s length-scaled fallback delay for {label} "
             f"(speech_text={'unknown' if speech_text is None else f'{len(speech_text)} chars'})"
         )
+
+    async def _queue_transfer_announcement(self, params, callback, message, *, flow=False):
+        """Use native utterance identity, then transport completion and playback."""
+        service = self._tts_service
+        watcher = self._tts_completion_watcher
+
+        async def context_done():
+            if watcher is not None:
+                watcher.reset()
+                watcher.schedule_after_speech(callback, label="Transfer")
+            else:
+                await asyncio.sleep(max(3.0, estimate_playback_secs(message)))
+                await callback()
+
+        response_id = getattr(params.llm, "current_response_frame_id", None)
+        response_text = getattr(params.llm, "current_response_text", "")
+        if (
+            flow and message and response_id is not None
+            and response_text.strip() == message.strip()
+            and service is not None and hasattr(service, "bind_terminal_response")
+        ):
+            # The model already emitted this exact announcement. It may still
+            # be queued upstream of TTS, so bind by response-frame identity,
+            # never by a stale greeting's speaking-done event.
+            service.bind_terminal_response(response_id, context_done)
+            return
+        if not message:
+            self._run_after_speech(callback, "Transfer", reset=False)
+            return
+        frame = TTSSpeakFrame(message)
+        if service is not None and hasattr(service, "bind_terminal_speech"):
+            service.bind_terminal_speech(frame, context_done)
+        else:
+            self._run_after_speech(
+                callback, "Transfer", reset=True, speech_text=message,
+            )
+        await params.llm.push_frame(frame)
+
+    async def _complete_transfer(self, params, succeeded):
+        """Finish tool bookkeeping without starting another model generation."""
+        worker = getattr(params, "pipeline_worker", None)
+        if (
+            (worker is not None and worker.has_finished())
+            or (
+                self._tts_completion_watcher is not None
+                and self._tts_completion_watcher.is_closing
+            )
+        ):
+            return
+        message = (
+            "The transfer was accepted."
+            if succeeded else "I couldn't confirm the connection. Please tell me how else I can help."
+        )
+        await params.result_callback(
+            {
+                "status": "transferred" if succeeded else "failed",
+                "message": message,
+                # A transport error cannot prove the remote side effect did
+                # not happen. Never recommend a blind retry from this result.
+                "retry_safe": False,
+            },
+            properties=FunctionCallResultProperties(run_llm=False),
+        )
+        if succeeded:
+            if self.call_handler is not None:
+                self.call_handler.cancel_idle_tracker(self.call_sid)
+            if worker is not None:
+                # A downstream EndFrame alone reaches the sink but never ends
+                # the native worker's source push loop.
+                await worker.stop_when_done()
+            else:
+                await params.llm.push_frame(EndFrame())
+        else:
+            await params.llm.push_frame(TTSSpeakFrame(message))
 
     def set_event_queue(self, event_queue) -> None:
         """Attach the CallEventQueue for this call.
@@ -1005,17 +1088,9 @@ class FunctionMapper:
                 continues executing the TwiML it received (warm <Dial> or cold REFER).
                 """
                 _transfer_succeeded = False
-                _call_already_ended = False
                 try:
                     if self.twilio_client and self.call_sid:
                         try:
-                            # Capture recording SID before launching parallel tasks.
-                            _rec_sid = (
-                                self.call_handler.call_recording_sids.get(self.call_sid)
-                                if self.call_handler
-                                else None
-                            )
-
                             # Stop recording and save transcript concurrently — they are
                             # independent of each other.  Both must finish before the Twilio
                             # REST call so the recording is stopped and the transcript is
@@ -1028,6 +1103,16 @@ class FunctionMapper:
                             #   bypasses LLM context) is injected manually here.
 
                             async def _stop_recording_task():
+                                _rec_sid = None
+                                if self.call_handler:
+                                    if hasattr(self.call_handler, "_await_recording_start"):
+                                        _rec_sid = await self.call_handler._await_recording_start(
+                                            self.call_sid
+                                        )
+                                    else:
+                                        _rec_sid = self.call_handler.call_recording_sids.get(
+                                            self.call_sid
+                                        )
                                 if _rec_sid:
                                     try:
                                         await _asyncio.to_thread(
@@ -1113,13 +1198,6 @@ class FunctionMapper:
                                 f"for call {self.call_sid}"
                             )
 
-                            # Stop the idle timer now that the AI leg is ending.
-                            # Prevents ghost idle_timeout events during the transfer
-                            # ringing/bridging window (the 30 s countdown from the last
-                            # user utterance fires AFTER the transfer if not cancelled here).
-                            if self.call_handler is not None:
-                                self.call_handler.cancel_idle_tracker(self.call_sid)
-
                             # Build mode-specific TwiML. Do not include an
                             # explicit stream-stop verb: this call uses
                             # bidirectional Connect/Stream, and Twilio stops
@@ -1186,13 +1264,17 @@ class FunctionMapper:
                                 if _should_log_prompts():
                                     logger.debug(f"Warm Transfer TwiML:\n{transfer_twiml}")
 
-                            # All DB + Twilio REST work runs in a single worker thread.
-                            # Session opens here — no await crosses this boundary.
-                            # _twilio_cap is the Twilio SDK client (stateless, thread-safe).
+                            # Record success only after the carrier accepts the
+                            # update. An attempted handoff is not a transfer.
+                            if (
+                                self._tts_completion_watcher is not None
+                                and self._tts_completion_watcher.is_closing
+                            ):
+                                return
                             _call_sid_cap = self.call_sid
                             _twilio_cap = self.twilio_client
 
-                            def _db_record_and_transfer():
+                            def _db_record_accepted_transfer():
                                 from ..database import SessionLocal as _SL
                                 from ..services.call_logger import CallLogger as _CL
 
@@ -1204,9 +1286,6 @@ class FunctionMapper:
                                             call_sid=_call_sid_cap,
                                             transfer_to=phone_number,
                                             transfer_type="cold",
-                                        )
-                                        _twilio_cap.calls(_call_sid_cap).update(
-                                            twiml=transfer_twiml
                                         )
                                         # Twilio does NOT call /connect-complete after a REST API
                                         # <Refer> update, so ACW must be triggered here directly.
@@ -1278,32 +1357,28 @@ class FunctionMapper:
                                             transfer_to=phone_number,
                                             transfer_type="warm",
                                         )
-                                        _twilio_cap.calls(_call_sid_cap).update(
-                                            twiml=transfer_twiml
-                                        )
                                     return True
                                 finally:
                                     db.close()
 
-                            _transfer_succeeded = await _asyncio.to_thread(_db_record_and_transfer)
+                            await _asyncio.to_thread(
+                                lambda: _twilio_cap.calls(_call_sid_cap).update(
+                                    twiml=transfer_twiml
+                                )
+                            )
+                            _transfer_succeeded = True
+                            await _asyncio.to_thread(_db_record_accepted_transfer)
                             logger.info(
                                 f"✅ {'Cold SIP REFER' if transfer_mode == 'cold' else 'Warm'} transfer "
                                 f"initiated for call {self.call_sid} to {phone_number}"
                             )
 
                         except Exception as e:
-                            if isinstance(e, _TwilioRestException) and e.status == 400:
-                                # Race condition: Twilio returned 400 because the call leg
-                                # was already terminated — this happens when the transfer
-                                # completes so fast that by the time our REST update() call
-                                # lands, Twilio has already ended the original leg.  Treat
-                                # this as a clean transfer end so the pipeline closes
-                                # gracefully rather than staying alive indefinitely.
-                                logger.warning(
-                                    f"⚠️ Twilio 400 on transfer REST call for {self.call_sid} — "
-                                    f"call leg already ended (fast transfer race); treating as clean end"
+                            if _transfer_succeeded:
+                                logger.error(
+                                    f"Accepted transfer follow-up failed for call {self.call_sid}: "
+                                    f"{type(e).__name__}"
                                 )
-                                _call_already_ended = True
                             else:
                                 logger.error(
                                     f"❌ Twilio transfer failed for call {self.call_sid}: {e}"
@@ -1329,61 +1404,15 @@ class FunctionMapper:
                     # the conversation.  If the call is truly gone (404), Twilio
                     # will close the WebSocket on its side and the transport will
                     # push EndFrame naturally.
-                    if _transfer_succeeded or _call_already_ended:
-                        await params.llm.push_frame(EndFrame())
-                    else:
-                        logger.warning(
-                            f"Transfer did not succeed for {self.call_sid} — "
-                            f"EndFrame not pushed; pipeline remains active"
-                        )
+                    await self._complete_transfer(params, _transfer_succeeded)
 
             # Record what will be spoken so _execute_transfer can append it to
             # the saved transcript (TTSSpeakFrame bypasses the LLM context).
             self._pending_pre_transfer_message = pre_message
 
-            # WHY THE SLEEP: FunctionCallInProgressFrame arrives ~67ms after this
-            # handler runs and wipes the active TTS context before Deepgram audio
-            # returns (~125ms).  Sleeping 250ms (+ one event-loop yield) lets that
-            # frame fully clear the stale context.  We then create a fresh named
-            # context so the pre-transfer phrase has a valid landing zone and we
-            # know exactly which context_id to bind our callback to.
-            await _asyncio.sleep(0)
-            await _asyncio.sleep(0.25)
-
-            # Create a fresh TTS audio context and bind the transfer callback to it.
-            # When on_audio_context_completed fires for this exact context_id the
-            # transfer executes — immune to Deepgram's spurious mid-turn
-            # BotStoppedSpeakingFrame.  Falls back to BotStopped watcher if the
-            # TTS service does not expose create_audio_context.
-            import uuid as _uuid
-
-            _ctx_id: str | None = None
-            if self._tts_service is not None and hasattr(self._tts_service, "create_audio_context"):
-                _ctx_id = str(_uuid.uuid4())
-                try:
-                    await self._tts_service.create_audio_context(_ctx_id)
-                    logger.debug(
-                        f"Created fresh TTS audio context {_ctx_id} for transfer phrase "
-                        f"on call {self.call_sid}"
-                    )
-                except Exception as _ctx_err:
-                    logger.warning(
-                        f"Failed to create TTS audio context for transfer phrase "
-                        f"on call {self.call_sid}: {_ctx_err}"
-                    )
-                    _ctx_id = None
-
-            # Register callback AFTER context creation so we know the exact ctx_id.
-            # context_id=None falls through to BotStopped watcher (reset=True).
-            self._run_after_speech(
-                _execute_transfer,
-                label="Transfer",
-                reset=(_ctx_id is None),
-                context_id=_ctx_id,
-                speech_text=pre_message,
+            await self._queue_transfer_announcement(
+                params, _execute_transfer, pre_message,
             )
-
-            await params.llm.push_frame(TTSSpeakFrame(pre_message))
 
         return function_schema, transfer_handler
 
@@ -2800,22 +2829,31 @@ class FunctionMapper:
                 import asyncio as _asyncio_flow
                 import re as _re_flow
 
+                async def _clear_rejected_flow_transfer():
+                    if (
+                        executor.state.current_node_id == result.get("current_node_id")
+                        and executor.state.transfer_target == target
+                    ):
+                        executor.state.transfer_requested = False
+                        executor.state.transfer_target = None
+                        await executor._snapshot_state()
+
                 if self.twilio_client and self.call_sid and target:
 
                     async def _execute_flow_transfer():
                         """Performs the Twilio REST call for a flow-triggered transfer.
                         Runs as an asyncio task after speech ends — outside Pipecat's
-                        function-call timeout. Pushes EndFrame only after Twilio
+                        function-call timeout. Ends the worker only after Twilio
                         accepts the transfer update.
 
                         Thread-safety contract:
                         - _save_call_transcript is awaited BEFORE any session opens.
                         - Recording stop is already off-loop via to_thread; kept outside the DB block.
                         - TwiML is built on the event loop — pure Python string ops, no I/O.
-                        - ALL DB work (record_transfer, get_call_log, ACW query) and the blocking
-                          Twilio calls().update() REST call run inside _db_flow_record_and_transfer,
-                          which is called via asyncio.to_thread. The session is opened and closed
-                          entirely within that function.
+                        - The blocking Twilio update runs off-loop before opening the
+                          separate DB follow-up session. A rejected update is never
+                          persisted as an accepted transfer.
+                        - All DB follow-up work and its session stay in one worker thread.
                         - self.twilio_client is the Twilio helper-library Client (uses requests
                           internally). It holds no event-loop references and is safe to call from
                           any thread — consistent with existing to_thread usage elsewhere.
@@ -2823,7 +2861,6 @@ class FunctionMapper:
                         - No ORM object leaves the thread.
                         """
                         _flow_transfer_succeeded = False
-                        _flow_call_already_ended = False
                         try:
                             await self._await_twilio_playback_mark(
                                 "flow-transfer", expected_speech_text=_flow_transfer_msg
@@ -2851,11 +2888,16 @@ class FunctionMapper:
                             # ── Step 2: Stop recording ────────────────────────────────────────────
                             # Already off-loop via to_thread. Kept outside the DB block so no
                             # session is open across this await.
-                            _flow_rec_sid = (
-                                self.call_handler.call_recording_sids.get(self.call_sid)
-                                if self.call_handler
-                                else None
-                            )
+                            _flow_rec_sid = None
+                            if self.call_handler:
+                                if hasattr(self.call_handler, "_await_recording_start"):
+                                    _flow_rec_sid = await self.call_handler._await_recording_start(
+                                        self.call_sid
+                                    )
+                                else:
+                                    _flow_rec_sid = self.call_handler.call_recording_sids.get(
+                                        self.call_sid
+                                    )
                             if _flow_rec_sid:
                                 try:
                                     _frs_cap = _flow_rec_sid  # plain string
@@ -2911,7 +2953,7 @@ class FunctionMapper:
                                 twiml_parts.append("</Response>")
                                 logger.info(f"🔄 Warm flow transfer to {target}")
 
-                            # ── Step 4: All DB + Twilio REST in one thread ───────────────────────
+                            # ── Step 4: Carrier acceptance, then thread-local DB follow-up ──
                             # Capture plain scalars before crossing the thread boundary.
                             # No ORM object and no session handle may cross this line.
                             _cap_call_sid = self.call_sid  # str
@@ -2919,8 +2961,13 @@ class FunctionMapper:
                             _cap_twiml = "\n".join(twiml_parts)  # str
                             _cap_target = target  # str
                             _cap_mode = flow_transfer_mode  # str
+                            if (
+                                self._tts_completion_watcher is not None
+                                and self._tts_completion_watcher.is_closing
+                            ):
+                                return
 
-                            def _db_flow_record_and_transfer():
+                            def _db_flow_record_accepted_transfer():
                                 from ..database import SessionLocal as _SL
                                 from ..services.call_logger import CallLogger as _CL
 
@@ -2933,10 +2980,6 @@ class FunctionMapper:
                                         transfer_to=_cap_target,
                                         transfer_type=transfer_type,
                                     )
-                                    # Blocking Twilio REST — safe here, we are in a thread
-                                    _cap_twilio.calls(_cap_call_sid).update(twiml=_cap_twiml)
-                                    logger.info(f"✅ Flow transfer to {_cap_target} initiated")
-
                                     # Trigger ACW for cold flow transfers — Twilio won't call /connect-complete
                                     if _cap_mode == "cold":
                                         try:
@@ -3010,45 +3053,34 @@ class FunctionMapper:
                                     _db.close()
                                 return True
 
-                            _flow_transfer_succeeded = await _asyncio_flow.to_thread(
-                                _db_flow_record_and_transfer
+                            await _asyncio_flow.to_thread(
+                                lambda: _cap_twilio.calls(_cap_call_sid).update(
+                                    twiml=_cap_twiml
+                                )
                             )
+                            _flow_transfer_succeeded = True
+                            await _asyncio_flow.to_thread(_db_flow_record_accepted_transfer)
 
                         except Exception as e:
-                            if isinstance(e, _TwilioRestException) and e.status == 400:
-                                logger.warning(
-                                    f"⚠️ Twilio 400 on flow transfer REST call for {self.call_sid} — "
-                                    "call leg already ended; treating as clean end"
+                            if _flow_transfer_succeeded:
+                                logger.error(
+                                    f"Accepted flow transfer follow-up failed: {type(e).__name__}"
                                 )
-                                _flow_call_already_ended = True
                             else:
                                 logger.error(f"Flow transfer failed: {e}")
                         finally:
-                            if _flow_transfer_succeeded or _flow_call_already_ended:
-                                await params.llm.push_frame(EndFrame())
-                            else:
-                                logger.warning(
-                                    f"Flow transfer did not succeed for {self.call_sid} — "
-                                    "EndFrame not pushed; pipeline remains active"
-                                )
+                            if not _flow_transfer_succeeded:
+                                await _clear_rejected_flow_transfer()
+                            await self._complete_transfer(params, _flow_transfer_succeeded)
 
-                    # Bind the transfer to the LLM's current audio context (reset=False
-                    # reads _turn_context_id from the TTS service).  Falls back to
-                    # BotStopped watcher then fixed delay — never reset=True because the
-                    # speech was initiated upstream by the LLM, not by this handler.
-                    self._run_after_speech(
-                        _execute_flow_transfer,
-                        label="Flow transfer",
-                        reset=False,
-                        speech_text=_flow_transfer_msg,
+                    await self._queue_transfer_announcement(
+                        params, _execute_flow_transfer, _flow_transfer_msg, flow=True,
                     )
                 else:
-                    # No Twilio client / call_sid / target — end the pipeline immediately
-                    await params.llm.push_frame(EndFrame())
-                # Return immediately — do NOT call result_callback for transfer actions.
-                # Calling it would trigger a new LLM generation cycle, which cancels
-                # any in-flight TTS context before Deepgram audio arrives, preventing
-                # BotStoppedSpeakingFrame from firing and killing the transfer callback.
+                    await _clear_rejected_flow_transfer()
+                    await self._complete_transfer(params, False)
+                # Complete only after the actual outcome, with run_llm=False:
+                # no new inference can interrupt the announcement.
                 return
 
             elif result.get("action") == "end":

@@ -86,3 +86,17 @@ class WorkflowIsolationTests(unittest.TestCase):
                         if step.get("name", "").startswith("Retain application compatibility"))
         self.assertEqual(evidence["if"], "always()")
         self.assertTrue(evidence["uses"].startswith("actions/upload-artifact@"))
+
+    def test_transfer_and_recording_checks_are_required_before_image_export(self):
+        steps = load("voice-flow-candidate.yml")["jobs"]["candidate"]["steps"]
+        check = next(step for step in steps if step.get("id") == "application_lifecycle")
+        self.assertNotIn("continue-on-error", check)
+        for required in (
+            "--network none", "--read-only", '--entrypoint env "$IMAGE" -i',
+            "lifecycle_guard.py", "test_application_transfers.py",
+            "test_application_recordings.py",
+        ):
+            self.assertIn(required, check["run"])
+        export = next(i for i, step in enumerate(steps)
+                      if step.get("id") == "export_candidate_image")
+        self.assertLess(steps.index(check), export)

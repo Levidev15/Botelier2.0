@@ -14,10 +14,12 @@ then imports the actual application code from that same image.
 | Provider → TTS completion | Started real Flux service, native audio-context worker and real receive loop | Synthetic PCM preserves 8 kHz/context identity. Flushed alone cannot complete speech; SpeechMetadata completes the actual context. |
 | Speech → hangup | Actual end-call handler with real `FunctionCallParams`, native direct-speech dispatch, real completion/mark watchers and `_finalize_call_end` | No hangup on enqueue, early stop, completed synthesis alone, or wrong mark. Exactly one hangup/EndFrame after matching playback acknowledgement. Interrupted goodbye does not end the call. No extra LLM generation. |
 | Failure paths | Actual custom Aura/Flux connect-error handlers and carrier mark waiter | Both providers must emit an ErrorFrame and connection-error notification, not a NameError. Unacknowledged carrier marks time out and remove their waiter. |
+| Speech → transfer | Actual tool and legacy-flow handlers, native worker, Flux speech contexts, carrier mark watcher and Twilio HTTP request preparation | Warm/cold handoffs wait for their actual announcement and matching mark. Rejection returns a structured failure and permits another caller turn. Shutdown cannot approve a pending handoff. |
+| Recording → handoff/disposal | Actual recording-start service, real recording-stop SDK and call-owned tasks | Account entitlement and assistant toggle are both required. Pending startup cannot race past a transfer or survive coordinator cleanup. Recording HTTP errors remain optional failures. |
 
-There are 30 component cases, 41 lifecycle cases and 28 selected legacy
+There are 30 component cases, 81 lifecycle cases and 28 selected legacy
 extractor/mapper regression cases below. The lifecycle command runs the latter
-two groups together; it must not be described as 69 whole-call cases. Results
+two groups together; it must not be described as 109 whole-call cases. Results
 belong to the exact checked commit and image, not this document. The CI log and
 retained evidence determine pass/fail.
 
@@ -76,13 +78,18 @@ remains outside this checkpoint.
 - Real SDK setup starts the TTS service and its context worker. Fake sockets
   remain open until teardown; an exhausted finite iterator would incorrectly
   simulate a dropped provider connection and trigger reconnects.
-- Carrier updates are recorded in memory. Playback acknowledgements are
-  synthetic frames; nobody places or hears a phone call.
+- Carrier traffic is recorded in memory. Transfer tests retain the real Twilio
+  client, form encoding and response parsing, replacing only
+  `requests.Session.send`; recording startup uses its actual service at the
+  same HTTP boundary. Playback acknowledgements enter the real ASGI websocket
+  as synthetic JSON; nobody places or hears a phone call.
 - An in-memory empty database lookup lets the real terminal tool-usage logger
   run in the component suite. Lifecycle checks instead use strictly enumerated
   synthetic records/sessions. Real event queue and greeting/caller-mark logic
   execute; transcript persistence/billing finalization is explicitly a fake
-  `CallLogger.complete_call` boundary. This does not test billing, ACW or actual
+  `CallLogger.complete_call` boundary. Transfer persistence is also a synthetic
+  boundary; cold-transfer ACW/extraction is explicitly not started. This does
+  not test billing, ACW or actual
   database commit/idempotency behavior. Real drivers/connections, SQLite
   connections and server startup remain denied. ORM declarations use real
   SQLAlchemy, not a database connection.
@@ -101,7 +108,8 @@ remains outside this checkpoint.
   correctly dropped while greeting-mute release propagates is not mistaken for
   a broken input path. Provider transcription and PCM remain synthetic.
 - Greeting disk/HTTP cache access is a forced cache miss. Its actual TTS fallback
-  runs; cache-hit/prewarm-bundle and recording paths are not covered.
+  runs; cache-hit/prewarm-bundle paths are not covered. Recording coverage is
+  limited to the dedicated offline slice below.
 - Startup gates are at the greeting-cache/provider socket boundaries. The
   earlier race slice completes the fake handshake after hangup; the separate
   provider-failure slice below never releases its stalled I/O before asserting
@@ -189,6 +197,54 @@ validation and installation of the existing I/O/import guards. A separate
 stdlib safety regression proves database and server imports are still denied
 during that preparation; collection order does not justify allowing either.
 
+## Offline transfer and recording slice
+
+Forty additional cases use the actual coordinator, factory and native worker,
+with Flux STT/OpenAI/Flux TTS. They exercise real legacy-flow or transfer-tool
+dispatch, synthetic finalized STT turns, serialized model requests, speech
+contexts, carrier media/mark messages and outbound Twilio request preparation.
+The legacy flow executor is positioned at a transfer node; this does not prove
+graph ordering, start authorization or a new native controller.
+
+- Warm and cold tool/flow transfers must speak their configured announcement
+  once, wait for its actual context/transport completion, reject a wrong mark,
+  then issue the right `Dial`/`Refer` update. A flow with no model preface must
+  still speak its configured message. No extra model generation is requested.
+- Generic HTTP 400/404/500 and a transport timeout must not be persisted as
+  transfer success or falsely treated as an already-ended call. The failure
+  result completes native tool bookkeeping without starting another completion.
+  A new real finalized STT turn gets a second model reply; its request contains
+  no unfinished transfer tool. Missing carrier configuration also stays usable.
+  Failure speech says the connection could not be confirmed, and the result
+  does not recommend a blind retry. A timeout is not proof that the remote
+  update did not happen: authoritative callback reconciliation and protection
+  against an explicitly requested retry after an ambiguous outcome remain
+  untested and must be resolved before production rollout.
+- Hangup during announcement or while waiting for a mark must discard the
+  deferred action. Releasing waiters during shutdown is not a playback ACK.
+  An already-sent held carrier update is instead awaited, without blocking the
+  event loop; it is not abandoned or blindly retried after caller hangup.
+- The existing function-call mute strategy remains in force during a transfer.
+  These tests characterize that policy; they do not introduce caller-driven
+  transfer cancellation or configurable per-node interruption behavior.
+- A persistence failure after remote acceptance cannot undo the side effect,
+  cause a duplicate update or speak a false carrier-rejection message. Actual
+  transfer-log commits, durable recovery and webhook/commit races remain untested.
+- Recording requires both the account feature and assistant setting. Its real
+  start request must be off-loop, dual channel, and use the configured callback
+  URL. A refused, timed-out or malformed start cannot kill the voice worker.
+  Pending startup must settle before either tool/flow handoff or call cleanup.
+- Known recording SIDs are stopped before handoff. The existing **best-effort**
+  policy is preserved: a failed recording-stop request warns but does not block
+  transfer. Therefore these tests do not guarantee recording has stopped after
+  a carrier error, nor do they approve a recording/privacy policy.
+
+Injected failures retain their exact expected error patterns. All cases require
+finished native workers, closed synthetic sessions/queues, cleared call state,
+no surviving call-created tasks and no unexpected guarded operations.
+Authenticated recording-status/transfer webhooks, real recording downloads,
+database writes, AI-leg billing and cold-transfer ACW are not exercised.
+
 ## Minimal candidate application changes
 
 Both custom Deepgram connection-error paths referenced `ErrorFrame` without
@@ -244,6 +300,29 @@ dispatch, model requests and context ownership are retained, usage/finish
 metadata is emitted once, and nested iterator/HTTP close propagates on cancel.
 Vendor sources, the three reviewed overlays and dependencies are unchanged.
 
+Transfer checks reproduced success being recorded before carrier acceptance,
+generic 400 responses being treated as successful termination, and a native
+worker that remained running after an EndFrame was pushed mid-pipeline. The
+candidate now records only accepted handoffs, supplies a truthful final tool
+result with `run_llm=False`, and ends the worker through its source queue.
+Failed handoffs clear their owned legacy-flow transfer flag and remain usable.
+The Twilio SDK HTTP client has an explicit ten-second request timeout; this is
+not a strict whole-operation deadline or a retry/failover policy.
+
+The old manual audio context did not identify the context actually chosen by
+native `TTSSpeakFrame` processing. An application-owned Flux mixin binds terminal
+callbacks to actual speech-frame or model-response identities and actual native
+contexts. The OpenAI wrapper retains the current response identity/text so an
+already-spoken matching flow announcement is not duplicated. Other TTS providers
+retain their previous context wiring and are not whole-call certified here.
+
+Recording startup is now retained and observed rather than fire-and-forget.
+Post-speech actions are also tracked: shutdown closes new callbacks, releases
+pending mark waits as cancellations, and awaits already-sent off-loop work
+before disposing of its call. Cancelling an asyncio waiter would not cancel the
+thread's external HTTP side effect. These changes are candidate-only; no live
+phone route, credentials, dependency or vendor source is changed.
+
 ## What a pass does not establish
 
 - No full FastAPI server boot, customer database, Azure staging environment,
@@ -253,7 +332,7 @@ Vendor sources, the three reviewed overlays and dependencies are unchanged.
   not exercised by calling the handler's cancellation method.
 - The interruption/transcript slices cover the stated synthetic turns and
   callbacks, not exhaustive timing races, every coalesced/word-stamped text
-  shape or real acoustics. Other exceptional termination, complete transfer handling,
+  shape or real acoustics. Authenticated transfer/recording callbacks, complete
   carrier recovery, concurrent reconnects and every
   assistant/provider configuration still need separate checks.
 - Stalled-provider checks above prove bounded disposal after hangup, not

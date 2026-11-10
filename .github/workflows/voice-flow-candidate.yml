@@ -156,6 +156,8 @@ jobs:
             /ci/examples/features/botelier-flow-trial/test_application_lifecycle_races.py \
             /ci/examples/features/botelier-flow-trial/test_application_failures.py \
             /ci/examples/features/botelier-flow-trial/test_application_transcripts.py \
+            /ci/examples/features/botelier-flow-trial/test_application_transfers.py \
+            /ci/examples/features/botelier-flow-trial/test_application_recordings.py \
             /ci/legacy-transcripts/test_interrupted_transcript.py::TestMarkResponseInterrupted \
             /ci/legacy-transcripts/test_interrupted_transcript.py::TestInterruptedMarking \
             /ci/legacy-transcripts/test_interrupted_transcript.py::TestIncompleteRecoverySkip \

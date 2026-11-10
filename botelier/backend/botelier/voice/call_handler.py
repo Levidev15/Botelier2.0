@@ -384,6 +384,7 @@ class CallHandler:
         self.call_recording_sids: dict[
             str, str
         ] = {}  # call_sid -> Twilio recording SID (set when recording starts)
+        self.call_recording_tasks: dict[str, asyncio.Task] = {}
         self.call_tasks: dict[
             str, Any
         ] = {}  # call_sid -> PipelineTask (cancelled by connect-complete when stream ends)
@@ -1354,7 +1355,9 @@ class CallHandler:
                 # blocks the greeting for ~20–80 ms without functional gain.
                 asyncio.create_task(asyncio.to_thread(_write_call_answered))
 
-                # Fire in-call recording as a non-blocking background task.
+                # Start recording without delaying the greeting. Retain its
+                # ownership so transfer/cleanup cannot overtake an in-flight
+                # HTTP start and lose the recording SID.
                 # This replaces the phone-number-level VoiceRecord approach; no
                 # Reconfigure step is needed.  Failures are logged but never abort
                 # the call.
@@ -1362,34 +1365,20 @@ class CallHandler:
                     from ..config.domain import get_public_base_url as _get_base_url
                     from ..services.recording_sync import start_in_call_recording as _start_rec
 
-                    _rec_task = asyncio.create_task(
-                        _start_rec(
+                    async def _start_owned_recording(_owner=task):
+                        sid = await _start_rec(
                             call_sid=call_sid,
                             account_sub_sid=hotel_twilio_sid,
                             account_sub_token=hotel_twilio_token,
                             base_url=_get_base_url(),
                         )
+                        if sid and self.active_calls.get(call_sid) is _owner:
+                            self.call_recording_sids[call_sid] = sid
+                        return sid
+
+                    self.call_recording_tasks[call_sid] = asyncio.create_task(
+                        _start_owned_recording(), name=f"recording-start:{call_sid}",
                     )
-
-                    # Store the recording SID when the task completes so transfer
-                    # handlers can stop the recording before handing off.
-                    # done_callback runs synchronously in the event loop — no awaiting.
-                    # Guard with active_calls check: if cleanup already ran the SID
-                    # must not be re-inserted as a stale entry.
-                    def _on_rec_started(
-                        _t,
-                        _sid_store=self.call_recording_sids,
-                        _active=self.active_calls,
-                        _csid=call_sid,
-                    ):
-                        try:
-                            sid = _t.result()
-                            if sid and _csid in _active:
-                                _sid_store[_csid] = sid
-                        except Exception:
-                            pass
-
-                    _rec_task.add_done_callback(_on_rec_started)
                     logger.info(f"🎙️ In-call recording task queued for {call_sid}")
 
                 # Pass the queue reference to FunctionMapper so it can log pipeline events
@@ -1730,6 +1719,7 @@ class CallHandler:
                     logger.error(f"Failed to save transcript on error: {save_error}")
         finally:
             _capture_open = False
+            _terminal_watcher = None
             # This call owns the optional warmup, including its HTTP client.
             # Do not let it keep requesting/retrying after its call has ended.
             if _llm_prewarm_task is not None:
@@ -1752,6 +1742,7 @@ class CallHandler:
                 watcher = getattr(mapper, "_tts_completion_watcher", None)
                 if watcher is not None:
                     watcher.clear_callback()
+                    _terminal_watcher = watcher
                     logger.debug(f"Cleared pending TTS callback for call {call_sid}")
                 mark_watcher = getattr(mapper, "_twilio_mark_watcher", None)
                 if mark_watcher is not None:
@@ -1768,6 +1759,13 @@ class CallHandler:
                         f"LLM warmup cleanup failed for {call_sid}: "
                         f"{type(_warmup_err).__name__}"
                     )
+            if _terminal_watcher is not None:
+                await _terminal_watcher.wait_for_callbacks()
+            # requests.post is off-loop and has its own HTTP timeout. Cancelling
+            # only its asyncio waiter would not cancel the thread's side effect.
+            # Observe completion rather than losing a late recording response.
+            await self._await_recording_start(call_sid)
+            self.call_recording_tasks.pop(call_sid, None)
             # Flush and stop the event queue
             if call_sid in self.call_event_queues:
                 try:
@@ -1860,6 +1858,22 @@ class CallHandler:
             # Safety pop — already removed at the top of the finally block, but
             # handles any edge path where the pop above was skipped.
             self.call_idle_trackers.pop(call_sid, None)
+
+    async def _await_recording_start(self, call_sid: str) -> str | None:
+        """Resolve this call's optional recording start before handoff/disposal."""
+        recording_task = self.call_recording_tasks.get(call_sid)
+        if recording_task is not None:
+            try:
+                await asyncio.shield(recording_task)
+            except asyncio.CancelledError:
+                if not recording_task.cancelled():
+                    raise
+            except Exception as recording_error:
+                logger.warning(
+                    f"Recording startup failed for {call_sid}: "
+                    f"{type(recording_error).__name__}"
+                )
+        return self.call_recording_sids.get(call_sid)
 
     def is_pipeline_active(self, call_sid: str) -> bool:
         """Task #96: True iff a pipeline for ``call_sid`` is still registered

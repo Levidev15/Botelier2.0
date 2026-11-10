@@ -116,6 +116,7 @@ from pipecat.turns.user_turn_strategies import (
 
 from ..config.providers import is_flux_model
 from .agent import VoiceAgentConfig
+from .terminal_speech import TerminalSpeechContexts
 
 
 def is_external_vad_effectively_enabled(config: VoiceAgentConfig) -> bool:
@@ -803,6 +804,8 @@ class TtsCompletionWatcher(FrameProcessor):
         self._on_done_callback = None  # One-shot async callback
         self._bot_speaking = False  # True between BotStarted/BotStoppedSpeakingFrame
         self._guard_task = None  # Active timeout-guard task (cancelled on teardown)
+        self._action_tasks: set[asyncio.Task] = set()
+        self._callbacks_closed = False
         # Monotonic timestamp of the last TTS activity frame (TTSStartedFrame /
         # TTSAudioRawFrame) observed flowing downstream.  Used by the timeout
         # guard to distinguish "speech is queued/being synthesized but hasn't
@@ -818,6 +821,32 @@ class TtsCompletionWatcher(FrameProcessor):
         BotStoppedSpeakingFrame.
         """
         self._speaking_done.clear()
+
+    @property
+    def is_closing(self) -> bool:
+        return self._callbacks_closed
+
+    def _start_action(self, callback):
+        async def guarded():
+            if self._callbacks_closed:
+                return
+            try:
+                await callback()
+            except Exception:
+                logger.exception(
+                    "TtsCompletionWatcher: unhandled exception in post-speech callback"
+                )
+
+        action = asyncio.create_task(guarded())
+        self._action_tasks.add(action)
+        action.add_done_callback(self._action_tasks.discard)
+
+    async def wait_for_callbacks(self):
+        """Observe already-started actions; cancelling a waiter cannot undo HTTP."""
+        current = asyncio.current_task()
+        actions = [task for task in self._action_tasks if task is not current]
+        if actions:
+            await asyncio.gather(*(asyncio.shield(task) for task in actions))
 
     def schedule_after_speech(
         self, callback, timeout: float = 5.0, max_wait: float = 60.0, label: str = ""
@@ -858,11 +887,13 @@ class TtsCompletionWatcher(FrameProcessor):
             max_wait: Absolute ceiling in seconds regardless of speaking state.
                       Default 60 s.
         """
+        if self._callbacks_closed:
+            return
         if self._speaking_done.is_set():
             logger.info(
                 f"TtsCompletionWatcher[{label}]: speech already done — firing callback immediately"
             )
-            asyncio.create_task(callback())
+            self._start_action(callback)
         else:
             if self._on_done_callback is not None:
                 logger.warning("TtsCompletionWatcher: overwriting existing on-done callback")
@@ -930,11 +961,14 @@ class TtsCompletionWatcher(FrameProcessor):
                             f"— firing post-speech callback via timeout"
                         )
                         try:
+                            self._action_tasks.add(asyncio.current_task())
                             await cb()
                         except Exception:
                             logger.exception(
                                 "TtsCompletionWatcher: unhandled exception in timeout callback"
                             )
+                        finally:
+                            self._action_tasks.discard(asyncio.current_task())
 
             self._guard_task = asyncio.create_task(_timeout_guard())
 
@@ -948,6 +982,7 @@ class TtsCompletionWatcher(FrameProcessor):
         its callback detaches itself first, so an in-flight action is never
         cancelled mid-execution.
         """
+        self._callbacks_closed = True
         self._on_done_callback = None
         if self._guard_task is not None and not self._guard_task.done():
             self._guard_task.cancel()
@@ -970,6 +1005,8 @@ class TtsCompletionWatcher(FrameProcessor):
             return False
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
+        if isinstance(frame, (CancelFrame, EndFrame)):
+            self.clear_callback()
         await super().process_frame(frame, direction)
         if isinstance(frame, BotStartedSpeakingFrame):
             # Track audible speech so the schedule_after_speech timeout guard
@@ -990,16 +1027,7 @@ class TtsCompletionWatcher(FrameProcessor):
             cb = self._on_done_callback
             self._on_done_callback = None
             if cb is not None:
-
-                async def _guarded_cb(callback=cb):
-                    try:
-                        await callback()
-                    except Exception:
-                        logger.exception(
-                            "TtsCompletionWatcher: unhandled exception in post-speech callback"
-                        )
-
-                asyncio.create_task(_guarded_cb())
+                self._start_action(cb)
         # Always pass frames through unchanged
         await self.push_frame(frame, direction)
 
@@ -1044,6 +1072,8 @@ class TwilioMarkWatcher(FrameProcessor):
 
         try:
             await asyncio.wait_for(event.wait(), timeout=timeout)
+            if self._pending.get(name) is not event:
+                return False  # Teardown released this waiter, not a carrier ACK.
             logger.info(f"Twilio playback mark acknowledged: {name}")
             return True
         except TimeoutError:
@@ -2475,7 +2505,7 @@ class VoiceEngineFactory:
                 config.tts_config, config.tts_voice_id or "flux-haley-en"
             )
 
-            class _BotelierDeepgramFluxTTSService(DeepgramFluxTTSService):
+            class _BotelierDeepgramFluxTTSService(TerminalSpeechContexts, DeepgramFluxTTSService):
                 """Deepgram Flux TTS with Botelier-specific enhancements.
 
                 Adds the same three layers as the Aura subclass:
