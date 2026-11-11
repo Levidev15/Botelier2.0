@@ -17,7 +17,8 @@ def test_enabled_mcp_tool_survives_a_flow_node_tool_refresh():
     async def scenario():
         providers = NodeProviders([
             tool_delta("collect_query", {"query": "standard"}),
-            "The connected fixture remains available.",
+            tool_delta("collect_choice", {"choice": "standard"}, call_id="choice-call"),
+            "Your fixture choice is noted.",
         ])
         async with NodeCall(config=flow_config(source="integration"), providers=providers, mcp=True) as call:
             await start_conversation(call)
@@ -27,10 +28,11 @@ def test_enabled_mcp_tool_survives_a_flow_node_tool_refresh():
             await providers.user_turn("Please check the standard fixture.")
             await wait_for_speech(call, NARRATION)
             await providers.user_turn("Check the fixture using the connected tool.", turn_index=1)
-            await wait_for_speech(call, "The connected fixture remains available.")
+            await wait_for_speech(call, "Your fixture choice is noted.")
             requests = [body for body in providers.requests if body.get("stream")]
             names = {tool["function"]["name"] for tool in requests[1]["tools"]}
             assert names == {"collect_choice", "mcp_lookup"}
+            assert call.executor.state.collected_slots["choice"] == "standard"
             assert "mcp_disabled" not in names
             assert not any(message.get("method") == "tools/call"
                            for message in providers.mcp_messages)

@@ -34,7 +34,9 @@ invent a new node or silently claim that MCP calls follow graph edges.
    consume an unrelated response node. The executor still rejects the action.
    Already-spoken wait metadata is removed from the final model tool result.
 4. Filtered/enabled MCP schemas survive the flow mapper's current-tool refresh.
-   Disabled and native-colliding tools are not reintroduced.
+   Disabled and native-colliding tools are not reintroduced. All registered
+   native handlers reserve their names, including those whose schemas are still
+   gated until a later node; a connection cannot replace a future collect action.
 5. MCP protocol-level errors and structured-only data are preserved in a
    **tool result**, never promoted into system instructions or direct TTS.
    Legacy successful text concatenation is unchanged. Non-text content is not
@@ -101,3 +103,25 @@ native function bookkeeping to settle, not just an in-progress context entry.
   remain deferred rather than mocked as completed.
 - The guard is an audit/import hook, not an OS sandbox. Local results do not
   replace the fresh-image no-network gate or future approved Azure staging.
+
+## Fresh-image compatibility finding
+
+The first fresh-image run caught an additional dependency boundary that local
+passes did not certify: its open-ended MCP requirement resolved **MCP 2.3.0**,
+while the verified local environment used **MCP 1.26.0**. Pipecat 1.5.0 imports
+the legacy `streamablehttp_client` symbol; MCP 2.3.0 exports only the renamed
+`streamable_http_client`. The optional import path silently marks MCP
+unavailable while ordinary voice setup continues.
+
+The gate correctly failed: 42 node cases passed, seven MCP cases failed and
+unexpected follow-up model attempts remained guard failures. Later callback/
+database checks and image export were skipped, not counted as passes. MCP
+fixtures now require the actual SDK import and available voice client before
+starting a pipeline, so this mismatch cannot be hidden behind tool-unavailable
+fallbacks.
+
+Do not patch SDK files, fake MCP availability, install packages into the running
+workspace or relax guards to bypass this. The proposed correction is an
+explicit **candidate-only** constraint to the already-tested MCP 1.26.0.
+Dependency changes remain an approval boundary; the production requirements,
+Azure container and routing have not been changed.

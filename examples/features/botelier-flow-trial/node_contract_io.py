@@ -267,7 +267,7 @@ class NodeProviders(TranscriptProviders):
                  "inputSchema": {"type": "object", "properties": {
                      "query": {"type": "string"},
                  }, "required": ["query"]}}
-                for name in ("mcp_lookup", "mcp_disabled", "collect_query")
+                for name in ("mcp_lookup", "mcp_disabled", "collect_query", "collect_choice")
             ]}
         elif method == "tools/call":
             assert message["params"] == {
@@ -327,10 +327,18 @@ class NodeCall(OfflineCall):
             tool_type=ToolType.FLOW, config=config,
         )]
         if mcp:
+            # Fail on the real SDK import before starting a pipeline. Core
+            # voice imports may swallow optional MCP incompatibilities.
+            from pipecat.services.mcp_service import MCPClient
+            from botelier.voice import call_handler
             from botelier.models.mcp_connection import MCPConnectionStatus, MCPTransportType
 
+            assert call_handler.PIPECAT_MCP_AVAILABLE
+            assert call_handler.PipecatMCPClient is MCPClient
             self.records.assistant.mcp_connection_id = CONNECTION
-            self.records.assistant.mcp_enabled_tools = ["mcp_lookup", "collect_query"]
+            self.records.assistant.mcp_enabled_tools = [
+                "mcp_lookup", "collect_query", "collect_choice",
+            ]
             self.records.rows["MCPConnection"] = SimpleNamespace(
                 id=CONNECTION, name="Offline MCP fixture", server_url=MCP_URL,
                 status=MCPConnectionStatus.CONNECTED,

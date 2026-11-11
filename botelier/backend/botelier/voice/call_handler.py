@@ -68,6 +68,9 @@ def _merge_voice_mcp_tools(
         for schema in function_schemas
         if getattr(schema, "name", None)
     }
+    # Flow handlers are registered up front even when their schemas are gated
+    # until a later node. MCP must not replace those currently hidden handlers.
+    native_names.update(function_handlers)
     filtered_tools = [
         tool
         for tool in discovered_tools
