@@ -17,12 +17,15 @@ cleanup() {
 trap cleanup EXIT
 mkdir -p "$EVIDENCE"
 
+# The official image permits password-free bootstrap only with this fixture
+# setting. It is NOT production auth: there is no TCP listener, container
+# networking or published port, and clients see only this temporary Unix socket.
 db_id=$(docker run -d --network none --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,size=32m \
   --tmpfs /var/run/postgresql:rw,nosuid,nodev,size=16m \
   --tmpfs /var/lib/postgresql/data:rw,nosuid,nodev,size=256m \
   -v "$socket:/offline-db:rw" \
-  -e POSTGRES_DB=voice_recovery_fixture -e POSTGRES_HOST_AUTH_METHOD=reject \
+  -e POSTGRES_DB=voice_recovery_fixture -e POSTGRES_HOST_AUTH_METHOD=trust \
   postgres:16.10-bookworm \
   -c listen_addresses= -c unix_socket_directories=/offline-db \
   -c unix_socket_permissions=0777 -c fsync=on -c synchronous_commit=on)

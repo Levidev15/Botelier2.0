@@ -23,7 +23,10 @@ class RecoveryOrchestrationTests(unittest.TestCase):
                 "import json,os,sys\n"
                 "args=sys.argv[1:]\n"
                 "with open(os.environ['FIXTURE_DOCKER_LOG'],'a') as f: f.write(json.dumps(args)+'\\n')\n"
-                "if args[:2]==['run','-d']: print('synthetic-fixture-container')\n"
+                "if args[:2]==['run','-d']:\n"
+                " if 'POSTGRES_HOST_AUTH_METHOD=trust' not in args:\n"
+                "  print('Synthetic official-image password-free initialization refusal',file=sys.stderr); sys.exit(23)\n"
+                " print('synthetic-fixture-container')\n"
                 "if os.environ.get('FAIL_SUITE') and any(os.environ['FAIL_SUITE'] in a for a in args): sys.exit(19)\n"
             )
             binary.chmod(0o700)
@@ -46,6 +49,7 @@ class RecoveryOrchestrationTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         runs = [call for call in calls if call[0] == "run"]
         self.assertEqual(len(runs), 4)
+        self.assertIn("listen_addresses=", runs[0])
         for call in runs:
             self.assertEqual(call[call.index("--network") + 1], "none")
             self.assertIn("--read-only", call)
