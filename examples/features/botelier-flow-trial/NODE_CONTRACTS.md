@@ -121,7 +121,10 @@ starting a pipeline, so this mismatch cannot be hidden behind tool-unavailable
 fallbacks.
 
 Do not patch SDK files, fake MCP availability, install packages into the running
-workspace or relax guards to bypass this. The proposed correction is an
-explicit **candidate-only** constraint to the already-tested MCP 1.26.0.
-Dependency changes remain an approval boundary; the production requirements,
-Azure container and routing have not been changed.
+workspace or relax guards to bypass this. The approved correction is an
+explicit **candidate-only** `mcp==1.26.0` constraint, consumed only by
+`Dockerfile.flow-pilot`. The Pipecat wheel and Flux overlays remain unchanged.
+The complete fresh-image gate must verify this dependency resolution; local
+passes alone cannot clear the failed image checkpoint. Further dependency
+changes remain an approval boundary. The production requirements, Azure
+container, running workspace packages and routing have not been changed.
