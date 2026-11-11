@@ -143,3 +143,20 @@ class WorkflowIsolationTests(unittest.TestCase):
         self.assertIn("bash scripts/voice_release/check_transfer_recovery.sh", check["run"])
         export = next(i for i, step in enumerate(steps) if step.get("id") == "export_candidate_image")
         self.assertLess(steps.index(check), export)
+
+    def test_native_adapter_gate_is_mandatory_and_offline_before_image_export(self):
+        steps = load("voice-flow-candidate.yml")["jobs"]["candidate"]["steps"]
+        check = next((step for step in steps if step.get("id") == "native_pilot_adapter"), None)
+        self.assertIsNotNone(check, "The saved-flow native adapter gate is missing")
+        self.assertNotIn("continue-on-error", check)
+        self.assertNotIn("if", check)
+        for required in (
+            "--network none", "--read-only", '--entrypoint env "$IMAGE" -i',
+            "lifecycle_guard.py", "--backend-root /app",
+            "test_pilot_contract.py", "test_pilot_pipeline.py", "test_pilot_mcp.py",
+            'tee "$EVIDENCE/native-pilot-adapter.log"',
+        ):
+            self.assertIn(required, check["run"])
+        export = next(i for i, step in enumerate(steps)
+                      if step.get("id") == "export_candidate_image")
+        self.assertLess(steps.index(check), export)

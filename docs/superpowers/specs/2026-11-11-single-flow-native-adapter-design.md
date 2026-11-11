@@ -7,7 +7,7 @@ existing saved graph format runs through native Pipecat Flows, performs one
 existing connected API lookup, presents its result once, and asks the next
 question without an extra caller turn.
 
-The checkpoint goal is approved. This detailed contract is for review before
+The user approved this detailed contract on 2026-11-11 for isolated
 implementation. It refines the existing Azure Voice Flow Pilot; it does not
 authorize the rest of that pilot or a production migration.
 

@@ -191,6 +191,31 @@ jobs:
             /ci/examples/features/botelier-flow-trial/test_application_mcp_contracts.py \
             /ci/examples/features/botelier-flow-trial/test_action_boundary_contracts.py \
             2>&1 | tee "$EVIDENCE/node-contracts.log"
+      - name: Exercise the inactive saved-flow native adapter offline
+        id: native_pilot_adapter
+        env:
+          IMAGE: voice-flow-candidate:${{ github.sha }}
+          EVIDENCE: ${{ runner.temp }}/voice-application-evidence
+        run: |
+          mkdir -p "$EVIDENCE"
+          printf '{"commit":"%s","network":"none","production_activation":false,"providers":"synthetic","business_io":"synthetic","database":"synthetic","spoken_barge_in_certified":false}\n' \
+            "$GITHUB_SHA" > "$EVIDENCE/native-pilot-checkpoint.json"
+          docker run --rm --network none --read-only \
+            --tmpfs /tmp:rw,nosuid,nodev,size=256m \
+            -v "$GITHUB_WORKSPACE/examples/features/botelier-flow-trial:/ci/examples/features/botelier-flow-trial:ro" \
+            -v "$RUNNER_TEMP/voice-test-tools:/test-tools:ro" \
+            --entrypoint env "$IMAGE" -i \
+            PATH=/usr/local/bin:/usr/bin:/bin HOME=/tmp NLTK_DATA=/opt/nltk_data \
+            PYTHONPATH=/test-tools PYTHONDONTWRITEBYTECODE=1 \
+            PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 LOGURU_LEVEL=ERROR \
+            python -B /ci/examples/features/botelier-flow-trial/lifecycle_guard.py \
+            --diagnose \
+            --backend-root /app \
+            --package-root /usr/local/lib/python3.11/site-packages/pipecat \
+            --tests /ci/examples/features/botelier-flow-trial/test_pilot_contract.py \
+            /ci/examples/features/botelier-flow-trial/test_pilot_pipeline.py \
+            /ci/examples/features/botelier-flow-trial/test_pilot_mcp.py \
+            2>&1 | tee "$EVIDENCE/native-pilot-adapter.log"
       - name: Exercise authenticated carrier callbacks offline
         id: application_callbacks
         env:
