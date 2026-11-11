@@ -43,6 +43,8 @@ mkdir -p "$EVIDENCE"
 # The official image permits password-free bootstrap only with this fixture
 # setting. It is NOT production auth: there is no TCP listener, container
 # networking or published port, and clients see only this temporary Unix socket.
+# The image's bootstrap psql clears PGHOST and needs the default local socket
+# too. That internal directory is never shared with the test clients.
 db_id=$(docker run -d --network none --read-only \
   --tmpfs /tmp:rw,nosuid,nodev,size=32m \
   --tmpfs /var/run/postgresql:rw,nosuid,nodev,size=16m \
@@ -50,7 +52,7 @@ db_id=$(docker run -d --network none --read-only \
   -v "$socket:/offline-db:rw" \
   -e POSTGRES_DB=voice_recovery_fixture -e POSTGRES_HOST_AUTH_METHOD=trust \
   postgres:16.10-bookworm \
-  -c listen_addresses= -c unix_socket_directories=/offline-db \
+  -c listen_addresses= -c unix_socket_directories=/var/run/postgresql,/offline-db \
   -c unix_socket_permissions=0777 -c fsync=on -c synchronous_commit=on)
 ready=false
 for _ in {1..40}; do

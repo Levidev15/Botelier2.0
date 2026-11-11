@@ -31,6 +31,8 @@ class RecoveryOrchestrationTests(unittest.TestCase):
                 "if args[:2]==['run','-d']:\n"
                 " if 'POSTGRES_HOST_AUTH_METHOD=trust' not in args:\n"
                 "  print('Synthetic official-image password-free initialization refusal',file=sys.stderr); sys.exit(23)\n"
+                " if 'unix_socket_directories=/var/run/postgresql,/offline-db' not in args:\n"
+                "  print('Synthetic initializer default-socket failure',file=sys.stderr); sys.exit(25)\n"
                 " print('synthetic-fixture-container')\n"
                 "if args[:2]==['run','--rm']:\n"
                 " from pathlib import Path\n"
