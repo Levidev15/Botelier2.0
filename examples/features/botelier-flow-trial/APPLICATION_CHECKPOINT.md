@@ -72,6 +72,15 @@ tasks or unexpected guard denials. Synthetic usage chunks verify that real
 model-token/TTS usage still reaches the persistence handoff; actual billing
 remains outside this checkpoint.
 
+## API/MCP node contracts
+
+The separate required node-contract gate exercises the actual voice tool
+catalogue, API/action/integration execution and MCP protocol client with
+synthetic external I/O. It covers response mapping, presentation ownership,
+stale actions, safe-method retry limits, structured/error results, enabled-tool
+retention and cancellation. It does not activate a new controller or prove
+model obedience. See [the contract matrix and explicit limits](NODE_CONTRACTS.md).
+
 ## Boundaries replaced by test fixtures
 
 - Websocket and HTTP I/O are replaced at their transport boundaries. The

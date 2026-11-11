@@ -210,7 +210,7 @@ class SynthesizerSocket(RecordingSocket):
 
 
 class Providers:
-    def __init__(self, *, hold_stt=False, hold_tts_turn=None):
+    def __init__(self, *, hold_stt=False, hold_tts_turn=None, model_reply_limit=2):
         self.stt = RecordingSocket([{"type": "Connected"}])
         self.tts = SynthesizerSocket(hold_turn=hold_tts_turn)
         self.stt_connected = asyncio.Event()
@@ -219,6 +219,7 @@ class Providers:
         if not hold_stt:
             self.release_stt.set()
         self.requests = []
+        self.model_reply_limit = model_reply_limit
 
     async def connect_stt(self, url, **kwargs):
         if not url.startswith("wss://api.deepgram.com/v2/listen?"):
@@ -255,9 +256,9 @@ class Providers:
                 "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
             })
         turn = sum(bool(item.get("stream")) for item in self.requests)
-        if turn > 2:
+        if turn > self.model_reply_limit:
             guard.deny("unexpected_lifecycle_model_retry_or_extra_turn")
-        answer = (ANSWER, REVISED_ANSWER)[turn - 1]
+        answer = (ANSWER, REVISED_ANSWER)[min(turn - 1, 1)]
         chunks = [
             {"delta": {"role": "assistant", "content": answer}, "finish_reason": None},
             {"delta": {}, "finish_reason": "stop"},

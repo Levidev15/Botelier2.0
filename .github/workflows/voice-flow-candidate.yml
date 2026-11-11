@@ -166,6 +166,31 @@ jobs:
             /ci/legacy-transcripts/test_interrupted_transcript.py::TestDefectFixes \
             /ci/legacy-transcripts/test_flow_speech_transcript_ordering.py \
             2>&1 | tee "$EVIDENCE/application-lifecycle.log"
+      - name: Exercise API and MCP node contracts offline
+        id: node_contracts
+        env:
+          IMAGE: voice-flow-candidate:${{ github.sha }}
+          EVIDENCE: ${{ runner.temp }}/voice-application-evidence
+        run: |
+          mkdir -p "$EVIDENCE"
+          printf '{"commit":"%s","network":"none","server_boot_tested":false,"providers":"synthetic","business_io":"synthetic","database":"synthetic"}\n' \
+            "$GITHUB_SHA" > "$EVIDENCE/node-contract-checkpoint.json"
+          docker run --rm --network none --read-only \
+            --tmpfs /tmp:rw,nosuid,nodev,size=256m \
+            -v "$GITHUB_WORKSPACE/examples/features/botelier-flow-trial:/ci/examples/features/botelier-flow-trial:ro" \
+            -v "$RUNNER_TEMP/voice-test-tools:/test-tools:ro" \
+            --entrypoint env "$IMAGE" -i \
+            PATH=/usr/local/bin:/usr/bin:/bin HOME=/tmp NLTK_DATA=/opt/nltk_data \
+            PYTHONPATH=/test-tools PYTHONDONTWRITEBYTECODE=1 \
+            PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 LOGURU_LEVEL=ERROR \
+            python -B /ci/examples/features/botelier-flow-trial/lifecycle_guard.py \
+            --diagnose \
+            --backend-root /app \
+            --package-root /usr/local/lib/python3.11/site-packages/pipecat \
+            --tests /ci/examples/features/botelier-flow-trial/test_application_api_contracts.py \
+            /ci/examples/features/botelier-flow-trial/test_application_mcp_contracts.py \
+            /ci/examples/features/botelier-flow-trial/test_action_boundary_contracts.py \
+            2>&1 | tee "$EVIDENCE/node-contracts.log"
       - name: Exercise authenticated carrier callbacks offline
         id: application_callbacks
         env:

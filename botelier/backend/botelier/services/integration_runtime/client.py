@@ -84,10 +84,9 @@ PROPERTY_IDENTITY_KEYS = frozenset(
     }
 )
 
-# Task #331 — only idempotent (safe) HTTP methods are retried on a 429/5xx
-# response. Non-safe methods (POST/PUT/PATCH/DELETE) keep the historical
-# retry-on-transport-error-only behavior so a write is never silently
-# re-attempted after the server may have already applied it.
+# Only safe HTTP methods may be retried, including after transport errors.
+# A write can have reached the provider before its response is lost; a local
+# flow/ledger lock does not make a second request safe at that provider.
 _SAFE_METHODS = frozenset({"GET", "HEAD", "OPTIONS"})
 _FORM_CONTENT_TYPE = "application/x-www-form-urlencoded"
 _MULTIPART_CONTENT_TYPE = "multipart/form-data"
@@ -398,13 +397,14 @@ class IntegrationClient:
         attempt = 0
         last_error: Optional[Exception] = None
         safe_method = config.method.upper() in _SAFE_METHODS
+        retry_limit = config.retry_count if safe_method else 0
         # One-shot flag: allow a single forced token refresh + retry on 401/403
         # for integrations whose auth strategy acquires a bearer token at connect
         # time (login_endpoint / oauth2_client_credentials). Certified adapters
         # already handle this via their own refresh_credentials path.
         _auth_refresh_attempted = False
 
-        while attempt <= config.retry_count:
+        while attempt <= retry_limit:
             try:
                 response = await self._make_request(
                     method=config.method,
@@ -444,12 +444,12 @@ class IntegrationClient:
                 # Retry throttling (429) and transient server errors (5xx), but
                 # only for idempotent methods so a write is never re-applied.
                 retryable_status = result.status_code == 429 or result.status_code >= 500
-                if retryable_status and safe_method and attempt < config.retry_count:
+                if retryable_status and safe_method and attempt < retry_limit:
                     retry_after = parse_retry_after(response.headers.get("Retry-After"))
                     delay = compute_backoff_delay(attempt, rconf, retry_after=retry_after)
                     logger.warning(
                         f"Retryable status {result.status_code} "
-                        f"(attempt {attempt + 1}/{config.retry_count + 1}); "
+                        f"(attempt {attempt + 1}/{retry_limit + 1}); "
                         f"backing off {delay:.2f}s: {log_endpoint}"
                     )
                     await asyncio.sleep(delay)
@@ -505,21 +505,21 @@ class IntegrationClient:
                 # Log only the sanitized URL — a rendered URL can carry API keys
                 # or other credentials in its query string.
                 logger.warning(
-                    f"Request timeout (attempt {attempt + 1}/{config.retry_count + 1}): "
+                    f"Request timeout (attempt {attempt + 1}/{retry_limit + 1}): "
                     f"{_sanitize_endpoint_for_log(url)}"
                 )
                 last_error = httpx.TimeoutException(f"Request timed out after {config.timeout}s")
                 attempt += 1
-                if attempt <= config.retry_count:
+                if attempt <= retry_limit:
                     await asyncio.sleep(compute_backoff_delay(attempt - 1, rconf))
 
             except httpx.NetworkError as e:
                 logger.warning(
-                    f"Network error (attempt {attempt + 1}/{config.retry_count + 1}): {e}"
+                    f"Network error (attempt {attempt + 1}/{retry_limit + 1}): {e}"
                 )
                 last_error = e
                 attempt += 1
-                if attempt <= config.retry_count:
+                if attempt <= retry_limit:
                     await asyncio.sleep(compute_backoff_delay(attempt - 1, rconf))
 
             except Exception as e:

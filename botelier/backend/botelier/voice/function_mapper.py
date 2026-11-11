@@ -2638,18 +2638,22 @@ class FunctionMapper:
             # this function advanced the flow and therefore requires a tool refresh.
             _prev_node_id = executor.state.current_node_id
 
-            # Start API execution as a task so TTS can fire while it runs.
-            api_task = asyncio.create_task(
-                executor.handle_function_call(function_name, dict(params.arguments))
-            )
-
-            # Emit thinking message concurrently — before the HTTP call returns.
             _node_id = function_name.replace("execute_", "", 1)
             _api_node = next(
                 (n for n in executor.flow_config.nodes if n.id == _node_id), None
             )
             _completed_api_node = _api_node
-            if _api_node:
+            _exposed_names = {
+                schema.get("function", schema)["name"]
+                for schema in executor.get_function_schemas()
+            }
+            # Start execution only after inspecting the current schemas, so a
+            # schema failure cannot leave an unowned side-effect task running.
+            api_task = asyncio.create_task(
+                executor.handle_function_call(function_name, dict(params.arguments))
+            )
+            # Emit thinking message concurrently — before the HTTP call returns.
+            if _api_node and function_name in _exposed_names:
                 _thinking = (_api_node.data.get("api", {}).get("thinkingMessage") or "").strip()
                 if _thinking:
                     if hasattr(params, "llm") and params.llm is not None:
@@ -2699,6 +2703,12 @@ class FunctionMapper:
                 result = await executor.handle_function_call(_api_function, {})
                 _completed_api_node = _current_node
 
+            if result.get("out_of_order"):
+                # A stale registered handler is not a new service request.
+                # Keep its rejection/guidance for the model, without replaying
+                # wait/error speech or acknowledging an unrelated response node.
+                _completed_api_node = None
+
             # ── API_RESPONSE auto-execution ──────────────────────────────────
             # If the flow just landed on an API_RESPONSE node (from the direct
             # execute_ call or from the chained API_REQUEST above), render the
@@ -2707,7 +2717,11 @@ class FunctionMapper:
             # API_RESPONSE node owns all post-fetch speech.
             _current_node_now = executor.state.get_current_node()
             _api_response_spoke = False
-            if _current_node_now and _current_node_now.type == NodeType.API_RESPONSE:
+            if (
+                not result.get("out_of_order")
+                and _current_node_now
+                and _current_node_now.type == NodeType.API_RESPONSE
+            ):
                 _resp_text = executor._render_api_response_text(_current_node_now)
                 if _resp_text and hasattr(params, "llm") and params.llm is not None:
                     try:
@@ -2718,15 +2732,26 @@ class FunctionMapper:
                             f"{_resp_text[:80]!r}"
                         )
                         _api_response_spoke = True
+                        # Keep the tool acknowledgement consistent with what
+                        # was actually presented, not the API's superseded text.
+                        result["voice_result"] = _resp_text
+                        result["voice_result_is_auto_summary"] = False
                     except Exception as _resp_err:
                         logger.warning(
                             f"Could not speak API_RESPONSE text for {tool_name}: {_resp_err}"
                         )
                 # Advance the flow regardless of TTS success.
                 try:
-                    await executor.handle_function_call(
+                    _response_result = await executor.handle_function_call(
                         f"continue_response_{_current_node_now.id}", {}
                     )
+                    # The acknowledgement already advanced this node. Do not
+                    # hand the model stale instructions to acknowledge it again.
+                    if _response_result.get("success"):
+                        result["current_node_id"] = _response_result["current_node_id"]
+                        result.pop("current_node_context", None)
+                        if _response_result.get("current_node_context"):
+                            result["current_node_context"] = _response_result["current_node_context"]
                 except Exception as _adv_err:
                     logger.warning(
                         f"Could not advance past API_RESPONSE node for {tool_name}: {_adv_err}"
@@ -2787,7 +2812,7 @@ class FunctionMapper:
                     # not designer content: it is per-node configurable via
                     # api.onComplete (empty string suppresses it) and skipped
                     # entirely when the result already speaks directly.
-                    if _will_speak_directly:
+                    if _api_response_spoke or _will_speak_directly:
                         # Direct speech is guaranteed — never stack a bridge
                         # (default OR configured) on top of it.
                         _completion_bridge = ""
@@ -2830,10 +2855,12 @@ class FunctionMapper:
                             else str(_on_complete).strip()
                         )
                 else:
-                    _completion_bridge = str(
-                        _api_config.get("onError")
-                        or "I'm sorry, I wasn't able to complete that check. Please try again."
-                    ).strip()
+                    _completion_bridge = (
+                        "" if _api_response_spoke else str(
+                            _api_config.get("onError")
+                            or "I'm sorry, I wasn't able to complete that check. Please try again."
+                        ).strip()
+                    )
                     # Surface the real failure reason (status code + raw
                     # provider error) into the call's event timeline so an
                     # operator reviewing the call afterward can see e.g.
@@ -3252,6 +3279,7 @@ class FunctionMapper:
                 "data",
                 "extracted_variables",
                 "response_instructions",
+                "thinking_message",
                 "voice_result_is_auto_summary",
             ):
                 result.pop(_blob_key, None)

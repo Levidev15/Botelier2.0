@@ -34,6 +34,7 @@ from botelier.services.integration_client import (
     IntegrationClient,
     ResponseVariable,
     _sanitize_endpoint_for_log,
+    extract_json_value,
 )
 from botelier.services.ssrf_safe_transport import SSRFSafeTransport
 
@@ -635,18 +636,9 @@ class ActionExecutor:
         return extracted
 
     def _extract_json_value(self, data: Any, path: str) -> Any:
-        if path.startswith("$."):
-            path = path[2:]
-        current = data
-        for part in path.split("."):
-            if isinstance(current, dict):
-                current = current.get(part)
-            elif isinstance(current, list) and part.isdigit():
-                idx = int(part)
-                current = current[idx] if 0 <= idx < len(current) else None
-            else:
-                return None
-        return current
+        # Custom actions must accept the same mapping dialect as connected
+        # integrations and the flow editor (including [0] and [*]).
+        return extract_json_value(data, path)
 
     def _extract_error_message(self, data: Any) -> Optional[str]:
         if isinstance(data, dict):

@@ -35,7 +35,7 @@ class TranscriptProviders(Providers):
         self, replies, *, hold_tts_turn=None, separate_tool_chunks=False,
         stall_after_first=False, usage_on_content=False,
     ):
-        super().__init__(hold_tts_turn=hold_tts_turn)
+        super().__init__(hold_tts_turn=hold_tts_turn, model_reply_limit=len(replies))
         self.replies = tuple(replies)
         self.separate_tool_chunks = separate_tool_chunks
         self.stall_after_first = stall_after_first

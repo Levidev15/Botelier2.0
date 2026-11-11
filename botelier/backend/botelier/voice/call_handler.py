@@ -184,7 +184,7 @@ async def _mcp_isolated_tool_call(
     """
     _diag: Dict[str, Optional[str]] = {}
 
-    async def _isolated() -> str:
+    async def _isolated() -> str | dict:
         client = mcpc_class(server_params=server_params)
         await client.start()
         try:
@@ -195,6 +195,23 @@ async def _mcp_isolated_tool_call(
                 params.function_name,
                 arguments=arguments,
             )
+            # Keep protocol-level outcome and structured data in the tool
+            # result, not in speech or system instructions. Plain text success
+            # remains a string for existing MCP tools/callers.
+            structured = getattr(results, "structuredContent", None)
+            is_error = getattr(results, "isError", False) is True
+            if isinstance(structured, dict) or is_error:
+                response = {
+                    "content": [
+                        {"type": "text", "text": chunk.text}
+                        for chunk in (getattr(results, "content", None) or [])
+                        if isinstance(getattr(chunk, "text", None), str) and chunk.text
+                    ],
+                    "isError": is_error,
+                }
+                if isinstance(structured, dict):
+                    response["structuredContent"] = structured
+                return response
             response = ""
             if results and hasattr(results, "content") and results.content:
                 for _chunk in results.content:
@@ -908,7 +925,15 @@ class CallHandler:
                     # invocation time even though MCP registration happens earlier.
                     _mcp_ch = self  # capture CallHandler; mapper may not exist yet
                     _mcp_cs = call_sid
+                    _mcp_mapper = self.call_mappers.get(call_sid)
                     for _mcp_t in filtered_tools:
+                        # Flow advances rebuild the context from the mapper's
+                        # non-flow catalogue. Retain only the MCP schemas that
+                        # survived ownership/enablement and native-name filters.
+                        if _mcp_mapper is not None:
+                            _mcp_mapper.register_non_flow_tool_schema(
+                                _mcp_t.to_default_dict()
+                            )
                         _mcp_fn = _mcp_t.name
                         _mcp_raw = function_handlers[_mcp_fn]
 

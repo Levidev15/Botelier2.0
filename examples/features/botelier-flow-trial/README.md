@@ -3,8 +3,9 @@
 This is an **isolated engineering trial**, not an activated Botelier runtime,
 saved-JSON adapter or production rollout. The backend does not import this harness.
 The candidate workflow now runs framework-only and actual-application checks.
-The application checkpoint includes one candidate-only fix: importing `ErrorFrame`
-for the custom Deepgram connection-error handlers. Main and production are not
+The application checkpoint includes candidate-only compatibility and regression
+corrections. The API/MCP input, output, speech and retry contracts are documented
+in [the node-contract checkpoint](NODE_CONTRACTS.md). Main and production are not
 changed by these checks.
 
 ## Current decision
@@ -73,7 +74,8 @@ Values of secret keys are never read.
   acknowledgement.
 - Global functions survive framework tool refresh; complete structured MCP-like
   result payloads survive Flows callback delivery. That does **not** fix or
-  exercise Botelier's existing MCP transport/result mapper.
+  exercise Botelier's existing MCP transport/result mapper. The separate
+  [node-contract suite](NODE_CONTRACTS.md) now exercises that actual voice path.
 - Callback results here are measured **before** the real assistant aggregator.
   This does not contradict the vendored aggregator's separate falsey-result
   conversion described in the audit.

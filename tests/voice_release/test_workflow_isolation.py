@@ -118,6 +118,23 @@ class WorkflowIsolationTests(unittest.TestCase):
                       if step.get("id") == "export_candidate_image")
         self.assertLess(steps.index(check), export)
 
+    def test_api_and_mcp_contract_checks_are_required_before_image_export(self):
+        steps = load("voice-flow-candidate.yml")["jobs"]["candidate"]["steps"]
+        check = next((step for step in steps if step.get("id") == "node_contracts"), None)
+        self.assertIsNotNone(check, "The API/MCP node-contract gate is missing")
+        self.assertNotIn("continue-on-error", check)
+        self.assertNotIn("if", check)
+        for required in (
+            "--network none", "--read-only", '--entrypoint env "$IMAGE" -i',
+            "lifecycle_guard.py", "--backend-root /app",
+            "test_application_api_contracts.py", "test_application_mcp_contracts.py",
+            "test_action_boundary_contracts.py",
+        ):
+            self.assertIn(required, check["run"])
+        export = next(i for i, step in enumerate(steps)
+                      if step.get("id") == "export_candidate_image")
+        self.assertLess(steps.index(check), export)
+
     def test_postgresql_recovery_is_mandatory_before_image_export(self):
         steps = load("voice-flow-candidate.yml")["jobs"]["candidate"]["steps"]
         check = next((step for step in steps if step.get("id") == "transfer_recovery"), None)
