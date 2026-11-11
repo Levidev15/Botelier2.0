@@ -11,8 +11,31 @@ socket=$(mktemp -d "$RUNNER_TEMP/voice-recovery-socket.XXXXXX")
 chmod 0777 "$socket"
 db_id=""
 cleanup() {
-  if [[ -n "$db_id" ]]; then docker rm -f "$db_id" >/dev/null; fi
+  local result=$?
+  if [[ -n "$db_id" ]]; then
+    docker logs "$db_id" > "$EVIDENCE/recovery-database.log" 2>&1 \
+      || echo "Fixture log capture unavailable" >&2
+    docker inspect --format '{{.State.Status}} {{.State.ExitCode}} {{.State.OOMKilled}}' \
+      "$db_id" > "$EVIDENCE/recovery-database-state.log" 2>&1 \
+      || echo "Fixture state capture unavailable" >&2
+    if [[ "$result" != 0 ]]; then
+      docker exec "$db_id" pg_isready -h /offline-db -U postgres \
+        -d voice_recovery_fixture >> "$EVIDENCE/recovery-database-state.log" 2>&1 \
+        || echo "Fixture server-side readiness failed" >> "$EVIDENCE/recovery-database-state.log"
+      docker exec "$db_id" stat -c '%F %a %u:%g %d:%i' /offline-db/.s.PGSQL.5432 \
+        >> "$EVIDENCE/recovery-database-state.log" 2>&1 \
+        || echo "Fixture server socket unavailable" >> "$EVIDENCE/recovery-database-state.log"
+      docker run --rm --network none --read-only -v "$socket:/offline-db:ro" \
+        --entrypoint env postgres:16.10-bookworm -i PATH=/usr/bin:/bin \
+        stat -c '%F %a %u:%g %d:%i' /offline-db/.s.PGSQL.5432 \
+        >> "$EVIDENCE/recovery-database-state.log" 2>&1 \
+        || echo "Fixture client socket unavailable" >> "$EVIDENCE/recovery-database-state.log"
+      cat "$EVIDENCE/recovery-database-state.log" "$EVIDENCE/recovery-database.log" >&2
+    fi
+    docker rm -f "$db_id" >/dev/null
+  fi
   rm -rf -- "$socket"
+  return "$result"
 }
 trap cleanup EXIT
 mkdir -p "$EVIDENCE"
@@ -31,7 +54,10 @@ db_id=$(docker run -d --network none --read-only \
   -c unix_socket_permissions=0777 -c fsync=on -c synchronous_commit=on)
 ready=false
 for _ in {1..40}; do
-  if docker exec "$db_id" pg_isready -h /offline-db -U postgres \
+  # The official entrypoint starts and stops a temporary initializer. Its
+  # pg_isready success is not readiness of the final PID-1 server.
+  if docker exec "$db_id" sh -c 'test "$(cat /proc/1/comm)" = postgres' \
+      && docker exec "$db_id" pg_isready -h /offline-db -U postgres \
       -d voice_recovery_fixture >/dev/null 2>&1; then
     ready=true
     break

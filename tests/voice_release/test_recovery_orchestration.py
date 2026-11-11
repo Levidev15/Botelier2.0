@@ -23,10 +23,20 @@ class RecoveryOrchestrationTests(unittest.TestCase):
                 "import json,os,sys\n"
                 "args=sys.argv[1:]\n"
                 "with open(os.environ['FIXTURE_DOCKER_LOG'],'a') as f: f.write(json.dumps(args)+'\\n')\n"
+                "probes=os.environ['FIXTURE_DOCKER_LOG']+'.probes'\n"
+                "if args[0]=='exec' and '/proc/1/comm' in ' '.join(args):\n"
+                " from pathlib import Path\n"
+                " p=Path(probes); n=int(p.read_text())+1 if p.exists() else 1; p.write_text(str(n))\n"
+                " sys.exit(0 if n>=2 else 1)\n"
                 "if args[:2]==['run','-d']:\n"
                 " if 'POSTGRES_HOST_AUTH_METHOD=trust' not in args:\n"
                 "  print('Synthetic official-image password-free initialization refusal',file=sys.stderr); sys.exit(23)\n"
                 " print('synthetic-fixture-container')\n"
+                "if args[:2]==['run','--rm']:\n"
+                " from pathlib import Path\n"
+                " p=Path(probes)\n"
+                " if not p.exists() or int(p.read_text())<2:\n"
+                "  print('Synthetic temporary-server readiness false positive',file=sys.stderr); sys.exit(24)\n"
                 "if os.environ.get('FAIL_SUITE') and any(os.environ['FAIL_SUITE'] in a for a in args): sys.exit(19)\n"
             )
             binary.chmod(0o700)
@@ -65,13 +75,22 @@ class RecoveryOrchestrationTests(unittest.TestCase):
             self.assertIn("env", call)
             self.assertTrue(call[call.index("-v") + 1].endswith(":/offline-db:ro"))
         self.assertEqual(calls[-1], ["rm", "-f", "synthetic-fixture-container"])
+        self.assertTrue(any(call[0] == "logs" for call in calls[:-1]))
+        self.assertTrue(any(call[0] == "inspect" for call in calls[:-1]))
         self.assertEqual(remaining, [])
+        probes = [i for i, call in enumerate(calls) if "/proc/1/comm" in " ".join(call)]
+        first_client = next(i for i, call in enumerate(calls) if call[:2] == ["run", "--rm"])
+        self.assertEqual(len(probes), 2)
+        self.assertLess(probes[-1], first_client)
 
     def test_failed_suite_stops_recovery_and_still_cleans_up(self):
         result, calls, remaining = self.launch(fail_suite="test_transfer_attempts_postgres.py")
         self.assertEqual(result.returncode, 19, result.stderr)
         self.assertFalse(any("test_recovery_process_seed.py" in " ".join(call) for call in calls))
         self.assertEqual(calls[-1], ["rm", "-f", "synthetic-fixture-container"])
+        diagnostic = next(call for call in calls if call[:2] == ["run", "--rm"] and "stat" in call)
+        self.assertEqual(diagnostic[diagnostic.index("--network") + 1], "none")
+        self.assertTrue(diagnostic[diagnostic.index("-v") + 1].endswith(":/offline-db:ro"))
         self.assertEqual(remaining, [])
 
     def test_a_non_candidate_image_is_rejected_before_docker(self):
