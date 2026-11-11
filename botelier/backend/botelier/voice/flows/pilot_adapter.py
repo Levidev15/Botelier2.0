@@ -22,6 +22,7 @@ from botelier.services.action_executor import (
 from botelier.services.integration_client import IntegrationAPIConfig, ResponseVariable
 from botelier.voice.flows.pilot_cancellation import reconcile_native_cancellation
 from botelier.voice.flows.pilot_contract import CompiledPilot
+from botelier.voice.flows.pilot_queue import InterruptionSafeFlowQueue
 
 
 _TOKEN = re.compile(r"{{\s*([A-Za-z][A-Za-z0-9_]*)\s*}}")
@@ -68,7 +69,8 @@ class NativePilotAdapter:
         if len(names) != len(set(names)) or set(names) & compiled.native_names:
             raise ValueError("native_global_collision")
         self.manager = FlowManager(
-            llm=llm, worker=worker, context_aggregator=context_aggregator,
+            llm=llm, worker=InterruptionSafeFlowQueue(worker),
+            context_aggregator=context_aggregator,
             global_functions=list(global_functions),
         )
         self.manager.state["facts"] = {}

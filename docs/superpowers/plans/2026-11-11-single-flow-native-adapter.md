@@ -25,11 +25,13 @@
 - `botelier/backend/botelier/voice/flows/pilot_contract.py`: pure validation, frozen call identity, immutable compiled collection/action/presentation contract.
 - `botelier/backend/botelier/voice/flows/pilot_adapter.py`: native manager, validated handlers, owned cancellation, context replacement and direct speech.
 - `botelier/backend/botelier/voice/flows/pilot_cancellation.py`: ordered reconciliation for actual native cancelled call IDs, without SDK or mute-policy changes.
+- `botelier/backend/botelier/voice/flows/pilot_queue.py`: call-scoped forwarding facade, marking native node messages/tools as interruption-safe without changing speech or transition ownership.
 - `botelier/backend/botelier/voice/flows/pilot_mcp.py`: schema/handler-format bridge for an already authorized host catalogue; no discovery, credentials or transport.
 - `examples/features/botelier-flow-trial/pilot_io.py`: test-only host attachment and synthetic graph, reusing the real coordinator/worker and existing low-level fixture boundaries.
 - `examples/features/botelier-flow-trial/test_pilot_contract.py`: graph admission, immutable identity/configuration, rendering and rejection diagnostics.
 - `examples/features/botelier-flow-trial/test_pilot_pipeline.py`: actual STT/model/native action/TTS, context, error, duplicate/stale and cancellation checks.
 - `examples/features/botelier-flow-trial/test_pilot_mcp.py`: actual filtered catalogue and synthetic MCP protocol through native globals.
+- `examples/features/botelier-flow-trial/test_pilot_interruption_order.py`: forced native queue resets before the actual consumer, cancellation recovery and a usable next caller turn.
 - `.github/workflows/voice-flow-candidate.yml` and `tests/voice_release/test_workflow_isolation.py`: mandatory adapter gate before export, with retained evidence.
 - `examples/features/botelier-flow-trial/PILOT_ADAPTER.md`: supported subset, commands, exact evidence and limitations.
 
@@ -118,7 +120,7 @@ Input is exclusively the actual host's filtered schema/handler catalogue. The br
 ## Task 4: Require and inspect the fresh-image checkpoint
 
 - [x] Write a failing release-policy test that requires `native_pilot_adapter` before candidate export, with neither conditional execution nor continue-on-error, disabled network, read-only root and clean environment.
-- [x] Add that step to run the three new test files with the existing lifecycle guard and retained `native-pilot-adapter.log`/checkpoint metadata. Keep every prior gate unchanged.
+- [x] Add that step to run the four new test files with the existing lifecycle guard and retained `native-pilot-adapter.log`/checkpoint metadata. Keep every prior gate unchanged.
 - [x] Run release-policy tests and the complete local adapter suite. Review all changed paths, caller references, cleanup and the spec acceptance list. Update documentation with actual commands/results, not anticipated passes.
 - [ ] Commit only explicit candidate files and push only `candidate/azure-flow-image-checks`. Confirm remote main is unchanged. Do not dispatch an extra workflow when push already triggered it.
 - [ ] Wait for the exact commit's full fresh-image run. Inspect metadata and full logs for all steps, actual counts, versions, source integrity and zero unexpected guard reports. Keep generated evidence ignored.
@@ -139,7 +141,7 @@ env -i PATH="$PATH" HOME=/tmp/botelier-native-flow-trial \
   --backend-root "$PWD/botelier/backend" \
   --package-root /home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/pipecat \
   --tests "$TRIAL/test_pilot_contract.py" "$TRIAL/test_pilot_pipeline.py" \
-  "$TRIAL/test_pilot_mcp.py"
+  "$TRIAL/test_pilot_mcp.py" "$TRIAL/test_pilot_interruption_order.py"
 python -B -m unittest discover -s tests/voice_release -v
 git diff --check
 ```
@@ -163,3 +165,11 @@ The host's tool-call user mute policy stays unchanged. Pending-read cancellation
 is certified only at the native control boundary, while result-audio interruption
 uses actual synthetic STT. The host's volatile clock tail is expected to change;
 its policy prefix and unrelated developer guidance must remain intact.
+
+Additional forced-order regressions showed that queued native RESET messages,
+tool updates and the cancellation barrier can themselves be lost to a queue
+reset. The marker must be uninterruptible. A narrow queue facade adds the same
+supported SDK marker only to the native message/tool frames, forwarding every
+operation to the actual worker. It does not protect speech or select nodes.
+Both tests must fail with these protections removed, then pass with all original
+adapter cases in the complete exact-image gate.

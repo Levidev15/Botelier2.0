@@ -9,12 +9,12 @@ bookkeeping, using actual cancelled call IDs supplied by the native event.
 
 from dataclasses import dataclass
 
-from pipecat.frames.frames import ControlFrame, FunctionCallCancelFrame
+from pipecat.frames.frames import ControlFrame, FunctionCallCancelFrame, UninterruptibleFrame
 from pipecat.processors.frame_processor import FrameDirection
 
 
 @dataclass
-class _CancellationBarrier(ControlFrame):
+class _CancellationBarrier(ControlFrame, UninterruptibleFrame):
     calls: tuple[tuple[str, str], ...] = ()
 
 

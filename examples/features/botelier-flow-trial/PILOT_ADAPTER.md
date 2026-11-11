@@ -90,6 +90,27 @@ native control frame and the preceding real processor's
 `broadcast_interruption()`, cancelled transport reads and deliberately late
 successful responses. Hangup must dispose all call-created tasks and sessions.
 
+### Queued node updates must survive interruption
+
+Native RESET message and tool updates are ordinary interruptible data frames
+in this SDK. The manager can already report the new node while these updates
+are still queued before their actual user-aggregator consumer. An interruption
+can drop them, leaving old tools/guidance active. A cancellation-recovery
+barrier is also useless if that barrier can itself be dropped.
+
+A small call-scoped queue facade forwards lifecycle, events and frames to the
+same real worker. Only the native RESET message/tool frames receive the SDK's
+`UninterruptibleFrame` marker, as does the cancellation barrier. Native Flows
+still chooses transitions and builds their contents. Speech, caller input and
+model runs are deliberately not protected and remain interruptible.
+
+Two forced-order regressions pause the real processor before the actual
+consumer, queue these frames, and deliver the actual receiver interruption.
+They require the next caller turn to work with the right tools/guidance, the
+cancelled call to settle, no repeated read and no replayed result speech.
+Both fail when the protections are removed; simple favorable-timing passes
+are not used as evidence for this race.
+
 ### The existing tool-call mute policy is unchanged
 
 The actual application mutes caller input during a function call. Therefore
@@ -109,11 +130,13 @@ interruption policy is a separate design and verification decision.
 - `test_pilot_mcp.py`: actual account/connection/enablement filtering, synthetic
   MCP protocol round trips after transition, structured/error results and
   disabled/current/future/spent collisions.
+- `test_pilot_interruption_order.py`: the two forced native queue-reset windows,
+  actual consumer readiness, cancellation and the next caller turn.
 - The actual model request keeps `parallel_tool_calls=False`. The adversarial
   duplicate-call test emits separately indexed call deltas in one response,
   a layout the pinned parser supports. This checkpoint does not certify the
   SDK's handling of several tool calls inside one individual delta.
-- The mandatory candidate CI step `native_pilot_adapter` runs all three files
+- The mandatory candidate CI step `native_pilot_adapter` runs all four files
   with disabled container networking, read-only root and cleared environment
   before exact-image export. It retains `native-pilot-adapter.log` and
   `native-pilot-checkpoint.json`. No prior regression step was removed.
@@ -131,7 +154,7 @@ env -i PATH="$PATH" HOME=/tmp/botelier-native-flow-trial \
   --backend-root "$PWD/botelier/backend" \
   --package-root /home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/pipecat \
   --tests "$TRIAL/test_pilot_contract.py" "$TRIAL/test_pilot_pipeline.py" \
-  "$TRIAL/test_pilot_mcp.py"
+  "$TRIAL/test_pilot_mcp.py" "$TRIAL/test_pilot_interruption_order.py"
 python -B -m unittest discover -s tests/voice_release -v
 git diff --check
 ```
@@ -146,10 +169,19 @@ reports must be inspected before this checkpoint is reported as passed.
 Local results alone do not certify the image. SDK deprecation warnings remain
 visible, and injected failure cases are not a claim of warning-free behavior.
 
-Local verification on 2026-11-11: **97 adapter tests passed**, with
+The first local verification on 2026-11-11 had **97 adapter tests passed**, with
 `APPLICATION_GUARD_BLOCKED_ATTEMPTS=0`; **70 release-policy tests passed**;
 `git diff --check` passed. The adapter test split is 50 admission, 41 actual
 pipeline and 6 MCP cases. Expected SDK deprecations produced 150 warnings.
+The two subsequently demonstrated native queue-reset cases are mandatory
+additional regressions; that earlier pass and its candidate image do not
+certify the strengthened implementation.
+
+Final strengthened local verification on 2026-11-11: **99 tests passed**
+(50 admission, 41 pipeline, 6 MCP, 2 forced-order pipeline regressions),
+**zero unexpected guard denials**, 156 visible SDK deprecation warnings;
+**70 release-policy tests passed**, and `git diff --check` passed. A new
+exact-commit fresh-image run is still required before checkpoint acceptance.
 
 One earlier complete run timed out before pilot initialization while waiting
 for greeting completion; a diagnostic rerun did not reproduce a runtime fault.

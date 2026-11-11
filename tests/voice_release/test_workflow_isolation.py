@@ -154,6 +154,7 @@ class WorkflowIsolationTests(unittest.TestCase):
             "--network none", "--read-only", '--entrypoint env "$IMAGE" -i',
             "lifecycle_guard.py", "--backend-root /app",
             "test_pilot_contract.py", "test_pilot_pipeline.py", "test_pilot_mcp.py",
+            "test_pilot_interruption_order.py",
             'tee "$EVIDENCE/native-pilot-adapter.log"',
         ):
             self.assertIn(required, check["run"])
