@@ -22,8 +22,10 @@ then imports the actual application code from that same image.
 There are 30 component cases, 87 lifecycle cases and 28 selected legacy
 extractor/mapper regressions. The lifecycle command runs the latter two groups
 together; its 115 cases must not be described as 115 whole-call replays.
-A separate callback process runs 49 router/service cases and four native-worker
-integrations. Results belong to the exact checked commit and image, not this
+A separate callback process runs 49 router/service cases, four native-worker
+integrations and six recovery reproductions. The CI-only recovery gate adds
+real PostgreSQL arbitration/reconciliation and two independent native processes
+against the same disposable fixture database. Results belong to the exact checked commit and image, not this
 document. CI logs and retained evidence determine pass/fail.
 
 ## First whole-call slice
@@ -233,8 +235,8 @@ graph ordering, start authorization or a new native controller.
   explicit `unconfirmed` result and quarantine further handoffs in the current
   mapper. An actual second model turn cannot repeat that SDK update. HTTP 400
   rejection can instead be followed by an explicit caller-requested successful
-  attempt. Durable attempt identity/reconciliation and worker-restart protection
-  remain release gates; a per-mapper guard is not a distributed guarantee.
+  attempt. The separate recovery gate below adds durable attempt fencing; this
+  slice alone is not a distributed guarantee.
 - Hangup during announcement or while waiting for a mark must discard the
   deferred action. Releasing waiters during shutdown is not a playback ACK.
   An already-sent held carrier update is instead awaited, without blocking the
@@ -244,7 +246,8 @@ graph ordering, start authorization or a new native controller.
   transfer cancellation or configurable per-node interruption behavior.
 - A persistence failure after remote acceptance cannot undo the side effect,
   cause a duplicate update or speak a false carrier-rejection message. Actual
-  transfer-log commits, durable recovery and webhook/commit races remain untested.
+  transfer-log commits and authoritative external recovery were outside this
+  slice; the bounded durable recovery cases are described below.
 - Recording requires both the account feature and assistant setting. Its real
   start request must be off-loop, dual channel, and use the configured callback
   URL. A refused, timed-out or malformed start cannot kill the voice worker.
@@ -391,10 +394,11 @@ phone route, credentials, dependency or vendor source is changed.
   Twilio through Azure/proxies or full-server initialization.
 - The interruption/transcript slices cover the stated synthetic turns and
   callbacks, not exhaustive timing races, every coalesced/word-stamped text
-  shape or real acoustics. Complete carrier recovery, persisted attempt
-  reconciliation, callback-before-registration/commit races, worker restarts,
-  concurrent reconnects, PostgreSQL transaction behavior and every
-  assistant/provider configuration still need separate checks.
+  shape or real acoustics. The recovery gate below checks persisted attempt
+  reconciliation, an early callback and a missing-outcome window, competing
+  PostgreSQL sessions and independent processes. Complete carrier recovery,
+  live transport reconnection, whole-server ownership, PostgreSQL server-crash
+  recovery and every assistant/provider configuration still need separate checks.
 - Stalled-provider checks above prove bounded disposal after hangup, not
   autonomous failover or a response deadline while the caller stays connected.
   The independent warmup deadline is the explicitly tested exception. Hostile
@@ -413,3 +417,62 @@ phone route, credentials, dependency or vendor source is changed.
 Finish the outstanding application/lifecycle checks and report their evidence
 before advancing to node contracts or a native adapter. No production merge,
 Azure deployment or paid rehearsal is authorized by this checkpoint.
+
+## Offline transfer recovery gate
+
+The real tool and legacy-flow handlers now reserve a stable account/call key in
+the **existing** operation ledger. A random attempt ID fences each reservation.
+An issued marker is committed before the carrier SDK call. Neither an old lease
+nor an expired retention hint permits an issued/unconfirmed request to run again.
+Only a known rejection, or cancellation before dispatch, permits a new attempt.
+This is separate from the generic business ledger's lease-takeover policy; that
+policy and all SDK/dependency versions are unchanged. No migration or table
+creation is added to application startup or request handling.
+
+Warm-transfer URLs carry the attempt ID under the real Twilio signature. The
+two child-callback routes require that ID to match the current issued attempt
+before reconciling it. Old-attempt, wrong-account and wrong-child callbacks
+cannot release or rewrite a successor. A matching callback can precede the HTTP
+response; a later lost response must not downgrade the accepted evidence.
+Legacy callbacks still follow their existing paths but cannot reconcile a
+durable attempt merely by matching its parent.
+
+The disconnect callback checks durable issued/unconfirmed/accepted evidence
+before emitting Hangup or finalizing a call whose transfer log has not yet
+committed. A guard lookup failure returns a generic 503, not an explicit Hangup.
+No target number, credential, message or transcript is added to ledger payloads.
+
+Verification is deliberately split:
+
+- Six native-worker reproductions run in the ordinary callback guard with an
+  enumerated SQL-I/O double, alongside the prior signed-callback cases. They
+  cover worker recreation after a lost response, accepted-transfer metadata
+  failure followed by disconnect, and generated callback identity, for both
+  tool and legacy-flow dispatch.
+- A **separate CI-only guard** admits only psycopg2 connections with the exact
+  disposable database/user and `/offline-db` Unix socket. DSNs, TCP hosts,
+  arbitrary options and inherited credentials are denied. Existing guards are
+  not relaxed. Main, application database startup and unrelated APIs stay denied.
+- The database and all three test containers have networking disabled. There
+  are no published ports or customer connection strings. PostgreSQL data is
+  temporary, the real ledger model creates only its fixture schema, and the
+  owning script removes the database on success or failure.
+- The real-PostgreSQL suite checks competing sessions, expired-lease safety,
+  attempt fencing, tenant/child isolation, callback ordering, signed routes and
+  a lost commit response. Call-log/auth/business-I/O records remain synthetic;
+  this is not a full database/server integration.
+- Two subsequent containers prove memory independence: the first runs an actual
+  native worker with a simulated carrier timeout and missing final outcome
+  persistence; the second starts a fresh native worker through the other transfer
+  path and must make **zero** carrier requests. The row and attempt ID survive
+  between them; no Python object, connection or cache does.
+
+The missing-outcome window is fault injection, not a physical SIGKILL or
+PostgreSQL crash test. The invariant is conservative **no blind replay**, not
+exactly-once delivery or autonomous recovery. Pre-dispatch abandoned reservations
+are not automatically taken over. Live carrier reconciliation, call ownership
+across replicas, authoritative retries, retention/operator recovery policy and
+availability in those quarantined cases remain release gates. The database
+fixture proves ledger locking, not call-event deduplication under PostgreSQL.
+No API/MCP business operation, SMS, payment link or new node controller/UI is
+activated by this gate.

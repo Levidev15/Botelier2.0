@@ -141,6 +141,37 @@ def _callback_failure_response() -> Response:
     )
 
 
+def _transfer_attempts_for_db(db):
+    from sqlalchemy.orm import sessionmaker
+    from ..services.transfer_attempts import TransferAttempts
+
+    # Capture the thread-safe Engine, never move the request's Session to a thread.
+    return TransferAttempts(sessionmaker(bind=db.get_bind()))
+
+
+async def _observe_transfer_attempt(request, fields, db):
+    attempt_id = request.query_params.get("transfer_attempt")
+    if attempt_id is None:
+        return True  # Legacy callback; not evidence about any durable attempt.
+    try:
+        if str(uuid.UUID(attempt_id)) != attempt_id:
+            raise ValueError
+    except (ValueError, AttributeError):
+        raise HTTPException(status_code=422, detail="Invalid transfer attempt")
+    parent_sid = fields.get("ParentCallSid")
+    child_sid = fields.get("CallSid")
+    if not parent_sid or not child_sid:
+        raise HTTPException(status_code=422, detail="Missing transfer identities")
+    parent = CallLogger(db).get_call_log(parent_sid)
+    if parent is None or not parent.account_id:
+        return False
+    return bool(await asyncio.to_thread(
+        _transfer_attempts_for_db(db).observe,
+        str(parent.account_id), parent_sid, attempt_id,
+        child_sid, fields.get("CallStatus"),
+    ))
+
+
 # Vocabulary for enrichment fields written into CallEvent.details (Task #94).
 # Keep this set small and stable; adding values later is fine, renaming or
 # removing them is breaking for any downstream consumer (dashboard timeline,
@@ -632,6 +663,8 @@ async def call_status_callback(
         duration_seconds = _callback_duration(call_duration)
 
         if parent_call_sid:
+            if not await _observe_transfer_attempt(request, form_data, db):
+                return {"status": "ignored", "reason": "transfer_attempt_mismatch"}
             logger.info(f"Child call detected - Parent: {parent_call_sid}")
             call_logger.create_transfer_leg_from_callback(
                 parent_call_sid=parent_call_sid,
@@ -997,6 +1030,21 @@ async def connect_complete(
 
         logger.info(f"Connect complete - SID: {call_sid}")
 
+        call_logger = CallLogger(db)
+        call_log = call_logger.get_call_log(call_sid)
+        if call_log and call_log.account_id and not call_log.has_transfer:
+            try:
+                attempt = await asyncio.to_thread(
+                    _transfer_attempts_for_db(db).get, str(call_log.account_id), call_sid,
+                )
+            except Exception as error:
+                logger.error(f"Transfer disconnect guard unavailable: {type(error).__name__}")
+                return _callback_failure_response()
+            if attempt and attempt.phase in {"issued", "unconfirmed", "accepted"}:
+                # The carrier can redirect/disconnect the stream before record_transfer
+                # commits, or its HTTP response can be lost. Never emit Hangup here.
+                return Response(content="", media_type="application/xml")
+
         call_handler = _get_call_handler()
         await call_handler.save_transcript_for_call(call_sid)
 
@@ -1128,6 +1176,8 @@ async def transfer_status_callback(
             _validate_callback_status(call_status)
             call_logger = CallLogger(db)
             duration_seconds = _callback_duration(call_duration)
+            if not await _observe_transfer_attempt(request, form_data, db):
+                return {"status": "ignored", "reason": "transfer_attempt_mismatch"}
             updated = call_logger.update_leg_status(
                 leg_call_sid=call_sid,
                 status=call_status,

@@ -20,6 +20,7 @@ from lifecycle_io import CALL_SID, STREAM_SID, Records
 from lifecycle_support import OfflineCall
 from transcript_io import TranscriptProviders
 from transcript_tools import tool_reply
+from transfer_storage import MemoryTransferStorage
 
 
 ACCOUNT_SID = "AC" + "0" * 32
@@ -176,6 +177,7 @@ class TransferCall(OfflineCall):
         hold_start=False, hold_transfer=False, hold_announcement=False,
         with_preface=True,
         credentials=True,
+        transfer_storage=None,
     ):
         name = "transfer_fixture" if source == "tool" else "transfer_handoff"
         providers = TranscriptProviders(
@@ -195,6 +197,7 @@ class TransferCall(OfflineCall):
             hold_transfer=hold_transfer,
         )
         self.mapper = None
+        self.transfer_storage = transfer_storage or MemoryTransferStorage()
 
     def transfer_tools(self, call):
         from pipecat.adapters.schemas.function_schema import FunctionSchema
@@ -204,7 +207,8 @@ class TransferCall(OfflineCall):
             call_sid=CALL_SID, stream_sid=STREAM_SID,
             to_number=CALLER_ID, from_number=CALLER_ID,
             twilio_account_sid=ACCOUNT_SID, twilio_auth_token=TOKEN,
-            call_handler=self.handler, account_id="offline-account",
+            call_handler=self.handler, account_id="00000000-0000-0000-0000-000000000001",
+            session_factory=self.transfer_storage,
         )
         self.mapper = mapper
         if not self.credentials:

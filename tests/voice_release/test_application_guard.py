@@ -21,7 +21,7 @@ class ApplicationGuardTests(unittest.TestCase):
         }
         env.update(extra_env or {})
         args = [sys.executable, "-B", str(TRIAL / script)]
-        if script in {"application_guard.py", "lifecycle_guard.py", "callback_guard.py"}:
+        if script in {"application_guard.py", "lifecycle_guard.py", "callback_guard.py", "recovery_guard.py"}:
             args += ["--backend-root", str(ROOT / "botelier/backend")]
         else:
             args += ["--target", "wheel"]
@@ -80,6 +80,41 @@ class ApplicationGuardTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("env -i", result.stderr)
         self.assertNotIn(marker, result.stderr + result.stdout)
+
+    def test_recovery_mode_keeps_network_process_secrets_and_live_startup_denied(self):
+        result = self.run_guard(script="recovery_guard.py")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["expected_denials"], 6)
+
+    def test_recovery_mode_rejects_inherited_credentials_before_import(self):
+        marker = "synthetic-value-not-a-credential"
+        result = self.run_guard(
+            script="recovery_guard.py", extra_env={"NEON_DATABASE_URL": marker},
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("env -i", result.stderr)
+        self.assertNotIn(marker, result.stderr + result.stdout)
+
+    def test_recovery_connection_policy_denies_dsns_and_non_fixture_destinations(self):
+        program = (
+            "from recovery_guard import FIXTURE_CONNECTION,validate_fixture_connection\n"
+            "from guard import TrialSafetyError\n"
+            "validate_fixture_connection((),dict(FIXTURE_CONNECTION))\n"
+            "bad=[(('postgresql://customer.invalid/live',),{}),"
+            "((),{**FIXTURE_CONNECTION,'host':'127.0.0.1'}),"
+            "((),{**FIXTURE_CONNECTION,'dbname':'customer'}),"
+            "((),{**FIXTURE_CONNECTION,'password':'not-a-credential'})]\n"
+            "for args,kwargs in bad:\n"
+            " try: validate_fixture_connection(args,kwargs)\n"
+            " except TrialSafetyError: continue\n"
+            " raise AssertionError('Non-fixture connection was admitted')\n"
+        )
+        result = subprocess.run(
+            [sys.executable, "-B", "-c", program],
+            env={"PATH": os.environ["PATH"], "PYTHONPATH": str(TRIAL)},
+            text=True, capture_output=True, timeout=20,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_callback_fixture_namespace_does_not_admit_other_api_modules_or_database(self):
         with tempfile.TemporaryDirectory() as temporary:

@@ -12,6 +12,7 @@ import guard
 
 from application_support import load_function_mapper
 from callback_store import CallbackStore, TOKEN_A
+from transfer_storage import MemoryTransferStorage
 
 
 # Matches the synthetic origin in the actual SDK-generated transfer TwiML.
@@ -81,6 +82,12 @@ class CallbackHarness:
         ))
         self.patches.enter_context(patch.object(
             self.module, "_get_call_handler", lambda: self.handler,
+        ))
+        from botelier.services.transfer_attempts import TransferAttempts
+        storage = vars(self.store).get("transfer_storage") or MemoryTransferStorage()
+        self.patches.enter_context(patch.object(
+            self.module, "_transfer_attempts_for_db",
+            lambda db: TransferAttempts(storage),
         ))
         # Keep callback routing and eligibility helpers real. Only external
         # business jobs and billing persistence are out of this checkpoint.

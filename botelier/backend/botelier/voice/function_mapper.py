@@ -225,6 +225,8 @@ class FunctionMapper:
         # Shared by every transfer tool/flow in this call. An uncertain remote
         # side effect cannot be retried safely just because another turn asks.
         self._transfer_state: Optional[str] = None
+        self._transfer_attempt_id: Optional[str] = None
+        self._transfer_attempt_store = None
 
         # CallEventQueue — injected by CallHandler after pipeline initialization.
         # Used to log pipeline events non-blockingly.
@@ -554,10 +556,30 @@ class FunctionMapper:
             )
         await params.llm.push_frame(frame)
 
+    def _transfer_attempts(self):
+        if self._transfer_attempt_store is None:
+            from ..services.transfer_attempts import TransferAttempts
+            self._transfer_attempt_store = TransferAttempts(self.session_factory)
+        return self._transfer_attempt_store
+
     async def _claim_transfer(self, params):
         if self._transfer_state is None:
             self._transfer_state = "pending"
-            return True
+            try:
+                attempt = await asyncio.to_thread(
+                    self._transfer_attempts().claim, self.account_id, self.call_sid,
+                )
+                self._transfer_attempt_id = attempt.attempt_id
+                self._transfer_state = (
+                    "pending" if attempt.phase == "reserved"
+                    else "unconfirmed" if attempt.phase == "issued" else attempt.phase
+                )
+                if attempt.owned:
+                    return True
+            except Exception as error:
+                # A failed claim/commit is not permission to make a carrier call.
+                self._transfer_state = "unconfirmed"
+                logger.error(f"Transfer reservation unavailable: {type(error).__name__}")
         worker = getattr(params, "pipeline_worker", None)
         if (
             (worker is not None and worker.has_finished())
@@ -566,18 +588,31 @@ class FunctionMapper:
         ):
             return False
         status = self._transfer_state
-        message = (
-            "The earlier connection request is unconfirmed. I won't send another "
-            "transfer request. How else can I help?"
-            if status == "unconfirmed"
-            else "A connection request is already pending. I won't send a second one."
-        )
+        if status == "unconfirmed":
+            message = (
+                "The earlier connection request is unconfirmed. I won't send another "
+                "transfer request. How else can I help?"
+            )
+        elif status == "accepted":
+            message = "A connection request was already accepted. I won't send another one."
+        else:
+            message = "A connection request is already pending. I won't send a second one."
         await params.result_callback(
             {"status": status, "message": message, "retry_safe": False},
             properties=FunctionCallResultProperties(run_llm=False),
         )
         await params.llm.push_frame(TTSSpeakFrame(message))
         return False
+
+    async def _issue_transfer(self, attempt_id):
+        try:
+            return bool(await asyncio.to_thread(
+                self._transfer_attempts().issue,
+                self.account_id, self.call_sid, attempt_id,
+            ))
+        except Exception as error:
+            logger.error(f"Transfer dispatch reservation unavailable: {type(error).__name__}")
+            return False
 
     @staticmethod
     def _is_definite_transfer_rejection(error):
@@ -587,8 +622,27 @@ class FunctionMapper:
             and isinstance(status, int) and 400 <= status < 500 and status != 408
         )
 
-    async def _complete_transfer(self, params, succeeded, *, uncertain=False):
+    async def _complete_transfer(
+        self, params, succeeded, *, uncertain=False, rejected=False, attempt_id=None,
+    ):
         """Finish tool bookkeeping without starting another model generation."""
+        attempt_id = attempt_id or self._transfer_attempt_id
+        outcome = "accepted" if succeeded else "unconfirmed" if uncertain else "rejected"
+        try:
+            settled = await asyncio.to_thread(
+                self._transfer_attempts().settle,
+                self.account_id, self.call_sid, attempt_id, outcome,
+                definite_rejection=rejected,
+            )
+            if settled:
+                succeeded = settled.phase == "accepted"
+                uncertain = settled.phase in {"issued", "unconfirmed"}
+        except Exception as error:
+            # An already-issued marker remains durable even when this write fails.
+            logger.error(f"Transfer outcome persistence unavailable: {type(error).__name__}")
+            uncertain = not succeeded
+        if attempt_id != self._transfer_attempt_id:
+            return
         self._transfer_state = (
             "accepted" if succeeded else "unconfirmed" if uncertain else None
         )
@@ -1102,6 +1156,7 @@ class FunctionMapper:
 
             if not await self._claim_transfer(params):
                 return
+            _attempt_id = self._transfer_attempt_id
             # Log transfer_initiated event (non-blocking)
             self.log_event(
                 "transfer_initiated",
@@ -1130,6 +1185,7 @@ class FunctionMapper:
                 """
                 _transfer_succeeded = False
                 _transfer_uncertain = False
+                _transfer_rejected = False
                 try:
                     if self.twilio_client and self.call_sid:
                         try:
@@ -1283,7 +1339,10 @@ class FunctionMapper:
                                     twiml_parts.append('<Dial timeout="30">')
 
                                 base_url = get_public_base_url()
-                                status_callback = f"{base_url}/api/calls/transfer-status"
+                                status_callback = (
+                                    f"{base_url}/api/calls/transfer-status"
+                                    f"?transfer_attempt={_attempt_id}"
+                                )
                                 send_digits_attr = (
                                     f' sendDigits="{extension_pause_commas}{extension}"'
                                     if extension
@@ -1404,6 +1463,8 @@ class FunctionMapper:
                                     db.close()
 
                             _transfer_uncertain = True
+                            if not await self._issue_transfer(_attempt_id):
+                                return
                             await _asyncio.to_thread(
                                 lambda: _twilio_cap.calls(_call_sid_cap).update(
                                     twiml=transfer_twiml
@@ -1426,6 +1487,7 @@ class FunctionMapper:
                             else:
                                 if self._is_definite_transfer_rejection(e):
                                     _transfer_uncertain = False
+                                    _transfer_rejected = True
                                 logger.error(
                                     f"❌ Twilio transfer failed for call {self.call_sid}: {e}"
                                 )
@@ -1452,6 +1514,7 @@ class FunctionMapper:
                     # push EndFrame naturally.
                     await self._complete_transfer(
                         params, _transfer_succeeded, uncertain=_transfer_uncertain,
+                        rejected=_transfer_rejected, attempt_id=_attempt_id,
                     )
 
             # Record what will be spoken so _execute_transfer can append it to
@@ -2870,6 +2933,7 @@ class FunctionMapper:
             if result.get("action") == "transfer":
                 if not await self._claim_transfer(params):
                     return
+                _flow_attempt_id = self._transfer_attempt_id
                 target = result.get("target")
                 flow_transfer_mode = result.get("transfer_mode", "warm")
                 # The announcement the LLM/flow speaks before the transfer —
@@ -2912,6 +2976,7 @@ class FunctionMapper:
                         """
                         _flow_transfer_succeeded = False
                         _flow_transfer_uncertain = False
+                        _flow_transfer_rejected = False
                         try:
                             await self._await_twilio_playback_mark(
                                 "flow-transfer", expected_speech_text=_flow_transfer_msg
@@ -2994,7 +3059,10 @@ class FunctionMapper:
                                 else:
                                     twiml_parts.append('<Dial timeout="30">')
                                 base_url = get_public_base_url()
-                                status_callback = f"{base_url}/api/calls/transfer-status"
+                                status_callback = (
+                                    f"{base_url}/api/calls/transfer-status"
+                                    f"?transfer_attempt={_flow_attempt_id}"
+                                )
                                 twiml_parts.append(
                                     f'<Number statusCallback="{status_callback}" '
                                     f'statusCallbackEvent="initiated ringing answered completed">'
@@ -3105,6 +3173,8 @@ class FunctionMapper:
                                 return True
 
                             _flow_transfer_uncertain = True
+                            if not await self._issue_transfer(_flow_attempt_id):
+                                return
                             await _asyncio_flow.to_thread(
                                 lambda: _cap_twilio.calls(_cap_call_sid).update(
                                     twiml=_cap_twiml
@@ -3122,14 +3192,17 @@ class FunctionMapper:
                             else:
                                 if self._is_definite_transfer_rejection(e):
                                     _flow_transfer_uncertain = False
+                                    _flow_transfer_rejected = True
                                 logger.error(f"Flow transfer failed: {e}")
                         finally:
-                            if not _flow_transfer_succeeded and not _flow_transfer_uncertain:
-                                await _clear_rejected_flow_transfer()
                             await self._complete_transfer(
                                 params, _flow_transfer_succeeded,
                                 uncertain=_flow_transfer_uncertain,
+                                rejected=_flow_transfer_rejected,
+                                attempt_id=_flow_attempt_id,
                             )
+                            if self._transfer_state is None:
+                                await _clear_rejected_flow_transfer()
 
                     await self._queue_transfer_announcement(
                         params, _execute_flow_transfer, _flow_transfer_msg, flow=True,

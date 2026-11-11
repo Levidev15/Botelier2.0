@@ -16,6 +16,7 @@ from transfer_io import TOKEN, TransferCall
 def shared_store(call):
     """Both actual handlers see the same synthetic call/account objects."""
     store = CallbackStore()
+    store.transfer_storage = call.transfer_storage
     row = call.records.call
     row.account_id, row.assistant_id = ACCOUNT_A, None
     for key, value in {

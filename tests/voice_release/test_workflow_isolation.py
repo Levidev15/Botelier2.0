@@ -111,8 +111,18 @@ class WorkflowIsolationTests(unittest.TestCase):
             "callback_guard.py", "--backend-root /app",
             "test_application_callbacks.py", "test_application_callback_delivery.py",
             "test_application_callback_lifecycle.py",
+            "test_application_transfer_recovery.py",
         ):
             self.assertIn(required, check["run"])
         export = next(i for i, step in enumerate(steps)
                       if step.get("id") == "export_candidate_image")
+        self.assertLess(steps.index(check), export)
+
+    def test_postgresql_recovery_is_mandatory_before_image_export(self):
+        steps = load("voice-flow-candidate.yml")["jobs"]["candidate"]["steps"]
+        check = next((step for step in steps if step.get("id") == "transfer_recovery"), None)
+        self.assertIsNotNone(check, "The real PostgreSQL recovery gate is missing")
+        self.assertNotIn("continue-on-error", check)
+        self.assertIn("bash scripts/voice_release/check_transfer_recovery.sh", check["run"])
+        export = next(i for i, step in enumerate(steps) if step.get("id") == "export_candidate_image")
         self.assertLess(steps.index(check), export)

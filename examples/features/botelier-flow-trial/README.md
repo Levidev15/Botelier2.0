@@ -114,7 +114,8 @@ even when a test fails.
   --package-root /home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/pipecat \
   --tests "$TRIAL/test_application_callbacks.py" \
   "$TRIAL/test_application_callback_delivery.py" \
-  "$TRIAL/test_application_callback_lifecycle.py"
+  "$TRIAL/test_application_callback_lifecycle.py" \
+  "$TRIAL/test_application_transfer_recovery.py"
 ```
 
 Run guards sequentially: they share a temporary output directory. This separate
@@ -123,3 +124,18 @@ or unrelated APIs. Dashboard JWT dependencies always deny, database/provider I/O
 is synthetic, and real Twilio request validation is retained. A pass requires
 zero unexpected guard denials. See `APPLICATION_CHECKPOINT.md` for the exact
 scope, unconfirmed-transfer protection and remaining recovery/production gates.
+
+## Disposable PostgreSQL recovery gate (CI only)
+
+The candidate workflow runs `scripts/voice_release/check_transfer_recovery.sh`
+before exact-image export. It creates a temporary PostgreSQL fixture with no
+network or published ports and shares only its Unix socket with three independent
+test containers. One tests real ledger SQL/locking; the next two test a committed
+issued request across independent native worker processes. Database cleanup runs
+on failure as well as success.
+
+Do not start this database in the workspace, point it at an existing database,
+pass a customer connection string, or relax the ordinary offline guards. The
+new recovery guard allows only the fixed CI Unix-socket fixture and still denies
+providers, subprocesses, credentials and full server/database startup. Synthetic
+commit/outcome loss is not a certification of real carrier or database failover.

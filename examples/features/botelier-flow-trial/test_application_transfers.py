@@ -79,8 +79,15 @@ def test_transfer_waits_for_announcement_and_matching_playback_mark(mode, source
                 assert dial.attrib == {"timeout": "30", "callerId": CALLER_ID}
                 number = dial.find("Number")
                 assert number.text == DESTINATION
+                # The intentional callback contract now binds the URL to the
+                # committed attempt, not just the parent call. Compare against
+                # persisted data, not the mapper's URL-building helper.
+                persisted = next(iter(call.transfer_storage.rows.values()))["result"]
                 assert number.attrib == {
-                    "statusCallback": BASE_URL + "/api/calls/transfer-status",
+                    "statusCallback": (
+                        BASE_URL + "/api/calls/transfer-status?transfer_attempt="
+                        + persisted["attempt_id"]
+                    ),
                     "statusCallbackEvent": "initiated ringing answered completed",
                 }
                 assert xml.find("Refer") is None

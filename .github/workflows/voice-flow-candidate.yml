@@ -190,7 +190,14 @@ jobs:
             --tests /ci/examples/features/botelier-flow-trial/test_application_callbacks.py \
             /ci/examples/features/botelier-flow-trial/test_application_callback_delivery.py \
             /ci/examples/features/botelier-flow-trial/test_application_callback_lifecycle.py \
+            /ci/examples/features/botelier-flow-trial/test_application_transfer_recovery.py \
             2>&1 | tee "$EVIDENCE/application-callbacks.log"
+      - name: Verify restart recovery against disposable PostgreSQL without networking
+        id: transfer_recovery
+        env:
+          IMAGE: voice-flow-candidate:${{ github.sha }}
+          EVIDENCE: ${{ runner.temp }}/voice-application-evidence
+        run: bash scripts/voice_release/check_transfer_recovery.sh
       - name: Retain application compatibility evidence even on failure
         if: always()
         uses: actions/upload-artifact@v4
