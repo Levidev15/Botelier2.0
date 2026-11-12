@@ -104,37 +104,40 @@ class NativePilotAdapter:
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
 
+    async def _enter_node(self, action, manager):
+        """Use the current visit's data, not a first-registered closure."""
+        if self.closed or self.worker.has_finished():
+            raise RuntimeError("pilot_closed")
+        slot = action["slot"]
+        messages = action["task_messages"]
+        # Run at native node entry, AFTER the actual assistant aggregator
+        # has committed all tool results. Keep original message objects so
+        # only our exact prior guidance is removed, not similar host policy.
+        messages[:] = [
+            message for message in manager.get_current_context()
+            if message is not self._guidance
+        ]
+        self._guidance = {
+            "role": "developer",
+            "content": (
+                f"Current saved flow node: {slot.node_id}. "
+                f"Collect {slot.variable} using {slot.function_name}. "
+                "Accept only the caller's explicit answer. Do not repeat the "
+                "already issued question or invent an action outcome. "
+                "The final collection is a pause, not a booking or payment. "
+                + slot.instructions
+            ),
+        }
+        messages.append(self._guidance)
+        # Built-in tts_say pre-actions wait for an ActionFinishedFrame at
+        # the far end of TTS before native context/tools/current_node are
+        # updated. A slow or interrupted utterance must not keep the OLD
+        # collection node active. Our single speech owner issues the text
+        # without making native node entry depend on audio completion.
+        await self.worker.queue_frame(TTSSpeakFrame(text=action["utterance"]))
+
     def _node(self, slot, utterance):
         messages = []
-
-        async def enter(action, manager):
-            if self.closed or self.worker.has_finished():
-                raise RuntimeError("pilot_closed")
-            # Run at native node entry, AFTER the actual assistant aggregator
-            # has committed all tool results. Keep original message objects so
-            # only our exact prior guidance is removed, not similar host policy.
-            messages[:] = [
-                message for message in manager.get_current_context()
-                if message is not self._guidance
-            ]
-            self._guidance = {
-                "role": "developer",
-                "content": (
-                    f"Current saved flow node: {slot.node_id}. "
-                    f"Collect {slot.variable} using {slot.function_name}. "
-                    "Accept only the caller's explicit answer. Do not repeat the "
-                    "already issued question or invent an action outcome. "
-                    "The final collection is a pause, not a booking or payment. "
-                    + slot.instructions
-                ),
-            }
-            messages.append(self._guidance)
-            # Built-in tts_say pre-actions wait for an ActionFinishedFrame at
-            # the far end of TTS before native context/tools/current_node are
-            # updated. A slow or interrupted utterance must not keep the OLD
-            # collection node active. Our single speech owner issues the text
-            # without making native node entry depend on audio completion.
-            await self.worker.queue_frame(TTSSpeakFrame(text=utterance))
 
         async def collect(arguments, manager):
             return await self._collect(slot, arguments)
@@ -151,7 +154,13 @@ class NativePilotAdapter:
                 cancel_on_interruption=True,
             )],
             "pre_actions": [
-                {"type": f"pilot_enter_{slot.node_id}", "handler": enter},
+                # Native Flows registers a handler only once per action type.
+                # Keep one stable callable and pass this visit's owned data;
+                # RESET must consume the very list that this action fills.
+                {
+                    "type": "pilot_enter", "handler": self._enter_node,
+                    "slot": slot, "utterance": utterance, "task_messages": messages,
+                },
             ],
             "respond_immediately": False,
         }

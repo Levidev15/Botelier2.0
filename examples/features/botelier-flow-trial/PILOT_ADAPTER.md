@@ -120,6 +120,34 @@ an active API lookup. The separate result-audio interruption uses actual
 synthetic STT after the action has completed. A change to the caller/tool
 interruption policy is a separate design and verification decision.
 
+### Re-entering a node uses the current visit's data
+
+Native Flows caches a custom action handler on its first registration by type.
+A new node config with the same action type does not replace that handler.
+The previous per-node entry closure captured its original question and message
+list: a later fresh config could speak the old question while RESET consumed
+the new, empty list, losing host policy and history.
+
+The adapter now uses one stable native entry handler. Each entry action carries
+its own immutable collection spec, utterance and the exact task-message list
+that the native context updater will consume. The handler reads that payload,
+preserves existing host policy/history, and replaces only its own previous
+guidance. Repeated visits do not grow the native action-handler registry.
+
+Five offline regressions drive the public native host API after successful,
+failed and empty reads, plus nine repeated visits with fresh or reused configs.
+They check current private instructions, actual speech/tools, preserved policy
+and committed user/assistant/tool history, no duplicate API request, retained
+spent-node rejection and full cleanup. A test-only queue fence observes the
+actual assistant consumer before issuing another visit: seeing the user
+consumer's new tools alone does not prove the earlier tool frame has finished
+at the later assistant consumer.
+
+This fixes the entry mechanism only. These host-driven tests do not enable
+caller corrections, graph backtracking, repeated actions, changed mute policy
+or production attachment. The existing admission and accepted-node guards are
+unchanged; a previously accepted query remains spent after re-entry.
+
 ## Test coverage and evidence
 
 - `test_pilot_contract.py`: exact admission/rejection and immutable scope.
@@ -132,11 +160,13 @@ interruption policy is a separate design and verification decision.
   disabled/current/future/spent collisions.
 - `test_pilot_interruption_order.py`: the two forced native queue-reset windows,
   actual consumer readiness, cancellation and the next caller turn.
+- `test_pilot_reentry.py`: fresh per-visit data, preserved policy/history,
+  bounded registration, actual consumer settlement and unchanged spent guards.
 - The actual model request keeps `parallel_tool_calls=False`. The adversarial
   duplicate-call test emits separately indexed call deltas in one response,
   a layout the pinned parser supports. This checkpoint does not certify the
   SDK's handling of several tool calls inside one individual delta.
-- The mandatory candidate CI step `native_pilot_adapter` runs all four files
+- The mandatory candidate CI step `native_pilot_adapter` runs all five files
   with disabled container networking, read-only root and cleared environment
   before exact-image export. It retains `native-pilot-adapter.log` and
   `native-pilot-checkpoint.json`. No prior regression step was removed.
@@ -154,7 +184,8 @@ env -i PATH="$PATH" HOME=/tmp/botelier-native-flow-trial \
   --backend-root "$PWD/botelier/backend" \
   --package-root /home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/pipecat \
   --tests "$TRIAL/test_pilot_contract.py" "$TRIAL/test_pilot_pipeline.py" \
-  "$TRIAL/test_pilot_mcp.py" "$TRIAL/test_pilot_interruption_order.py"
+  "$TRIAL/test_pilot_mcp.py" "$TRIAL/test_pilot_interruption_order.py" \
+  "$TRIAL/test_pilot_reentry.py"
 python -B -m unittest discover -s tests/voice_release -v
 git diff --check
 ```
@@ -190,6 +221,15 @@ as separate four-second readiness phases, matching the existing lifecycle
 fixture, and reports their actual states on failure. It still waits for the
 real completed greeting before starting the adapter. No assertion, guard,
 provider/script budget or application timeout was removed.
+
+Node-entry safety local verification: **104 adapter cases passed** in 82.02
+seconds, including the five new entry regressions, with **zero unexpected
+guard denials** and 171 visible SDK deprecation warnings. **70 release-policy
+checks passed**. The new regressions first reproduced lost policy and stale
+questions against the unchanged adapter. The final tests wait for the real
+assistant consumer as well as checking actual context, tools and TTS output.
+A fresh exact-commit image run is required separately; these local results do
+not authorize production attachment or the next correction-handling stage.
 
 ## Still outside this checkpoint
 

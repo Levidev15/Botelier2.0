@@ -216,6 +216,7 @@ jobs:
             /ci/examples/features/botelier-flow-trial/test_pilot_pipeline.py \
             /ci/examples/features/botelier-flow-trial/test_pilot_mcp.py \
             /ci/examples/features/botelier-flow-trial/test_pilot_interruption_order.py \
+            /ci/examples/features/botelier-flow-trial/test_pilot_reentry.py \
             2>&1 | tee "$EVIDENCE/native-pilot-adapter.log"
       - name: Exercise authenticated carrier callbacks offline
         id: application_callbacks
