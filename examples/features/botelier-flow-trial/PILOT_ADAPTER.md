@@ -217,7 +217,7 @@ place.
   duplicate-call test emits separately indexed call deltas in one response,
   a layout the pinned parser supports. This checkpoint does not certify the
   SDK's handling of several tool calls inside one individual delta.
-- The mandatory candidate CI step `native_pilot_adapter` runs all six files
+- The mandatory candidate CI step `native_pilot_adapter` runs all nine files
   with disabled container networking, read-only root and cleared environment
   before exact-image export. It retains `native-pilot-adapter.log` and
   `native-pilot-checkpoint.json`. No prior regression step was removed.
@@ -236,7 +236,9 @@ env -i PATH="$PATH" HOME=/tmp/botelier-native-flow-trial \
   --package-root /home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/pipecat \
   --tests "$TRIAL/test_pilot_contract.py" "$TRIAL/test_pilot_pipeline.py" \
   "$TRIAL/test_pilot_mcp.py" "$TRIAL/test_pilot_interruption_order.py" \
-  "$TRIAL/test_pilot_reentry.py" "$TRIAL/test_pilot_revisions.py"
+  "$TRIAL/test_pilot_reentry.py" "$TRIAL/test_pilot_revisions.py" \
+  "$TRIAL/test_pilot_late_speech.py" "$TRIAL/test_pilot_replacement.py" \
+  "$TRIAL/test_pilot_replacement_edges.py"
 python -B -m unittest discover -s tests/voice_release -v
 git diff --check
 ```
@@ -292,6 +294,114 @@ first-handler retention; the final implementation uses distinct visit tool
 identities instead. The final checks prove a fresh answer can still execute
 after stale work is rejected, not merely that all handlers become unusable.
 These are local results; exact-commit container acceptance is a separate gate.
+
+## Earlier blocking finding: a new visit does not cancel old plain speech
+
+The subsequent offline speech-authority check reproduced a separate gap:
+host-driven node changes do not cancel an existing model stream or revoke a
+model text already queued at TTS. The old text can create a new provider
+`Speak` request after the new visit was established, before the replacement
+question. This is not a request to retract audio already issued while valid.
+The collection/read/transition visit fences remain useful, but do not protect
+this non-tool speech path.
+
+`test_pilot_late_speech.py` and its test-only `pilot_speech_io.py` use the real
+coordinator, streaming model SDK, native host API, TTS receiver and cleanup.
+They hold only external model bytes or the actual TTS receiver before
+delegating to it. Positive controls keep normal speech, subsequent current
+answers and hangup disposal observable. No runtime behavior is mocked into a
+pass.
+
+The pre-fix focused run had **three failing desired-behavior checks and seven
+passing controls**, with **31 visible SDK warnings** and zero unexpected guard denials.
+The failing cases are a same-node new visit before first model text, a
+different node after an already-issued valid prefix, and old model text
+waiting at TTS. All three matched controls passed when the test explicitly
+requested and acknowledged the existing native `InterruptionFrame` before
+changing the visit. The adapter did not yet request it at that point.
+The failures were not skipped, marked expected, or converted into assertions
+that accept stale speech.
+
+That was **local characterization**, not new exact-container acceptance.
+No runtime, dependency, caller-mute, graph, editor or CI workflow change
+accompanied that investigation. The earlier checked image omitted these tests.
+Caller corrections remain disabled. The guarded host-entry checkpoint below
+addresses this demonstrated output gap; it does not authorize correction or
+backtracking features. Do not unconditionally interrupt unknown side-effecting
+globals or replay their operations.
+
+## Guarded host replacement using the existing native cancellation path
+
+`NativePilotAdapter.replace_node(slot, utterance)` is the application-owned
+entry for an explicitly authorized host replacement. It is **not** registered
+as an LLM tool, API route, caller-edit feature or production runtime choice.
+Raw `manager.set_node_from_config` remains a framework primitive, not the safe
+application replacement contract. Existing raw-manager revision probes still
+deliberately bypass this entry to verify independent defense in depth.
+
+The host can replace only an already admitted collection specification, with
+the same binding and saved prompt; only its private instructions may vary.
+The explicit utterance is bounded to a nonblank string. Both instruction and
+utterance limits are 8,000 characters. Admission/start/close failures occur
+before any cancellation or manager state change. Spent-node facts and the
+compiled graph are not reset or expanded.
+
+The call-owned guard in `pilot_replacement.py`:
+
+1. Refuses concurrent replacement, active reads, active global handlers,
+   native queued function calls and accepted deferred native entry **before**
+   requesting interruption or touching native pending state.
+2. Observes the SDK's synchronous function-start frame hook, rather than a
+   later asynchronous notification or private runner registry. Native final
+   result/cancellation consumers release that work's lease. Wrapped globals
+   retain their native signatures/options and original business handler.
+3. Closes last-mile handler admission during handoff, so a retained/racing
+   native collection or MCP wrapper cannot start new business I/O. The
+   original clients still own authorization, sessions, retries and results.
+4. Requests a normal native `InterruptionFrame`, acknowledges that exact frame
+   at the worker's downstream boundary, and drains ordered control work before
+   entering a replacement through the **same** native manager.
+5. Defers the new direct-speech prompt until both real message/tool consumers
+   acknowledge the new native context. The host entry does **not** wait for
+   that prompt's audio to finish. Native automatic result transitions keep
+   their existing behavior and caller mute strategies remain unchanged.
+6. Bounds the whole handoff to five seconds. Timeout or host cancellation
+   fails closed rather than reopening tool admission while an unacknowledged
+   interruption remains in flight. Native terminal frames invalidate pending
+   acknowledgment early; late acknowledgments cannot publish a new prompt
+   after hangup. A failed handoff is not a successful rollback or retry.
+
+Native manager setup replaces the worker's initial reached-frame filter set.
+The guard therefore installs its acknowledgment filters **after** that setup.
+The first implementation's real downstream trace caught an otherwise silent
+lost-ack timeout; no SDK source or timeout extension was used to fix it.
+
+The speech tests now drive the guarded application entry. Their forbidden
+obsolete-speech assertions remain, and their observation boundary was
+**strengthened** to include output issued while the replacement itself awaits
+acknowledgment. The separate manual-native-interruption controls remain as
+double-interruption regressions. Nothing is skipped or marked expected.
+
+Local final verification passed **155 adapter cases**, including all 120 prior
+regressions and 35 new speech/replacement cases, with 340 visible SDK warnings
+and **zero unexpected guard denials**. All **70 release-policy checks passed**.
+The new cases cover active/queued API and MCP work, pending native entry,
+retained/racing wrappers, real hangup, overlapping replacement, failed or
+cancelled acknowledgment, invalid configuration, before-start/after-close
+entry, new-node collection during held prompt audio, and bounded registrations.
+Controlled removal of the preflight and of native cancellation each made the
+relevant real-pipeline regression fail; the original source was restored
+byte-for-byte and the targeted cases rechecked.
+
+All three new suites are mandatory in the existing network-disabled,
+read-only fresh-image adapter gate before export. The policy test also rejects
+a workflow that omits them. Local results are not fresh-image certification:
+inspect the complete exact-commit candidate workflow before claiming that gate.
+
+This establishes a controlled host-entry boundary, **not** arbitrary
+simultaneous caller-turn/model-input handoff, correction semantics, mutating
+business-operation cancellation, a provider/acoustic rehearsal or Azure
+readiness. Those remain separate gates before any caller-edit activation.
 
 ## Still outside this checkpoint
 

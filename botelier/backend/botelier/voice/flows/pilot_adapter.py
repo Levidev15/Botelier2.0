@@ -7,7 +7,7 @@ mapping, retry policy and invocation logs. There is no legacy executor here.
 
 import asyncio
 from copy import deepcopy
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import math
 import re
@@ -23,8 +23,11 @@ from botelier.services.action_executor import (
 )
 from botelier.services.integration_client import IntegrationAPIConfig, ResponseVariable
 from botelier.voice.flows.pilot_cancellation import reconcile_native_cancellation
-from botelier.voice.flows.pilot_contract import CompiledPilot, NATIVE_FUNCTION_PREFIX
+from botelier.voice.flows.pilot_contract import (
+    CollectionSpec, CompiledPilot, NATIVE_FUNCTION_PREFIX,
+)
 from botelier.voice.flows.pilot_queue import InterruptionSafeFlowQueue
+from botelier.voice.flows.pilot_replacement import NodeReplacementGuard
 
 
 _TOKEN = re.compile(r"{{\s*([A-Za-z][A-Za-z0-9_]*)\s*}}")
@@ -75,19 +78,30 @@ class NativePilotAdapter:
         self._visit = None
         self._claim = None
         self._owned_task = None
+        self._pending_entry = None
         self._accepted = set()
         self._guidance = None
+        global_functions = tuple(global_functions)
         names = [function.name for function in global_functions]
         if len(names) != len(set(names)) or any(
             name in compiled.native_names or name.startswith(NATIVE_FUNCTION_PREFIX)
             for name in names
         ):
             raise ValueError("native_global_collision")
+        self._replacement = NodeReplacementGuard(
+            llm=llm, worker=worker, assistant=context_aggregator.assistant(),
+            is_closed=lambda: self.closed,
+            extra_busy=lambda: (
+                self._claim is not None or self._owned_task is not None
+                or self._pending_entry is not None
+            ),
+        )
         self.manager = FlowManager(
             llm=llm, worker=InterruptionSafeFlowQueue(worker),
             context_aggregator=context_aggregator,
-            global_functions=list(global_functions),
+            global_functions=[self._replacement.protect(function) for function in global_functions],
         )
+        self._replacement.attach()
         self.manager.state["facts"] = {}
         reconcile_native_cancellation(
             llm=llm, worker=worker, context_aggregator=context_aggregator,
@@ -116,10 +130,43 @@ class NativePilotAdapter:
         self.closed = True
         self._visit = None
         self._claim = None
+        self._pending_entry = None
+        await self._replacement.close()
         task = self._owned_task
         if task is not None and task is not asyncio.current_task() and not task.done():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
+
+    async def replace_node(self, slot, utterance):
+        """Explicit trusted-host supersession, not a caller-edit tool or route.
+
+        Only an admitted collection's instructions may vary. This adds neither
+        graph admission nor authority to reset accepted facts. Business work and
+        already-accepted native transitions must finish before host replacement.
+        """
+        if self.closed or self.worker.has_finished():
+            raise RuntimeError("pilot_closed")
+        if not self._started or self._visit is None:
+            raise RuntimeError("pilot_not_startable")
+        admitted = (self.compiled.query, self.compiled.choice, self.compiled.failure)
+        if (
+            not isinstance(slot, CollectionSpec)
+            or not isinstance(slot.instructions, str) or len(slot.instructions) > 8000
+            or not any(replace(slot, instructions=bound.instructions) == bound for bound in admitted)
+            or not isinstance(utterance, str) or not utterance.strip() or len(utterance) > 8000
+        ):
+            raise ValueError("pilot_replacement_config")
+        visit = self._visit
+        async with self._replacement.replacement():
+            if not self._is_current(visit):
+                raise RuntimeError("pilot_stale_entry")
+            await self.manager.set_node_from_config(self._node(
+                slot, utterance, defer_speech=True,
+            ))
+            # Both native context/tool consumers must be current before the
+            # replacement prompt can begin. Do not wait for its audio to end.
+            await self._replacement.barrier()
+            await self.worker.queue_frame(TTSSpeakFrame(text=utterance))
 
     async def _enter_node(self, action, manager):
         """Use the current visit's data, not a first-registered closure."""
@@ -138,6 +185,7 @@ class NativePilotAdapter:
             self._revision, f"{NATIVE_FUNCTION_PREFIX}{slot.node_id[:16]}_{uuid4().hex}",
         )
         self._visit = visit
+        self._pending_entry = None
 
         async def collect(arguments, manager):
             return await self._collect(slot, visit, arguments)
@@ -178,11 +226,12 @@ class NativePilotAdapter:
         # updated. A slow or interrupted utterance must not keep the OLD
         # collection node active. Our single speech owner issues the text
         # without making native node entry depend on audio completion.
-        await self.worker.queue_frame(TTSSpeakFrame(text=action["utterance"]))
+        if not action.get("defer_speech", False):
+            await self.worker.queue_frame(TTSSpeakFrame(text=action["utterance"]))
         if not self._is_current(visit):
             raise RuntimeError("pilot_stale_entry")
 
-    def _node(self, slot, utterance, *, source_visit=None):
+    def _node(self, slot, utterance, *, source_visit=None, defer_speech=False):
         messages = []
         functions = []
 
@@ -199,6 +248,7 @@ class NativePilotAdapter:
                     "type": "pilot_enter", "handler": self._enter_node,
                     "slot": slot, "utterance": utterance, "task_messages": messages,
                     "functions": functions, "source_visit": source_visit,
+                    "defer_speech": defer_speech,
                 },
             ],
             "respond_immediately": False,
@@ -214,6 +264,7 @@ class NativePilotAdapter:
         return (
             self._is_current(visit) and self.manager.current_node == slot.node_id
             and slot.node_id not in self._accepted and self._claim is None
+            and not self._replacement.blocked
         )
 
     async def _collect(self, slot, visit, arguments):
@@ -271,6 +322,9 @@ class NativePilotAdapter:
                 "flow_version_id": self.compiled.identity.flow_version_id,
                 "data": deepcopy(mapped),
             }
+            # Native owns the deferred transition after result commit. Keep
+            # that ownership protected even after this handler's task returns.
+            self._pending_entry = visit
             return result, self._node(next_slot, text, source_visit=visit)
         finally:
             if self._claim is claim:
