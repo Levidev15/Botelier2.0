@@ -8,7 +8,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection
 
 from node_contract_io import PRESENTATION, speech, tool_delta, wait_for_speech
-from pilot_io import PilotCall, PilotProviders
+from pilot_io import PilotCall, PilotProviders, native_schema
 
 
 def control_source(call):
@@ -86,6 +86,7 @@ def test_native_cancellation_barrier_survives_another_interruption_while_queued(
             observed = []
 
             await call.activate()
+            query_function_name = native_schema(call, "query").name
 
             @call.created[1].event_handler("on_frame_reached_downstream")
             async def reached(worker, frame):
@@ -102,7 +103,7 @@ def test_native_cancellation_barrier_survives_another_interruption_while_queued(
             ))
             await interrupt_paused_source(call, clock)
             await call.wait_until(lambda: bool(observed))
-            assert observed == [(("collect_query", "node-contract-call"),)]
+            assert observed == [((query_function_name, "node-contract-call"),)]
             await call.wait_until(lambda: not call.created[3].assistant().has_function_calls_in_progress)
             await providers.user_turn("Stop; that was the wrong fixture.", turn_index=1)
             await wait_for_speech(call, "The pending lookup was interrupted.")

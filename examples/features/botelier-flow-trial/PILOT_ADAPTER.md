@@ -49,8 +49,9 @@ changed by this checkpoint.
   adapter-owned guidance object after native tool results have committed.
   The host's existing volatile local-time tail continues to refresh.
 - Reuse the actual host's authorized/enabled MCP catalogue and isolated handler.
-  Reserve every pilot collection name, including future/pause nodes, before
-  adding native globals. Structured results and error status remain tool data.
+  Reserve every logical pilot collection name, including future/pause nodes,
+  and the entire `pilot_collect_` visit namespace before adding native globals.
+  Structured results and error status remain tool data.
 
 The proof bounds caller text at 2,048 characters, a definition at 100,000
 serialized characters, presented results at 50 items, mapped data at 50,000
@@ -148,6 +149,52 @@ caller corrections, graph backtracking, repeated actions, changed mute policy
 or production attachment. The existing admission and accepted-node guards are
 unchanged; a previously accepted query remains spent after re-entry.
 
+### Visit revisions protect dispatch, reads and deferred entry
+
+Node identity alone does not establish authority: the same logical node can be
+entered more than once. Each actual entry now creates a fresh immutable,
+call-owned execution revision and a unique native function name. The logical
+saved node ID is preserved. Wire names stay within the provider's 64-character
+limit even for a maximum-length saved ID; their UUID suffix is execution
+metadata, not a secret or a caller fact.
+
+This requires more than putting a new token in same-named function arguments.
+The installed SDK both resolves queued handlers again at execution time and
+retains the first auto-registered handler while its name stays advertised.
+Reusing a name with a fresh closure could either reuse old authority or reject
+all new answers. Distinct visit names avoid both cases. Normal native context
+sync installs the new handler and removes obsolete auto-registered names;
+there is no SDK registry patch, manual re-registration or growing action type.
+
+Each collection handler also captures its immutable visit. It rejects an old
+wrapper even when the same saved node is current and not yet accepted. An
+owned read checks both its claim and visit after I/O before saving mapped
+results. Its returned native node configuration carries the source visit
+through the deferred tool-result callback. The stable entry pre-action checks
+that source before altering guidance, tools, node state or issuing speech.
+A superseded callback fails closed through the SDK's normal action/FlowError
+path with the safe `pilot_stale_entry` category. The forced-order regression
+retains and explicitly matches those native diagnostics; it does not suppress
+errors or accept unrelated task failures.
+
+MCP filtering and the adapter constructor both reserve the visit namespace,
+including unknown/future identities. Cancellation bookkeeping recognizes
+actual cancelled native names in that call-owned namespace as well as the
+existing authorized globals. Caller muting, transport retry policy, action
+authorization and MCP global transport/side-effect policy are unchanged.
+
+The model-provider fixture selects actual advertised wire tools from its
+serialized request; readable logical names are only test-script aliases.
+Queued replies retain that request's original wire identity. Separate raw-name
+tests bypass aliasing to prove stale, forged and bare logical names cannot
+gain native or MCP action authority. This is synthetic provider data, not
+runtime argument repair or proof that a real model follows instructions.
+
+These protections do not implement editable answers, dependency invalidation,
+new retries, general graph loops, durable revisions or an interruptible API/MCP
+policy. The existing spent-node guard and forward-only admission remain in
+place.
+
 ## Test coverage and evidence
 
 - `test_pilot_contract.py`: exact admission/rejection and immutable scope.
@@ -162,11 +209,15 @@ unchanged; a previously accepted query remains spent after re-entry.
   actual consumer readiness, cancellation and the next caller turn.
 - `test_pilot_reentry.py`: fresh per-visit data, preserved policy/history,
   bounded registration, actual consumer settlement and unchanged spent guards.
+- `test_pilot_revisions.py`: retained and actually queued calls across same-ID
+  visits, superseded reads, deferred native entry, disposed-call identities,
+  forged names, native/MCP namespace protection, maximum-length saved IDs and
+  actual-inference stale-handler pruning with fresh or reused configs.
 - The actual model request keeps `parallel_tool_calls=False`. The adversarial
   duplicate-call test emits separately indexed call deltas in one response,
   a layout the pinned parser supports. This checkpoint does not certify the
   SDK's handling of several tool calls inside one individual delta.
-- The mandatory candidate CI step `native_pilot_adapter` runs all five files
+- The mandatory candidate CI step `native_pilot_adapter` runs all six files
   with disabled container networking, read-only root and cleared environment
   before exact-image export. It retains `native-pilot-adapter.log` and
   `native-pilot-checkpoint.json`. No prior regression step was removed.
@@ -185,7 +236,7 @@ env -i PATH="$PATH" HOME=/tmp/botelier-native-flow-trial \
   --package-root /home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/pipecat \
   --tests "$TRIAL/test_pilot_contract.py" "$TRIAL/test_pilot_pipeline.py" \
   "$TRIAL/test_pilot_mcp.py" "$TRIAL/test_pilot_interruption_order.py" \
-  "$TRIAL/test_pilot_reentry.py"
+  "$TRIAL/test_pilot_reentry.py" "$TRIAL/test_pilot_revisions.py"
 python -B -m unittest discover -s tests/voice_release -v
 git diff --check
 ```
@@ -230,6 +281,17 @@ questions against the unchanged adapter. The final tests wait for the real
 assistant consumer as well as checking actual context, tools and TTS output.
 A fresh exact-commit image run is required separately; these local results do
 not authorize production attachment or the next correction-handling stage.
+
+Visit-revision safety local verification: **120 adapter cases passed** in
+81.21 seconds, including 15 new revision cases and one additional enabled MCP
+namespace-collision case. There were **zero unexpected guard denials** and
+228 visible SDK deprecation warnings. **70 release-policy checks passed**.
+Before runtime changes the new checks reproduced ten ownership/control
+failures. A same-name argument-token attempt then exposed the SDK's
+first-handler retention; the final implementation uses distinct visit tool
+identities instead. The final checks prove a fresh answer can still execute
+after stale work is rejected, not merely that all handlers become unusable.
+These are local results; exact-commit container acceptance is a separate gate.
 
 ## Still outside this checkpoint
 

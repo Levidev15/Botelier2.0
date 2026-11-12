@@ -10,6 +10,8 @@ from typing import Any, Callable
 
 from pipecat.flows import FlowsFunctionSchema
 
+from botelier.voice.flows.pilot_contract import NATIVE_FUNCTION_PREFIX
+
 
 @dataclass(frozen=True)
 class _HostMCPInvocation:
@@ -44,12 +46,12 @@ def _handler(name, host_handler):
 
 
 def native_mcp_globals(schemas, handlers, *, reserved_names):
-    """Reserve ALL native names before exposing the surviving host globals."""
+    """Reserve logical names AND the entire visit namespace before globals."""
     globals_ = []
     seen = set()
     for schema in schemas:
         name = schema.name
-        if name in reserved_names:
+        if name in reserved_names or name.startswith(NATIVE_FUNCTION_PREFIX):
             continue
         if name in seen or name not in handlers or not callable(handlers[name]):
             raise ValueError("mcp_catalogue_invalid")

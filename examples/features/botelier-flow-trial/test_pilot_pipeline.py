@@ -7,11 +7,11 @@ import pytest
 
 from lifecycle_io import CALL_SID
 from node_contract_io import ERROR, PRESENTATION, PRIVATE, WAIT, speech, tool_delta, tool_result, wait_for_speech
-from pilot_io import PilotCall, PilotProviders, pilot_config
+from pilot_io import PilotCall, PilotProviders, native_schema, native_tool_names, pilot_config
 
 
 def tools(call):
-    return {tool.name for tool in call.created[4].tools.standard_tools}
+    return native_tool_names(call)
 
 
 def test_native_collection_runs_one_connected_read_and_issues_the_next_question_once():
@@ -230,10 +230,7 @@ def test_competing_and_spent_native_calls_cannot_repeat_a_read_wait_or_transitio
         ], status="hold")
         async with PilotCall(providers=providers) as call:
             await call.activate()
-            retained = next(
-                schema for schema in call.created[4].tools.standard_tools
-                if schema.name == "collect_query"
-            )
+            retained = native_schema(call, "query")
             await providers.user_turn("Please check the standard fixture.")
             await call.wait_until(lambda: providers.business_started.is_set())
             competing = await call.invoke_retained(retained, {"query": "other"})

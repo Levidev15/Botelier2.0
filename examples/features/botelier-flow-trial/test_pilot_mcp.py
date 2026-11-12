@@ -6,7 +6,9 @@ import json
 import pytest
 
 from node_contract_io import PRESENTATION, speech, tool_delta, tool_result, wait_for_speech
-from pilot_io import PilotCall, PilotProviders
+from pilot_io import (
+    REVISION_COLLISION, PilotCall, PilotProviders, logical_function_name, native_tool_names,
+)
 
 
 @pytest.mark.parametrize("is_error,spoken", [
@@ -29,16 +31,17 @@ def test_host_mcp_lookup_survives_the_transition_without_promoting_structured_da
         ], mcp_result=payload)
         async with PilotCall(providers=providers, mcp=True) as call:
             await call.activate()
-            assert {schema.name for schema in call.created[4].tools.standard_tools} == {
+            assert native_tool_names(call) == {
                 "collect_query", "mcp_lookup",
             }
             assert {schema.name for schema in call.host_schemas} == {
                 "collect_query", "collect_choice", "collect_failure", "mcp_lookup",
+                REVISION_COLLISION,
             }
             await providers.user_turn("Please check the standard fixture.")
             await wait_for_speech(call, PRESENTATION)
             await call.wait_for_node("choice")
-            assert {schema.name for schema in call.created[4].tools.standard_tools} == {
+            assert native_tool_names(call) == {
                 "collect_choice", "mcp_lookup",
             }
             assert not any(message["method"] == "tools/call" for message in providers.mcp_messages)
@@ -47,7 +50,7 @@ def test_host_mcp_lookup_survives_the_transition_without_promoting_structured_da
             assert tool_result(call, "mcp-call") == payload
             requests = [body for body in providers.requests if body.get("stream")]
             assert len(requests) == 3
-            assert {tool["function"]["name"] for tool in requests[1]["tools"]} == {
+            assert {logical_function_name(tool["function"]["name"]) for tool in requests[1]["tools"]} == {
                 "collect_choice", "mcp_lookup",
             }
             wire = next(
@@ -70,7 +73,7 @@ def test_host_mcp_lookup_survives_the_transition_without_promoting_structured_da
     asyncio.run(scenario())
 
 
-@pytest.mark.parametrize("name", ["mcp_disabled", "collect_choice", "collect_failure"])
+@pytest.mark.parametrize("name", ["mcp_disabled", "collect_choice", "collect_failure", REVISION_COLLISION])
 def test_disabled_and_future_colliding_names_have_no_mcp_dispatch_path(name):
     async def scenario():
         providers = PilotProviders([
@@ -84,7 +87,7 @@ def test_disabled_and_future_colliding_names_have_no_mcp_dispatch_path(name):
             assert call.adapter.facts == {}
             assert providers.business_requests == []
             assert not any(message["method"] == "tools/call" for message in providers.mcp_messages)
-            assert {schema.name for schema in call.created[4].tools.standard_tools} == {
+            assert native_tool_names(call) == {
                 "collect_query", "mcp_lookup",
             }
             await call.finish("graceful_end")

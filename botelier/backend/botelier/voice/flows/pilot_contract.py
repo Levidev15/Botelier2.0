@@ -14,6 +14,7 @@ from uuid import UUID
 _NODE_ID = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,47}\Z")
 _VARIABLE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,47}\Z")
 _TOKEN = re.compile(r"{{\s*([A-Za-z][A-Za-z0-9_]*)\s*}}")
+NATIVE_FUNCTION_PREFIX = "pilot_collect_"
 _RESERVED = {
     "status", "current_node_id", "flow_version_id", "account_id", "property_id",
     "call_sid", "tool_id", "outcome", "success",

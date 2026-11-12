@@ -7,9 +7,11 @@ mapping, retry policy and invocation logs. There is no legacy executor here.
 
 import asyncio
 from copy import deepcopy
+from dataclasses import dataclass
 import json
 import math
 import re
+from uuid import uuid4
 
 from loguru import logger
 from pipecat.flows import FlowManager, FlowsFunctionSchema
@@ -21,11 +23,19 @@ from botelier.services.action_executor import (
 )
 from botelier.services.integration_client import IntegrationAPIConfig, ResponseVariable
 from botelier.voice.flows.pilot_cancellation import reconcile_native_cancellation
-from botelier.voice.flows.pilot_contract import CompiledPilot
+from botelier.voice.flows.pilot_contract import CompiledPilot, NATIVE_FUNCTION_PREFIX
 from botelier.voice.flows.pilot_queue import InterruptionSafeFlowQueue
 
 
 _TOKEN = re.compile(r"{{\s*([A-Za-z][A-Za-z0-9_]*)\s*}}")
+
+
+@dataclass(frozen=True)
+class _Visit:
+    """Call-owned execution revision, not an editable caller fact."""
+
+    revision: int
+    function_name: str
 
 
 def _render(template, values):
@@ -61,12 +71,17 @@ class NativePilotAdapter:
         self.session_factory = session_factory
         self.closed = False
         self._started = False
+        self._revision = 0
+        self._visit = None
         self._claim = None
         self._owned_task = None
         self._accepted = set()
         self._guidance = None
         names = [function.name for function in global_functions]
-        if len(names) != len(set(names)) or set(names) & compiled.native_names:
+        if len(names) != len(set(names)) or any(
+            name in compiled.native_names or name.startswith(NATIVE_FUNCTION_PREFIX)
+            for name in names
+        ):
             raise ValueError("native_global_collision")
         self.manager = FlowManager(
             llm=llm, worker=InterruptionSafeFlowQueue(worker),
@@ -77,6 +92,7 @@ class NativePilotAdapter:
         reconcile_native_cancellation(
             llm=llm, worker=worker, context_aggregator=context_aggregator,
             names=compiled.native_names | set(names), is_closed=lambda: self.closed,
+            native_prefix=NATIVE_FUNCTION_PREFIX,
         )
 
         @worker.event_handler("on_pipeline_finished")
@@ -98,6 +114,7 @@ class NativePilotAdapter:
     async def close(self):
         """Invalidate ownership before cancelling and awaiting the owned read."""
         self.closed = True
+        self._visit = None
         self._claim = None
         task = self._owned_task
         if task is not None and task is not asyncio.current_task() and not task.done():
@@ -108,7 +125,34 @@ class NativePilotAdapter:
         """Use the current visit's data, not a first-registered closure."""
         if self.closed or self.worker.has_finished():
             raise RuntimeError("pilot_closed")
+        source = action.get("source_visit")
+        if source is not None and not self._is_current(source):
+            # Native transitions run after tool-result context commit. A
+            # captured callback must not regain authority after host re-entry.
+            raise RuntimeError("pilot_stale_entry")
         slot = action["slot"]
+        self._revision += 1
+        # <=63 characters even for the longest admitted saved node ID. Names
+        # are unique across calls/visits; the UUID is not a secret or a fact.
+        visit = _Visit(
+            self._revision, f"{NATIVE_FUNCTION_PREFIX}{slot.node_id[:16]}_{uuid4().hex}",
+        )
+        self._visit = visit
+
+        async def collect(arguments, manager):
+            return await self._collect(slot, visit, arguments)
+
+        # Populate the SAME list native Flows reads after this pre-action.
+        # The SDK retains an advertised name's first handler until that name
+        # leaves the tool set. A fresh name prevents rebinding OR retaining
+        # old authority; native schema sync prunes obsolete registrations.
+        action["functions"][:] = [FlowsFunctionSchema(
+            name=visit.function_name,
+            description=f"Record the caller's explicit {slot.variable} at this node.",
+            properties={slot.variable: {"type": "string", "minLength": 1, "maxLength": 2048}},
+            required=[slot.variable], handler=collect,
+            cancel_on_interruption=True,
+        )]
         messages = action["task_messages"]
         # Run at native node entry, AFTER the actual assistant aggregator
         # has committed all tool results. Keep original message objects so
@@ -121,7 +165,7 @@ class NativePilotAdapter:
             "role": "developer",
             "content": (
                 f"Current saved flow node: {slot.node_id}. "
-                f"Collect {slot.variable} using {slot.function_name}. "
+                f"Collect {slot.variable} using {visit.function_name}. "
                 "Accept only the caller's explicit answer. Do not repeat the "
                 "already issued question or invent an action outcome. "
                 "The final collection is a pause, not a booking or payment. "
@@ -135,24 +179,18 @@ class NativePilotAdapter:
         # collection node active. Our single speech owner issues the text
         # without making native node entry depend on audio completion.
         await self.worker.queue_frame(TTSSpeakFrame(text=action["utterance"]))
+        if not self._is_current(visit):
+            raise RuntimeError("pilot_stale_entry")
 
-    def _node(self, slot, utterance):
+    def _node(self, slot, utterance, *, source_visit=None):
         messages = []
-
-        async def collect(arguments, manager):
-            return await self._collect(slot, arguments)
+        functions = []
 
         return {
             "name": slot.node_id,
             "task_messages": messages,
             "context_strategy": ContextStrategyConfig(strategy=ContextStrategy.RESET),
-            "functions": [FlowsFunctionSchema(
-                name=slot.function_name,
-                description=f"Record the caller's explicit {slot.variable} at this node.",
-                properties={slot.variable: {"type": "string", "minLength": 1, "maxLength": 2048}},
-                required=[slot.variable], handler=collect,
-                cancel_on_interruption=True,
-            )],
+            "functions": functions,
             "pre_actions": [
                 # Native Flows registers a handler only once per action type.
                 # Keep one stable callable and pass this visit's owned data;
@@ -160,20 +198,26 @@ class NativePilotAdapter:
                 {
                     "type": "pilot_enter", "handler": self._enter_node,
                     "slot": slot, "utterance": utterance, "task_messages": messages,
+                    "functions": functions, "source_visit": source_visit,
                 },
             ],
             "respond_immediately": False,
         }
 
-    def _available(self, slot):
+    def _is_current(self, visit):
         return (
             not self.closed and not self.worker.has_finished()
-            and self.manager.current_node == slot.node_id
+            and self._visit is visit
+        )
+
+    def _available(self, slot, visit):
+        return (
+            self._is_current(visit) and self.manager.current_node == slot.node_id
             and slot.node_id not in self._accepted and self._claim is None
         )
 
-    async def _collect(self, slot, arguments):
-        if not self._available(slot):
+    async def _collect(self, slot, visit, arguments):
+        if not self._available(slot, visit):
             return {"status": "rejected", "reason": "busy_or_stale"}
         if (
             not isinstance(arguments, dict) or set(arguments) != {slot.variable}
@@ -212,7 +256,7 @@ class NativePilotAdapter:
             if task.cancelling():
                 raise asyncio.CancelledError
             if (
-                self.closed or self.worker.has_finished() or self._claim is not claim
+                not self._is_current(visit) or self._claim is not claim
                 or self.manager.current_node != slot.node_id
             ):
                 return {"status": "rejected", "reason": "busy_or_stale"}
@@ -227,7 +271,7 @@ class NativePilotAdapter:
                 "flow_version_id": self.compiled.identity.flow_version_id,
                 "data": deepcopy(mapped),
             }
-            return result, self._node(next_slot, text)
+            return result, self._node(next_slot, text, source_visit=visit)
         finally:
             if self._claim is claim:
                 self._claim = None

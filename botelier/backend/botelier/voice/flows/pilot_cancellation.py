@@ -18,7 +18,9 @@ class _CancellationBarrier(ControlFrame, UninterruptibleFrame):
     calls: tuple[tuple[str, str], ...] = ()
 
 
-def reconcile_native_cancellation(*, llm, worker, context_aggregator, names, is_closed):
+def reconcile_native_cancellation(
+    *, llm, worker, context_aggregator, names, is_closed, native_prefix="",
+):
     """Install call-owned hooks; never select a node or modify context internals."""
     names = frozenset(names)
     worker.add_reached_downstream_filter((_CancellationBarrier,))
@@ -29,7 +31,12 @@ def reconcile_native_cancellation(*, llm, worker, context_aggregator, names, is_
             return
         owned = tuple(dict.fromkeys(
             (call.function_name, call.tool_call_id)
-            for call in calls if call.function_name in names
+            for call in calls if (
+                call.function_name in names or (
+                    native_prefix and isinstance(call.function_name, str)
+                    and call.function_name.startswith(native_prefix)
+                )
+            )
         ))
         if owned:
             # Unlike another priority cancellation frame, this control frame

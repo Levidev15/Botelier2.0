@@ -39,16 +39,35 @@ IDENTITY_FIELDS = {
     "flow_version_id": "offline-version",
     "call_sid": "CAofflinefixture",
 }
+REVISION_COLLISION = "pilot_collect_query_" + "0" * 32
+
+
+def logical_function_name(name):
+    """Human-readable fixture view; runtime dispatch NEVER uses this alias."""
+    if name.startswith("pilot_collect_"):
+        return "collect_" + name[len("pilot_collect_"):].rsplit("_", 1)[0]
+    return name
+
+
+def native_schema(call, node_id):
+    prefix = f"pilot_collect_{node_id[:16]}_"
+    return next(schema for schema in call.created[4].tools.standard_tools
+                if schema.name.startswith(prefix))
+
+
+def native_tool_names(call):
+    return {logical_function_name(schema.name) for schema in call.created[4].tools.standard_tools}
 
 
 class PilotProviders(NodeProviders):
     def __init__(
         self, *args, late_business_result=False, hold_tts_turn=None,
-        separate_call_chunks=False, **kwargs,
+        separate_call_chunks=False, bind_native_names=True, **kwargs,
     ):
         super().__init__(*args, **kwargs)
         self.tts.hold_turn = hold_tts_turn
         self.separate_call_chunks = separate_call_chunks
+        self.bind_native_names = bind_native_names
         self.late_business_result = late_business_result
         self.returned_late_result = False
 
@@ -63,11 +82,15 @@ class PilotProviders(NodeProviders):
             # still refuse to speak, mutate facts or advance.
             self.returned_late_result = True
             return httpx.Response(200, json=self.payload, request=request)
-        if self.separate_call_chunks and response.headers.get("content-type") == "text/event-stream":
-            # Generate an explicit provider layout supported by the pinned
-            # parser: two indexed call deltas in one model response, not two
-            # entries in a single delta (the SDK reads only that delta's first
-            # entry). This is a fixture format choice, not a runtime repair.
+        if response.headers.get("content-type") == "text/event-stream":
+            # A scripted model selects the tool in THIS serialized request,
+            # not mutable application state. Held/late replies retain that
+            # wire identity. Raw old/forged names can bypass fixture aliasing.
+            body = json.loads(request.content)
+            advertised = {
+                logical_function_name(tool["function"]["name"]): tool["function"]["name"]
+                for tool in body.get("tools", []) if tool.get("type") == "function"
+            }
             lines = []
             for line in response.text.splitlines():
                 if not line.startswith("data: ") or line == "data: [DONE]":
@@ -77,9 +100,18 @@ class PilotProviders(NodeProviders):
                 chunk = json.loads(line[6:])
                 choices = chunk.get("choices", [])
                 calls = choices[0].get("delta", {}).get("tool_calls", []) if choices else []
-                if len(calls) <= 1:
-                    lines.append(line)
+                if self.bind_native_names:
+                    for tool in calls:
+                        function = tool["function"]
+                        name = function["name"]
+                        if name.startswith("collect_"):
+                            key = "collect_" + name[len("collect_"):][:16]
+                            function["name"] = advertised.get(key, name)
+                if len(calls) <= 1 or not self.separate_call_chunks:
+                    lines.append("data: " + json.dumps(chunk))
                     continue
+                # Preserve the explicit indexed-delta layout supported by the
+                # pinned parser; this is a fixture choice, not a runtime repair.
                 for index, tool in enumerate(calls):
                     copy = {**chunk, "choices": [{
                         **choices[0], "delta": {"tool_calls": [tool]},
@@ -98,12 +130,13 @@ class PilotProviders(NodeProviders):
         message = json.loads(request.content)
         if message["method"] == "tools/list":
             body = response.json()
-            body["result"]["tools"].append({
-                "name": "collect_failure", "description": "Another native-name collision",
-                "inputSchema": {"type": "object", "properties": {
-                    "query": {"type": "string"},
-                }, "required": ["query"]},
-            })
+            for name in ("collect_failure", REVISION_COLLISION):
+                body["result"]["tools"].append({
+                    "name": name, "description": "A native-name collision",
+                    "inputSchema": {"type": "object", "properties": {
+                        "query": {"type": "string"},
+                    }, "required": ["query"]},
+                })
             return httpx.Response(200, json=body, request=request)
         return response
 
@@ -144,6 +177,7 @@ class PilotCall(OfflineCall):
             self.records.assistant.mcp_connection_id = CONNECTION
             self.records.assistant.mcp_enabled_tools = [
                 "mcp_lookup", "collect_query", "collect_choice", "collect_failure",
+                REVISION_COLLISION,
             ]
             self.records.rows["MCPConnection"] = SimpleNamespace(
                 id=CONNECTION, name="Offline MCP fixture", server_url=MCP_URL,
@@ -165,6 +199,7 @@ class PilotCall(OfflineCall):
             self.host_handlers = dict(kwargs.get("function_handlers") or {})
             assert {schema.name for schema in self.host_schemas} <= {
                 "mcp_lookup", "collect_query", "collect_choice", "collect_failure",
+                REVISION_COLLISION,
             }
             kwargs.update(function_schemas=None, function_handlers=None)
             result = original_factory(*args, **kwargs)
@@ -207,9 +242,9 @@ class PilotCall(OfflineCall):
             self.compiled.query.prompt in speech(self)
             and not self.created[16].get_audio_contexts()
             and not self.created[5]._bot_speaking
-            and self.compiled.query.function_name in {
-                tool.name for tool in getattr(self.created[4].tools, "standard_tools", ())
-            }
+            and any(tool.name.startswith(
+                f"pilot_collect_{self.compiled.query.node_id[:16]}_",
+            ) for tool in getattr(self.created[4].tools, "standard_tools", ()))
         ))
 
     async def invoke_retained(self, schema, arguments):
@@ -234,9 +269,8 @@ class PilotCall(OfflineCall):
         # context/tool frames and current-node assignment have completed.
         await self.wait_until(lambda: (
             self.adapter.manager.current_node == node_id
-            and f"collect_{node_id}" in {
-                tool.name for tool in getattr(self.created[4].tools, "standard_tools", ())
-            }
+            and any(tool.name.startswith(f"pilot_collect_{node_id[:16]}_")
+                    for tool in getattr(self.created[4].tools, "standard_tools", ()))
         ))
 
     async def wait_until(self, predicate, timeout=4.0):

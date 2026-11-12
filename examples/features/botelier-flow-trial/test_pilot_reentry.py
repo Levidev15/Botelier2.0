@@ -11,7 +11,7 @@ import pytest
 from pipecat.frames.frames import DataFrame
 
 from node_contract_io import ERROR, PRESENTATION, PRIVATE, WAIT, speech, tool_delta, tool_result, wait_for_speech
-from pilot_io import PilotCall, PilotProviders
+from pilot_io import PilotCall, PilotProviders, logical_function_name, native_schema, native_tool_names
 
 
 HOST_GUIDANCE = {
@@ -67,10 +67,7 @@ def test_return_to_an_earlier_node_keeps_policy_history_and_fresh_entry_data(
                 message["content"].split("\n\n## ASSISTANT LOCAL TIME", 1)[0]
                 for message in call.created[4].messages if message.get("role") == "system"
             )
-            retained_query = next(
-                schema for schema in call.created[4].tools.standard_tools
-                if schema.name == "collect_query"
-            )
+            retained_query = native_schema(call, "query")
             await providers.user_turn("Please check the standard fixture.")
             await wait_for_speech(call, utterance)
             await call.wait_for_node(origin)
@@ -107,7 +104,7 @@ def test_return_to_an_earlier_node_keeps_policy_history_and_fresh_entry_data(
             )
             assert any(
                 message.get("role") == "assistant" and any(
-                    tool["function"]["name"] == "collect_query"
+                    logical_function_name(tool["function"]["name"]) == "collect_query"
                     for tool in message.get("tool_calls", [])
                 )
                 for message in messages
@@ -141,7 +138,7 @@ def test_return_to_an_earlier_node_keeps_policy_history_and_fresh_entry_data(
             }
             assert call.adapter.facts == previous_facts
             assert len(providers.business_requests) == 1
-            assert {tool.name for tool in call.created[4].tools.standard_tools} == {"collect_query"}
+            assert native_tool_names(call) == {"collect_query"}
             issued = speech(call)
             assert issued.count("Which fixture?") == 1
             assert issued.count("Which corrected fixture?") == 1
@@ -194,7 +191,7 @@ def test_repeated_entries_refresh_instructions_without_accumulating_action_handl
                 assert (
                     slot.instructions if reuse_config else instructions
                 ) in call.adapter._guidance["content"]
-                assert {tool.name for tool in call.created[4].tools.standard_tools} == {
+                assert native_tool_names(call) == {
                     slot.function_name,
                 }
                 # Inspect the real native registry's capacity, not a fake
