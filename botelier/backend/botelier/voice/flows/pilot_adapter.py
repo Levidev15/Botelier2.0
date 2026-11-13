@@ -89,7 +89,8 @@ class NativePilotAdapter:
         ):
             raise ValueError("native_global_collision")
         self._replacement = NodeReplacementGuard(
-            llm=llm, worker=worker, assistant=context_aggregator.assistant(),
+            llm=llm, worker=worker, user=context_aggregator.user(),
+            assistant=context_aggregator.assistant(),
             is_closed=lambda: self.closed,
             extra_busy=lambda: (
                 self._claim is not None or self._owned_task is not None

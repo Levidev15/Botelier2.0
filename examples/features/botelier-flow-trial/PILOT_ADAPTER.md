@@ -226,11 +226,12 @@ Run from the isolated worktree:
 
 ```bash
 TRIAL="$PWD/examples/features/botelier-flow-trial"
+ASSETS="$PWD/generated-artifacts/voice-pilot/offline-assets/nltk_data"
 env -i PATH="$PATH" HOME=/tmp/botelier-native-flow-trial \
   PYTHONPATH=/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages \
   PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
   HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 HF_HUB_DISABLE_TELEMETRY=1 \
-  DO_NOT_TRACK=1 LOGURU_LEVEL=ERROR NLTK_DATA=/home/runner/nltk_data \
+  DO_NOT_TRACK=1 LOGURU_LEVEL=ERROR NLTK_DATA="$ASSETS" \
   python -B "$TRIAL/lifecycle_guard.py" \
   --backend-root "$PWD/botelier/backend" \
   --package-root /home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/pipecat \
@@ -238,15 +239,19 @@ env -i PATH="$PATH" HOME=/tmp/botelier-native-flow-trial \
   "$TRIAL/test_pilot_mcp.py" "$TRIAL/test_pilot_interruption_order.py" \
   "$TRIAL/test_pilot_reentry.py" "$TRIAL/test_pilot_revisions.py" \
   "$TRIAL/test_pilot_late_speech.py" "$TRIAL/test_pilot_replacement.py" \
-  "$TRIAL/test_pilot_replacement_edges.py"
+  "$TRIAL/test_pilot_replacement_edges.py" "$TRIAL/test_pilot_handoff_input.py" \
+  "$TRIAL/test_pilot_input_preservation.py"
 python -B -m unittest discover -s tests/voice_release -v
 git diff --check
 ```
 
 Run guards sequentially because their temporary report directory is shared.
-The existing public tokenizer cache is required; do not download assets,
-install packages, expose inherited credentials or weaken guards to clear a
-failure. Normal runs require zero unexpected denials.
+Use the verified public tokenizer cache. If its old temporary location is
+lost, prepare only the exact checksum-pinned public data already declared by
+`Dockerfile.flow-pilot`, outside the guarded run, under ignored workspace
+storage. Asset preparation is not a test pass. Do not permit library/runtime
+auto-downloads, install packages, expose credentials or weaken guards to clear
+a failure. Normal test runs require zero unexpected denials.
 
 The complete fresh-image run, exact commit, actual test counts and guard
 reports must be inspected before this checkpoint is reported as passed.
@@ -402,6 +407,130 @@ This establishes a controlled host-entry boundary, **not** arbitrary
 simultaneous caller-turn/model-input handoff, correction semantics, mutating
 business-operation cancellation, a provider/acoustic rehearsal or Azure
 readiness. Those remain separate gates before any caller-edit activation.
+
+## Caller-input gap reproduced before input-guard implementation
+
+The separately approved **test-only** caller-input checkpoint adds
+`handoff_input_io.py` and `test_pilot_handoff_input.py`. It runs actual Flux
+start/end-of-turn messages, the real call coordinator, native model parsing
+and function dispatch, the existing clients, actual TTS consumers and teardown.
+Only synthetic external bytes and specific real receiver timings are held.
+Model request observations come from the actual serialized HTTP request;
+function decisions are captured from actual native result frames.
+
+On the prior guarded candidate, **four desired-behavior cases failed and
+four controls passed**, with 28 visible SDK warnings, 20.09 seconds and zero
+unexpected guard denials:
+
+| Timing window | Observed behavior |
+| --- | --- |
+| New caller turn after model cancellation but before its final TTS acknowledgment | A new model request carries the old private guidance/tool. Holding that new stream triggers the real five-second handoff timeout and leaves admission failed closed. The stream is still open at that failure. |
+| Same window, with a fast model response | Old-context speech is issued while replacement is pending, before the replacement question. This is not a claim that speech escaped after the new visit committed. |
+| New guidance/tools installed, final readiness acknowledgment still held | A genuine current-node API answer is rejected as `busy_or_stale`; no fact or API request is committed. |
+| Same final-readiness window, current MCP answer | The original enabled native MCP wrapper rejects the valid answer; no MCP request is sent. |
+
+Positive controls verify the same API and MCP inputs succeed **after** the
+handoff, with current private guidance/current tool identity and exactly one
+request; a slow current-context plain reply can finish after acknowledgment;
+and real caller hangup disposes new inference plus pending replacement without
+publishing the replacement prompt. Every scenario reaches actual coordinator/
+worker teardown and strict disposal assertions before its final contract
+assertions. Internal private instructions/results are not routed to speech.
+
+The first two tests allow either deferred input or cancellation of obsolete
+inference. They do not demand that a future correct input gate admit the model
+early. The positive slow-current-reply control releases its external stream
+after **handoff completion**, not after audible prompt completion: the prompt
+traverses the same LLM processor and cannot be used to release a deliberately
+blocked current inference.
+
+### Root cause
+
+The prior replacement guard coordinated existing output and native business
+work, but not admission of new model-context frames. A caller turn could start a new
+old-context completion after the one interruption has passed the LLM. A slow
+completion then blocks an ordered readiness frame; a fast completion can
+issue speech before replacement finishes. Conversely, the guard's intentionally
+closed handler admission rejects valid new-node input during final readiness.
+Removing that business guard is not a safe fix.
+
+Before caller corrections are enabled, coordinate **model admission** with
+the call-owned handoff: preserve incoming caller input, keep native control/
+context/tool updates flowing, and release the preserved input once under
+confirmed current-node authority. Retain bounded lifetime, hangup invalidation,
+the configured mute policy and the existing API/MCP side-effect ownership.
+Do not retry/replay business actions to compensate for lost input.
+
+The pinned framework has `GatedLLMContextAggregator` and `GatedAggregator`
+primitives, but neither is a proven drop-in solution. The former retains the
+latest context per notification rather than exposing a persistent open/close
+policy; the latter buffers non-system frames, including controls if used
+naively. Lifecycle, queued-context ordering, multiple turns, close/timeout
+disposal and ordinary-input behavior need actual integration tests.
+
+Those characterization checks were **not included in the earlier green
+image run**. That investigation changed no runtime or workflow and made no
+new image-acceptance claim. The implementation below adds them to the mandatory
+exact-image gate; a historical image pass cannot certify the new code.
+
+## Call-owned input preservation during guarded replacement
+
+`pilot_input.py` now closes model-context admission **before** the guard's
+initial native interruption. It reopens only after the final real readiness
+acknowledgment and the entry question have been queued. The same native worker
+then receives at most one fresh context notification for retained input.
+Native Flows remains the sole node-transition owner.
+
+The application-owned OpenAI service has an optional admission hook; ordinary
+non-pilot calls have no policy installed and retain native processing. An
+explicit pilot using an unsupported LLM fails admission rather than silently
+running without this protection. No SDK source or dependencies changed.
+
+The synchronous native user-aggregator frame hook retains new caller message
+objects before a queued RESET can erase them. Missing messages are restored
+through the public context API under the confirmed current instructions/tools.
+Identity, not text equality, prevents duplication: two genuinely repeated
+caller utterances remain two messages. They remain `user` data, never private
+instructions. Whole old contexts, tool calls and API/MCP actions are not
+replayed.
+
+Context notifications already waiting in the real LLM queue are accounted for
+before cancellation can drop them. Deferred notifications carry call-local
+frame metadata so a late copy cannot start a second completion after release.
+Native interruption, message/tool updates, readiness and terminal frames
+continue normally; the guard never pauses the entire LLM processor or changes
+the caller's configured mute strategy.
+
+The existing five-second handoff deadline is unchanged. Additional temporary
+retention is limited to **32 new user messages and 32,768 UTF-8 bytes**. An
+over-budget or unsupported input fails the handoff closed rather than silently
+dropping/truncating caller data. Timeout, request cancellation and actual call
+termination discard retained references and do not release late inference.
+Unconsumed pilot context notifications are also bounded at 32; native
+interruption clears their tracked backlog. Nothing in this buffer is logged
+or persisted.
+
+The two input suites cover the original slow/fast old-context race, valid
+current API/MCP answers before/after readiness, repeated utterances, input
+between snapshot and RESET, queued-context cancellation, timeout/cancellation,
+hangup, inclusive limits, overflow, malformed text/foreign contexts, late
+notification redelivery and exclusive admission ownership. Most cases use actual Flux input.
+Queue-specific and count-budget cases use the real native aggregator's public
+context API to isolate queue/budget behavior without extending the five-second
+deadline. The count case does not claim 33 acoustic turns fit inside that
+deadline.
+
+Both input suites are mandatory alongside the existing nine adapter suites
+in the network-disabled, read-only exact-image workflow before image export.
+Local test results and that exact-commit workflow must be reported separately.
+The final local run on 2026-11-13 passed **178 adapter tests** (23 input checks
+and 155 prior regressions), with 410 visible SDK deprecation warnings and zero
+unexpected guard denials. All **70 release-policy tests** also passed; the
+policy rejects omission of either input suite from the image gate.
+
+This implements only the approved input-admission checkpoint; it does not
+activate caller corrections, expand admitted graphs or certify production
+readiness. Inspect the exact-commit build result before claiming image acceptance.
 
 ## Still outside this checkpoint
 

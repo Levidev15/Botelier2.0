@@ -300,3 +300,7 @@ class PilotCall(OfflineCall):
         super().assert_clean(**kwargs)
         assert self.adapter.closed
         assert all(session.closed for session in self.actions.sessions)
+        ingress = self.adapter._replacement._input
+        assert ingress.closed and not ingress.holding
+        assert not ingress._users and not ingress._queued and not ingress._seen
+        assert not ingress._pending and ingress._bytes == 0

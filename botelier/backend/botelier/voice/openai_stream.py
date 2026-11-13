@@ -45,6 +45,24 @@ class _TextAndToolStream:
 
 
 class SpeechPreservingOpenAILLMService(OpenAILLMService):
+    def install_context_admission(self, admission):
+        """Attach one call-owned policy; ordinary non-pilot calls are unchanged."""
+        if getattr(self, "_context_admission", None) is not None:
+            raise RuntimeError("llm_context_admission_already_installed")
+        self._context_admission = admission
+
+    async def queue_frame(self, frame, direction=FrameDirection.DOWNSTREAM, callback=None):
+        admission = getattr(self, "_context_admission", None)
+        if admission is not None:
+            admission.queued(frame)
+        await super().queue_frame(frame, direction, callback)
+
+    async def process_frame(self, frame, direction):
+        admission = getattr(self, "_context_admission", None)
+        if admission is not None and not admission.allow(frame):
+            return
+        await super().process_frame(frame, direction)
+
     async def push_frame(self, frame, direction=FrameDirection.DOWNSTREAM):
         if direction == FrameDirection.DOWNSTREAM:
             if isinstance(frame, LLMFullResponseStartFrame):

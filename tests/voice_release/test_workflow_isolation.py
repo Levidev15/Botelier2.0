@@ -158,6 +158,7 @@ class WorkflowIsolationTests(unittest.TestCase):
             "test_pilot_revisions.py",
             "test_pilot_late_speech.py", "test_pilot_replacement.py",
             "test_pilot_replacement_edges.py",
+            "test_pilot_handoff_input.py", "test_pilot_input_preservation.py",
             'tee "$EVIDENCE/native-pilot-adapter.log"',
         ):
             self.assertIn(required, check["run"])

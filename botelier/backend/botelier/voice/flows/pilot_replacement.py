@@ -18,6 +18,8 @@ from pipecat.frames.frames import (
     StopFrame, UninterruptibleFrame,
 )
 
+from botelier.voice.flows.pilot_input import HandoffInput
+
 
 HANDOFF_TIMEOUT_SECONDS = 5.0
 
@@ -30,7 +32,7 @@ class _NodeHandoffBarrier(ControlFrame, UninterruptibleFrame):
 class NodeReplacementGuard:
     """One bounded host replacement, with no background runner or global lock."""
 
-    def __init__(self, *, llm, worker, assistant, is_closed, extra_busy):
+    def __init__(self, *, llm, worker, user, assistant, is_closed, extra_busy):
         self.worker = worker
         self.assistant = assistant
         self.is_closed = is_closed
@@ -42,6 +44,10 @@ class NodeReplacementGuard:
         self._globals = 0
         self._waiting = None
         self._owner = None
+        self._input_error = None
+        self._input = HandoffInput(
+            llm=llm, user=user, on_failure=self._input_failed,
+        )
 
         @llm.event_handler("on_before_push_frame")
         async def starting(processor, frame):
@@ -111,9 +117,17 @@ class NodeReplacementGuard:
 
     def invalidate(self):
         self.closed = True
+        self._input.close()
         self._calls.clear()
         if self._waiting is not None:
             self._waiting[1].cancel()
+
+    def _input_failed(self, reason):
+        self.failed = True
+        self._input_error = reason
+        logger.warning("native_pilot_input_failed category={}", reason)
+        if self._waiting is not None and not self._waiting[1].done():
+            self._waiting[1].set_exception(RuntimeError(reason))
 
     async def close(self):
         self.invalidate()
@@ -129,6 +143,8 @@ class NodeReplacementGuard:
             await future
             if self.closed or self.is_closed() or self.worker.has_finished():
                 raise RuntimeError("pilot_closed")
+            if self.failed:
+                raise RuntimeError(self._input_error or "pilot_replacement_failed")
         finally:
             self._waiting = None
 
@@ -148,17 +164,30 @@ class NodeReplacementGuard:
         self.in_progress = True
         self._owner = asyncio.current_task()
         try:
+            # Close inference admission BEFORE the first cancellation. Do not
+            # mute caller STT or block native controls needed for readiness.
+            self._input.begin()
             async with asyncio.timeout(HANDOFF_TIMEOUT_SECONDS):
                 await self._acknowledge(InterruptionFrame())
                 await self.barrier()
                 if self.busy:
                     raise RuntimeError("pilot_replacement_busy")
                 yield
+                if self.failed:
+                    raise RuntimeError(self._input_error or "pilot_replacement_failed")
+                retained = self._input.release()
+                self.in_progress = False
+                if retained is not None:
+                    # Same ordered worker queue, AFTER the entry question.
+                    # Native inference/dispatch resumes once with fresh context;
+                    # no tool invocation or API/MCP operation is replayed here.
+                    await self.worker.queue_frame(retained)
         except BaseException as exc:
             # A timeout/caller cancellation is not a successful rollback.
             # Keep tool admission closed until teardown instead of reopening
             # while an unacknowledged interruption may still be in flight.
             self.failed = True
+            self._input.close()
             category = "timeout" if isinstance(exc, TimeoutError) else "handoff"
             logger.warning("native_pilot_replacement_failed category={}", category)
             if isinstance(exc, asyncio.CancelledError) and self.closed:
