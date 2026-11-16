@@ -1,8 +1,9 @@
-# Inactive single-flow native adapter checkpoint
+# Native adapter and opt-in development voice-host checkpoint
 
 ## What this builds
 
-This is an explicitly attached offline proof, not a production engine switch.
+This is a bounded, offline-tested development integration, not a production
+engine switch or a complete reservation workflow.
 It admits one graph in the existing saved format:
 
 `INITIAL → COLLECT_SLOT → connected GET → API_RESPONSE → COLLECT_SLOT`
@@ -16,10 +17,36 @@ Native Pipecat Flows owns the waiting nodes and transitions. The existing
 authorization, serialization, response mapping, retries and invocation logging.
 The legacy flow executor is not attached alongside the pilot.
 
-Only `pilot_io.PilotCall`, a test host around the real call coordinator and
-factory, constructs the adapter. No default call handler, editor, assistant
-flag, saved definition, package constraint, phone routing or deployment is
-changed by this checkpoint.
+The real `CallHandler` can now attach the adapter under an explicit development
+policy. Ordinary calls still use their existing controller. The normal
+simulator and default editor behavior have not been migrated, and this
+checkpoint has not changed environment values, routing, deployment or providers.
+
+## Development-host selection is off by default
+
+Both exact server values are required: `BOTELIER_ENV=development` and
+`BOTELIER_NATIVE_FLOWS_DEV=1`. The assistant must explicitly select its sole
+active FLOW using `call_settings.native_flow_tool_id`. The host validates its
+account, property, tool-set ownership and pinned published `FlowVersion`.
+Production or absent/nonmatching gates retain the legacy path.
+
+Cold and prewarmed calls share native admission. On an opted-in prewarm path,
+the host re-reads the authoritative assistant and tools rather than treating
+the intentionally reduced snapshots as complete ORM rows. It compiles the
+published graph, not a cached tool configuration or draft. Unsupported selected
+graphs/resources fail before pipeline creation without falling back to legacy.
+
+The returned real worker, LLM and context aggregator receive one native adapter.
+Startup follows greeting completion, independently of whether the optional
+call-log row/event queue was available. Startup tasks and actions remain
+call-generation-owned and are cancelled/disposed on hangup.
+
+This host deliberately refuses extra flow/non-flow tools, MCP resources and
+escalation rather than silently dropping or granting resources. The separate
+offline MCP adapter fixtures below do not imply that the development host's MCP
+bridge or the normal simulator is ready. Default authoring settings and other
+graphs can still be refused; authenticated editor/save/publish compatibility,
+exact-image validation and user-led manual calls remain separate gates.
 
 ## Admission and runtime boundaries
 
@@ -34,6 +61,17 @@ changed by this checkpoint.
 - Explicit response-variable paths override response mappings, using the
   existing integration extraction semantics. Mapped outputs cannot overwrite
   caller facts or reserved execution fields.
+- Equivalent editor metadata and the relative `url`/`path` aliases are
+  normalized without mutating the saved definition. Conflicting paths,
+  nonempty unsupported instructions, meaningful headers/body/override settings
+  and unsupported collection retries are rejected, not ignored.
+- Optional `api.responseProjection.fields` selects exact mapped variables for
+  the LLM tool-result `data`. Explicit string-only cleanup allows `trim`,
+  `collapse_whitespace` and `clean_text`; raw mapped facts retain their values,
+  types and array structure. This boundary performs no financial calculations,
+  implicit labels/array joining or silent truncation. Both selected input and
+  output are bounded JSON; malformed projection data uses the failure branch.
+  Display cleanup is not HTML sanitization or a prompt-injection trust boundary.
 - Collection instructions become private node guidance. Nonempty private
   instructions on automatic API/presentation nodes fail admission.
 - The presentation owns result speech. Conflicting API success/narration
@@ -48,7 +86,8 @@ changed by this checkpoint.
 - Keep original host policy and valid history; replace only the exact prior
   adapter-owned guidance object after native tool results have committed.
   The host's existing volatile local-time tail continues to refresh.
-- Reuse the actual host's authorized/enabled MCP catalogue and isolated handler.
+- The separate MCP adapter fixtures reuse the actual host's authorized/enabled
+  catalogue and isolated handler; the development host does not bridge it yet.
   Reserve every logical pilot collection name, including future/pause nodes,
   and the entire `pilot_collect_` visit namespace before adding native globals.
   Structured results and error status remain tool data.
@@ -198,6 +237,12 @@ place.
 ## Test coverage and evidence
 
 - `test_pilot_contract.py`: exact admission/rejection and immutable scope.
+- `test_configurable_response_projection.py`: explicit field selection and
+  bounded non-executable cleanup without changing authoritative mapped facts.
+- `test_pilot_template_compatibility.py`: preserved builder and starter-template
+  output contracts after removal of the unused controller.
+- `test_native_dev_voice_host.py`: explicitly gated development-host selection,
+  real coordinator attachment and disposal; not production or manual-call approval.
 - `test_pilot_pipeline.py`: actual coordinator/factory/worker, synthetic STT,
   actual model SDK serialization/dispatch, native manager, existing connected
   action, direct TTS, tool history, duplicate/stale calls, failure/deadline,
@@ -235,7 +280,10 @@ env -i PATH="$PATH" HOME=/tmp/botelier-native-flow-trial \
   python -B "$TRIAL/lifecycle_guard.py" \
   --backend-root "$PWD/botelier/backend" \
   --package-root /home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/pipecat \
-  --tests "$TRIAL/test_pilot_contract.py" "$TRIAL/test_pilot_pipeline.py" \
+  --tests "$TRIAL/test_pilot_contract.py" \
+  "$TRIAL/test_configurable_response_projection.py" \
+  "$TRIAL/test_pilot_template_compatibility.py" \
+  "$TRIAL/test_native_dev_voice_host.py" "$TRIAL/test_pilot_pipeline.py" \
   "$TRIAL/test_pilot_mcp.py" "$TRIAL/test_pilot_interruption_order.py" \
   "$TRIAL/test_pilot_reentry.py" "$TRIAL/test_pilot_revisions.py" \
   "$TRIAL/test_pilot_late_speech.py" "$TRIAL/test_pilot_replacement.py" \

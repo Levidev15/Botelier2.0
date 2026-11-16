@@ -1,7 +1,7 @@
-"""Fail-closed, immutable admission for the inactive single-flow pilot.
+"""Fail-closed, immutable admission for the bounded native development pilot.
 
 This is deliberately not a general graph executor. Only the reviewed six-node
-read-only shape is admitted, and no production call site imports this module.
+read-only shape is admitted. Admission never enables native execution by itself.
 """
 
 from collections import Counter
@@ -10,9 +10,14 @@ import json
 import re
 from uuid import UUID
 
+from botelier.services.response_projection import (
+    ResponseProjectionError, validate_mapped_projection,
+)
+
 
 _NODE_ID = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,47}\Z")
 _VARIABLE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,47}\Z")
+_ENDPOINT_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}\Z")
 _TOKEN = re.compile(r"{{\s*([A-Za-z][A-Za-z0-9_]*)\s*}}")
 NATIVE_FUNCTION_PREFIX = "pilot_collect_"
 _RESERVED = {
@@ -100,9 +105,10 @@ def _collection(node, variables):
     slot = data.get("slot")
     _require(isinstance(slot, dict), "slot")
     _require(
-        set(slot) <= {"variableKey", "prompt", "required", "validation", "type"}
+        set(slot) <= {"variableKey", "prompt", "required", "validation", "type", "retryPrompt"}
         and slot.get("required", True) is True
         and not slot.get("validation")
+        and not _text(slot.get("retryPrompt", ""), "slot")
         and slot.get("type", "text") == "text",
         "slot",
     )
@@ -151,6 +157,74 @@ def _mappings(api, caller_keys):
     return tuple(pairs.items())
 
 
+def _connected_request(api, query_variable, caller_keys):
+    """Normalize equivalent editor fields, never unsupported request behavior."""
+    _require(set(api) <= {
+        "apiSource", "integrationId", "method", "path", "url", "thinkingMessage",
+        "onError", "onComplete", "onSuccess", "responseInstructions",
+        "responseVariables", "responseMapping", "timeout", "retryCount",
+        "integrationSlug", "endpointId", "endpointName", "autoMappingSource",
+        "headers", "bodyTemplate", "queryParamOverrides", "onNotFound",
+        "onAuthError", "retryDelay", "responseProjection",
+    }, "api_fields")
+    if "endpointId" in api:
+        _require(
+            isinstance(api["endpointId"], str)
+            and _ENDPOINT_ID.fullmatch(api["endpointId"]),
+            "endpoint_identity",
+        )
+    for key in ("integrationSlug", "endpointName"):
+        if key in api:
+            _text(api[key], "endpoint_identity", required=True)
+    if "autoMappingSource" in api:
+        # Provenance is editor metadata, not the effective response mapping.
+        _mappings({"responseMapping": api["autoMappingSource"]}, caller_keys)
+
+    _require(not any(api.get(key) for key in (
+        "onComplete", "onSuccess", "responseInstructions", "onNotFound", "onAuthError",
+    )), "speech")
+    # Connected requests inherit these exact JSON headers from IntegrationClient.
+    # Other headers/body/query overrides need real runtime support, not omission.
+    headers = api.get("headers", {})
+    _require(
+        isinstance(headers, dict) and all(
+            isinstance(key, str) and key.lower() in {"content-type", "accept"}
+            and value == "application/json" for key, value in headers.items()
+        )
+        and api.get("bodyTemplate", "") == ""
+        and api.get("queryParamOverrides", {}) == {},
+        "api_fields",
+    )
+    for key in ("headers", "bodyTemplate", "queryParamOverrides"):
+        api.pop(key, None)
+    if "retryDelay" in api:
+        _require(
+            api.get("retryCount", 2) == 0
+            and type(api["retryDelay"]) is int and 0 <= api["retryDelay"] <= 30_000,
+            "request_limits",
+        )
+        api.pop("retryDelay")
+
+    paths = []
+    for key in ("path", "url"):
+        value = api.get(key)
+        if value is None or value == "":
+            continue
+        path = _template(value, "request_template")
+        _require(
+            path.startswith("/") and not path.startswith("//")
+            and not any(char in path for char in ("\\", "#", "\r", "\n", "\x00"))
+            and "://" not in path
+            and set(_TOKEN.findall(path)) <= {query_variable},
+            "request_template",
+        )
+        paths.append(path)
+    _require(bool(paths), "request_template")
+    _require(len(set(paths)) == 1, "request_path_conflict")
+    api["path"] = paths[0]
+    api.pop("url", None)
+
+
 def compile_pilot(config: dict, identity: PilotIdentity) -> CompiledPilot:
     """Copy and admit exactly the reviewed connected-GET conversation shape."""
     _require(isinstance(identity, PilotIdentity), "identity")
@@ -163,6 +237,8 @@ def compile_pilot(config: dict, identity: PilotIdentity) -> CompiledPilot:
         if isinstance(exc, PilotAdmissionError):
             raise
         raise PilotAdmissionError("definition_json") from None
+    _require(not _text(config.get("globalPrompt", ""), "global_instructions"),
+             "global_instructions")
     nodes, edges = config.get("nodes"), config.get("edges")
     _require(isinstance(nodes, list) and isinstance(edges, list), "definition")
     _require(all(isinstance(n, dict) for n in nodes), "node_ids")
@@ -200,8 +276,12 @@ def compile_pilot(config: dict, identity: PilotIdentity) -> CompiledPilot:
     _require(config.get("initial_node") == initial["id"], "topology")
     initial_data = initial["data"]
     _require(
-        set(initial_data) <= {"name", "description", "greeting", "waitForResponse"}
-        and not initial_data.get("greeting") and initial_data.get("waitForResponse") is False,
+        set(initial_data) <= {
+            "name", "description", "greeting", "waitForResponse", "systemPrompt",
+        }
+        and not initial_data.get("greeting")
+        and not _text(initial_data.get("systemPrompt", ""), "initial")
+        and initial_data.get("waitForResponse") is False,
         "initial",
     )
     query_id = outgoing.get((initial["id"], ""))
@@ -247,22 +327,7 @@ def compile_pilot(config: dict, identity: PilotIdentity) -> CompiledPilot:
         UUID(api.get("integrationId", ""))
     except (ValueError, TypeError, AttributeError):
         raise PilotAdmissionError("connected_get") from None
-    _require(set(api) <= {
-        "apiSource", "integrationId", "method", "path", "thinkingMessage", "onError",
-        "onComplete", "onSuccess", "responseInstructions", "responseVariables",
-        "responseMapping", "timeout", "retryCount",
-    }, "api_fields")
-    _require(not any(api.get(key) for key in (
-        "onComplete", "onSuccess", "responseInstructions",
-    )), "speech")
-    path = _template(api.get("path"), "request_template")
-    _require(
-        path.startswith("/") and not path.startswith("//")
-        and not any(char in path for char in ("\\", "#", "\r", "\n", "\x00"))
-        and "://" not in path
-        and set(_TOKEN.findall(path)) <= {query.variable},
-        "request_template",
-    )
+    _connected_request(api, query.variable, {query.variable, choice.variable, failure.variable})
     _require(
         type(api.get("timeout", 30)) is int and 1 <= api.get("timeout", 30) <= 30
         and type(api.get("retryCount", 2)) is int and 0 <= api.get("retryCount", 2) <= 2,
@@ -272,6 +337,10 @@ def compile_pilot(config: dict, identity: PilotIdentity) -> CompiledPilot:
         value = _text(api.get(key, ""), "speech", required=True)
         _require("{" not in value and "}" not in value, "speech")
     mappings = _mappings(api, {query.variable, choice.variable, failure.variable})
+    try:
+        validate_mapped_projection(api.get("responseProjection"), dict(mappings))
+    except ResponseProjectionError as exc:
+        raise PilotAdmissionError(str(exc)) from None
     _require(
         set(response["data"]) <= {"name", "description", "responsePresentation", "instructions"},
         "presentation",

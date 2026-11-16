@@ -1,8 +1,8 @@
-"""Inactive, bounded adapter to native Pipecat Flows.
+"""Explicitly attached, bounded adapter to native Pipecat Flows.
 
-Only an explicitly constructed test host attaches this pilot. Native Flows
-owns transitions; the existing action service owns authorization, HTTP,
+Native Flows owns transitions; the existing action service owns authorization, HTTP,
 mapping, retry policy and invocation logs. There is no legacy executor here.
+Development-host selection and admission are separate from this adapter.
 """
 
 import asyncio
@@ -22,6 +22,9 @@ from botelier.services.action_executor import (
     ActionContext, ActionExecutionRequest, ActionExecutor,
 )
 from botelier.services.integration_client import IntegrationAPIConfig, ResponseVariable
+from botelier.services.response_projection import (
+    ResponseProjectionError, project_mapped_values,
+)
 from botelier.voice.flows.pilot_cancellation import reconcile_native_cancellation
 from botelier.voice.flows.pilot_contract import (
     CollectionSpec, CompiledPilot, NATIVE_FUNCTION_PREFIX,
@@ -313,6 +316,17 @@ class NativePilotAdapter:
             ):
                 return {"status": "rejected", "reason": "busy_or_stale"}
             outcome, mapped, next_slot, text = self._presentation(response)
+            projection_failure = False
+            projected = {}
+            if outcome != "failure":
+                try:
+                    projected = project_mapped_values(
+                        mapped, api.get("responseProjection"),
+                    )
+                except ResponseProjectionError:
+                    logger.warning("native_pilot_projection_failure")
+                    projection_failure = True
+                    outcome, mapped, next_slot, text = self._presentation(None)
             self.manager.state["facts"].update(mapped)
             self._accepted.add(slot.node_id)
             result = {
@@ -321,8 +335,10 @@ class NativePilotAdapter:
                 "presentation_node_id": self.compiled.response_node_id,
                 "current_node_id": next_slot.node_id,
                 "flow_version_id": self.compiled.identity.flow_version_id,
-                "data": deepcopy(mapped),
+                "data": projected,
             }
+            if projection_failure:
+                result["failure_reason"] = "response_projection"
             # Native owns the deferred transition after result commit. Keep
             # that ownership protected even after this handler's task returns.
             self._pending_entry = visit

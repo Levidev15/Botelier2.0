@@ -1,13 +1,9 @@
-"""Botelier Flows - Hotel-specific conversation flow management.
+"""Botelier starter templates for hotel conversation flows.
 
-Wraps Pipecat Flows to provide:
-- Visual flow editor integration
-- Hotel-scoped function handlers
-- Pre-built flow templates
-- Multi-tenant flow isolation
+The active flow runtime is ``FlowExecutor``; this package exports the built-in
+templates used to seed editable flows.
 """
 
-from botelier.voice.flows.engine import BoteilerFlowEngine
 from botelier.voice.flows.templates import FlowTemplates
 
-__all__ = ["BoteilerFlowEngine", "FlowTemplates"]
+__all__ = ["FlowTemplates"]

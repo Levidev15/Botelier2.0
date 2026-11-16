@@ -107,12 +107,21 @@ export interface SlotConfig {
   useBuiltInValidator?: boolean;
 }
 
+export interface ResponseProjectionConfig {
+  fields: Array<{
+    variable: string;
+    cleanup?: Array<"trim" | "collapse_whitespace" | "clean_text">;
+  }>;
+}
+
 export interface APIRequestConfig {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   url: string;
   headers?: Record<string, string>;
   bodyTemplate?: string;
   responseMapping?: Record<string, string>;
+  /** Exact native LLM tool-result data; does not mutate authoritative flow variables. */
+  responseProjection?: ResponseProjectionConfig;
   responseInstructions?: string;
   thinkingMessage?: string;
   timeout?: number;

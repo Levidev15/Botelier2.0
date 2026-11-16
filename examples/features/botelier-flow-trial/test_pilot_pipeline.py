@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import json
 
 import pytest
 
@@ -12,6 +13,103 @@ from pilot_io import PilotCall, PilotProviders, native_schema, native_tool_names
 
 def tools(call):
     return native_tool_names(call)
+
+
+def test_saved_editor_endpoint_runs_through_the_actual_native_pipeline_unchanged():
+    from test_pilot_contract import editor_config
+
+    async def scenario():
+        config = json.loads(json.dumps(editor_config()))
+        providers = PilotProviders([tool_delta("collect_query", {"query": "standard"})])
+        async with PilotCall(config=config, providers=providers) as call:
+            await call.activate()
+            await providers.user_turn("Please check the standard fixture.")
+            await wait_for_speech(call, PRESENTATION)
+            await call.wait_for_node("choice")
+            assert call.adapter.manager.current_node == "choice"
+            assert str(providers.business_requests[0].url) == (
+                "https://api.fixture.invalid/search?query=standard"
+            )
+            assert len(providers.business_requests) == 1
+            assert tool_result(call)["data"] == {
+                "rooms": [{"name": "Standard", "price": 0}], "price": 0,
+            }
+            assert tool_result(call)["flow_version_id"] == "offline-version"
+            assert speech(call)[1:] == ["Which fixture?", WAIT, PRESENTATION]
+            assert config["nodes"][2]["data"]["api"]["url"] == "/search?query={{query}}"
+            assert "path" not in config["nodes"][2]["data"]["api"]
+            assert all(not mapper._flow_executors for mapper in call.handler.call_mappers.values())
+            await call.finish("graceful_end")
+            call.assert_clean()
+    asyncio.run(scenario())
+
+
+def test_actual_tool_result_uses_the_configured_projection_and_keeps_raw_facts_separate():
+    async def scenario():
+        config = pilot_config()
+        api = config["nodes"][2]["data"]["api"]
+        api["responseMapping"]["policy"] = "$.policy"
+        api["responseProjection"] = {"fields": [
+            {"variable": "rooms"},
+            {"variable": "policy", "cleanup": ["clean_text"]},
+        ]}
+        providers = PilotProviders(
+            [tool_delta("collect_query", {"query": "standard"})],
+            payload={
+                "rooms": [{"name": "Standard", "price": 0}],
+                "policy": "<p>  Taxes &amp; fees included. </p>",
+                "private": "not-a-model-field",
+            },
+        )
+        async with PilotCall(config=config, providers=providers) as call:
+            await call.activate()
+            await providers.user_turn("Please check the standard fixture.")
+            await wait_for_speech(call, PRESENTATION)
+            await call.wait_for_node("choice")
+            assert tool_result(call)["data"] == {
+                "rooms": [{"name": "Standard", "price": 0}],
+                "policy": "Taxes & fees included.",
+            }
+            assert call.adapter.facts == {
+                "query": "standard", "rooms": [{"name": "Standard", "price": 0}],
+                "price": 0, "policy": "<p>  Taxes &amp; fees included. </p>",
+            }
+            assert sum(bool(body.get("stream")) for body in providers.requests) == 1
+            await call.finish("graceful_end")
+            call.assert_clean()
+    asyncio.run(scenario())
+
+
+def test_invalid_projected_provider_value_uses_the_failure_branch_without_partial_facts():
+    async def scenario():
+        config = pilot_config()
+        api = config["nodes"][2]["data"]["api"]
+        api["responseMapping"]["policy"] = "$.policy"
+        api["responseProjection"] = {"fields": [
+            {"variable": "policy", "cleanup": ["clean_text"]},
+        ]}
+        providers = PilotProviders(
+            [tool_delta("collect_query", {"query": "standard"})],
+            payload={
+                "rooms": [{"name": "Standard", "price": 0}],
+                "policy": {"private": "must-not-be-coerced-to-text"},
+            },
+        )
+        async with PilotCall(config=config, providers=providers) as call:
+            await call.activate()
+            await providers.user_turn("Please check the standard fixture.")
+            await wait_for_speech(call, ERROR + " Try a different fixture?")
+            await call.wait_for_node("failure")
+            result = tool_result(call)
+            assert result["outcome"] == "failure"
+            assert result["failure_reason"] == "response_projection"
+            assert result["data"] == {}
+            assert call.adapter.facts == {"query": "standard"}
+            assert "must-not-be-coerced-to-text" not in " ".join(speech(call))
+            assert PRESENTATION not in speech(call)
+            await call.finish("graceful_end")
+            call.assert_clean()
+    asyncio.run(scenario())
 
 
 def test_native_collection_runs_one_connected_read_and_issues_the_next_question_once():

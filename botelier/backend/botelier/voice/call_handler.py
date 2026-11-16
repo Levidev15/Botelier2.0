@@ -34,6 +34,10 @@ from ..services.property_scope import resolve_session_property_id
 from .agent import VoiceAgentConfig
 from .engine import VoiceEngineFactory, is_external_vad_effectively_enabled
 from .function_mapper import FunctionMapper
+from .flows.native_dev_host import (
+    NativeDevAdmissionError, NativeFlowDevPolicy, prepare_native_dev_selection,
+    redacted_reference,
+)
 from .greeting_cache import get_or_generate_greeting_audio
 from .prewarm import PreWarmBundle, PreWarmCache
 from .prompt_context import build_runtime_system_prompt
@@ -377,10 +381,21 @@ class CallHandler:
     - interrupted_responses: Tracks which assistant responses were interrupted
     """
 
-    def __init__(self):
-        """Initialize call handler."""
+    def __init__(self, *, native_flow_dev_policy=None):
+        """Initialize call handler.
+
+        ``native_flow_dev_policy`` is an offline-test seam. Application callers
+        use the exact environment gate captured by ``NativeFlowDevPolicy``.
+        """
+        self.native_flow_dev_policy = (
+            native_flow_dev_policy
+            if native_flow_dev_policy is not None
+            else NativeFlowDevPolicy.from_environment()
+        )
         self.active_calls = {}
         self.call_mappers: dict[str, FunctionMapper] = {}
+        self.native_flow_hosts: dict[str, Any] = {}
+        self.native_flow_start_tasks: dict[str, tuple[Any, asyncio.Task]] = {}
         self.call_contexts: dict[str, Any] = {}
         self.call_start_times: dict[str, datetime] = {}
         self.greeting_timestamps: dict[str, dict] = {}
@@ -462,6 +477,8 @@ class CallHandler:
         """
         _capture_open = False
         _llm_prewarm_task = None
+        _native_selection = None
+        _native_adapter = None
         try:
             logger.info(f"📞 Call {call_sid}: {to_number}")
 
@@ -480,6 +497,8 @@ class CallHandler:
             call_log_id = None
             call_started_at = None
             should_record_call = False
+            mcp_connection_data = None
+            mcp_enabled_tools = []
 
             # Task #111 — try the pre-warm cache first. The /api/calls/incoming
             # webhook starts a background pre-warm task that loads Assistant,
@@ -706,9 +725,110 @@ class CallHandler:
                     elif config.enable_function_calling:
                         logger.info(f"No tool set assigned to assistant {assistant.id}")
 
-                    # Fetch MCP connection data if assistant has one configured
-                    mcp_connection_data = None
-                    mcp_enabled_tools = []
+                _native_assistant = assistant
+                if (
+                    self.native_flow_dev_policy.enabled
+                    and prewarm_bundle is not None
+                    and prewarm_bundle.assistant is not None
+                ):
+                    # The prewarm AssistantSnapshot intentionally omits
+                    # tool_set_id and MCP columns. Re-read the authoritative
+                    # assistant only for this opt-in development path so its
+                    # ownership and explicit selection are revalidated.
+                    _native_assistant = (
+                        db.query(Assistant)
+                        .filter(Assistant.id == assistant.id)
+                        .first()
+                    )
+                    if _native_assistant is None:
+                        raise NativeDevAdmissionError("native_dev_ownership")
+
+                _native_call_settings = _native_assistant.call_settings or {}
+                if (
+                    self.native_flow_dev_policy.enabled
+                    and isinstance(_native_call_settings, dict)
+                    and _native_call_settings.get("native_flow_tool_id") is not None
+                ):
+                    # Shared by the pre-warmed and cold paths. Refuse before
+                    # MCP credentials/handshakes, provider setup, or per-tool
+                    # exception handling can obscure unsupported resources.
+                    if (
+                        _native_assistant.mcp_connection_id
+                        or getattr(_native_assistant, "mcp_enabled_tools", None)
+                        or mcp_connection_data
+                        or mcp_enabled_tools
+                        or _native_call_settings.get("escalation_number")
+                    ):
+                        raise NativeDevAdmissionError("native_dev_resources")
+                    if len(tools) != 1:
+                        if not (
+                            prewarm_bundle is not None
+                            and prewarm_bundle.assistant is not None
+                        ):
+                            raise NativeDevAdmissionError("native_dev_resources")
+
+                    from ..models.flow_version import FlowVersion, FlowVersionStatus
+                    from ..models.tool import Tool
+                    from ..models.tool_set import ToolSet
+                    from ..services.property_scope import property_belongs_to_account
+
+                    native_tools = tools
+                    if prewarm_bundle is not None and prewarm_bundle.assistant is not None:
+                        if not config.enable_function_calling:
+                            raise NativeDevAdmissionError("native_dev_resources")
+                        native_tools = (
+                            db.query(Tool)
+                            .filter(
+                                Tool.tool_set_id == _native_assistant.tool_set_id,
+                                Tool.is_active == "true",
+                            )
+                            .all()
+                        )
+                    if len(native_tools) != 1:
+                        raise NativeDevAdmissionError("native_dev_resources")
+
+                    native_tool = native_tools[0]
+                    _native_tool_set = (
+                        db.query(ToolSet)
+                        .filter(ToolSet.id == _native_assistant.tool_set_id)
+                        .first()
+                        if _native_assistant.tool_set_id else None
+                    )
+                    _published_version_id = getattr(
+                        native_tool, "published_version_id", None,
+                    )
+                    _native_flow_version = (
+                        db.query(FlowVersion)
+                        .filter(
+                            FlowVersion.id == _published_version_id,
+                            FlowVersion.tool_id == native_tool.id,
+                            FlowVersion.status == FlowVersionStatus.PUBLISHED,
+                        )
+                        .first()
+                        if _published_version_id else None
+                    )
+                    _native_property_id = resolve_session_property_id(
+                        dialed_number=to_number, assistant=_native_assistant, db=db,
+                    )
+                    _native_property_owned = bool(
+                        _native_assistant.account_id and _native_assistant.property_id
+                        and property_belongs_to_account(
+                            db, _native_assistant.account_id, _native_assistant.property_id,
+                        )
+                    )
+                    _native_selection = prepare_native_dev_selection(
+                        assistant=_native_assistant,
+                        tools=native_tools,
+                        tool_set=_native_tool_set,
+                        flow_version=_native_flow_version,
+                        call_sid=call_sid,
+                        property_id=_native_property_id,
+                        property_owned=_native_property_owned,
+                    )
+
+                # The pre-warm bundle already carries its MCP data. The cold
+                # path resolves it here, after shared native admission.
+                if not (prewarm_bundle is not None and prewarm_bundle.assistant is not None):
                     logger.info(
                         f"🔍 Checking MCP: assistant.mcp_connection_id = {assistant.mcp_connection_id}, PIPECAT_MCP_AVAILABLE = {PIPECAT_MCP_AVAILABLE}"
                     )
@@ -769,22 +889,27 @@ class CallHandler:
             api_keys = self._get_api_keys()
 
             # 3. Build native function schemas and handlers (knowledge base ALWAYS available)
-            function_schemas, function_handlers = self._build_function_schemas_and_handlers(
-                assistant=assistant,
-                tools=tools,
-                api_keys=api_keys,
-                call_sid=call_sid,
-                stream_sid=stream_sid,
-                from_number=from_number,
-                to_number=to_number,
-                twilio_account_sid=hotel_twilio_sid,
-                twilio_auth_token=hotel_twilio_token,
-                account_name=(
-                    prewarm_bundle.account_name
-                    if (prewarm_bundle and prewarm_bundle.assistant)
-                    else (_call_acct.name if _call_acct else None)
-                ),
-            )
+            if _native_selection is not None:
+                # Native Flows owns the sole selected controller and registers
+                # its schemas after the caller has heard the ordinary greeting.
+                function_schemas, function_handlers = [], {}
+            else:
+                function_schemas, function_handlers = self._build_function_schemas_and_handlers(
+                    assistant=assistant,
+                    tools=tools,
+                    api_keys=api_keys,
+                    call_sid=call_sid,
+                    stream_sid=stream_sid,
+                    from_number=from_number,
+                    to_number=to_number,
+                    twilio_account_sid=hotel_twilio_sid,
+                    twilio_auth_token=hotel_twilio_token,
+                    account_name=(
+                        prewarm_bundle.account_name
+                        if (prewarm_bundle and prewarm_bundle.assistant)
+                        else (_call_acct.name if _call_acct else None)
+                    ),
+                )
 
             # 3.25 Resolve MCP before pipeline creation. Pipecat 1.5's
             # register_tools_schema() only binds handlers; it does not mutate an
@@ -1043,7 +1168,39 @@ class CallHandler:
             _flow_mapper = self.call_mappers.get(call_sid)
             _flow_executors = _flow_mapper.get_flow_executors() if _flow_mapper else []
             _prompt_now = datetime.now(timezone.utc)
-            if _flow_executors:
+            if _native_selection is not None:
+                # Keep the normal host prompt/private policy and runtime clock
+                # context. Native node guidance is added by the adapter only
+                # after this greeting/system context is committed.
+                config.runtime_assistant_prompt = config.system_prompt
+                config.runtime_flow_personas = []
+                config.runtime_has_flow = True
+                config.runtime_has_past_date_slot = False
+                config.system_prompt = build_runtime_system_prompt(
+                    config.system_prompt,
+                    [],
+                    config.timezone,
+                    now=_prompt_now,
+                    business_name=assistant.business_name,
+                )
+                _native_tool = _native_selection.tool
+                _native_overrides = {
+                    "llm_provider": getattr(_native_tool, "llm_provider", None),
+                    "llm_model": getattr(_native_tool, "llm_model", None),
+                    "llm_temperature": getattr(_native_tool, "llm_temperature", None),
+                    "llm_max_tokens": getattr(_native_tool, "llm_max_tokens", None),
+                }
+                for _key in ("llm_provider", "llm_model"):
+                    if _native_overrides[_key]:
+                        setattr(config, _key, _native_overrides[_key])
+                for _key in ("llm_temperature", "llm_max_tokens"):
+                    if _native_overrides[_key] is not None:
+                        setattr(config, _key, _native_overrides[_key])
+                if not any(value is not None for value in _native_overrides.values()):
+                    if assistant.temperature is None:
+                        config.llm_temperature = 0.4
+                logger.info("native_dev_flow_prompt_prepared engine=NativePilotAdapter")
+            elif _flow_executors:
                 config.runtime_assistant_prompt = config.system_prompt
                 config.runtime_flow_personas = [
                     persona
@@ -1277,6 +1434,25 @@ class CallHandler:
                 stream_sid=stream_sid,
             )
 
+            if _native_selection is not None:
+                from .flows.pilot_adapter import NativePilotAdapter
+
+                _native_adapter = NativePilotAdapter(
+                    _native_selection.compiled,
+                    llm=llm,
+                    worker=task,
+                    context_aggregator=context_aggregator,
+                    session_factory=SessionLocal,
+                )
+                if _capture_is_current():
+                    self.native_flow_hosts[call_sid] = _native_adapter
+                logger.info(
+                    "native_dev_flow_selected engine=NativePilotAdapter "
+                    "tool_ref={} flow_version_ref={}",
+                    redacted_reference(_native_selection.tool.id),
+                    redacted_reference(_native_selection.compiled.identity.flow_version_id),
+                )
+
             # Link the TTS completion watcher, TTS service, and mark watcher to the
             # FunctionMapper so terminal handlers can use context-ID-bound callbacks
             # (immune to Deepgram's spurious mid-turn BotStoppedSpeakingFrame).
@@ -1298,6 +1474,42 @@ class CallHandler:
             )
             self.call_start_times[call_sid] = datetime.utcnow()
             self.interrupted_responses[call_sid] = set()  # Initialize interruption tracking
+
+            async def _start_native_flow_after_greeting():
+                if _native_adapter is None:
+                    return
+                _start_task = asyncio.current_task()
+                _start_entry = None
+                try:
+                    if (
+                        self.native_flow_hosts.get(call_sid) is _native_adapter
+                        and _capture_is_current()
+                        and websocket.client_state.name == "CONNECTED"
+                        and not task.has_finished()
+                    ):
+                        if _start_task is not None:
+                            _start_entry = (_native_adapter, _start_task)
+                            self.native_flow_start_tasks[call_sid] = _start_entry
+                        await _native_adapter.start()
+                except asyncio.CancelledError:
+                    raise
+                except Exception as _native_start_error:
+                    # Never fall back to the legacy executor after native
+                    # selection or surface SDK details to the caller.
+                    logger.error(
+                        "native_dev_flow_start_failed category={}",
+                        type(_native_start_error).__name__,
+                    )
+                    try:
+                        await task.cancel()
+                    except Exception:
+                        logger.warning("native_dev_flow_cancel_failed")
+                finally:
+                    if (
+                        _start_entry is not None
+                        and self.native_flow_start_tasks.get(call_sid) is _start_entry
+                    ):
+                        self.native_flow_start_tasks.pop(call_sid, None)
 
             # 7.5 Initialize and start the call event queue for pipeline events
             if call_log_id:
@@ -1481,6 +1693,8 @@ class CallHandler:
                     # Do not await here — GreetingCompletionTracker now invokes
                     # this callback via create_task so push_frame is never blocked.
                     # Finalization paths explicitly await this tracked task (500 ms cap).
+                    if _native_adapter is not None:
+                        await _start_native_flow_after_greeting()
 
                 greeting_completion_tracker.set_greeting_callback(_on_greeting_completed)
 
@@ -1523,6 +1737,20 @@ class CallHandler:
                     _mark_task.add_done_callback(_log_task_exception)
 
                 first_speech_tracker.set_first_speech_callback(_on_first_user_speech)
+
+            if _native_adapter is not None and not call_log_id:
+                async def _on_native_greeting_completed():
+                    if not _capture_is_current():
+                        return
+                    vad_suspicion_tracker.clear_stt_mute()
+                    await _start_native_flow_after_greeting()
+
+                greeting_completion_tracker.set_call_active(
+                    lambda: websocket.client_state.name == "CONNECTED"
+                )
+                greeting_completion_tracker.set_greeting_callback(
+                    _on_native_greeting_completed,
+                )
 
             # Task #111 — emit prewarm hit/miss telemetry BEFORE greeting_started
             # so the events appear in timeline order.
@@ -1747,6 +1975,38 @@ class CallHandler:
                     logger.error(f"Failed to save transcript on error: {save_error}")
         finally:
             _capture_open = False
+            _native_start_entry = self.native_flow_start_tasks.get(call_sid)
+            if (
+                _native_start_entry is not None
+                and _native_adapter is not None
+                and _native_start_entry[0] is _native_adapter
+            ):
+                _native_start_task = _native_start_entry[1]
+            else:
+                _native_start_entry = None
+                _native_start_task = None
+            if (
+                _native_start_task is not None
+                and _native_start_task is not asyncio.current_task()
+                and not _native_start_task.done()
+            ):
+                _native_start_task.cancel()
+                await asyncio.gather(_native_start_task, return_exceptions=True)
+            if _native_adapter is not None:
+                try:
+                    await _native_adapter.close()
+                except Exception as _native_close_error:
+                    logger.warning(
+                        "native_dev_flow_close_failed category={}",
+                        type(_native_close_error).__name__,
+                    )
+                if self.native_flow_hosts.get(call_sid) is _native_adapter:
+                    self.native_flow_hosts.pop(call_sid, None)
+            if (
+                _native_start_entry is not None
+                and self.native_flow_start_tasks.get(call_sid) is _native_start_entry
+            ):
+                self.native_flow_start_tasks.pop(call_sid, None)
             _terminal_watcher = None
             # This call owns the optional warmup, including its HTTP client.
             # Do not let it keep requesting/retrying after its call has ended.

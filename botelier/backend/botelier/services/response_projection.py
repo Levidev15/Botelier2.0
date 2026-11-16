@@ -1,18 +1,138 @@
-"""Build readable, LLM-facing projections from mapped API response values.
+"""Build explicit JSON and legacy readable projections of mapped API values.
 
 The mapping layer deliberately preserves API-shaped values for flow variables.
-This module is the display boundary: it turns parallel top-level arrays into
-index-aligned records without changing the original mapped data.
+The native JSON boundary uses an operator allowlist and explicit cleanup only.
+The legacy display formatter joins parallel arrays without changing action facts.
 """
 
 from __future__ import annotations
 
 import html
+from html.parser import HTMLParser
+import json
 import re
 from typing import Any, Mapping
 
 
 _HTML_TAG_RE = re.compile(r"<[^>]+>")
+_PROJECTION_VARIABLE_RE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,47}\Z")
+_CLEANUP_OPERATIONS = frozenset({"trim", "collapse_whitespace", "clean_text"})
+
+
+class ResponseProjectionError(ValueError):
+    """Safe, payload-free diagnostic for an invalid LLM data projection."""
+
+
+class _ProjectionTextParser(HTMLParser):
+    """Extract display text without executing or loading provider markup."""
+
+    def __init__(self):
+        super().__init__(convert_charrefs=True)
+        self.parts: list[str] = []
+
+    def handle_data(self, data):
+        self.parts.append(data)
+
+
+def _projection_text(value: str) -> str:
+    parser = _ProjectionTextParser()
+    try:
+        parser.feed(value)
+        parser.close()
+    except (AssertionError, ValueError):
+        raise ResponseProjectionError("projection_cleanup_value") from None
+    return " ".join(" ".join(parser.parts).split())
+
+
+def validate_mapped_projection(configuration: Any, available_variables) -> None:
+    """Validate a non-executable field allowlist against actual mapping names."""
+    if configuration is None:
+        return
+    if not isinstance(configuration, dict) or set(configuration) != {"fields"}:
+        raise ResponseProjectionError("projection_configuration")
+    fields = configuration["fields"]
+    if not isinstance(fields, list) or len(fields) > 64:
+        raise ResponseProjectionError("projection_configuration")
+    seen = set()
+    for field in fields:
+        if not isinstance(field, dict) or not set(field) <= {"variable", "cleanup"}:
+            raise ResponseProjectionError("projection_configuration")
+        variable = field.get("variable")
+        if (
+            not isinstance(variable, str) or not _PROJECTION_VARIABLE_RE.fullmatch(variable)
+            or variable in seen
+        ):
+            raise ResponseProjectionError("projection_variable")
+        if variable not in available_variables:
+            raise ResponseProjectionError("projection_missing_variable")
+        seen.add(variable)
+        cleanup = field.get("cleanup", [])
+        if (
+            not isinstance(cleanup, list) or len(cleanup) > 3
+            or any(not isinstance(op, str) or op not in _CLEANUP_OPERATIONS for op in cleanup)
+        ):
+            raise ResponseProjectionError("projection_cleanup")
+
+
+def project_mapped_values(
+    values: Mapping[str, Any], configuration: Any = None,
+) -> dict[str, Any]:
+    """Return the exact configured JSON payload without changing action facts.
+
+    No implicit array joining, financial calculations, string conversion or
+    truncation occurs here. The older human-readable formatter below retains
+    its existing behavior for legacy consumers. ``clean_text`` is display
+    cleanup, not an HTML-output sanitizer or a prompt-injection trust boundary.
+    """
+    if not isinstance(values, Mapping):
+        raise ResponseProjectionError("projection_json")
+    validate_mapped_projection(configuration, values.keys())
+    if configuration is None:
+        return _bounded_projection_copy(dict(values))
+    projected = {
+        field["variable"]: values[field["variable"]]
+        for field in configuration["fields"]
+    }
+    # Bound selected provider data before any cleanup or parsing. Reject rather
+    # than silently truncate; authoritative action facts are never rewritten.
+    projected = _bounded_projection_copy(projected)
+    for field in configuration["fields"]:
+        variable = field["variable"]
+        value = projected[variable]
+        for operation in field.get("cleanup", []):
+            if not isinstance(value, str):
+                raise ResponseProjectionError("projection_cleanup_type")
+            if operation == "trim":
+                value = value.strip()
+            elif operation == "collapse_whitespace":
+                value = re.sub(r"\s+", " ", value)
+            elif operation == "clean_text":
+                value = _projection_text(value)
+        projected[variable] = value
+    return _bounded_projection_copy(projected)
+
+
+def _bounded_projection_copy(projected: dict[str, Any]) -> dict[str, Any]:
+    """Validate size and depth and return an independent, exact JSON value."""
+    try:
+        encoded = json.dumps(projected, allow_nan=False, ensure_ascii=False)
+        size = len(encoded.encode("utf-8"))
+    except (TypeError, ValueError, RecursionError):
+        raise ResponseProjectionError("projection_json") from None
+    if size > 100_000:
+        raise ResponseProjectionError("projection_size")
+    pending = [(projected, 0)]
+    while pending:
+        value, depth = pending.pop()
+        if depth > 32:
+            raise ResponseProjectionError("projection_depth")
+        if isinstance(value, dict):
+            if any(not isinstance(key, str) for key in value):
+                raise ResponseProjectionError("projection_json")
+            pending.extend((nested, depth + 1) for nested in value.values())
+        elif isinstance(value, list):
+            pending.extend((nested, depth + 1) for nested in value)
+    return json.loads(encoded)
 
 
 def format_mapped_response(values: Mapping[str, Any]) -> str:

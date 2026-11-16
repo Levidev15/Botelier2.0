@@ -191,7 +191,7 @@ jobs:
             /ci/examples/features/botelier-flow-trial/test_application_mcp_contracts.py \
             /ci/examples/features/botelier-flow-trial/test_action_boundary_contracts.py \
             2>&1 | tee "$EVIDENCE/node-contracts.log"
-      - name: Exercise the inactive saved-flow native adapter offline
+      - name: Exercise native development voice and saved-flow contracts offline
         id: native_pilot_adapter
         env:
           IMAGE: voice-flow-candidate:${{ github.sha }}
@@ -213,6 +213,9 @@ jobs:
             --backend-root /app \
             --package-root /usr/local/lib/python3.11/site-packages/pipecat \
             --tests /ci/examples/features/botelier-flow-trial/test_pilot_contract.py \
+            /ci/examples/features/botelier-flow-trial/test_configurable_response_projection.py \
+            /ci/examples/features/botelier-flow-trial/test_pilot_template_compatibility.py \
+            /ci/examples/features/botelier-flow-trial/test_native_dev_voice_host.py \
             /ci/examples/features/botelier-flow-trial/test_pilot_pipeline.py \
             /ci/examples/features/botelier-flow-trial/test_pilot_mcp.py \
             /ci/examples/features/botelier-flow-trial/test_pilot_interruption_order.py \
