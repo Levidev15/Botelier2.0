@@ -43,10 +43,65 @@ call-generation-owned and are cancelled/disposed on hangup.
 
 This host deliberately refuses extra flow/non-flow tools, MCP resources and
 escalation rather than silently dropping or granting resources. The separate
-offline MCP adapter fixtures below do not imply that the development host's MCP
-bridge or the normal simulator is ready. Default authoring settings and other
+offline MCP adapter fixtures below are not a generic MCP resource bridge for
+this host. Default authoring settings and other
 graphs can still be refused; authenticated editor/save/publish compatibility,
 exact-image validation and user-led manual calls remain separate gates.
+
+## Explicit native development simulator
+
+The simulator has an opt-in HTTP path through the actual `NativeTextHost`,
+`NativePilotAdapter`, `FlowManager`, context aggregators and pipeline worker.
+It does not imitate node execution in a second text controller. The default
+request and existing production voice paths remain legacy.
+
+`POST /api/simulate/start` must explicitly supply `engine: "native_pilot"`,
+`source: "published"`, a positive integer `source_version` and `assistant_id`,
+as well as `tool_id`. Both development environment gates above must be exact.
+The assistant must select that tool explicitly and own its sole active flow.
+Tool-set, account, property, active status and published-version ownership are
+checked before constructing a provider. A stale version returns a conflict.
+Draft/unsaved requests and unsupported graphs/resources fail without falling
+back to `tool.config`, another model or the legacy controller.
+
+The shared assistant configuration loads the same private knowledge, business
+identity and clock context as native voice, with the same selected tool's model
+overrides. Clock refresh does not inject legacy-controller instructions. The
+HTTP pilot currently admits OpenAI only, with finite configured temperature,
+1–4,096 completion tokens and at most 64 KiB of private prompt. Configurations
+outside that budget fail rather than being silently changed. The request's
+metadata database session closes before provider/action work; each action uses
+the existing separately owned session boundary.
+
+Start, message and state responses identify the actual server-selected engine,
+assistant, account/property, tool, published version and model in `runtime`.
+They do not return the private prompt, credentials or caller-controlled runtime
+claims. `function_called` remains a scalar wire name for response-model
+compatibility. New output comes from real pipeline acknowledgments, including
+the SDK's follow-up model cycle after final collection—not queue emptiness.
+
+Sessions are owner-bound and recheck account access on every HTTP operation.
+Manual tool-call injection is refused. Admission, turns, output and lifetime
+are bounded; duplicate concurrent turns are rejected, not queued. Defaults
+are 16 sessions per process, two per owner, five starts per minute per owner,
+one second between turns, 30 turns, five minutes idle and 15 minutes total.
+DELETE, startup failure, cancellation, expiry and application lifespan shutdown
+own worker cleanup and quota release. These registries are process-local, not
+distributed production session storage or a production-wide quota.
+
+The native route is tested with real JWT verification and permissions against
+synthetic identities/metadata, actual SDK workers, and strictly scripted external
+transports. `simulation_guard.py` admits this router only; other API routes,
+server boot, live database sessions, real credentials and network are denied.
+The guard requires its documented fixed **synthetic** signing key; do not pass
+real environment secrets. These tests do not verify MFA, signed-in UI, actual
+provider behavior or real calls.
+
+The editor/sidebar has not yet been connected to this path. The supported
+published graph is still the six-node read-only pilot below. Its final pause
+is not a completed booking, sent link or successful checkout. Generic MCP
+resources, writes, reports, SMS/email, reservation links and complete V1
+authoring remain separate implementation/acceptance work.
 
 ## Admission and runtime boundaries
 

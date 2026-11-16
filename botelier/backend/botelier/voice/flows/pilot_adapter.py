@@ -67,7 +67,8 @@ class NativePilotAdapter:
 
     def __init__(
         self, compiled: CompiledPilot, *, llm, worker, context_aggregator,
-        session_factory, global_functions=(),
+        session_factory, global_functions=(), text_observer=None,
+        text_observer_timeout=5.0,
     ):
         if not isinstance(compiled, CompiledPilot):
             raise TypeError("A compiled pilot definition is required")
@@ -100,12 +101,17 @@ class NativePilotAdapter:
                 or self._pending_entry is not None
             ),
         )
+        self._flow_queue = InterruptionSafeFlowQueue(
+            worker, observer=text_observer,
+            observer_timeout=text_observer_timeout,
+        )
         self.manager = FlowManager(
-            llm=llm, worker=InterruptionSafeFlowQueue(worker),
+            llm=llm, worker=self._flow_queue,
             context_aggregator=context_aggregator,
             global_functions=[self._replacement.protect(function) for function in global_functions],
         )
         self._replacement.attach()
+        self._flow_queue.attach()
         self.manager.state["facts"] = {}
         reconcile_native_cancellation(
             llm=llm, worker=worker, context_aggregator=context_aggregator,
@@ -135,6 +141,7 @@ class NativePilotAdapter:
         self._visit = None
         self._claim = None
         self._pending_entry = None
+        self._flow_queue.close()
         await self._replacement.close()
         task = self._owned_task
         if task is not None and task is not asyncio.current_task() and not task.done():
@@ -231,6 +238,7 @@ class NativePilotAdapter:
         # collection node active. Our single speech owner issues the text
         # without making native node entry depend on audio completion.
         if not action.get("defer_speech", False):
+            self._flow_queue.node_speech_started(action["utterance"])
             await self.worker.queue_frame(TTSSpeakFrame(text=action["utterance"]))
         if not self._is_current(visit):
             raise RuntimeError("pilot_stale_entry")

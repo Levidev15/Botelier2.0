@@ -9,13 +9,14 @@ import json
 import os
 import re
 import uuid
+from contextlib import asynccontextmanager
 from datetime import datetime, timezone
-from typing import Any, Optional
+from typing import Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
 from openai import OpenAI
-from pydantic import BaseModel
+from pydantic import BaseModel, StrictInt
 from sqlalchemy.orm import Session
 
 from ..auth.middleware import check_account_permission, get_current_user
@@ -30,7 +31,19 @@ from ..voice.prompt_context import (
     build_runtime_system_prompt,
 )
 
-router = APIRouter(prefix="/api/simulate", tags=["Simulation"])
+@asynccontextmanager
+async def _simulation_lifespan(_app):
+    try:
+        yield
+    finally:
+        registry = SimulationSession.native_registry
+        if registry is not None:
+            await registry.shutdown()
+
+
+router = APIRouter(
+    prefix="/api/simulate", tags=["Simulation"], lifespan=_simulation_lifespan,
+)
 
 # Simulator↔live parity: the preview must run the SAME LLM the assistant is
 # configured with, so what a user tests in the simulator matches what callers
@@ -88,7 +101,9 @@ def _forced_collection_function(state: "SimulationState", user_message: str) -> 
 class SimulationSession:
     """In-memory storage for simulation sessions."""
 
-    sessions: dict[str, "SimulationState"] = {}
+    sessions: dict[str, Any] = {}
+    # Constructed lazily only for an explicitly admitted native dev request.
+    native_registry: Any = None
 
 
 class SimulationState:
@@ -211,6 +226,9 @@ class StartSimulationRequest(BaseModel):
     # flow. When omitted, the simulator falls back to an assistant sharing the
     # tool's tool_set so KB parity still works without a frontend change.
     assistant_id: Optional[str] = None
+    engine: Literal["legacy", "native_pilot"] = "legacy"
+    source: Optional[Literal["published", "draft", "unsaved"]] = None
+    source_version: Optional[StrictInt] = None
 
 
 class StartSimulationResponse(BaseModel):
@@ -219,6 +237,7 @@ class StartSimulationResponse(BaseModel):
     variables_to_collect: list[dict]
     state: dict
     messages: list[dict]
+    runtime: Optional[dict] = None
 
 
 class SimulateMessageRequest(BaseModel):
@@ -239,6 +258,7 @@ class SimulateMessageResponse(BaseModel):
     # (exception type + one-line message) to the simulator UI instead of
     # hiding flow-config bugs behind a generic apology. Never a traceback.
     error: Optional[str] = None
+    runtime: Optional[dict] = None
 
 
 class TestAPIRequest(BaseModel):
@@ -753,8 +773,8 @@ async def start_simulation(
 ):
     """Start a new flow simulation session.
 
-    Creates a FlowExecutor instance and returns the initial greeting
-    along with variables that need to be collected.
+    Keep legacy execution as the default. Native development requests require
+    explicit source/version admission before a provider or worker is created.
     """
     tool = db.query(Tool).filter(Tool.id == request.tool_id).first()
     if not tool:
@@ -776,6 +796,35 @@ async def start_simulation(
 
     if tool.tool_type.value != "FLOW":
         raise HTTPException(status_code=400, detail="Tool is not a flow type")
+
+    if request.engine == "native_pilot":
+        from ..services.native_simulation import (
+            start_native_simulation, validate_native_simulation_source,
+        )
+        from ..services.native_simulation_session import (
+            NativeSimulationError, NativeSimulationRegistry,
+        )
+        from ..voice.flows.native_dev_host import NativeFlowDevPolicy
+
+        try:
+            validate_native_simulation_source(
+                request, NativeFlowDevPolicy.from_environment(),
+            )
+            native_assistant = _resolve_flow_assistant(
+                db, tool, request.assistant_id, user, account_id=sim_account_id,
+            )
+            owner_user_id = str(user.id)
+            if SimulationSession.native_registry is None:
+                SimulationSession.native_registry = NativeSimulationRegistry()
+            result = await start_native_simulation(
+                request=request, assistant=native_assistant, tool=tool, db=db,
+                account_id=sim_account_id, owner_user_id=owner_user_id,
+                registry=SimulationSession.native_registry,
+                session_map=SimulationSession.sessions,
+            )
+            return StartSimulationResponse(**result)
+        except NativeSimulationError as error:
+            raise _native_http_error(error) from None
 
     config_data = tool.config if tool.config else {}
     flow_config_dict = dict(config_data) if isinstance(config_data, dict) else {}
@@ -927,6 +976,18 @@ async def simulate_message(
     Otherwise, send the message to the LLM and let it decide what to do.
     """
     state = _get_session_and_check_access(request.session_id, user, db)
+    if _is_native_session(state):
+        from ..services.native_simulation_session import NativeSimulationError
+
+        db.close()
+        try:
+            result = await state.send(
+                request.message, function_call=request.function_call,
+                function_args=request.function_args,
+            )
+            return SimulateMessageResponse(**result)
+        except NativeSimulationError as error:
+            raise _native_http_error(error) from None
 
     if state.is_ended:
         raise HTTPException(status_code=400, detail="Simulation has ended")
@@ -1443,11 +1504,30 @@ async def _process_with_llm(state: SimulationState, user_message: str) -> dict:
         }
 
 
-def _get_session_and_check_access(session_id: str, user: User, db: Session) -> "SimulationState":
+def _is_native_session(state) -> bool:
+    """The engine belongs to a server-created session, never a message body."""
+    return getattr(state, "engine", None) == "native_pilot"
+
+
+def _native_http_error(error) -> HTTPException:
+    return HTTPException(
+        status_code=error.status_code, detail=error.code,
+        headers={"Retry-After": "60"} if error.status_code == 429 else None,
+    )
+
+
+def _get_session_and_check_access(session_id: str, user: User, db: Session):
     """Retrieve a simulation session and verify the caller has view access to its account."""
     state = SimulationSession.sessions.get(session_id)
     if not state:
         raise HTTPException(status_code=404, detail="Session not found")
+    if _is_native_session(state):
+        from ..services.native_simulation_session import NativeSimulationError
+
+        try:
+            state.check_owner(str(user.id))
+        except NativeSimulationError as error:
+            raise _native_http_error(error) from None
     if state.account_id:
         check_account_permission(user, state.account_id, "tools.view", db)
     return state
@@ -1478,6 +1558,10 @@ async def end_simulation(
 ):
     """End and cleanup a simulation session."""
     state = _get_session_and_check_access(session_id, user, db)
+    if _is_native_session(state):
+        db.close()
+        await state.close()
+        return {"status": "ended"}
     await _close_session_mcp(state)
     del SimulationSession.sessions[session_id]
     return {"status": "ended"}
@@ -1491,6 +1575,19 @@ async def get_simulation_state(
 ):
     """Get current state of a simulation session."""
     state = _get_session_and_check_access(session_id, user, db)
+    if _is_native_session(state):
+        from ..services.native_simulation_session import NativeSimulationError
+
+        db.close()
+        try:
+            return {
+                "state": state.get_state_snapshot(),
+                "messages": state.messages,
+                "suggested_functions": [],
+                "runtime": state.runtime,
+            }
+        except NativeSimulationError as error:
+            raise _native_http_error(error) from None
 
     return {
         "state": state.get_state_snapshot(),

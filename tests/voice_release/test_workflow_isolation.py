@@ -159,9 +159,36 @@ class WorkflowIsolationTests(unittest.TestCase):
             "test_pilot_late_speech.py", "test_pilot_replacement.py",
             "test_pilot_replacement_edges.py",
             "test_pilot_handoff_input.py", "test_pilot_input_preservation.py",
+            "test_native_assistant_configuration.py",
+            "test_native_simulation_selection.py",
+            "test_native_simulation_session.py", "test_native_text_host.py",
             'tee "$EVIDENCE/native-pilot-adapter.log"',
         ):
             self.assertIn(required, check["run"])
         export = next(i for i, step in enumerate(steps)
                       if step.get("id") == "export_candidate_image")
+        self.assertLess(steps.index(check), export)
+
+    def test_native_simulation_api_is_mandatory_and_isolated_before_image_export(self):
+        steps = load("voice-flow-candidate.yml")["jobs"]["candidate"]["steps"]
+        check = next(
+            (step for step in steps if step.get("id") == "native_simulation_api"),
+            None,
+        )
+        self.assertIsNotNone(check, "The real authenticated native API gate is missing")
+        self.assertNotIn("continue-on-error", check)
+        self.assertNotIn("if", check)
+        for required in (
+            "--network none", "--read-only", '--entrypoint env "$IMAGE" -i',
+            "simulation_guard.py", "--self-test", "--tests",
+            "--backend-root /app", "test_native_simulation_api.py",
+            "BOTELIER_ENV=development", "BOTELIER_NATIVE_FLOWS_DEV=1",
+            "NEXTAUTH_SECRET=botelier-flow-trial-only-synthetic-nextauth-secret-v1-not-a-credential",
+            'tee "$EVIDENCE/native-simulation-$check.log"',
+        ):
+            self.assertIn(required, check["run"])
+        export = next(
+            i for i, step in enumerate(steps)
+            if step.get("id") == "export_candidate_image"
+        )
         self.assertLess(steps.index(check), export)

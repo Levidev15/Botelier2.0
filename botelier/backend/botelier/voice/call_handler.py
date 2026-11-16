@@ -35,8 +35,8 @@ from .agent import VoiceAgentConfig
 from .engine import VoiceEngineFactory, is_external_vad_effectively_enabled
 from .function_mapper import FunctionMapper
 from .flows.native_dev_host import (
-    NativeDevAdmissionError, NativeFlowDevPolicy, prepare_native_dev_selection,
-    redacted_reference,
+    NativeDevAdmissionError, NativeFlowDevPolicy, apply_native_pilot_context,
+    ensure_native_dev_resources, prepare_native_dev_selection, redacted_reference,
 )
 from .greeting_cache import get_or_generate_greeting_audio
 from .prewarm import PreWarmBundle, PreWarmCache
@@ -752,14 +752,11 @@ class CallHandler:
                     # Shared by the pre-warmed and cold paths. Refuse before
                     # MCP credentials/handshakes, provider setup, or per-tool
                     # exception handling can obscure unsupported resources.
-                    if (
-                        _native_assistant.mcp_connection_id
-                        or getattr(_native_assistant, "mcp_enabled_tools", None)
-                        or mcp_connection_data
-                        or mcp_enabled_tools
-                        or _native_call_settings.get("escalation_number")
-                    ):
-                        raise NativeDevAdmissionError("native_dev_resources")
+                    ensure_native_dev_resources(
+                        _native_assistant,
+                        mcp_connection_data=mcp_connection_data,
+                        mcp_enabled_tools=mcp_enabled_tools,
+                    )
                     if len(tools) != 1:
                         if not (
                             prewarm_bundle is not None
@@ -1169,36 +1166,10 @@ class CallHandler:
             _flow_executors = _flow_mapper.get_flow_executors() if _flow_mapper else []
             _prompt_now = datetime.now(timezone.utc)
             if _native_selection is not None:
-                # Keep the normal host prompt/private policy and runtime clock
-                # context. Native node guidance is added by the adapter only
-                # after this greeting/system context is committed.
-                config.runtime_assistant_prompt = config.system_prompt
-                config.runtime_flow_personas = []
-                config.runtime_has_flow = True
-                config.runtime_has_past_date_slot = False
-                config.system_prompt = build_runtime_system_prompt(
-                    config.system_prompt,
-                    [],
-                    config.timezone,
+                apply_native_pilot_context(
+                    config, assistant=assistant, tool=_native_selection.tool,
                     now=_prompt_now,
-                    business_name=assistant.business_name,
                 )
-                _native_tool = _native_selection.tool
-                _native_overrides = {
-                    "llm_provider": getattr(_native_tool, "llm_provider", None),
-                    "llm_model": getattr(_native_tool, "llm_model", None),
-                    "llm_temperature": getattr(_native_tool, "llm_temperature", None),
-                    "llm_max_tokens": getattr(_native_tool, "llm_max_tokens", None),
-                }
-                for _key in ("llm_provider", "llm_model"):
-                    if _native_overrides[_key]:
-                        setattr(config, _key, _native_overrides[_key])
-                for _key in ("llm_temperature", "llm_max_tokens"):
-                    if _native_overrides[_key] is not None:
-                        setattr(config, _key, _native_overrides[_key])
-                if not any(value is not None for value in _native_overrides.values()):
-                    if assistant.temperature is None:
-                        config.llm_temperature = 0.4
                 logger.info("native_dev_flow_prompt_prepared engine=NativePilotAdapter")
             elif _flow_executors:
                 config.runtime_assistant_prompt = config.system_prompt
@@ -2301,110 +2272,10 @@ class CallHandler:
             logger.debug(f"🛑 Marked interrupted: {content.strip()[:50]}...")
 
     async def _create_agent_config(self, assistant: Assistant) -> VoiceAgentConfig:
-        """Convert database Assistant model to VoiceAgentConfig.
+        """Use the shared assistant settings without changing legacy call setup."""
+        from .assistant_config import build_assistant_agent_config
 
-        Injects knowledge base content directly into the system prompt for:
-        - Immediate access without tool-call latency
-        - Prompt caching on subsequent turns
-        - Better answer quality (LLM has full context)
-
-        The knowledge base load is run in a thread (asyncio.to_thread) so that
-        the synchronous SQLAlchemy query does not block the event loop during
-        call setup.
-
-        Args:
-            assistant: Database assistant model
-
-        Returns:
-            VoiceAgentConfig for pipeline creation
-        """
-        from botelier.voice.agent import AgentStatus
-        from botelier.voice.knowledge_handler import load_knowledge_for_prompt
-
-        status = AgentStatus.ACTIVE if assistant.is_active else AgentStatus.PAUSED
-
-        base_prompt = assistant.system_prompt or "You are a friendly assistant."
-
-        kb_content = ""
-        if assistant.knowledge_base_id:
-            try:
-                kb_content = await asyncio.to_thread(
-                    load_knowledge_for_prompt, str(assistant.knowledge_base_id)
-                )
-            except Exception as e:
-                logger.error(f"Failed to load KB for assistant {assistant.id}: {e}")
-                kb_content = ""
-        else:
-            logger.info(f"No knowledge base assigned to assistant {assistant.id}")
-
-        if kb_content:
-            # Task #106 — order matters for OpenAI prompt caching.
-            #
-            # OpenAI's prompt cache hits on the longest STABLE prefix from the
-            # start of the messages array. The persona (`base_prompt`) and the
-            # static RESPONSE GUIDELINES below are byte-stable across every
-            # call to the same assistant. KB content is also stable for the
-            # 5-minute in-process TTL window (knowledge_handler._kb_cache),
-            # but it is the only segment that can change mid-day when an
-            # operator edits the KB. By placing the volatile KB block LAST,
-            # the much larger persona+guidelines prefix stays cacheable even
-            # when a KB edit invalidates the trailing tokens — protecting
-            # cached_tokens / prompt_tokens ratio on every subsequent turn.
-            #
-            # The new turn_latency.cached_tokens telemetry lets us measure
-            # the effect of this ordering on the next deploy without guessing.
-            enhanced_prompt = f"""{base_prompt}
-
-## RESPONSE GUIDELINES
-- Answer questions from the knowledge base naturally and conversationally
-- Keep responses concise (under 50 words) since this is a phone call
-- Only transfer to a human if: (1) the caller explicitly requests to speak with someone, OR (2) the question requires information NOT in the knowledge base AND the caller needs urgent assistance
-- For general questions covered by the knowledge base, answer directly without offering to transfer
-- If the caller asks a question in the middle of a task, answer it briefly, then continue where you left off — do not lose your place or restart
-
-## KNOWLEDGE BASE
-You have access to the following Q&A knowledge base. Use this information to answer customer questions directly and confidently. Do NOT transfer the call or say you don't have information if the answer is in this knowledge base.
-
-{kb_content}"""
-            logger.info(
-                f"📚 Injected KB ({len(kb_content)} chars) into system prompt for assistant {assistant.id}"
-            )
-        else:
-            enhanced_prompt = base_prompt
-            logger.info(f"📚 No KB content found for assistant {assistant.id}")
-
-        return VoiceAgentConfig(
-            agent_id=str(assistant.id),
-            account_id=str(assistant.account_id),
-            name=assistant.name,
-            description=assistant.description,
-            status=status,
-            stt_provider=assistant.stt_provider,
-            stt_model=assistant.stt_model,
-            stt_language=assistant.language or "en",
-            stt_config=assistant.stt_config or {},
-            llm_provider=assistant.llm_provider,
-            llm_model=assistant.llm_model,
-            llm_temperature=0.7 if assistant.temperature is None else assistant.temperature,
-            llm_max_tokens=assistant.max_tokens or 400,
-            llm_config=assistant.llm_config or {},
-            tts_provider=assistant.tts_provider,
-            tts_voice_id=assistant.tts_voice or "",
-            tts_model=assistant.tts_model,
-            tts_speed=1.0,
-            tts_config=assistant.tts_config or {},
-            system_prompt=enhanced_prompt,
-            greeting_message=assistant.first_message or "Hello! How can I help you today?",
-            timezone=getattr(assistant, "timezone", None) or "UTC",
-            enable_function_calling=True,
-            # Per-assistant barge-in toggle. NULL (pre-migration rows) = allowed.
-            enable_interruptions=(
-                True if assistant.allow_interruptions is None else bool(assistant.allow_interruptions)
-            ),
-            enable_vad=assistant.vad_enabled,
-            vad_provider=assistant.vad_provider,
-            vad_config=assistant.vad_config or {},
-        )
+        return await build_assistant_agent_config(assistant)
 
     def _get_api_keys(self) -> dict[str, str]:
         """Get API keys from environment variables.
