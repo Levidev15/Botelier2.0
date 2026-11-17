@@ -45,6 +45,9 @@ _STATUS_BY_CODE = {
     "native_simulation_failed": 400,
     "native_simulation_invalid_input": 400,
     "native_simulation_manual_calls_disabled": 400,
+    "native_simulation_preview_pending": 409,
+    "native_simulation_preview_request_mismatch": 409,
+    "native_simulation_preview_invalid": 400,
     "native_simulation_not_found": 404,
     "native_simulation_closed": 409,
     "native_simulation_busy": 409,
@@ -673,11 +676,24 @@ class NativeSimulationSession:
         *,
         function_call: Any = None,
         function_args: Any = None,
+        preview_result: Any = None,
     ) -> dict:
         # Manual tool-call injection is rejected before any host, history, or
         # provider access; only the host's real model turn may produce a call.
         if function_call is not None or function_args is not None:
             raise NativeSimulationError("native_simulation_manual_calls_disabled")
+        if preview_result is not None:
+            if message not in {"", None}:
+                raise NativeSimulationError("native_simulation_preview_invalid")
+            return await self._resume_preview(preview_result)
+        pending_preview = getattr(self.host, "pending_preview", lambda: None)()
+        turn_pending = getattr(self.host, "turn_pending", lambda: False)()
+        if pending_preview is not None or turn_pending:
+            self.assert_live()
+            raise NativeSimulationError(
+                "native_simulation_preview_pending"
+                if pending_preview is not None else "native_simulation_busy",
+            )
         if (
             not isinstance(message, str)
             or not message.strip()
@@ -753,6 +769,93 @@ class NativeSimulationSession:
             if self._close_task is None:
                 await self.close()
             raise safe_error from None
+        finally:
+            if self._active_turn is asyncio.current_task():
+                self._active_turn = None
+                self._expiry_changed.set()
+
+    async def _resume_preview(self, preview_result):
+        self.assert_live()
+        pending_getter = getattr(self.host, "pending_preview", None)
+        submit = getattr(self.host, "submit_preview", None)
+        resume = getattr(self.host, "resume_preview", None)
+        if not callable(pending_getter) or not callable(submit) or not callable(resume):
+            raise NativeSimulationError("native_simulation_preview_request_mismatch")
+        pending = pending_getter()
+        if not isinstance(preview_result, dict):
+            raise NativeSimulationError("native_simulation_preview_invalid")
+        supplied_data = set(preview_result).intersection({"data", "data_json"})
+        if (
+            set(preview_result) - {
+                "request_id", "status_code", "data", "data_json", "success",
+                "error_type",
+            }
+            or len(supplied_data) != 1
+        ):
+            raise NativeSimulationError("native_simulation_preview_invalid")
+        if (
+            pending is None
+            or preview_result.get("request_id") != pending.get("request_id")
+        ):
+            raise NativeSimulationError("native_simulation_preview_request_mismatch")
+        if self._active_turn is not None:
+            raise NativeSimulationError("native_simulation_busy")
+        from botelier.voice.flows.native_action_preview import (
+            NativePreviewError, NativePreviewResponse,
+        )
+        try:
+            sample = {
+                "status_code": preview_result.get("status_code"),
+                "success": preview_result.get("success"),
+                "error_type": preview_result.get("error_type"),
+            }
+            sample[next(iter(supplied_data))] = preview_result[
+                next(iter(supplied_data))
+            ]
+            response = NativePreviewResponse(**sample)
+        except (NativePreviewError, TypeError, ValueError):
+            raise NativeSimulationError("native_simulation_preview_invalid") from None
+        self._active_turn = asyncio.current_task()
+        self._mark_activity()
+        try:
+            submit(preview_result["request_id"], response)
+            async with asyncio.timeout(_TURN_TIMEOUT_SECONDS):
+                result = await resume()
+            if self._closing or self._closed:
+                raise NativeSimulationError("native_simulation_closed")
+            self.assert_live()
+            outputs, called, function_result = self._public_turn(result)
+            updated_messages = self._messages_with_metadata(
+                self._messages, outputs, called, function_result,
+            )
+            response_text = " ".join(
+                item["content"] for item in outputs if item["content"].strip()
+            )
+            state = self._host_snapshot()
+            self._messages = updated_messages
+            self._mark_activity()
+            return {
+                "response": response_text,
+                "function_called": called,
+                "function_result": deepcopy(function_result),
+                "state": state,
+                "messages": self.messages,
+                "suggested_functions": [],
+                "error": None,
+                "runtime": self._response_runtime(),
+            }
+        except asyncio.CancelledError:
+            if self._close_task is None:
+                await self.close()
+            raise
+        except TimeoutError:
+            if self._close_task is None:
+                await self.close()
+            raise NativeSimulationError("native_simulation_timeout") from None
+        except NativeSimulationError:
+            raise
+        except Exception as error:
+            raise self._host_failure(error) from None
         finally:
             if self._active_turn is asyncio.current_task():
                 self._active_turn = None

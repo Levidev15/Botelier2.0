@@ -138,9 +138,17 @@ class NativeMessenger:
 
     @staticmethod
     def validate_sms(recipient, body, from_number):
+        invalid = NativeMessenger.validate_sms_content(recipient, body)
+        if invalid:
+            return invalid
+        if not isinstance(from_number, str) or not _E164.fullmatch(from_number):
+            return "invalid_recipient"
+        return None
+
+    @staticmethod
+    def validate_sms_content(recipient, body):
         if (
             not isinstance(recipient, str) or not _E164.fullmatch(recipient)
-            or not isinstance(from_number, str) or not _E164.fullmatch(from_number)
         ):
             return "invalid_recipient"
         if not isinstance(body, str) or not body.strip() or len(body) > _MAX_SMS_BODY:

@@ -16,7 +16,10 @@ from typing import Any, Literal, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
 from openai import OpenAI
-from pydantic import BaseModel, StrictInt
+from pydantic import (
+    BaseModel, ConfigDict, Field, StrictBool, StrictInt, StrictStr,
+    model_validator,
+)
 from sqlalchemy.orm import Session
 
 from ..auth.middleware import check_account_permission, get_current_user
@@ -240,11 +243,42 @@ class StartSimulationResponse(BaseModel):
     runtime: Optional[dict] = None
 
 
+class NativePreviewSubmission(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    request_id: StrictStr = Field(min_length=1, max_length=64)
+    status_code: StrictInt
+    data: Any = None
+    data_json: Optional[StrictStr] = Field(default=None, max_length=65_536)
+    success: Optional[StrictBool] = None
+    error_type: Optional[StrictStr] = Field(default=None, max_length=32)
+
+    @model_validator(mode="after")
+    def validate_sample(self):
+        supplied = self.model_fields_set.intersection({"data", "data_json"})
+        if len(supplied) != 1:
+            raise ValueError("Exactly one of data or data_json is required")
+        from ..voice.flows.native_action_preview import (
+            NativePreviewError, NativePreviewResponse,
+        )
+        try:
+            sample = {
+                "status_code": self.status_code,
+                "success": self.success,
+                "error_type": self.error_type,
+            }
+            field = next(iter(supplied))
+            sample[field] = getattr(self, field)
+            NativePreviewResponse(**sample)
+        except NativePreviewError:
+            raise ValueError("Invalid bounded preview sample") from None
+        return self
+
 class SimulateMessageRequest(BaseModel):
     session_id: str
-    message: str
+    message: str = ""
     function_call: Optional[str] = None
     function_args: Optional[dict] = None
+    preview_result: Optional[NativePreviewSubmission] = None
 
 
 class SimulateMessageResponse(BaseModel):
@@ -976,6 +1010,11 @@ async def simulate_message(
     Otherwise, send the message to the LLM and let it decide what to do.
     """
     state = _get_session_and_check_access(request.session_id, user, db)
+    if (
+        not request.message.strip()
+        and request.preview_result is None
+    ):
+        raise HTTPException(status_code=400, detail="Message is required")
     if _is_native_session(state):
         from ..services.native_simulation_session import NativeSimulationError
 
@@ -984,10 +1023,16 @@ async def simulate_message(
             result = await state.send(
                 request.message, function_call=request.function_call,
                 function_args=request.function_args,
+                preview_result=(
+                    request.preview_result.model_dump(exclude_unset=True)
+                    if request.preview_result is not None else None
+                ),
             )
             return SimulateMessageResponse(**result)
         except NativeSimulationError as error:
             raise _native_http_error(error) from None
+    if request.preview_result is not None:
+        raise HTTPException(status_code=400, detail="Preview results require native_pilot")
 
     if state.is_ended:
         raise HTTPException(status_code=400, detail="Simulation has ended")

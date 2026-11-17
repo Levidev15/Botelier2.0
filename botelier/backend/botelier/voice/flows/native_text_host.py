@@ -33,6 +33,9 @@ from botelier.voice.flows.native_text_observer import (
     NativeTextObserver,
     NativeTextTurnBarrier,
 )
+from botelier.voice.flows.native_action_preview import (
+    NativeActionPreview, NativePreviewError,
+)
 
 
 _START_TIMEOUT = 10.0
@@ -72,6 +75,7 @@ class NativeTextHost:
         execution_mode: str = "preview",
         global_functions=(),
         available_flows=None,
+        preview=None,
     ):
         if not isinstance(compiled, CompiledFlow) or not isinstance(config, VoiceAgentConfig):
             raise NativeTextHostError("invalid")
@@ -91,6 +95,9 @@ class NativeTextHost:
         self._session_factory = session_factory
         self._turn_timeout = float(turn_timeout)
         self._execution_mode = execution_mode
+        if preview is not None and not isinstance(preview, NativeActionPreview):
+            raise NativeTextHostError("invalid")
+        self.preview = preview
         self._global_functions = tuple(global_functions)
         self._available_flows = available_flows
         self._action_runner = None
@@ -112,9 +119,14 @@ class NativeTextHost:
         self._start_task = None
         self._started_event = asyncio.Event()
         self._changed = asyncio.Event()
+        if self.preview is not None:
+            self.preview.set_on_change(self._changed.set)
         self._close_lock = asyncio.Lock()
         self._close_complete = asyncio.Event()
         self._send_task = None
+        self._turn = None
+        self._adapter_start_task = None
+        self._adapter_start_settled = False
         self._active_generation = 0
         self._response_starts = 0
         self._response_ends = 0
@@ -175,11 +187,27 @@ class NativeTextHost:
                 if greeting:
                     await self._worker.queue_frame(TTSSpeakFrame(text=greeting))
                     await self._ack_output()
-                await self.adapter.start()
-                await self._await_start_idle()
+                self._turn = {
+                    "kind": "start", "generation": self._active_generation,
+                    "response_ends": self._response_ends, "output_start": 0,
+                }
+                self._adapter_start_task = asyncio.create_task(
+                    self.adapter.start(), name="native-text-adapter-start",
+                )
+                self._adapter_start_task.add_done_callback(
+                    self._adapter_start_done,
+                )
+                pending = await self._await_start_idle()
+                if pending:
+                    result = self._pending_result()
+                    return result
+                await self._adapter_start_task
+                if await self._await_start_idle():
+                    return self._pending_result()
                 self._raise_if_failed()
                 result = self._result(0)
                 self._outputs.clear()
+                self._turn = None
                 return result
         except TimeoutError:
             await self.close()
@@ -329,6 +357,10 @@ class NativeTextHost:
             flow_id: NativeActionRunner(
                 compiled, self._session_factory,
                 execution_mode=self._execution_mode, channel="simulation",
+                preview=self.preview,
+                preview_scope=lambda node, flow_id=flow_id: self._preview_scope(
+                    flow_id, node,
+                ),
             )
             for flow_id, compiled in compiled_flows.items()
         }
@@ -363,14 +395,100 @@ class NativeTextHost:
         self._changed.set()
 
     async def _simulate_terminal(self, node, facts):
-        # Text simulations never hang up or transfer a real phone call.
-        return NativeTerminalResult(
-            node.type == "end", completed=node.type == "end",
-            failure_reason=None if node.type == "end" else "preview_only_transfer",
+        if node.type == "end":
+            return NativeTerminalResult(True, completed=True)
+        # Transfer is a simulated effect; no carrier is ever contacted.
+        if self.preview is None:
+            return NativeTerminalResult(False, failure_reason="preview_only_transfer")
+        node_id = getattr(node, "node_id", None)
+        if not isinstance(node_id, str) or not node_id:
+            return NativeTerminalResult(False, failure_reason="preview_only_transfer")
+        try:
+            scope = self._preview_scope(str(self.compiled.identity.tool_id), node)
+            sample = await self.preview.request(
+                node_id=node_id, source_kind="transfer", scope=scope,
+                current_scope=lambda: self._preview_scope(
+                    str(self.compiled.identity.tool_id), node,
+                ),
+            )
+        except NativePreviewError as exc:
+            return NativeTerminalResult(False, failure_reason=exc.code)
+        self.preview.record_effect("transfer", node.node_id)
+        if not sample.success:
+            return NativeTerminalResult(False, failure_reason="preview_transfer_rejected")
+        return NativeTerminalResult(True, completed=True)
+
+    def _preview_scope(self, flow_id, node):
+        adapter = self.adapter
+        revision = getattr(adapter, "_revision", 0)
+        visit = getattr(adapter, "_visit", None)
+        identity = self._action_runners.get(flow_id)
+        compiled = getattr(identity, "compiled", self.compiled)
+        return (
+            str(compiled.identity.tool_id),
+            str(compiled.identity.flow_version_id),
+            str(node.node_id),
+            str(self._active_generation),
+            str(revision),
+            str(id(visit)) if visit is not None else "no-visit",
         )
+
+    def _pending_result(self):
+        result = self._result(self._turn["output_start"] if self._turn else 0)
+        result["pending_preview"] = self.preview.snapshot() if self.preview else None
+        result["safe_preview_effects"] = self.preview.effects if self.preview else []
+        result["execution_mode"] = "preview"
+        return result
+
+    def pending_preview(self):
+        return self.preview.snapshot() if self.preview else None
+
+    def turn_pending(self):
+        return self._turn is not None
+
+    def submit_preview(self, request_id, response):
+        if self.preview is None:
+            raise NativePreviewError("preview_closed")
+        self.preview.submit(request_id, response)
+
+    async def resume_preview(self):
+        if self._turn is None or self.preview is None:
+            raise NativePreviewError("preview_request_mismatch")
+        if self._send_task is not None:
+            raise NativeTextHostError("busy")
+        task = asyncio.current_task()
+        self._send_task = task
+        try:
+            async with asyncio.timeout(self._turn_timeout):
+                if self._turn["kind"] == "start":
+                    if self._adapter_start_task is None:
+                        raise NativeTextHostError("initialization")
+                    if await self._await_start_idle():
+                        return self._pending_result()
+                    await self._adapter_start_task
+                    if await self._await_start_idle():
+                        return self._pending_result()
+                else:
+                    await self._await_turn(self._turn["response_ends"])
+                if self.preview.snapshot() is not None:
+                    return self._pending_result()
+                result = self._result(self._turn["output_start"])
+                self._outputs.clear()
+                self._turn = None
+                return result
+        except TimeoutError:
+            await self.close()
+            raise NativeTextHostError("timeout") from None
+        finally:
+            if self._send_task is task:
+                self._send_task = None
+                self._changed.set()
 
     def _native_idle(self):
         if self.adapter is None or self._model_inflight or self._active_calls:
+            return False
+        start_task = getattr(self, "_adapter_start_task", None)
+        if start_task is not None and not start_task.done():
             return False
         if self._transition_expected or self._observer.node_updates:
             return False
@@ -404,11 +522,44 @@ class NativeTextHost:
     async def _await_start_idle(self):
         while True:
             self._raise_if_failed()
+            if self.preview is not None and self.preview.snapshot() is not None:
+                return True
+            if (
+                self._adapter_start_task is not None
+                and self._adapter_start_task.done()
+                and not self._adapter_start_settled
+            ):
+                self._adapter_start_settled = True
+                await asyncio.sleep(0)
+                continue
             await self._drain_native_output()
             if self._native_idle():
-                return
+                return False
             self._changed.clear()
+            if self.preview is not None and self.preview.snapshot() is not None:
+                return True
             if self._native_idle():
+                continue
+            await self._changed.wait()
+
+    async def _await_turn(self, initial_response_ends):
+        while True:
+            self._raise_if_failed()
+            if self.preview is not None and self.preview.snapshot() is not None:
+                return True
+            if self._turn_ready(initial_response_ends):
+                await self._drain_native_output()
+                self._raise_if_failed()
+                if self.preview is not None and self.preview.snapshot() is not None:
+                    return True
+                if self._turn_ready(initial_response_ends):
+                    return False
+            self._changed.clear()
+            if (
+                self._failure is not None or self.closed
+                or self._turn_ready(initial_response_ends)
+                or self.preview is not None and self.preview.snapshot() is not None
+            ):
                 continue
             await self._changed.wait()
 
@@ -489,6 +640,19 @@ class NativeTextHost:
             except asyncio.CancelledError:
                 pass
 
+    def _adapter_start_done(self, task):
+        if task.cancelled():
+            self._changed.set()
+            return
+        try:
+            error = task.exception()
+        except asyncio.CancelledError:
+            error = None
+        if error is not None and not self.closed:
+            self._pipeline_error()
+        else:
+            self._changed.set()
+
     def _raise_if_failed(self):
         if self._failure is not None:
             raise NativeTextHostError(self._failure.code)
@@ -521,7 +685,7 @@ class NativeTextHost:
             raise NativeTextHostError("closed")
         if self._worker is None or not self._started_event.is_set():
             raise NativeTextHostError("initialization")
-        if self._send_task is not None:
+        if self._send_task is not None or self._turn is not None:
             raise NativeTextHostError("busy")
         if (
             not isinstance(message, str)
@@ -539,6 +703,10 @@ class NativeTextHost:
         self._outputs.clear()
         self._output_start = 0
         initial_response_ends = self._response_ends
+        self._turn = {
+            "kind": "message", "generation": generation,
+            "response_ends": initial_response_ends, "output_start": 0,
+        }
         try:
             async with asyncio.timeout(self._turn_timeout):
                 self._raise_if_failed()
@@ -548,23 +716,13 @@ class NativeTextHost:
                     messages=[{"role": "user", "content": message}],
                     run_llm=True,
                 ))
-                while True:
-                    self._raise_if_failed()
-                    if self._turn_ready(initial_response_ends):
-                        await self._drain_native_output()
-                        self._raise_if_failed()
-                        if self._turn_ready(initial_response_ends):
-                            result = self._result(self._output_start)
-                            self._outputs.clear()
-                            return result
-                    self._changed.clear()
-                    if (
-                        self._failure is not None
-                        or self.closed
-                        or self._turn_ready(initial_response_ends)
-                    ):
-                        continue
-                    await self._changed.wait()
+                pending = await self._await_turn(initial_response_ends)
+                if pending:
+                    return self._pending_result()
+                result = self._result(self._output_start)
+                self._outputs.clear()
+                self._turn = None
+                return result
         except TimeoutError:
             await self.close()
             raise NativeTextHostError("timeout") from None
@@ -635,6 +793,9 @@ class NativeTextHost:
                 "total": total,
                 "percentage": round(count * 100 / total) if total else 0,
             },
+            "pending_preview": self.preview.snapshot() if self.preview else None,
+            "safe_preview_effects": self.preview.effects if self.preview else [],
+            "execution_mode": "preview",
         }
 
     async def close(self):
@@ -645,6 +806,10 @@ class NativeTextHost:
                 return
             self.closed = True
             self._api_keys = {}
+            self._turn = None
+            self._outputs.clear()
+            if self.preview is not None:
+                self.preview.close()
             self._observer.close()
             self._active_generation += 1
             self._changed.set()
@@ -655,6 +820,12 @@ class NativeTextHost:
             start_task = self._start_task
             if start_task is not None and start_task is not current and not start_task.done():
                 start_task.cancel()
+            adapter_start_task = self._adapter_start_task
+            if (
+                adapter_start_task is not None
+                and adapter_start_task is not current and not adapter_start_task.done()
+            ):
+                adapter_start_task.cancel()
             if self.adapter is not None:
                 try:
                     async with asyncio.timeout(self._adapter_close_timeout):
@@ -703,4 +874,15 @@ class NativeTextHost:
                         await asyncio.gather(start_task, return_exceptions=True)
                 except TimeoutError:
                     start_task.cancel()
+            if (
+                adapter_start_task is not None and adapter_start_task is not current
+                and not adapter_start_task.done()
+            ):
+                try:
+                    async with asyncio.timeout(_CLOSE_TIMEOUT):
+                        await asyncio.gather(
+                            adapter_start_task, return_exceptions=True,
+                        )
+                except TimeoutError:
+                    adapter_start_task.cancel()
             self._close_complete.set()

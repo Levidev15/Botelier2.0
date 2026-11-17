@@ -45,7 +45,7 @@ class NativeActionRunner:
     def __init__(
         self, compiled, session_factory, *, messenger=None,
         execution_mode="execute", channel="voice", http_executor_factory=None,
-        mcp_client_factory=None,
+        mcp_client_factory=None, preview=None, preview_scope=None,
     ):
         if (
             not isinstance(compiled, CompiledFlow) or not callable(session_factory)
@@ -62,6 +62,14 @@ class NativeActionRunner:
         self.preview_only = execution_mode == "preview" or channel == "simulation"
         self.http_executor_factory = http_executor_factory
         self.mcp_client_factory = mcp_client_factory
+        if preview is not None and (
+            channel != "simulation"
+            or not callable(getattr(preview, "request", None))
+            or preview_scope is not None and not callable(preview_scope)
+        ):
+            raise ValueError("native_action_preview_scope")
+        self.preview = preview
+        self.preview_scope = preview_scope
         if messenger is not None and (
             str(getattr(messenger.identity, "account_id", ""))
             != str(compiled.identity.account_id)
@@ -71,6 +79,63 @@ class NativeActionRunner:
             raise ValueError("native_messenger_scope_mismatch")
         self._ledger = NativeEffectLedger(session_factory, compiled.identity)
         self._closed = False
+
+    async def _request_preview(self, node, source_kind):
+        from botelier.voice.flows.native_action_preview import NativePreviewError
+
+        if not self.preview_only:
+            return _failure("preview_required")
+        if self.preview is None or self.preview_scope is None:
+            return _failure("preview_required")
+        try:
+            scope = tuple(self.preview_scope(node))
+            response = await self.preview.request(
+                node_id=node.node_id, source_kind=source_kind, scope=scope,
+                current_scope=lambda: tuple(self.preview_scope(node)),
+            )
+        except NativePreviewError as exc:
+            return _failure(exc.code)
+        return response
+
+    def _map_preview_response(self, node, config, sample, mappings, source):
+        if isinstance(sample, NativeActionResult):
+            return sample
+        from botelier.voice.flows.native_action_preview import NativePreviewResponse
+        if not isinstance(sample, NativePreviewResponse):
+            return _failure("preview_response_invalid")
+        self.preview.record_effect(
+            {
+                "http": "api_request", "integration": "integration",
+                "tool": "tool_api", "mcp": "mcp",
+            }.get(source, source),
+            node.node_id,
+        )
+        if not sample.success:
+            branch = (
+                "auth_error" if sample.error_type == "auth_error"
+                else "not_found" if sample.error_type == "not_found"
+                else "error"
+            )
+            prefix = {
+                "http": "api", "integration": "integration",
+                "tool": "tool", "mcp": "mcp",
+            }.get(source, "action")
+            reason = (
+                f"{prefix}_auth_error" if branch == "auth_error"
+                else f"{prefix}_not_found" if branch == "not_found"
+                else f"{prefix}_rejected"
+            )
+            return _failure(
+                reason, branch,
+            )
+        try:
+            mapped = self._map_outputs(sample.data, mappings)
+            projected = project_mapped_values(
+                mapped, config.get("responseProjection"),
+            )
+        except (ValueError, TypeError, ResponseProjectionError):
+            return _failure("response_mapping_invalid")
+        return NativeActionResult(True, variables=mapped, llm_data=projected)
 
     async def execute(self, node, facts, *, confirmation=None):
         if self._closed:
@@ -214,11 +279,14 @@ class NativeActionRunner:
             from botelier.voice.flows.native_messaging import NativeMessenger
 
             if tool_type == "SEND_SMS":
-                if self.messenger is None:
-                    return _failure("messenger_unavailable")
-                invalid = NativeMessenger.validate_sms(
-                    recipient, body, self.messenger.from_number,
-                )
+                if self.preview_only:
+                    invalid = NativeMessenger.validate_sms_content(recipient, body)
+                else:
+                    if self.messenger is None:
+                        return _failure("messenger_unavailable")
+                    invalid = NativeMessenger.validate_sms(
+                        recipient, body, self.messenger.from_number,
+                    )
             else:
                 invalid = NativeMessenger.validate_email(
                     None, recipient, subject, body, self.compiled.identity,
@@ -256,7 +324,30 @@ class NativeActionRunner:
         except (ValueError, TypeError, ResponseProjectionError):
             return _failure("response_mapping_invalid")
         if self.preview_only:
-            return _failure("preview_required")
+            sample = await self._request_preview(node, "tool")
+            if isinstance(sample, NativeActionResult):
+                return sample
+            self.preview.record_effect(
+                "send_sms" if tool_type == "SEND_SMS" else "send_email",
+                node.node_id,
+            )
+            if not sample.success:
+                branch = (
+                    "auth_error" if sample.error_type == "auth_error"
+                    else "not_found" if sample.error_type == "not_found"
+                    else "error"
+                )
+                return _failure("message_" + (sample.error_type or "rejected"), branch)
+            try:
+                mapped, projected = map_project_response(
+                    config, sample.data,
+                    declared_variables={
+                        item.key for item in self.compiled.variable_declarations
+                    },
+                )
+            except (ValueError, TypeError, ResponseProjectionError):
+                return _failure("response_mapping_invalid")
+            return NativeActionResult(True, variables=mapped, llm_data=projected)
         if self.messenger is None:
             return _failure("messenger_unavailable")
         claim = await asyncio.to_thread(
@@ -511,7 +602,26 @@ class NativeActionRunner:
                 )
             except (TypeError, ValueError):
                 return _failure("mcp_arguments_invalid")
-            return _failure("preview_required")
+            sample = await self._request_preview(node, "mcp")
+            if isinstance(sample, NativeActionResult):
+                return sample
+            self.preview.record_effect("mcp", node.node_id)
+            if not sample.success or not isinstance(sample.data, dict):
+                return _failure(
+                    "mcp_tool_error" if not sample.success else "mcp_result_shape",
+                    "auth_error" if sample.error_type == "auth_error" else "error",
+                )
+            try:
+                raw = self._json_safe_mcp_value(sample.data)
+                if raw.get("isError") is True:
+                    return _failure("mcp_tool_error")
+                mapped = self._map_outputs(raw, mappings)
+                projected = project_mapped_values(
+                    mapped, config.get("responseProjection"),
+                )
+            except (TypeError, ValueError, ResponseProjectionError):
+                return _failure("mcp_result_shape")
+            return NativeActionResult(True, variables=mapped, llm_data=projected)
         claim = None
         if writing:
             claim = await asyncio.to_thread(
@@ -859,7 +969,10 @@ class NativeActionRunner:
         ):
             return _failure("confirmation_required")
         if self.preview_only:
-            return _failure("preview_required")
+            sample = await self._request_preview(node, "integration")
+            return self._map_preview_response(
+                node, config, sample, mappings, "integration",
+            )
         if writing:
             claim = await asyncio.to_thread(
                 self._ledger.claim, node.node_id,
@@ -1317,6 +1430,31 @@ class NativeActionRunner:
         from botelier.voice.flows.native_record_actions import NativeRecordActionStore
 
         store = NativeRecordActionStore(self.session_factory, self.compiled.identity)
+        if self.preview_only:
+            if self.preview is None:
+                return _failure("preview_required")
+            source_node_id = setting.get("updateSourceNodeId")
+            prior = self.preview.get_record(source_node_id) if source_node_id else None
+            try:
+                prepared_preview = await asyncio.to_thread(
+                    store.prepare_preview, setting, facts, prior,
+                )
+            except LookupError:
+                return _failure("record_type_unavailable")
+            except (ValueError, TypeError, RequestTemplateError):
+                return _failure("record_values_invalid")
+            if prepared_preview is None:
+                return _failure("record_source_unavailable")
+            preview_node_id = source_node_id or node.node_id
+            self.preview.save_record(
+                preview_node_id, prepared_preview["record_type_id"],
+                prepared_preview["data"], prepared_preview["status"],
+            )
+            self.preview.record_effect(
+                "record_update" if source_node_id else "record_create",
+                node.node_id,
+            )
+            return NativeActionResult(True, variables={}, llm_data={})
         try:
             prepared = await asyncio.to_thread(
                 store.prepare, setting, facts,
@@ -1361,7 +1499,10 @@ class NativeActionRunner:
             ):
                 return _failure("confirmation_required")
         if self.preview_only:
-            return _failure("preview_required")
+            sample = await self._request_preview(node, "http")
+            return self._map_preview_response(
+                node, config, sample, mappings, "http",
+            )
         if writing:
             claim = await asyncio.to_thread(
                 self._ledger.claim, node.node_id,

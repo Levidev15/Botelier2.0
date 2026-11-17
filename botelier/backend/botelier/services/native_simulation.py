@@ -48,6 +48,7 @@ class NativeSimulationPlan:
     variables_to_collect: list[dict]
     global_functions: tuple = ()
     available_flows: dict = None
+    preview: object = None
 
 
 def validate_native_simulation_source(request, policy) -> None:
@@ -94,7 +95,7 @@ def _validate_model_configuration(config) -> None:
         raise NativeSimulationError("native_simulation_model_configuration")
 
 
-def _preview_global_mcp_functions(selection, assistant, db):
+def _preview_global_mcp_functions(selection, assistant, db, preview=None):
     """Expose only cached, explicitly read-only MCP schemas in preview mode."""
     connection_id = getattr(assistant, "mcp_connection_id", None)
     if not connection_id:
@@ -287,12 +288,40 @@ def _preview_global_mcp_functions(selection, assistant, db):
         if len(encoded_schema.encode("utf-8")) > 64_000:
             raise NativeSimulationError("native_dev_resources")
 
-        async def preview_handler(_arguments, _manager, _tool_name=name):
-            return {
-                "status": "preview_required",
-                "source": "mcp",
-                "tool": _tool_name,
-            }
+        async def preview_handler(
+            _arguments, _manager, _tool_name=name,
+            _properties=safe_properties, _required=tuple(required),
+        ):
+            if preview is None:
+                return {"status": "preview_required", "source": "mcp"}
+            try:
+                NativeActionRunner._validate_mcp_schema(
+                    {"type": "object", "properties": _properties,
+                     "required": list(_required), "additionalProperties": False},
+                    _arguments,
+                )
+                sample = await preview.request(
+                    node_id="global-" + _tool_name,
+                    source_kind="mcp_read",
+                    scope=(
+                        str(selection.compiled.identity.tool_id),
+                        str(selection.compiled.identity.flow_version_id),
+                        str(selection.compiled.identity.call_sid),
+                        _tool_name,
+                    ),
+                )
+                if not sample.success or not isinstance(sample.data, dict):
+                    return {"status": "preview_rejected", "source": "mcp"}
+                result = NativeActionRunner._json_safe_mcp_value(sample.data)
+                if result.get("isError") is True:
+                    return {"status": "preview_rejected", "source": "mcp"}
+                from botelier.voice.flows.native_quote_graph import assert_quote_payload_safe
+
+                assert_quote_payload_safe(selection.compiled, {}, result)
+                preview.record_effect("mcp_read", "global-" + _tool_name)
+                return result
+            except Exception:
+                return {"status": "preview_rejected", "source": "mcp"}
 
         result.append(FlowsFunctionSchema(
             name=name,
@@ -377,7 +406,12 @@ async def prepare_native_simulation(
     ):
         raise NativeSimulationError("native_simulation_version_changed", 409)
 
-    global_functions = _preview_global_mcp_functions(selection, assistant, db)
+    from botelier.voice.flows.native_action_preview import NativeActionPreview
+
+    preview = NativeActionPreview(timeout=120.0)
+    global_functions = _preview_global_mcp_functions(
+        selection, assistant, db, preview,
+    )
     try:
         config = await build_assistant_agent_config(assistant)
         apply_native_flow_context(config, assistant=assistant, tool=selection.tool)
@@ -409,10 +443,13 @@ async def prepare_native_simulation(
             "version_number": version.version_number,
             "llm_provider": config.llm_provider, "llm_model": config.llm_model,
             "read_only_global_tools": [item.name for item in global_functions],
+            "execution_mode": "preview", "effect_mode": "simulation",
+            "effects_simulated": True,
         },
         variables_to_collect=list(variables_by_key.values()),
         global_functions=global_functions,
         available_flows=flow_catalogue,
+        preview=preview,
     )
 
 
@@ -471,6 +508,7 @@ async def start_native_simulation(
                 session_factory=action_sessions, turn_timeout=120.0,
                 global_functions=plan.global_functions,
                 available_flows=plan.available_flows,
+                preview=plan.preview,
             )
             session = NativeSimulationSession(
                 session_id=session_id, owner_user_id=owner_user_id,

@@ -60,6 +60,9 @@ def test_native_simulator_uses_the_owned_published_graph_not_stale_tool_config()
             "llm_provider": records.assistant.llm_provider,
             "llm_model": records.assistant.llm_model,
             "read_only_global_tools": [],
+            "execution_mode": "preview",
+            "effect_mode": "simulation",
+            "effects_simulated": True,
         }
         assert plan.config.llm_temperature == 0
         assert {entry["key"] for entry in plan.variables_to_collect} == {
@@ -90,6 +93,7 @@ def test_native_simulator_selects_the_requested_flow_from_multiple_assignments()
             arguments["request"].tool_id, "00000000-0000-0000-0000-000000000110",
         }
         assert plan.global_functions == ()
+        from botelier.voice.flows.native_action_preview import NativePreviewResponse
         from botelier.voice.flows.native_text_host import NativeTextHost
 
         host = NativeTextHost(
@@ -98,16 +102,27 @@ def test_native_simulator_selects_the_requested_flow_from_multiple_assignments()
             api_keys={"openai_api_key": "offline-test-only"},
             session_factory=records.session,
             available_flows=plan.available_flows,
+            preview=plan.preview,
         )
         try:
             host._build_pipeline()
             assert set(host.adapter._flow_catalogue) == set(plan.available_flows)
-            result = await host._simulate_terminal(
-                SimpleNamespace(type="transfer"), {},
+            task = asyncio.create_task(host._simulate_terminal(
+                SimpleNamespace(type="transfer", node_id="transfer"), {},
+            ))
+            while host.preview.snapshot() is None:
+                await asyncio.sleep(0)
+            pending = host.preview.snapshot()
+            host.preview.submit(
+                pending["request_id"],
+                NativePreviewResponse(status_code=200, data={"accepted": True}),
             )
-            assert result.accepted is False
-            assert result.completed is False
-            assert result.failure_reason == "preview_only_transfer"
+            result = await task
+            assert result.accepted is True
+            assert result.completed is True
+            assert host.preview.effects == [{
+                "kind": "transfer", "node_id": "transfer", "simulated": True,
+            }]
         finally:
             await host.close()
         arguments["db"].close()
@@ -139,14 +154,24 @@ def test_native_simulator_exposes_only_scoped_readonly_mcp_preview_tools():
         plan = await module.prepare_native_simulation(**arguments)
         assert [item.name for item in plan.global_functions] == ["lookup"]
         assert plan.runtime["read_only_global_tools"] == ["lookup"]
+        from botelier.voice.flows.native_action_preview import NativePreviewResponse
         filter_schema = plan.global_functions[0].properties["filter"]
         assert filter_schema["properties"]["tags"] == {
             "type": "array", "items": {"type": "string"},
         }
-        preview = await plan.global_functions[0].handler({}, None)
-        assert preview == {
-            "status": "preview_required", "source": "mcp", "tool": "lookup",
-        }
+        handler_task = asyncio.create_task(plan.global_functions[0].handler(
+            {"filter": {"tags": []}}, None,
+        ))
+        while plan.preview.snapshot() is None:
+            await asyncio.sleep(0)
+        pending = plan.preview.snapshot()
+        response = {"isError": False, "structuredContent": {"found": True}, "content": []}
+        plan.preview.submit(
+            pending["request_id"],
+            NativePreviewResponse(status_code=200, data=response),
+        )
+        preview = await handler_task
+        assert preview == response
         assert "reserve" not in plan.runtime["read_only_global_tools"]
         from botelier.voice.flows.native_text_host import NativeTextHost
 
@@ -156,6 +181,7 @@ def test_native_simulator_exposes_only_scoped_readonly_mcp_preview_tools():
             api_keys={"openai_api_key": "offline-test-only"},
             session_factory=records.session,
             global_functions=plan.global_functions,
+            preview=plan.preview,
         )
         try:
             host._build_pipeline()

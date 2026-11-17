@@ -101,7 +101,9 @@ class NativeToolActionHandler:
         ):
             return self._failure("confirmation_required")
         if self.runner.preview_only:
-            return self._failure("preview_required")
+            return await self._map_preview_sample(
+                node, source_config, mappings, writing,
+            )
 
         claim = None
         if writing:
@@ -183,7 +185,9 @@ class NativeToolActionHandler:
         ):
             return self._failure("confirmation_required")
         if self.runner.preview_only:
-            return self._failure("preview_required")
+            return await self._map_preview_sample(
+                node, source_config, mappings, writing,
+            )
 
         claim = None
         if writing:
@@ -433,6 +437,29 @@ class NativeToolActionHandler:
         ):
             return self._failure("effect_outcome_unknown")
         return self._failure("tool_operation_rejected")
+
+    async def _map_preview_sample(self, node, source_config, mappings, writing):
+        from botelier.services.action_executor import ActionExecutionResult
+        from botelier.services.integration_client import APIErrorType
+        from botelier.voice.flows.native_actions import NativeActionResult
+
+        sample = await self.runner._request_preview(node, "tool")
+        if isinstance(sample, NativeActionResult):
+            return sample
+        self.runner.preview.record_effect("tool_api", node.node_id)
+        error_name = sample.error_type
+        if error_name is None:
+            error_type = APIErrorType.SUCCESS
+        else:
+            try:
+                error_type = APIErrorType(error_name)
+            except ValueError:
+                error_type = APIErrorType.UNKNOWN
+        result = ActionExecutionResult(
+            success=sample.success, status_code=sample.status_code,
+            data=sample.data, error_type=error_type,
+        )
+        return self._map_result(result, source_config, mappings, writing)
 
     def _failure(self, reason, branch="error"):
         from botelier.voice.flows.native_actions import _failure

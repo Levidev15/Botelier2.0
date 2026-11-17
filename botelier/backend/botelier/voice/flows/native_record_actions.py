@@ -112,6 +112,99 @@ class NativeRecordActionStore:
         finally:
             self._quiet(db, "close")
 
+    def prepare_preview(self, setting, facts, prior=None):
+        """Render and validate an in-memory record without requiring a CallLog."""
+        from botelier.models.record_type import RecordType
+        from botelier.services.request_templates import render_content_template
+
+        db = self.session_factory()
+        try:
+            try:
+                type_id = _uuid(setting.get("recordTypeId"))
+            except (TypeError, ValueError, AttributeError):
+                raise LookupError("record_type_unavailable") from None
+            account_id, _property_id = self._scope_ids()
+            record_type = db.query(RecordType).filter(
+                RecordType.id == type_id,
+                RecordType.account_id == account_id,
+                RecordType.is_active.is_(True),
+            ).first()
+            if record_type is None:
+                raise LookupError("record_type_unavailable")
+            fields = record_type.fields or []
+            definitions = {
+                field.get("key"): field for field in fields
+                if isinstance(field, dict)
+            }
+            if len(definitions) != len(fields):
+                raise ValueError("record_schema_invalid")
+            mapping = setting.get("mapping") or {}
+            if not isinstance(mapping, dict) or set(mapping) - set(definitions):
+                raise ValueError("record_field_invalid")
+            values = {}
+            for key, template in mapping.items():
+                if not isinstance(template, str):
+                    raise ValueError("record_value_invalid")
+                exact = _TEMPLATE_TOKEN.fullmatch(template)
+                if exact:
+                    variable = exact.group(1)
+                    if variable not in facts:
+                        raise ValueError("record_value_missing")
+                    value = facts[variable]
+                else:
+                    value = render_content_template(
+                        template, facts, media_type="text/plain",
+                    )
+                _validate_field(definitions[key], value)
+                values[key] = value
+            status = None
+            if setting.get("status") is not None:
+                exact = _TEMPLATE_TOKEN.fullmatch(setting["status"])
+                if exact:
+                    if exact.group(1) not in facts:
+                        raise ValueError("record_status_missing")
+                    status = facts[exact.group(1)]
+                else:
+                    status = render_content_template(
+                        setting["status"], facts, media_type="text/plain",
+                    )
+                allowed = {
+                    item.get("value") for item in record_type.status_options or []
+                    if isinstance(item, dict) and isinstance(item.get("value"), str)
+                }
+                if status not in allowed:
+                    raise ValueError("record_status_invalid")
+
+            source_node_id = setting.get("updateSourceNodeId")
+            if source_node_id:
+                if (
+                    not isinstance(prior, dict)
+                    or prior.get("record_type_id") != str(type_id)
+                    or not isinstance(prior.get("data"), dict)
+                ):
+                    return None
+                final_data = dict(prior["data"])
+                final_data.update(values)
+                final_status = prior.get("status") if status is None else status
+                _validate_record_state(
+                    fields, final_data, final_status,
+                    record_type.status_options or [],
+                )
+            else:
+                final_data = values
+                final_status = status
+                _validate_record_state(
+                    fields, final_data, final_status,
+                    record_type.status_options or [],
+                )
+            return {
+                "record_type_id": str(type_id),
+                "data": final_data,
+                "status": final_status,
+            }
+        finally:
+            self._quiet(db, "close")
+
     def _create(self, node_id, setting, data, status, call_log_id, assistant_id):
         from botelier.models.assistant import Assistant
         from botelier.models.call_log import CallLog
