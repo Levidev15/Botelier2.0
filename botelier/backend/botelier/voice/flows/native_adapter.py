@@ -1243,6 +1243,35 @@ class NativeFlowAdapter:
             self._outcome = "failed"
             self._failure_reason = result.failure_reason or "terminal_rejected"
 
+    def observe_terminal_result(self, node_id, result):
+        """Record only a matching deferred host result for the active terminal.
+
+        A transfer's immediate Twilio acceptance is not proof that the human
+        destination answered. Unconfirmed outcomes also remain pending so the
+        host cannot present them as safely retryable or completed.
+        """
+        if (
+            not self._is_open()
+            or self._active_node_id != node_id
+            or self._status != "terminal_pending"
+            or not isinstance(result, dict)
+        ):
+            return False
+        status = result.get("status")
+        if status == "transferred":
+            self._outcome = "carrier_accepted_pending"
+            self._failure_reason = None
+        elif status == "unconfirmed":
+            self._outcome = "unconfirmed"
+            self._failure_reason = None
+        elif status in {"failed", "skipped", "error"}:
+            self._status = "terminal_failed"
+            self._outcome = "failed"
+            self._failure_reason = "transfer_failed"
+        else:
+            return False
+        return True
+
     async def _after_guided_message(self, action, manager):
         node_id = action.get("node_id")
         if (

@@ -4,33 +4,48 @@ import copy
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import guard
+
 from lifecycle_io import CALL_SID
 from lifecycle_support import OfflineCall
 from node_contract_io import (
-    ACCOUNT, CONNECTION, PROPERTY, ActionRecords, CatalogueRecords, flow_config,
-    synthetic_integration,
+    ACCOUNT, CONNECTION, PROPERTY, ActionRecords, CatalogueRecords,
+    CatalogueSession, flow_config, synthetic_integration,
 )
-from pilot_io import PilotProviders, pilot_config
+from pilot_io import PilotProviders
 
 
-TOOL_ID = "offline-flow"
-TOOL_SET_ID = "offline-flow-tool-set"
-VERSION_ID = "offline-published-version"
+TOOL_ID = "00000000-0000-0000-0000-000000000104"
+TOOL_SET_ID = "00000000-0000-0000-0000-000000000108"
+VERSION_ID = "00000000-0000-0000-0000-000000000109"
+
+
+class NativeDevCatalogueSession(CatalogueSession):
+    def first(self):
+        if self.closed:
+            guard.deny("closed_native_dev_catalogue_query")
+        if self.model == "Tool":
+            return self.records.rows["Tool"][0]
+        return super().first()
 
 
 class NativeDevRecords(CatalogueRecords):
     def __init__(
         self, *, extra_tool=False, with_mcp=False, bad_contract=False,
-        wrong_ownership=None, missing_version=False, unpublished_version=False,
-        wrong_selection=False,
+        with_global_prompt=False, wrong_ownership=None, missing_version=False,
+        unpublished_version=False, wrong_selection=False,
     ):
         super().__init__()
         from botelier.models.flow_version import FlowVersionStatus
         from botelier.models.tool import ToolType
 
-        config = pilot_config()
+        config = flow_config(source="custom", presentation=True, narration=False)
+        if with_global_prompt:
+            config["globalPrompt"] = (
+                "Keep the caller's requested availability constraints intact."
+            )
         if bad_contract:
-            config["globalPrompt"] = "Unsupported private global guidance."
+            config["unknownPrivatePrompt"] = "Reject unknown editor fields."
         tool = SimpleNamespace(
             id=TOOL_ID, name="fixture", description="Fixture flow",
             tool_type=ToolType.FLOW, config=copy.deepcopy(config),
@@ -49,8 +64,10 @@ class NativeDevRecords(CatalogueRecords):
         if extra_tool:
             self.rows["Tool"].append(SimpleNamespace(
                 id="offline-extra-tool", name="extra", description="Extra tool",
-                tool_type=ToolType.API_REQUEST, config={}, tool_set_id=TOOL_SET_ID,
-                account_id=None, is_active="true",
+                tool_type=ToolType.FLOW, config=copy.deepcopy(config),
+                tool_set_id=TOOL_SET_ID, account_id=None, is_active="true",
+                published_version_id=None, llm_provider=None, llm_model=None,
+                llm_temperature=None, llm_max_tokens=None,
             ))
         self.rows.update({
             "ToolSet": SimpleNamespace(id=TOOL_SET_ID, account_id=ACCOUNT),
@@ -82,6 +99,11 @@ class NativeDevRecords(CatalogueRecords):
             property_id=PROPERTY, assistant_id=self.assistant.id,
         )
 
+    def session(self):
+        session = NativeDevCatalogueSession(self)
+        self.sessions.append(session)
+        return session
+
 
 class _SessionRouter:
     """Route native action reads to action fakes, all host reads to records."""
@@ -94,18 +116,25 @@ class _SessionRouter:
         self.records = records
         self.actions = actions
         self.delegate = None
+        self.delegates = {}
 
     def query(self, model):
-        self.delegate = (
-            self.actions.session()
-            if model.__name__ in self._ACTION_MODELS
-            else self.records.session()
+        store = (
+            "actions" if model.__name__ in self._ACTION_MODELS else "records"
         )
+        self.delegate = self.delegates.get(store)
+        if self.delegate is None:
+            self.delegate = (
+                self.actions.session()
+                if store == "actions" else self.records.session()
+            )
+            self.delegates[store] = self.delegate
         return self.delegate.query(model)
 
     def close(self):
-        if self.delegate is not None:
-            return self.delegate.close()
+        for delegate in self.delegates.values():
+            if not delegate.closed:
+                delegate.close()
 
     def __getattr__(self, name):
         if self.delegate is None:
@@ -123,8 +152,9 @@ class NativeDevVoiceCall(OfflineCall):
 
     def __init__(
         self, *, native_enabled=True, extra_tool=False, with_mcp=False,
-        bad_contract=False, providers=None, handler=None, wrong_ownership=None,
-        missing_version=False, unpublished_version=False, wrong_selection=False,
+        bad_contract=False, with_global_prompt=False, providers=None, handler=None,
+        wrong_ownership=None, missing_version=False, unpublished_version=False,
+        wrong_selection=False,
         prewarmed=False, missing_call_log=False,
     ):
         module = __import__("botelier.voice.call_handler", fromlist=["CallHandler"])
@@ -145,10 +175,12 @@ class NativeDevVoiceCall(OfflineCall):
                         "arguments": '{"query":"standard"}',
                     },
                 }]},
+                "The selected fixture is ready.",
             ]),
         )
         self.records = NativeDevRecords(
             extra_tool=extra_tool, with_mcp=with_mcp, bad_contract=bad_contract,
+            with_global_prompt=with_global_prompt,
             wrong_ownership=wrong_ownership, missing_version=missing_version,
             unpublished_version=unpublished_version, wrong_selection=wrong_selection,
         )

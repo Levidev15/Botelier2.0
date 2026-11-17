@@ -846,6 +846,83 @@ def test_transfer_pre_message_precedes_terminal_callback_and_is_not_completion_p
     asyncio.run(scenario())
 
 
+def test_live_voice_terminal_bridge_maps_end_transfer_and_deferred_transfer_result():
+    async def scenario():
+        from botelier.voice.flows.native_voice_host import _terminal_handler
+
+        class Mapper:
+            def __init__(self):
+                self.tool = None
+                self.callback = None
+
+            def _map_end_call(self, tool):
+                self.tool = tool
+
+                async def end_handler(_params):
+                    return None
+
+                return {}, end_handler
+
+            def _map_transfer_call(self, tool):
+                self.tool = tool
+
+                async def transfer_handler(params):
+                    self.callback = params.result_callback
+
+                return {}, transfer_handler
+
+        mapper = Mapper()
+        compiled = compile_simple_flow()
+        call = GraphCall(compiled)
+        terminal = _terminal_handler(mapper, call.llm, call.worker)
+        terminal.adapter = call.adapter
+        call.adapter.terminal_handler = terminal
+        await call.adapter.start()
+        call.user_turn("Morgan")
+        schema, = call.worker.tools.values()
+        await call.invoke_schema(schema, {"name": "Morgan"})
+
+        assert mapper.tool.name == "native_end_done"
+        assert mapper.tool.config == {"goodbye_message": "Thanks, Morgan."}
+        assert call.adapter.snapshot()["status"] == "terminal_pending"
+        assert call.adapter.snapshot()["completed"] is False
+        assert all(
+            getattr(frame, "text", None) != "Thanks, Morgan."
+            for frame in call.worker.frames
+        )
+        await call.adapter.close()
+
+        mapper = Mapper()
+        call = GraphCall(compile_transfer_flow())
+        terminal = _terminal_handler(mapper, call.llm, call.worker)
+        terminal.adapter = call.adapter
+        call.adapter.terminal_handler = terminal
+        await call.adapter.start()
+        call.user_turn("human")
+        schema, = call.worker.tools.values()
+        await call.invoke_schema(schema, {"request": "human"})
+
+        assert mapper.tool.name == "native_transfer_transfer"
+        assert mapper.tool.config == {
+            "phone_number": "+15555550100",
+            "pre_transfer_message": "Connecting you to the fixture team.",
+            "transfer_mode": "warm",
+        }
+        assert call.adapter.snapshot()["status"] == "terminal_pending"
+        assert all(
+            getattr(frame, "text", None) != "Connecting you to the fixture team."
+            for frame in call.worker.frames
+        )
+        await mapper.callback({"status": "failed"})
+        snapshot = call.adapter.snapshot()
+        assert snapshot["status"] == "terminal_failed"
+        assert snapshot["outcome"] == "failed"
+        assert snapshot["failure_reason"] == "transfer_failed"
+        await call.adapter.close()
+
+    asyncio.run(scenario())
+
+
 def test_stale_schema_cannot_mutate_facts_after_native_transition():
     async def scenario():
         from botelier.voice.flows.native_execution import NativeTerminalResult

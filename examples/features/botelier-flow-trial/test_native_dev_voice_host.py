@@ -105,8 +105,9 @@ def test_prewarmed_call_uses_pinned_published_graph_not_tool_snapshot():
             await call.wait_until(lambda: call.started.is_set())
             adapter = call.handler.native_flow_hosts[CALL_SID]
             call.adapter = adapter
-            assert adapter.compiled.query.node_id == "query"
-            assert adapter.compiled.query.prompt == "Which fixture?"
+            query = adapter.compiled.node("query")
+            assert query.node_id == "query"
+            assert query.data()["slot"]["prompt"] == "Which fixture?"
             assert adapter.compiled.identity.flow_version_id == VERSION_ID
             assert not call.handler.call_mappers
 
@@ -120,6 +121,52 @@ def test_prewarmed_call_uses_pinned_published_graph_not_tool_snapshot():
             ))
             assert adapter.manager.current_node == "choice"
             assert call.handler.call_mappers == {}
+            await call.finish("graceful_end")
+            call.assert_clean()
+
+    asyncio.run(scenario())
+
+
+def test_actual_voice_selects_the_explicit_published_flow_from_multiple_assignments():
+    async def scenario():
+        from botelier.voice.flows.native_adapter import NativeFlowAdapter
+
+        providers = PilotProviders([
+            {
+                "tool_calls": [{
+                    "index": 0, "id": "multi-flow-query", "type": "function",
+                    "function": {
+                        "name": "collect_query",
+                        "arguments": '{"query":"standard"}',
+                    },
+                }],
+            },
+            "The selected fixture is ready.",
+        ])
+        async with NativeDevVoiceCall(
+            extra_tool=True, with_global_prompt=True, providers=providers,
+        ) as call:
+            await call.wait_until(lambda: call.started.is_set())
+            adapter = call.handler.native_flow_hosts[CALL_SID]
+            assert isinstance(adapter, NativeFlowAdapter)
+            assert adapter.compiled.identity.tool_id == TOOL_ID
+            assert adapter.compiled.identity.flow_version_id == VERSION_ID
+            await call.wait_until(lambda: (
+                adapter._started and "Which fixture?" in speech(call)
+            ))
+            await call.providers.user_turn("Check the standard fixture.")
+            await call.wait_until(lambda: (
+                PRESENTATION in speech(call)
+                and len(call.providers.business_requests) == 1
+            ))
+            assert adapter.manager.current_node == "choice"
+            assert len(call.providers.business_requests) == 1
+            assert any(
+                message.get("content")
+                == "Keep the caller's requested availability constraints intact."
+                for request in call.providers.requests
+                for message in request.get("messages", [])
+            )
             await call.finish("graceful_end")
             call.assert_clean()
 
@@ -176,15 +223,14 @@ def test_native_start_is_independent_of_missing_call_log_and_keeps_native_tools(
 @pytest.mark.parametrize(
     "resources,expected_code",
     [
-        ({"extra_tool": True}, "native_dev_resources"),
         ({"with_mcp": True}, "native_dev_resources"),
-        ({"bad_contract": True}, "global_instructions"),
+        ({"bad_contract": True}, "definition_field"),
         ({"wrong_ownership": "tool_set"}, "native_dev_ownership"),
         ({"wrong_ownership": "property"}, "native_dev_ownership"),
         ({"wrong_ownership": "tool"}, "native_dev_ownership"),
         ({"missing_version": True}, "native_dev_published_version"),
         ({"unpublished_version": True}, "native_dev_published_version"),
-        ({"wrong_selection": True}, "native_dev_selection"),
+        ({"wrong_selection": True}, "native_dev_resources"),
     ],
 )
 def test_unsupported_native_resources_and_graphs_fail_before_worker_creation(

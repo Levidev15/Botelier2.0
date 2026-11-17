@@ -33,3 +33,33 @@ Exact guarded command:
   --package-root /home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/pipecat \
   --tests examples/features/botelier-flow-trial/test_native_graph_text_host.py
 Result: 5 passed; APPLICATION_GUARD_BLOCKED_ATTEMPTS=0.
+
+Task 5 actual voice-runtime milestone
+
+Implementation:
+- CallHandler now constructs NativeFlowAdapter for explicitly selected,
+  published native graphs rather than the pilot-only adapter. It selects the
+  configured FLOW by native_flow_tool_id while preserving unrelated assigned
+  tools, uses the authoritative published FlowVersion, and retains the
+  call-owned session/property/identity fences.
+- The actual voice host creates a voice-scoped NativeActionRunner only for
+  graphs that contain action nodes; function-mapper end/transfer primitives
+  handle terminal speech, playback marks, and carrier work.
+- Deferred transfer outcomes update the matching pending native terminal.
+  Carrier acceptance remains pending and is not reported as a connected human;
+  failed outcomes settle as terminal_failed. End speech remains owned by the
+  existing mapper primitive, not duplicated by the adapter.
+- Native Flow globalPrompt is admitted and included in actual provider context.
+  Unknown saved graph fields still fail before pipeline creation.
+- Native multi-tool development fixtures now use valid scoped IDs and stable
+  per-store sessions, so scoped native action execution is tested without
+  broadening real I/O or weakening lifecycle guards.
+
+Guarded verification:
+  lifecycle_guard.py --tests test_native_dev_voice_host.py
+                  test_native_graph_runtime.py
+  Result: 46 passed; APPLICATION_GUARD_BLOCKED_ATTEMPTS=0.
+  Python syntax compilation passed for the changed runtime and fixture files.
+
+The deprecation warnings are from the installed current Pipecat APIs and are
+unrelated to this change.

@@ -35,7 +35,7 @@ from .agent import VoiceAgentConfig
 from .engine import VoiceEngineFactory, is_external_vad_effectively_enabled
 from .function_mapper import FunctionMapper
 from .flows.native_dev_host import (
-    NativeDevAdmissionError, NativeFlowDevPolicy, apply_native_pilot_context,
+    NativeDevAdmissionError, NativeFlowDevPolicy, apply_native_flow_context,
     ensure_native_dev_resources, prepare_native_dev_selection, redacted_reference,
 )
 from .greeting_cache import get_or_generate_greeting_audio
@@ -479,6 +479,8 @@ class CallHandler:
         _llm_prewarm_task = None
         _native_selection = None
         _native_adapter = None
+        _native_mapper = None
+        _native_action_runner = None
         try:
             logger.info(f"📞 Call {call_sid}: {to_number}")
 
@@ -757,13 +759,6 @@ class CallHandler:
                         mcp_connection_data=mcp_connection_data,
                         mcp_enabled_tools=mcp_enabled_tools,
                     )
-                    if len(tools) != 1:
-                        if not (
-                            prewarm_bundle is not None
-                            and prewarm_bundle.assistant is not None
-                        ):
-                            raise NativeDevAdmissionError("native_dev_resources")
-
                     from ..models.flow_version import FlowVersion, FlowVersionStatus
                     from ..models.tool import Tool
                     from ..models.tool_set import ToolSet
@@ -781,10 +776,17 @@ class CallHandler:
                             )
                             .all()
                         )
-                    if len(native_tools) != 1:
+                    _selected_tool_id = str(
+                        _native_call_settings.get("native_flow_tool_id") or "",
+                    )
+                    _selected_tools = [
+                        item for item in native_tools
+                        if str(getattr(item, "id", "") or "") == _selected_tool_id
+                    ]
+                    if len(_selected_tools) != 1:
                         raise NativeDevAdmissionError("native_dev_resources")
 
-                    native_tool = native_tools[0]
+                    native_tool = _selected_tools[0]
                     _native_tool_set = (
                         db.query(ToolSet)
                         .filter(ToolSet.id == _native_assistant.tool_set_id)
@@ -1166,11 +1168,11 @@ class CallHandler:
             _flow_executors = _flow_mapper.get_flow_executors() if _flow_mapper else []
             _prompt_now = datetime.now(timezone.utc)
             if _native_selection is not None:
-                apply_native_pilot_context(
+                apply_native_flow_context(
                     config, assistant=assistant, tool=_native_selection.tool,
                     now=_prompt_now,
                 )
-                logger.info("native_dev_flow_prompt_prepared engine=NativePilotAdapter")
+                logger.info("native_dev_flow_prompt_prepared engine=NativeFlowAdapter")
             elif _flow_executors:
                 config.runtime_assistant_prompt = config.system_prompt
                 config.runtime_flow_personas = [
@@ -1406,19 +1408,37 @@ class CallHandler:
             )
 
             if _native_selection is not None:
-                from .flows.pilot_adapter import NativePilotAdapter
+                from .flows.native_voice_host import create_native_voice_runtime
 
-                _native_adapter = NativePilotAdapter(
-                    _native_selection.compiled,
+                _account_name = (
+                    prewarm_bundle.account_name
+                    if prewarm_bundle is not None and prewarm_bundle.assistant is not None
+                    else getattr(_call_acct, "name", None)
+                )
+                (
+                    _native_adapter,
+                    _native_mapper,
+                    _native_action_runner,
+                ) = create_native_voice_runtime(
+                    _native_selection,
+                    call_handler=self,
                     llm=llm,
                     worker=task,
                     context_aggregator=context_aggregator,
+                    call_sid=call_sid,
+                    stream_sid=stream_sid,
+                    from_number=from_number,
+                    to_number=to_number,
+                    twilio_account_sid=hotel_twilio_sid,
+                    twilio_auth_token=hotel_twilio_token,
+                    account_name=_account_name,
+                    assistant_timezone=config.timezone,
                     session_factory=SessionLocal,
                 )
                 if _capture_is_current():
                     self.native_flow_hosts[call_sid] = _native_adapter
                 logger.info(
-                    "native_dev_flow_selected engine=NativePilotAdapter "
+                    "native_dev_flow_selected engine=NativeFlowAdapter "
                     "tool_ref={} flow_version_ref={}",
                     redacted_reference(_native_selection.tool.id),
                     redacted_reference(_native_selection.compiled.identity.flow_version_id),
@@ -1427,10 +1447,11 @@ class CallHandler:
             # Link the TTS completion watcher, TTS service, and mark watcher to the
             # FunctionMapper so terminal handlers can use context-ID-bound callbacks
             # (immune to Deepgram's spurious mid-turn BotStoppedSpeakingFrame).
-            if call_sid in self.call_mappers:
-                self.call_mappers[call_sid].set_tts_completion_watcher(tts_completion_watcher)
-                self.call_mappers[call_sid].set_twilio_mark_watcher(twilio_mark_watcher)
-                self.call_mappers[call_sid].set_tts_service(tts_service)
+            _voice_mapper = self.call_mappers.get(call_sid) or _native_mapper
+            if _voice_mapper is not None:
+                _voice_mapper.set_tts_completion_watcher(tts_completion_watcher)
+                _voice_mapper.set_twilio_mark_watcher(twilio_mark_watcher)
+                _voice_mapper.set_tts_service(tts_service)
 
             # Store the usage observer so _save_call_transcript can read accumulated
             # LLM token counts, TTS chars, and model names at call teardown.
@@ -1593,8 +1614,8 @@ class CallHandler:
                     logger.info(f"🎙️ In-call recording task queued for {call_sid}")
 
                 # Pass the queue reference to FunctionMapper so it can log pipeline events
-                if call_sid in self.call_mappers:
-                    self.call_mappers[call_sid].set_event_queue(event_queue)
+                if _voice_mapper is not None:
+                    _voice_mapper.set_event_queue(event_queue)
 
                 # Wire event_queue to the FirstUserSpeechTracker in the pipeline
                 first_speech_tracker.set_event_queue(event_queue)
@@ -1973,6 +1994,14 @@ class CallHandler:
                     )
                 if self.native_flow_hosts.get(call_sid) is _native_adapter:
                     self.native_flow_hosts.pop(call_sid, None)
+            if _native_action_runner is not None:
+                try:
+                    await _native_action_runner.close()
+                except Exception as _native_action_close_error:
+                    logger.warning(
+                        "native_dev_action_runner_close_failed category={}",
+                        type(_native_action_close_error).__name__,
+                    )
             if (
                 _native_start_entry is not None
                 and self.native_flow_start_tasks.get(call_sid) is _native_start_entry
