@@ -487,6 +487,7 @@ class CallHandler:
         _native_adapter = None
         _native_mapper = None
         _native_action_runner = None
+        _native_action_runners = {}
         try:
             logger.info(f"📞 Call {call_sid}: {to_number}")
 
@@ -1025,24 +1026,36 @@ class CallHandler:
                     )
                 from .flows.native_actions import NativeActionRunner
 
-                _native_action_runner = NativeActionRunner(
-                    _native_selection.compiled, lambda: SessionLocal(),
-                    execution_mode="execute", channel="voice",
+                for _flow_id, _flow_entry in _native_flow_catalogue.items():
+                    _flow_compiled = _flow_entry["compiled"]
+                    _flow_runner = NativeActionRunner(
+                        _flow_compiled, lambda: SessionLocal(),
+                        execution_mode="execute", channel="voice",
+                    )
+                    _native_action_runners[_flow_id] = _flow_runner
+                _native_action_runner = _native_action_runners.get(
+                    str(_native_selection.compiled.identity.tool_id),
                 )
-                for node in _native_selection.compiled.nodes:
-                    if node.type not in {"api_request", "capability"}:
-                        continue
-                    action = node.data().get("api", {})
-                    if action.get("apiSource") != "mcp":
-                        continue
-                    try:
-                        await asyncio.to_thread(
-                            _native_action_runner.is_mcp_tool_read_only,
-                            action.get("mcpConnectionId"),
-                            action.get("mcpToolName"),
-                        )
-                    except Exception:
-                        raise NativeDevAdmissionError("native_dev_resources") from None
+                if _native_action_runner is None:
+                    raise NativeDevAdmissionError("native_action_runner_scope")
+                for _flow_id, _flow_entry in _native_flow_catalogue.items():
+                    _flow_runner = _native_action_runners[_flow_id]
+                    for node in _flow_entry["compiled"].nodes:
+                        if node.type not in {"api_request", "capability"}:
+                            continue
+                        action = node.data().get("api", {})
+                        if action.get("apiSource") != "mcp":
+                            continue
+                        try:
+                            await asyncio.to_thread(
+                                _flow_runner.is_mcp_tool_read_only,
+                                action.get("mcpConnectionId"),
+                                action.get("mcpToolName"),
+                            )
+                        except Exception:
+                            raise NativeDevAdmissionError(
+                                "native_dev_resources",
+                            ) from None
             else:
                 function_schemas, function_handlers = self._build_function_schemas_and_handlers(
                     assistant=assistant,
@@ -1662,6 +1675,7 @@ class CallHandler:
                     assistant_timezone=config.timezone,
                     session_factory=SessionLocal,
                     action_runner=_native_action_runner,
+                    action_runners=_native_action_runners,
                     global_functions=_native_global_functions,
                     available_flows=_native_flow_catalogue,
                     recovery_snapshot=_native_recovery_snapshot,
@@ -2231,9 +2245,18 @@ class CallHandler:
                     )
                 if self.native_flow_hosts.get(call_sid) is _native_adapter:
                     self.native_flow_hosts.pop(call_sid, None)
-            if _native_action_runner is not None:
+            _runners_to_close = (
+                tuple(_native_action_runners.values())
+                if _native_action_runners else
+                ((_native_action_runner,) if _native_action_runner is not None else ())
+            )
+            _closed_runner_ids = set()
+            for _runner_to_close in _runners_to_close:
+                if id(_runner_to_close) in _closed_runner_ids:
+                    continue
+                _closed_runner_ids.add(id(_runner_to_close))
                 try:
-                    await _native_action_runner.close()
+                    await _runner_to_close.close()
                 except Exception as _native_action_close_error:
                     logger.warning(
                         "native_dev_action_runner_close_failed category={}",

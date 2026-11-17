@@ -61,7 +61,8 @@ class NativeFlowAdapter:
         self, compiled, *, llm, worker, context_aggregator, execute_action=None,
         terminal_handler=None, global_functions=(), text_observer=None,
         text_observer_timeout=5.0, today=None, direct_speech_observer=None,
-        available_flows=None, recovery_snapshot=None, snapshot_handler=None,
+        available_flows=None, action_runners=None, recovery_snapshot=None,
+        snapshot_handler=None,
     ):
         if not callable(getattr(compiled, "node", None)) or not callable(
             getattr(compiled, "next_node", None)
@@ -130,7 +131,27 @@ class NativeFlowAdapter:
         self._resume_after_effect_commit = False
         self.worker = worker
         self.context_aggregator = context_aggregator
-        self.execute_action = execute_action
+        self._default_execute_action = execute_action
+        self._action_runners = None
+        if action_runners is not None:
+            if not isinstance(action_runners, dict):
+                raise ValueError("native_action_runners")
+            validated_runners = {}
+            for flow_id, runner in action_runners.items():
+                entry = flow_catalogue.get(flow_id)
+                if (
+                    not isinstance(flow_id, str) or entry is None
+                    or getattr(runner, "compiled", None) is not entry["compiled"]
+                    or not callable(getattr(runner, "execute", None))
+                ):
+                    raise ValueError("native_action_runner_scope")
+                validated_runners[flow_id] = runner
+            for flow_id, entry in flow_catalogue.items():
+                if any(node.type in _ACTION_TYPES for node in entry["compiled"].nodes):
+                    if flow_id not in validated_runners:
+                        raise ValueError("native_action_runner_missing")
+            self._action_runners = validated_runners
+        self.execute_action = self._action_callback_for(compiled)
         self.terminal_handler = terminal_handler
         if direct_speech_observer is not None and not callable(direct_speech_observer):
             raise ValueError("native_speech_observer")
@@ -311,6 +332,7 @@ class NativeFlowAdapter:
         if not isinstance(current, str) or compiled.node(current) is None:
             raise NativeFlowRecoveryError("native_recovery_node")
         self.compiled = compiled
+        self.execute_action = self._action_callback_for(compiled)
         self._declarations_by_key = {
             declaration.key: declaration
             for declaration in compiled.variable_declarations
@@ -1044,7 +1066,22 @@ class NativeFlowAdapter:
             and (self._total_steps == 1 or self._awaiting_flow_choice)
         )
 
+    def _action_callback_for(self, compiled):
+        if self._action_runners is None:
+            return self._default_execute_action
+        tool_id = str(compiled.identity.tool_id)
+        entry = self._flow_catalogue.get(tool_id)
+        runner = self._action_runners.get(tool_id)
+        if entry is None or entry["compiled"] is not compiled:
+            raise RuntimeError("native_action_runner_scope")
+        if any(node.type in _ACTION_TYPES for node in compiled.nodes):
+            if runner is None:
+                raise RuntimeError("native_action_runner_missing")
+            return runner.execute
+        return runner.execute if runner is not None else None
+
     def _replace_compiled_flow(self, compiled, caller_values):
+        action_callback = self._action_callback_for(compiled)
         old_declarations = self._declarations_by_key
         old_types = {
             key: entry.data().get("type")
@@ -1077,6 +1114,7 @@ class NativeFlowAdapter:
             self.manager.state["facts"][key] = normalized
             carried[key] = deepcopy(normalized)
         self._caller_values = carried
+        self.execute_action = action_callback
         self._derived.clear()
         self._llm_data = {}
         self._confirmation = None

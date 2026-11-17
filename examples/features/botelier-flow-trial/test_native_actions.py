@@ -43,6 +43,21 @@ def _compiled_custom_read(identity=None):
     return compile_flow(config, identity)
 
 
+def _native_mcp_policy(db, fixture, connection_id, *, enabled, read_only):
+    from botelier.services.native_mcp_policy import protect_connection_config
+
+    return protect_connection_config(
+        {
+            "property_id": fixture.property_id,
+            "native_enabled_tools": enabled,
+            "native_read_only_tools": read_only,
+        },
+        account_id=fixture.account_id,
+        connection_id=connection_id,
+        db=db,
+    )
+
+
 def test_native_custom_api_uses_action_executor_and_exact_projection(monkeypatch):
     from native_effect_io import NativeEffectsFixture
 
@@ -131,11 +146,10 @@ def test_global_mcp_exposure_is_explicitly_read_only_and_scope_checked():
                 auth_type=MCPAuthType.NONE,
                 transport_type=MCPTransportType.STREAMABLE_HTTP,
                 is_active=True,
-                connection_config={
-                    "property_id": fixture.property_id,
-                    "native_enabled_tools": ["lookup", "reserve"],
-                    "native_read_only_tools": ["lookup"],
-                },
+                connection_config=_native_mcp_policy(
+                    db, fixture, connection_id,
+                    enabled=["lookup", "reserve"], read_only=["lookup"],
+                ),
             ))
             db.commit()
             db.close()
@@ -159,6 +173,47 @@ def test_global_mcp_exposure_is_explicitly_read_only_and_scope_checked():
                 pass
             else:
                 raise AssertionError("A disabled global MCP tool was authorized")
+
+            legacy_id = uuid.uuid4()
+            clone_id = uuid.uuid4()
+            stored_policy = db.query(MCPConnection).filter(
+                MCPConnection.id == connection_id,
+            ).first().get_connection_config()
+            db.add_all([
+                MCPConnection(
+                    id=legacy_id, account_id=uuid.UUID(fixture.account_id),
+                    name="Legacy flat self-grant",
+                    server_url="https://mcp.fixture.invalid/mcp",
+                    auth_type=MCPAuthType.NONE,
+                    transport_type=MCPTransportType.STREAMABLE_HTTP,
+                    is_active=True,
+                    connection_config={
+                        "property_id": fixture.property_id,
+                        "native_enabled_tools": ["lookup"],
+                        "native_read_only_tools": ["lookup"],
+                    },
+                ),
+                MCPConnection(
+                    id=clone_id, account_id=uuid.UUID(fixture.account_id),
+                    name="Copied sealed grant",
+                    server_url="https://mcp.fixture.invalid/mcp",
+                    auth_type=MCPAuthType.NONE,
+                    transport_type=MCPTransportType.STREAMABLE_HTTP,
+                    is_active=True,
+                    connection_config=stored_policy,
+                ),
+            ])
+            db.commit()
+            db.close()
+            for untrusted_id in (legacy_id, clone_id):
+                try:
+                    runner.is_mcp_tool_read_only(str(untrusted_id), "lookup")
+                except PermissionError:
+                    pass
+                else:
+                    raise AssertionError(
+                        "An untrusted or cross-connection MCP policy was authorized",
+                    )
             await runner.close()
 
     asyncio.run(scenario())
@@ -379,11 +434,10 @@ def test_scoped_mcp_write_requires_consent_and_replays_mapped_result():
                         "required": ["amount"],
                     },
                 }],
-                connection_config={
-                    "property_id": fixture.property_id,
-                    "native_enabled_tools": ["reserve"],
-                    "native_read_only_tools": [],
-                },
+                connection_config=_native_mcp_policy(
+                    db, fixture, connection_id,
+                    enabled=["reserve"], read_only=[],
+                ),
             ))
             db.commit()
             db.close()
@@ -423,6 +477,7 @@ def test_scoped_mcp_write_requires_consent_and_replays_mapped_result():
             compiled = compile_flow(config, fixture.identity)
             calls = []
             clients = []
+            client_configs = []
 
             class Session:
                 async def list_tools(self):
@@ -446,9 +501,10 @@ def test_scoped_mcp_write_requires_consent_and_replays_mapped_result():
                     })()
 
             class Client:
-                def __init__(self, **_kwargs):
+                def __init__(self, **kwargs):
                     self._session = Session()
                     clients.append(self)
+                    client_configs.append(kwargs["connection_config"])
 
                 async def connect(self, timeout):
                     assert timeout == 10
@@ -494,5 +550,10 @@ def test_scoped_mcp_write_requires_consent_and_replays_mapped_result():
             assert second == first
             assert calls == [("reserve", {"amount": 0})]
             assert len(clients) == 1
+            assert "_native_policy_v1" not in client_configs[0]
+            assert not {
+                "native_enabled_tools", "native_read_only_tools",
+                "property_id", "account_global",
+            } & set(client_configs[0])
 
     asyncio.run(scenario())

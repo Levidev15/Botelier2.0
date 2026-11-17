@@ -200,7 +200,9 @@ class NativeDevRecords(CatalogueRecords):
             ),
             "Property": (
                 None if wrong_ownership == "property"
-                else SimpleNamespace(id=PROPERTY, account_id=ACCOUNT)
+                else SimpleNamespace(
+                    id=PROPERTY, account_id=ACCOUNT, is_active=True,
+                )
             ),
             "MCPConnection": (
                 None if not with_mcp else SimpleNamespace(
@@ -218,11 +220,7 @@ class NativeDevRecords(CatalogueRecords):
                             "type": "object", "properties": {},
                         }},
                     ],
-                    get_connection_config=lambda: {
-                        "property_id": PROPERTY,
-                        "native_enabled_tools": ["lookup", "reserve"],
-                        "native_read_only_tools": ["lookup"],
-                    },
+                    get_connection_config=lambda: self.native_mcp_policy,
                 )
             ),
             "FlowSession": [],
@@ -239,6 +237,24 @@ class NativeDevRecords(CatalogueRecords):
             self.rows["ToolSet"].account_id = "00000000-0000-0000-0000-000000000999"
         self.assistant.mcp_connection_id = CONNECTION if with_mcp else None
         self.assistant.mcp_enabled_tools = ["lookup", "reserve"] if with_mcp else []
+        self.native_mcp_policy = {}
+        if with_mcp:
+            from botelier.services.native_mcp_policy import protect_connection_config
+
+            policy_db = self.session()
+            try:
+                self.native_mcp_policy = protect_connection_config(
+                    {
+                        "property_id": PROPERTY,
+                        "native_enabled_tools": ["lookup", "reserve"],
+                        "native_read_only_tools": ["lookup"],
+                    },
+                    account_id=ACCOUNT,
+                    connection_id=CONNECTION,
+                    db=policy_db,
+                )
+            finally:
+                policy_db.close()
         self.rows["PhoneNumber"] = SimpleNamespace(
             property_id=PROPERTY, assistant_id=self.assistant.id,
         )

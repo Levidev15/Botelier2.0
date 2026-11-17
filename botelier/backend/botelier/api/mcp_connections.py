@@ -23,6 +23,7 @@ import ipaddress
 import socket
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from uuid import UUID, uuid4
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
@@ -30,7 +31,7 @@ from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
-from botelier.auth.middleware import get_current_user
+from botelier.auth.middleware import check_account_permission, get_current_user
 from botelier.database import get_db
 from botelier.models.mcp_connection import (
     SUPPORTED_MCP_TRANSPORTS,
@@ -53,18 +54,40 @@ _BLOCKED_HOSTS = {
 }
 
 
-def _assert_account_access(current_user, account_id: str) -> None:
-    if getattr(current_user, "user_type", None) == "platform_admin":
-        return
-    memberships = getattr(current_user, "account_memberships", None) or []
-    allowed = {
-        str(getattr(m, "account_id", "")) for m in memberships if getattr(m, "is_active", False)
-    }
-    if account_id not in allowed:
-        raise HTTPException(
-            status_code=403,
-            detail="You do not have access to this account",
+def _assert_account_access(
+    current_user, account_id: str, db: Session, permission="integrations.view",
+) -> None:
+    try:
+        account_id = str(UUID(str(account_id)))
+    except (ValueError, TypeError, AttributeError):
+        raise HTTPException(status_code=400, detail="Invalid account_id") from None
+    check_account_permission(current_user, account_id, permission, db)
+
+
+def _assert_integration_manager(current_user, account_id: str, db: Session) -> None:
+    _assert_account_access(
+        current_user, account_id, db, permission="integrations.manage",
+    )
+
+
+def _protect_native_connection_config(config, *, account_id, connection_id, db):
+    from botelier.services.native_mcp_policy import protect_connection_config
+
+    try:
+        return protect_connection_config(
+            config or {}, account_id=account_id, connection_id=connection_id, db=db,
         )
+    except ValueError as exc:
+        code = str(exc)
+        status = 400
+        raise HTTPException(
+            status_code=status,
+            detail=(
+                "Invalid native MCP policy scope"
+                if code == "native_mcp_policy_scope"
+                else "Invalid native MCP policy"
+            ),
+        ) from None
 
 
 def _validate_mcp_server_url(url: str) -> None:
@@ -129,6 +152,7 @@ class MCPConnectionUpdate(BaseModel):
 class MCPConnectionTestRequest(BaseModel):
     """Request model for testing an MCP connection without saving."""
 
+    account_id: str
     server_url: str = Field(..., min_length=1)
     auth_type: str = "none"
     transport_type: str = "sse"
@@ -195,12 +219,18 @@ async def create_mcp_connection(
     data: MCPConnectionCreate, current_user=Depends(get_current_user), db: Session = Depends(get_db)
 ):
     """Create a new MCP connection."""
-    _assert_account_access(current_user, data.account_id)
+    _assert_integration_manager(current_user, data.account_id, db)
     _validate_mcp_server_url(data.server_url)
     transport_type = _validate_transport_type(data.transport_type)
     auth_type = _validate_auth_type(data.auth_type)
+    connection_id = uuid4()
+    connection_config = _protect_native_connection_config(
+        data.connection_config or {}, account_id=data.account_id,
+        connection_id=connection_id, db=db,
+    )
 
     connection = MCPConnection(
+        id=connection_id,
         account_id=data.account_id,
         name=data.name,
         description=data.description,
@@ -208,7 +238,7 @@ async def create_mcp_connection(
         server_url=data.server_url,
         auth_type=auth_type,
         status=MCPConnectionStatus.DISCONNECTED,
-        connection_config=data.connection_config or {},
+        connection_config=connection_config,
     )
 
     if data.credentials:
@@ -231,7 +261,7 @@ async def list_mcp_connections(
     db: Session = Depends(get_db),
 ):
     """List all MCP connections for an account."""
-    _assert_account_access(current_user, account_id)
+    _assert_account_access(current_user, account_id, db)
     connections = (
         db.query(MCPConnection)
         .filter(MCPConnection.account_id == account_id)
@@ -252,7 +282,7 @@ async def get_mcp_connection(
     if not connection:
         raise HTTPException(status_code=404, detail="MCP connection not found")
 
-    _assert_account_access(current_user, str(connection.account_id))
+    _assert_account_access(current_user, str(connection.account_id), db)
 
     return connection.to_dict(include_tools=True)
 
@@ -270,7 +300,21 @@ async def update_mcp_connection(
     if not connection:
         raise HTTPException(status_code=404, detail="MCP connection not found")
 
-    _assert_account_access(current_user, str(connection.account_id))
+    sensitive_update = any(
+        getattr(data, field) is not None
+        for field in (
+            "transport_type", "server_url", "auth_type", "credentials",
+            "is_active", "connection_config",
+        )
+    )
+    if sensitive_update:
+        _assert_integration_manager(
+            current_user, str(connection.account_id), db,
+        )
+    else:
+        _assert_account_access(
+            current_user, str(connection.account_id), db,
+        )
 
     if data.name is not None:
         connection.name = data.name
@@ -278,9 +322,14 @@ async def update_mcp_connection(
         connection.description = data.description
     if data.transport_type is not None:
         connection.transport_type = _validate_transport_type(data.transport_type)
+    rebind = any(
+        getattr(data, field) is not None
+        for field in ("server_url", "transport_type", "auth_type", "credentials")
+    )
     if data.server_url is not None:
         _validate_mcp_server_url(data.server_url)
         connection.server_url = data.server_url
+    if rebind:
         connection.status = MCPConnectionStatus.DISCONNECTED
         connection.discovered_tools = []
     if data.auth_type is not None:
@@ -288,7 +337,18 @@ async def update_mcp_connection(
     if data.is_active is not None:
         connection.is_active = data.is_active
     if data.connection_config is not None:
-        connection.connection_config = data.connection_config
+        connection.connection_config = _protect_native_connection_config(
+            data.connection_config,
+            account_id=connection.account_id,
+            connection_id=connection.id,
+            db=db,
+        )
+    elif rebind:
+        from botelier.services.native_mcp_policy import clear_connection_native_policy
+
+        connection.connection_config = clear_connection_native_policy(
+            connection.get_connection_config(),
+        )
     if data.credentials is not None:
         connection.set_credentials(data.credentials.model_dump(exclude_none=True))
 
@@ -310,7 +370,7 @@ async def delete_mcp_connection(
     if not connection:
         raise HTTPException(status_code=404, detail="MCP connection not found")
 
-    _assert_account_access(current_user, str(connection.account_id))
+    _assert_integration_manager(current_user, str(connection.account_id), db)
 
     db.delete(connection)
     db.commit()
@@ -330,7 +390,7 @@ async def test_existing_connection(
     if not connection:
         raise HTTPException(status_code=404, detail="MCP connection not found")
 
-    _assert_account_access(current_user, str(connection.account_id))
+    _assert_integration_manager(current_user, str(connection.account_id), db)
     _validate_mcp_server_url(connection.server_url)
     _validate_transport_type(
         connection.transport_type.value if connection.transport_type else "sse"
@@ -392,7 +452,7 @@ async def discover_tools(
     if not connection:
         raise HTTPException(status_code=404, detail="MCP connection not found")
 
-    _assert_account_access(current_user, str(connection.account_id))
+    _assert_integration_manager(current_user, str(connection.account_id), db)
     _validate_mcp_server_url(connection.server_url)
     _validate_transport_type(
         connection.transport_type.value if connection.transport_type else "sse"
@@ -446,8 +506,10 @@ async def discover_tools(
 async def test_connection_without_saving(
     data: MCPConnectionTestRequest,
     current_user=Depends(get_current_user),
+    db: Session = Depends(get_db),
 ):
     """Test an MCP connection without saving it."""
+    _assert_integration_manager(current_user, data.account_id, db)
     _validate_mcp_server_url(data.server_url)
     transport_type = _validate_transport_type(data.transport_type)
     try:

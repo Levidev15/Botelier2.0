@@ -11,7 +11,7 @@ def create_native_voice_runtime(
     selection, *, call_handler, llm, worker, context_aggregator,
     call_sid, stream_sid, from_number, to_number, twilio_account_sid,
     twilio_auth_token, account_name, assistant_timezone, session_factory,
-    action_runner=None, global_functions=(),
+    action_runner=None, action_runners=None, global_functions=(),
     available_flows=None,
     recovery_snapshot=None,
 ):
@@ -63,6 +63,7 @@ def create_native_voice_runtime(
         terminal_handler=terminal_handler,
         global_functions=global_functions,
         available_flows=available_flows,
+        action_runners=action_runners,
         recovery_snapshot=recovery_snapshot,
         snapshot_handler=recovery_store.save,
         direct_speech_observer=mapper._capture_direct_speech,

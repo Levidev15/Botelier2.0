@@ -461,44 +461,46 @@ class NativeActionRunner:
     def resolve_mcp_tool_policy(db, identity, connection_id, tool_name):
         """Resolve one tool against current account/property connection policy."""
         from botelier.models.mcp_connection import MCPConnection
+        from botelier.models.property import Property
 
         try:
             parsed_id = UUID(connection_id)
         except (ValueError, TypeError, AttributeError):
             raise LookupError("mcp_connection_not_found") from None
+        try:
+            account_id = UUID(identity.account_id)
+            property_id = UUID(identity.property_id)
+        except (ValueError, TypeError, AttributeError):
+            raise PermissionError("mcp_connection_scope") from None
+        property_row = db.query(Property).filter(
+            Property.id == property_id,
+            Property.account_id == account_id,
+            Property.is_active.is_(True),
+        ).first()
+        if property_row is None:
+            raise PermissionError("mcp_connection_scope")
         connection = db.query(MCPConnection).filter(
             MCPConnection.id == parsed_id,
-            MCPConnection.account_id == UUID(identity.account_id),
+            MCPConnection.account_id == account_id,
             MCPConnection.is_active.is_(True),
         ).first()
         if connection is None:
             raise LookupError("mcp_connection_not_found")
-        config = connection.get_connection_config() or {}
-        if not isinstance(config, dict):
-            raise PermissionError("mcp_connection_scope")
-        bound_property = config.get("property_id")
-        if bound_property is not None:
+        from botelier.services.native_mcp_policy import resolve_connection_policy
+
+        policy = resolve_connection_policy(connection)
+        if policy.property_id is not None:
             try:
-                parsed_property = UUID(str(bound_property))
+                parsed_property = UUID(policy.property_id)
                 identity_property = UUID(identity.property_id)
             except (TypeError, ValueError, AttributeError):
                 raise PermissionError("mcp_connection_scope") from None
             if parsed_property != identity_property:
                 raise PermissionError("mcp_connection_scope")
-        elif config.get("account_global") is not True:
+        elif policy.account_global is not True:
             raise PermissionError("mcp_connection_scope")
-        enabled_tools = config.get("native_enabled_tools")
-        read_only_tools = config.get("native_read_only_tools", [])
-        if (
-            not isinstance(enabled_tools, list) or len(enabled_tools) > 128
-            or any(not isinstance(name, str) or not name for name in enabled_tools)
-            or len(enabled_tools) != len(set(enabled_tools))
-            or not isinstance(read_only_tools, list) or len(read_only_tools) > 128
-            or any(not isinstance(name, str) or not name for name in read_only_tools)
-            or len(read_only_tools) != len(set(read_only_tools))
-            or set(read_only_tools) - set(enabled_tools)
-        ):
-            raise PermissionError("mcp_tool_policy")
+        enabled_tools = policy.enabled_tools
+        read_only_tools = policy.read_only_tools
         if tool_name not in enabled_tools:
             raise PermissionError("mcp_tool_disabled")
         # Server-provided readOnly annotations are intentionally ignored.
@@ -517,6 +519,7 @@ class NativeActionRunner:
 
     async def _call_mcp_tool(self, connection, tool_name, arguments):
         from botelier.services.mcp_client import MCPClient
+        from botelier.services.native_mcp_policy import public_connection_config
 
         factory = self.mcp_client_factory or MCPClient
         transport = getattr(connection.transport_type, "value", connection.transport_type)
@@ -526,7 +529,9 @@ class NativeActionRunner:
         client = factory(
             server_url=connection.server_url, auth_type=auth_type,
             credentials=connection.get_credentials(),
-            connection_config=connection.get_connection_config(),
+            connection_config=public_connection_config(
+                connection.get_connection_config(),
+            ),
             transport_type=transport,
         )
         loop = asyncio.get_running_loop()

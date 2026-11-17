@@ -94,6 +94,7 @@ class NativeTextHost:
         self._global_functions = tuple(global_functions)
         self._available_flows = available_flows
         self._action_runner = None
+        self._action_runners = {}
         self._adapter_close_timeout = _CLOSE_TIMEOUT
         self._expected_model_ends = 0
         self._api_keys = dict(api_keys)
@@ -315,15 +316,26 @@ class NativeTextHost:
                     self._function_result = deepcopy(frame.result)
             self._changed.set()
 
-        execute_action = None
-        if any(node.type in {"api_request", "capability", "save_record"} for node in self.compiled.nodes):
-            from botelier.voice.flows.native_actions import NativeActionRunner
+        from botelier.voice.flows.native_actions import NativeActionRunner
 
-            self._action_runner = NativeActionRunner(
-                self.compiled, self._session_factory,
+        compiled_flows = {
+            str(self.compiled.identity.tool_id): self.compiled,
+            **{
+                flow_id: entry["compiled"]
+                for flow_id, entry in (self._available_flows or {}).items()
+            },
+        }
+        self._action_runners = {
+            flow_id: NativeActionRunner(
+                compiled, self._session_factory,
                 execution_mode=self._execution_mode, channel="simulation",
             )
-            execute_action = self._action_runner.execute
+            for flow_id, compiled in compiled_flows.items()
+        }
+        self._action_runner = self._action_runners[
+            str(self.compiled.identity.tool_id)
+        ]
+        execute_action = self._action_runner.execute
         self.adapter = NativeFlowAdapter(
             self.compiled,
             llm=self._llm,
@@ -333,6 +345,7 @@ class NativeTextHost:
             terminal_handler=self._simulate_terminal,
             global_functions=self._global_functions,
             available_flows=self._available_flows,
+            action_runners=self._action_runners,
             text_observer=self._observer,
             text_observer_timeout=min(5.0, self._turn_timeout),
         )
@@ -648,10 +661,10 @@ class NativeTextHost:
                         await self.adapter.close()
                 except BaseException:
                     pass
-            if self._action_runner is not None:
+            for action_runner in self._action_runners.values():
                 try:
                     async with asyncio.timeout(_CLOSE_TIMEOUT):
-                        await self._action_runner.close()
+                        await action_runner.close()
                 except Exception:
                     pass
             try:
