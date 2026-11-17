@@ -248,3 +248,39 @@ def test_capability_typed_arguments_preserve_names_and_zero_in_the_actual_broker
             await runner.close()
 
     asyncio.run(scenario())
+
+
+def test_repeated_public_aliases_return_a_bounded_safe_quote_failure(monkeypatch):
+    from native_effect_io import NativeEffectsFixture
+
+    async def scenario():
+        async with NativeEffectsFixture() as fixture:
+            from botelier.voice.flows import native_quote_actions
+            from botelier.voice.flows.native_actions import NativeActionRunner
+            from botelier.voice.flows.native_graph import compile_flow
+
+            original = native_quote_actions.validate_reservation_quote
+            monkeypatch.setattr(
+                native_quote_actions, "validate_reservation_quote",
+                lambda quote, **kwargs: original(quote, **{**kwargs, "now": NOW}),
+            )
+            source, facts = quote_definition(), caller_facts()
+            facts["provider_quote"]["terms"] = "x" * 3_000
+            original(
+                facts["provider_quote"], expected=facts["selection"], now=NOW,
+                allowed_checkout_origins=configuration()["quotePolicy"]["allowedCheckoutOrigins"],
+                require_checkout_link=True,
+            )
+            source["nodes"][1]["data"]["api"]["responseMapping"].update({
+                f"public_alias_{index}": "$.public" for index in range(100)
+            })
+            compiled = compile_flow(source, fixture.identity)
+            runner = NativeActionRunner(compiled, fixture.factory)
+            result = await runner.execute(compiled.node("quote"), facts)
+            assert result.success is False
+            assert result.failure_reason == "quote_result_limits"
+            assert result.variables == {}
+            assert result.llm_data == {}
+            await runner.close()
+
+    asyncio.run(scenario())

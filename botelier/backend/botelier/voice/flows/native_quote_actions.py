@@ -2,14 +2,18 @@
 
 from dataclasses import dataclass, field
 from datetime import datetime
+import ipaddress
 import json
 import re
+import unicodedata
 
 from botelier.services.request_templates import RequestTemplateError, render_json_template
 from botelier.services.reservation_quote_contract import (
     QuoteContractError, ValidatedReservationQuote, _origin, validate_reservation_quote,
 )
-from botelier.voice.flows.native_execution import NativeActionResult, NativeConfirmation
+from botelier.voice.flows.native_execution import (
+    NativeActionResult, NativeConfirmation, copy_native_json,
+)
 from botelier.voice.flows.native_response_mapping import (
     NativeResponseMappingError, map_project_response, resolve_response_variables,
 )
@@ -17,6 +21,14 @@ from botelier.voice.flows.native_response_mapping import (
 
 _KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 _URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
+_OTHER_SCHEME = re.compile(r"(?<![A-Za-z0-9+.-])[A-Za-z][A-Za-z0-9+.-]*:\S")
+_RELATIVE_URL = re.compile(r"(?<![:/\w])//[^\s/]")
+_BARE_HOST = re.compile(
+    r"(?<![\w@.-])(?:[^\W_](?:[^\W_]|-){0,62}\.)+"
+    r"(?:[^\W\d_]{2,63}|xn--[a-z0-9-]{2,59})(?![\w.@-])", re.I,
+)
+_IPV4 = re.compile(r"(?<![\w.])(?:[0-9]{1,3}\.){3}[0-9]{1,3}(?![\d.])")
+_IPV6 = re.compile(r"\[([0-9A-Fa-f:]+)\]")
 _POLICY_FIELDS = frozenset({
     "allowedCheckoutOrigins", "requireCheckoutLink", "providerSelectedDimensions",
     "fingerprintVariable", "privateUrlVariable", "publicConfirmationFields",
@@ -249,6 +261,13 @@ def prepare_quote(
         or "private" in model_data
     ):
         raise NativeQuoteError("quote_projection_private")
+    try:
+        # Mapping aliases can duplicate a bounded public subtree. Enforce the
+        # final native boundary too, before building the detached action result.
+        copy_native_json(variables)
+        copy_native_json(model_data)
+    except (TypeError, ValueError, RecursionError, OverflowError):
+        raise NativeQuoteError("quote_result_limits") from None
     return PreparedNativeQuote(
         policy, validated,
         NativeActionResult(True, variables=variables, llm_data=model_data),
@@ -262,6 +281,25 @@ def _same(left, right):
         )
     except (TypeError, ValueError, RecursionError):
         return False
+
+
+def _has_other_link(text):
+    """Recognize extra navigable forms without changing any message data."""
+    probe = unicodedata.normalize("NFKC", text).translate(str.maketrans({
+        "\u3002": ".", "\uff0e": ".", "\uff61": ".",
+    }))
+    probe = "".join(char for char in probe if unicodedata.category(char) != "Cf")
+    if _OTHER_SCHEME.search(probe) or _RELATIVE_URL.search(probe) or _BARE_HOST.search(probe):
+        return True
+    candidates = [match.group() for match in _IPV4.finditer(probe)]
+    candidates.extend(match.group(1) for match in _IPV6.finditer(probe))
+    for candidate in candidates:
+        try:
+            ipaddress.ip_address(candidate)
+        except ValueError:
+            continue
+        return True
+    return False
 
 
 def prepare_quote_delivery(
@@ -328,6 +366,8 @@ def prepare_quote_delivery(
         or facts.get(policy.private_url_variable) != private_url
         or _URL.findall(arguments["body"]) != [private_url]
         or _contains(arguments.get("subject", ""), private_url)
+        or _has_other_link(arguments["body"].replace(private_url, "", 1))
+        or _has_other_link(arguments.get("subject", ""))
     ):
         raise NativeQuoteError("quote_delivery_url")
     return PreparedQuoteDelivery(

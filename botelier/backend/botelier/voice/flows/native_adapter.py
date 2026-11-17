@@ -723,14 +723,24 @@ class NativeFlowAdapter:
 
     def _carry_private(self, value):
         if isinstance(value, str) and value.strip():
+            from botelier.voice.flows.native_quote_graph import assert_quote_payload_safe
+
+            assert_quote_payload_safe(self.compiled, self.facts, value)
             self._pending_instructions.append(value.strip())
 
     def _render(self, template, *, speech=True):
-        return render_text(template, self.facts, speech=speech)
+        from botelier.voice.flows.native_quote_graph import assert_quote_payload_safe
+
+        text = render_text(template, self.facts, speech=speech)
+        assert_quote_payload_safe(self.compiled, self.facts, text)
+        return text
 
     async def _speak(self, text):
         if not text:
             return
+        from botelier.voice.flows.native_quote_graph import assert_quote_payload_safe
+
+        assert_quote_payload_safe(self.compiled, self.facts, text)
         if not self._is_open():
             raise RuntimeError("native_flow_closed")
         if self._direct_speech_observer is not None:
@@ -882,6 +892,16 @@ class NativeFlowAdapter:
             }],
             "respond_immediately": respond_immediately,
         }
+        from botelier.voice.flows.native_quote_graph import assert_quote_payload_safe
+
+        assert_quote_payload_safe(self.compiled, self.facts, messages)
+        for function in functions:
+            assert_quote_payload_safe(
+                self.compiled, self.facts, (
+                    getattr(function, "description", None),
+                    getattr(function, "properties", None),
+                ),
+            )
         if guided and node.type == "message" and not data.get("waitForResponse", True):
             config["post_actions"] = [{
                 "type": "native_after_guided", "handler": self._after_guided_message,
@@ -1814,6 +1834,20 @@ class NativeFlowAdapter:
         valid_keys = set(self._declarations_by_key)
         if set(mapped_values) - valid_keys:
             self._fail("action_mapping")
+            return None, "error"
+        from botelier.voice.flows.native_quote_actions import NativeQuoteError
+        from botelier.voice.flows.native_quote_graph import assert_quote_payload_safe
+
+        try:
+            assert_quote_payload_safe(
+                self.compiled, {**self.facts, **mapped_values},
+                result.llm_data if result.success else {},
+                mapped_variables=mapped_values,
+            )
+        except NativeQuoteError as exc:
+            self._llm_data = {}
+            self.manager.state["native_llm_data"] = {}
+            self._fail(exc.code)
             return None, "error"
         self.manager.state["facts"].update(mapped_values)
         self._derived.update(mapped_values)

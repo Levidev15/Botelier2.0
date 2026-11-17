@@ -80,6 +80,7 @@ _API_FIELDS = frozenset({
     "integrationSlug", "endpointId", "endpointName", "autoMappingSource",
     "queryParamOverrides", "path", "responseVariables",
     "mcpConnectionId", "mcpToolName", "argumentsTemplate", "toolId", "quotePolicy",
+    "quoteDelivery",
 })
 _SLOT_FIELDS = frozenset({
     "id", "order", "variableKey", "prompt", "type", "validation",
@@ -466,6 +467,20 @@ def _validate_api(
     )
     if not isinstance(source, str) or source not in allowed_sources:
         _fail("api_source", node_id, "apiSource")
+    if "quoteDelivery" in api:
+        delivery = api["quoteDelivery"]
+        if (
+            source != "tool" or not isinstance(delivery, dict)
+            or set(delivery) != {"quoteNodeId", "recipientVariable"}
+        ):
+            _fail("quote_delivery", node_id, "quoteDelivery")
+        _identifier(delivery.get("quoteNodeId"), _NODE_ID, "quote_delivery", node_id, "quoteNodeId")
+        recipient = _identifier(
+            delivery.get("recipientVariable"), _VARIABLE, "quote_delivery", node_id,
+            "recipientVariable",
+        )
+        if recipient not in declared:
+            _fail("quote_delivery", node_id, "recipientVariable")
     integration_bindings = {
         "integrationId", "integrationSlug", "endpointId", "endpointName",
     }
@@ -1198,6 +1213,16 @@ def compile_flow(config: dict, identity: PilotIdentity) -> CompiledFlow:
     compiled_edges, outgoing = _validate_edges(edges, by_id)
     _validate_topology(nodes, by_id, compiled_edges, outgoing, initial_id)
     _validate_record_update_bindings(nodes, by_id, compiled_edges)
+    from botelier.voice.flows.native_quote_graph import validate_quote_graph
+    from botelier.voice.flows.native_quote_actions import NativeQuoteError
+
+    try:
+        validate_quote_graph(
+            nodes, compiled_edges, initial_id,
+            global_prompt=snapshot.get("globalPrompt", snapshot.get("global_prompt")),
+        )
+    except NativeQuoteError as exc:
+        _fail(exc.code)
     total_io = config_bytes + sum(
         len(node._data_json.encode("utf-8")) for node in compiled_nodes
     )

@@ -230,6 +230,49 @@ def test_prepares_only_the_validated_private_url_exception_not_a_second_consent_
     assert prepared.validated.fingerprint == facts["quote_fingerprint"]
 
 
+@pytest.mark.parametrize("extra", [
+    "ftp://untrusted.example/file",
+    "javascript:alert(1)",
+    "mailto:billing@untrusted.example",
+    "tel:+14155550102",
+    "data:text/html,untrusted",
+    "//untrusted.example/review",
+    "untrusted.example/review",
+    "www.untrusted.example",
+    "https://another.example/review",
+    "127.0.0.1/review",
+    "ｊａｖａｓｃｒｉｐｔ：alert(1)",
+])
+@pytest.mark.parametrize("field", ["body", "subject"])
+def test_quote_delivery_rejects_additional_schemes_relative_and_bare_links(extra, field):
+    from botelier.voice.flows.native_quote_actions import (
+        NativeQuoteError, prepare_quote_delivery,
+    )
+
+    config, facts, confirmation, arguments = confirmed_delivery()
+    arguments[field] = arguments.get(field, "") + "\n" + extra
+    with pytest.raises(NativeQuoteError, match="quote_delivery_url"):
+        prepare_quote_delivery(
+            config, facts, confirmation, arguments,
+            recipient_variable="caller_phone", now=NOW,
+        )
+
+
+def test_quote_link_policy_preserves_normal_amounts_dates_times_and_contact_text():
+    from botelier.voice.flows.native_quote_actions import prepare_quote_delivery
+
+    config, facts, confirmation, arguments = confirmed_delivery()
+    arguments["body"] = (
+        "Reservation details: 2026-12-01 to 2026-12-03, arrival 15:00. "
+        "Total USD 230.00, tax 20.00, fees 10.00. "
+        "Contact ada@example.com.\n" + facts["private_checkout_url"]
+    )
+    prepare_quote_delivery(
+        config, facts, confirmation, arguments,
+        recipient_variable="caller_phone", now=NOW,
+    )
+
+
 @pytest.mark.parametrize("change", [
     "missing_confirmation", "stale_price", "stale_recipient", "private_url",
     "expired", "second_url", "url_suffix", "url_in_subject", "unknown_argument",
