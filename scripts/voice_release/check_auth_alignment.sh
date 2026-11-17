@@ -11,7 +11,10 @@ set -euo pipefail
 : "${RUNNER_TEMP:?}" "${GITHUB_WORKSPACE:?}" "${EVIDENCE:?}"
 frontend="$GITHUB_WORKSPACE/botelier/frontend"
 dependencies="${FRONTEND_DEPENDENCIES:-"$frontend/node_modules"}"
-[[ -d "$dependencies/next-auth" ]] || {
+dependencies="${dependencies%/}"
+encoder_root=$(dirname "$dependencies")
+[[ "$(basename "$dependencies")" == node_modules \
+   && -f "$encoder_root/package.json" && -d "$dependencies/next-auth" ]] || {
   echo "The candidate's locked frontend dependencies are required" >&2; exit 2;
 }
 node_binary=$(command -v node)
@@ -78,14 +81,14 @@ for check in self-test protocol postgres; do
         /ci/examples/features/botelier-flow-trial/test_mfa_schema_upgrade.py
       ;;
   esac
-  # Node and the real locked NextAuth package are test tools, not additions to
-  # the voice runtime image. The guard permits only its fixed synthetic encoder.
+  # Mount the already-populated package cache once: a nested bind cannot create
+  # node_modules inside a read-only source mount. Node/NextAuth remain test-only
+  # inputs; the guard permits only its fixed synthetic encoder.
   docker run --rm --network none --read-only \
     --tmpfs /tmp:rw,nosuid,nodev,size=256m \
     -v "$socket:/tmp/botelier-auth-fixture:ro" \
     -v "$node_binary:/test-node/node:ro" \
-    -v "$frontend:/frontend:ro" \
-    -v "$dependencies:/frontend/node_modules:ro" \
+    -v "$encoder_root:/frontend:ro" \
     -v "$GITHUB_WORKSPACE/examples/features/botelier-flow-trial:/ci/examples/features/botelier-flow-trial:ro" \
     -v "$RUNNER_TEMP/voice-test-tools:/test-tools:ro" \
     --entrypoint env "$IMAGE" -i \

@@ -19,6 +19,7 @@ class AuthOrchestrationTests(unittest.TestCase):
             root = Path(directory)
             (root / "botelier/frontend").mkdir(parents=True)
             (root / "deps/node_modules/next-auth").mkdir(parents=True)
+            (root / "deps/package.json").write_text('{"name":"synthetic-encoder-fixture"}')
             binary = root / "docker"
             binary.write_text(
                 "#!/usr/bin/env python3\n"
@@ -36,6 +37,13 @@ class AuthOrchestrationTests(unittest.TestCase):
                 " print('synthetic-auth-fixture')\n"
                 "if args[:2]==['run','--rm'] and 'auth_guard.py' in ' '.join(args):\n"
                 " if not probes.exists() or int(probes.read_text())<2: sys.exit(24)\n"
+                " mounts=[args[i+1].split(':') for i,a in enumerate(args) if a=='-v']\n"
+                " for source,target,mode in mounts:\n"
+                "  for parent,parent_target,parent_mode in mounts:\n"
+                "   if parent_mode=='ro' and target.startswith(parent_target+'/'):\n"
+                "    destination=Path(parent)/target[len(parent_target)+1:]\n"
+                "    if not destination.exists():\n"
+                "     sys.stderr.write('Read-only parent has no nested mount destination\\n'); sys.exit(125)\n"
                 " if os.environ.get('FAIL_CHECK') and os.environ['FAIL_CHECK'] in ' '.join(args): sys.exit(19)\n"
             )
             binary.chmod(0o700)
@@ -83,8 +91,8 @@ class AuthOrchestrationTests(unittest.TestCase):
             self.assertIn("-i", call)
             self.assertIn("env", call)
             mounts = [call[i + 1] for i, value in enumerate(call) if value == "-v"]
-            self.assertTrue(any(m.endswith(":/frontend:ro") for m in mounts))
-            self.assertTrue(any(m.endswith(":/frontend/node_modules:ro") for m in mounts))
+            self.assertTrue(any(m.endswith("/deps:/frontend:ro") for m in mounts))
+            self.assertFalse(any(m.endswith(":/frontend/node_modules:ro") for m in mounts))
             self.assertTrue(any(m.endswith(":/test-node/node:ro") for m in mounts))
             self.assertTrue(any(m.endswith(":/tmp/botelier-auth-fixture:ro") for m in mounts))
         self.assertEqual(calls[-1], ["rm", "-f", "synthetic-auth-fixture"])
