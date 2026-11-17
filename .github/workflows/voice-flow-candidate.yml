@@ -302,6 +302,12 @@ jobs:
             /ci/examples/features/botelier-flow-trial/test_pilot_handoff_input.py \
             /ci/examples/features/botelier-flow-trial/test_pilot_input_preservation.py \
             2>&1 | tee "$EVIDENCE/native-pilot-adapter.log"
+      - name: Exercise the full V1 compiler actions data and recovery offline
+        id: full_flow_v1
+        env:
+          IMAGE: voice-flow-candidate:${{ github.sha }}
+          EVIDENCE: ${{ runner.temp }}/voice-application-evidence
+        run: bash scripts/voice_release/check_full_flow_v1.sh
       - name: Exercise authenticated native simulation through the real SDK offline
         id: native_simulation_api
         env:
