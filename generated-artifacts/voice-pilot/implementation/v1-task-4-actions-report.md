@@ -77,6 +77,11 @@ provider request. Host-supplied sample responses can use the public pure
   confirmation, response policy, and output mapping before reusing the existing
   `build_operation_api_config`/`ActionExecutor` path. Nested FLOW and terminal
   Tool types are not dispatched; payment-classified operations remain blocked.
+- Native HTTP write completion uses one shared definitive-rejection classifier
+  (`native_outcome_policy.py`) across direct and selected Tool actions. It matches
+  the reviewed status set exactly; 409 and 429 remain ambiguous, keep the ledger
+  claim pending, and block repeat provider invocation. 400/401 validation and
+  authorization rejections remain terminal known failures.
 - Node-level MCP reads the current account-owned connection and explicit
   property/global scope, checks the configured enabled tool list, ignores
   server `readOnly` annotations, validates the current tool schema and args,
@@ -142,6 +147,14 @@ source-compatible mapped-text and output-only JSON arrays, source binding,
 actual scoped capability/API/dynamic-operation execution, slug resolution,
 typed/default mapping, actual disposable Record storage, encrypted atomic
 receipts, acknowledgement-loss replay, and correction CAS.
+
+For the targeted action/ledger review, the coherent guarded unit
+(`test_native_graph.py`, `test_native_actions.py`,
+`test_native_capabilities.py`, `test_native_integration_resolution.py`,
+`test_native_effect_ledger.py`, and `test_native_tool_sources.py`) passes:
+**100 passed; 0 guard blocks**. Test-first status cases were red for selected
+API_REQUEST and DYNAMIC_OPERATION writes at 409/429, then green after both paths
+were aligned to the shared classifier; 400/401 completion/replay remains covered.
 The parent separately owns the host fixture and strict external-ledger
 integration; no host/fixture files are included in this scoped change.
 

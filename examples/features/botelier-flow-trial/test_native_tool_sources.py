@@ -2,6 +2,7 @@ import asyncio
 import uuid
 
 import httpx
+import pytest
 
 
 def test_selected_owned_api_request_tool_uses_current_config_and_exact_outputs(monkeypatch):
@@ -153,7 +154,10 @@ def test_selected_tool_cannot_override_its_published_output_map(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_selected_current_dynamic_operation_reuses_owned_policy_confirmation_and_ledger(monkeypatch):
+@pytest.mark.parametrize("status_code", [400, 401, 409, 429])
+def test_selected_api_request_writes_classify_rejection_and_ambiguity(
+    monkeypatch, status_code,
+):
     from native_effect_io import NativeEffectsFixture
 
     async def scenario():
@@ -162,7 +166,111 @@ def test_selected_current_dynamic_operation_reuses_owned_policy_confirmation_and
         async def controlled_transport(_transport, request):
             requests.append(request)
             return httpx.Response(
-                200, json={"confirmation": "D-321", "private": "never expose"},
+                status_code, json={"error": "controlled response"}, request=request,
+            )
+
+        async with NativeEffectsFixture() as fixture:
+            from botelier.models.tool import Tool, ToolType
+            from botelier.services.ssrf_safe_transport import SSRFSafeTransport
+            from botelier.voice.flows.native_actions import NativeActionRunner
+            from botelier.voice.flows.native_execution import NativeConfirmation
+            from botelier.voice.flows.native_graph import compile_flow
+            from editor_fixture import TOOL_SET_ID
+
+            monkeypatch.setattr(
+                SSRFSafeTransport, "handle_async_request", controlled_transport,
+            )
+            tool_id = uuid.uuid4()
+            db = fixture.factory()
+            db.add(Tool(
+                id=str(tool_id), name="Create reservation",
+                description="Create a reservation", tool_type=ToolType.API_REQUEST,
+                config={
+                    "method": "POST",
+                    "url": "https://api.fixture.invalid/reservations",
+                    "parameters": {"name": {"type": "string", "required": True}},
+                    "bodyTemplate": '{"name":"{{name}}"}',
+                    "responseMapping": {"confirmation": "$.confirmation"},
+                    "timeout": 2, "retryCount": 0,
+                },
+                tool_set_id=uuid.UUID(TOOL_SET_ID), is_active="true",
+            ))
+            db.commit()
+            db.close()
+            config = {
+                "initial_node": "start",
+                "variables": [{"key": "name", "type": "text"}],
+                "nodes": [
+                    {"id": "start", "type": "initial", "data": {"greeting": ""}},
+                    {"id": "confirm", "type": "confirmation", "data": {
+                        "confirmation": {
+                            "summaryTemplate": "Create reservation for {{name}}?",
+                            "confirmPrompt": "Proceed?",
+                            "variablesToConfirm": ["name"], "allowEdit": False,
+                        },
+                    }},
+                    {"id": "create", "type": "api_request", "data": {"api": {
+                        "apiSource": "tool", "toolId": str(tool_id),
+                        "argumentsTemplate": '{"name":"{{name}}"}',
+                        "responseMapping": {"confirmation": "$.confirmation"},
+                    }}},
+                    {"id": "done", "type": "end", "data": {"closingMessage": ""}},
+                ],
+                "edges": [
+                    {"id": "start-confirm", "source": "start", "target": "confirm"},
+                    {"id": "confirm-create", "source": "confirm", "target": "create",
+                     "sourceHandle": "confirmed"},
+                    {"id": "create-done", "source": "create", "target": "done",
+                     "sourceHandle": "success"},
+                ],
+            }
+            compiled = compile_flow(config, fixture.identity)
+            runner = NativeActionRunner(compiled, fixture.factory)
+            facts = {"name": "Ari"}
+            consent = NativeConfirmation("confirm", 1, '{"name":"Ari"}', ("name",))
+
+            first = await runner.execute(
+                compiled.node("create"), facts, confirmation=consent,
+            )
+            second = await runner.execute(
+                compiled.node("create"), facts, confirmation=consent,
+            )
+
+            if status_code in {409, 429}:
+                assert first.failure_reason == "effect_outcome_unknown"
+                assert second.failure_reason == "effect_outcome_unknown"
+                expected_status = "pending"
+            else:
+                assert first.failure_reason == "tool_operation_rejected"
+                assert second == first
+                expected_status = "failed"
+            assert len(requests) == 1
+            db = fixture.factory()
+            try:
+                claim = db.query(
+                    fixture.effect_models["OperationIdempotency"],
+                ).one()
+                assert claim.status == expected_status
+            finally:
+                db.close()
+
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("status_code", [200, 400, 401, 409, 429])
+def test_selected_current_dynamic_operation_reuses_owned_policy_confirmation_and_ledger(
+    monkeypatch, status_code,
+):
+    from native_effect_io import NativeEffectsFixture
+
+    async def scenario():
+        requests = []
+
+        async def controlled_transport(_transport, request):
+            requests.append(request)
+            return httpx.Response(
+                status_code,
+                json={"confirmation": "D-321", "private": "never expose"},
                 request=request,
             )
 
@@ -319,9 +427,36 @@ def test_selected_current_dynamic_operation_reuses_owned_policy_confirmation_and
             replay = await runner.execute(
                 compiled.node("create"), facts, confirmation=consent,
             )
-            assert accepted.success is True, accepted
-            assert accepted.variables == {"confirmation": "D-321"}
-            assert replay == accepted
+            if status_code == 200:
+                assert accepted.success is True, accepted
+                assert accepted.variables == {"confirmation": "D-321"}
+                assert replay == accepted
+            elif status_code in {409, 429}:
+                assert accepted.failure_reason == "effect_outcome_unknown"
+                assert replay.failure_reason == "effect_outcome_unknown"
+                assert len(requests) == 1
+                pending_db = fixture.factory()
+                try:
+                    claim = pending_db.query(
+                        fixture.effect_models["OperationIdempotency"],
+                    ).one()
+                    assert claim.status == "pending"
+                finally:
+                    pending_db.close()
+                return
+            else:
+                assert accepted.failure_reason == "tool_operation_rejected"
+                assert replay == accepted
+                assert len(requests) == 1
+                rejected_db = fixture.factory()
+                try:
+                    claim = rejected_db.query(
+                        fixture.effect_models["OperationIdempotency"],
+                    ).one()
+                    assert claim.status == "failed"
+                finally:
+                    rejected_db.close()
+                return
             assert len(requests) == 1
             assert requests[0].method == "POST"
 

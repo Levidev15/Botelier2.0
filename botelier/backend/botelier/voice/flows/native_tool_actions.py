@@ -13,13 +13,11 @@ from botelier.voice.flows.native_response_mapping import (
     NativeResponseMappingError,
     map_response_data,
 )
+from botelier.voice.flows.native_outcome_policy import is_definitive_rejection
 from botelier.services.response_projection import project_mapped_values
 
 
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
-_DEFINITIVE_REJECTION_STATUSES = {
-    400, 401, 403, 404, 405, 409, 410, 415, 422, 429,
-}
 _PAYMENT_TERMS = {
     "charge", "checkout", "collectpayment", "invoice", "payment", "refund",
 }
@@ -146,7 +144,7 @@ class NativeToolActionHandler:
         if writing:
             status = getattr(response, "status_code", 0)
             known = result.success or (
-                not response.success and status in _DEFINITIVE_REJECTION_STATUSES
+                not response.success and is_definitive_rejection(status)
             )
             if not known or not await asyncio.to_thread(
                 self.runner._ledger.complete, claim, result, outcome_known=True,
@@ -231,7 +229,7 @@ class NativeToolActionHandler:
         if writing:
             status = getattr(response, "status_code", 0)
             known = result.success or (
-                not response.success and status in _DEFINITIVE_REJECTION_STATUSES
+                not response.success and is_definitive_rejection(status)
             )
             if not known or not await asyncio.to_thread(
                 self.runner._ledger.complete, claim, result, outcome_known=True,

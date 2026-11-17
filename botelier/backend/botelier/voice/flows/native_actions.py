@@ -19,6 +19,7 @@ from botelier.voice.flows.native_execution import (
 )
 from botelier.voice.flows.native_effect_ledger import NativeEffectLedger
 from botelier.voice.flows.native_graph import CompiledFlow, CompiledNode
+from botelier.voice.flows.native_outcome_policy import is_definitive_rejection
 from botelier.voice.flows.native_response_mapping import (
     NativeResponseMappingError, map_project_response as _map_project_response,
     map_response_data, resolve_response_variables,
@@ -34,11 +35,6 @@ _BLOCKED_HEADERS = frozenset({
     "proxy-authorization", "proxy-connection", "cookie", "set-cookie",
 })
 _MAX_FACT_BYTES = 250_000
-_DEFINITIVE_REJECTION_STATUSES = frozenset({
-    400, 401, 403, 404, 405, 410, 413, 415, 422, 428,
-})
-
-
 def _failure(reason, branch="error"):
     return NativeActionResult(False, branch=branch, failure_reason=reason)
 
@@ -814,8 +810,7 @@ class NativeActionRunner:
             )
         if writing:
             known = outcome.success or (
-                not result.success
-                and result.status_code in _DEFINITIVE_REJECTION_STATUSES
+                not result.success and is_definitive_rejection(result.status_code)
             )
             if not known:
                 return _failure("effect_outcome_unknown")
@@ -1296,7 +1291,7 @@ class NativeActionRunner:
                 branch,
             )
         if writing:
-            known = result.success or result.status_code in _DEFINITIVE_REJECTION_STATUSES
+            known = result.success or is_definitive_rejection(result.status_code)
             if not known:
                 return _failure("effect_outcome_unknown")
             completed = await asyncio.to_thread(
