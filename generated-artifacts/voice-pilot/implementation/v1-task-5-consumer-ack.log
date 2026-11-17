@@ -120,6 +120,24 @@ Final actual typed-utterance parity refinement:
   chunk; the actual Pipecat sink correctly coalesced it with its intro. The
   assertion now checks the exact combined spoken utterance.
 
+Text-host fence and retired-fixture migration:
+- Verified the parent P2 safeguard against the installed Pipecat worker and
+  assistant-context consumer, not by reverting runtime state: a forced first
+  `acknowledge_consumed_node() == False` after the actual context fence remains
+  non-idle, waits for a later state-change signal and only then settles. The
+  exact focused test is
+  `test_text_host_waits_for_successful_consumer_ack_after_real_context_fence`.
+- The old `test_native_text_host.py` still constructed `CompiledPilot` and
+  asserted retired `NativePilotAdapter` node names. A run exposed 12 failures at
+  the intentional `CompiledFlow` type fence (zero guard blocks); this was stale
+  test code, not a reason to admit the six-node engine. Replaced it with an
+  explicit fail-closed compatibility test. The actual host tests remain in
+  `test_native_graph_text_host.py`, covering greeting, real consumer
+  acknowledgment, completion, guided prompts and confirmation re-entry.
+- Final combined lifecycle group including actual native text + voice, runtime,
+  simulation selection, and assistant settings: 89 passed, 61 SDK deprecation
+  warnings, `APPLICATION_GUARD_BLOCKED_ATTEMPTS=0`.
+
 Recovery and parity continuation:
 - Added optimistic compare-and-swap snapshots in the existing FlowSession store.
   Recovery pins root and active flow-version identity plus exact source digests,
