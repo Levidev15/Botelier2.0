@@ -446,57 +446,74 @@ class NativeActionRunner:
         return outcome
 
     def _resolve_mcp_connection(self, connection_id, tool_name):
-        from botelier.models.mcp_connection import MCPConnection
-
         db = self.session_factory()
         try:
-            try:
-                parsed_id = UUID(connection_id)
-            except (ValueError, TypeError, AttributeError):
-                raise LookupError("mcp_connection_not_found") from None
-            connection = db.query(MCPConnection).filter(
-                MCPConnection.id == parsed_id,
-                MCPConnection.account_id == UUID(self.compiled.identity.account_id),
-                MCPConnection.is_active.is_(True),
-            ).first()
-            if connection is None:
-                raise LookupError("mcp_connection_not_found")
-            config = connection.get_connection_config() or {}
-            if not isinstance(config, dict):
-                raise PermissionError("mcp_connection_scope")
-            bound_property = config.get("property_id")
-            if bound_property is not None:
-                try:
-                    parsed_property = UUID(str(bound_property))
-                    identity_property = UUID(self.compiled.identity.property_id)
-                except (TypeError, ValueError, AttributeError):
-                    raise PermissionError("mcp_connection_scope") from None
-                if parsed_property != identity_property:
-                    raise PermissionError("mcp_connection_scope")
-            elif config.get("account_global") is not True:
-                raise PermissionError("mcp_connection_scope")
-            enabled_tools = config.get("native_enabled_tools")
-            read_only_tools = config.get("native_read_only_tools", [])
-            if (
-                not isinstance(enabled_tools, list) or len(enabled_tools) > 128
-                or any(not isinstance(name, str) or not name for name in enabled_tools)
-                or len(enabled_tools) != len(set(enabled_tools))
-                or not isinstance(read_only_tools, list) or len(read_only_tools) > 128
-                or any(not isinstance(name, str) or not name for name in read_only_tools)
-                or len(read_only_tools) != len(set(read_only_tools))
-                or set(read_only_tools) - set(enabled_tools)
-            ):
-                raise PermissionError("mcp_tool_policy")
-            if tool_name not in enabled_tools:
-                raise PermissionError("mcp_tool_disabled")
-            # Server-provided readOnly annotations are intentionally ignored.
-            read_only = tool_name in read_only_tools
-            return connection, read_only
+            return self.resolve_mcp_tool_policy(
+                db, self.compiled.identity, connection_id, tool_name,
+            )
         finally:
             try:
                 db.close()
             except Exception:
                 pass
+
+    @staticmethod
+    def resolve_mcp_tool_policy(db, identity, connection_id, tool_name):
+        """Resolve one tool against current account/property connection policy."""
+        from botelier.models.mcp_connection import MCPConnection
+
+        try:
+            parsed_id = UUID(connection_id)
+        except (ValueError, TypeError, AttributeError):
+            raise LookupError("mcp_connection_not_found") from None
+        connection = db.query(MCPConnection).filter(
+            MCPConnection.id == parsed_id,
+            MCPConnection.account_id == UUID(identity.account_id),
+            MCPConnection.is_active.is_(True),
+        ).first()
+        if connection is None:
+            raise LookupError("mcp_connection_not_found")
+        config = connection.get_connection_config() or {}
+        if not isinstance(config, dict):
+            raise PermissionError("mcp_connection_scope")
+        bound_property = config.get("property_id")
+        if bound_property is not None:
+            try:
+                parsed_property = UUID(str(bound_property))
+                identity_property = UUID(identity.property_id)
+            except (TypeError, ValueError, AttributeError):
+                raise PermissionError("mcp_connection_scope") from None
+            if parsed_property != identity_property:
+                raise PermissionError("mcp_connection_scope")
+        elif config.get("account_global") is not True:
+            raise PermissionError("mcp_connection_scope")
+        enabled_tools = config.get("native_enabled_tools")
+        read_only_tools = config.get("native_read_only_tools", [])
+        if (
+            not isinstance(enabled_tools, list) or len(enabled_tools) > 128
+            or any(not isinstance(name, str) or not name for name in enabled_tools)
+            or len(enabled_tools) != len(set(enabled_tools))
+            or not isinstance(read_only_tools, list) or len(read_only_tools) > 128
+            or any(not isinstance(name, str) or not name for name in read_only_tools)
+            or len(read_only_tools) != len(set(read_only_tools))
+            or set(read_only_tools) - set(enabled_tools)
+        ):
+            raise PermissionError("mcp_tool_policy")
+        if tool_name not in enabled_tools:
+            raise PermissionError("mcp_tool_disabled")
+        # Server-provided readOnly annotations are intentionally ignored.
+        read_only = tool_name in read_only_tools
+        return connection, read_only
+
+    def is_mcp_tool_read_only(self, connection_id, tool_name):
+        """Resolve global-MCP exposure through the same account/property policy.
+
+        Callers may advertise only explicitly enabled read-only tools outside
+        a saved flow action. Server annotations and assistant tool names alone
+        are not authority to run a global mutation.
+        """
+        _, read_only = self._resolve_mcp_connection(connection_id, tool_name)
+        return read_only
 
     async def _call_mcp_tool(self, connection, tool_name, arguments):
         from botelier.services.mcp_client import MCPClient

@@ -18,25 +18,59 @@ from pilot_io import PilotProviders
 TOOL_ID = "00000000-0000-0000-0000-000000000104"
 TOOL_SET_ID = "00000000-0000-0000-0000-000000000108"
 VERSION_ID = "00000000-0000-0000-0000-000000000109"
+ALT_TOOL_ID = "00000000-0000-0000-0000-000000000110"
+ALT_VERSION_ID = "00000000-0000-0000-0000-000000000111"
 
 
 class NativeDevCatalogueSession(CatalogueSession):
+    def __init__(self, records):
+        super().__init__(records)
+        self.criteria = []
+
+    def query(self, model):
+        self.criteria = []
+        return super().query(model)
+
+    def filter(self, *criteria):
+        self.criteria = list(criteria)
+        return self
+
     def first(self):
         if self.closed:
             guard.deny("closed_native_dev_catalogue_query")
         if self.model == "Tool":
             return self.records.rows["Tool"][0]
+        if self.model == "FlowVersion":
+            candidates = [
+                self.records.rows["FlowVersion"],
+                *self.records.rows.get("AdditionalFlowVersions", []),
+            ]
+            for version in candidates:
+                if all(
+                    str(getattr(
+                        getattr(version, criterion.left.key, None), "value",
+                        getattr(version, criterion.left.key, None),
+                    )) == str(getattr(criterion.right.value, "value", criterion.right.value))
+                    for criterion in self.criteria
+                ):
+                    return version
+            return None
         return super().first()
 
 
 class NativeDevRecords(CatalogueRecords):
     def __init__(
         self, *, extra_tool=False, with_mcp=False, bad_contract=False,
-        with_global_prompt=False, wrong_ownership=None, missing_version=False,
-        unpublished_version=False, wrong_selection=False,
+        with_global_prompt=False, extra_global_tool=False, escalation=False,
+        extra_published_flow=False,
+        wrong_ownership=None, missing_version=False, unpublished_version=False,
+        wrong_selection=False,
     ):
         super().__init__()
         from botelier.models.flow_version import FlowVersionStatus
+        from botelier.models.mcp_connection import (
+            MCPAuthType, MCPConnectionStatus, MCPTransportType,
+        )
         from botelier.models.tool import ToolType
 
         config = flow_config(source="custom", presentation=True, narration=False)
@@ -69,6 +103,42 @@ class NativeDevRecords(CatalogueRecords):
                 published_version_id=None, llm_provider=None, llm_model=None,
                 llm_temperature=None, llm_max_tokens=None,
             ))
+        alternate_config = copy.deepcopy(config)
+        alternate_start = next(
+            node for node in alternate_config["nodes"] if node["id"] == "start"
+        )
+        alternate_start["data"]["greeting"] = "Alternate workflow."
+        alternate_query = next(
+            node for node in alternate_config["nodes"] if node["id"] == "query"
+        )
+        alternate_query["data"]["slot"]["prompt"] = "Which alternate fixture?"
+        if extra_published_flow:
+            alternate_config["nodes"].append({
+                "id": "end", "type": "end", "data": {
+                    "closingMessage": "The alternate support task is complete.",
+                },
+            })
+            alternate_config["edges"].append({
+                "id": "choice-end", "source": "choice", "target": "end",
+            })
+            self.rows["Tool"].append(SimpleNamespace(
+                id=ALT_TOOL_ID, name="fixture support",
+                description="A second assigned published workflow.",
+                tool_type=ToolType.FLOW, config=copy.deepcopy(alternate_config),
+                tool_set_id=TOOL_SET_ID, account_id=None, is_active="true",
+                published_version_id=ALT_VERSION_ID, llm_provider=None,
+                llm_model=None, llm_temperature=None, llm_max_tokens=None,
+            ))
+        if extra_global_tool:
+            self.rows["Tool"].append(SimpleNamespace(
+                id="00000000-0000-0000-0000-000000000106",
+                name="end_call_fixture", description="End the offline call.",
+                tool_type=ToolType.END_CALL,
+                config={"goodbye_message": "Goodbye from the assigned tool."},
+                tool_set_id=TOOL_SET_ID, account_id=None, is_active="true",
+                published_version_id=None, llm_provider=None, llm_model=None,
+                llm_temperature=None, llm_max_tokens=None,
+            ))
         self.rows.update({
             "ToolSet": SimpleNamespace(id=TOOL_SET_ID, account_id=ACCOUNT),
             "FlowVersion": SimpleNamespace(
@@ -79,11 +149,42 @@ class NativeDevRecords(CatalogueRecords):
                 ),
                 flow_config=config,
             ),
+            "AdditionalFlowVersions": (
+                [SimpleNamespace(
+                    id=ALT_VERSION_ID, tool_id=ALT_TOOL_ID,
+                    status=FlowVersionStatus.PUBLISHED,
+                    version_number=1,
+                    flow_config=alternate_config,
+                )]
+                if extra_published_flow else []
+            ),
             "Property": (
                 None if wrong_ownership == "property"
                 else SimpleNamespace(id=PROPERTY, account_id=ACCOUNT)
             ),
-            "MCPConnection": None,
+            "MCPConnection": (
+                None if not with_mcp else SimpleNamespace(
+                    id=CONNECTION, account_id=ACCOUNT, is_active=True,
+                    status=MCPConnectionStatus.CONNECTED,
+                    transport_type=MCPTransportType.STREAMABLE_HTTP,
+                    auth_type=MCPAuthType.NONE,
+                    server_url="https://mcp.fixture.invalid/mcp",
+                    credentials_encrypted=None, name="Offline MCP fixture",
+                    discovered_tools=[
+                        {"name": "lookup", "parameters": {
+                            "type": "object", "properties": {},
+                        }},
+                        {"name": "reserve", "parameters": {
+                            "type": "object", "properties": {},
+                        }},
+                    ],
+                    get_connection_config=lambda: {
+                        "property_id": PROPERTY,
+                        "native_enabled_tools": ["lookup", "reserve"],
+                        "native_read_only_tools": ["lookup"],
+                    },
+                )
+            ),
         })
         self.assistant.account_id = ACCOUNT
         self.assistant.property_id = PROPERTY
@@ -91,10 +192,12 @@ class NativeDevRecords(CatalogueRecords):
         self.assistant.call_settings = {
             "native_flow_tool_id": "offline-other-flow" if wrong_selection else TOOL_ID,
         }
+        if escalation:
+            self.assistant.call_settings["escalation_number"] = "+15555550199"
         if wrong_ownership == "tool_set":
             self.rows["ToolSet"].account_id = "00000000-0000-0000-0000-000000000999"
         self.assistant.mcp_connection_id = CONNECTION if with_mcp else None
-        self.assistant.mcp_enabled_tools = []
+        self.assistant.mcp_enabled_tools = ["lookup", "reserve"] if with_mcp else []
         self.rows["PhoneNumber"] = SimpleNamespace(
             property_id=PROPERTY, assistant_id=self.assistant.id,
         )
@@ -154,7 +257,8 @@ class NativeDevVoiceCall(OfflineCall):
         self, *, native_enabled=True, extra_tool=False, with_mcp=False,
         bad_contract=False, with_global_prompt=False, providers=None, handler=None,
         wrong_ownership=None, missing_version=False, unpublished_version=False,
-        wrong_selection=False,
+        wrong_selection=False, extra_global_tool=False, escalation=False,
+        extra_published_flow=False,
         prewarmed=False, missing_call_log=False,
     ):
         module = __import__("botelier.voice.call_handler", fromlist=["CallHandler"])
@@ -181,9 +285,12 @@ class NativeDevVoiceCall(OfflineCall):
         self.records = NativeDevRecords(
             extra_tool=extra_tool, with_mcp=with_mcp, bad_contract=bad_contract,
             with_global_prompt=with_global_prompt,
+            extra_global_tool=extra_global_tool, escalation=escalation,
+            extra_published_flow=extra_published_flow,
             wrong_ownership=wrong_ownership, missing_version=missing_version,
             unpublished_version=unpublished_version, wrong_selection=wrong_selection,
         )
+        self.mcp_calls = []
         if missing_call_log:
             self.records.rows["CallLog"] = None
         self.actions = ActionRecords(synthetic_integration())
@@ -193,6 +300,8 @@ class NativeDevVoiceCall(OfflineCall):
 
     async def __aenter__(self):
         from botelier.services.ssrf_safe_transport import SSRFSafeTransport
+        from pipecat.adapters.schemas.function_schema import FunctionSchema
+        from pipecat.adapters.schemas.tools_schema import ToolsSchema
 
         if self.records.rows["CallLog"] is None:
             self.handler.call_event_queues = _NoQueueMap(
@@ -256,6 +365,39 @@ class NativeDevVoiceCall(OfflineCall):
         self.patches.enter_context(patch.object(
             self.module, "SessionLocal", self.session_factory,
         ))
+        if self.records.assistant.mcp_connection_id:
+            class OfflineMCPSession:
+                async def call_tool(_session, tool_name, arguments=None):
+                    self.mcp_calls.append((tool_name, arguments))
+                    return SimpleNamespace(
+                        content=[SimpleNamespace(text="Offline MCP fixture data.")],
+                        structuredContent=None,
+                        isError=False,
+                    )
+
+            class OfflineMCPClient:
+                def __init__(self, **_kwargs):
+                    self.closed = False
+                    self._active_session = OfflineMCPSession()
+
+                async def start(self):
+                    return None
+
+                async def get_tools_schema(self):
+                    return ToolsSchema(standard_tools=[
+                        FunctionSchema("lookup", "Read fixture data.", {}, []),
+                        FunctionSchema("reserve", "Write fixture data.", {}, []),
+                    ])
+
+                async def close(self):
+                    self.closed = True
+
+            self.patches.enter_context(patch.object(
+                self.module, "PIPECAT_MCP_AVAILABLE", True,
+            ))
+            self.patches.enter_context(patch.object(
+                self.module, "PipecatMCPClient", OfflineMCPClient,
+            ))
         return self
 
     def session_factory(self):

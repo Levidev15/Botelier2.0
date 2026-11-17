@@ -6,8 +6,11 @@ Flows, not this module, owns every runtime node and transition.
 
 from dataclasses import dataclass
 import asyncio
+import importlib.util
+import json
 import math
 import os
+import re
 
 from loguru import logger
 
@@ -22,6 +25,7 @@ from botelier.voice.flows.native_dev_host import (
     NativeFlowDevPolicy,
     apply_native_flow_context,
     ensure_native_dev_resources,
+    prepare_native_dev_catalogue,
     prepare_native_dev_selection,
 )
 
@@ -31,7 +35,7 @@ _ADMISSION_CODES = frozenset({
     "native_dev_published_version",
 })
 _MAX_PRIVATE_PROMPT_BYTES = 64 * 1024
-_MAX_COMPLETION_TOKENS = 4096
+_MAX_COMPLETION_TOKENS = 32768
 
 
 @dataclass(frozen=True)
@@ -42,6 +46,8 @@ class NativeSimulationPlan:
     config: object
     runtime: dict
     variables_to_collect: list[dict]
+    global_functions: tuple = ()
+    available_flows: dict = None
 
 
 def validate_native_simulation_source(request, policy) -> None:
@@ -60,10 +66,18 @@ def validate_native_simulation_source(request, policy) -> None:
 
 
 def _validate_model_configuration(config) -> None:
-    # Certify one actual provider path first. Never silently use OpenAI when
-    # the configured provider is different; Google remains unverified here.
-    if config.llm_provider.lower() != "openai":
+    # Match the current voice engine's two implemented SDK paths. Never
+    # silently substitute OpenAI for a configured Gemini model.
+    provider = config.llm_provider.lower()
+    if provider not in {"openai", "google_gemini"}:
         raise NativeSimulationError("native_simulation_provider_unsupported")
+    if provider == "google_gemini":
+        try:
+            google_sdk_available = importlib.util.find_spec("google.genai") is not None
+        except (ImportError, ModuleNotFoundError, ValueError):
+            google_sdk_available = False
+        if not google_sdk_available:
+            raise NativeSimulationError("native_simulation_provider_unsupported")
     if (
         not isinstance(config.llm_model, str)
         or not config.llm_model.strip()
@@ -78,6 +92,216 @@ def _validate_model_configuration(config) -> None:
     ):
         # Refuse rather than truncate prompts or silently change token limits.
         raise NativeSimulationError("native_simulation_model_configuration")
+
+
+def _preview_global_mcp_functions(selection, assistant, db):
+    """Expose only cached, explicitly read-only MCP schemas in preview mode."""
+    connection_id = getattr(assistant, "mcp_connection_id", None)
+    if not connection_id:
+        if getattr(assistant, "mcp_enabled_tools", None):
+            raise NativeSimulationError("native_dev_resources")
+        return ()
+
+    from botelier.models.mcp_connection import (
+        MCPConnection, MCPConnectionStatus,
+    )
+    from botelier.voice.flows.native_actions import NativeActionRunner
+    from pipecat.flows.types import FlowsFunctionSchema
+
+    connection = db.query(MCPConnection).filter(
+        MCPConnection.id == connection_id,
+        MCPConnection.account_id == assistant.account_id,
+        MCPConnection.is_active.is_(True),
+    ).first()
+    if (
+        connection is None
+        or connection.status != MCPConnectionStatus.CONNECTED
+        or not getattr(connection, "server_url", None)
+    ):
+        raise NativeSimulationError("native_dev_resources")
+    enabled = getattr(assistant, "mcp_enabled_tools", None) or []
+    if (
+        not isinstance(enabled, list) or len(enabled) > 128
+        or any(not isinstance(name, str) or not name for name in enabled)
+        or len(enabled) != len(set(enabled))
+    ):
+        raise NativeSimulationError("native_dev_resources")
+    discover = getattr(connection, "get_discovered_tools", None)
+    discovered = (
+        discover() if callable(discover)
+        else getattr(connection, "discovered_tools", None)
+    ) or []
+    if not isinstance(discovered, list):
+        raise NativeSimulationError("native_dev_resources")
+
+    result = []
+    for name in enabled:
+        try:
+            current, read_only = NativeActionRunner.resolve_mcp_tool_policy(
+                db, selection.compiled.identity, connection_id, name,
+            )
+        except (LookupError, PermissionError, TypeError, ValueError):
+            raise NativeSimulationError("native_dev_resources") from None
+        if current.id != connection.id:
+            raise NativeSimulationError("native_dev_resources")
+        if not read_only:
+            continue
+        if (
+            not re.fullmatch(r"[A-Za-z0-9_-]{1,64}", name)
+            or name in selection.compiled.native_names
+            or name.startswith("native_")
+        ):
+            raise NativeSimulationError("native_dev_resources")
+        matching = [
+            item for item in discovered
+            if isinstance(item, dict) and item.get("name") == name
+        ]
+        if len(matching) != 1:
+            raise NativeSimulationError("native_dev_resources")
+        item = matching[0]
+        parameters = item.get("parameters", item.get("inputSchema", {}))
+        if not isinstance(parameters, dict):
+            raise NativeSimulationError("native_dev_resources")
+        properties = parameters.get("properties", {})
+        required = parameters.get("required", [])
+        if (
+            parameters.get("type", "object") != "object"
+            or set(parameters) - {
+                "type", "properties", "required", "description",
+                "additionalProperties",
+            }
+            or parameters.get("additionalProperties", False) is not False
+            or not isinstance(properties, dict) or len(properties) > 64
+            or not isinstance(required, list)
+            or any(not isinstance(key, str) or key not in properties for key in required)
+            or len(required) != len(set(required))
+        ):
+            raise NativeSimulationError("native_dev_resources")
+
+        def safe_schema(schema, depth=0):
+            if (
+                depth > 16 or not isinstance(schema, dict)
+                or schema.get("type") not in {
+                    "string", "number", "integer", "boolean", "object", "array",
+                }
+                or set(schema) - {
+                    "type", "title", "description", "default", "enum",
+                    "properties", "required", "items", "minimum", "maximum",
+                    "minLength", "maxLength", "additionalProperties",
+                }
+            ):
+                raise NativeSimulationError("native_dev_resources")
+            result_schema = {"type": schema["type"]}
+            enum = schema.get("enum")
+            if enum is not None:
+                if (
+                    not isinstance(enum, list) or not enum or len(enum) > 128
+                    or any(
+                        not isinstance(value, (str, int, float, bool))
+                        or isinstance(value, float) and not math.isfinite(value)
+                        for value in enum
+                    )
+                ):
+                    raise NativeSimulationError("native_dev_resources")
+                result_schema["enum"] = enum
+            for minimum_key, maximum_key in (
+                ("minimum", "maximum"),
+                ("minLength", "maxLength"),
+            ):
+                minimum = schema.get(minimum_key)
+                maximum = schema.get(maximum_key)
+                if minimum is not None:
+                    if (
+                        isinstance(minimum, bool)
+                        or not isinstance(minimum, (int, float))
+                        or isinstance(minimum, float) and not math.isfinite(minimum)
+                    ):
+                        raise NativeSimulationError("native_dev_resources")
+                    result_schema[minimum_key] = minimum
+                if maximum is not None:
+                    if (
+                        isinstance(maximum, bool)
+                        or not isinstance(maximum, (int, float))
+                        or isinstance(maximum, float) and not math.isfinite(maximum)
+                    ):
+                        raise NativeSimulationError("native_dev_resources")
+                    result_schema[maximum_key] = maximum
+                if minimum is not None and maximum is not None and minimum > maximum:
+                    raise NativeSimulationError("native_dev_resources")
+            if schema["type"] == "object":
+                child_properties = schema.get("properties", {})
+                child_required = schema.get("required", [])
+                if (
+                    not isinstance(child_properties, dict)
+                    or len(child_properties) > 128
+                    or not isinstance(child_required, list)
+                    or any(
+                        not isinstance(key, str) or key not in child_properties
+                        for key in child_required
+                    )
+                    or len(child_required) != len(set(child_required))
+                    or schema.get("additionalProperties", False) is not False
+                ):
+                    raise NativeSimulationError("native_dev_resources")
+                safe_children = {}
+                for key, child in child_properties.items():
+                    if (
+                        not isinstance(key, str)
+                        or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,63}", key)
+                    ):
+                        raise NativeSimulationError("native_dev_resources")
+                    safe_children[key] = safe_schema(child, depth + 1)
+                result_schema["properties"] = safe_children
+                if child_required:
+                    result_schema["required"] = list(child_required)
+                result_schema["additionalProperties"] = False
+            elif schema["type"] == "array":
+                if schema.get("additionalProperties") is not None:
+                    raise NativeSimulationError("native_dev_resources")
+                if not isinstance(schema.get("items"), dict):
+                    raise NativeSimulationError("native_dev_resources")
+                result_schema["items"] = safe_schema(schema["items"], depth + 1)
+            elif any(
+                key in schema for key in (
+                    "properties", "required", "items", "additionalProperties",
+                )
+            ):
+                raise NativeSimulationError("native_dev_resources")
+            return result_schema
+
+        safe_properties = {}
+        for key, schema in properties.items():
+            if (
+                not isinstance(key, str)
+                or not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_-]{0,63}", key)
+            ):
+                raise NativeSimulationError("native_dev_resources")
+            safe_properties[key] = safe_schema(schema)
+        try:
+            encoded_schema = json.dumps(
+                {"type": "object", "properties": safe_properties, "required": required},
+                ensure_ascii=False, allow_nan=False, separators=(",", ":"),
+            )
+        except (TypeError, ValueError, RecursionError):
+            raise NativeSimulationError("native_dev_resources") from None
+        if len(encoded_schema.encode("utf-8")) > 64_000:
+            raise NativeSimulationError("native_dev_resources")
+
+        async def preview_handler(_arguments, _manager, _tool_name=name):
+            return {
+                "status": "preview_required",
+                "source": "mcp",
+                "tool": _tool_name,
+            }
+
+        result.append(FlowsFunctionSchema(
+            name=name,
+            description="Read-only connected resource; preview only.",
+            properties=safe_properties,
+            required=required,
+            handler=preview_handler,
+        ))
+    return tuple(result)
 
 
 async def prepare_native_simulation(
@@ -130,6 +354,16 @@ async def prepare_native_simulation(
         )
         if selection is None:
             raise NativeDevAdmissionError("native_dev_selection")
+        flow_catalogue = prepare_native_dev_catalogue(
+            assistant=assistant,
+            tools=tools,
+            tool_set=tool_set,
+            db=db,
+            call_sid=session_id,
+            property_id=assistant.property_id,
+            property_owned=owned,
+            selected=selection,
+        )
     except NativeDevAdmissionError as error:
         code = (
             str(error) if str(error) in _ADMISSION_CODES
@@ -143,6 +377,7 @@ async def prepare_native_simulation(
     ):
         raise NativeSimulationError("native_simulation_version_changed", 409)
 
+    global_functions = _preview_global_mcp_functions(selection, assistant, db)
     try:
         config = await build_assistant_agent_config(assistant)
         apply_native_flow_context(config, assistant=assistant, tool=selection.tool)
@@ -173,19 +408,27 @@ async def prepare_native_simulation(
             "flow_version_id": identity.flow_version_id,
             "version_number": version.version_number,
             "llm_provider": config.llm_provider, "llm_model": config.llm_model,
+            "read_only_global_tools": [item.name for item in global_functions],
         },
         variables_to_collect=list(variables_by_key.values()),
+        global_functions=global_functions,
+        available_flows=flow_catalogue,
     )
 
 
 def native_model_api_keys(config) -> dict:
     """Resolve only the configured model credential, after native admission."""
-    if config.llm_provider.lower() != "openai":
+    provider = config.llm_provider.lower()
+    if provider == "openai":
+        env_name, key_name = "OPENAI_API_KEY", "openai_api_key"
+    elif provider == "google_gemini":
+        env_name, key_name = "GOOGLE_API_KEY", "google_api_key"
+    else:
         raise NativeSimulationError("native_simulation_provider_unsupported")
-    key = os.getenv("OPENAI_API_KEY")
+    key = os.getenv(env_name)
     if not isinstance(key, str) or not key.strip():
         raise NativeSimulationError("native_simulation_model_unconfigured", 503)
-    return {"openai_api_key": key}
+    return {key_name: key}
 
 
 def native_action_session_factory():
@@ -226,6 +469,8 @@ async def start_native_simulation(
             host = NativeTextHost(
                 plan.compiled, config=plan.config, api_keys=keys,
                 session_factory=action_sessions, turn_timeout=120.0,
+                global_functions=plan.global_functions,
+                available_flows=plan.available_flows,
             )
             session = NativeSimulationSession(
                 session_id=session_id, owner_user_id=owner_user_id,

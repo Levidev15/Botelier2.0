@@ -2098,9 +2098,24 @@ class VoiceEngineFactory:
         elif provider == "google_gemini":
             from pipecat.services.google.llm import GoogleLLMService
 
+            if hasattr(GoogleLLMService, "Settings"):
+                return GoogleLLMService(
+                    api_key=api_keys.get("google_api_key"),
+                    settings=GoogleLLMService.Settings(
+                        model=config.llm_model,
+                        temperature=config.llm_temperature,
+                        max_tokens=config.llm_max_tokens,
+                        top_p=config.llm_config.get("top_p", 1.0),
+                    ),
+                )
             return GoogleLLMService(
                 api_key=api_keys.get("google_api_key"),
                 model=config.llm_model,
+                params=GoogleLLMService.InputParams(
+                    temperature=config.llm_temperature,
+                    max_tokens=config.llm_max_tokens,
+                    top_p=config.llm_config.get("top_p", 1.0),
+                ),
             )
         else:
             raise ValueError(f"Unsupported LLM provider: {provider}")

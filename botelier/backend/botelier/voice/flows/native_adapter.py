@@ -58,6 +58,7 @@ class NativeFlowAdapter:
         self, compiled, *, llm, worker, context_aggregator, execute_action=None,
         terminal_handler=None, global_functions=(), text_observer=None,
         text_observer_timeout=5.0, today=None, direct_speech_observer=None,
+        available_flows=None,
     ):
         if not callable(getattr(compiled, "node", None)) or not callable(
             getattr(compiled, "next_node", None)
@@ -72,7 +73,49 @@ class NativeFlowAdapter:
             or any(name in compiled.native_names for name in global_names)
         ):
             raise ValueError("native_global_collision")
+        if available_flows is None:
+            available_flows = {}
+        if not isinstance(available_flows, dict):
+            raise ValueError("native_flow_catalogue")
+        flow_catalogue = {}
+        for flow_id, entry in available_flows.items():
+            if (
+                not isinstance(flow_id, str) or not isinstance(entry, dict)
+                or set(entry) != {"compiled", "name", "description"}
+            ):
+                raise ValueError("native_flow_catalogue")
+            flow = entry["compiled"]
+            identity = getattr(flow, "identity", None)
+            if (
+                not callable(getattr(flow, "node", None))
+                or not callable(getattr(flow, "next_node", None))
+                or str(getattr(identity, "tool_id", "")) != flow_id
+                or str(getattr(identity, "account_id", ""))
+                != str(compiled.identity.account_id)
+                or str(getattr(identity, "property_id", ""))
+                != str(compiled.identity.property_id)
+                or str(getattr(identity, "call_sid", ""))
+                != str(compiled.identity.call_sid)
+                or not isinstance(entry["name"], str)
+                or not isinstance(entry["description"], str)
+            ):
+                raise ValueError("native_flow_catalogue")
+            flow_catalogue[flow_id] = {
+                "compiled": flow,
+                "name": entry["name"][:128],
+                "description": entry["description"][:256],
+            }
+        selected_flow = flow_catalogue.get(str(compiled.identity.tool_id))
+        if selected_flow is None:
+            flow_catalogue[str(compiled.identity.tool_id)] = {
+                "compiled": compiled, "name": "", "description": "",
+            }
         self.compiled = compiled
+        self._root_compiled = compiled
+        self._flow_catalogue = flow_catalogue
+        self._catalog_active = False
+        self._awaiting_flow_choice = False
+        self._suppress_initial_greeting = False
         self.worker = worker
         self.context_aggregator = context_aggregator
         self.execute_action = execute_action
@@ -113,6 +156,14 @@ class NativeFlowAdapter:
         self._pending_instructions = []
         self._automatic_calls = 0
         self._auto_advance_tasks = set()
+
+        if len(self._flow_catalogue) > 1:
+            flow_functions = (
+                self._flow_select_function(),
+                self._flow_exit_function(),
+            )
+            global_functions += flow_functions
+            global_names.extend(function.name for function in flow_functions)
 
         self.manager = FlowManager(
             llm=llm,
@@ -312,8 +363,13 @@ class NativeFlowAdapter:
                 return current
             if kind == "initial":
                 self._carry_private(data.get("systemPrompt"))
-                if data.get("greeting"):
+                if data.get("greeting") and not self._suppress_initial_greeting:
                     await self._speak(self._render(data["greeting"]))
+                if len(self._flow_catalogue) > 1 and not self._catalog_active:
+                    self._active_node_id = current
+                    self._active_slot = None
+                    self._active_form_index = 0
+                    return current
                 current = self._default_next(current)
                 continue
             if kind == "message":
@@ -379,6 +435,10 @@ class NativeFlowAdapter:
                 continue
             if kind in _TERMINALS:
                 self._active_node_id = current
+                if kind == "end" and self._catalog_active:
+                    return await self._return_to_flow_root(
+                        node, data, cursor,
+                    )
                 await self._run_terminal(node, data)
                 return current
             self._fail("unsupported_runtime_node")
@@ -460,7 +520,10 @@ class NativeFlowAdapter:
         speech = ""
         guided = False
         if node.type == "initial":
-            if data.get("greeting"):
+            if self._awaiting_flow_choice:
+                speech = "Would you like another task, or should I end the call?"
+                self._suppress_initial_greeting = False
+            elif data.get("greeting"):
                 speech = self._render(data["greeting"])
             self._carry_private(data.get("systemPrompt"))
             if data.get("waitForResponse"):
@@ -643,9 +706,18 @@ class NativeFlowAdapter:
     def _functions_for_visit(self, node, data, visit, form_index):
         node_id = node.node_id
         if node.type == "initial":
-            if not data.get("waitForResponse", True):
-                return []
-            return [self._text_response_schema(node_id, visit)]
+            functions = []
+            root_selection = (
+                len(self._flow_catalogue) > 1
+                and not self._catalog_active
+                and (self._total_steps == 1 or self._awaiting_flow_choice)
+            )
+            if (
+                not self._awaiting_flow_choice
+                and (data.get("waitForResponse", True) or root_selection)
+            ):
+                functions.append(self._text_response_schema(node_id, visit))
+            return functions
         if node.type == "collect_slot":
             return [self._slot_schema(node_id, visit, data["slot"])]
         if node.type == "collect_form":
@@ -668,6 +740,211 @@ class NativeFlowAdapter:
             name=name, description=description[:512], properties=properties,
             required=list(required), handler=handler, cancel_on_interruption=True,
         )
+
+    def _flow_select_function(self):
+        ids = sorted(self._flow_catalogue)
+        choices = "; ".join(
+            f"{self._flow_catalogue[flow_id]['name'] or flow_id} ({flow_id})"
+            for flow_id in ids
+        )
+
+        async def select_flow(arguments, manager):
+            if self._visit is None or self._active_node_id is None:
+                return self._rejected("flow_selection_unavailable")
+            return await self._select_assigned_flow(
+                self._active_node_id, self._visit, arguments,
+            )
+
+        return FlowsFunctionSchema(
+            name=f"{_NATIVE_PREFIX}select_flow_{uuid4().hex}",
+            description=(
+                "Before entering a flow step, select one currently assigned and "
+                "published flow by tool_id. Available flows: " + choices
+            )[:512],
+            properties={"tool_id": {"type": "string", "enum": ids}},
+            required=["tool_id"],
+            handler=select_flow,
+            cancel_on_interruption=True,
+        )
+
+    def _flow_exit_function(self):
+        async def exit_call(arguments, manager):
+            return await self._exit_at_flow_root(arguments, manager)
+
+        return FlowsFunctionSchema(
+            name="native_exit_call",
+            description=(
+                "End this call from the native flow-selection root when the caller "
+                "explicitly asks to finish."
+            ),
+            properties={},
+            required=[],
+            handler=exit_call,
+            cancel_on_interruption=True,
+        )
+
+    def _at_flow_root(self):
+        return (
+            self.compiled.identity.tool_id == self._root_compiled.identity.tool_id
+            and self._active_node_id == self._root_compiled.initial_node_id
+            and self.manager.current_node == self._root_compiled.initial_node_id
+            and (self._total_steps == 1 or self._awaiting_flow_choice)
+        )
+
+    def _replace_compiled_flow(self, compiled, caller_values):
+        old_declarations = self._declarations_by_key
+        old_types = {
+            key: entry.data().get("type")
+            for key, entry in old_declarations.items()
+        }
+        self.compiled = compiled
+        self._declarations_by_key = {
+            entry.key: entry for entry in compiled.variable_declarations
+        }
+        self.manager.state["facts"] = {}
+        self.manager.state["native_llm_data"] = {}
+        for entry in compiled.variable_declarations:
+            declaration = entry.data()
+            if entry.origin == "explicit" and declaration.get("defaultValue") is not None:
+                self.manager.state["facts"][entry.key] = self._normalize_assignment(
+                    entry.key, declaration["defaultValue"],
+                )
+        carried = {}
+        for key, value in caller_values.items():
+            entry = self._declarations_by_key.get(key)
+            if (
+                entry is None or entry.origin != "explicit"
+                or old_types.get(key) != entry.data().get("type")
+            ):
+                continue
+            try:
+                normalized = self._normalize_assignment(key, value)
+            except (RuntimeError, NativeValueError):
+                continue
+            self.manager.state["facts"][key] = normalized
+            carried[key] = deepcopy(normalized)
+        self._caller_values = carried
+        self._derived.clear()
+        self._llm_data = {}
+        self._confirmation = None
+        self._edit_recollect = False
+        self._pending_instructions.clear()
+        self._retries = {}
+        self._visits = {}
+        self._accepted.clear()
+        self._spent_effects.clear()
+        self._active_node_id = None
+        self._active_slot = None
+        self._active_form_index = 0
+        self.manager.state["native_llm_data"] = {}
+
+    async def _select_assigned_flow(self, node_id, visit, arguments):
+        if (
+            not self._available(node_id, visit)
+            or not self._at_flow_root()
+            or not self._new_user_turn(visit)
+            or not self._arguments(arguments, ["tool_id"])
+        ):
+            return self._rejected("flow_selection_unavailable")
+        flow_id = arguments["tool_id"]
+        target = self._flow_catalogue.get(flow_id)
+        if target is None:
+            return self._rejected("flow_selection_invalid")
+
+        claim = object()
+        task = asyncio.current_task()
+        self._claim = claim
+        self._owned_task = task
+        try:
+            self._awaiting_flow_choice = False
+            self._suppress_initial_greeting = False
+            if flow_id == self.compiled.identity.tool_id:
+                self._catalog_active = True
+                next_node = self._default_next(node_id)
+                if next_node is None:
+                    self._fail("flow_selection_dead_end")
+                    return {"status": "error", "reason": "flow_selection_dead_end"}
+                active = await self._resolve_segment(next_node, visit)
+            else:
+                caller_values = deepcopy(self._caller_values)
+                self._replace_compiled_flow(target["compiled"], caller_values)
+                self._catalog_active = True
+                active = await self._resolve_segment(
+                    self.compiled.initial_node_id, visit,
+                )
+            if not self._owned(node_id, visit, claim, task):
+                return self._rejected("busy_or_stale")
+            if active is None:
+                self._pending_entry = None
+                return self._terminal_or_error({
+                    "status": "accepted", "current_node": node_id,
+                })
+            self._pending_entry = (active, None)
+            return (
+                {"status": "selected", "flow_id": flow_id, "current_node": active},
+                self._node_config(active, source_visit=visit),
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._fail("flow_selection_runtime")
+            return {"status": "error", "reason": "flow_selection_runtime"}
+        finally:
+            if self._claim is claim:
+                self._claim = None
+            if self._owned_task is task:
+                self._owned_task = None
+
+    async def _return_to_flow_root(self, node, data, source_visit):
+        closing = data.get("closingMessage", "")
+        if closing:
+            await self._speak(self._render(closing))
+        caller_values = deepcopy(self._caller_values)
+        self._replace_compiled_flow(self._root_compiled, caller_values)
+        self._catalog_active = False
+        self._awaiting_flow_choice = True
+        self._suppress_initial_greeting = True
+        return await self._resolve_segment(
+            self._root_compiled.initial_node_id, source_visit,
+        )
+
+    async def _exit_at_flow_root(self, arguments, manager):
+        visit = self._visit
+        node_id = self._active_node_id
+        if (
+            not isinstance(arguments, dict) or arguments
+            or visit is None or node_id is None
+            or not self._available(node_id, visit)
+            or not self._at_flow_root()
+            or not self._new_user_turn(visit)
+        ):
+            return self._rejected("flow_exit_unavailable")
+        end_node = next(
+            (node for node in self.compiled.nodes if node.type == "end"),
+            None,
+        )
+        if end_node is None:
+            return self._rejected("flow_exit_unavailable")
+        claim = object()
+        task = asyncio.current_task()
+        self._claim = claim
+        self._owned_task = task
+        try:
+            await self._run_terminal(end_node, end_node.data())
+            return {
+                "status": self._status,
+                "outcome": self._outcome,
+            }
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            self._fail("flow_exit_runtime")
+            return {"status": "error", "reason": "flow_exit_runtime"}
+        finally:
+            if self._claim is claim:
+                self._claim = None
+            if self._owned_task is task:
+                self._owned_task = None
 
     def _slot_schema(self, node_id, visit, slot):
         variable = slot["variableKey"]

@@ -44,18 +44,16 @@ class NativeDevSelection:
 def ensure_native_dev_resources(
     assistant, *, mcp_connection_data=None, mcp_enabled_tools=None,
 ) -> None:
-    """Refuse unsupported global resources before any client is constructed."""
+    """Validate the shared selection envelope without blanket resource bans.
+
+    MCP authority is checked against the selected graph and the current
+    connection policy by NativeActionRunner before a global schema is exposed.
+    Assistant escalation remains an explicitly configured FunctionMapper
+    capability; it is not a reason to reject native flow admission.
+    """
     settings = getattr(assistant, "call_settings", None) or {}
     if not isinstance(settings, dict):
         raise NativeDevAdmissionError("native_dev_selection")
-    if (
-        getattr(assistant, "mcp_connection_id", None)
-        or getattr(assistant, "mcp_enabled_tools", None)
-        or mcp_connection_data
-        or mcp_enabled_tools
-        or settings.get("escalation_number")
-    ):
-        raise NativeDevAdmissionError("native_dev_resources")
 
 
 def prepare_native_dev_selection(
@@ -143,6 +141,63 @@ def prepare_native_dev_selection(
         # the saved graph or parser/provider details into a log or caller path.
         raise NativeDevAdmissionError(str(exc)) from None
     return NativeDevSelection(compiled=compiled, tool=tool)
+
+
+def prepare_native_dev_catalogue(
+    *, assistant, tools, tool_set, db, call_sid, property_id,
+    property_owned, selected,
+):
+    """Compile only the other currently assigned, published native flows."""
+    from botelier.models.flow_version import FlowVersion, FlowVersionStatus
+
+    catalogue = {
+        str(selected.tool.id): {
+            "compiled": selected.compiled,
+            "name": str(getattr(selected.tool, "name", "") or ""),
+            "description": str(getattr(selected.tool, "description", "") or ""),
+        },
+    }
+    for tool in tools:
+        tool_id = str(getattr(tool, "id", "") or "")
+        if (
+            not tool_id or tool_id in catalogue
+            or getattr(tool, "is_active", None) != "true"
+            or getattr(getattr(tool, "tool_type", None), "value", None) != "FLOW"
+            or str(getattr(tool, "tool_set_id", "") or "")
+            != str(getattr(assistant, "tool_set_id", "") or "")
+        ):
+            continue
+        version_id = getattr(tool, "published_version_id", None)
+        if not version_id:
+            continue
+        version = db.query(FlowVersion).filter(
+            FlowVersion.id == version_id,
+            FlowVersion.tool_id == tool.id,
+            FlowVersion.status == FlowVersionStatus.PUBLISHED,
+        ).first()
+        if version is None:
+            continue
+        try:
+            flow = prepare_native_dev_selection(
+                assistant=assistant,
+                tools=tools,
+                tool_set=tool_set,
+                flow_version=version,
+                call_sid=call_sid,
+                property_id=property_id,
+                property_owned=property_owned,
+                requested_tool_id=tool_id,
+            )
+        except NativeDevAdmissionError:
+            # A broken/unpublished alternate must not poison a valid selected
+            # flow or become a caller-selectable route.
+            continue
+        catalogue[tool_id] = {
+            "compiled": flow.compiled,
+            "name": str(getattr(tool, "name", "") or ""),
+            "description": str(getattr(tool, "description", "") or ""),
+        }
+    return catalogue
 
 
 def apply_native_flow_context(config, *, assistant, tool, now=None) -> None:

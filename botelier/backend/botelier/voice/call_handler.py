@@ -36,7 +36,8 @@ from .engine import VoiceEngineFactory, is_external_vad_effectively_enabled
 from .function_mapper import FunctionMapper
 from .flows.native_dev_host import (
     NativeDevAdmissionError, NativeFlowDevPolicy, apply_native_flow_context,
-    ensure_native_dev_resources, prepare_native_dev_selection, redacted_reference,
+    ensure_native_dev_resources, prepare_native_dev_catalogue,
+    prepare_native_dev_selection, redacted_reference,
 )
 from .greeting_cache import get_or_generate_greeting_audio
 from .prewarm import PreWarmBundle, PreWarmCache
@@ -478,6 +479,7 @@ class CallHandler:
         _capture_open = False
         _llm_prewarm_task = None
         _native_selection = None
+        _native_flow_catalogue = {}
         _native_adapter = None
         _native_mapper = None
         _native_action_runner = None
@@ -766,6 +768,11 @@ class CallHandler:
 
                     native_tools = tools
                     if prewarm_bundle is not None and prewarm_bundle.assistant is not None:
+                        # Native admission uses the freshly loaded Assistant,
+                        # not configuration or tools copied into a prewarm
+                        # snapshot. This refresh happens before pipeline setup.
+                        assistant = _native_assistant
+                        config = await self._create_agent_config(_native_assistant)
                         if not config.enable_function_calling:
                             raise NativeDevAdmissionError("native_dev_resources")
                         native_tools = (
@@ -776,6 +783,7 @@ class CallHandler:
                             )
                             .all()
                         )
+                        tools = native_tools
                     _selected_tool_id = str(
                         _native_call_settings.get("native_flow_tool_id") or "",
                     )
@@ -824,21 +832,47 @@ class CallHandler:
                         property_id=_native_property_id,
                         property_owned=_native_property_owned,
                     )
-
-                # The pre-warm bundle already carries its MCP data. The cold
-                # path resolves it here, after shared native admission.
-                if not (prewarm_bundle is not None and prewarm_bundle.assistant is not None):
-                    logger.info(
-                        f"🔍 Checking MCP: assistant.mcp_connection_id = {assistant.mcp_connection_id}, PIPECAT_MCP_AVAILABLE = {PIPECAT_MCP_AVAILABLE}"
+                    _native_flow_catalogue = prepare_native_dev_catalogue(
+                        assistant=_native_assistant,
+                        tools=native_tools,
+                        tool_set=_native_tool_set,
+                        db=db,
+                        call_sid=call_sid,
+                        property_id=_native_property_id,
+                        property_owned=_native_property_owned,
+                        selected=_native_selection,
                     )
-                    if assistant.mcp_connection_id:
+
+                # Native calls refresh MCP resources from the authoritative
+                # Assistant even on a pre-warmed path. Bundle credentials and
+                # remote locations are snapshots, never current authority.
+                _native_prewarm = (
+                    _native_selection is not None
+                    and prewarm_bundle is not None
+                    and prewarm_bundle.assistant is not None
+                )
+                if _native_selection is not None:
+                    mcp_connection_data = None
+                    mcp_enabled_tools = []
+                if not (
+                    prewarm_bundle is not None
+                    and prewarm_bundle.assistant is not None
+                    and not _native_prewarm
+                ):
+                    _mcp_assistant = (
+                        _native_assistant if _native_selection is not None else assistant
+                    )
+                    logger.info(
+                        f"🔍 Checking MCP: assistant.mcp_connection_id = {_mcp_assistant.mcp_connection_id}, PIPECAT_MCP_AVAILABLE = {PIPECAT_MCP_AVAILABLE}"
+                    )
+                    if _mcp_assistant.mcp_connection_id:
                         from ..models.mcp_connection import MCPConnection, MCPConnectionStatus
 
                         mcp_conn = (
                             db.query(MCPConnection)
                             .filter(
-                                MCPConnection.id == assistant.mcp_connection_id,
-                                MCPConnection.account_id == assistant.account_id,
+                                MCPConnection.id == _mcp_assistant.mcp_connection_id,
+                                MCPConnection.account_id == _mcp_assistant.account_id,
                                 MCPConnection.is_active == True,
                             )
                             .first()
@@ -874,7 +908,7 @@ class CallHandler:
                                 "credentials": credentials,
                                 "discovered_tools": mcp_conn.discovered_tools or [],
                             }
-                            mcp_enabled_tools = assistant.mcp_enabled_tools or []
+                            mcp_enabled_tools = _mcp_assistant.mcp_enabled_tools or []
                             logger.info(
                                 f"Loaded MCP connection {mcp_conn.name} with {len(mcp_enabled_tools)} enabled tools"
                             )
@@ -884,14 +918,85 @@ class CallHandler:
                 # WebSocket connections are long-lived - keeping sessions open exhausts the connection pool
                 db.close()
 
+            if _native_selection is not None:
+                _mcp_assistant = _native_assistant or assistant
+                if (
+                    _mcp_assistant.mcp_connection_id
+                    and (
+                        not mcp_connection_data
+                        or str(mcp_connection_data.get("id"))
+                        != str(_mcp_assistant.mcp_connection_id)
+                    )
+                ):
+                    raise NativeDevAdmissionError("native_dev_resources")
+                if mcp_enabled_tools and not mcp_connection_data:
+                    raise NativeDevAdmissionError("native_dev_resources")
+
             # 2. Get API keys
             api_keys = self._get_api_keys()
 
             # 3. Build native function schemas and handlers (knowledge base ALWAYS available)
             if _native_selection is not None:
-                # Native Flows owns the sole selected controller and registers
-                # its schemas after the caller has heard the ordinary greeting.
-                function_schemas, function_handlers = [], {}
+                # NativeFlowAdapter is the sole flow controller. Ordinary
+                # assistant tools remain global functions; assigned FLOW tools
+                # are deliberately excluded until the root selector handles
+                # them as native graphs rather than legacy FlowExecutor calls.
+                native_global_tools = [
+                    tool for tool in tools
+                    if getattr(getattr(tool, "tool_type", None), "value", None) != "FLOW"
+                ]
+                function_schemas, function_handlers = self._build_function_schemas_and_handlers(
+                    assistant=assistant,
+                    tools=native_global_tools,
+                    api_keys=api_keys,
+                    call_sid=call_sid,
+                    stream_sid=stream_sid,
+                    from_number=from_number,
+                    to_number=to_number,
+                    twilio_account_sid=hotel_twilio_sid,
+                    twilio_auth_token=hotel_twilio_token,
+                    account_name=(
+                        prewarm_bundle.account_name
+                        if (prewarm_bundle and prewarm_bundle.assistant)
+                        else (_call_acct.name if _call_acct else None)
+                    ),
+                )
+                _native_names = set(_native_selection.compiled.native_names)
+                _colliding_globals = [
+                    schema.name for schema in function_schemas
+                    if schema.name in _native_names or schema.name.startswith("native_")
+                ]
+                if _colliding_globals:
+                    function_schemas = [
+                        schema for schema in function_schemas
+                        if schema.name not in _colliding_globals
+                    ]
+                    for _name in _colliding_globals:
+                        function_handlers.pop(_name, None)
+                    logger.warning(
+                        "Skipping assistant tools colliding with native flow names: {}",
+                        _colliding_globals,
+                    )
+                from .flows.native_actions import NativeActionRunner
+
+                _native_action_runner = NativeActionRunner(
+                    _native_selection.compiled, lambda: SessionLocal(),
+                    execution_mode="execute", channel="voice",
+                )
+                for node in _native_selection.compiled.nodes:
+                    if node.type not in {"api_request", "capability"}:
+                        continue
+                    action = node.data().get("api", {})
+                    if action.get("apiSource") != "mcp":
+                        continue
+                    try:
+                        await asyncio.to_thread(
+                            _native_action_runner.is_mcp_tool_read_only,
+                            action.get("mcpConnectionId"),
+                            action.get("mcpToolName"),
+                        )
+                    except Exception:
+                        raise NativeDevAdmissionError("native_dev_resources") from None
             else:
                 function_schemas, function_handlers = self._build_function_schemas_and_handlers(
                     assistant=assistant,
@@ -919,12 +1024,32 @@ class CallHandler:
             # locally and emit it once the queue exists.
             _mcp_event_payload = None
             _mcp_client_for_pipeline = None
+            _native_global_mcp_names = set()
+            if (
+                _native_selection is not None
+                and _native_action_runner is not None
+                and mcp_connection_data
+            ):
+                for _mcp_name in mcp_enabled_tools:
+                    try:
+                        _is_read_only = await asyncio.to_thread(
+                            _native_action_runner.is_mcp_tool_read_only,
+                            mcp_connection_data.get("id"), _mcp_name,
+                        )
+                    except Exception:
+                        _is_read_only = False
+                    if _is_read_only:
+                        _native_global_mcp_names.add(_mcp_name)
+            _mcp_tools_for_call = (
+                _native_global_mcp_names
+                if _native_selection is not None else set(mcp_enabled_tools)
+            )
             logger.info(
                 f"🔍 MCP setup check: mcp_connection_data={mcp_connection_data is not None}, "
-                f"mcp_enabled_tools={mcp_enabled_tools}, "
+                f"mcp_enabled_tools={sorted(_mcp_tools_for_call)}, "
                 f"PIPECAT_MCP_AVAILABLE={PIPECAT_MCP_AVAILABLE}"
             )
-            if mcp_connection_data and mcp_enabled_tools and PIPECAT_MCP_AVAILABLE:
+            if mcp_connection_data and _mcp_tools_for_call and PIPECAT_MCP_AVAILABLE:
                 import time as _time_mcp
 
                 _mcp_t_start = _time_mcp.monotonic()
@@ -1009,6 +1134,16 @@ class CallHandler:
                     # Capture server params and class for the per-call wrapper.
                     _mcp_rp = _server_params
                     _mcp_cls = PipecatMCPClient
+                    _native_mcp_runner = (
+                        _native_action_runner
+                        if _native_selection is not None else None
+                    )
+                    _native_mcp_connection_id = (
+                        mcp_connection_data.get("id")
+                        if _native_mcp_runner is not None and mcp_connection_data
+                        else None
+                    )
+                    _native_mcp_allowed = frozenset(_native_global_mcp_names)
 
                     async def _mcp_per_call_wrapper(
                         params,
@@ -1016,6 +1151,9 @@ class CallHandler:
                         _mcpc=_mcp_cls,
                         _ucp_names=ucp_tool_names,
                         _ucp_url=_ucp_profile_url,
+                        _native_runner=_native_mcp_runner,
+                        _connection_id=_native_mcp_connection_id,
+                        _native_allowed=_native_mcp_allowed,
                     ) -> None:
                         """Delegate to module-level _mcp_isolated_tool_call.
 
@@ -1029,15 +1167,45 @@ class CallHandler:
                             if _ucp_url and params.function_name in _ucp_names
                             else None
                         )
+                        if _native_runner is not None:
+                            allowed = False
+                            if (
+                                _connection_id is not None
+                                and params.function_name in _native_allowed
+                            ):
+                                try:
+                                    allowed = await asyncio.to_thread(
+                                        _native_runner.is_mcp_tool_read_only,
+                                        _connection_id,
+                                        params.function_name,
+                                    )
+                                except Exception:
+                                    allowed = False
+                            if not allowed:
+                                await params.result_callback(
+                                    "MCP tool is unavailable under the current "
+                                    "read-only policy."
+                                )
+                                return
                         await _mcp_isolated_tool_call(
                             params, _rp, _mcpc, ucp_meta=_ucp_meta
                         )
 
+                    _mcp_schema_tools = list(
+                        all_tools_schema.standard_tools or []
+                    )
+                    if _native_selection is not None:
+                        _native_names = set(_native_selection.compiled.native_names)
+                        _mcp_schema_tools = [
+                            item for item in _mcp_schema_tools
+                            if item.name not in _native_names
+                            and not item.name.startswith("native_")
+                        ]
                     filtered_tools, colliding_names = _merge_voice_mcp_tools(
                         function_schemas,
                         function_handlers,
-                        list(all_tools_schema.standard_tools or []),
-                        set(mcp_enabled_tools),
+                        _mcp_schema_tools,
+                        _mcp_tools_for_call,
                         _mcp_per_call_wrapper,
                     )
 
@@ -1409,6 +1577,19 @@ class CallHandler:
 
             if _native_selection is not None:
                 from .flows.native_voice_host import create_native_voice_runtime
+                from pipecat.flows.types import FlowsFunctionSchema
+
+                _native_global_functions = [
+                    FlowsFunctionSchema(
+                        name=schema.name,
+                        description=schema.description,
+                        properties=schema.properties,
+                        required=schema.required,
+                        handler=function_handlers[schema.name],
+                    )
+                    for schema in function_schemas
+                    if schema.name in function_handlers
+                ]
 
                 _account_name = (
                     prewarm_bundle.account_name
@@ -1434,6 +1615,9 @@ class CallHandler:
                     account_name=_account_name,
                     assistant_timezone=config.timezone,
                     session_factory=SessionLocal,
+                    action_runner=_native_action_runner,
+                    global_functions=_native_global_functions,
+                    available_flows=_native_flow_catalogue,
                 )
                 if _capture_is_current():
                     self.native_flow_hosts[call_sid] = _native_adapter
@@ -1447,8 +1631,14 @@ class CallHandler:
             # Link the TTS completion watcher, TTS service, and mark watcher to the
             # FunctionMapper so terminal handlers can use context-ID-bound callbacks
             # (immune to Deepgram's spurious mid-turn BotStoppedSpeakingFrame).
-            _voice_mapper = self.call_mappers.get(call_sid) or _native_mapper
-            if _voice_mapper is not None:
+            _voice_mappers = []
+            for _voice_mapper in (self.call_mappers.get(call_sid), _native_mapper):
+                if (
+                    _voice_mapper is not None
+                    and all(_voice_mapper is not existing for existing in _voice_mappers)
+                ):
+                    _voice_mappers.append(_voice_mapper)
+            for _voice_mapper in _voice_mappers:
                 _voice_mapper.set_tts_completion_watcher(tts_completion_watcher)
                 _voice_mapper.set_twilio_mark_watcher(twilio_mark_watcher)
                 _voice_mapper.set_tts_service(tts_service)

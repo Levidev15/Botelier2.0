@@ -11,6 +11,8 @@ def create_native_voice_runtime(
     selection, *, call_handler, llm, worker, context_aggregator,
     call_sid, stream_sid, from_number, to_number, twilio_account_sid,
     twilio_auth_token, account_name, assistant_timezone, session_factory,
+    action_runner=None, global_functions=(),
+    available_flows=None,
 ):
     """Build one native manager, scoped action runner, and terminal host bridge."""
     compiled = selection.compiled
@@ -35,13 +37,16 @@ def create_native_voice_runtime(
     )
 
     execute_action = None
-    action_runner = None
-    if any(node.type in {"api_request", "capability", "save_record"} for node in compiled.nodes):
+    if action_runner is None and any(
+        node.type in {"api_request", "capability", "save_record"}
+        for node in compiled.nodes
+    ):
         from botelier.voice.flows.native_actions import NativeActionRunner
 
         action_runner = NativeActionRunner(
             compiled, session_factory, execution_mode="execute", channel="voice",
         )
+    if action_runner is not None:
         execute_action = action_runner.execute
 
     terminal_handler = _terminal_handler(mapper, llm, worker)
@@ -52,6 +57,8 @@ def create_native_voice_runtime(
         context_aggregator=context_aggregator,
         execute_action=execute_action,
         terminal_handler=terminal_handler,
+        global_functions=global_functions,
+        available_flows=available_flows,
         direct_speech_observer=mapper._capture_direct_speech,
     )
     terminal_handler.adapter = adapter

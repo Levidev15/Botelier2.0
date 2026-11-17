@@ -63,3 +63,47 @@ Guarded verification:
 
 The deprecation warnings are from the installed current Pipecat APIs and are
 unrelated to this change.
+
+Task 5 shared-resource, model-parity, and caller-selected-flow milestone
+
+Implementation:
+- Native voice/Test Lab admission now keeps current assigned read-only MCP
+  globals, checks the account/property connection allowlist, ignores server
+  readOnly annotations as authority, and rechecks policy at invocation before
+  using the application's isolated MCP transport. Preview exposes sanitized
+  cached schemas only and never connects or invokes a remote resource. Escalation
+  uses the current assistant configuration and the existing terminal primitive.
+- The native simulator builds an actual catalogue from other valid published
+  assigned FLOW versions. At the root, native FlowManager global functions offer
+  only published tool IDs and an explicit exit; the root gates both functions,
+  swaps one active graph at a time, returns at subflow end, and preserves only
+  type-compatible explicit caller facts. Defaults, API-derived values and
+  projections are cleared on graph changes. Flow transfer remains terminal.
+- Native Text/Test Lab receives the same compiled catalogue as voice. Unsupported
+  provider configuration is rejected before client construction; optional
+  Google Gemini configuration is passed through to the installed SDK interface
+  when that package is present. In the current installed environment
+  `google.genai` is absent, so Gemini execution is explicitly unsupported rather
+  than installed or silently substituted. Model output limits now match the
+  configured 32,768 token contract.
+- Preview transfer returns a truthful unsuccessful `preview_only_transfer`
+  result rather than an invalid acceptance-with-failure or fabricated transfer.
+
+Guarded verification:
+  lifecycle_guard.py --tests test_native_dev_voice_host.py
+                  test_native_graph_runtime.py
+                  test_native_simulation_selection.py
+                  test_native_assistant_configuration.py
+  Result: 80 passed; APPLICATION_GUARD_BLOCKED_ATTEMPTS=0.
+  Separate native action permission tests: 6 passed, zero guard blocks.
+
+Test correction history:
+- A new multi-flow voice test initially timed out because it expected the
+  preselected flow's slot prompt while the correct caller-driven root was still
+  waiting for selection. The assertion was corrected to verify the initial
+  root node; actual selection, API-backed subflow, controlled return, fact
+  provenance and cleanup then passed in a real offline worker fixture.
+- One initial guard invocation timed out before yielding a result; a rerun
+  exposed the above fixture assumption. A typo test path then returned
+  "no tests ran" (zero blocks); all corrected invocations are recorded above.
+- No blocked external/application attempts were recorded in the passing suites.

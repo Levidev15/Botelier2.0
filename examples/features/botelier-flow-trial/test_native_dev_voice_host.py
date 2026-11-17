@@ -6,9 +6,9 @@ import pytest
 
 from lifecycle_io import CALL_SID, GREETING, PRIVATE_PROMPT
 from native_dev_voice_io import (
-    NativeDevVoiceCall, TOOL_ID, VERSION_ID,
+    ALT_TOOL_ID, NativeDevVoiceCall, TOOL_ID, VERSION_ID,
 )
-from node_contract_io import API_URL, PRESENTATION, PROPERTY, speech
+from node_contract_io import API_URL, PRESENTATION, PROPERTY, speech, tool_delta
 from pilot_io import PilotProviders
 
 
@@ -144,7 +144,8 @@ def test_actual_voice_selects_the_explicit_published_flow_from_multiple_assignme
             "The selected fixture is ready.",
         ])
         async with NativeDevVoiceCall(
-            extra_tool=True, with_global_prompt=True, providers=providers,
+            extra_tool=True, with_global_prompt=True, extra_global_tool=True,
+            escalation=True, with_mcp=True, providers=providers,
         ) as call:
             await call.wait_until(lambda: call.started.is_set())
             adapter = call.handler.native_flow_hosts[CALL_SID]
@@ -167,9 +168,70 @@ def test_actual_voice_selects_the_explicit_published_flow_from_multiple_assignme
                 for request in call.providers.requests
                 for message in request.get("messages", [])
             )
+            model_tool_names = {
+                item["function"]["name"]
+                for request in call.providers.requests
+                for item in request.get("tools", [])
+                if item.get("type") == "function"
+            }
+            assert {
+                "end_call_fixture", "request_human", "lookup",
+            } <= model_tool_names
+            assert "reserve" not in model_tool_names
+            assert call.handler.call_mappers[CALL_SID].get_flow_executors() == []
             await call.finish("graceful_end")
             call.assert_clean()
 
+    asyncio.run(scenario())
+
+
+def test_native_root_selects_and_returns_between_published_assigned_flows():
+    async def scenario():
+        providers = PilotProviders([
+            tool_delta("collect_select_flow", {"tool_id": ALT_TOOL_ID}),
+            tool_delta("collect_query", {"query": "alternate"}),
+            tool_delta("collect_choice", {"choice": "Standard"}),
+        ])
+        async with NativeDevVoiceCall(
+            extra_published_flow=True, providers=providers,
+        ) as call:
+            await call.wait_until(lambda: call.started.is_set())
+            adapter = call.handler.native_flow_hosts[CALL_SID]
+            await call.wait_until(lambda: (
+                adapter._started and adapter.manager.current_node == "start"
+            ))
+            await call.providers.user_turn("Use the fixture support workflow.")
+            await call.wait_until(lambda: (
+                adapter.compiled.identity.tool_id == ALT_TOOL_ID
+                and "Which alternate fixture?" in speech(call)
+            ))
+            assert adapter._catalog_active is True
+            assert adapter.manager.current_node == "query"
+            await call.providers.user_turn("Find alternate.")
+            await call.wait_until(lambda: (
+                PRESENTATION in speech(call)
+                and len(call.providers.business_requests) == 1
+            ))
+            assert "query=alternate" in str(call.providers.business_requests[0].url)
+            await call.providers.user_turn("Select Standard.")
+            await call.wait_until(lambda: (
+                adapter._awaiting_flow_choice
+                and adapter.compiled.identity.tool_id == TOOL_ID
+                and "Would you like another task, or should I end the call?"
+                in speech(call)
+            ))
+            assert adapter._catalog_active is False
+            assert adapter.facts == {
+                "query": "alternate",
+                "choice": "Standard",
+            }
+            root_selection = next(
+                function for function in adapter.manager._global_functions
+                if function.name == "native_exit_call"
+            )
+            assert root_selection.name == "native_exit_call"
+            await call.finish("graceful_end")
+            call.assert_clean()
     asyncio.run(scenario())
 
 
@@ -185,12 +247,52 @@ def test_prewarmed_native_ownership_rejection_does_not_fall_back_to_legacy():
     asyncio.run(scenario())
 
 
-def test_prewarmed_native_call_revalidates_mcp_resources_from_the_authoritative_assistant():
+def test_prewarmed_native_call_revalidates_and_exposes_only_readonly_mcp_globals():
     async def scenario():
         async with NativeDevVoiceCall(prewarmed=True, with_mcp=True) as call:
-            await asyncio.wait_for(asyncio.shield(call.run_task), timeout=4.0)
-            call.assert_rejected_before_pipeline("native_dev_resources")
-            assert not call.providers.requests
+            await call.wait_until(lambda: (
+                call.started.is_set()
+                and call.handler.native_flow_hosts[CALL_SID]._started
+            ))
+            await call.providers.user_turn("Check the standard fixture.")
+            await call.wait_until(lambda: (
+                PRESENTATION in speech(call)
+                and len(call.providers.business_requests) == 1
+            ))
+            model_tool_names = {
+                item["function"]["name"]
+                for request in call.providers.requests
+                for item in request.get("tools", [])
+                if item.get("type") == "function"
+            }
+            assert "lookup" in model_tool_names
+            assert "reserve" not in model_tool_names
+            await call.finish("graceful_end")
+            call.assert_clean()
+    asyncio.run(scenario())
+
+
+def test_native_voice_executes_only_currently_authorized_global_readonly_mcp_tool():
+    async def scenario():
+        providers = PilotProviders([
+            tool_delta("lookup", {}),
+            "The fixture lookup is preview-only.",
+        ])
+        async with NativeDevVoiceCall(
+            with_mcp=True, providers=providers,
+        ) as call:
+            await call.wait_until(lambda: (
+                call.started.is_set()
+                and call.handler.native_flow_hosts[CALL_SID]._started
+            ))
+            await call.providers.user_turn("Read the fixture lookup.")
+            await call.wait_until(lambda: (
+                bool(call.mcp_calls)
+                and "The fixture lookup is preview-only." in speech(call)
+            ))
+            assert call.mcp_calls == [("lookup", {})]
+            await call.finish("graceful_end")
+            call.assert_clean()
     asyncio.run(scenario())
 
 
@@ -223,7 +325,6 @@ def test_native_start_is_independent_of_missing_call_log_and_keeps_native_tools(
 @pytest.mark.parametrize(
     "resources,expected_code",
     [
-        ({"with_mcp": True}, "native_dev_resources"),
         ({"bad_contract": True}, "definition_field"),
         ({"wrong_ownership": "tool_set"}, "native_dev_ownership"),
         ({"wrong_ownership": "property"}, "native_dev_ownership"),

@@ -70,6 +70,8 @@ class NativeTextHost:
         session_factory,
         turn_timeout: float = 120.0,
         execution_mode: str = "preview",
+        global_functions=(),
+        available_flows=None,
     ):
         if not isinstance(compiled, CompiledFlow) or not isinstance(config, VoiceAgentConfig):
             raise NativeTextHostError("invalid")
@@ -89,6 +91,8 @@ class NativeTextHost:
         self._session_factory = session_factory
         self._turn_timeout = float(turn_timeout)
         self._execution_mode = execution_mode
+        self._global_functions = tuple(global_functions)
+        self._available_flows = available_flows
         self._action_runner = None
         self._adapter_close_timeout = _CLOSE_TIMEOUT
         self._expected_model_ends = 0
@@ -327,6 +331,8 @@ class NativeTextHost:
             context_aggregator=self._context_aggregator,
             execute_action=execute_action,
             terminal_handler=self._simulate_terminal,
+            global_functions=self._global_functions,
+            available_flows=self._available_flows,
             text_observer=self._observer,
             text_observer_timeout=min(5.0, self._turn_timeout),
         )
@@ -346,8 +352,8 @@ class NativeTextHost:
     async def _simulate_terminal(self, node, facts):
         # Text simulations never hang up or transfer a real phone call.
         return NativeTerminalResult(
-            True, completed=node.type == "end",
-            failure_reason=None if node.type == "end" else "simulated_transfer",
+            node.type == "end", completed=node.type == "end",
+            failure_reason=None if node.type == "end" else "preview_only_transfer",
         )
 
     def _native_idle(self):

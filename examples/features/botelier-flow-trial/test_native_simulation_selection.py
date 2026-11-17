@@ -1,6 +1,7 @@
 """Native Test Lab source admission; no server, providers or customer storage."""
 
 import asyncio
+import importlib.util
 from types import SimpleNamespace
 
 import pytest
@@ -42,12 +43,14 @@ def test_native_simulator_uses_the_owned_published_graph_not_stale_tool_config()
         records.rows["Tool"][0].config = {"nodes": [], "globalPrompt": "STALE"}
         records.assistant.temperature = 0
         plan = await module.prepare_native_simulation(**arguments)
-        assert plan.compiled.query.node_id == "query"
-        assert plan.compiled.query.prompt == "Which fixture?"
+        query = plan.compiled.node("query")
+        assert query.node_id == "query"
+        assert query.data()["slot"]["prompt"] == "Which fixture?"
         assert plan.compiled.identity.call_sid == "offline-native-simulation"
         assert plan.runtime == {
             "engine": "native_pilot",
             "source": "published",
+            "implementation": "NativeFlowAdapter",
             "tool_id": TOOL_ID,
             "assistant_id": str(records.assistant.id),
             "account_id": ACCOUNT,
@@ -56,18 +59,111 @@ def test_native_simulator_uses_the_owned_published_graph_not_stale_tool_config()
             "version_number": 1,
             "llm_provider": records.assistant.llm_provider,
             "llm_model": records.assistant.llm_model,
+            "read_only_global_tools": [],
         }
         assert plan.config.llm_temperature == 0
         assert {entry["key"] for entry in plan.variables_to_collect} == {
-            plan.compiled.query.variable,
-            plan.compiled.choice.variable,
-            plan.compiled.failure.variable,
+            plan.compiled.node("query").data()["slot"]["variableKey"],
+            plan.compiled.node("choice").data()["slot"]["variableKey"],
+            plan.compiled.node("failure").data()["slot"]["variableKey"],
         }
         assert all(entry["type"] == "string" for entry in plan.variables_to_collect)
         assert len(plan.variables_to_collect) == len({
             entry["key"] for entry in plan.variables_to_collect
         }), "alternative collection nodes must not duplicate a variable in the editor"
-        assert plan.variables_to_collect[0]["node_id"] == plan.compiled.query.node_id
+        assert plan.variables_to_collect[0]["node_id"] == query.node_id
+        arguments["db"].close()
+    asyncio.run(scenario())
+
+
+def test_native_simulator_selects_the_requested_flow_from_multiple_assignments():
+    async def scenario():
+        module, records, arguments = selection_case(
+            extra_published_flow=True, wrong_selection=True,
+        )
+        plan = await module.prepare_native_simulation(**arguments)
+        assert plan.compiled.identity.tool_id == arguments["request"].tool_id
+        assert plan.compiled.identity.flow_version_id == str(
+            records.rows["FlowVersion"].id,
+        )
+        assert set(plan.available_flows) == {
+            arguments["request"].tool_id, "00000000-0000-0000-0000-000000000110",
+        }
+        assert plan.global_functions == ()
+        from botelier.voice.flows.native_text_host import NativeTextHost
+
+        host = NativeTextHost(
+            plan.compiled,
+            config=plan.config,
+            api_keys={"openai_api_key": "offline-test-only"},
+            session_factory=records.session,
+            available_flows=plan.available_flows,
+        )
+        try:
+            host._build_pipeline()
+            assert set(host.adapter._flow_catalogue) == set(plan.available_flows)
+            result = await host._simulate_terminal(
+                SimpleNamespace(type="transfer"), {},
+            )
+            assert result.accepted is False
+            assert result.completed is False
+            assert result.failure_reason == "preview_only_transfer"
+        finally:
+            await host.close()
+        arguments["db"].close()
+    asyncio.run(scenario())
+
+
+def test_native_simulator_exposes_only_scoped_readonly_mcp_preview_tools():
+    async def scenario():
+        module, records, arguments = selection_case(with_mcp=True)
+        records.rows["MCPConnection"].discovered_tools[0]["parameters"] = {
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "description": "Untrusted server text is not model schema.",
+                    "properties": {
+                        "tags": {
+                            "type": "array",
+                            "items": {"type": "string", "description": "Not copied."},
+                        },
+                    },
+                    "required": ["tags"],
+                    "additionalProperties": False,
+                },
+            },
+            "required": ["filter"],
+            "additionalProperties": False,
+        }
+        plan = await module.prepare_native_simulation(**arguments)
+        assert [item.name for item in plan.global_functions] == ["lookup"]
+        assert plan.runtime["read_only_global_tools"] == ["lookup"]
+        filter_schema = plan.global_functions[0].properties["filter"]
+        assert filter_schema["properties"]["tags"] == {
+            "type": "array", "items": {"type": "string"},
+        }
+        preview = await plan.global_functions[0].handler({}, None)
+        assert preview == {
+            "status": "preview_required", "source": "mcp", "tool": "lookup",
+        }
+        assert "reserve" not in plan.runtime["read_only_global_tools"]
+        from botelier.voice.flows.native_text_host import NativeTextHost
+
+        host = NativeTextHost(
+            plan.compiled,
+            config=plan.config,
+            api_keys={"openai_api_key": "offline-test-only"},
+            session_factory=records.session,
+            global_functions=plan.global_functions,
+        )
+        try:
+            host._build_pipeline()
+            assert [
+                item.name for item in host.adapter.manager._global_functions
+            ] == ["lookup"]
+        finally:
+            await host.close()
         arguments["db"].close()
     asyncio.run(scenario())
 
@@ -128,9 +224,6 @@ def test_native_simulator_is_unavailable_in_production_before_metadata_queries()
         ({"wrong_ownership": "property"}, "native_dev_ownership"),
         ({"wrong_ownership": "tool"}, "native_dev_ownership"),
         ({"wrong_ownership": "tool_set"}, "native_dev_ownership"),
-        ({"wrong_selection": True}, "native_dev_selection"),
-        ({"extra_tool": True}, "native_dev_resources"),
-        ({"with_mcp": True}, "native_dev_resources"),
         ({"missing_version": True}, "native_dev_published_version"),
         ({"unpublished_version": True}, "native_dev_published_version"),
     ],
@@ -163,14 +256,70 @@ def test_native_simulator_refuses_mismatched_request_identity_or_inactive_flow(c
     asyncio.run(scenario())
 
 
-def test_native_simulator_does_not_substitute_an_unverified_provider_or_model():
+def test_native_simulator_does_not_substitute_an_unavailable_provider_or_model():
     async def scenario():
         module, records, arguments = selection_case()
-        records.assistant.llm_provider = "google_gemini"
+        records.assistant.llm_provider = "anthropic"
         records.assistant.llm_model = "configured-other-model"
         with pytest.raises(module.NativeSimulationError) as error:
             await module.prepare_native_simulation(**arguments)
         assert error.value.code == "native_simulation_provider_unsupported"
         assert records.assistant.llm_model == "configured-other-model"
+        arguments["db"].close()
+    asyncio.run(scenario())
+
+
+def test_native_simulator_uses_the_configured_google_model_and_sdk_context(monkeypatch):
+    async def scenario():
+        module, records, arguments = selection_case()
+        records.assistant.llm_provider = "google_gemini"
+        records.assistant.llm_model = "gemini-2.5-flash"
+        records.assistant.temperature = 0.35
+        records.assistant.max_tokens = 333
+        records.assistant.llm_config = {"top_p": 0.8}
+        try:
+            google_sdk_available = importlib.util.find_spec("google.genai") is not None
+        except (ImportError, ModuleNotFoundError, ValueError):
+            google_sdk_available = False
+        if not google_sdk_available:
+            with pytest.raises(module.NativeSimulationError) as error:
+                await module.prepare_native_simulation(**arguments)
+            assert error.value.code == "native_simulation_provider_unsupported"
+            arguments["db"].close()
+            return
+
+        from pipecat.adapters.schemas.function_schema import FunctionSchema
+        from pipecat.adapters.schemas.tools_schema import ToolsSchema
+        from pipecat.adapters.services.gemini_adapter import GeminiLLMAdapter
+        from pipecat.processors.aggregators.llm_context import LLMContext
+        from botelier.voice.engine import VoiceEngineFactory
+
+        plan = await module.prepare_native_simulation(**arguments)
+        assert plan.config.llm_provider == "google_gemini"
+        assert plan.config.llm_model == "gemini-2.5-flash"
+        monkeypatch.setenv("GOOGLE_API_KEY", "offline-google-key")
+        monkeypatch.setenv("OPENAI_API_KEY", "must-not-be-selected")
+        assert module.native_model_api_keys(plan.config) == {
+            "google_api_key": "offline-google-key",
+        }
+
+        service = VoiceEngineFactory.create_llm_service(
+            plan.config, {"google_api_key": "offline-google-key"},
+        )
+        assert service._settings.model == "gemini-2.5-flash"
+        assert service._settings.temperature == 0.35
+        assert service._settings.max_tokens == 333
+        assert service._settings.top_p == 0.8
+
+        context = LLMContext(
+            messages=[{"role": "user", "content": "Check availability."}],
+            tools=ToolsSchema(standard_tools=[
+                FunctionSchema("lookup_fixture", "Lookup only.", {}, []),
+            ]),
+        )
+        invocation = GeminiLLMAdapter().get_llm_invocation_params(context)
+        assert invocation["tools"][0]["functionDeclarations"][0]["name"] == (
+            "lookup_fixture"
+        )
         arguments["db"].close()
     asyncio.run(scenario())

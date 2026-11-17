@@ -111,6 +111,59 @@ def test_native_custom_api_uses_action_executor_and_exact_projection(monkeypatch
     asyncio.run(scenario())
 
 
+def test_global_mcp_exposure_is_explicitly_read_only_and_scope_checked():
+    from native_effect_io import NativeEffectsFixture
+
+    async def scenario():
+        async with NativeEffectsFixture() as fixture:
+            from botelier.models.mcp_connection import (
+                MCPAuthType, MCPConnection, MCPTransportType,
+            )
+            from botelier.voice.flows.native_actions import NativeActionRunner
+            from botelier.voice.flows.native_graph import compile_flow
+
+            connection_id = uuid.uuid4()
+            db = fixture.factory()
+            db.add(MCPConnection(
+                id=connection_id, account_id=uuid.UUID(fixture.account_id),
+                name="Native global read-only fixture",
+                server_url="https://mcp.fixture.invalid/mcp",
+                auth_type=MCPAuthType.NONE,
+                transport_type=MCPTransportType.STREAMABLE_HTTP,
+                is_active=True,
+                connection_config={
+                    "property_id": fixture.property_id,
+                    "native_enabled_tools": ["lookup", "reserve"],
+                    "native_read_only_tools": ["lookup"],
+                },
+            ))
+            db.commit()
+            db.close()
+            compiled = compile_flow({
+                "initial_node": "start",
+                "variables": [],
+                "nodes": [
+                    {"id": "start", "type": "initial", "data": {
+                        "greeting": "", "waitForResponse": False,
+                    }},
+                    {"id": "end", "type": "end", "data": {"closingMessage": ""}},
+                ],
+                "edges": [{"id": "done", "source": "start", "target": "end"}],
+            }, fixture.identity)
+            runner = NativeActionRunner(compiled, fixture.factory)
+            assert runner.is_mcp_tool_read_only(str(connection_id), "lookup") is True
+            assert runner.is_mcp_tool_read_only(str(connection_id), "reserve") is False
+            try:
+                runner.is_mcp_tool_read_only(str(connection_id), "disabled")
+            except PermissionError:
+                pass
+            else:
+                raise AssertionError("A disabled global MCP tool was authorized")
+            await runner.close()
+
+    asyncio.run(scenario())
+
+
 def test_output_only_mapping_defaults_preserve_false_and_required_missing_fails(monkeypatch):
     from native_effect_io import NativeEffectsFixture
 
