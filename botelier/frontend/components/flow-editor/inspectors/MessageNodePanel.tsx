@@ -1,6 +1,9 @@
 "use client";
 
+import { useState } from "react";
+import { AlertCircle } from "lucide-react";
 import { useFlowStore, MessageNodeData } from "../store";
+import { collectFlowVariables, findQuoteSpeechProtections } from "../flowEditorData";
 
 interface Props {
   data: MessageNodeData;
@@ -8,8 +11,31 @@ interface Props {
 }
 
 export default function MessageNodePanel({ data, nodeId }: Props) {
-  const { updateNodeData, variables } = useFlowStore();
+  const { updateNodeData, variables, nodes, edges } = useFlowStore();
+  const [speechError, setSpeechError] = useState<string | null>(null);
   const deliveryMode = data.deliveryMode || "guided";
+  const flowVariables = collectFlowVariables(variables, nodes);
+  const quoteProtection = findQuoteSpeechProtections(nodes, edges, nodeId);
+  const protectedKeys = new Set([
+    ...quoteProtection.privateVariables,
+    ...quoteProtection.fingerprintVariables,
+    ...quoteProtection.rawQuoteVariables,
+  ]);
+  const spokenContent = data.message || "";
+  const containsProtectedReference = (value: string) =>
+    Array.from(protectedKeys).some((key) => key && value.includes(`{{${key}}}`)) ||
+    (protectedKeys.size > 0 && /https?:\/\/\S+/i.test(value));
+  const messageError = containsProtectedReference(spokenContent)
+    ? "A quote fingerprint, raw quote or private checkout URL cannot be included in spoken text."
+    : null;
+  const updateMessage = (value: string) => {
+    if (protectedKeys.size && containsProtectedReference(value)) {
+      setSpeechError("Keep the quote fingerprint, raw quote and private checkout URL out of spoken text.");
+      return;
+    }
+    setSpeechError(null);
+    updateNodeData(nodeId, { message: value });
+  };
 
   return (
     <div className="space-y-4">
@@ -20,21 +46,26 @@ export default function MessageNodePanel({ data, nodeId }: Props) {
         </label>
         <textarea
           value={data.message || ""}
-          onChange={(e) => updateNodeData(nodeId, { message: e.target.value })}
+          onChange={(e) => updateMessage(e.target.value)}
           rows={4}
           className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-blue-500 focus:outline-none resize-none"
           placeholder="Your message here..."
         />
 
-        {variables.length > 0 && (
+        {(messageError || speechError) && (
+          <p role="alert" className="mt-1 flex items-start gap-1.5 text-[10px] text-amber-300">
+            <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />{speechError || messageError}
+          </p>
+        )}
+        {flowVariables.filter((variable) => !protectedKeys.has(variable.key)).length > 0 && (
           <div className="mt-2 flex flex-wrap gap-1">
-            {variables.map((v) => (
+            {flowVariables.filter((variable) => !protectedKeys.has(variable.key)).map((v) => (
               <button
                 key={v.key}
-                onClick={() => updateNodeData(nodeId, { message: (data.message || "") + `{{${v.key}}}` })}
+                onClick={() => updateMessage((data.message || "") + `{{${v.key}}}`)}
                 className="text-xs bg-purple-900/30 text-purple-400 rounded px-1.5 py-0.5 hover:bg-purple-900/50"
               >
-                {`{{${v.key}}}`}
+                {`{{${v.key}}}`}{v.origin === "mapped" ? " · mapped" : ""}
               </button>
             ))}
           </div>

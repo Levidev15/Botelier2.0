@@ -348,8 +348,8 @@ export default function FlowSimulatorSidebar({
             </select>
             {engine === "native" && (
               <p className="mb-4 text-left text-[11px] leading-relaxed text-amber-200/80">
-                Bounded, read-only six-node pilot. It does not support every node type, booking, or messaging, and does not switch production publishing.
-                Requires a clean, current published version and an assistant.
+                The server validates the complete published flow, version, assistant, model and attached resources before native development starts. No provider fallback or production routing change is made.
+                Custom API and MCP actions in text simulation remain preview-only and report preview-required rather than fabricating results.
               </p>
             )}
             {engine === "native" && !assistantId && (

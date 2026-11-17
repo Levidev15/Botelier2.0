@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   ReactFlow,
   Background,
@@ -17,6 +17,7 @@ import {
 import "@xyflow/react/dist/style.css";
 
 import { useFlowStore } from "./store";
+import { duplicateFlowSelection } from "./flowEditorData";
 import { nodeTypes } from "./nodes";
 import NodeInspector from "./NodeInspector";
 import FlowToolbar from "./FlowToolbar";
@@ -104,6 +105,10 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
     onConnect,
     selectNode,
     selectedNode,
+    duplicateSelectedNodes,
+    pasteFlowSelection,
+    undoFlow,
+    redoFlow,
     loadFlow,
     saveFlow,
     isLoading,
@@ -121,6 +126,7 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
   const [showSimulator, setShowSimulator] = useState(false);
   const [showSchema, setShowSchema] = useState(false);
   const [showAIBuilder, setShowAIBuilder] = useState(false);
+  const clipboardRef = useRef<{ nodes: typeof nodes; edges: Edge[] } | null>(null);
 
   useEffect(() => {
     loadFlow(toolId, accountId);
@@ -151,6 +157,61 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const editingText = !!target && (
+        target.isContentEditable ||
+        ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName)
+      );
+      if (editingText) return;
+      const command = e.metaKey || e.ctrlKey;
+      if (command && e.key.toLowerCase() === "z") {
+        e.preventDefault();
+        if (e.shiftKey) redoFlow();
+        else undoFlow();
+      }
+      if (command && e.key.toLowerCase() === "y") {
+        e.preventDefault();
+        redoFlow();
+      }
+      if (command && e.key.toLowerCase() === "c") {
+        const selected = nodes.filter((node) => node.selected);
+        const selection = selected.length
+          ? selected
+          : selectedNode
+            ? nodes.filter((node) => node.id === selectedNode.id)
+            : [];
+        if (selection.length) {
+          e.preventDefault();
+          clipboardRef.current = {
+            nodes: selection.map((node) => JSON.parse(JSON.stringify(node))),
+            edges: edges
+              .filter((edge) =>
+                selection.some((node) => node.id === edge.source) &&
+                selection.some((node) => node.id === edge.target)
+              )
+              .map((edge) => JSON.parse(JSON.stringify(edge))),
+          };
+        }
+      }
+      if (command && e.key.toLowerCase() === "v" && clipboardRef.current) {
+        e.preventDefault();
+        let counter = 0;
+        const pasted = duplicateFlowSelection(
+          clipboardRef.current.nodes,
+          clipboardRef.current.edges,
+          (kind) => `${kind}_${globalThis.crypto?.randomUUID?.() ?? `${Date.now()}_${++counter}_${Math.random().toString(36).slice(2)}`}`,
+        );
+        pasteFlowSelection(pasted.nodes, pasted.edges);
+        if (pasted.clearedReferences.length) {
+          notify.info("Copied node lost an outside Record or quote reference. Review the copied node before saving.");
+        }
+      }
+      if (command && e.key.toLowerCase() === "d") {
+        e.preventDefault();
+        if (duplicateSelectedNodes().length) {
+          notify.info("Duplicated node lost an outside Record or quote reference. Review the copied node before saving.");
+        }
+      }
       if ((e.metaKey || e.ctrlKey) && e.key === "s") {
         e.preventDefault();
         if (isDirty && !isSaving) {
@@ -161,7 +222,7 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [isDirty, isSaving]);
+  }, [duplicateSelectedNodes, edges, isDirty, isSaving, nodes, pasteFlowSelection, redoFlow, selectedNode, undoFlow]);
 
   // Scroll to error nodes whenever errorNodeIds changes (publish failure).
   // Must be before any early return to satisfy Rules of Hooks.

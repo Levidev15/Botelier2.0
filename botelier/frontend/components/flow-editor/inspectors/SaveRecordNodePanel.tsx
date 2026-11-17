@@ -5,6 +5,7 @@ import { Phone, Info } from "lucide-react";
 import { useFlowStore, SaveRecordNodeData } from "../store";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
+import { collectFlowVariables, findCompatibleRecordSources } from "../flowEditorData";
 
 interface Props {
   data: SaveRecordNodeData;
@@ -33,6 +34,9 @@ interface RecordTypeLite {
 
 export default function SaveRecordNodePanel({ data, nodeId }: Props) {
   const { updateNodeData, variables } = useFlowStore();
+  const nodes = useFlowStore((state) => state.nodes);
+  const edges = useFlowStore((state) => state.edges);
+  const availableVariables = collectFlowVariables(variables, nodes);
   const { accountId } = useAccountContext();
   const { authFetch } = useAuthToken();
 
@@ -45,25 +49,37 @@ export default function SaveRecordNodePanel({ data, nodeId }: Props) {
 
   const [recordTypes, setRecordTypes] = useState<RecordTypeLite[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!accountId) return;
+    let active = true;
+    if (!accountId) {
+      setRecordTypes([]);
+      setLoading(false);
+      return () => { active = false; };
+    }
     (async () => {
       try {
         setLoading(true);
+        setLoadError(null);
         const res = await authFetch(`/api/record-types?account_id=${accountId}`);
+        if (!res.ok) throw new Error("Could not load Record types.");
         const json = await res.json();
-        setRecordTypes(Array.isArray(json) ? json : []);
+        if (active) setRecordTypes(Array.isArray(json) ? json : []);
       } catch {
-        setRecordTypes([]);
+        if (active) {
+          setRecordTypes([]);
+          setLoadError("Could not load Record types.");
+        }
       } finally {
-        setLoading(false);
+        if (active) setLoading(false);
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [accountId]);
+    return () => { active = false; };
+  }, [accountId, authFetch]);
 
   const selectedType = recordTypes.find((t) => t.id === saveRecord.recordTypeId) || null;
+  const compatibleSources = findCompatibleRecordSources(nodes, edges, nodeId, saveRecord.recordTypeId);
 
   const update = (updates: Partial<typeof saveRecord>) => {
     updateNodeData(nodeId, { saveRecord: { ...saveRecord, ...updates } });
@@ -120,10 +136,36 @@ export default function SaveRecordNodePanel({ data, nodeId }: Props) {
             No record types defined yet. Create one under Records → Manage Types.
           </p>
         )}
+        {loadError && <p role="alert" className="mt-1 text-xs text-red-400">{loadError}</p>}
       </div>
 
       {selectedType && (
         <>
+          <div className="rounded-lg border border-gray-800 bg-[#111111] p-3">
+            <label className="block text-sm font-medium text-gray-300 mb-1">Record action</label>
+            <select
+              value={saveRecord.updateSourceNodeId || ""}
+              onChange={(event) => update({ updateSourceNodeId: event.target.value || undefined })}
+              className={inputCls}
+              aria-label="Record create or update source"
+            >
+              <option value="">Create a new Record</option>
+              {compatibleSources.map((source) => (
+                <option key={source.id} value={source.id}>
+                  Update Record created by {source.data.name || source.id}
+                </option>
+              ))}
+            </select>
+            {saveRecord.updateSourceNodeId && !compatibleSources.some((source) => source.id === saveRecord.updateSourceNodeId) ? (
+              <p role="alert" className="mt-1 text-xs text-amber-300">
+                The selected create node is no longer reachable or compatible. Choose a valid source or select Create a new Record.
+              </p>
+            ) : (
+              <p className="mt-1 text-[11px] text-gray-500">
+                Updates require a reachable earlier create node using this same Record type. Otherwise this step creates a new Record.
+              </p>
+            )}
+          </div>
           <div>
             <div className="flex items-center gap-1.5 mb-2">
               <label className="block text-sm font-medium text-gray-400">Field Mapping</label>
@@ -143,12 +185,12 @@ export default function SaveRecordNodePanel({ data, nodeId }: Props) {
                     type="text"
                     value={saveRecord.mapping?.[f.key] || ""}
                     onChange={(e) => setMapping(f.key, e.target.value)}
-                    placeholder={`e.g. {{${variables[0]?.key || "variable"}}}`}
+                    placeholder={`e.g. {{${availableVariables[0]?.key || "variable"}}}`}
                     className={inputCls}
                   />
-                  {variables.length > 0 && (
+                  {availableVariables.length > 0 && (
                     <div className="flex flex-wrap gap-1 mt-1">
-                      {variables.map((v) => (
+                      {availableVariables.map((v) => (
                         <button
                           key={v.key}
                           onClick={() =>
@@ -159,7 +201,7 @@ export default function SaveRecordNodePanel({ data, nodeId }: Props) {
                           }
                           className="text-xs bg-rose-900/30 text-rose-300 rounded px-1.5 py-0.5 hover:bg-rose-900/50"
                         >
-                          {`{{${v.key}}}`}
+                          {`{{${v.key}}}`}{v.origin === "mapped" ? " · mapped JSON" : ""}
                         </button>
                       ))}
                     </div>

@@ -3,6 +3,7 @@
 import { useRef, useState, useCallback } from "react";
 import { AlertTriangle } from "lucide-react";
 import { useFlowStore, APIResponseNodeData, APIResponseConfig } from "../store";
+import { collectFlowVariables, findQuoteSpeechProtections } from "../flowEditorData";
 
 interface Props {
   data: APIResponseNodeData;
@@ -79,7 +80,16 @@ function detectFieldTokens(template: string, knownKeys: Set<string>): string[] {
 // ── Main component ────────────────────────────────────────────────────────────
 
 export default function APIResponseNodePanel({ data, nodeId }: Props) {
-  const { updateNodeData, variables } = useFlowStore();
+  const { updateNodeData, variables, edges } = useFlowStore();
+  const nodes = useFlowStore((state) => state.nodes);
+  const quoteProtection = findQuoteSpeechProtections(nodes, edges, nodeId);
+  const protectedKeys = [
+    ...quoteProtection.privateVariables,
+    ...quoteProtection.fingerprintVariables,
+    ...quoteProtection.rawQuoteVariables,
+  ];
+  const availableVariables = collectFlowVariables(variables, nodes)
+    .filter((variable) => !protectedKeys.includes(variable.key));
 
   const cfg: APIResponseConfig = data.responsePresentation || {
     arrayVariable: "",
@@ -102,6 +112,7 @@ export default function APIResponseNodePanel({ data, nodeId }: Props) {
   const noResultsRef = useRef<HTMLTextAreaElement>(null);
 
   const [activeField, setActiveField] = useState<FieldKey>("intro");
+  const [speechError, setSpeechError] = useState<string | null>(null);
 
   const fieldRefs: Record<FieldKey, React.RefObject<HTMLTextAreaElement>> = {
     intro:     introRef,
@@ -110,11 +121,23 @@ export default function APIResponseNodePanel({ data, nodeId }: Props) {
     noResults: noResultsRef,
   };
 
+  const updateSpeechField = (patch: Partial<APIResponseConfig>, value: string) => {
+    if (
+      protectedKeys.some((key) => key && value.includes(`{{${key}}}`)) ||
+      protectedKeys.length > 0 && /https?:\/\/\S+/i.test(value)
+    ) {
+      setSpeechError("Quote fingerprint, raw quote and private checkout URL cannot be included in spoken output.");
+      return;
+    }
+    setSpeechError(null);
+    update(patch);
+  };
+
   const fieldUpdaters: Record<FieldKey, (val: string) => void> = {
-    intro:     (val) => update({ introText:     val }),
-    template:  (val) => update({ itemTemplate:  val }),
-    outro:     (val) => update({ outroText:     val }),
-    noResults: (val) => update({ noResultsText: val }),
+    intro:     (val) => updateSpeechField({ introText: val }, val),
+    template:  (val) => updateSpeechField({ itemTemplate: val }, val),
+    outro:     (val) => updateSpeechField({ outroText: val }, val),
+    noResults: (val) => updateSpeechField({ noResultsText: val }, val),
   };
 
   // Insert token into the currently-active textarea
@@ -127,13 +150,16 @@ export default function APIResponseNodePanel({ data, nodeId }: Props) {
   );
 
   // ── Derived data ───────────────────────────────────────────────────────────
-  const varKeySet = new Set(variables.map((v) => v.key));
+  const varKeySet = new Set(availableVariables.map((v) => v.key));
   const detectedFieldTokens = detectFieldTokens(cfg.itemTemplate || "", varKeySet);
 
   // Variables referenced in any text field that aren't defined
   const allText = [cfg.introText, cfg.itemTemplate, cfg.outroText, cfg.noResultsText]
     .filter(Boolean)
     .join(" ");
+  const existingQuoteExposure =
+    protectedKeys.some((key) => key && allText.includes(`{{${key}}}`)) ||
+    protectedKeys.length > 0 && /https?:\/\/\S+/i.test(allText);
   const referencedVars = Array.from(new Set(
     Array.from(allText.matchAll(/\{\{(\w+)\}\}/g)).map((m) => m[1]),
   )).filter((name) => {
@@ -152,7 +178,7 @@ export default function APIResponseNodePanel({ data, nodeId }: Props) {
 
   // ── Variable palette ───────────────────────────────────────────────────────
   const showTemplateTokens = cfg.arrayVariable && activeField === "template";
-  const hasVariables = variables.length > 0;
+  const hasVariables = availableVariables.length > 0;
 
   const PillButton = ({
     token,
@@ -215,9 +241,9 @@ export default function APIResponseNodePanel({ data, nodeId }: Props) {
           className="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm text-white focus:outline-none focus:border-amber-500"
         >
           <option value="">— none / speak intro text only —</option>
-          {variables.map((v) => (
+          {availableVariables.map((v) => (
             <option key={v.key} value={v.key}>
-              {`{{${v.key}}}`} — {v.description || TYPE_LABELS[v.type] || v.type}
+              {`{{${v.key}}}`} — {v.origin === "mapped" ? "mapped JSON output (array/object preserved)" : v.description || TYPE_LABELS[v.type] || v.type}
             </option>
           ))}
         </select>
@@ -353,7 +379,7 @@ export default function APIResponseNodePanel({ data, nodeId }: Props) {
                 Flow variables
               </p>
               <div className="flex flex-wrap gap-1.5">
-                {variables.map((v) => (
+                {availableVariables.map((v) => (
                   <PillButton
                     key={v.key}
                     token={`{{${v.key}}}`}
@@ -368,6 +394,11 @@ export default function APIResponseNodePanel({ data, nodeId }: Props) {
       )}
 
       {/* ── Undefined-variable warnings ───────────────────────────────────── */}
+      {(speechError || existingQuoteExposure) && (
+        <div role="alert" className="rounded-lg border border-amber-700/40 bg-amber-950/20 p-3 text-xs text-amber-300">
+          {speechError || "This existing response template references quote-private data or a URL. Remove it before saving."}
+        </div>
+      )}
       {undefinedRefs.length > 0 && (
         <div className="rounded-lg border border-yellow-700/30 bg-yellow-900/10 p-3 space-y-1.5">
           <div className="flex items-center gap-1.5 text-xs text-yellow-400/80">

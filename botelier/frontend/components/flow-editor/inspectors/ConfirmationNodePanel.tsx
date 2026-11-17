@@ -1,6 +1,9 @@
 "use client";
 
-import { useFlowStore, ConfirmationNodeData, DeliveryMode } from "../store";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { AlertCircle } from "lucide-react";
+import { useFlowStore, ConfirmationNodeData, DeliveryMode, CapabilityNodeData } from "../store";
+import { collectFlowVariables, findQuoteConfirmationContext } from "../flowEditorData";
 
 interface Props {
   data: ConfirmationNodeData;
@@ -8,7 +11,9 @@ interface Props {
 }
 
 export default function ConfirmationNodePanel({ data, nodeId }: Props) {
-  const { updateNodeData, variables } = useFlowStore();
+  const { updateNodeData, variables, nodes, edges } = useFlowStore();
+  const previouslyRequiredRef = useRef<string[]>([]);
+  const [speechError, setSpeechError] = useState<string | null>(null);
   const confirmation = data.confirmation || {
     summaryTemplate: "",
     confirmPrompt: "",
@@ -18,6 +23,66 @@ export default function ConfirmationNodePanel({ data, nodeId }: Props) {
     deliveryMode: "guided" as DeliveryMode,
   };
   const deliveryMode = confirmation.deliveryMode || "guided";
+  const flowVariables = collectFlowVariables(variables, nodes);
+  const getQuoteApi = (id: string) =>
+    (nodes.find((node) => node.id === id)?.data as CapabilityNodeData | undefined)?.api;
+  const quoteContext = useMemo(
+    () => findQuoteConfirmationContext(nodes, edges, nodeId),
+    [nodes, edges, nodeId],
+  );
+  const requiredVariables = [
+    ...quoteContext.publicVariables,
+    ...quoteContext.fingerprintVariables,
+    ...quoteContext.recipientVariables,
+  ];
+  const requiredSignature = requiredVariables.join("\u0000");
+  const quotePrivateVariables = new Set([
+    ...quoteContext.privateVariables,
+    ...quoteContext.rawQuoteVariables,
+  ]);
+  const protectedSpeechVariables = new Set([
+    ...Array.from(quotePrivateVariables),
+    ...quoteContext.fingerprintVariables,
+  ]);
+  const currentVariablesToConfirm = confirmation.variablesToConfirm || [];
+  const quoteRoomVariable = quoteContext.validators
+    .map(({ id }) => getQuoteApi(id)?.quotePolicy?.publicConfirmationFields?.room_id)
+    .find(Boolean);
+  const quoteTotalVariable = quoteContext.validators
+    .map(({ id }) => getQuoteApi(id)?.quotePolicy?.publicConfirmationFields?.["pricing.total"])
+    .find(Boolean);
+  const hasStoredUnsafeSpeech = [
+    confirmation.summaryTemplate || "",
+    confirmation.confirmPrompt || "",
+    confirmation.editPrompt || "",
+  ].some((value) =>
+    Array.from(protectedSpeechVariables).some((key) => key && value.includes(`{{${key}}}`)) ||
+    (protectedSpeechVariables.size > 0 && /https?:\/\/\S+/i.test(value)),
+  );
+
+  useEffect(() => {
+    const retained = currentVariablesToConfirm.filter((key) => !previouslyRequiredRef.current.includes(key));
+    const next = Array.from(new Set([...retained, ...requiredVariables]));
+    previouslyRequiredRef.current = requiredVariables;
+    if (
+      next.length !== currentVariablesToConfirm.length ||
+      next.some((key, index) => key !== currentVariablesToConfirm[index])
+    ) {
+      updateNodeData(nodeId, { confirmation: { ...confirmation, variablesToConfirm: next } });
+    }
+  }, [nodeId, requiredSignature, currentVariablesToConfirm, confirmation, updateNodeData]);
+
+  const writeSpeech = (field: "summaryTemplate" | "confirmPrompt" | "editPrompt", value: string) => {
+    const unsafeVariable = Array.from(protectedSpeechVariables).find(
+      (key) => key && value.includes(`{{${key}}}`),
+    );
+    if (unsafeVariable || /https?:\/\/\S+/i.test(value)) {
+      setSpeechError("Keep the fingerprint, raw quote and private URL out of every spoken confirmation field.");
+      return;
+    }
+    setSpeechError(null);
+    updateConfirmation({ [field]: value });
+  };
 
   const updateConfirmation = (updates: Partial<typeof confirmation>) => {
     updateNodeData(nodeId, { confirmation: { ...confirmation, ...updates } });
@@ -37,22 +102,39 @@ export default function ConfirmationNodePanel({ data, nodeId }: Props) {
       <div>
         <label className="block text-sm font-medium text-gray-400 mb-1">Variables to Confirm</label>
         <div className="flex flex-wrap gap-2">
-          {variables.map((v) => (
+          {flowVariables.filter((variable) =>
+            !quotePrivateVariables.has(variable.key) &&
+            !quoteContext.rawQuoteVariables.includes(variable.key),
+          ).map((v) => {
+            const isRequired = requiredVariables.includes(v.key);
+            return (
             <button
               key={v.key}
               onClick={() => toggleVariable(v.key)}
+              disabled={isRequired}
+              title={isRequired ? "Required by the reservation quote delivery contract" : undefined}
               className={`text-xs rounded px-2 py-1 transition ${
                 confirmation.variablesToConfirm?.includes(v.key)
                   ? "bg-emerald-600 text-white"
                   : "bg-gray-700 text-gray-300 hover:bg-gray-600"
-              }`}
+              } ${isRequired ? "cursor-not-allowed ring-1 ring-emerald-400/60" : ""}`}
             >
-              {v.key}
+              {v.key}{isRequired ? " · required" : v.origin === "mapped" ? " · mapped" : ""}
             </button>
-          ))}
+          );})}
         </div>
-        {variables.length === 0 && (
+        {flowVariables.length === 0 && (
           <p className="text-xs text-gray-500">Add flow variables first</p>
+        )}
+        {quoteContext.validators.length > 0 && (
+          <div className="mt-2 space-y-1 rounded-lg border border-emerald-900/50 bg-emerald-950/10 p-2 text-[10px] text-gray-400">
+            <p>Quote confirmation requires every public quote field, the internal fingerprint and the selected delivery recipient. The private URL and raw provider quote cannot be confirmed here.</p>
+            {!quoteContext.recipientVariables.length && (
+              <p role="alert" className="flex items-start gap-1.5 text-amber-300">
+                <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />Bind an existing SMS or email sender to this validator and choose its recipient fact.
+              </p>
+            )}
+          </div>
         )}
       </div>
 
@@ -63,11 +145,19 @@ export default function ConfirmationNodePanel({ data, nodeId }: Props) {
         </label>
         <textarea
           value={confirmation.summaryTemplate || ""}
-          onChange={(e) => updateConfirmation({ summaryTemplate: e.target.value })}
+          onChange={(e) => writeSpeech("summaryTemplate", e.target.value)}
           rows={3}
           className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none resize-none"
-          placeholder="Summary of collected information: {{variable_name}}..."
+          placeholder={quoteContext.validators.length
+            ? `Review ${quoteRoomVariable ? `{{${quoteRoomVariable}}}` : "the selected room"} and stay details, total ${quoteTotalVariable ? `{{${quoteTotalVariable}}}` : "the quoted total"}. Is this correct?`
+            : "Summary of collected information: {{variable_name}}..."}
         />
+        {quoteContext.validators.length > 0 && <p className="mt-1 text-[10px] text-gray-500">Use only human-readable public details and the recipient. The fingerprint and checkout link are internal delivery controls, never speech.</p>}
+        {(speechError || hasStoredUnsafeSpeech) && (
+          <p role="alert" className="mt-1 text-[10px] text-amber-300">
+            {speechError || "Existing spoken text contains a protected quote reference. Remove it before continuing."}
+          </p>
+        )}
       </div>
 
       <div>
@@ -75,7 +165,7 @@ export default function ConfirmationNodePanel({ data, nodeId }: Props) {
         <input
           type="text"
           value={confirmation.confirmPrompt || ""}
-          onChange={(e) => updateConfirmation({ confirmPrompt: e.target.value })}
+          onChange={(e) => writeSpeech("confirmPrompt", e.target.value)}
           className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none"
           placeholder="Is this information correct?"
         />
@@ -128,7 +218,7 @@ export default function ConfirmationNodePanel({ data, nodeId }: Props) {
           <input
             type="text"
             value={confirmation.editPrompt || ""}
-            onChange={(e) => updateConfirmation({ editPrompt: e.target.value })}
+            onChange={(e) => writeSpeech("editPrompt", e.target.value)}
             className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-emerald-500 focus:outline-none"
             placeholder="What would you like to change?"
           />

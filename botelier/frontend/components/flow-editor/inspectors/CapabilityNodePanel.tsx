@@ -4,6 +4,9 @@ import { useEffect, useState } from "react";
 import { ChevronDown, ChevronRight, Loader2, Plus, Sparkles, X } from "lucide-react";
 import { useFlowStore, CapabilityNodeData, APIRequestConfig } from "../store";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
+import ResponseContractPanel from "./ResponseContractPanel";
+import QuoteContractPanel from "./QuoteContractPanel";
+import { collectFlowVariables, findQuoteSpeechProtections } from "../flowEditorData";
 
 interface CapabilityParam {
   type?: string;
@@ -32,18 +35,22 @@ function prettify(name: string): string {
 }
 
 export default function CapabilityNodePanel({ data, nodeId }: Props) {
-  const { updateNodeData, variables } = useFlowStore();
+  const { updateNodeData, variables, toolId, nodes, edges } = useFlowStore();
   const { authFetch } = useAuthToken();
 
   const api: APIRequestConfig =
-    data.api || { method: "GET", url: "", apiSource: "capability", capability: "" };
+    data.api
+      ? { ...data.api, apiSource: data.api.apiSource ?? "capability" }
+      : { method: "GET", url: "", apiSource: "capability", capability: "" };
 
   const [capabilities, setCapabilities] = useState<Capability[]>([]);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [retryKey, setRetryKey] = useState(0);
   const [showResponseMapping, setShowResponseMapping] = useState(
     !!(api.responseMapping && Object.keys(api.responseMapping).length > 0)
   );
+  const [speechError, setSpeechError] = useState<string | null>(null);
 
   useEffect(() => {
     const fetchCapabilities = async () => {
@@ -64,13 +71,32 @@ export default function CapabilityNodePanel({ data, nodeId }: Props) {
       }
     };
     fetchCapabilities();
-  }, [authFetch]);
+  }, [authFetch, retryKey]);
 
   const updateApi = (patch: Partial<APIRequestConfig>) => {
-    updateNodeData(nodeId, { api: { ...api, ...patch } });
+    updateNodeData(nodeId, { api: { ...api, apiSource: "capability", ...patch } });
   };
 
   const selected = capabilities.find((c) => c.name === api.capability);
+  const isQuoteValidator = api.capability === "validate_reservation_quote";
+  const flowVariables = collectFlowVariables(variables, nodes);
+  const quoteProtection = findQuoteSpeechProtections(nodes, edges, nodeId);
+  const protectedSpeechVariables = [
+    ...quoteProtection.privateVariables,
+    ...quoteProtection.fingerprintVariables,
+    ...quoteProtection.rawQuoteVariables,
+  ];
+  const writeSpeech = (field: "thinkingMessage" | "responseInstructions", value: string) => {
+    if (
+      protectedSpeechVariables.some((key) => key && value.includes(`{{${key}}}`)) ||
+      protectedSpeechVariables.length > 0 && /https?:\/\/\S+/i.test(value)
+    ) {
+      setSpeechError("Keep the quote fingerprint, raw quote and private checkout URL out of spoken content.");
+      return;
+    }
+    setSpeechError(null);
+    updateApi({ [field]: value });
+  };
 
   const responseMappingEntries = Object.entries(api.responseMapping || {});
 
@@ -128,7 +154,20 @@ export default function CapabilityNodePanel({ data, nodeId }: Props) {
         ) : (
           <select
             value={api.capability || ""}
-            onChange={(e) => updateApi({ capability: e.target.value })}
+            onChange={(e) => {
+              const capability = e.target.value;
+              const leavingQuote = api.capability === "validate_reservation_quote" && capability !== "validate_reservation_quote";
+              updateApi({
+                capability,
+                ...(leavingQuote ? {
+                  quotePolicy: undefined,
+                  responseMapping: {},
+                  responseVariables: [],
+                  responseProjection: { fields: [] },
+                  argumentsTemplate: "",
+                } : {}),
+              });
+            }}
             className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-purple-500 focus:outline-none"
           >
             <option value="">Select a capability...</option>
@@ -140,11 +179,16 @@ export default function CapabilityNodePanel({ data, nodeId }: Props) {
           </select>
         )}
         {loadError && (
-          <p className="text-xs text-red-500 mt-1">{loadError}</p>
+          <div role="alert" className="mt-1 flex items-center justify-between gap-2">
+            <p className="text-xs text-red-400">{loadError}</p>
+            <button type="button" onClick={() => setRetryKey((key) => key + 1)} className="text-xs text-purple-300 hover:text-purple-200">
+              Retry
+            </button>
+          </div>
         )}
       </div>
 
-      {selected && (
+      {selected && !isQuoteValidator && (
         <div className="rounded-lg border border-gray-800 bg-[#1a1a1a] p-3 space-y-2">
           <p className="text-xs text-gray-400">{selected.description}</p>
           <div className="flex flex-wrap gap-1">
@@ -189,7 +233,7 @@ export default function CapabilityNodePanel({ data, nodeId }: Props) {
         </div>
       )}
 
-      <div>
+      {!isQuoteValidator && <div>
         <label className="block text-sm font-medium text-gray-400 mb-1">
           Thinking Message
           <span className="text-xs text-gray-500 ml-2">(optional)</span>
@@ -197,16 +241,17 @@ export default function CapabilityNodePanel({ data, nodeId }: Props) {
         <input
           type="text"
           value={api.thinkingMessage || ""}
-          onChange={(e) => updateApi({ thinkingMessage: e.target.value })}
+          onChange={(e) => writeSpeech("thinkingMessage", e.target.value)}
           placeholder="e.g., Let me check that for you..."
           className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-purple-500 focus:outline-none"
         />
         <p className="text-xs text-gray-500 mt-1">
           Spoken while the capability runs.
         </p>
-      </div>
+        {speechError && <p role="alert" className="mt-1 text-[10px] text-amber-300">{speechError}</p>}
+      </div>}
 
-      <div>
+      {!isQuoteValidator && <div>
         <button
           onClick={() => setShowResponseMapping(!showResponseMapping)}
           className="flex items-center gap-2 text-sm font-medium text-gray-300"
@@ -275,16 +320,16 @@ export default function CapabilityNodePanel({ data, nodeId }: Props) {
             )}
           </div>
         )}
-      </div>
+      </div>}
 
-      <div>
+      {!isQuoteValidator && <div>
         <label className="block text-sm font-medium text-gray-400 mb-1">
           Response Instructions
           <span className="text-xs text-gray-500 ml-2">(optional)</span>
         </label>
         <textarea
           value={api.responseInstructions || ""}
-          onChange={(e) => updateApi({ responseInstructions: e.target.value })}
+          onChange={(e) => writeSpeech("responseInstructions", e.target.value)}
           rows={3}
           placeholder={
             responseMappingEntries.length > 0
@@ -302,7 +347,22 @@ export default function CapabilityNodePanel({ data, nodeId }: Props) {
             </code>
           </p>
         )}
-      </div>
+      </div>}
+      {isQuoteValidator ? (
+        <QuoteContractPanel
+          nodeId={nodeId}
+          api={api}
+          update={updateApi}
+          variables={flowVariables}
+        />
+      ) : (
+        <ResponseContractPanel
+          nodeId={nodeId}
+          toolId={toolId}
+          api={api}
+          variables={variables}
+        />
+      )}
     </div>
   );
 }

@@ -7,6 +7,10 @@ import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import APIRequestHeadersSection from "./APIRequestHeadersSection";
 import VariableReferencePills from "./VariableReferencePills";
+import NativeSourceBindingPanel from "./NativeSourceBindingPanel";
+import ResponseContractPanel from "./ResponseContractPanel";
+import QuoteContractPanel from "./QuoteContractPanel";
+import { collectFlowVariables, findQuoteSpeechProtections } from "../flowEditorData";
 
 interface EndpointVariable {
   key: string;
@@ -53,6 +57,8 @@ interface Props {
 
 export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props) {
   const { updateNodeData, variables, addVariable, toolId } = useFlowStore();
+  const nodes = useFlowStore((state) => state.nodes);
+  const edges = useFlowStore((state) => state.edges);
   const { authFetch } = useAuthToken();
   const { accountId } = useAccountContext();
   const api = data.api || { method: "GET" as const, url: "", apiSource: "custom" as const };
@@ -71,6 +77,7 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
   const [availableSecrets, setAvailableSecrets] = useState<Array<{ key: string; name: string }>>([]);
   const [secretPickerIndex, setSecretPickerIndex] = useState<number | null>(null);
   const [testVariables, setTestVariables] = useState<Record<string, string>>({});
+  const [speechError, setSpeechError] = useState<string | null>(null);
   const [testLoading, setTestLoading] = useState(false);
   const [testError, setTestError] = useState<string | null>(null);
   // Per-row feedback for the "declare as variable" shortcut
@@ -164,7 +171,8 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
           endpointId: prewiredEndpoint.id,
           endpointName: prewiredEndpoint.name,
           method: prewiredEndpoint.method as APIRequestConfig["method"],
-          url: prewiredEndpoint.path,
+          path: prewiredEndpoint.path,
+          url: undefined,
           bodyTemplate,
           responseMapping: hasMapping ? { ...endpointMapping } : (currentApi.responseMapping ?? {}),
           autoMappingSource: hasMapping ? { ...endpointMapping } : currentApi.autoMappingSource,
@@ -188,6 +196,30 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
     updateNodeData(nodeId, { api: { ...api, ...updates } });
   };
 
+  const quoteProtection = findQuoteSpeechProtections(nodes, edges, nodeId);
+  const speechProtectedVariables = [
+    ...quoteProtection.privateVariables,
+    ...quoteProtection.fingerprintVariables,
+    ...quoteProtection.rawQuoteVariables,
+  ];
+  const speechVariables = collectFlowVariables(variables, nodes).filter(
+    (variable) => !speechProtectedVariables.includes(variable.key),
+  );
+  const isUnsafeQuoteSpeech = (value: string) =>
+    speechProtectedVariables.some((key) => key && value.includes(`{{${key}}}`)) ||
+    (speechProtectedVariables.length > 0 && /https?:\/\/\S+/i.test(value));
+  const updateSpeechText = (
+    field: "thinkingMessage" | "responseInstructions" | "onSuccess" | "onComplete" | "onError" | "onNotFound" | "onAuthError",
+    value: string | undefined,
+  ) => {
+    if (value && isUnsafeQuoteSpeech(value)) {
+      setSpeechError("Keep the quote fingerprint, raw quote and private checkout URL out of spoken content.");
+      return;
+    }
+    setSpeechError(null);
+    updateApi({ [field]: value });
+  };
+
   const selectedIntegration = integrations.find(i => i.id === api.integrationId);
   const selectedEndpoint = selectedIntegration?.integration_type.endpoints.find(e => e.id === api.endpointId);
   const endpointGroups = (selectedIntegration?.integration_type.endpoints ?? []).reduce(
@@ -200,7 +232,8 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
     },
     {} as Record<string, APIAccountIntegration["integration_type"]["endpoints"]>
   );
-  const testableVariables = variables.filter(v => v.key);
+  const flowVariables = collectFlowVariables(variables, nodes);
+  const testableVariables = flowVariables.filter(v => v.key);
 
   const setQueryParamOverride = (key: string, value: string) => {
     updateApi({ queryParamOverrides: { ...(api.queryParamOverrides ?? {}), [key]: value } });
@@ -259,7 +292,8 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
         endpointId: prewired.id,
         endpointName: prewired.name,
         method: prewired.method as APIRequestConfig["method"],
-        url: prewired.path,
+        url: undefined,
+        path: prewired.path,
         bodyTemplate,
         responseMapping: hasMapping ? { ...endpointMapping } : (api.responseMapping ?? {}),
         autoMappingSource: hasMapping ? { ...endpointMapping } : api.autoMappingSource,
@@ -271,7 +305,8 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
         integrationSlug: integration?.integration_type.slug,
         endpointId: undefined,
         endpointName: undefined,
-        url: "",
+        url: undefined,
+        path: undefined,
         method: "GET" as const,
         bodyTemplate: "",
         autoMappingSource: undefined,
@@ -338,7 +373,8 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
       endpointId,
       endpointName: endpoint.name,
       method: endpoint.method as "GET" | "POST" | "PUT" | "PATCH" | "DELETE",
-      url: endpoint.path,
+      url: undefined,
+      path: endpoint.path,
       bodyTemplate,
       responseMapping: newResponseMapping,
       autoMappingSource: newAutoMappingSource,
@@ -467,7 +503,7 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
         body: JSON.stringify({
           account_id: accountId,
           method: api.method,
-          url: api.url || "",
+           url: api.url || api.path || "",
           headers: api.headers || {},
           bodyTemplate: api.bodyTemplate || undefined,
           timeout: api.timeout ?? 8,
@@ -497,6 +533,9 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
   };
 
   const apiSource = api.apiSource || "custom";
+  const usesNativeBinding = ["mcp", "tool", "capability"].includes(apiSource);
+  const usesRequestTester = apiSource === "custom" || apiSource === "integration";
+  const isQuoteValidator = apiSource === "capability" && api.capability === "validate_reservation_quote";
   const inputCls = "w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-orange-500 focus:outline-none";
   const smallInputCls = "flex-1 bg-[#1a1a1a] border border-gray-700 rounded px-2 py-1 text-white text-xs focus:border-orange-500 focus:outline-none font-mono";
 
@@ -507,22 +546,52 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
         <select
           value={apiSource}
           onChange={(e) => {
-            const newSource = e.target.value as "custom" | "integration";
+            const newSource = e.target.value as APIRequestConfig["apiSource"];
             updateApi({
               apiSource: newSource,
               integrationId: undefined,
               integrationSlug: undefined,
               endpointId: undefined,
               endpointName: undefined,
-              url: newSource === "custom" ? api.url : "",
+              mcpConnectionId: undefined,
+              mcpToolName: undefined,
+              toolId: undefined,
+              capability: undefined,
+              quotePolicy: undefined,
+              quoteDelivery: undefined,
+              argumentsTemplate: "",
+              url: newSource === "custom" ? api.url : undefined,
+              path: undefined,
+              method: ["mcp", "tool", "capability"].includes(newSource ?? "")
+                ? undefined as unknown as APIRequestConfig["method"]
+                : api.method,
+              headers: ["mcp", "tool", "capability", "integration"].includes(newSource ?? "")
+                ? undefined
+                : api.headers,
+              bodyTemplate: ["mcp", "tool", "capability", "integration"].includes(newSource ?? "")
+                ? undefined
+                : api.bodyTemplate,
+              queryParamOverrides: undefined,
             });
           }}
           className={inputCls}
         >
           <option value="custom">Custom URL</option>
           <option value="integration">Integration</option>
+          <option value="capability">Capability</option>
+          <option value="tool">Saved Tool</option>
+          <option value="mcp">MCP tool</option>
         </select>
       </div>
+
+      {usesNativeBinding && (
+        <NativeSourceBindingPanel
+          api={api}
+          nodeId={nodeId}
+          variables={flowVariables}
+          update={updateApi}
+        />
+      )}
 
       {apiSource === "integration" && (
         <>
@@ -716,13 +785,13 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
         </div>
       )}
 
-      <div>
+      {usesRequestTester && <div>
         <label className="block text-sm font-medium text-gray-400 mb-1">
           Thinking message
         </label>
         <textarea
           value={api.thinkingMessage || ""}
-          onChange={(e) => updateApi({ thinkingMessage: e.target.value })}
+          onChange={(e) => updateSpeechText("thinkingMessage", e.target.value)}
           rows={2}
           className={`${inputCls} resize-none text-xs`}
           placeholder="What the AI says while the request is in progress — e.g. &quot;Let me check that reservation for you.&quot;"
@@ -730,10 +799,11 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
         <p className="text-xs text-gray-500 mt-1">
           Spoken aloud during the API call so callers don&apos;t hear silence
         </p>
-        <VariableReferencePills text={api.thinkingMessage || ""} variables={variables} />
-      </div>
+        <VariableReferencePills text={api.thinkingMessage || ""} variables={speechVariables} />
+        {speechError && <p role="alert" className="text-[10px] text-amber-300">{speechError}</p>}
+      </div>}
 
-      <div className="grid grid-cols-2 gap-3">
+      {!isQuoteValidator && <div className="grid grid-cols-2 gap-3">
         <div>
           <label className="block text-sm font-medium text-gray-400 mb-1">
             Timeout (seconds)
@@ -768,9 +838,9 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
           />
           <p className="text-xs text-gray-500 mt-1">Set to 0 for voice; retries add silence</p>
         </div>
-      </div>
+      </div>}
 
-      <APIRequestHeadersSection
+      {usesRequestTester && <APIRequestHeadersSection
         showHeaders={showHeaders}
         onToggle={() => setShowHeaders(!showHeaders)}
         headerEntries={headerEntries}
@@ -781,7 +851,7 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
         secretPickerIndex={secretPickerIndex}
         setSecretPickerIndex={setSecretPickerIndex}
         smallInputCls={smallInputCls}
-      />
+      />}
 
       {(api.method === "POST" || api.method === "PUT" || api.method === "PATCH") && (
         <div>
@@ -797,9 +867,9 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
             placeholder='{"key": "{{variable_name}}"}'
           />
 
-          {variables.length > 0 && (
+          {flowVariables.length > 0 && (
             <div className="mt-2 flex flex-wrap gap-1">
-              {variables.map((v) => (
+              {flowVariables.map((v) => (
                 <button
                   key={v.key}
                   onClick={() => updateApi({ bodyTemplate: (api.bodyTemplate || "") + `{{${v.key}}}` })}
@@ -813,7 +883,7 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
         </div>
       )}
 
-      <div className="border border-gray-800 rounded-lg bg-[#111111] overflow-hidden">
+      {usesRequestTester && <div className="border border-gray-800 rounded-lg bg-[#111111] overflow-hidden">
         <div className="px-3 py-2 border-b border-gray-800 flex items-center justify-between gap-3">
           <div>
             <h4 className="text-sm font-medium text-gray-200">Test API request</h4>
@@ -925,9 +995,9 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
             </div>
           )}
         </div>
-      </div>
+      </div>}
 
-      <div>
+      {!isQuoteValidator && <div>
         <button
           onClick={() => setShowResponseMapping(!showResponseMapping)}
           className="flex items-center gap-2 text-sm font-medium text-gray-300"
@@ -1017,15 +1087,32 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
             </button>
           </div>
         )}
-      </div>
+      </div>}
 
-      <div>
+      {isQuoteValidator ? (
+        <QuoteContractPanel
+          nodeId={nodeId}
+          api={api}
+          update={updateApi}
+          variables={flowVariables}
+        />
+      ) : (
+        <ResponseContractPanel
+          nodeId={nodeId}
+          toolId={toolId}
+          api={api}
+          variables={variables}
+          sampleFromTest={testResult?.success ? testResult.body : undefined}
+        />
+      )}
+
+      {!isQuoteValidator && <div>
         <label className="block text-sm font-medium text-gray-400 mb-1">
           Voice result script
         </label>
         <textarea
           value={api.responseInstructions || ""}
-          onChange={(e) => updateApi({ responseInstructions: e.target.value })}
+          onChange={(e) => updateSpeechText("responseInstructions", e.target.value)}
           rows={4}
           className={`${inputCls} resize-none text-xs`}
           placeholder={selectedEndpoint
@@ -1035,10 +1122,11 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
         <p className="text-xs text-gray-500 mt-1">
           Becomes the tool result the AI reads after the API call — use {"{{variable}}"} placeholders to embed extracted values. Leave blank to use the "On success" message.
         </p>
-        <VariableReferencePills text={api.responseInstructions || ""} variables={variables} />
-      </div>
+        <VariableReferencePills text={api.responseInstructions || ""} variables={speechVariables} />
+        {speechError && <p role="alert" className="text-[10px] text-amber-300">{speechError}</p>}
+      </div>}
 
-      <div>
+      {!isQuoteValidator && <div>
         <button
           onClick={() => setShowResponseMessages(!showResponseMessages)}
           className="flex items-center gap-2 text-sm font-medium text-gray-300"
@@ -1064,7 +1152,7 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
               <input
                 type="text"
                 value={api.onSuccess || ""}
-                onChange={(e) => updateApi({ onSuccess: e.target.value })}
+                onChange={(e) => updateSpeechText("onSuccess", e.target.value)}
                 className={inputCls}
                 placeholder="Request completed successfully"
               />
@@ -1075,7 +1163,7 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
                 type="text"
                 value={api.onComplete ?? ""}
                 onChange={(e) =>
-                  updateApi({ onComplete: e.target.value === "" ? undefined : e.target.value })
+                  updateSpeechText("onComplete", e.target.value === "" ? undefined : e.target.value)
                 }
                 disabled={api.onComplete === ""}
                 className={inputCls}
@@ -1099,7 +1187,7 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
               <input
                 type="text"
                 value={api.onError || ""}
-                onChange={(e) => updateApi({ onError: e.target.value })}
+                  onChange={(e) => updateSpeechText("onError", e.target.value)}
                 className={inputCls}
                 placeholder="There was an issue processing your request"
               />
@@ -1117,7 +1205,7 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
               <input
                 type="text"
                 value={api.onNotFound || ""}
-                onChange={(e) => updateApi({ onNotFound: e.target.value })}
+                onChange={(e) => updateSpeechText("onNotFound", e.target.value)}
                 className={inputCls}
                 placeholder="The requested information was not found"
               />
@@ -1127,14 +1215,14 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
               <input
                 type="text"
                 value={api.onAuthError || ""}
-                onChange={(e) => updateApi({ onAuthError: e.target.value })}
+                onChange={(e) => updateSpeechText("onAuthError", e.target.value)}
                 className={inputCls}
                 placeholder="There was an authentication issue with the system"
               />
             </div>
           </div>
         )}
-      </div>
+      </div>}
     </div>
   );
 }

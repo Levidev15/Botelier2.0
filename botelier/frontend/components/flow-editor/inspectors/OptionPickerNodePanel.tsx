@@ -2,6 +2,7 @@
 
 import { Plus, X, AlertTriangle } from "lucide-react";
 import { useFlowStore, OptionPickerNodeData, OptionPickerConfig, OptionPickerWrite } from "../store";
+import { collectFlowVariables, findQuoteSpeechProtections } from "../flowEditorData";
 
 interface Props {
   data: OptionPickerNodeData;
@@ -9,7 +10,16 @@ interface Props {
 }
 
 export default function OptionPickerNodePanel({ data, nodeId }: Props) {
-  const { updateNodeData, variables } = useFlowStore();
+  const { updateNodeData, variables, edges } = useFlowStore();
+  const nodes = useFlowStore((state) => state.nodes);
+  const quoteProtection = findQuoteSpeechProtections(nodes, edges, nodeId);
+  const protectedKeys = [
+    ...quoteProtection.privateVariables,
+    ...quoteProtection.fingerprintVariables,
+    ...quoteProtection.rawQuoteVariables,
+  ];
+  const availableVariables = collectFlowVariables(variables, nodes)
+    .filter((variable) => !protectedKeys.includes(variable.key));
 
   const picker: OptionPickerConfig = data.optionPicker || {
     sourceVariable: "",
@@ -22,6 +32,18 @@ export default function OptionPickerNodePanel({ data, nodeId }: Props) {
 
   const update = (patch: Partial<OptionPickerConfig>) =>
     updateNodeData(nodeId, { optionPicker: { ...picker, ...patch } });
+  const updateSpokenText = (key: "prompt" | "retryPrompt", value: string) => {
+    if (
+      protectedKeys.some((variable) => variable && value.includes(`{{${variable}}}`)) ||
+      protectedKeys.length > 0 && /https?:\/\/\S+/i.test(value)
+    ) return;
+    update({ [key]: value });
+  };
+  const hasPrivateSource = protectedKeys.includes(picker.sourceVariable);
+  const hasPrivateSpeech = [picker.prompt, picker.retryPrompt].some((text) =>
+    protectedKeys.some((key) => key && text?.includes(`{{${key}}}`)) ||
+    protectedKeys.length > 0 && /https?:\/\/\S+/i.test(text ?? ""),
+  );
 
   const writes = picker.writes || [];
 
@@ -47,6 +69,11 @@ export default function OptionPickerNodePanel({ data, nodeId }: Props) {
   return (
     <div className="space-y-4">
       {/* Source array variable */}
+      {(hasPrivateSource || hasPrivateSpeech) && (
+        <p role="alert" className="rounded border border-amber-800/50 bg-amber-950/20 px-3 py-2 text-xs text-amber-300">
+          Quote fingerprint, raw quote and private checkout URL cannot be selected or spoken here. Replace any existing private reference before saving.
+        </p>
+      )}
       <div>
         <label className="block text-sm font-medium text-gray-400 mb-1">
           Source list variable
@@ -57,8 +84,8 @@ export default function OptionPickerNodePanel({ data, nodeId }: Props) {
           className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-teal-500 focus:outline-none"
         >
           <option value="">Select variable...</option>
-          {variables.map((v) => (
-            <option key={v.key} value={v.key}>{v.key}</option>
+          {availableVariables.map((v) => (
+            <option key={v.key} value={v.key}>{v.key}{v.origin === "mapped" ? " · mapped JSON output" : ""}</option>
           ))}
         </select>
         <p className="mt-1 text-xs text-gray-500">
@@ -90,7 +117,7 @@ export default function OptionPickerNodePanel({ data, nodeId }: Props) {
         </label>
         <textarea
           value={picker.prompt || ""}
-          onChange={(e) => update({ prompt: e.target.value })}
+          onChange={(e) => updateSpokenText("prompt", e.target.value)}
           rows={2}
           placeholder="Which one would you like?"
           className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-teal-500 focus:outline-none resize-none"
@@ -104,7 +131,7 @@ export default function OptionPickerNodePanel({ data, nodeId }: Props) {
         </label>
         <textarea
           value={picker.retryPrompt || ""}
-          onChange={(e) => update({ retryPrompt: e.target.value })}
+          onChange={(e) => updateSpokenText("retryPrompt", e.target.value)}
           rows={2}
           placeholder="Sorry, which option was that — the first or the second?"
           className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-teal-500 focus:outline-none resize-none"
@@ -147,8 +174,8 @@ export default function OptionPickerNodePanel({ data, nodeId }: Props) {
                   className="w-full bg-gray-800 border border-gray-700 rounded px-2 py-1 text-white text-xs focus:border-teal-500 focus:outline-none"
                 >
                   <option value="">Select variable to write...</option>
-                  {variables.map((v) => (
-                    <option key={v.key} value={v.key}>{v.key}</option>
+                  {availableVariables.map((v) => (
+                    <option key={v.key} value={v.key}>{v.key}{v.origin === "mapped" ? " · mapped JSON output" : ""}</option>
                   ))}
                 </select>
                 <input
@@ -199,7 +226,8 @@ export default function OptionPickerNodePanel({ data, nodeId }: Props) {
           <span>Gray handle = Fallback (optional — after max retries fail)</span>
         </div>
         <p className="mt-2 text-gray-500">
-          The caller can select by spoken name or by position ("the first one"). Every bound
+          The caller can select by spoken name or by position ("the first one"). Mapped outputs
+          keep their original JSON type, including arrays and objects. Every bound
           variable is rewritten in full on each selection, so choosing again later safely
           replaces the earlier pick.
         </p>

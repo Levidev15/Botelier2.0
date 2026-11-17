@@ -31,6 +31,7 @@ import {
   Code,
   Sparkles,
   ListChecks,
+  Copy,
 } from "lucide-react";
 import { useFlowStore, NodeType, AVAILABLE_TEMPLATES, FlowVersionInfo } from "./store";
 import { toast } from "sonner";
@@ -203,6 +204,12 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
     applyTemplate, 
     isLoading, 
     nodes,
+    selectedNode,
+    duplicateSelectedNodes,
+    canUndo,
+    canRedo,
+    undoFlow,
+    redoFlow,
     currentSource,
     currentVersionNumber,
     publishedVersionNumber,
@@ -409,17 +416,39 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
           <div className="h-6 w-px bg-gray-700 mx-2" />
 
           <button
-            className="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 transition"
+            type="button"
+            onClick={undoFlow}
+            disabled={!canUndo}
+            className="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 transition disabled:opacity-30 disabled:cursor-not-allowed"
             title="Undo"
+            aria-label="Undo last flow edit"
           >
             <Undo2 className="h-4 w-4" />
           </button>
 
           <button
-            className="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 transition"
+            type="button"
+            onClick={redoFlow}
+            disabled={!canRedo}
+            className="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 transition disabled:opacity-30 disabled:cursor-not-allowed"
             title="Redo"
+            aria-label="Redo flow edit"
           >
             <Redo2 className="h-4 w-4" />
+          </button>
+          <button
+            type="button"
+            onClick={() => {
+              if (duplicateSelectedNodes().length) {
+                toast.info("Duplicated node lost an outside Record or quote reference. Review the copied node before saving.");
+              }
+            }}
+            disabled={!selectedNode && !nodes.some((node) => node.selected)}
+            className="p-2 text-gray-400 hover:text-white rounded-lg hover:bg-gray-800 transition disabled:opacity-30 disabled:cursor-not-allowed"
+            title="Duplicate selected nodes (Ctrl/Cmd+D). Linked Record updates are remapped only when their source is duplicated too."
+            aria-label="Duplicate selected nodes"
+          >
+            <Copy className="h-4 w-4" />
           </button>
 
           <div className="h-6 w-px bg-gray-700 mx-2" />

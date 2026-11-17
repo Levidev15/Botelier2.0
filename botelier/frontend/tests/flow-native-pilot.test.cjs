@@ -32,6 +32,18 @@ function loadSimulator() {
   return loadModule("components/flow-simulator/nativePilot.ts");
 }
 
+function loadFlowEditorData() {
+  return loadModule("components/flow-editor/flowEditorData.ts");
+}
+
+function loadResponsePreview() {
+  return loadModule("components/flow-editor/inspectors/responsePreview.ts");
+}
+
+function loadQuoteEditor() {
+  return loadModule("components/flow-editor/inspectors/quoteEditor.ts");
+}
+
 function validSnapshot(overrides = {}) {
   return {
     assistantId: "assistant-7",
@@ -235,7 +247,8 @@ test("native HTTP errors are allowlisted and never trigger a legacy retry", asyn
         snapshot: validSnapshot(),
       }),
       error => {
-        assert.match(error.message, /published|six-node pilot/i);
+        assert.match(error.message, /published|server could not admit/i);
+        assert.doesNotMatch(error.message, /exactly six-node|read-only shape/i);
         assert.doesNotMatch(error.message, /provider-secret/);
         return true;
       },
@@ -246,22 +259,24 @@ test("native HTTP errors are allowlisted and never trigger a legacy retry", asyn
 
 test("fixed native errors are actionable and unexpected structured detail is non-leaking", () => {
   const { formatNativeError } = loadSimulator();
-  assert.match(formatNativeError({
+  const unsupported = formatNativeError({
     code: "native_simulation_flow_unsupported",
     diagnostic: "node_types",
-  }), /exactly six-node, read-only shape/i);
+  });
+  assert.match(unsupported, /server could not admit this published flow/i);
+  assert.doesNotMatch(unsupported, /six-node|read-only/i);
   assert.match(formatNativeError({
     code: "native_simulation_flow_unsupported",
     diagnostic: "global_instructions",
-  }), /global instructions/i);
+  }), /server could not admit this published flow/i);
   assert.match(formatNativeError({
     code: "native_simulation_flow_unsupported",
     diagnostic: "connected_get",
-  }), /connected GET\/API/i);
+  }), /server could not admit this published flow/i);
   assert.match(formatNativeError({
     code: "native_simulation_flow_unsupported",
     diagnostic: "unlisted_provider_payload",
-  }), /exactly six-node, read-only shape/i);
+  }), /server could not admit this published flow/i);
   assert.match(formatNativeError("Native pilot requires a published flow"), /published/i);
   const safe = formatNativeError({
     code: "provider_secret_dump",
@@ -281,9 +296,254 @@ test("native error allowlists reject inherited object keys instead of rendering 
     ]) {
       const message = formatNativeError(detail);
       assert.equal(typeof message, "string", JSON.stringify(detail));
-      assert.match(message, /could not start|six-node/i);
+   assert.match(message, /could not start|server could not admit/i);
     }
   }
+});
+
+test("mapped API outputs become downstream choices without changing their JSON values", () => {
+  const { collectFlowVariables } = loadFlowEditorData();
+  const variables = [{ key: "guest_name", type: "text", description: "", required: true }];
+  const nodes = [{
+    id: "lookup",
+    type: "api_request",
+    data: { api: {
+      responseMapping: { available_rooms: "$.rooms" },
+      responseVariables: [{ variableKey: "total", jsonPath: "$.total", defaultValue: 0 }],
+    } },
+  }];
+  const result = collectFlowVariables(variables, nodes);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.map(({ key, type, required, origin }) => ({
+    key, type, required, origin,
+  })))), [
+    { key: "guest_name", type: "text", required: true, origin: "declared" },
+    { key: "available_rooms", type: "text", required: false, origin: "mapped" },
+    { key: "total", type: "text", required: false, origin: "mapped" },
+  ]);
+  assert.equal(result[1].description.includes("array or object"), true);
+  assert.deepEqual(variables, [{ key: "guest_name", type: "text", description: "", required: true }]);
+});
+
+test("copy/paste remaps Record update references only when the source node is copied too", () => {
+  const { duplicateFlowSelection } = loadFlowEditorData();
+  const nodes = [
+    { id: "record-create", type: "save_record", position: { x: 1, y: 2 }, data: { name: "Create", saveRecord: { recordTypeId: "booking" } } },
+    { id: "record-update", type: "save_record", position: { x: 3, y: 4 }, data: { name: "Update", saveRecord: { recordTypeId: "booking", updateSourceNodeId: "record-create" } } },
+    { id: "other-update", type: "save_record", position: { x: 5, y: 6 }, data: { name: "Other", saveRecord: { recordTypeId: "booking", updateSourceNodeId: "record-create" } } },
+  ];
+  const edges = [{ id: "create-update", source: "record-create", target: "record-update", type: "deletable" }];
+  let id = 0;
+  const both = duplicateFlowSelection(nodes.slice(0, 2), edges, () => `copy-${++id}`);
+  const copiedCreate = both.nodes.find((node) => node.data.name === "Create");
+  const copiedUpdate = both.nodes.find((node) => node.data.name === "Update");
+  assert.equal(copiedUpdate.data.saveRecord.updateSourceNodeId, copiedCreate.id);
+  assert.equal(both.edges[0].source, copiedCreate.id);
+  assert.equal(both.edges[0].target, copiedUpdate.id);
+  const updateOnly = duplicateFlowSelection([nodes[1]], edges, () => `solo-${++id}`);
+  assert.equal(Object.hasOwn(updateOnly.nodes[0].data.saveRecord, "updateSourceNodeId"), false);
+  assert.deepEqual(JSON.parse(JSON.stringify(updateOnly.remappedReferences)), [updateOnly.nodes[0].id]);
+});
+
+test("copy/paste remaps quote delivery references and clears external validator links", () => {
+  const { duplicateFlowSelection } = loadFlowEditorData();
+  const nodes = [
+    {
+      id: "quote-validator",
+      type: "api_request",
+      position: { x: 0, y: 0 },
+      data: { api: { apiSource: "capability", capability: "validate_reservation_quote" } },
+    },
+    {
+      id: "quote-sender",
+      type: "api_request",
+      position: { x: 2, y: 2 },
+      data: { api: { apiSource: "tool", toolId: "sms-tool", argumentsTemplate: "{\"body\":\"{{private_checkout_url}}\"}", quoteDelivery: { quoteNodeId: "quote-validator", recipientVariable: "caller_phone" } } },
+    },
+  ];
+  let id = 0;
+  const both = duplicateFlowSelection(nodes, [{ id: "quote-send", source: "quote-validator", target: "quote-sender" }], () => `copy-${++id}`);
+  const copiedValidator = both.nodes.find((node) => node.data.api?.capability === "validate_reservation_quote");
+  const copiedSender = both.nodes.find((node) => node.data.api?.toolId === "sms-tool");
+  assert.equal(copiedSender.data.api.quoteDelivery.quoteNodeId, copiedValidator.id);
+  assert.equal(both.clearedReferences.length, 0);
+  const senderOnly = duplicateFlowSelection([nodes[1]], [], () => `solo-${++id}`);
+  assert.equal(Object.hasOwn(senderOnly.nodes[0].data.api, "quoteDelivery"), false);
+  assert.equal(senderOnly.nodes[0].data.api.argumentsTemplate, "");
+  assert.deepEqual(JSON.parse(JSON.stringify(senderOnly.clearedReferences)), [senderOnly.nodes[0].id]);
+});
+
+test("Record update source choices require same type and a real directed path", () => {
+  const { findCompatibleRecordSources } = loadFlowEditorData();
+  const nodes = [
+    { id: "create", type: "save_record", data: { name: "Reservation", saveRecord: { recordTypeId: "booking" } } },
+    { id: "target", type: "save_record", data: { name: "Edit reservation", saveRecord: { recordTypeId: "booking" } } },
+    { id: "wrong-type", type: "save_record", data: { saveRecord: { recordTypeId: "guest" } } },
+    { id: "already-update", type: "save_record", data: { saveRecord: { recordTypeId: "booking", updateSourceNodeId: "create" } } },
+  ];
+  const choices = findCompatibleRecordSources(nodes, [
+    { source: "create", target: "target" },
+    { source: "wrong-type", target: "target" },
+    { source: "already-update", target: "target" },
+  ], "target", "booking");
+  assert.deepEqual(choices.map((node) => node.id), ["create"]);
+});
+
+test("quote confirmation requirements bind public fields, fingerprint and delivery recipient only", () => {
+  const {
+    findQuoteConfirmationContext,
+    findQuoteSpeechProtections,
+  } = loadFlowEditorData();
+  const { DEFAULT_QUOTE_POLICY, DEFAULT_QUOTE_ARGUMENTS } = loadQuoteEditor();
+  const nodes = [
+    { id: "quote", type: "api_request", data: { name: "Quote", api: {
+      apiSource: "capability",
+      capability: "validate_reservation_quote",
+      quotePolicy: DEFAULT_QUOTE_POLICY,
+      argumentsTemplate: DEFAULT_QUOTE_ARGUMENTS,
+    } } },
+    { id: "confirm", type: "confirmation", data: {} },
+    { id: "send", type: "api_request", data: { api: {
+      apiSource: "tool",
+      quoteDelivery: { quoteNodeId: "quote", recipientVariable: "caller_email" },
+    } } },
+    { id: "speech", type: "message", data: {} },
+  ];
+  const edges = [
+    { source: "quote", target: "confirm" },
+    { source: "confirm", target: "send" },
+    { source: "confirm", target: "speech" },
+  ];
+  const context = findQuoteConfirmationContext(nodes, edges, "confirm");
+  assert.equal(context.validators[0].id, "quote");
+  assert.equal(context.publicVariables.length, 13);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.fingerprintVariables)), ["quote_fingerprint"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.recipientVariables)), ["caller_email"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(context.privateVariables)), ["private_checkout_url"]);
+  const speech = findQuoteSpeechProtections(nodes, edges, "speech");
+  assert.deepEqual(JSON.parse(JSON.stringify(speech.privateVariables)), ["private_checkout_url"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(speech.fingerprintVariables)), ["quote_fingerprint"]);
+  assert.deepEqual(JSON.parse(JSON.stringify(speech.rawQuoteVariables)), ["provider_quote"]);
+});
+
+test("quote editor emits exact canonical output paths, no defaults, and public-only projection", () => {
+  const {
+    DEFAULT_QUOTE_POLICY,
+    REQUIRED_QUOTE_FIELDS,
+    buildQuoteResponseBindings,
+  } = loadQuoteEditor();
+  const bindings = buildQuoteResponseBindings(DEFAULT_QUOTE_POLICY);
+  const mapping = JSON.parse(JSON.stringify(bindings.responseMapping));
+  assert.equal(Object.keys(mapping).length, 15);
+  for (const path of REQUIRED_QUOTE_FIELDS) {
+    const variable = DEFAULT_QUOTE_POLICY.publicConfirmationFields[path];
+    assert.equal(mapping[variable], `$.public.${path}`);
+  }
+  assert.equal(mapping[DEFAULT_QUOTE_POLICY.fingerprintVariable], "$.fingerprint");
+  assert.equal(mapping[DEFAULT_QUOTE_POLICY.privateUrlVariable], "$.private.checkout_url");
+  assert.equal(bindings.responseVariables.some((entry) => Object.hasOwn(entry, "defaultValue")), false);
+  const projection = bindings.responseProjection.fields.map((field) => field.variable);
+  assert.equal(projection.includes(DEFAULT_QUOTE_POLICY.fingerprintVariable), false);
+  assert.equal(projection.includes(DEFAULT_QUOTE_POLICY.privateUrlVariable), false);
+  assert.equal(projection.length, 13);
+});
+
+test("quote policy helpers require typed quote and expected objects and immutable origins", () => {
+  const {
+    DEFAULT_QUOTE_ARGUMENTS,
+    DEFAULT_QUOTE_POLICY,
+    validateQuoteArgumentsTemplate,
+    validateAllowedCheckoutOrigins,
+    isSafeFlowVariableKey,
+  } = loadQuoteEditor();
+  assert.equal(validateQuoteArgumentsTemplate(DEFAULT_QUOTE_ARGUMENTS), null);
+  assert.equal(validateQuoteArgumentsTemplate('{"quote":{{quote}},"expected":{{selection}},"price":2}')?.includes("exactly two"), true);
+  assert.equal(validateQuoteArgumentsTemplate('{"quote":"{{quote}}","expected":{}}')?.includes("typed JSON object"), true);
+  const origins = validateAllowedCheckoutOrigins("https://bookings.example.com\nhttps://pay.example.org");
+  assert.equal(origins.error, undefined);
+  assert.deepEqual(JSON.parse(JSON.stringify(origins.origins)), ["https://bookings.example.com", "https://pay.example.org"]);
+  assert.ok(validateAllowedCheckoutOrigins("https://example.com/checkout").error);
+  assert.ok(validateAllowedCheckoutOrigins("http://example.com").error);
+  assert.equal(isSafeFlowVariableKey("__native_quote"), false);
+  assert.equal(isSafeFlowVariableKey(DEFAULT_QUOTE_POLICY.fingerprintVariable), true);
+});
+
+test("saved SMS/email quote delivery requires one private-link token and exact typed recipient", () => {
+  const {
+    defaultQuoteDeliveryTemplate,
+    validateQuoteDeliveryTemplate,
+  } = loadQuoteEditor();
+  const smsTemplate = defaultQuoteDeliveryTemplate("SEND_SMS", "caller_phone", "private_checkout_url");
+  assert.equal(validateQuoteDeliveryTemplate(smsTemplate, "SEND_SMS", "caller_phone", "private_checkout_url"), null);
+  const emailTemplate = defaultQuoteDeliveryTemplate("SEND_EMAIL", "caller_email", "private_checkout_url");
+  assert.equal(validateQuoteDeliveryTemplate(emailTemplate, "SEND_EMAIL", "caller_email", "private_checkout_url"), null);
+  assert.ok(validateQuoteDeliveryTemplate(smsTemplate.replace("{{private_checkout_url}}", "plain text"), "SEND_SMS", "caller_phone", "private_checkout_url"));
+  assert.ok(validateQuoteDeliveryTemplate(smsTemplate.replace("{{caller_phone}}", "{{different_phone}}"), "SEND_SMS", "caller_phone", "private_checkout_url"));
+  assert.ok(validateQuoteDeliveryTemplate(smsTemplate.replace("Review your selected reservation:", "Visit https://other.example/page"), "SEND_SMS", "caller_phone", "private_checkout_url"));
+  assert.ok(validateQuoteDeliveryTemplate(emailTemplate.replace("Your reservation quote", "{{private_checkout_url}}"), "SEND_EMAIL", "caller_email", "private_checkout_url"));
+});
+
+test("pure response preview payload keeps exact declarations, mappings and projection", () => {
+  const { buildResponsePreviewPayload } = loadResponsePreview();
+  const sample = { total: 0, accepted: false, items: [{ id: "A" }] };
+  const configuration = {
+    responseMapping: { items: "$.items" },
+    responseVariables: [{ variableKey: "total", jsonPath: "$.total", defaultValue: 0 }],
+    responseProjection: { fields: [{ variable: "items" }, { variable: "total" }] },
+  };
+  const declarations = [{ key: "total", type: "number", required: false }];
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(buildResponsePreviewPayload(sample, configuration, declarations))),
+    {
+      sample,
+      configuration,
+      variableDeclarations: declarations,
+    },
+  );
+});
+
+test("response preview uses the owned sample-only route and returns exact raw/model values", async () => {
+  const { previewMappedResponse } = loadResponsePreview();
+  const calls = [];
+  const result = await previewMappedResponse({
+    authFetch: async (url, options) => {
+      calls.push({ url, options });
+      return new Response(JSON.stringify({
+        mapped_variables: { total: 0, confirmed: false, rooms: [{ code: "S" }] },
+        llm_data: { total: 0, confirmed: false, rooms: [{ code: "S" }] },
+      }), { status: 200 });
+    },
+    toolId: "flow-tool-1",
+    accountId: "account-1",
+    sample: { response: true },
+    configuration: { responseMapping: { total: "$.total" } },
+    variableDeclarations: [{ key: "total", type: "number", description: "", required: false }],
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, "/api/tools/flow-tool-1/flow/preview-response?account_id=account-1");
+  assert.equal(calls[0].options.method, "POST");
+  assert.deepEqual(result.mapped_variables, { total: 0, confirmed: false, rooms: [{ code: "S" }] });
+  assert.deepEqual(result.llm_data, { total: 0, confirmed: false, rooms: [{ code: "S" }] });
+});
+
+test("response preview errors are fixed and financial projection cleanup is refused", async () => {
+  const { previewMappedResponse, looksFinancialVariable } = loadResponsePreview();
+  await assert.rejects(previewMappedResponse({
+    authFetch: async () => new Response(JSON.stringify({
+      detail: { code: "mapping_projection", secret: "must-not-render" },
+    }), { status: 422 }),
+    toolId: "flow-tool-1",
+    accountId: "account-1",
+    sample: {},
+    configuration: {},
+    variableDeclarations: [],
+  }), (error) => {
+    assert.equal(error.message, "Preview unavailable (mapping_projection).");
+    assert.doesNotMatch(error.message, /must-not-render/);
+    return true;
+  });
+  assert.equal(looksFinancialVariable("nightly_rate"), true);
+  assert.equal(looksFinancialVariable("booking_total"), true);
+  assert.equal(looksFinancialVariable("guest_name"), false);
 });
 
 function createStore() {
@@ -306,6 +566,7 @@ function createStore() {
     },
     "@xyflow/react": reactFlow,
     "@/lib/auth/accountContext": accountContext,
+    "./flowEditorData": loadFlowEditorData(),
   }, {
     window: { localStorage: { getItem: () => "unit-test-auth-token" } },
     localStorage: { getItem: () => "unit-test-auth-token" },
@@ -333,6 +594,23 @@ test("node measurements and selection preserve published cleanliness while graph
   store.getState().setIsDirty(false);
   store.getState().onEdgesChange([{ id: "start-q", type: "remove" }]);
   assert.equal(store.getState().isDirty, true);
+});
+
+test("flow toolbar history restores graph edits and starts a clean scope on load", async () => {
+  const store = createStore();
+  store.getState().setToolId("history-tool");
+  store.getState().setHotelId("history-account");
+  store.getState().addNode("message", { x: 10, y: 20 });
+  assert.equal(store.getState().nodes.length, 1);
+  assert.equal(store.getState().canUndo, true);
+  store.getState().undoFlow();
+  assert.equal(store.getState().nodes.length, 0);
+  assert.equal(store.getState().canRedo, true);
+  store.getState().redoFlow();
+  assert.equal(store.getState().nodes.length, 1);
+  await store.getState().loadFlow("history-tool", "history-account");
+  assert.equal(store.getState().canUndo, false);
+  assert.equal(store.getState().canRedo, false);
 });
 
 test("late version history cannot restore a cleared tool or overwrite another tool", async () => {

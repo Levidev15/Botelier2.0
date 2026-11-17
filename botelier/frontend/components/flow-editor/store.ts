@@ -12,6 +12,7 @@ import {
   applyEdgeChanges,
 } from "@xyflow/react";
 import { getAccountContext } from "@/lib/auth/accountContext";
+import { duplicateFlowSelection } from "./flowEditorData";
 
 function getAuthHeaders(): Record<string, string> {
   if (typeof window === "undefined") return {};
@@ -118,6 +119,8 @@ export interface APIRequestConfig {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   /** Custom requests use a URL; saved integration endpoints need not have one. */
   url?: string;
+  /** Relative path used by a selected integration endpoint. */
+  path?: string;
   headers?: Record<string, string>;
   bodyTemplate?: string;
   responseMapping?: Record<string, string>;
@@ -135,12 +138,35 @@ export interface APIRequestConfig {
   onComplete?: string;
   onNotFound?: string;
   onAuthError?: string;
-  apiSource?: "custom" | "integration" | "capability";
+  apiSource?: "custom" | "integration" | "capability" | "mcp" | "tool";
   capability?: string;
   integrationId?: string;
   integrationSlug?: string;
   endpointId?: string;
   endpointName?: string;
+  /** Stable source bindings used by the native Flow Tool. */
+  mcpConnectionId?: string;
+  mcpToolName?: string;
+  toolId?: string;
+  quotePolicy?: {
+    allowedCheckoutOrigins: string[];
+    requireCheckoutLink: boolean;
+    providerSelectedDimensions: Array<"rate_id" | "offer_id">;
+    fingerprintVariable: string;
+    privateUrlVariable: string;
+    publicConfirmationFields: Record<string, string>;
+  };
+  quoteDelivery?: {
+    quoteNodeId: string;
+    recipientVariable: string;
+  };
+  /** Exact JSON object template; {{variable}} tokens are resolved by the server. */
+  argumentsTemplate?: string;
+  responseVariables?: Array<{
+    variableKey: string;
+    jsonPath: string;
+    defaultValue?: unknown;
+  }>;
   autoMappingSource?: Record<string, string>;
   queryParamOverrides?: Record<string, string>;
 }
@@ -167,6 +193,8 @@ export interface SaveRecordConfig {
   mapping: Record<string, string>;
   // Optional static/template status; validated against the type's status_options.
   status?: string;
+  /** ID of an earlier compatible create node whose record this node updates. */
+  updateSourceNodeId?: string;
 }
 
 export interface ConditionConfig {
@@ -345,6 +373,8 @@ export interface FlowState {
   selectedNode: Node<NodeData> | null;
   activeNodeId: string | null; // For simulator highlighting
   isDirty: boolean;
+  canUndo: boolean;
+  canRedo: boolean;
   isLoading: boolean;
   toolId: string | null;
   accountId: string | null;
@@ -371,12 +401,16 @@ export interface FlowState {
   addNode: (type: NodeType, position: { x: number; y: number }) => void;
   deleteNode: (nodeId: string) => void;
   deleteEdge: (edgeId: string) => void;
+  duplicateSelectedNodes: () => string[];
+  pasteFlowSelection: (nodes: Node<NodeData>[], edges: Edge[]) => void;
   
   addVariable: (variable: FlowVariable) => void;
   updateVariable: (key: string, variable: Partial<FlowVariable>) => void;
   deleteVariable: (key: string) => void;
   
   setGlobalPrompt: (prompt: string) => void;
+  undoFlow: () => void;
+  redoFlow: () => void;
   
   loadFlow: (toolId: string, accountId: string, source?: "draft" | "published") => Promise<void>;
   saveFlow: (description?: string) => Promise<void>;
@@ -410,6 +444,44 @@ export interface FlowState {
 let nodeIdCounter = 0;
 let flowLoadGeneration = 0;
 let versionHistoryGeneration = 0;
+
+type FlowHistorySnapshot = Pick<FlowState, "nodes" | "edges" | "variables" | "globalPrompt">;
+type FlowStateGetter = () => FlowState;
+type FlowStateSetter = (partial: Partial<FlowState>) => void;
+let flowHistoryPast: FlowHistorySnapshot[] = [];
+let flowHistoryFuture: FlowHistorySnapshot[] = [];
+let flowHistoryScope: string | null = null;
+const MAX_FLOW_HISTORY = 60;
+
+function copyFlowHistorySnapshot(state: FlowState): FlowHistorySnapshot {
+  return JSON.parse(JSON.stringify({
+    nodes: state.nodes,
+    edges: state.edges,
+    variables: state.variables,
+    globalPrompt: state.globalPrompt,
+  }));
+}
+
+function clearFlowHistory(set: FlowStateSetter) {
+  flowHistoryPast = [];
+  flowHistoryFuture = [];
+  flowHistoryScope = null;
+  set({ canUndo: false, canRedo: false });
+}
+
+function recordFlowHistory(get: FlowStateGetter, set: FlowStateSetter) {
+  const state = get();
+  const scope = `${state.accountId ?? ""}:${state.toolId ?? ""}`;
+  if (flowHistoryScope !== scope) {
+    flowHistoryPast = [];
+    flowHistoryFuture = [];
+    flowHistoryScope = scope;
+  }
+  flowHistoryPast.push(copyFlowHistorySnapshot(state));
+  if (flowHistoryPast.length > MAX_FLOW_HISTORY) flowHistoryPast.shift();
+  flowHistoryFuture = [];
+  set({ canUndo: true, canRedo: false });
+}
 
 const generateNodeId = () => {
   nodeIdCounter += 1;
@@ -1991,6 +2063,8 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   selectedNode: null,
   activeNodeId: null,
   isDirty: false,
+  canUndo: false,
+  canRedo: false,
   isLoading: false,
   toolId: null,
   accountId: null,
@@ -2010,13 +2084,20 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   setErrorNodeIds: (ids) => set({ errorNodeIds: ids }),
   clearErrorNodeIds: () => set({ errorNodeIds: [] }),
 
-  setNodes: (nodes) => set({ nodes, isDirty: true, errorNodeIds: [] }),
-  setEdges: (edges) => set({ edges, isDirty: true, errorNodeIds: [] }),
+  setNodes: (nodes) => {
+    recordFlowHistory(get, set);
+    set({ nodes, isDirty: true, errorNodeIds: [] });
+  },
+  setEdges: (edges) => {
+    recordFlowHistory(get, set);
+    set({ edges, isDirty: true, errorNodeIds: [] });
+  },
 
   onNodesChange: (changes) => {
     // React Flow emits measurements and selection on mount. Neither is part
     // of the saved definition; treating them as edits invalidates every test.
     const edited = changes.some(change => change.type !== "dimensions" && change.type !== "select");
+    if (edited) recordFlowHistory(get, set);
     set({
       nodes: applyNodeChanges(changes, get().nodes),
       isDirty: get().isDirty || edited,
@@ -2026,6 +2107,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
 
   onEdgesChange: (changes) => {
     const edited = changes.some(change => change.type !== "select");
+    if (edited) recordFlowHistory(get, set);
     set({
       edges: applyEdgeChanges(changes, get().edges),
       isDirty: get().isDirty || edited,
@@ -2034,6 +2116,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   onConnect: (connection) => {
+    recordFlowHistory(get, set);
     const sourceNode = get().nodes.find(n => n.id === connection.source);
     const edgeStyle = sourceNode ? getNodeStyle(sourceNode.type as NodeType) : { stroke: "#3b82f6", strokeWidth: 2 };
     
@@ -2057,6 +2140,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   setActiveNodeId: (nodeId) => set({ activeNodeId: nodeId }),
 
   updateNodeData: (nodeId, data) => {
+    recordFlowHistory(get, set);
     set({
       nodes: get().nodes.map((node) =>
         node.id === nodeId
@@ -2073,6 +2157,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   addNode: (type: NodeType, position: { x: number; y: number }) => {
+    recordFlowHistory(get, set);
     const id = generateNodeId();
     const defaultData = getDefaultNodeData(type);
 
@@ -2091,6 +2176,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   deleteNode: (nodeId) => {
+    recordFlowHistory(get, set);
     set({
       nodes: get().nodes.filter((n) => n.id !== nodeId),
       edges: get().edges.filter((e) => e.source !== nodeId && e.target !== nodeId),
@@ -2101,6 +2187,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   deleteEdge: (edgeId) => {
+    recordFlowHistory(get, set);
     set({
       edges: get().edges.filter((e) => e.id !== edgeId),
       isDirty: true,
@@ -2108,7 +2195,51 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     });
   },
 
+  duplicateSelectedNodes: () => {
+    const state = get();
+    const selected = state.nodes.filter((node) => node.selected);
+    const selection = selected.length
+      ? selected
+      : state.selectedNode
+        ? state.nodes.filter((node) => node.id === state.selectedNode?.id)
+        : [];
+    if (!selection.length) return [];
+    recordFlowHistory(get, set);
+    const duplicated = duplicateFlowSelection(
+      selection,
+      state.edges,
+      (kind) => `${kind}_${Date.now()}_${++nodeIdCounter}`,
+    );
+    set({
+      nodes: [
+        ...state.nodes.map((node) => ({ ...node, selected: false })),
+        ...duplicated.nodes,
+      ],
+      edges: [...state.edges, ...duplicated.edges],
+      selectedNode: duplicated.nodes[0] ?? null,
+      isDirty: true,
+      errorNodeIds: [],
+    });
+    return duplicated.clearedReferences;
+  },
+
+  pasteFlowSelection: (nodes, edges) => {
+    if (!nodes.length) return;
+    recordFlowHistory(get, set);
+    set({
+      nodes: [
+        ...get().nodes.map((node) => ({ ...node, selected: false })),
+        ...nodes,
+      ],
+      edges: [...get().edges, ...edges],
+      selectedNode: nodes[0] ?? null,
+      isDirty: true,
+      errorNodeIds: [],
+    });
+  },
+
   addVariable: (variable) => {
+    recordFlowHistory(get, set);
     const existing = get().variables.find((v) => v.key === variable.key);
     if (existing) {
       // Deduplicate: merge into the existing entry rather than appending
@@ -2129,6 +2260,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   updateVariable: (key, updates) => {
+    recordFlowHistory(get, set);
     const newKey = (updates as { key?: string }).key;
 
     if (newKey !== undefined && newKey !== key) {
@@ -2226,6 +2358,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   deleteVariable: (key) => {
+    recordFlowHistory(get, set);
     set({
       variables: get().variables.filter((v) => v.key !== key),
       isDirty: true,
@@ -2234,6 +2367,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   setGlobalPrompt: (prompt: string) => {
+    recordFlowHistory(get, set);
     set({
       globalPrompt: prompt,
       isDirty: true,
@@ -2241,7 +2375,46 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     });
   },
 
+  undoFlow: () => {
+    if (!flowHistoryPast.length) return;
+    const current = get();
+    flowHistoryFuture.push(copyFlowHistorySnapshot(current));
+    const previous = flowHistoryPast.pop()!;
+    const selectedNode = previous.nodes.find((node) => node.id === current.selectedNode?.id) ?? null;
+    set({
+      ...previous,
+      selectedNode,
+      activeNodeId: previous.nodes.some((node) => node.id === current.activeNodeId)
+        ? current.activeNodeId
+        : null,
+      isDirty: true,
+      errorNodeIds: [],
+      canUndo: flowHistoryPast.length > 0,
+      canRedo: true,
+    });
+  },
+
+  redoFlow: () => {
+    if (!flowHistoryFuture.length) return;
+    const current = get();
+    flowHistoryPast.push(copyFlowHistorySnapshot(current));
+    const next = flowHistoryFuture.pop()!;
+    const selectedNode = next.nodes.find((node) => node.id === current.selectedNode?.id) ?? null;
+    set({
+      ...next,
+      selectedNode,
+      activeNodeId: next.nodes.some((node) => node.id === current.activeNodeId)
+        ? current.activeNodeId
+        : null,
+      isDirty: true,
+      errorNodeIds: [],
+      canUndo: true,
+      canRedo: flowHistoryFuture.length > 0,
+    });
+  },
+
   loadFlow: async (toolId: string, accountId: string, source?: "draft" | "published") => {
+    clearFlowHistory(set);
     const generation = ++flowLoadGeneration;
     const changingTool = get().toolId !== toolId || get().accountId !== accountId;
     set({
@@ -2328,6 +2501,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     const { toolId, accountId } = get();
     if (!toolId || !accountId) return;
 
+    clearFlowHistory(set);
     const generation = ++flowLoadGeneration;
     set({ isLoading: true, currentVersionId: null });
     try {
@@ -2607,6 +2781,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       return;
     }
 
+    recordFlowHistory(get, set);
     set({
       nodes: template.nodes.map((n: any) => ({
         id: n.id,
@@ -2629,6 +2804,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   applyAIPatch: (patch) => {
+    recordFlowHistory(get, set);
     const { nodes, edges, variables } = get();
     const ts = Date.now();
 
@@ -2672,6 +2848,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   clearFlow: () => {
+    clearFlowHistory(set);
     flowLoadGeneration += 1;
     set({
       nodes: [],
@@ -2679,6 +2856,8 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       variables: [],
       selectedNode: null,
       isDirty: false,
+      canUndo: false,
+      canRedo: false,
       toolId: null,
       accountId: null,
       currentSource: "legacy",
@@ -2693,8 +2872,14 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   setIsDirty: (dirty) => set({ isDirty: dirty }),
-  setToolId: (id) => set({ toolId: id }),
-  setHotelId: (id) => set({ accountId: id }),
+  setToolId: (id) => {
+    if (get().toolId !== id) clearFlowHistory(set);
+    set({ toolId: id });
+  },
+  setHotelId: (id) => {
+    if (get().accountId !== id) clearFlowHistory(set);
+    set({ accountId: id });
+  },
 
   getFlowConfig: () => {
     const { nodes, edges, variables, globalPrompt } = get();
