@@ -15,6 +15,10 @@ _MAX_EMAIL_BODY = 30_000
 _DEFAULT_TIMEOUT = 8.0
 
 
+class NativeSMSNotSubmitted(asyncio.CancelledError):
+    """Cancellation atomically prevented the provider submission boundary."""
+
+
 class _SMSSubmissionState:
     """Linearize cancellation against the final pre-submit boundary."""
 
@@ -31,6 +35,8 @@ class _SMSSubmissionState:
         with self._lock:
             if not self._submitting:
                 self._cancelled = True
+                return True
+            return False
 
     def begin_submission(self):
         with self._lock:
@@ -91,13 +97,15 @@ class NativeMessenger:
                 ),
                 timeout=self.timeout,
             )
-        except asyncio.CancelledError:
-            submission.cancel_before_submission()
+        except asyncio.CancelledError as exc:
+            if submission.cancel_before_submission():
+                raise NativeSMSNotSubmitted() from exc
             raise
         except Exception:
-            submission.cancel_before_submission()
-            # A synchronous provider may continue after asyncio's timeout. Do
-            # not assert rejection; the durable claim must remain pending.
+            if submission.cancel_before_submission():
+                return NativeTerminalResult(False, failure_reason="submission_cancelled")
+            # Once submission began, a synchronous provider may continue after
+            # a timeout. Its outcome must remain pending, never guessed.
             return NativeTerminalResult(False, failure_reason="effect_outcome_unknown")
         if isinstance(accepted, NativeTerminalResult):
             return accepted
@@ -234,4 +242,4 @@ class NativeMessenger:
         return isinstance(config, dict)
 
 
-__all__ = ["NativeMessenger"]
+__all__ = ["NativeMessenger", "NativeSMSNotSubmitted"]

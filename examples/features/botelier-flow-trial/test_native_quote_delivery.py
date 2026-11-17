@@ -751,11 +751,11 @@ def test_sms_quote_is_fenced_if_owner_is_cancelled_before_provider_submission(mo
             assert sent == []
             rows = _ledger_rows(fixture)
             assert len(rows) == 1
-            assert rows[0].status == "pending"
+            assert rows[0].status == "failed"
             retry = await runner.execute(
                 compiled.node("delivery"), facts, confirmation=confirmation,
             )
-            assert retry.failure_reason == "effect_outcome_unknown"
+            assert retry.failure_reason == "submission_cancelled"
             assert sent == []
             assert len(_ledger_rows(fixture)) == 1
             await runner.close()

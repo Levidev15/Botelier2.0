@@ -286,7 +286,7 @@ class NativeActionRunner:
                     )
                     return result if completed else _failure("effect_outcome_unknown")
             if quote_context is None:
-                delivery = await self.messenger.send_sms(recipient, body)
+                delivery = await self._send_sms_with_claim(claim, recipient, body)
             else:
                 def quote_pre_submit_guard():
                     if self._closed:
@@ -305,8 +305,8 @@ class NativeActionRunner:
                         return "action_runner_closed"
                     return None
 
-                delivery = await self.messenger.send_sms(
-                    recipient, body, before_submit=quote_pre_submit_guard,
+                delivery = await self._send_sms_with_claim(
+                    claim, recipient, body, before_submit=quote_pre_submit_guard,
                 )
         else:
             try:
@@ -326,6 +326,8 @@ class NativeActionRunner:
                 "messenger_unavailable", "invalid_recipient", "invalid_message",
                 "sender_scope_mismatch", "invalid_subject", "email_sender_unavailable",
                 "preview_required", "action_runner_closed",
+                "pre_submit_guard_failed", "pre_submit_guard_invalid",
+                "submission_cancelled",
             }
             known_quote_failure = (
                 quote_context is not None
@@ -453,6 +455,24 @@ class NativeActionRunner:
                 db.close()
             except Exception:
                 pass
+
+    async def _send_sms_with_claim(self, claim, recipient, body, *, before_submit=None):
+        from botelier.voice.flows.native_messaging import NativeSMSNotSubmitted
+
+        try:
+            if before_submit is None:
+                return await self.messenger.send_sms(recipient, body)
+            return await self.messenger.send_sms(
+                recipient, body, before_submit=before_submit,
+            )
+        except NativeSMSNotSubmitted:
+            # This typed cancellation proves begin_submission was prevented.
+            # Preserve cancellation while finishing the already-owned receipt.
+            await asyncio.shield(asyncio.to_thread(
+                self._ledger.complete, claim, _failure("submission_cancelled"),
+                outcome_known=True,
+            ))
+            raise
 
     async def _mcp_api(self, node, config, facts, confirmation):
         try:
