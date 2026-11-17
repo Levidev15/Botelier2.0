@@ -30,6 +30,45 @@ def test_general_text_host_uses_native_graph_and_records_each_prompt_exactly_onc
     asyncio.run(asyncio.wait_for(scenario(), 15))
 
 
+def test_text_host_waits_for_successful_consumer_ack_after_real_context_fence():
+    async def scenario():
+        async with NativeGraphTextFixture() as fixture:
+            original_build = fixture.host._build_pipeline
+            acknowledgements = 0
+
+            def build_with_delayed_ack():
+                nonlocal acknowledgements
+                original_build()
+                adapter = fixture.host.adapter
+                original_ack = adapter.acknowledge_consumed_node
+
+                def acknowledge():
+                    nonlocal acknowledgements
+                    acknowledgements += 1
+                    if acknowledgements == 1:
+                        # Simulate the SDK's first downstream/context fence
+                        # completing before the manager reports the entered
+                        # replacement node. A later real state-change signal
+                        # permits a second acknowledgment attempt.
+                        asyncio.get_running_loop().call_later(
+                            0.01, fixture.host._changed.set,
+                        )
+                        return False
+                    return original_ack()
+
+                adapter.acknowledge_consumed_node = acknowledge
+
+            fixture.host._build_pipeline = build_with_delayed_ack
+            result = await fixture.host.start()
+            assert acknowledgements >= 2
+            assert [item["content"] for item in result["messages"]] == [
+                "Welcome to the fixture.", "What is your name?",
+            ]
+            assert fixture.host.snapshot()["pending_slot"] == "name"
+
+    asyncio.run(asyncio.wait_for(scenario(), 15))
+
+
 def test_general_text_host_finishes_truthfully_at_end_without_audio_or_carrier():
     async def scenario():
         async with NativeGraphTextFixture([

@@ -125,6 +125,7 @@ class NativeTextHost:
         self._output_start = 0
         self._failure = None
         self._turn_barriers = {}
+        self._consumer_ack_pending = False
         self._observer = NativeTextObserver(self)
 
     @property
@@ -356,6 +357,8 @@ class NativeTextHost:
             return False
         if self._response_ends < self._expected_model_ends or self.adapter.execution_busy:
             return False
+        if self._consumer_ack_pending:
+            return False
         state = self.adapter.snapshot()
         node = self.compiled.node(state["current_node"]) if state["current_node"] else None
         return not (
@@ -374,7 +377,10 @@ class NativeTextHost:
             self.adapter is not None and not self._transition_expected
             and not self._observer.node_updates
         ):
-            self.adapter.acknowledge_consumed_node()
+            acknowledged = self.adapter.acknowledge_consumed_node()
+            self._consumer_ack_pending = not acknowledged
+            if acknowledged:
+                self._changed.set()
 
     async def _await_start_idle(self):
         while True:
