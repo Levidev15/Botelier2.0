@@ -21,7 +21,7 @@ is the channel's stable contact identifier (``call_sid`` for voice).
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, String, UniqueConstraint
+from sqlalchemy import Column, DateTime, ForeignKey, Index, JSON, String, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 
 from botelier.database import Base
@@ -80,7 +80,11 @@ class FlowSession(Base):
 
     current_node_id = Column(String(255), nullable=True)
 
-    collected_slots = Column(JSONB, nullable=False, server_default="{}")
+    collected_slots = Column(
+        JSONB().with_variant(JSON(), "sqlite"),
+        nullable=False,
+        server_default="{}",
+    )
 
     status = Column(String(32), nullable=False, default=FlowSessionStatus.ACTIVE)
 

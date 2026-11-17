@@ -58,7 +58,7 @@ def ensure_native_dev_resources(
 
 def prepare_native_dev_selection(
     *, assistant, tools, tool_set, flow_version, call_sid,
-    property_id, property_owned, requested_tool_id=None,
+    property_id, property_owned, requested_tool_id=None, pinned_version_id=None,
 ):
     """Compile the exact owned published FLOW, never a first-tool fallback.
 
@@ -114,12 +114,12 @@ def prepare_native_dev_selection(
         raise NativeDevAdmissionError("native_dev_ownership")
 
     published_version_id = getattr(tool, "published_version_id", None)
-    if not published_version_id or flow_version is None:
+    selected_version_id = str(pinned_version_id or published_version_id or "")
+    if not selected_version_id or flow_version is None:
         raise NativeDevAdmissionError("native_dev_published_version")
-    published_version_id = str(published_version_id)
     status = getattr(getattr(flow_version, "status", None), "value", None)
     if (
-        str(getattr(flow_version, "id", "") or "") != published_version_id
+        str(getattr(flow_version, "id", "") or "") != selected_version_id
         or str(getattr(flow_version, "tool_id", "") or "") != tool_id
         or status != "published"
     ):
@@ -132,7 +132,7 @@ def prepare_native_dev_selection(
                 account_id=account_id,
                 property_id=assistant_property_id,
                 tool_id=tool_id,
-                flow_version_id=published_version_id,
+                flow_version_id=selected_version_id,
                 call_sid=str(call_sid),
             ),
         )
@@ -145,7 +145,7 @@ def prepare_native_dev_selection(
 
 def prepare_native_dev_catalogue(
     *, assistant, tools, tool_set, db, call_sid, property_id,
-    property_owned, selected,
+    property_owned, selected, recovery_snapshot=None,
 ):
     """Compile only the other currently assigned, published native flows."""
     from botelier.models.flow_version import FlowVersion, FlowVersionStatus
@@ -197,6 +197,55 @@ def prepare_native_dev_catalogue(
             "name": str(getattr(tool, "name", "") or ""),
             "description": str(getattr(tool, "description", "") or ""),
         }
+    if recovery_snapshot is not None:
+        active = recovery_snapshot.get("active")
+        active_id = active.get("tool_id") if isinstance(active, dict) else None
+        active_version_id = (
+            active.get("flow_version_id") if isinstance(active, dict) else None
+        )
+        assigned_ids = {str(getattr(tool, "id", "") or "") for tool in tools}
+        if (
+            not isinstance(active_id, str)
+            or not isinstance(active_version_id, str)
+            or active_id not in assigned_ids
+        ):
+            raise NativeDevAdmissionError("native_recovery_source")
+        current_active = catalogue.get(active_id)
+        if (
+            current_active is None
+            or str(current_active["compiled"].identity.flow_version_id)
+            != active_version_id
+        ):
+            active_tools = [
+                item for item in tools
+                if str(getattr(item, "id", "") or "") == active_id
+            ]
+            if len(active_tools) != 1:
+                raise NativeDevAdmissionError("native_recovery_source")
+            active_tool = active_tools[0]
+            version = db.query(FlowVersion).filter(
+                FlowVersion.id == active_version_id,
+                FlowVersion.tool_id == active_tool.id,
+                FlowVersion.status == FlowVersionStatus.PUBLISHED,
+            ).first()
+            active_selection = prepare_native_dev_selection(
+                assistant=assistant,
+                tools=tools,
+                tool_set=tool_set,
+                flow_version=version,
+                call_sid=call_sid,
+                property_id=property_id,
+                property_owned=property_owned,
+                requested_tool_id=active_id,
+                pinned_version_id=active_version_id,
+            )
+            if active_selection is None:
+                raise NativeDevAdmissionError("native_recovery_source")
+            catalogue[active_id] = {
+                "compiled": active_selection.compiled,
+                "name": str(getattr(active_tool, "name", "") or ""),
+                "description": str(getattr(active_tool, "description", "") or ""),
+            }
     return catalogue
 
 

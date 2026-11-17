@@ -1,12 +1,14 @@
 """Exercise explicit native-dev selection through the real voice coordinator."""
 
 import asyncio
+from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 
 from lifecycle_io import CALL_SID, GREETING, PRIVATE_PROMPT
 from native_dev_voice_io import (
-    ALT_TOOL_ID, NativeDevVoiceCall, TOOL_ID, VERSION_ID,
+    ALT_TOOL_ID, NativeDevVoiceCall, REPLACEMENT_VERSION_ID, TOOL_ID, VERSION_ID,
 )
 from node_contract_io import API_URL, PRESENTATION, PROPERTY, speech, tool_delta
 from pilot_io import PilotProviders
@@ -92,9 +94,45 @@ def test_explicit_native_selection_runs_on_real_worker_after_greeting_and_withou
             assert PRIVATE_PROMPT in system_text
             assert PRIVATE_PROMPT not in " ".join(speech(call))
 
+            stored = call.records.rows["FlowSession"][0].collected_slots["native_flow"]
+            assert stored["current_node_id"] == "choice"
+            assert stored["caller_facts"] == {"query": "standard"}
+            assert stored["fact_provenance"]["query"] == "caller"
+            assert stored["root"]["flow_version_id"] == VERSION_ID
+            records = call.records
             await call.finish("graceful_end")
             assert adapter.closed
             call.assert_clean()
+
+        from botelier.models.flow_version import FlowVersionStatus
+
+        replacement = deepcopy(records.rows["FlowVersion"].flow_config)
+        replacement["nodes"][1]["data"]["slot"]["prompt"] = (
+            "This is a newer published source and must not replace recovery."
+        )
+        records.rows["Tool"][0].published_version_id = REPLACEMENT_VERSION_ID
+        records.rows["AdditionalFlowVersions"].append(SimpleNamespace(
+            id=REPLACEMENT_VERSION_ID,
+            tool_id=TOOL_ID,
+            status=FlowVersionStatus.PUBLISHED,
+            version_number=2,
+            flow_config=replacement,
+        ))
+        async with NativeDevVoiceCall(records=records) as recovered:
+            await recovered.wait_until(lambda: (
+                recovered.started.is_set()
+                and recovered.handler.native_flow_hosts[CALL_SID]._started
+                and recovered.handler.native_flow_hosts[CALL_SID].manager.current_node
+                == "choice"
+                and "Which option?" in speech(recovered)
+            ))
+            resumed = recovered.handler.native_flow_hosts[CALL_SID]
+            assert resumed.compiled.identity.flow_version_id == VERSION_ID
+            assert resumed.facts["query"] == "standard"
+            assert "rooms" in resumed.facts
+            assert recovered.providers.business_requests == []
+            await recovered.finish("graceful_end")
+            recovered.assert_clean()
 
     asyncio.run(scenario())
 
@@ -118,6 +156,7 @@ def test_prewarmed_call_uses_pinned_published_graph_not_tool_snapshot():
             await call.wait_until(lambda: (
                 PRESENTATION in speech(call)
                 and len(call.providers.business_requests) == 1
+                and adapter.manager.current_node == "choice"
             ))
             assert adapter.manager.current_node == "choice"
             assert call.handler.call_mappers == {}
@@ -159,6 +198,7 @@ def test_actual_voice_selects_the_explicit_published_flow_from_multiple_assignme
             await call.wait_until(lambda: (
                 PRESENTATION in speech(call)
                 and len(call.providers.business_requests) == 1
+                and adapter.manager.current_node == "choice"
             ))
             assert adapter.manager.current_node == "choice"
             assert len(call.providers.business_requests) == 1
@@ -254,10 +294,12 @@ def test_prewarmed_native_call_revalidates_and_exposes_only_readonly_mcp_globals
                 call.started.is_set()
                 and call.handler.native_flow_hosts[CALL_SID]._started
             ))
+            adapter = call.handler.native_flow_hosts[CALL_SID]
             await call.providers.user_turn("Check the standard fixture.")
             await call.wait_until(lambda: (
                 PRESENTATION in speech(call)
                 and len(call.providers.business_requests) == 1
+                and adapter.manager.current_node == "choice"
             ))
             model_tool_names = {
                 item["function"]["name"]
@@ -313,6 +355,7 @@ def test_native_start_is_independent_of_missing_call_log_and_keeps_native_tools(
             await call.wait_until(lambda: (
                 PRESENTATION in speech(call)
                 and len(call.providers.business_requests) == 1
+                and adapter.manager.current_node == "choice"
             ))
             assert adapter.manager.current_node == "choice"
             await call.finish("graceful_end")

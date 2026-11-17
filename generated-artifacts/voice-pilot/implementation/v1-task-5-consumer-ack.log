@@ -107,3 +107,49 @@ Test correction history:
   exposed the above fixture assumption. A typo test path then returned
   "no tests ran" (zero blocks); all corrected invocations are recorded above.
 - No blocked external/application attempts were recorded in the passing suites.
+
+Recovery and parity continuation:
+- Added optimistic compare-and-swap snapshots in the existing FlowSession store.
+  Recovery pins root and active flow-version identity plus exact source digests,
+  tenant/property/call scope, current node, explicit caller provenance and safe
+  projections. Scope drift, version replacement, stale writes and a snapshot
+  pending an uncommitted effect fail closed. A committed action result resumes
+  from its recorded branch without replaying the external effect; terminal
+  effects are persisted pending and are never replayed after an ambiguous exit.
+- Call admission loads recovery before current-version selection, reconstructs
+  the pinned historical version, and refuses changed source digests. Recovery
+  uses the existing FlowSession JSONB field (SQLite JSON variant only for the
+  in-memory ORM fixture); no new persistence service or provider was introduced.
+- Form collection now exposes later fields as optional model arguments while
+  requiring the configured current field. Each optional value must be present
+  in the current caller transcript and pass its own native validator before any
+  facts mutate. It preserves ordered prompts for missing fields and accepts
+  valid same-turn answers instead of forcing redundant caller turns.
+- Actual Pipecat STT-to-FlowManager-to-model-tool-to-TTS test now canonicalizes
+  caller "tomorrow" to the injected next-day date before an action sees facts.
+  The same real worker test supplies name and email in one caller utterance;
+  both explicit values are accepted, and an invented optional email is rejected.
+- Recovery ORM coverage exercises round-trip identity, stale CAS and scope
+  mismatch. Runtime coverage proves pending action is not replayed and a
+  committed action's branch resumes without calling it again.
+
+Guarded verification after recovery/parity:
+  lifecycle_guard.py --tests test_native_dev_voice_host.py
+                  test_native_graph_runtime.py
+                  test_native_simulation_selection.py
+                  test_native_assistant_configuration.py
+  Result: 83 passed; APPLICATION_GUARD_BLOCKED_ATTEMPTS=0.
+  editor_guard.py --tests test_native_flow_recovery.py test_native_actions.py
+  Result: 7 passed; blocked_attempts=0.
+
+Test correction history:
+- An isolated date test helper timed out because its synthetic model request was
+  issued before the test's actual STT turn reached the caller pipeline. It was
+  replaced with date coverage inside the already-proven full-catalog Pipecat
+  worker path, where STT input, function schema, tool result, and TTS response
+  are serialized in the real runtime order. The resulting actual-pipeline tests
+  and full four-suite run passed.
+- One guard selector typo returned "no tests ran" (zero blocks). A parameterized
+  confirmation test had one transient tool-result observation failure; isolated
+  rerun and the full suite passed. No blocked external/application attempts
+  were recorded in the passing suites.

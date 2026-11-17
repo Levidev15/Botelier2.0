@@ -30,6 +30,9 @@ from ..models.phone_number import PhoneNumber
 from ..models.tool import ToolType
 from ..services.call_event_queue import CallEventQueue
 from ..services.call_logger import CallLogger
+from ..services.native_flow_recovery import (
+    NativeFlowRecoveryError, NativeFlowSnapshotStore, native_flow_source_digest,
+)
 from ..services.property_scope import resolve_session_property_id
 from .agent import VoiceAgentConfig
 from .engine import VoiceEngineFactory, is_external_vad_effectively_enabled
@@ -480,6 +483,7 @@ class CallHandler:
         _llm_prewarm_task = None
         _native_selection = None
         _native_flow_catalogue = {}
+        _native_recovery_snapshot = None
         _native_adapter = None
         _native_mapper = None
         _native_action_runner = None
@@ -784,8 +788,38 @@ class CallHandler:
                             .all()
                         )
                         tools = native_tools
+                    _native_property_id = resolve_session_property_id(
+                        dialed_number=to_number, assistant=_native_assistant, db=db,
+                    )
+                    _native_property_owned = bool(
+                        _native_assistant.account_id and _native_assistant.property_id
+                        and property_belongs_to_account(
+                            db, _native_assistant.account_id, _native_assistant.property_id,
+                        )
+                    )
+                    _native_recovery_store = NativeFlowSnapshotStore(
+                        lambda: SessionLocal(),
+                    )
+                    try:
+                        _native_recovery_snapshot = _native_recovery_store.load_pinned(
+                            call_sid=call_sid,
+                            account_id=str(_native_assistant.account_id or ""),
+                            property_id=str(_native_property_id or ""),
+                            assigned_tool_ids=[
+                                str(item.id) for item in native_tools
+                                if getattr(
+                                    getattr(item, "tool_type", None), "value", None,
+                                ) == "FLOW"
+                            ],
+                        )
+                    except NativeFlowRecoveryError as exc:
+                        raise NativeDevAdmissionError(str(exc)) from None
                     _selected_tool_id = str(
-                        _native_call_settings.get("native_flow_tool_id") or "",
+                        (
+                            _native_recovery_snapshot["root"]["tool_id"]
+                            if _native_recovery_snapshot is not None
+                            else _native_call_settings.get("native_flow_tool_id")
+                        ) or "",
                     )
                     _selected_tools = [
                         item for item in native_tools
@@ -804,24 +838,20 @@ class CallHandler:
                     _published_version_id = getattr(
                         native_tool, "published_version_id", None,
                     )
+                    _pinned_version_id = (
+                        _native_recovery_snapshot["root"]["flow_version_id"]
+                        if _native_recovery_snapshot is not None else None
+                    )
+                    _version_id = _pinned_version_id or _published_version_id
                     _native_flow_version = (
                         db.query(FlowVersion)
                         .filter(
-                            FlowVersion.id == _published_version_id,
+                            FlowVersion.id == _version_id,
                             FlowVersion.tool_id == native_tool.id,
                             FlowVersion.status == FlowVersionStatus.PUBLISHED,
                         )
                         .first()
-                        if _published_version_id else None
-                    )
-                    _native_property_id = resolve_session_property_id(
-                        dialed_number=to_number, assistant=_native_assistant, db=db,
-                    )
-                    _native_property_owned = bool(
-                        _native_assistant.account_id and _native_assistant.property_id
-                        and property_belongs_to_account(
-                            db, _native_assistant.account_id, _native_assistant.property_id,
-                        )
+                        if _version_id else None
                     )
                     _native_selection = prepare_native_dev_selection(
                         assistant=_native_assistant,
@@ -831,6 +861,8 @@ class CallHandler:
                         call_sid=call_sid,
                         property_id=_native_property_id,
                         property_owned=_native_property_owned,
+                        requested_tool_id=_selected_tool_id,
+                        pinned_version_id=_pinned_version_id,
                     )
                     _native_flow_catalogue = prepare_native_dev_catalogue(
                         assistant=_native_assistant,
@@ -841,7 +873,21 @@ class CallHandler:
                         property_id=_native_property_id,
                         property_owned=_native_property_owned,
                         selected=_native_selection,
+                        recovery_snapshot=_native_recovery_snapshot,
                     )
+                    if _native_recovery_snapshot is not None:
+                        root_digest = native_flow_source_digest(
+                            _native_selection.compiled,
+                        )
+                        active_id = _native_recovery_snapshot["active"]["tool_id"]
+                        active_compiled = _native_flow_catalogue[active_id]["compiled"]
+                        if (
+                            _native_recovery_snapshot.get("source_digest")
+                            != root_digest
+                            or _native_recovery_snapshot["active"].get("source_digest")
+                            != native_flow_source_digest(active_compiled)
+                        ):
+                            raise NativeDevAdmissionError("native_recovery_source")
 
                 # Native calls refresh MCP resources from the authoritative
                 # Assistant even on a pre-warmed path. Bundle credentials and
@@ -1618,6 +1664,7 @@ class CallHandler:
                     action_runner=_native_action_runner,
                     global_functions=_native_global_functions,
                     available_flows=_native_flow_catalogue,
+                    recovery_snapshot=_native_recovery_snapshot,
                 )
                 if _capture_is_current():
                     self.native_flow_hosts[call_sid] = _native_adapter

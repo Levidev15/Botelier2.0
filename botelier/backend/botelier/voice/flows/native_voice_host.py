@@ -13,6 +13,7 @@ def create_native_voice_runtime(
     twilio_auth_token, account_name, assistant_timezone, session_factory,
     action_runner=None, global_functions=(),
     available_flows=None,
+    recovery_snapshot=None,
 ):
     """Build one native manager, scoped action runner, and terminal host bridge."""
     compiled = selection.compiled
@@ -50,6 +51,9 @@ def create_native_voice_runtime(
         execute_action = action_runner.execute
 
     terminal_handler = _terminal_handler(mapper, llm, worker)
+    from botelier.services.native_flow_recovery import NativeFlowSnapshotStore
+
+    recovery_store = NativeFlowSnapshotStore(session_factory)
     adapter = NativeFlowAdapter(
         compiled,
         llm=llm,
@@ -59,6 +63,8 @@ def create_native_voice_runtime(
         terminal_handler=terminal_handler,
         global_functions=global_functions,
         available_flows=available_flows,
+        recovery_snapshot=recovery_snapshot,
+        snapshot_handler=recovery_store.save,
         direct_speech_observer=mapper._capture_direct_speech,
     )
     terminal_handler.adapter = adapter
@@ -102,7 +108,7 @@ def _terminal_handler(mapper, llm, worker):
             # result here. It already owns its call event and caller messaging.
             adapter = getattr(handle_terminal, "adapter", None)
             if adapter is not None:
-                adapter.observe_terminal_result(node.node_id, result)
+                await adapter.observe_terminal_result_and_persist(node.node_id, result)
             return None
 
         params = SimpleNamespace(

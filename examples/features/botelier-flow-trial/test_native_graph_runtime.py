@@ -3,6 +3,7 @@
 import asyncio
 from copy import deepcopy
 from dataclasses import FrozenInstanceError
+from datetime import date
 import json
 
 import pytest
@@ -48,6 +49,106 @@ def test_boundary_results_snapshot_mutable_values_and_confirmation():
         NativeActionResult(True, variables=[])
     with pytest.raises(ValueError):
         NativeActionResult(True, llm_data=[])
+
+
+def test_recovery_never_replays_a_pending_external_action():
+    async def scenario():
+        from botelier.services.native_flow_recovery import (
+            native_flow_identity, native_flow_source_digest,
+        )
+
+        compiled = compile_full_catalog_flow()
+        identity = native_flow_identity(compiled)
+        snapshot = {
+            "schema_version": 1,
+            "revision": 7,
+            "root": identity,
+            "source_digest": native_flow_source_digest(compiled),
+            "active": {
+                **identity,
+                "source_digest": native_flow_source_digest(compiled),
+            },
+            "current_node_id": "lookup",
+            "node_revision": 3,
+            "total_steps": 2,
+            "state": "pending_effect",
+            "catalog_active": False,
+            "awaiting_flow_choice": False,
+            "facts": {"name": "Ada"},
+            "caller_facts": {"name": "Ada"},
+            "fact_provenance": {"name": "caller"},
+            "llm_data": {},
+            "effect": {
+                "status": "pending", "node_id": "lookup",
+                "action_type": "api_request",
+                "flow_version_id": compiled.identity.flow_version_id,
+            },
+        }
+        action_calls = []
+        call = GraphCall(
+            compiled,
+            recovery_snapshot=snapshot,
+            execute_action=lambda *args, **kwargs: action_calls.append(args),
+        )
+        with pytest.raises(ValueError, match="native_recovery_pending"):
+            await call.adapter.start()
+        assert action_calls == []
+        await call.adapter.close()
+
+    asyncio.run(scenario())
+
+
+def test_recovery_resumes_the_committed_action_branch_without_replaying_it():
+    async def scenario():
+        from botelier.services.native_flow_recovery import (
+            native_flow_identity, native_flow_source_digest,
+        )
+
+        compiled = compile_full_catalog_flow()
+        identity = native_flow_identity(compiled)
+        source_digest = native_flow_source_digest(compiled)
+        snapshot = {
+            "schema_version": 1,
+            "revision": 7,
+            "root": identity,
+            "source_digest": source_digest,
+            "active": {**identity, "source_digest": source_digest},
+            "current_node_id": "lookup",
+            "node_revision": 3,
+            "total_steps": 5,
+            "state": "effect_committed",
+            "catalog_active": False,
+            "awaiting_flow_choice": False,
+            "facts": {
+                "name": "Ada", "channel": "lookup",
+                "items": [{"name": "Standard", "price": 0}],
+            },
+            "caller_facts": {"name": "Ada", "channel": "lookup"},
+            "fact_provenance": {
+                "name": "caller", "channel": "caller", "items": "action",
+            },
+            "llm_data": {},
+            "effect": {
+                "status": "committed", "node_id": "lookup",
+                "action_type": "api_request",
+                "flow_version_id": compiled.identity.flow_version_id,
+                "branch": "success",
+            },
+        }
+        action_calls = []
+        call = GraphCall(
+            compiled,
+            recovery_snapshot=snapshot,
+            execute_action=lambda *args, **kwargs: action_calls.append(args),
+        )
+        await call.adapter.start()
+        assert call.adapter.manager.current_node == "picker"
+        assert call.adapter.facts["items"][0]["price"] == 0
+        assert call.adapter.facts["name"] == "Ada"
+        assert action_calls == []
+        await call.adapter.close()
+
+    asyncio.run(scenario())
 
 
 def test_declared_defaults_are_typed_facts_with_progress_not_model_generated():
@@ -339,8 +440,10 @@ def test_full_catalog_order_selection_confirmation_actions_and_terminal():
 def test_actual_pipeline_rejects_qualified_or_negative_yes_before_write(utterance):
     async def scenario():
         from node_contract_io import tool_delta
+        from botelier.voice.flows.native_graph import compile_flow
 
         action_nodes = []
+        action_facts = []
         rooms = [
             {"name": "First room", "price": 50},
             {"name": "Second room", "price": 90},
@@ -348,6 +451,7 @@ def test_actual_pipeline_rejects_qualified_or_negative_yes_before_write(utteranc
 
         async def execute(node, facts, *, confirmation):
             action_nodes.append(node.node_id)
+            action_facts.append(deepcopy(facts))
             from botelier.voice.flows.native_execution import NativeActionResult
             if node.node_id == "lookup":
                 return NativeActionResult(
@@ -356,17 +460,26 @@ def test_actual_pipeline_rejects_qualified_or_negative_yes_before_write(utteranc
                 )
             return NativeActionResult(True)
 
+        base = compile_full_catalog_flow()
+        config = base.config()
+        config["variables"][0]["type"] = "date"
+        query = next(node for node in config["nodes"] if node["id"] == "query")
+        query["data"]["slot"].update(
+            type="date", validation={"minDaysAhead": 1},
+        )
         call = NativeGraphPipelineCall(
-            compile_full_catalog_flow(),
+            compile_flow(config, base.identity),
             providers=GraphProviders([
-                tool_delta("collect_query", {"query": "fixtures"}),
-                tool_delta("collect_name", {"name": "Ada"}),
-                tool_delta("collect_email", {"email": "ada@example.com"}),
+                tool_delta("collect_query", {"query": "tomorrow"}),
+                tool_delta("collect_name", {
+                    "name": "Ada", "email": "ada@example.com",
+                }),
                 tool_delta("select_room", {"ordinal": 2, "label": "Second room"}),
                 tool_delta("confirm", {"response": "yes"}),
                 "Please confirm yes or no.",
             ]),
             execute_action=execute,
+            adapter_args={"today": date(2026, 11, 17)},
         )
         async with call:
             await call.activate()
@@ -378,8 +491,11 @@ def test_actual_pipeline_rejects_qualified_or_negative_yes_before_write(utteranc
                 }
 
             await call.wait_until(lambda: bool(native_tools()))
-            turns = ("fixtures", "Ada", "ada@example.com", "Second room", utterance)
-            expected_nodes = ("form", "form", "picker", "confirm", "confirm")
+            turns = (
+                "tomorrow", "My name is Ada and my email is ada@example.com.",
+                "Second room", utterance,
+            )
+            expected_nodes = ("form", "picker", "confirm", "confirm")
             for index, (turn, expected_node) in enumerate(zip(turns, expected_nodes)):
                 previous_tools = native_tools()
                 await call.providers.user_turn(turn, turn_index=index)
@@ -401,8 +517,58 @@ def test_actual_pipeline_rejects_qualified_or_negative_yes_before_write(utteranc
             }
             assert call.adapter.manager.current_node == "confirm"
             assert action_nodes == ["lookup"]
+            assert action_facts[0]["query"] == "2026-11-18"
+            assert action_facts[0]["email"] == "ada@example.com"
+            assert any(
+                "email" in tool["function"]["parameters"]["properties"]
+                and "email" not in tool["function"]["parameters"].get("required", [])
+                for request in call.providers.requests
+                for tool in request.get("tools", [])
+                if tool.get("type") == "function"
+                and "name" in tool["function"]["parameters"].get("properties", {})
+            )
             await call.finish("graceful_end")
             call.assert_clean()
+
+    asyncio.run(scenario())
+
+
+def test_form_accepts_explicit_same_turn_values_and_rejects_model_invention():
+    async def scenario():
+        from botelier.voice.flows.native_execution import NativeActionResult
+
+        async def action(node, facts, *, confirmation):
+            return NativeActionResult(True, variables={"items": []})
+
+        call = GraphCall(
+            compile_full_catalog_flow(), execute_action=action,
+        )
+        await call.adapter.start()
+        call.user_turn("fixtures")
+        query_schema = next(iter(call.worker.tools.values()))
+        await call.invoke_schema(query_schema, {"query": "fixtures"})
+        form_schema = next(iter(call.worker.tools.values()))
+
+        call.user_turn("My name is Ada.")
+        rejected = await call.invoke_schema(form_schema, {
+            "name": "Ada", "email": "invented@example.com",
+        })
+        assert rejected == {
+            "status": "rejected", "reason": "caller_response_mismatch",
+        }
+        assert call.adapter.facts == {"query": "fixtures"}
+
+        call.user_turn("My name is Ada and my email is ada@example.com.")
+        accepted = await call.invoke_schema(form_schema, {
+            "name": "Ada", "email": "ada@example.com",
+        })
+        assert accepted["status"] == "accepted"
+        assert accepted["facts"] == {
+            "name": "Ada", "email": "ada@example.com",
+        }
+        assert call.adapter.facts["name"] == "Ada"
+        assert call.adapter.facts["email"] == "ada@example.com"
+        await call.adapter.close()
 
     asyncio.run(scenario())
 

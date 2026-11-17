@@ -436,7 +436,10 @@ class GraphProviders:
 class NativeGraphPipelineCall:
     """Actual application-created Pipecat worker plus an injected graph adapter."""
 
-    def __new__(cls, compiled, *, providers, execute_action=None, terminal_handler=None):
+    def __new__(
+        cls, compiled, *, providers, execute_action=None, terminal_handler=None,
+        adapter_args=None,
+    ):
         from lifecycle_support import OfflineCall
         from botelier.voice.flows.native_adapter import NativeFlowAdapter
         from test_application_transcripts import start_conversation
@@ -449,6 +452,7 @@ class NativeGraphPipelineCall:
                     compiled, llm=self.created[2], worker=self.created[1],
                     context_aggregator=self.created[3],
                     execute_action=execute_action, terminal_handler=terminal_handler,
+                    **(adapter_args or {}),
                 )
                 await self.adapter.start()
 

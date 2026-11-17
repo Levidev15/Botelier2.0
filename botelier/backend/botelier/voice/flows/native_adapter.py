@@ -27,6 +27,9 @@ from botelier.voice.flows.native_values import (
     NativeValueError, evaluate_condition, evaluate_value, present_response,
     render_text, resolve_option, validate_value,
 )
+from botelier.services.native_flow_recovery import (
+    NativeFlowRecoveryError, native_flow_identity, native_flow_source_digest,
+)
 from botelier.voice.flows.pilot_cancellation import reconcile_native_cancellation
 from botelier.voice.flows.pilot_queue import InterruptionSafeFlowQueue
 from botelier.voice.flows.pilot_replacement import NodeReplacementGuard
@@ -58,7 +61,7 @@ class NativeFlowAdapter:
         self, compiled, *, llm, worker, context_aggregator, execute_action=None,
         terminal_handler=None, global_functions=(), text_observer=None,
         text_observer_timeout=5.0, today=None, direct_speech_observer=None,
-        available_flows=None,
+        available_flows=None, recovery_snapshot=None, snapshot_handler=None,
     ):
         if not callable(getattr(compiled, "node", None)) or not callable(
             getattr(compiled, "next_node", None)
@@ -116,6 +119,15 @@ class NativeFlowAdapter:
         self._catalog_active = False
         self._awaiting_flow_choice = False
         self._suppress_initial_greeting = False
+        if snapshot_handler is not None and not callable(snapshot_handler):
+            raise ValueError("native_recovery_storage_unavailable")
+        self._snapshot_handler = snapshot_handler
+        self._recovery_snapshot = recovery_snapshot
+        self._recovery_revision = (
+            recovery_snapshot.get("revision", 0)
+            if isinstance(recovery_snapshot, dict) else 0
+        )
+        self._resume_after_effect_commit = False
         self.worker = worker
         self.context_aggregator = context_aggregator
         self.execute_action = execute_action
@@ -253,6 +265,216 @@ class NativeFlowAdapter:
             "respond_immediately": self._node_respond_immediately,
         }
 
+    def _restore_recovery_snapshot(self):
+        snapshot = self._recovery_snapshot
+        if snapshot is None:
+            return self.compiled.initial_node_id
+        if (
+            not isinstance(snapshot, dict)
+            or snapshot.get("schema_version") != 1
+            or type(snapshot.get("revision")) is not int
+            or snapshot["revision"] < 1
+        ):
+            raise NativeFlowRecoveryError("native_recovery_snapshot_invalid")
+        state = snapshot.get("state")
+        if state in {"pending_effect", "terminal_pending", "complete", "failed", "closed"}:
+            raise NativeFlowRecoveryError("native_recovery_pending")
+        if state not in {"active", "effect_committed"}:
+            raise NativeFlowRecoveryError("native_recovery_snapshot_invalid")
+
+        root = snapshot.get("root")
+        if (
+            root != native_flow_identity(self._root_compiled)
+            or snapshot.get("source_digest")
+            != native_flow_source_digest(self._root_compiled)
+        ):
+            raise NativeFlowRecoveryError("native_recovery_source")
+        active = snapshot.get("active")
+        if not isinstance(active, dict):
+            raise NativeFlowRecoveryError("native_recovery_snapshot_invalid")
+        active_id = active.get("tool_id")
+        entry = self._flow_catalogue.get(active_id)
+        if entry is None:
+            raise NativeFlowRecoveryError("native_recovery_source")
+        compiled = entry["compiled"]
+        active_identity = {
+            key: value for key, value in active.items()
+            if key != "source_digest"
+        }
+        if (
+            active_identity != native_flow_identity(compiled)
+            or active.get("source_digest") != native_flow_source_digest(compiled)
+        ):
+            raise NativeFlowRecoveryError("native_recovery_source")
+
+        current = snapshot.get("current_node_id")
+        if not isinstance(current, str) or compiled.node(current) is None:
+            raise NativeFlowRecoveryError("native_recovery_node")
+        self.compiled = compiled
+        self._declarations_by_key = {
+            declaration.key: declaration
+            for declaration in compiled.variable_declarations
+        }
+        self.manager.state["facts"] = {}
+        self.manager.state["native_llm_data"] = {}
+        for declaration in compiled.variable_declarations:
+            data = declaration.data()
+            if declaration.origin == "explicit" and data.get("defaultValue") is not None:
+                self.manager.state["facts"][declaration.key] = (
+                    self._normalize_assignment(declaration.key, data["defaultValue"])
+                )
+
+        facts = snapshot.get("facts")
+        provenance = snapshot.get("fact_provenance")
+        callers = snapshot.get("caller_facts")
+        if (
+            not isinstance(facts, dict) or len(facts) > 128
+            or not isinstance(provenance, dict) or set(provenance) != set(facts)
+            or not isinstance(callers, dict) or len(callers) > 128
+            or set(callers) != {key for key, origin in provenance.items() if origin == "caller"}
+        ):
+            raise NativeFlowRecoveryError("native_recovery_facts")
+        allowed_provenance = {"caller", "default", "derived", "action"}
+        self._caller_values = {}
+        self._derived = set()
+        for key, value in facts.items():
+            declaration = self._declarations_by_key.get(key)
+            origin = provenance.get(key)
+            if (
+                declaration is None or origin not in allowed_provenance
+                or (origin == "caller" and declaration.origin != "explicit")
+            ):
+                raise NativeFlowRecoveryError("native_recovery_facts")
+            try:
+                if origin in {"caller", "default"}:
+                    normalized = self._normalize_assignment(key, value)
+                else:
+                    normalized = copy_native_json(value)
+            except (RuntimeError, NativeValueError):
+                raise NativeFlowRecoveryError("native_recovery_facts") from None
+            except ValueError:
+                raise NativeFlowRecoveryError("native_recovery_facts") from None
+            self.manager.state["facts"][key] = normalized
+            if origin == "caller":
+                if callers[key] != normalized:
+                    raise NativeFlowRecoveryError("native_recovery_facts")
+                self._caller_values[key] = deepcopy(normalized)
+            else:
+                self._derived.add(key)
+
+        llm_data = snapshot.get("llm_data", {})
+        if not isinstance(llm_data, dict):
+            raise NativeFlowRecoveryError("native_recovery_projection")
+        try:
+            self._llm_data = copy_native_json(llm_data)
+        except ValueError:
+            raise NativeFlowRecoveryError("native_recovery_projection") from None
+        self.manager.state["native_llm_data"] = deepcopy(self._llm_data)
+
+        self._catalog_active = snapshot.get("catalog_active")
+        self._awaiting_flow_choice = snapshot.get("awaiting_flow_choice")
+        if (
+            type(self._catalog_active) is not bool
+            or type(self._awaiting_flow_choice) is not bool
+            or (self._awaiting_flow_choice and (
+                active_id != str(self._root_compiled.identity.tool_id)
+                or current != self._root_compiled.initial_node_id
+            ))
+        ):
+            raise NativeFlowRecoveryError("native_recovery_state")
+        node_revision = snapshot.get("node_revision")
+        total_steps = snapshot.get("total_steps")
+        if (
+            type(node_revision) is not int or node_revision < 0
+            or type(total_steps) is not int or not 1 <= total_steps <= _MAX_TOTAL_STEPS
+        ):
+            raise NativeFlowRecoveryError("native_recovery_revision")
+        self._revision = node_revision
+        self._total_steps = total_steps
+
+        effect = snapshot.get("effect")
+        if state == "effect_committed":
+            if (
+                not isinstance(effect, dict)
+                or effect.get("status") != "committed"
+                or effect.get("node_id") != current
+                or effect.get("branch") not in {"success", "error", "not_found", "auth_error"}
+                or compiled.node(current).type not in _ACTION_TYPES
+                or effect.get("action_type") != compiled.node(current).type
+                or effect.get("flow_version_id") != compiled.identity.flow_version_id
+            ):
+                raise NativeFlowRecoveryError("native_recovery_effect")
+            target = compiled.next_node(current, effect["branch"])
+            if target is None:
+                raise NativeFlowRecoveryError("native_recovery_effect")
+            current = target.node_id
+            self._total_steps = min(_MAX_TOTAL_STEPS, self._total_steps + 1)
+            self._resume_after_effect_commit = True
+        elif effect is not None:
+            raise NativeFlowRecoveryError("native_recovery_effect")
+        self._active_node_id = current
+        self._visits = {current: 1}
+        return current
+
+    async def _persist_recovery(
+        self, *, current_node_id=None, state="active", effect=None,
+    ):
+        if self._snapshot_handler is None:
+            return
+        facts = deepcopy(self.manager.state["facts"])
+        provenance = {}
+        callers = {}
+        for key, value in facts.items():
+            if key in self._caller_values:
+                provenance[key] = "caller"
+                callers[key] = deepcopy(value)
+            elif key in self._derived:
+                provenance[key] = "derived"
+            else:
+                declaration = self._declarations_by_key.get(key)
+                default = (
+                    declaration.data().get("defaultValue")
+                    if declaration is not None and declaration.origin == "explicit"
+                    else None
+                )
+                provenance[key] = "default" if default == value else "action"
+        payload = {
+            "schema_version": 1,
+            "revision": self._recovery_revision,
+            "root": native_flow_identity(self._root_compiled),
+            "source_digest": native_flow_source_digest(self._root_compiled),
+            "active": {
+                **native_flow_identity(self.compiled),
+                "source_digest": native_flow_source_digest(self.compiled),
+            },
+            "current_node_id": current_node_id or self._active_node_id,
+            "node_revision": self._revision,
+            "total_steps": self._total_steps,
+            "state": state,
+            "terminal_state": {
+                "status": self._status,
+                "outcome": self._outcome,
+                "failure_reason": self._failure_reason,
+            },
+            "catalog_active": self._catalog_active,
+            "awaiting_flow_choice": self._awaiting_flow_choice,
+            "facts": facts,
+            "caller_facts": callers,
+            "fact_provenance": provenance,
+            "llm_data": deepcopy(self._llm_data),
+            "effect": deepcopy(effect),
+        }
+        try:
+            self._recovery_revision = await asyncio.to_thread(
+                self._snapshot_handler, payload, self._recovery_revision,
+            )
+        except NativeFlowRecoveryError:
+            self._fail("native_recovery_write_failed")
+            raise
+        except Exception:
+            self._fail("native_recovery_write_failed")
+            raise NativeFlowRecoveryError("native_recovery_write_failed") from None
+
     async def start(self):
         if self.closed or self._started or self.worker.has_finished():
             raise RuntimeError("native_flow_not_startable")
@@ -262,11 +484,18 @@ class NativeFlowAdapter:
         self._owned_task = task
         try:
             await self.manager.initialize()
-            active = await self._resolve_segment(self.compiled.initial_node_id, None)
+            active = self._restore_recovery_snapshot()
+            if self._recovery_snapshot is None:
+                active = await self._resolve_segment(active, None)
+            elif self._resume_after_effect_commit:
+                active = await self._resolve_segment(active, None)
+            elif self.compiled.node(active).type in (_ACTION_TYPES | _TERMINALS):
+                raise NativeFlowRecoveryError("native_recovery_pending")
             if active is not None and self._is_open():
                 await self.manager.set_node_from_config(
                     self._node_config(active, source_visit=None),
                 )
+                await self._persist_recovery(current_node_id=active)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -354,6 +583,8 @@ class NativeFlowAdapter:
         while current is not None and self._is_open():
             if not self._mark_step(current):
                 return None
+            self._active_node_id = current
+            await self._persist_recovery(current_node_id=current)
             node, data = self._node_data(current)
             kind = node.type
             if kind in _ANSWER_TYPES and self._is_wait_node(kind, data):
@@ -429,6 +660,8 @@ class NativeFlowAdapter:
                 continue
             if kind in _ACTION_TYPES:
                 current, branch = await self._run_action(node, data, cursor)
+                if self._status == "pending_effect":
+                    return None
                 if current is None:
                     return None
                 cursor = self._visit if cursor is None else cursor
@@ -535,6 +768,13 @@ class NativeFlowAdapter:
             functions.append(self._slot_schema(node_id, source_visit, data["slot"]))
         elif node.type == "collect_form":
             slots = sorted(data["slots"], key=lambda item: item["order"])
+            form_index = next(
+                (
+                    index for index, slot in enumerate(slots)
+                    if slot["variableKey"] not in self.facts
+                ),
+                len(slots),
+            )
             if form_index >= len(slots):
                 raise RuntimeError("native_form_order")
             self._active_form_index = form_index
@@ -543,7 +783,13 @@ class NativeFlowAdapter:
                 speech = self._render(data["introMessage"])
             prompt = self._render(slots[form_index]["prompt"])
             speech = " ".join(item for item in (speech, prompt) if item)
-            functions.append(self._slot_schema(node_id, source_visit, slots[form_index]))
+            future_slots = [
+                slot for slot in slots[form_index + 1:]
+                if slot["variableKey"] not in self.facts
+            ]
+            functions.append(self._slot_schema(
+                node_id, source_visit, slots[form_index], form_slots=future_slots,
+            ))
         elif node.type == "message":
             if data.get("deliveryMode", "guided") == "static":
                 speech = self._render(data.get("message", ""))
@@ -722,7 +968,14 @@ class NativeFlowAdapter:
             return [self._slot_schema(node_id, visit, data["slot"])]
         if node.type == "collect_form":
             slots = sorted(data["slots"], key=lambda item: item["order"])
-            return [self._slot_schema(node_id, visit, slots[form_index])]
+            current = slots[form_index]
+            future_slots = [
+                slot for slot in slots[form_index + 1:]
+                if slot["variableKey"] not in self.facts
+            ]
+            return [self._slot_schema(
+                node_id, visit, current, form_slots=future_slots,
+            )]
         if node.type == "message" and data.get("waitForResponse", True):
             return [self._text_response_schema(node_id, visit)]
         if node.type == "option_picker":
@@ -946,27 +1199,37 @@ class NativeFlowAdapter:
             if self._owned_task is task:
                 self._owned_task = None
 
-    def _slot_schema(self, node_id, visit, slot):
-        variable = slot["variableKey"]
-        declaration = self._declaration(variable)
-        slot_type = slot.get("type", declaration.get("type", "text"))
-        if slot_type == "number":
-            schema = {"type": "number"}
-            for key in ("min", "max"):
-                if key in slot.get("validation", {}):
-                    schema[key] = slot["validation"][key]
-        else:
-            schema = {"type": "string", "minLength": 1, "maxLength": _MAX_ARGUMENTS}
-            if slot_type == "choice":
-                schema["enum"] = declaration.get("choices", [])
+    def _slot_schema(self, node_id, visit, slot, *, form_slots=()):
+        slots = (slot, *tuple(form_slots))
+        properties = {}
+        for current in slots:
+            variable = current["variableKey"]
+            declaration = self._declaration(variable)
+            slot_type = current.get("type", declaration.get("type", "text"))
+            if slot_type == "number":
+                schema = {"type": "number"}
+                for key in ("min", "max"):
+                    if key in current.get("validation", {}):
+                        schema[key] = current["validation"][key]
+            else:
+                schema = {
+                    "type": "string", "minLength": 1,
+                    "maxLength": _MAX_ARGUMENTS,
+                }
+                if slot_type == "choice":
+                    schema["enum"] = declaration.get("choices", [])
+            properties[variable] = schema
 
         async def collect(arguments, manager):
-            return await self._collect_slot(node_id, visit, slot, arguments)
+            return await self._collect_slot(
+                node_id, visit, slot, arguments, form_slots=form_slots,
+            )
 
         return self._schema(
-            node_id, visit, "Record the caller's explicit answer for this current field.",
-            {variable: schema},
-            [variable], collect,
+            node_id, visit,
+            "Record explicit caller-provided values for the current form fields.",
+            properties,
+            [slot["variableKey"]], collect,
         )
 
     def _text_response_schema(self, node_id, visit):
@@ -1019,60 +1282,93 @@ class NativeFlowAdapter:
             for value in arguments.values()
         )
 
-    async def _collect_slot(self, node_id, visit, slot, arguments):
+    async def _collect_slot(self, node_id, visit, slot, arguments, *, form_slots=()):
         if not self._available(node_id, visit):
             return self._rejected("busy_or_stale")
         key = slot["variableKey"]
-        declaration = self._declaration(key)
-        slot_type = slot.get("type", declaration.get("type", "text"))
-        valid_args = (
-            isinstance(arguments, dict) and set(arguments) == {key}
-            and (
-                type(arguments[key]) is int and abs(arguments[key]) <= 10 ** 100
-                or type(arguments[key]) is float
-                and math.isfinite(arguments[key]) and abs(arguments[key]) <= 1e100
-                if slot_type == "number"
-                else isinstance(arguments[key], str) and arguments[key].strip()
-                and len(arguments[key]) <= _MAX_ARGUMENTS
-            )
-        )
-        raw = arguments.get(key) if isinstance(arguments, dict) else None
+        node, data = self._node_data(node_id)
+        candidate_slots = (slot, *tuple(form_slots))
+        if node.type != "collect_form":
+            candidate_slots = (slot,)
+        allowed_keys = {item["variableKey"] for item in candidate_slots}
         latest = self._latest_user_text()
         if (
-            not valid_args or not self._new_user_turn(visit) or latest is None
-            or not self._same_answer(latest, str(raw))
+            not isinstance(arguments, dict)
+            or key not in arguments
+            or not set(arguments).issubset(allowed_keys)
+            or not self._new_user_turn(visit)
+            or latest is None
         ):
             return self._rejected("invalid_arguments")
+        for candidate in candidate_slots:
+            variable = candidate["variableKey"]
+            if variable not in arguments:
+                continue
+            raw = arguments[variable]
+            declaration = self._declaration(variable)
+            slot_type = candidate.get("type", declaration.get("type", "text"))
+            valid_value_type = (
+                type(raw) is int and abs(raw) <= 10 ** 100
+                or type(raw) is float and math.isfinite(raw) and abs(raw) <= 1e100
+                if slot_type == "number"
+                else isinstance(raw, str) and raw.strip()
+                and len(raw) <= _MAX_ARGUMENTS
+            )
+            if not valid_value_type:
+                return self._rejected("invalid_arguments")
+            if not self._same_answer(latest, str(raw)):
+                return self._rejected("caller_response_mismatch")
         claim = object()
         self._claim = claim
         task = asyncio.current_task()
         self._owned_task = task
         try:
-            slot_config = {**slot, "type": slot_type}
-            if slot_config["type"] == "choice":
-                slot_config["choices"] = declaration.get("choices", [])
-            try:
-                value = validate_value(
-                    slot_config, arguments[key], self.facts, today=self.today,
-                )
-            except NativeValueError:
-                return await self._retry(node_id, visit, slot, key, claim)
+            candidate_facts = self.facts
+            collected = {}
+            for candidate in candidate_slots:
+                variable = candidate["variableKey"]
+                if variable not in arguments:
+                    continue
+                declaration = self._declaration(variable)
+                slot_type = candidate.get("type", declaration.get("type", "text"))
+                slot_config = {**candidate, "type": slot_type}
+                if slot_type == "choice":
+                    slot_config["choices"] = declaration.get("choices", [])
+                try:
+                    value = validate_value(
+                        slot_config, arguments[variable], candidate_facts,
+                        today=self.today,
+                    )
+                except NativeValueError:
+                    if variable == key:
+                        return await self._retry(node_id, visit, candidate, variable, claim)
+                    return self._rejected("form_answer_invalid")
+                collected[variable] = value
+                candidate_facts[variable] = value
             if not self._owned(node_id, visit, claim, task):
                 return self._rejected("busy_or_stale")
-            self.manager.state["facts"][key] = value
-            self._caller_values[key] = deepcopy(value)
-            self._derived.discard(key)
+            self.manager.state["facts"].update(collected)
+            for variable, value in collected.items():
+                self._caller_values[variable] = deepcopy(value)
+                self._derived.discard(variable)
             self._confirmation = None
-            next_index = None
-            node, data = self._node_data(node_id)
             if node.type == "collect_form":
                 slots = sorted(data["slots"], key=lambda item: item["order"])
-                next_index = self._active_form_index + 1
+                next_index = next(
+                    (
+                        index for index, item in enumerate(slots)
+                        if item["variableKey"] not in self.manager.state["facts"]
+                    ),
+                    len(slots),
+                )
                 if next_index < len(slots):
                     target_config = self._node_config(
                         node_id, source_visit=visit, form_index=next_index,
                     )
-                    result = {"status": "accepted", "current_node": node_id}
+                    result = {
+                        "status": "accepted", "current_node": node_id,
+                        "facts": deepcopy(collected),
+                    }
                     self._pending_entry = (node_id, None)
                     return result, target_config
             self._accepted.add(visit)
@@ -1087,7 +1383,7 @@ class NativeFlowAdapter:
             self._pending_entry = (active, None)
             result = {
                 "status": "accepted", "current_node": node_id,
-                "facts": {key: value},
+                "facts": deepcopy(collected),
             }
             if self._llm_data:
                 result["data"] = deepcopy(self._llm_data)
@@ -1420,6 +1716,16 @@ class NativeFlowAdapter:
         configuration = data.get("api", {}) if kind in {"api_request", "capability"} else data.get(
             "saveRecord", data.get("save_record", {}),
         )
+        await self._persist_recovery(
+            current_node_id=node_id,
+            state="pending_effect",
+            effect={
+                "status": "pending",
+                "node_id": node_id,
+                "action_type": kind,
+                "flow_version_id": self.compiled.identity.flow_version_id,
+            },
+        )
         if kind in {"api_request", "capability"} and configuration.get("thinkingMessage"):
             await self._speak(self._render(configuration["thinkingMessage"]))
         result = None
@@ -1440,6 +1746,21 @@ class NativeFlowAdapter:
             result = NativeActionResult(
                 False, branch="error", failure_reason="action_unavailable",
             )
+        if result.failure_reason == "effect_outcome_unknown":
+            self._status = "pending_effect"
+            self._failure_reason = "effect_outcome_unknown"
+            self._outcome = "effect_outcome_unknown"
+            await self._persist_recovery(
+                current_node_id=node_id,
+                state="pending_effect",
+                effect={
+                    "status": "pending",
+                    "node_id": node_id,
+                    "action_type": kind,
+                    "flow_version_id": self.compiled.identity.flow_version_id,
+                },
+            )
+            return None, "error"
         mapped_values = result.variables if result.success else {}
         valid_keys = set(self._declarations_by_key)
         if set(mapped_values) - valid_keys:
@@ -1471,6 +1792,17 @@ class NativeFlowAdapter:
         if target is None:
             self._fail(result.failure_reason or "action_branch_unhandled")
             return None, handle
+        await self._persist_recovery(
+            current_node_id=node_id,
+            state="effect_committed",
+            effect={
+                "status": "committed",
+                "node_id": node_id,
+                "action_type": kind,
+                "flow_version_id": self.compiled.identity.flow_version_id,
+                "branch": handle,
+            },
+        )
         # onComplete is a spoken bridge only when no explicit presentation follows.
         if result.success and configuration.get("onComplete"):
             target_node = self.compiled.node(target)
@@ -1480,6 +1812,16 @@ class NativeFlowAdapter:
 
     async def _run_terminal(self, node, data):
         node_id = node.node_id
+        await self._persist_recovery(
+            current_node_id=node_id,
+            state="terminal_pending",
+            effect={
+                "status": "pending",
+                "node_id": node_id,
+                "terminal_type": node.type,
+                "flow_version_id": self.compiled.identity.flow_version_id,
+            },
+        )
         text = ""
         if node.type == "end":
             template = data.get("closingMessage", "")
@@ -1519,6 +1861,20 @@ class NativeFlowAdapter:
             self._status = "terminal_failed"
             self._outcome = "failed"
             self._failure_reason = result.failure_reason or "terminal_rejected"
+        await self._persist_recovery(
+            current_node_id=node_id,
+            state=(
+                "complete" if self._completed
+                else "terminal_pending" if result.accepted
+                else "failed"
+            ),
+            effect={
+                "status": "pending" if result.accepted and not result.completed else "settled",
+                "node_id": node_id,
+                "terminal_type": node.type,
+                "flow_version_id": self.compiled.identity.flow_version_id,
+            },
+        )
 
     def observe_terminal_result(self, node_id, result):
         """Record only a matching deferred host result for the active terminal.
@@ -1547,6 +1903,21 @@ class NativeFlowAdapter:
             self._failure_reason = "transfer_failed"
         else:
             return False
+        return True
+
+    async def observe_terminal_result_and_persist(self, node_id, result):
+        if not self.observe_terminal_result(node_id, result):
+            return False
+        await self._persist_recovery(
+            current_node_id=node_id,
+            state="terminal_pending" if self._status == "terminal_pending" else "failed",
+            effect={
+                "status": "pending" if self._status == "terminal_pending" else "settled",
+                "node_id": node_id,
+                "terminal_type": "transfer",
+                "flow_version_id": self.compiled.identity.flow_version_id,
+            },
+        )
         return True
 
     async def _after_guided_message(self, action, manager):

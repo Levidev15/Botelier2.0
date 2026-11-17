@@ -20,6 +20,7 @@ TOOL_SET_ID = "00000000-0000-0000-0000-000000000108"
 VERSION_ID = "00000000-0000-0000-0000-000000000109"
 ALT_TOOL_ID = "00000000-0000-0000-0000-000000000110"
 ALT_VERSION_ID = "00000000-0000-0000-0000-000000000111"
+REPLACEMENT_VERSION_ID = "00000000-0000-0000-0000-000000000112"
 
 
 class NativeDevCatalogueSession(CatalogueSession):
@@ -35,11 +36,32 @@ class NativeDevCatalogueSession(CatalogueSession):
         self.criteria = list(criteria)
         return self
 
+    def _matches(self, row):
+        for criterion in self.criteria:
+            actual = getattr(row, criterion.left.key, None)
+            expected = getattr(criterion.right.value, "value", criterion.right.value)
+            actual = getattr(actual, "value", actual)
+            if actual != expected and str(actual) != str(expected):
+                return False
+        return True
+
+    def all(self):
+        if self.closed:
+            guard.deny("closed_native_dev_catalogue_query")
+        if self.model == "FlowSession":
+            return [
+                row for row in self.records.rows.get("FlowSession", [])
+                if self._matches(row)
+            ]
+        return super().all()
+
     def first(self):
         if self.closed:
             guard.deny("closed_native_dev_catalogue_query")
         if self.model == "Tool":
             return self.records.rows["Tool"][0]
+        if self.model == "FlowSession":
+            return next(iter(self.all()), None)
         if self.model == "FlowVersion":
             candidates = [
                 self.records.rows["FlowVersion"],
@@ -56,6 +78,24 @@ class NativeDevCatalogueSession(CatalogueSession):
                     return version
             return None
         return super().first()
+
+    def add(self, row):
+        if self.closed:
+            guard.deny("unexpected_native_dev_catalogue_write")
+        if type(row).__name__ != "FlowSession":
+            return super().add(row)
+        if getattr(row, "id", None) is None:
+            from uuid import uuid4
+
+            row.id = uuid4()
+        self.records.rows.setdefault("FlowSession", []).append(row)
+
+    def update(self, values, synchronize_session=False):
+        rows = self.all()
+        for row in rows:
+            for column, value in values.items():
+                setattr(row, column.key, value)
+        return len(rows)
 
 
 class NativeDevRecords(CatalogueRecords):
@@ -185,6 +225,7 @@ class NativeDevRecords(CatalogueRecords):
                     },
                 )
             ),
+            "FlowSession": [],
         })
         self.assistant.account_id = ACCOUNT
         self.assistant.property_id = PROPERTY
@@ -259,7 +300,7 @@ class NativeDevVoiceCall(OfflineCall):
         wrong_ownership=None, missing_version=False, unpublished_version=False,
         wrong_selection=False, extra_global_tool=False, escalation=False,
         extra_published_flow=False,
-        prewarmed=False, missing_call_log=False,
+        prewarmed=False, missing_call_log=False, records=None,
     ):
         module = __import__("botelier.voice.call_handler", fromlist=["CallHandler"])
         if handler is None:
@@ -282,7 +323,7 @@ class NativeDevVoiceCall(OfflineCall):
                 "The selected fixture is ready.",
             ]),
         )
-        self.records = NativeDevRecords(
+        self.records = records or NativeDevRecords(
             extra_tool=extra_tool, with_mcp=with_mcp, bad_contract=bad_contract,
             with_global_prompt=with_global_prompt,
             extra_global_tool=extra_global_tool, escalation=escalation,

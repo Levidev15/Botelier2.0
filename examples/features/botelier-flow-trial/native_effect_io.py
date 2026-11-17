@@ -12,6 +12,7 @@ class NativeEffectsFixture(EditorASGIFixture):
         await super().__aenter__()
         from botelier import database
         from botelier.models.call_log import CallLog
+        from botelier.models.flow_session import FlowSession
         from botelier.models.integration import (
             AccountIntegration, AccountSecret, IntegrationAction,
             IntegrationActionInvocation, IntegrationActionVersion,
@@ -27,7 +28,7 @@ class NativeEffectsFixture(EditorASGIFixture):
             cls.__name__: cls for cls in (
                 CallLog, AccountIntegration, AccountSecret, IntegrationAction,
                 IntegrationActionInvocation, IntegrationActionVersion,
-                IntegrationCallLog, IntegrationType, MCPConnection,
+                IntegrationCallLog, IntegrationType, MCPConnection, FlowSession,
                 OperationIdempotency, ConnectionOperationPolicy, Record, RecordType,
             )
         }
