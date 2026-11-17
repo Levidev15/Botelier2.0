@@ -142,6 +142,9 @@ def test_native_http_flow_uses_real_owned_published_graph_and_native_text_worker
                 "llm_provider": harness.records.assistant.llm_provider,
                 "llm_model": harness.records.assistant.llm_model,
                 "read_only_global_tools": [],
+                "execution_mode": "preview",
+                "effect_mode": "simulation",
+                "effects_simulated": True,
             }
             assert start_body["state"]["current_node"] == "query"
             assert start_body["state"]["pending_slot"] == "query"
