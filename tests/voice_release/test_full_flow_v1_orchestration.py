@@ -128,9 +128,11 @@ class FullFlowV1OrchestrationTests(unittest.TestCase):
             "test_native_graph.py", "test_native_graph_imports.py",
             "test_native_values.py", "test_native_output_values.py",
             "test_native_request_templates.py", "test_native_prepared_transport.py",
+            "test_native_json_templates.py", "test_native_booking_graph.py",
             "test_reservation_quote_contract.py", "test_native_quote_actions.py",
             "test_native_quote_graph.py",
             "test_native_graph_runtime.py", "test_native_graph_corrections.py",
+            "test_native_caller_grounding.py", "test_native_quote_privacy.py",
             "test_native_graph_text_host.py", "test_native_graph_host_selection.py",
             "test_native_actions.py", "test_native_effect_ledger.py",
             "test_native_effect_actions.py", "test_native_capabilities.py",
@@ -138,6 +140,7 @@ class FullFlowV1OrchestrationTests(unittest.TestCase):
             "test_native_record_actions.py", "test_native_integration_binding.py",
             "test_native_integration_resolution.py", "test_native_quote_bridge.py",
             "test_native_quote_delivery.py",
+            "test_native_sms_submission.py", "test_native_booking_journey.py",
             "test_flow_response_preview.py", "test_flow_response_preview_routes.py",
             "test_native_flow_recovery.py",
         }.issubset(exercised), exercised)
@@ -149,6 +152,16 @@ class FullFlowV1OrchestrationTests(unittest.TestCase):
             "/ci/examples/features/botelier-flow-trial/test_native_quote_graph.py",
             calls[0],
         )
+        for group, names in (
+            (0, ("test_native_json_templates.py", "test_native_booking_graph.py")),
+            (1, ("test_native_caller_grounding.py", "test_native_quote_privacy.py")),
+            (2, ("test_native_sms_submission.py", "test_native_booking_journey.py")),
+        ):
+            for name in names:
+                path = "/ci/examples/features/botelier-flow-trial/" + name
+                self.assertIn(path, calls[group])
+                for other in {0, 1, 2} - {group}:
+                    self.assertNotIn(path, calls[other])
         editor = set(
             item.rsplit("/", 1)[-1] for item in calls[2]
             if item.endswith(".py") and "/test_" in item

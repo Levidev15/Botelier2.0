@@ -28,6 +28,8 @@ pure_tests=(
   test_native_values.py
   test_native_output_values.py
   test_native_request_templates.py
+  test_native_json_templates.py
+  test_native_booking_graph.py
   test_reservation_quote_contract.py
   test_native_quote_actions.py
   test_native_quote_graph.py
@@ -35,6 +37,8 @@ pure_tests=(
 runtime_tests=(
   test_native_prepared_transport.py
   test_native_graph_runtime.py
+  test_native_caller_grounding.py
+  test_native_quote_privacy.py
   test_native_graph_corrections.py
   test_native_graph_text_host.py
   test_native_graph_host_selection.py
@@ -54,6 +58,8 @@ editor_tests=(
   test_native_flow_recovery.py
   test_native_quote_bridge.py
   test_native_quote_delivery.py
+  test_native_sms_submission.py
+  test_native_booking_journey.py
 )
 mcp_tests=(
   test_mcp_native_policy.py
