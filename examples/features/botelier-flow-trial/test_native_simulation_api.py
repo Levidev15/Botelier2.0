@@ -20,6 +20,37 @@ def error_code(response):
     return detail.get("code") if isinstance(detail, dict) else detail
 
 
+def test_native_http_executes_a_safe_compiled_slot_tool_and_terminal_boundary():
+    async def scenario():
+        from native_graph_io import simple_flow_config
+        from node_contract_io import tool_delta
+
+        async with NativeSimulationAPIHarness(replies=[
+            tool_delta("collect_name", {"name": "Ada"}),
+        ]) as harness:
+            # Published source, real route/auth/session and real native tool
+            # path, deliberately with no API/MCP/business action in preview.
+            harness.records.version.flow_config = simple_flow_config()
+            started = await harness.start()
+            assert started.status_code == 200, started.text
+            session_id = started.json()["session_id"]
+            assert started.json()["state"]["pending_slot"] == "name"
+            result = await harness.message(session_id, "My name is Ada.")
+            assert result.status_code == 200, result.text
+            body = result.json()
+            assert body["function_called"].startswith("native_name_")
+            assert body["function_result"] is not None
+            assert body["error"] is None
+            assert body["state"]["collected_slots"] == {"name": "Ada"}
+            assert body["state"]["is_complete"] is True
+            assert body["state"]["is_ended"] is True
+            assert any(message["content"] == "Thanks, Ada." for message in body["messages"])
+            assert harness.fixture.providers.business_requests == []
+            assert len(harness.fixture.providers.requests) == 1
+
+    run(scenario)
+
+
 @pytest.mark.parametrize("condition", ["restricted", "revoked", "expired", "old_version"])
 def test_native_start_requires_a_current_full_assurance_session(condition):
     async def scenario():

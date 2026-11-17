@@ -1,6 +1,8 @@
 """General native graph through real model SDK, aggregators and text host."""
 
 import asyncio
+from copy import deepcopy
+from types import SimpleNamespace
 
 import pytest
 
@@ -420,5 +422,211 @@ def test_text_host_initialization_failure_closes_partially_owned_runners(monkeyp
             assert host._runner_task is None
             assert host._action_runners
             assert all(runner._closed for runner in host._action_runners.values())
+
+    asyncio.run(asyncio.wait_for(scenario(), 15))
+
+
+def _distinct_child_definition():
+    nodes = [
+        {"id": "child_start", "type": "initial", "data": {
+            "greeting": "Child workflow.", "waitForResponse": False,
+        }},
+        {"id": "child_email", "type": "collect_slot", "data": {"slot": {
+            "variableKey": "child_email", "prompt": "What is your email?",
+        }}},
+        {"id": "child_guided", "type": "message", "data": {
+            "message": "Child selection recorded.", "deliveryMode": "guided",
+            "waitForResponse": False,
+        }},
+        {"id": "child_reason", "type": "collect_slot", "data": {"slot": {
+            "variableKey": "child_reason", "prompt": "What is your reason?",
+        }}},
+        {"id": "child_done", "type": "end", "data": {"closingMessage": "Child complete."}},
+    ]
+    return {
+        "initial_node": "child_start",
+        "variables": [
+            {"key": "child_email", "type": "email"},
+            {"key": "child_reason", "type": "text"},
+        ],
+        "nodes": nodes,
+        "edges": [
+            {"id": "child-edge-" + str(index), "source": left["id"], "target": right["id"]}
+            for index, (left, right) in enumerate(zip(nodes, nodes[1:]))
+        ],
+    }
+
+
+def test_idle_fence_checks_the_active_child_only_guided_node():
+    from native_graph_io import compile_simple_flow
+    from botelier.voice.flows.native_graph import compile_flow
+    from botelier.voice.flows.native_text_host import NativeTextHost
+
+    root = compile_simple_flow()
+    child = compile_flow(_distinct_child_definition(), root.identity)
+    # Isolate the node-specific decision after the independent busy fences have
+    # settled. This is a state-helper unit test, not a simulated audio call.
+    state = SimpleNamespace(
+        compiled=root, adapter=SimpleNamespace(
+            compiled=child, execution_busy=False,
+            snapshot=lambda: {"current_node": "child_guided", "status": "running"},
+        ),
+        _model_inflight=0, _active_calls={}, _transition_expected=0,
+        _observer=SimpleNamespace(node_updates=0),
+        _response_ends=0, _expected_model_ends=0, _consumer_ack_pending=False,
+    )
+    assert NativeTextHost._native_idle(state) is False
+
+
+def test_actual_child_flow_reports_distinct_slots_and_finishes_guided_handoff():
+    async def scenario():
+        from botelier.voice.flows.native_graph import compile_flow
+        from botelier.voice.flows.pilot_contract import PilotIdentity
+
+        records = NativeDevRecords(extra_published_flow=True)
+        root_identity = PilotIdentity(
+            account_id=records.assistant.account_id,
+            property_id=records.assistant.property_id,
+            tool_id=TOOL_ID, flow_version_id=VERSION_ID,
+            call_sid="offline-distinct-child-state",
+        )
+        version = records.rows["AdditionalFlowVersions"][0]
+        version.flow_config = _distinct_child_definition()
+        child = compile_flow(version.flow_config, PilotIdentity(
+            account_id=root_identity.account_id, property_id=root_identity.property_id,
+            tool_id=ALT_TOOL_ID, flow_version_id=str(version.id),
+            call_sid=root_identity.call_sid,
+        ))
+        async with NativeGraphTextFixture(
+            providers=PilotProviders([
+                tool_delta("collect_select_flow", {"tool_id": ALT_TOOL_ID}),
+                tool_delta("collect_child_email", {"child_email": "ada@example.invalid"}),
+                "Child selection recorded.",
+            ]),
+            definition=records.rows["FlowVersion"].flow_config,
+            identity=root_identity, session_factory=records.session,
+            available_flows={ALT_TOOL_ID: {
+                "compiled": child, "name": "Distinct child", "description": "Child state",
+            }},
+        ) as fixture:
+            host = fixture.host
+            await host.start()
+            await host.send("Use the distinct child workflow.")
+            snapshot = host.snapshot()
+            assert snapshot["current_node"] == "child_email"
+            assert snapshot["pending_slot"] == "child_email"
+            assert snapshot["progress"] == {"collected": 0, "total": 2, "percentage": 0}
+            result = await host.send("My email is ada@example.invalid.")
+            assert host.snapshot()["current_node"] == "child_reason"
+            assert host.snapshot()["collected_slots"] == {"child_email": "ada@example.invalid"}
+            assert host.snapshot()["progress"] == {"collected": 1, "total": 2, "percentage": 50}
+            assert [item["content"] for item in result["messages"]] == [
+                "Child selection recorded.", "What is your reason?",
+            ]
+            assert fixture.providers.business_requests == []
+
+    asyncio.run(asyncio.wait_for(scenario(), 20))
+
+
+@pytest.mark.parametrize("value", ["", "   ", "x" * 2049, None, 7, {"message": "injected"}])
+def test_invalid_direct_host_input_does_not_change_state_or_call_the_model(value):
+    async def scenario():
+        async with NativeGraphTextFixture([
+            tool_delta("collect_name", {"name": "Ada"}),
+        ]) as fixture:
+            host = fixture.host
+            await host.start()
+            before = deepcopy(host.snapshot())
+            history = deepcopy(host.context.get_messages())
+            generation = host._active_generation
+            with pytest.raises(host.error_type) as error:
+                await host.send(value)
+            assert error.value.code == "invalid"
+            assert host.snapshot() == before
+            assert host.context.get_messages() == history
+            assert host._active_generation == generation
+            assert host._send_task is None and not host.closed
+            assert fixture.providers.requests == []
+            result = await host.send("My name is Ada.")
+            assert host.snapshot()["collected_slots"] == {"name": "Ada"}
+            assert any(item["content"] == "Thanks, Ada." for item in result["messages"])
+
+    asyncio.run(asyncio.wait_for(scenario(), 15))
+
+
+def test_node_update_failure_uses_the_real_host_error_callback_without_model_work():
+    async def scenario():
+        async with NativeGraphTextFixture() as fixture:
+            host = fixture.host
+            await host.start()
+            host._observer.node_update_failed()
+            with pytest.raises(host.error_type) as error:
+                await host.send("My name is Ada.")
+            assert error.value.code == "timeout"
+            assert host.closed and host._runner_task.done()
+            assert fixture.providers.requests == []
+
+    asyncio.run(asyncio.wait_for(scenario(), 15))
+
+
+@pytest.mark.parametrize("finish", ["timeout", "cancellation"])
+def test_pending_native_action_cannot_commit_its_late_result_after_host_close(monkeypatch, finish):
+    async def scenario():
+        from native_graph_io import simple_flow_config
+        from botelier.voice.flows.native_actions import NativeActionRunner
+        from botelier.voice.flows.native_execution import NativeActionResult
+
+        entered, cancelled = asyncio.Event(), asyncio.Event()
+
+        async def held_action(self, node, facts, **kwargs):
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                cancelled.set()
+                # A transport may finish despite cancellation. The real adapter
+                # must fence this result; this fake does not perform an effect.
+                return NativeActionResult(
+                    True, variables={"late_value": "must-not-commit"},
+                    llm_data={"late": "must-not-commit"},
+                )
+
+        monkeypatch.setattr(NativeActionRunner, "execute", held_action)
+        definition = simple_flow_config()
+        definition["variables"].append({"key": "late_value", "type": "text"})
+        definition["nodes"].insert(2, {
+            "id": "held_action", "type": "api_request", "data": {"api": {
+                "apiSource": "custom", "method": "GET",
+                "url": "https://fixture.invalid/held",
+                "responseMapping": {"late_value": "$.value"},
+                "timeout": 2, "retryCount": 0,
+            }},
+        })
+        definition["edges"][1]["target"] = "held_action"
+        definition["edges"].append({
+            "id": "held-done", "source": "held_action", "target": "done",
+            "sourceHandle": "success",
+        })
+        async with NativeGraphTextFixture(
+            [tool_delta("collect_name", {"name": "Ada"})],
+            definition=definition, turn_timeout=0.5,
+        ) as fixture:
+            host = fixture.host
+            await host.start()
+            turn = asyncio.create_task(host.send("My name is Ada."))
+            await asyncio.wait_for(entered.wait(), 3)
+            if finish == "cancellation":
+                turn.cancel()
+                with pytest.raises(asyncio.CancelledError):
+                    await turn
+            else:
+                with pytest.raises(host.error_type) as error:
+                    await turn
+                assert error.value.code == "timeout"
+            assert cancelled.is_set()
+            assert host.closed and host.adapter.closed and host._runner_task.done()
+            assert "late_value" not in host.adapter.facts
+            assert "must-not-commit" not in str(host.context.get_messages())
+            assert fixture.providers.business_requests == []
 
     asyncio.run(asyncio.wait_for(scenario(), 15))

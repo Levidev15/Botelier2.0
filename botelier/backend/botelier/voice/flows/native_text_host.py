@@ -379,7 +379,7 @@ class NativeTextHost:
         if self._consumer_ack_pending:
             return False
         state = self.adapter.snapshot()
-        node = self.compiled.node(state["current_node"]) if state["current_node"] else None
+        node = self.adapter.compiled.node(state["current_node"]) if state["current_node"] else None
         return not (
             node is not None and node.type == "message"
             and node.data().get("deliveryMode", "static") == "guided"
@@ -600,7 +600,7 @@ class NativeTextHost:
         else:
             current = self.adapter.snapshot()["current_node"]
             facts = self.adapter.facts
-        slots = self.compiled.caller_slots
+        slots = (self.adapter.compiled if self.adapter is not None else self.compiled).caller_slots
         caller_variables = tuple(dict.fromkeys(
             slot.variable for slot in slots
         ))

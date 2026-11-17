@@ -148,7 +148,7 @@ class NativeTextObserver:
         self.host._node_update_consumer_acknowledged()
 
     def node_update_failed(self):
-        self.host._node_update_failed()
+        self.host.node_update_failed()
 
     def close(self):
         self._pending_node_speeches.clear()
