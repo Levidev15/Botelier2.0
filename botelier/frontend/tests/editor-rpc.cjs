@@ -4,7 +4,13 @@ const path = require("node:path");
 
 const MAX_LINE_BYTES = 64 * 1024;
 
-function fixtureInvocation({ repo, ci = false, image, pythonPath, packageRoot, testTools, path: searchPath }) {
+function fixtureInvocation({
+  repo, ci = false, image, pythonPath, packageRoot, testTools,
+  fixtureProfile = "leaf", path: searchPath,
+}) {
+  if (!["leaf", "v1-browser"].includes(fixtureProfile)) {
+    throw new Error("Unsupported editor fixture profile.");
+  }
   const env = {
     PATH: searchPath || "/usr/bin:/bin",
     HOME: "/tmp",
@@ -28,7 +34,7 @@ function fixtureInvocation({ repo, ci = false, image, pythonPath, packageRoot, t
       args: [
         "-B", path.join(repo, "examples/features/botelier-flow-trial/editor_guard.py"),
         "--backend-root", path.join(repo, "botelier/backend"),
-        "--package-root", packageRoot, "--stdio",
+        "--package-root", packageRoot, "--fixture-profile", fixtureProfile, "--stdio",
       ],
       env: { ...env, PYTHONPATH: pythonPath },
     };
@@ -49,7 +55,8 @@ function fixtureInvocation({ repo, ci = false, image, pythonPath, packageRoot, t
         .map(([key, value]) => `${key}=${value}`),
       "python", "-B", "/ci/examples/features/botelier-flow-trial/editor_guard.py",
       "--backend-root", "/app",
-      "--package-root", "/usr/local/lib/python3.11/site-packages/pipecat", "--stdio",
+      "--package-root", "/usr/local/lib/python3.11/site-packages/pipecat",
+      "--fixture-profile", fixtureProfile, "--stdio",
     ],
     env: { PATH: env.PATH, HOME: env.HOME },
   };

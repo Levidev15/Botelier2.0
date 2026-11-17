@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { Trash2 } from "lucide-react";
+import { ArrowLeft, Trash2 } from "lucide-react";
 import {
   useFlowStore,
   InitialNodeData,
@@ -44,6 +44,8 @@ type Tab = "properties" | "variables" | "instructions";
 interface NodeInspectorProps {
   assistantId?: string;
   assistantTtsProvider?: string;
+  mobileOpen?: boolean;
+  onMobileClose?: () => void;
 }
 
 const nodeAccentColors: Record<string, string> = {
@@ -85,6 +87,8 @@ const nodeTypeLabels: Record<string, string> = {
 export default function NodeInspector({
   assistantId,
   assistantTtsProvider,
+  mobileOpen = false,
+  onMobileClose,
 }: NodeInspectorProps = {}) {
   const { selectedNode, updateNodeData, deleteNode } = useFlowStore();
   const [activeTab, setActiveTab] = useState<Tab>("variables");
@@ -161,7 +165,17 @@ export default function NodeInspector({
   ];
 
   return (
-    <div className="w-full md:w-[480px] h-[52vh] md:h-full bg-[#141414] border-t md:border-t-0 md:border-l border-gray-800 flex flex-col overflow-hidden flex-shrink-0">
+    <div
+      data-testid="node-inspector"
+      data-mobile-open={mobileOpen ? "true" : "false"}
+      aria-label="Flow inspector"
+      className={[
+        "flex-col overflow-hidden bg-[#141414] flex-shrink-0",
+        mobileOpen
+          ? "fixed inset-0 z-[100] flex h-[100dvh] w-screen max-w-none border-0 shadow-2xl md:static md:inset-auto md:z-auto md:h-full md:w-[480px] md:border-l md:border-gray-800 md:shadow-none"
+          : "hidden md:flex md:h-full md:w-[480px] md:border-l md:border-gray-800",
+      ].join(" ")}
+    >
       {/* ── Node header ─────────────────────────────────────────────────────── */}
       {selectedNode ? (
         <div
@@ -180,6 +194,15 @@ export default function NodeInspector({
             />
           </div>
           <button
+            type="button"
+            onClick={onMobileClose}
+            className="md:hidden inline-flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium text-gray-300 hover:text-white rounded-md hover:bg-gray-800 flex-shrink-0"
+            aria-label="Back to flow canvas"
+          >
+            <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+            <span>Back</span>
+          </button>
+          <button
             onClick={() => deleteNode(selectedNode.id)}
             className="p-1.5 text-gray-500 hover:text-red-400 transition-colors rounded hover:bg-red-400/10 flex-shrink-0 mt-0.5"
             title="Delete node"
@@ -188,9 +211,20 @@ export default function NodeInspector({
           </button>
         </div>
       ) : (
-        <div className="px-4 py-3 border-b border-gray-800 flex-shrink-0">
-          <p className="text-sm font-semibold text-gray-300">Flow Inspector</p>
-          <p className="text-xs text-gray-500 mt-0.5">Select a node to edit it</p>
+        <div className="px-4 py-3 border-b border-gray-800 flex items-center justify-between flex-shrink-0">
+          <div>
+            <p className="text-sm font-semibold text-gray-300">Flow Inspector</p>
+            <p className="text-xs text-gray-500 mt-0.5">Select a node to edit it</p>
+          </div>
+          <button
+            type="button"
+            onClick={onMobileClose}
+            className="md:hidden inline-flex items-center gap-1.5 px-2 py-1.5 text-xs font-medium text-gray-300 hover:text-white rounded-md hover:bg-gray-800 flex-shrink-0"
+            aria-label="Back to flow canvas"
+          >
+            <ArrowLeft className="h-4 w-4" aria-hidden="true" />
+            <span>Back</span>
+          </button>
         </div>
       )}
 

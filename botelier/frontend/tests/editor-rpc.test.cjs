@@ -125,7 +125,8 @@ test("local editor backend uses only the guarded candidate fixture and fixed syn
   assert.deepEqual(invocation.args, [
     "-B", path.join(repo, "examples/features/botelier-flow-trial/editor_guard.py"),
     "--backend-root", path.join(repo, "botelier/backend"),
-    "--package-root", "/installed-sdk/pipecat", "--stdio",
+    "--package-root", "/installed-sdk/pipecat",
+    "--fixture-profile", "leaf", "--stdio",
   ]);
   assert.equal(invocation.env.PYTHONPATH, "/installed-test-tools");
   assert.equal(invocation.env.BOTELIER_ENV, "development");
@@ -159,6 +160,20 @@ test("CI editor backend runs the exact candidate image without network, credenti
   assert.equal(invocation.args.includes("-p"), false);
   assert.equal(invocation.args.some(value => value.startsWith("DATABASE_URL=")), false);
   assert.equal(invocation.args.some(value => value.startsWith("OPENAI_API_KEY=")), false);
+  assert.ok(invocation.args.includes("--fixture-profile"));
+  assert.equal(invocation.args[invocation.args.indexOf("--fixture-profile") + 1], "leaf");
+});
+
+test("the browser-only profile is explicit and invalid fixture profiles are refused", () => {
+  const invocation = fixtureInvocation({
+    repo, pythonPath: "/installed-test-tools", packageRoot: "/installed-sdk/pipecat",
+    fixtureProfile: "v1-browser", path: "/usr/bin:/bin",
+  });
+  assert.equal(invocation.args[invocation.args.indexOf("--fixture-profile") + 1], "v1-browser");
+  assert.throws(() => fixtureInvocation({
+    repo, pythonPath: "/installed-test-tools", packageRoot: "/installed-sdk/pipecat",
+    fixtureProfile: "broad-api", path: "/usr/bin:/bin",
+  }), /Unsupported editor fixture profile/);
 });
 
 test("editor image runner refuses noncandidate images and unintended local container execution", () => {

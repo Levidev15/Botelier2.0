@@ -126,6 +126,7 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
   const [showSimulator, setShowSimulator] = useState(false);
   const [showSchema, setShowSchema] = useState(false);
   const [showAIBuilder, setShowAIBuilder] = useState(false);
+  const [mobileInspectorOpen, setMobileInspectorOpen] = useState(false);
   const clipboardRef = useRef<{ nodes: typeof nodes; edges: Edge[] } | null>(null);
 
   useEffect(() => {
@@ -135,13 +136,29 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
   const onNodeClick = useCallback(
     (_: React.MouseEvent, node: any) => {
       selectNode(node);
+      setMobileInspectorOpen(true);
     },
     [selectNode]
   );
 
   const onPaneClick = useCallback(() => {
     selectNode(null);
+    setMobileInspectorOpen(false);
   }, [selectNode]);
+
+  const closeMobileInspector = useCallback(() => {
+    setMobileInspectorOpen(false);
+    selectNode(null);
+  }, [selectNode]);
+
+  useEffect(() => {
+    if (!mobileInspectorOpen || window.matchMedia("(min-width: 768px)").matches) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") closeMobileInspector();
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [closeMobileInspector, mobileInspectorOpen]);
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -345,7 +362,12 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
           )}
         </div>
 
-        <NodeInspector assistantId={assistantId} assistantTtsProvider={assistantTtsProvider} />
+        <NodeInspector
+          assistantId={assistantId}
+          assistantTtsProvider={assistantTtsProvider}
+          mobileOpen={mobileInspectorOpen}
+          onMobileClose={closeMobileInspector}
+        />
 
         {showSimulator && (
           <div className="w-80 flex-shrink-0">

@@ -20,6 +20,7 @@ test.beforeEach(async () => {
     testTools: process.env.EDITOR_TEST_TOOLS,
     pythonPath: process.env.EDITOR_PYTHONPATH,
     packageRoot: process.env.EDITOR_PACKAGE_ROOT,
+    fixtureProfile: "v1-browser",
     path: process.env.PATH,
   });
   child = spawn(invocation.command, invocation.args, {
@@ -28,6 +29,7 @@ test.beforeEach(async () => {
   bridge = connectEditorFixture(child, { timeoutMs: 45_000 });
   fixture = await bridge.ready;
   expect(fixture.scope).toBe("test_only_editor_leaf_routes_not_main_app_startup");
+  expect(fixture.profile).toBe("v1-browser");
 });
 
 test.afterEach(async () => {
@@ -165,14 +167,9 @@ async function routeBrowser(page, { integrationsManage = true, mcpConfigured = f
     },
   }];
   const recordTypes = [{
-    id: "synthetic-booking-record",
-    name: "Synthetic Booking",
-    fields: [
-      { key: "guest_email", label: "Guest email", type: "email", required: true },
-      { key: "amount", label: "Quoted amount", type: "number", required: false },
-    ],
-    status_options: [{ value: "pending", label: "Pending" }, { value: "confirmed", label: "Confirmed" }],
-    is_active: true,
+    ...fixture.browser_fixtures.record_type,
+    created_at: null,
+    updated_at: null,
   }];
   page.on("pageerror", error => observed.pageErrors.push(error.message));
   await page.route("**/*", async route => {
@@ -315,7 +312,7 @@ async function routeBrowser(page, { integrationsManage = true, mcpConfigured = f
         is_platform_admin: false, role: { slug: "editor-pilot" },
         permissions: {
           tools: { view: true, edit: true },
-          flows: { view: true, edit: true, publish: true },
+          flows: { view: true, edit: true, publish: true, revert: true },
           assistants: { view: true },
           integrations: { view: true, manage: integrationsManage },
         },
@@ -388,6 +385,14 @@ async function getControlForLabel(page, label) {
 
 test("synthetic MFA login, draft save/reload, published versions and history use the real editor API", async ({ page }) => {
   const observations = await signInToEditor(page);
+  const baselinePublished = await bridge.request({
+    method: "GET",
+    path: `/api/tools/${fixture.tool_id}/flow?account_id=${fixture.account_id}&source=published`,
+    headers: await authHeaders(page),
+  });
+  expect(baselinePublished.status).toBe(200);
+  const baselinePrompt = baselinePublished.body.flow_config.nodes
+    .find(node => node.id === "query").data.slot.prompt;
   const prompt = "Which synthetic room should I check?";
   const instructionPlaceholder = "e.g., Be empathetic, confirm the date includes the year, offer examples if the caller seems confused...";
 
@@ -450,11 +455,39 @@ test("synthetic MFA login, draft save/reload, published versions and history use
   await expect(page.getByText("Version History", { exact: true })).toBeVisible();
   await expect(page.getByText("v2", { exact: true })).toBeVisible();
   await expect(page.getByTitle("Revert to this version").first()).toBeVisible();
+  page.once("dialog", dialog => dialog.accept());
+  const revertResponsePromise = page.waitForResponse(response =>
+    new URL(response.url()).pathname ===
+      `/api/tools/${fixture.tool_id}/flow/versions/1/revert`,
+  );
+  await page.getByTitle("Revert to this version").first().click();
+  const revertResponse = await revertResponsePromise;
+  expect(revertResponse.request().method()).toBe("POST");
+  expect(revertResponse.status()).toBe(200);
+  const reverted = await revertResponse.json();
+  expect(reverted.flow_config.nodes.find(node => node.id === "query").data.slot.prompt)
+    .toBe(baselinePrompt);
+  const reloadedDraft = await bridge.request({
+    method: "GET",
+    path: `/api/tools/${fixture.tool_id}/flow?account_id=${fixture.account_id}&source=draft`,
+    headers: await authHeaders(page),
+  });
+  expect(reloadedDraft.status).toBe(200);
+  expect(reloadedDraft.body.flow_config.nodes.find(node => node.id === "query").data.slot.prompt)
+    .toBe(baselinePrompt);
+  await page.reload();
+  await page.locator('.react-flow__node[data-id="query"]').click();
+  await expect(page.getByPlaceholder("May I have your name, please?"))
+    .toHaveValue(baselinePrompt);
 
   const screenshot = path.join(repo, "generated-artifacts/native-editor-version-checkpoint.png");
   fs.mkdirSync(path.dirname(screenshot), { recursive: true });
   await page.screenshot({ path: screenshot, fullPage: true });
   expect(observations.real.some(item => item.path === "/api/simulate/start")).toBe(false);
+  expect(observations.real.some(item =>
+    item.path === `/api/tools/${fixture.tool_id}/flow/versions/1/revert` &&
+    item.method === "POST",
+  )).toBe(true);
   expect(observations.pageErrors).toEqual([]);
   expect(observations.unexpected).toEqual([]);
 });
@@ -496,6 +529,9 @@ async function connectNodeHandles(page, sourceId, targetId, sourceHandle = "succ
 test("the 15-node inspector is reachable and typed capability/quote bindings persist without provider execution", async ({ page }) => {
   const observations = await signInToEditor(page, { mcpConfigured: true });
   await page.setViewportSize({ width: 1600, height: 3000 });
+  const originalNodeIds = new Set(await page.locator(".react-flow__node").evaluateAll(
+    nodes => nodes.map(node => node.getAttribute("data-id")),
+  ));
   const labels = [
     "Start", "Message", "Collect Input", "Collect Form", "Confirmation",
     "API Request", "API Response", "Capability", "Condition", "Router",
@@ -567,14 +603,29 @@ test("the 15-node inspector is reachable and typed capability/quote bindings per
   await page.getByLabel("Output variable 4").fill("quote_total");
   await page.getByLabel("JSON path for output 4").fill("$.pricing.total");
   await page.getByLabel("JSON default for output 4").fill("0");
+  await page.getByRole("button", { name: "Add output", exact: true }).click();
+  await page.getByLabel("Output variable 5").fill("is_member");
+  await page.getByLabel("JSON path for output 5").fill("$.is_member");
+  await page.getByLabel("JSON default for output 5").fill("false");
+  await page.getByRole("button", { name: "Add output", exact: true }).click();
+  await page.getByLabel("Output variable 6").fill("room_label");
+  await page.getByLabel("JSON path for output 6").fill("$.room_label");
   await page.getByRole("button", { name: "Add field", exact: true }).click();
   await page.locator('select[aria-label="Projected field 1"]').selectOption("stock_count");
-  await page.getByRole("checkbox", { name: "trim" }).first().check();
   await page.getByRole("button", { name: "Add field", exact: true }).click();
   await page.locator('select[aria-label="Projected field 2"]').selectOption("quote_total");
   await expect(page.getByRole("checkbox", { name: "trim" }).nth(1)).toBeDisabled();
+  await page.getByRole("button", { name: "Add field", exact: true }).click();
+  await page.locator('select[aria-label="Projected field 3"]').selectOption("rooms");
+  await page.getByRole("button", { name: "Add field", exact: true }).click();
+  await page.locator('select[aria-label="Projected field 4"]').selectOption("is_member");
+  await page.getByRole("button", { name: "Add field", exact: true }).click();
+  await page.locator('select[aria-label="Projected field 5"]').selectOption("selected_offer");
+  await page.getByRole("button", { name: "Add field", exact: true }).click();
+  await page.locator('select[aria-label="Projected field 6"]').selectOption("room_label");
+  await page.getByRole("checkbox", { name: "trim" }).nth(5).check();
   const sampleControl = page.getByText("Raw sample JSON", { exact: true }).locator("..").locator("textarea");
-  await sampleControl.fill('{"result":{"rooms":[{"name":"Quiet","count":2,"price":0}]},"pricing":{"total":0},"stock_count":0,"offer":{"rate":{"code":"SYNTH"}}}');
+  await sampleControl.fill('{"result":{"rooms":[{"name":"Quiet","count":2,"price":0}]},"pricing":{"total":0},"stock_count":0,"offer":{"rate":{"code":"SYNTH"}},"is_member":false,"room_label":"  Quiet Lounge  "}');
   await expect(page.getByText("Preview uses only the sample below.", { exact: false })).toBeVisible();
   await page.getByRole("button", { name: /Response Mapping/ }).click();
   const responseMappingSection = page.getByRole("button", { name: /Response Mapping/ }).locator("..");
@@ -582,6 +633,30 @@ test("the 15-node inspector is reachable and typed capability/quote bindings per
   await responseMappingSection.locator('input[placeholder="$.data.guest.name"]').last().fill("$.result.rooms");
   await responseMappingSection.locator('input[placeholder="variable_name"]').last().fill("rooms");
   await expect(responseMappingSection.locator('input[placeholder="variable_name"]').last()).toHaveValue("rooms");
+  const previewResponsePromise = page.waitForResponse(response =>
+    new URL(response.url()).pathname === `/api/tools/${fixture.tool_id}/flow/preview-response`);
+  await page.getByRole("button", { name: "Preview mapping", exact: true }).click();
+  const previewResponse = await previewResponsePromise;
+  expect(previewResponse.request().method()).toBe("POST");
+  expect(previewResponse.status()).toBe(200);
+  const preview = await previewResponse.json();
+  expect(preview.mapped_variables).toMatchObject({
+    stock_count: 0,
+    rooms: [{ name: "Quiet", count: 2, price: 0 }],
+    selected_offer: { rate: { code: "SYNTH" } },
+    quote_total: 0,
+    is_member: false,
+    room_label: "  Quiet Lounge  ",
+  });
+  expect(preview.llm_data).toEqual({
+    stock_count: 0,
+    quote_total: 0,
+    rooms: [{ name: "Quiet", count: 2, price: 0 }],
+    is_member: false,
+    selected_offer: { rate: { code: "SYNTH" } },
+    room_label: "Quiet Lounge",
+  });
+  await expect(page.getByText("Sample-only preview complete", { exact: true })).toBeVisible();
 
   await page.locator(`.react-flow__node[data-id="${ids["API Response"]}"]`).click({ force: true });
   await getControlForLabel(page, "Array variable").then(control => control.selectOption("rooms"));
@@ -653,22 +728,19 @@ test("the 15-node inspector is reachable and typed capability/quote bindings per
   // create node with the same server-owned Record type catalog entry.
   const recordCreateId = ids["Save Record"];
   await page.locator(`.react-flow__node[data-id="${recordCreateId}"]`).click({ force: true });
-  await getControlForLabel(page, "Record Type").then(control => control.selectOption("synthetic-booking-record"));
+  await getControlForLabel(page, "Record Type").then(control => control.selectOption(fixture.browser_fixtures.record_type.id));
   await getControlForLabel(page, "Guest email").then(control => control.fill("{{caller_email}}"));
-  await getControlForLabel(page, "Quoted amount").then(control => control.fill("{{quote_total}}"));
+  await getControlForLabel(page, "Quoted amount").then(control => control.fill("{{nightly_price}}"));
   await getControlForLabel(page, "Status (optional)").then(control => control.selectOption("confirmed"));
   await connectNodeHandles(page, recordCreateId, ids.RecordUpdate, "");
   await page.locator(`.react-flow__node[data-id="${ids.RecordUpdate}"]`).click({ force: true });
-  await getControlForLabel(page, "Record Type").then(control => control.selectOption("synthetic-booking-record"));
+  await getControlForLabel(page, "Record Type").then(control => control.selectOption(fixture.browser_fixtures.record_type.id));
   const updateRecordControl = page.getByLabel("Record create or update source");
   await expect(updateRecordControl.locator(`option[value="${recordCreateId}"]`)).toHaveCount(1);
   await updateRecordControl.selectOption(recordCreateId);
-  // The guard fixture has no persisted RecordType row; its safe read-only
-  // catalog DTO exercises the editor controls, while the real backend must
-  // remain authoritative and rejects invented type IDs at save time.
-  await page.getByTitle("Delete node").click();
-  await page.locator(`.react-flow__node[data-id="${recordCreateId}"]`).click({ force: true });
-  await page.getByTitle("Delete node").click();
+  await getControlForLabel(page, "Guest email").then(control => control.fill("{{caller_email}}"));
+  await getControlForLabel(page, "Quoted amount").then(control => control.fill("{{nightly_price}}"));
+  await getControlForLabel(page, "Status (optional)").then(control => control.selectOption("confirmed"));
 
   await page.locator(`.react-flow__node[data-id="${senderId}"]`).click({ force: true });
   await getControlForLabel(page, "API Source").then(control => control.selectOption("tool"));
@@ -803,10 +875,16 @@ test("the 15-node inspector is reachable and typed capability/quote bindings per
     { variableKey: "rooms", jsonPath: "$.result.rooms", defaultValue: [] },
     { variableKey: "selected_offer", jsonPath: "$.offer", defaultValue: { rate: { code: "SYNTH" } } },
     { variableKey: "quote_total", jsonPath: "$.pricing.total", defaultValue: 0 },
+    { variableKey: "is_member", jsonPath: "$.is_member", defaultValue: false },
+    { variableKey: "room_label", jsonPath: "$.room_label" },
   ]);
   expect(custom.responseProjection.fields).toEqual([
-    { variable: "stock_count", cleanup: ["trim"] },
+    { variable: "stock_count" },
     { variable: "quote_total" },
+    { variable: "rooms" },
+    { variable: "is_member" },
+    { variable: "selected_offer" },
+    { variable: "room_label", cleanup: ["trim"] },
   ]);
   const response = savedNodes.find(node => node.id === ids["API Response"]).data.responsePresentation;
   expect(response).toMatchObject({
@@ -841,6 +919,77 @@ test("the 15-node inspector is reachable and typed capability/quote bindings per
     mcpToolName: "inventory_lookup",
     argumentsTemplate: '{"room":"{{query}}","limit":0}',
   });
+  const createRecord = savedNodes.find(node => node.id === recordCreateId).data.saveRecord;
+  const updateRecord = savedNodes.find(node => node.id === ids.RecordUpdate).data.saveRecord;
+  expect(createRecord).toMatchObject({
+    recordTypeId: fixture.browser_fixtures.record_type.id,
+    recordTypeName: fixture.browser_fixtures.record_type.name,
+    mapping: { guest_email: "{{guest_email}}", amount: "{{nightly_price}}" },
+    status: "confirmed",
+  });
+  expect(updateRecord).toMatchObject({
+    recordTypeId: fixture.browser_fixtures.record_type.id,
+    recordTypeName: fixture.browser_fixtures.record_type.name,
+    mapping: { guest_email: "{{guest_email}}", amount: "{{nightly_price}}" },
+    status: "confirmed",
+    updateSourceNodeId: recordCreateId,
+  });
+  await page.reload();
+  await expect(page.locator(`.react-flow__node[data-id="${recordCreateId}"]`)).toBeVisible();
+  await expect(page.locator(`.react-flow__node[data-id="${ids.RecordUpdate}"]`)).toBeVisible();
+  await page.locator(`.react-flow__node[data-id="${ids.RecordUpdate}"]`).click({ force: true });
+  await expect(page.getByLabel("Record create or update source")).toHaveValue(recordCreateId);
+
+  // Save a small publishable graph through the same authenticated ASGI draft
+  // route: retain the original valid graph plus the already UI-configured
+  // create/update pair, and make that pair reachable from Start.
+  const publishableNodeIds = new Set([
+    ...originalNodeIds, recordCreateId, ids.RecordUpdate,
+  ]);
+  const publishableFlowConfig = {
+    ...saved.body.flow_config,
+    nodes: saved.body.flow_config.nodes.filter(node => publishableNodeIds.has(node.id)),
+    edges: saved.body.flow_config.edges.filter(edge =>
+      publishableNodeIds.has(edge.source) && publishableNodeIds.has(edge.target),
+    ),
+  };
+  publishableFlowConfig.edges.push({
+    id: "start-to-fixture-record-create",
+    source: "start",
+    target: recordCreateId,
+  });
+  const minimalGraphSave = await bridge.request({
+    method: "PUT",
+    path: `/api/tools/${fixture.tool_id}/flow/draft?account_id=${fixture.account_id}`,
+    headers: await authHeaders(page),
+    body: {
+      flow_config: publishableFlowConfig,
+      description: "Fixture-owned Record create/update browser verification",
+    },
+  });
+  expect(minimalGraphSave.status).toBe(200);
+  await page.reload();
+  await page.locator(`.react-flow__node[data-id="${ids.RecordUpdate}"]`).click({ force: true });
+  await expect(page.getByLabel("Record create or update source")).toHaveValue(recordCreateId);
+
+  await page.getByRole("button", { name: "Publish", exact: true }).click();
+  await page.getByPlaceholder("What changed in this version?").fill("Publish fixture-owned Record nodes");
+  const publishResponsePromise = page.waitForResponse(response =>
+    new URL(response.url()).pathname === `/api/tools/${fixture.tool_id}/flow/publish`,
+  );
+  await page.getByRole("button", { name: "Publish Now", exact: true }).click();
+  const publishResponse = await publishResponsePromise;
+  expect(publishResponse.status()).toBe(200);
+  const publishedRecordFlow = await bridge.request({
+    method: "GET",
+    path: `/api/tools/${fixture.tool_id}/flow?account_id=${fixture.account_id}&source=published`,
+    headers: await authHeaders(page),
+  });
+  expect(publishedRecordFlow.status).toBe(200);
+  expect(publishedRecordFlow.body.flow_config.nodes.find(node => node.id === recordCreateId).data.saveRecord.recordTypeId)
+    .toBe(fixture.browser_fixtures.record_type.id);
+  expect(publishedRecordFlow.body.flow_config.nodes.find(node => node.id === ids.RecordUpdate).data.saveRecord.updateSourceNodeId)
+    .toBe(recordCreateId);
   const copiedQuotes = savedNodes.filter(node =>
     node.id !== quoteId &&
     node.data.api?.apiSource === "capability" &&
@@ -853,7 +1002,11 @@ test("the 15-node inspector is reachable and typed capability/quote bindings per
   expect(copiedSenders).toHaveLength(1);
   expect(copiedSenders[0].data.api.quoteDelivery.quoteNodeId).toBe(copiedQuotes[0].id);
   expect(observations.mcpTestCalls).toBe(0);
-  expect(observations.real.some(item => /preview-response|api-tester\/test/.test(item.path))).toBe(false);
+  expect(observations.real.some(item =>
+    item.path === `/api/tools/${fixture.tool_id}/flow/preview-response` &&
+    item.method === "POST",
+  )).toBe(true);
+  expect(observations.real.some(item => /api-tester\/test/.test(item.path))).toBe(false);
   expect(observations.pageErrors).toEqual([]);
   expect(observations.unexpected).toEqual([]);
 });
@@ -935,20 +1088,62 @@ test("MCP view-only permission allows a name/description edit but exposes no gra
   expect(observations.unexpected).toEqual([]);
 });
 
-test("the native editor inspector stays within a narrow viewport", async ({ page }) => {
+test("the native editor inspector remains usable on desktop and opens a viewport-wide mobile drawer", async ({ page }) => {
   const observations = await signInToEditor(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
   await page.locator('.react-flow__node[data-id="query"]').click({ force: true });
   await expect(page.getByPlaceholder("May I have your name, please?")).toBeVisible();
+  const inspector = page.getByTestId("node-inspector");
+  await expect(inspector).toBeVisible();
+  const desktopBounds = await inspector.boundingBox();
+  const desktopFieldBounds = await page.getByPlaceholder("May I have your name, please?").boundingBox();
+  expect(desktopBounds).not.toBeNull();
+  expect(desktopBounds.width).toBeGreaterThanOrEqual(470);
+  expect(desktopBounds.x + desktopBounds.width).toBeLessThanOrEqual(1440);
+  expect(desktopFieldBounds).not.toBeNull();
+  expect(desktopFieldBounds.width).toBeGreaterThanOrEqual(400);
+
+  const screenshotDir = path.join(repo, "generated-artifacts");
+  fs.mkdirSync(screenshotDir, { recursive: true });
+  await page.screenshot({ path: path.join(screenshotDir, "native-editor-desktop-inspector-checkpoint.png") });
+
   await page.setViewportSize({ width: 390, height: 844 });
   await expect(page.getByPlaceholder("May I have your name, please?")).toBeVisible();
-  const inspector = page.locator('[class*="md:w-[480px]"]').first();
-  const bounds = await inspector.boundingBox();
-  expect(bounds).not.toBeNull();
-  expect(bounds.x).toBeGreaterThanOrEqual(0);
-  expect(bounds.x + bounds.width).toBeLessThanOrEqual(391);
-  const screenshot = path.join(repo, "generated-artifacts/native-editor-mobile-checkpoint.png");
-  fs.mkdirSync(path.dirname(screenshot), { recursive: true });
-  await page.screenshot({ path: screenshot, fullPage: true });
+  await expect(page.getByRole("button", { name: "Back to flow canvas" })).toBeVisible();
+  const mobileBounds = await inspector.boundingBox();
+  const mobileField = page.getByPlaceholder("May I have your name, please?");
+  const mobileFieldBounds = await mobileField.boundingBox();
+  expect(mobileBounds).not.toBeNull();
+  expect(mobileBounds.x).toBe(0);
+  expect(mobileBounds.y).toBe(0);
+  expect(mobileBounds.width).toBeGreaterThanOrEqual(389);
+  expect(mobileBounds.height).toBeGreaterThanOrEqual(843);
+  expect(mobileBounds.x + mobileBounds.width).toBeLessThanOrEqual(390);
+  expect(mobileFieldBounds).not.toBeNull();
+  expect(mobileFieldBounds.width).toBeGreaterThanOrEqual(320);
+  expect(mobileFieldBounds.x).toBeGreaterThanOrEqual(0);
+  expect(mobileFieldBounds.x + mobileFieldBounds.width).toBeLessThanOrEqual(390);
+
+  for (const name of ["Properties", "Variables", "Instructions"]) {
+    const tab = page.getByRole("button", { name, exact: true });
+    await expect(tab).toBeVisible();
+    const tabMetrics = await tab.evaluate(element => ({
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+    }));
+    expect(tabMetrics.scrollWidth).toBeLessThanOrEqual(tabMetrics.clientWidth + 1);
+  }
+
+  await page.getByRole("button", { name: "Instructions", exact: true }).click();
+  const instructions = page.getByPlaceholder(/Be empathetic, confirm the date includes the year/);
+  await expect(instructions).toBeVisible();
+  const instructionsBounds = await instructions.boundingBox();
+  expect(instructionsBounds.width).toBeGreaterThanOrEqual(320);
+  await page.getByRole("button", { name: "Properties", exact: true }).click();
+  await page.screenshot({ path: path.join(screenshotDir, "native-editor-mobile-checkpoint.png") });
+  await page.getByRole("button", { name: "Back to flow canvas" }).click();
+  await expect(inspector).toBeHidden();
+
   expect(observations.pageErrors).toEqual([]);
   expect(observations.unexpected).toEqual([]);
 });

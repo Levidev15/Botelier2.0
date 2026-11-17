@@ -258,7 +258,7 @@ async def _jsonl_lines():
         loop.remove_reader(fd)
 
 
-async def _serve_jsonl():
+async def _serve_jsonl(profile="leaf"):
     from editor_fixture import EditorASGIFixture, EditorFixtureError
 
     def unique_object(pairs):
@@ -269,7 +269,7 @@ async def _serve_jsonl():
             value[key] = item
         return value
 
-    fixture = EditorASGIFixture()
+    fixture = EditorASGIFixture(profile=profile)
     async with fixture:
         print(json.dumps(fixture.ready_record(), separators=(",", ":")), flush=True)
         async for line in _jsonl_lines():
@@ -329,6 +329,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--backend-root", type=Path, required=True)
     parser.add_argument("--package-root", type=Path, required=True)
+    parser.add_argument(
+        "--fixture-profile", choices=("leaf", "v1-browser"), default="leaf",
+        help="Select the default-deny leaf boundary or its exact V1 browser routes.",
+    )
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--self-test", action="store_true")
     group.add_argument("--stdio", action="store_true")
@@ -343,7 +347,7 @@ def main():
     if args.stdio:
         import asyncio
 
-        asyncio.run(_serve_jsonl())
+        asyncio.run(_serve_jsonl(args.fixture_profile))
         if BLOCKED:
             return 3
         return 0

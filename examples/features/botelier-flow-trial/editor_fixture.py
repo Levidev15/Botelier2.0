@@ -13,6 +13,9 @@ from urllib.parse import parse_qs, urlsplit
 
 ACCOUNT_ID = "00000000-0000-0000-0000-000000000101"
 PROPERTY_ID = "00000000-0000-0000-0000-000000000102"
+RECORD_TYPE_ID = "00000000-0000-0000-0000-000000000110"
+FOREIGN_ACCOUNT_ID = "00000000-0000-0000-0000-000000000201"
+FOREIGN_RECORD_TYPE_ID = "00000000-0000-0000-0000-000000000202"
 ASSISTANT_ID = "00000000-0000-0000-0000-000000000104"
 TOOL_SET_ID = "00000000-0000-0000-0000-000000000105"
 TOOL_ID = "offline-flow"
@@ -69,7 +72,10 @@ class EditorASGIFixture:
     password = PASSWORD
     totp_secret = TOTP_SECRET
 
-    def __init__(self):
+    def __init__(self, profile="leaf"):
+        if profile not in {"leaf", "v1-browser"}:
+            raise EditorFixtureError("Unsupported editor fixture profile")
+        self.profile = profile
         self.app = None
         self.client = None
         self.engine = None
@@ -87,6 +93,7 @@ class EditorASGIFixture:
         return {
             "type": "ready",
             "scope": "test_only_editor_leaf_routes_not_main_app_startup",
+            "profile": self.profile,
             "account_id": self.account_id,
             "property_id": self.property_id,
             "assistant_id": self.assistant_id,
@@ -127,8 +134,24 @@ class EditorASGIFixture:
                     "name": "Synthetic native flow", "tool_type": "FLOW",
                     "is_active": True, "published_version_number": 1,
                 },
+                "record_type": {
+                    "id": RECORD_TYPE_ID,
+                    "account_id": self.account_id,
+                    "name": "Synthetic Booking",
+                    "slug": "synthetic-booking",
+                    "fields": [
+                        {"key": "guest_email", "label": "Guest email", "type": "email", "required": True},
+                        {"key": "amount", "label": "Quoted amount", "type": "number", "required": False},
+                    ],
+                    "status_options": [
+                        {"value": "pending", "label": "Pending"},
+                        {"value": "confirmed", "label": "Confirmed"},
+                    ],
+                    "is_active": True,
+                },
                 "permissions": {
                     "flows.view": True, "flows.edit": True, "flows.publish": True,
+                    "flows.revert": True,
                     "tools.view": True, "assistants.view": True,
                 },
                 "features": {"native_flow_editor": True, "flow_versioning": True},
@@ -196,6 +219,35 @@ class EditorASGIFixture:
             return query == {"account_id": [self.account_id]} and verb == "GET" and body is None
         if re.fullmatch(rf"/api/tools/{re.escape(TOOL_ID)}/flow/versions/[1-9][0-9]{{0,8}}", route):
             return query == {"account_id": [self.account_id]} and verb == "GET" and body is None
+        if self.profile == "v1-browser" and route == (
+            f"/api/tools/{TOOL_ID}/flow/preview-response"
+        ):
+            if (
+                verb != "POST"
+                or query != {"account_id": [self.account_id]}
+                or not self._body_keys(body, {"sample", "configuration", "variableDeclarations"})
+            ):
+                return False
+            configuration = body["configuration"]
+            return (
+                isinstance(configuration, dict)
+                and set(configuration).issubset({
+                    "responseMapping", "responseVariables", "responseProjection",
+                })
+                and isinstance(configuration.get("responseMapping", {}), dict)
+                and isinstance(configuration.get("responseVariables", []), list)
+                and isinstance(configuration.get("responseProjection", {"fields": []}), dict)
+                and isinstance(body["variableDeclarations"], list)
+            )
+        if self.profile == "v1-browser" and route == (
+            f"/api/tools/{TOOL_ID}/flow/versions/1/revert"
+        ):
+            return (
+                verb == "POST"
+                and query == {"account_id": [self.account_id]}
+                and self._body_keys(body, {"publish_immediately"})
+                and body.get("publish_immediately") is False
+            )
         if route == "/api/simulate/start":
             return (
                 verb == "POST" and query_is({})
@@ -313,6 +365,7 @@ class EditorASGIFixture:
         from botelier.models.flow_version import FlowVersion, FlowVersionStatus
         from botelier.models.mfa import MFAAudit, MFARecoveryCode, MFARateLimit, MFASession
         from botelier.models.property import Property
+        from botelier.models.record_type import RecordType
         from botelier.models.role import AccountMembership, Role
         from botelier.models.tool import Tool, ToolType
         from botelier.models.tool_set import ToolSet
@@ -322,7 +375,7 @@ class EditorASGIFixture:
             "Account": Account, "AccountMembership": AccountMembership,
             "Assistant": Assistant, "FlowVersion": FlowVersion, "MFAAudit": MFAAudit,
             "MFARecoveryCode": MFARecoveryCode, "MFARateLimit": MFARateLimit,
-            "MFASession": MFASession, "Property": Property, "Role": Role,
+            "MFASession": MFASession, "Property": Property, "RecordType": RecordType, "Role": Role,
             "Tool": Tool, "ToolSet": ToolSet, "User": User,
         }
         for index in FlowVersion.__table__.indexes:
@@ -341,6 +394,7 @@ class EditorASGIFixture:
 
         reset_cipher_cache()
         account_id = uuid.UUID(self.account_id)
+        foreign_account_id = uuid.UUID(FOREIGN_ACCOUNT_ID)
         property_id = uuid.UUID(self.property_id)
         assistant_id = uuid.UUID(self.assistant_id)
         tool_set_id = uuid.UUID(TOOL_SET_ID)
@@ -353,6 +407,33 @@ class EditorASGIFixture:
             email=self.email, status=AccountStatus.ACTIVE,
             subscription_tier=SubscriptionTier.FREE, require_mfa=True,
         )
+        foreign_account = Account(
+            id=foreign_account_id, name="Synthetic foreign editor account",
+            slug="editor-checkpoint-foreign", email="foreign-editor-pilot@botelier-test.org",
+            status=AccountStatus.ACTIVE, subscription_tier=SubscriptionTier.FREE,
+        )
+        record_type_fields = [
+            {"key": "guest_email", "label": "Guest email", "type": "email", "required": True},
+            {"key": "amount", "label": "Quoted amount", "type": "number", "required": False},
+        ]
+        record_type_status_options = [
+            {"value": "pending", "label": "Pending"},
+            {"value": "confirmed", "label": "Confirmed"},
+        ]
+        record_type = RecordType(
+            id=uuid.UUID(RECORD_TYPE_ID), account_id=account_id,
+            name="Synthetic Booking", slug="synthetic-booking",
+            description="Fixture-owned editor Record type",
+            fields=record_type_fields, status_options=record_type_status_options,
+            auto_extract=False, assistant_ids=[], is_active=True, display_order=0,
+        )
+        foreign_record_type = RecordType(
+            id=uuid.UUID(FOREIGN_RECORD_TYPE_ID), account_id=foreign_account_id,
+            name="Foreign Synthetic Booking", slug="foreign-synthetic-booking",
+            description="Foreign-account rejection fixture",
+            fields=record_type_fields, status_options=record_type_status_options,
+            auto_extract=False, assistant_ids=[], is_active=True, display_order=0,
+        )
         prop = Property(
             id=property_id, account_id=account_id, name="Synthetic Property",
             timezone="UTC", is_default=True, is_active=True,
@@ -361,7 +442,7 @@ class EditorASGIFixture:
             id=uuid.UUID("00000000-0000-0000-0000-000000000107"),
             name="Editor pilot", slug="editor-pilot", account_id=account_id,
             permissions={
-                "flows": {"view": True, "edit": True, "publish": True},
+                    "flows": {"view": True, "edit": True, "publish": True, "revert": True},
                 "tools": {"view": True}, "assistants": {"view": True},
             },
         )
@@ -423,7 +504,10 @@ class EditorASGIFixture:
         )
         tool.published_version_id = version_id
         tool.published_version_number = 1
-        db.add_all([account, prop, role, user, membership, tool_set, assistant, tool, version])
+        db.add_all([
+            account, foreign_account, prop, role, user, membership, tool_set, assistant,
+            record_type, foreign_record_type, tool, version,
+        ])
         db.commit()
         db.close()
         assert pyotp.TOTP(self.totp_secret).now()
