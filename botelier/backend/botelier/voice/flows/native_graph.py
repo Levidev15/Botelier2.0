@@ -13,6 +13,7 @@ import json
 import re
 from typing import Any
 
+from botelier.services.request_templates import RequestTemplateError, render_json_template
 from botelier.services.response_projection import (
     ResponseProjectionError,
     validate_mapped_projection,
@@ -30,6 +31,7 @@ MAX_REVISITS = 12
 _NODE_ID = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,47}\Z")
 _VARIABLE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,47}\Z")
 _TOKEN = re.compile(r"{{\s*([A-Za-z][A-Za-z0-9_]*)\s*}}")
+_SECRET_TOKEN = re.compile(r"{{\s*secrets\.([A-Za-z][A-Za-z0-9_]*)\s*}}")
 _SLOT_TYPES = frozenset({"text", "date", "number", "phone", "email", "time", "choice"})
 _NODE_TYPES = frozenset({
     "initial", "message", "collect_slot", "collect_form", "api_request",
@@ -73,6 +75,7 @@ _API_FIELDS = frozenset({
     "onNotFound", "onAuthError", "apiSource", "capability", "integrationId",
     "integrationSlug", "endpointId", "endpointName", "autoMappingSource",
     "queryParamOverrides", "path", "responseVariables",
+    "mcpConnectionId", "mcpToolName", "argumentsTemplate", "toolId",
 })
 _SLOT_FIELDS = frozenset({
     "id", "order", "variableKey", "prompt", "type", "validation",
@@ -433,11 +436,39 @@ def _validate_api(api: Any, node_id: str, variables: set[str], *, capability=Fal
         _fail("api_config", node_id, "api")
     _keys(api, _API_FIELDS, "unknown_field", node_id)
     source = api.get("apiSource", "capability" if capability else "custom")
-    if not isinstance(source, str) or source not in ({"capability"} if capability else {"custom", "integration"}):
+    allowed_sources = {"capability"} if capability else {"custom", "integration", "mcp", "tool"}
+    if not isinstance(source, str) or source not in allowed_sources:
         _fail("api_source", node_id, "apiSource")
+    integration_bindings = {
+        "integrationId", "integrationSlug", "endpointId", "endpointName",
+    }
+    mcp_bindings = {"mcpConnectionId", "mcpToolName"}
+    if source == "integration":
+        incompatible = {
+            "url", "mcpConnectionId", "mcpToolName", "argumentsTemplate", "toolId",
+        }
+    elif source == "mcp":
+        incompatible = integration_bindings | {
+            "toolId", "url", "method", "headers", "bodyTemplate",
+            "queryParams", "queryParamOverrides", "path",
+        }
+    elif source == "tool":
+        incompatible = integration_bindings | mcp_bindings | {
+            "url", "method", "headers", "bodyTemplate", "queryParams",
+            "queryParamOverrides", "path",
+        }
+    elif source == "custom":
+        incompatible = {
+            "integrationId", "integrationSlug", "endpointId", "endpointName",
+            "mcpConnectionId", "mcpToolName", "argumentsTemplate", "toolId",
+        }
+    else:
+        incompatible = set()
+    if set(api) & incompatible:
+        _fail("api_source", node_id, "binding")
     if capability:
         _text(api.get("capability"), "api_config", node_id, "capability", required=True, limit=128)
-    else:
+    elif source in {"custom", "integration"}:
         method = api.get("method", "GET")
         if not isinstance(method, str) or method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
             _fail("api_config", node_id, "method")
@@ -453,18 +484,51 @@ def _validate_api(api: Any, node_id: str, variables: set[str], *, capability=Fal
                 if key in api:
                     _text(api[key], "api_config", node_id, key, required=True, limit=256)
             if not api.get("endpointId"):
-                _fail("api_config", node_id, "endpointId")
+                _text(api.get("path"), "api_config", node_id, "path", required=True, limit=4096)
+    else:
+        bindings = {
+            "mcp": ("mcpConnectionId", "mcpToolName"),
+            "tool": ("toolId",),
+        }[source]
+        for key in bindings:
+            _text(api.get(key), "api_source", node_id, key, required=True, limit=256)
+        if source == "mcp" and "toolId" in api or source == "tool" and (
+            "mcpConnectionId" in api or "mcpToolName" in api
+        ):
+            _fail("api_source", node_id, "binding")
+        template = _text(
+            api.get("argumentsTemplate"), "api_template", node_id,
+            "argumentsTemplate", required=True, limit=32_000,
+        )
+        residual = _TOKEN.sub("", template)
+        if set(_TOKEN.findall(template)) - variables or "{{" in residual or "}}" in residual:
+            _fail("api_template", node_id, "argumentsTemplate")
+        try:
+            parsed_arguments = render_json_template(
+                template, {name: "" for name in variables},
+            )
+        except (RequestTemplateError, TypeError, ValueError, RecursionError):
+            _fail("api_template", node_id, "argumentsTemplate")
+        if not isinstance(parsed_arguments, dict):
+            _fail("api_template", node_id, "argumentsTemplate")
     if api.get("url") is not None:
         _template(api["url"], variables, "api_template", node_id, "url")
     for key in ("bodyTemplate",):
         if key in api:
             body = _text(api[key], "api_template", node_id, key, limit=32_000)
-            residual = _TOKEN.sub("", body)
-            if set(_TOKEN.findall(body)) - variables or "{{" in residual or "}}" in residual:
+            without_secrets = _SECRET_TOKEN.sub("", body)
+            residual = _TOKEN.sub("", without_secrets)
+            if (
+                set(_TOKEN.findall(body)) - variables or "{{" in residual or "}}" in residual
+                or source != "custom" and _SECRET_TOKEN.search(body)
+            ):
                 _fail("api_template", node_id, key)
             try:
-                json.loads(_TOKEN.sub("x", body))
-            except (TypeError, ValueError, RecursionError):
+                rendered = render_json_template(
+                    body, {name: "" for name in variables},
+                    secret_resolver=lambda _key: "",
+                )
+            except (RequestTemplateError, TypeError, ValueError, RecursionError):
                 _fail("api_template", node_id, key)
     if "path" in api:
         _template(api["path"], variables, "api_template", node_id, "path", limit=4096)
@@ -485,6 +549,22 @@ def _validate_api(api: Any, node_id: str, variables: set[str], *, capability=Fal
             or any(not isinstance(k, str) or not isinstance(v, str) for k, v in value.items())
         ):
             _fail("api_config", node_id, name)
+    headers = api.get("headers") or {}
+    for key, value in headers.items():
+        lower = key.casefold()
+        secret = _SECRET_TOKEN.fullmatch(value)
+        if (
+            not re.fullmatch(r"[!#$%&'*+.^_`|~0-9A-Za-z-]{1,128}", key)
+            or lower in {
+                "host", "content-length", "transfer-encoding", "connection",
+                "proxy-authorization", "proxy-connection", "cookie", "set-cookie",
+            }
+            or "\r" in value or "\n" in value
+            or ("{{" in value and not secret)
+            or lower in {"authorization", "x-api-key", "api-key"} and not secret
+            or secret and source != "custom"
+        ):
+            _fail("api_config", node_id, "headers")
     for name in ("responseMapping", "autoMappingSource"):
         mapping = api.get(name)
         if mapping is not None:

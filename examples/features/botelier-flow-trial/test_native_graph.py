@@ -89,6 +89,63 @@ def test_normal_compiler_import_is_pure_without_synthetic_package_modules():
     assert "botelier.services.mcp_client" not in sys.modules
 
 
+@pytest.mark.parametrize(
+    "source,extra",
+    [
+        ("mcp", {"mcpConnectionId": "conn-1", "mcpToolName": "availability",
+                "argumentsTemplate": '{"date":"{{name}}"}'}),
+        ("tool", {"toolId": "tool-1",
+                  "argumentsTemplate": '{"date":"{{name}}"}'}),
+    ],
+)
+def test_api_sources_admit_explicit_native_mcp_and_tool_bindings(source, extra):
+    compiler = graph_api()
+    config = config_for("api_request")
+    api = config["nodes"][1]["data"]["api"]
+    api["apiSource"] = source
+    for key in (
+        "url", "method", "headers", "bodyTemplate", "queryParams",
+        "queryParamOverrides", "path",
+    ):
+        api.pop(key, None)
+    api.update(extra)
+
+    compiled = compiler.compile_flow(config, identity())
+
+    admitted = compiled.node("target").data()["api"]
+    assert admitted["apiSource"] == source
+    assert admitted["argumentsTemplate"] == extra["argumentsTemplate"]
+
+
+def test_api_source_rejects_missing_native_binding():
+    compiler = graph_api()
+    config = config_for("api_request")
+    api = config["nodes"][1]["data"]["api"]
+    api["apiSource"] = "mcp"
+    api.pop("url")
+    api.update({
+        "mcpToolName": "availability",
+        "argumentsTemplate": "{}",
+    })
+
+    with pytest.raises(compiler.NativeGraphError, match="api_source"):
+        compiler.compile_flow(config, identity())
+
+
+def test_custom_api_compiler_admits_only_explicit_account_secret_sinks():
+    compiler = graph_api()
+    config = config_for("api_request")
+    api = config["nodes"][1]["data"]["api"]
+    api["headers"] = {"Authorization": "{{secrets.vendor_token}}"}
+    api["bodyTemplate"] = (
+        '{"name":"{{name}}","token":"{{secrets.vendor_token}}"}'
+    )
+
+    compiled = compiler.compile_flow(config, identity())
+
+    assert compiled.node("target").data()["api"]["bodyTemplate"] == api["bodyTemplate"]
+
+
 def config_for(node_type):
     selected = node("target", node_type, sample_node(node_type))
     nodes = [
@@ -173,11 +230,21 @@ def test_integrations_and_safe_expressions_are_admitted_without_resolution_or_ev
     api_config = config_for("api_request")
     api = api_config["nodes"][1]["data"]["api"]
     api.update(apiSource="integration", integrationId=IDENTITY_FIELDS["account_id"],
-               endpointId="search-v1", path="/search?name={{name}}",
+               path="/search?name={{name}}",
                responseMapping={"name": "$.results[0].name"},
                responseProjection={"fields": [{"variable": "name", "cleanup": ["trim"]}]})
+    api.pop("url")
     compiled_api = graph_api().compile_flow(api_config, identity())
     assert compiled_api.node("target").data()["api"]["responseProjection"]["fields"][0]["cleanup"] == ["trim"]
+
+    missing_endpoint_binding = config_for("api_request")
+    missing_api = missing_endpoint_binding["nodes"][1]["data"]["api"]
+    missing_api.update(
+        apiSource="integration", integrationId=IDENTITY_FIELDS["account_id"],
+    )
+    missing_api.pop("url")
+    with pytest.raises(graph_api().NativeGraphError, match="api_config"):
+        graph_api().compile_flow(missing_endpoint_binding, identity())
 
     expression_config = config_for("set_variable")
     expression_config["nodes"][1]["data"]["setVariable"].update(
