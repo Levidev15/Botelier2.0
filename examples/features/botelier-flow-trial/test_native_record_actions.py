@@ -3,6 +3,46 @@ import json
 import uuid
 
 
+def test_native_effect_fixture_keeps_model_identity_but_not_editor_record_seeds():
+    from native_effect_io import NativeEffectsFixture
+
+    async def scenario():
+        from uuid import UUID, uuid4
+        from editor_fixture import EditorASGIFixture, RECORD_TYPE_ID
+
+        async with EditorASGIFixture() as editor:
+            from botelier import database
+            from botelier.models.record_type import RecordType
+            table = RecordType.__table__
+            assert table is database.Base.metadata.tables[RecordType.__tablename__]
+            db = editor.factory()
+            assert db.get(RecordType, UUID(RECORD_TYPE_ID)) is not None
+            db.close()
+        row_id = uuid4()
+        for index in range(2):
+            async with NativeEffectsFixture() as fixture:
+                from botelier import database
+                from botelier.models.record_type import RecordType
+                assert RecordType.__table__ is table
+                assert table is database.Base.metadata.tables[RecordType.__tablename__]
+                db = fixture.factory()
+                try:
+                    assert db.get(RecordType, UUID(RECORD_TYPE_ID)) is None
+                    assert db.get(RecordType, row_id) is None
+                    if index == 0:
+                        db.add(RecordType(
+                            id=row_id, account_id=UUID(fixture.account_id),
+                            name="Synthetic Booking", slug="synthetic-booking",
+                            fields=[], status_options=[], is_active=True,
+                        ))
+                        db.commit()
+                        assert db.get(RecordType, row_id) is not None
+                finally:
+                    db.close()
+
+    asyncio.run(scenario())
+
+
 def test_confirmed_save_record_preserves_zero_false_and_deduplicates():
     from native_effect_io import NativeEffectsFixture
 

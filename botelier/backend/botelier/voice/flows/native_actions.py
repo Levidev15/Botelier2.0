@@ -97,7 +97,7 @@ class NativeActionRunner:
             return _failure(exc.code)
         return response
 
-    def _map_preview_response(self, node, config, sample, mappings, source):
+    def _map_preview_response(self, node, config, sample, mappings, source, *, writing):
         if isinstance(sample, NativeActionResult):
             return sample
         from botelier.voice.flows.native_action_preview import NativePreviewResponse
@@ -110,6 +110,12 @@ class NativeActionRunner:
             }.get(source, source),
             node.node_id,
         )
+        if writing and (
+            sample.status_code == 0
+            or sample.status_code >= 500
+            or sample.error_type in {"network_error", "timeout"}
+        ):
+            return _failure("effect_outcome_unknown")
         if not sample.success:
             branch = (
                 "auth_error" if sample.error_type == "auth_error"
@@ -134,8 +140,71 @@ class NativeActionRunner:
                 mapped, config.get("responseProjection"),
             )
         except (ValueError, TypeError, ResponseProjectionError):
-            return _failure("response_mapping_invalid")
+            return _failure("effect_outcome_unknown" if writing else "response_mapping_invalid")
         return NativeActionResult(True, variables=mapped, llm_data=projected)
+
+    @staticmethod
+    def _map_preview_message_response(sample, mapped, projected):
+        # A real accepted Messenger receipt has this already-prepared canonical
+        # mapping. Provider response text must not replace it in a rehearsal.
+        if not sample.success:
+            if (
+                sample.status_code == 0 or sample.status_code >= 500
+                or sample.error_type in {"network_error", "timeout"}
+            ):
+                return _failure("effect_outcome_unknown")
+            branch = (
+                "auth_error" if sample.error_type == "auth_error"
+                else "not_found" if sample.error_type == "not_found"
+                else "error"
+            )
+            return _failure("message_" + (sample.error_type or "rejected"), branch)
+        return NativeActionResult(True, variables=mapped, llm_data=projected)
+
+    def _mcp_action_result(self, raw, config, mappings, *, writing):
+        if raw.get("isError"):
+            return _failure("effect_outcome_unknown" if writing else "mcp_tool_error")
+        try:
+            mapped = self._map_outputs(raw, mappings)
+            projected = project_mapped_values(mapped, config.get("responseProjection"))
+        except (ValueError, TypeError, ResponseProjectionError):
+            return _failure("effect_outcome_unknown" if writing else "response_mapping_invalid")
+        return NativeActionResult(True, variables=mapped, llm_data=projected)
+
+    def _map_preview_mcp_response(self, node, config, sample, mappings, *, writing):
+        if isinstance(sample, NativeActionResult):
+            return sample
+        self.preview.record_effect("mcp", node.node_id)
+        if not sample.success:
+            return _failure("effect_outcome_unknown" if writing else "mcp_request_failed")
+        try:
+            raw = self._mcp_sample_envelope(sample.data)
+        except (TypeError, ValueError):
+            return _failure("effect_outcome_unknown" if writing else "mcp_request_failed")
+        return self._mcp_action_result(raw, config, mappings, writing=writing)
+
+    @classmethod
+    def _mcp_sample_envelope(cls, data):
+        from mcp.types import CallToolResult
+
+        if not isinstance(data, dict):
+            raise ValueError("mcp_result_shape")
+        response = CallToolResult.model_validate(data, strict=True)
+        return cls._mcp_result_envelope(response)
+
+    @classmethod
+    def _mcp_result_envelope(cls, response):
+        envelope = cls._json_safe_mcp_value({
+            "isError": bool(getattr(response, "isError", False)),
+            "structuredContent": getattr(response, "structuredContent", None),
+            "content": getattr(response, "content", ()) or (),
+        })
+        encoded = json.dumps(
+            envelope, ensure_ascii=False, allow_nan=False, separators=(",", ":"),
+        )
+        if len(encoded.encode("utf-8")) > 250_000:
+            raise ValueError("mcp_result_too_large")
+        return json.loads(encoded)
 
     async def execute(self, node, facts, *, confirmation=None):
         if self._closed:
@@ -324,30 +393,16 @@ class NativeActionRunner:
         except (ValueError, TypeError, ResponseProjectionError):
             return _failure("response_mapping_invalid")
         if self.preview_only:
-            sample = await self._request_preview(node, "tool")
+            sample = await self._request_preview(
+                node, "send_sms" if tool_type == "SEND_SMS" else "send_email",
+            )
             if isinstance(sample, NativeActionResult):
                 return sample
             self.preview.record_effect(
                 "send_sms" if tool_type == "SEND_SMS" else "send_email",
                 node.node_id,
             )
-            if not sample.success:
-                branch = (
-                    "auth_error" if sample.error_type == "auth_error"
-                    else "not_found" if sample.error_type == "not_found"
-                    else "error"
-                )
-                return _failure("message_" + (sample.error_type or "rejected"), branch)
-            try:
-                mapped, projected = map_project_response(
-                    config, sample.data,
-                    declared_variables={
-                        item.key for item in self.compiled.variable_declarations
-                    },
-                )
-            except (ValueError, TypeError, ResponseProjectionError):
-                return _failure("response_mapping_invalid")
-            return NativeActionResult(True, variables=mapped, llm_data=projected)
+            return self._map_preview_message_response(sample, mapped, projected)
         if self.messenger is None:
             return _failure("messenger_unavailable")
         claim = await asyncio.to_thread(
@@ -603,25 +658,9 @@ class NativeActionRunner:
             except (TypeError, ValueError):
                 return _failure("mcp_arguments_invalid")
             sample = await self._request_preview(node, "mcp")
-            if isinstance(sample, NativeActionResult):
-                return sample
-            self.preview.record_effect("mcp", node.node_id)
-            if not sample.success or not isinstance(sample.data, dict):
-                return _failure(
-                    "mcp_tool_error" if not sample.success else "mcp_result_shape",
-                    "auth_error" if sample.error_type == "auth_error" else "error",
-                )
-            try:
-                raw = self._json_safe_mcp_value(sample.data)
-                if raw.get("isError") is True:
-                    return _failure("mcp_tool_error")
-                mapped = self._map_outputs(raw, mappings)
-                projected = project_mapped_values(
-                    mapped, config.get("responseProjection"),
-                )
-            except (TypeError, ValueError, ResponseProjectionError):
-                return _failure("mcp_result_shape")
-            return NativeActionResult(True, variables=mapped, llm_data=projected)
+            return self._map_preview_mcp_response(
+                node, config, sample, mappings, writing=writing,
+            )
         claim = None
         if writing:
             claim = await asyncio.to_thread(
@@ -642,16 +681,9 @@ class NativeActionRunner:
             raise
         except Exception:
             return _failure("effect_outcome_unknown" if writing else "mcp_request_failed")
-        if raw.get("isError"):
-            return _failure("effect_outcome_unknown" if writing else "mcp_tool_error")
-        try:
-            mapped = self._map_outputs(raw, mappings)
-            projected = project_mapped_values(mapped, config.get("responseProjection"))
-        except (ValueError, TypeError, ResponseProjectionError):
-            return _failure(
-                "effect_outcome_unknown" if writing else "response_mapping_invalid",
-            )
-        outcome = NativeActionResult(True, variables=mapped, llm_data=projected)
+        outcome = self._mcp_action_result(raw, config, mappings, writing=writing)
+        if not outcome.success:
+            return outcome
         if writing and not await asyncio.to_thread(
             self._ledger.complete, claim, outcome, outcome_known=True,
         ):
@@ -777,17 +809,7 @@ class NativeActionRunner:
                 client._session.call_tool(tool_name, arguments),
                 timeout=operation_timeout(),
             )
-            envelope = self._json_safe_mcp_value({
-                "isError": bool(getattr(response, "isError", False)),
-                "structuredContent": getattr(response, "structuredContent", None),
-                "content": getattr(response, "content", ()) or (),
-            })
-            encoded = json.dumps(
-                envelope, ensure_ascii=False, allow_nan=False, separators=(",", ":"),
-            )
-            if len(encoded.encode("utf-8")) > 250_000:
-                raise ValueError("mcp_result_too_large")
-            return json.loads(encoded)
+            return self._mcp_result_envelope(response)
         finally:
             try:
                 await asyncio.wait_for(client.disconnect(), timeout=1)
@@ -971,7 +993,7 @@ class NativeActionRunner:
         if self.preview_only:
             sample = await self._request_preview(node, "integration")
             return self._map_preview_response(
-                node, config, sample, mappings, "integration",
+                node, config, sample, mappings, "integration", writing=writing,
             )
         if writing:
             claim = await asyncio.to_thread(
@@ -1434,7 +1456,13 @@ class NativeActionRunner:
             if self.preview is None:
                 return _failure("preview_required")
             source_node_id = setting.get("updateSourceNodeId")
-            prior = self.preview.get_record(source_node_id) if source_node_id else None
+            record_scope = tuple(str(getattr(self.compiled.identity, key)) for key in (
+                "account_id", "property_id", "tool_id", "flow_version_id", "call_sid",
+            ))
+            prior = (
+                self.preview.get_record(source_node_id, scope=record_scope)
+                if source_node_id else None
+            )
             try:
                 prepared_preview = await asyncio.to_thread(
                     store.prepare_preview, setting, facts, prior,
@@ -1449,6 +1477,7 @@ class NativeActionRunner:
             self.preview.save_record(
                 preview_node_id, prepared_preview["record_type_id"],
                 prepared_preview["data"], prepared_preview["status"],
+                scope=record_scope,
             )
             self.preview.record_effect(
                 "record_update" if source_node_id else "record_create",
@@ -1501,7 +1530,7 @@ class NativeActionRunner:
         if self.preview_only:
             sample = await self._request_preview(node, "http")
             return self._map_preview_response(
-                node, config, sample, mappings, "http",
+                node, config, sample, mappings, "http", writing=writing,
             )
         if writing:
             claim = await asyncio.to_thread(

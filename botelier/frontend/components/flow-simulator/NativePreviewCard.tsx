@@ -24,9 +24,9 @@ export default function NativePreviewCard({ pending, isLoading, onSubmit }: Nati
   const sampleInstructions = outcomeOnly
     ? pending.source_kind === "transfer"
       ? "Select a simulated transfer outcome only. No call is moved, and no provider body or caller confirmation is accepted."
-      : "Select a simulated provider outcome only. Success produces a canonical accepted receipt; failures remain uncertain. No message body, private URL or provider response is accepted or shown."
+      : "Select a simulated provider outcome only. Success produces a canonical accepted receipt; network/server failures remain uncertain. No message body, private URL or provider response is accepted or shown."
     : isMcp
-      ? "Paste a synthetic MCP result envelope, including isError, structuredContent or content. Do not run discovery or Test."
+      ? "Paste a synthetic MCP result envelope with content (required), isError, and optional structuredContent. Do not run discovery or Test."
       : pending.source_kind === "record"
         ? "Paste sample result data for this simulated Record action. Nothing is written."
         : "Paste parsed API, integration or saved-tool result data before response mapping. Do not contact the API or provider.";

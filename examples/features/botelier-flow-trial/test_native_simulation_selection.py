@@ -159,6 +159,9 @@ def test_native_simulator_exposes_only_scoped_readonly_mcp_preview_tools():
         assert filter_schema["properties"]["tags"] == {
             "type": "array", "items": {"type": "string"},
         }
+        plan.preview.set_context_provider(lambda: (
+            plan.compiled, {}, ("owned-flow", "published-version", "initial-visit"),
+        ))
         handler_task = asyncio.create_task(plan.global_functions[0].handler(
             {"filter": {"tags": []}}, None,
         ))
@@ -191,6 +194,59 @@ def test_native_simulator_exposes_only_scoped_readonly_mcp_preview_tools():
         finally:
             await host.close()
         arguments["db"].close()
+    asyncio.run(scenario())
+
+
+@pytest.mark.parametrize("switch_while_pending", [False, True])
+def test_global_mcp_preview_binds_active_flow_and_blocks_its_private_fingerprint(switch_while_pending):
+    async def scenario():
+        from dataclasses import replace
+        from botelier.voice.flows.native_action_preview import NativePreviewError, NativePreviewResponse
+        from botelier.voice.flows.native_graph import compile_flow
+        from test_native_quote_privacy import privacy_definition
+
+        module, records, arguments = selection_case(with_mcp=True)
+        records.rows["MCPConnection"].discovered_tools[0]["parameters"] = {
+            "type": "object", "properties": {}, "required": [], "additionalProperties": False,
+        }
+        plan = await module.prepare_native_simulation(**arguments)
+        active = compile_flow(
+            privacy_definition(),
+            replace(plan.compiled.identity, tool_id="active-booking", flow_version_id="active-version"),
+        )
+        fingerprint = "a1" * 32
+        context = [active, {"quote_fingerprint": fingerprint}, ("active-booking", "visit-1")]
+        plan.preview.set_context_provider(lambda: tuple(context))
+        task = asyncio.create_task(plan.global_functions[0].handler({}, None))
+        try:
+            for _ in range(50):
+                if plan.preview.snapshot() is not None:
+                    break
+                assert not task.done(), "Global resource ended before requesting its sample"
+                await asyncio.sleep(0)
+            pending = plan.preview.snapshot()
+            assert pending is not None
+            response = NativePreviewResponse(data={
+                "isError": False, "structuredContent": {"receipt": fingerprint}, "content": [],
+            })
+            if switch_while_pending:
+                context[2] = ("active-booking", "visit-2")
+                with pytest.raises(NativePreviewError, match="preview_request_mismatch"):
+                    plan.preview.submit(pending["request_id"], response)
+                plan.preview.close()
+                assert await task == {"status": "preview_rejected", "source": "mcp"}
+            else:
+                plan.preview.submit(pending["request_id"], response)
+                result = await task
+                assert result == {"status": "preview_rejected", "source": "mcp"}
+                assert fingerprint not in str(result)
+                assert plan.preview.effects == []
+        finally:
+            plan.preview.close()
+            if not task.done():
+                task.cancel()
+            arguments["db"].close()
+
     asyncio.run(scenario())
 
 

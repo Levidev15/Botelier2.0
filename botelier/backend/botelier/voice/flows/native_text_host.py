@@ -121,6 +121,7 @@ class NativeTextHost:
         self._changed = asyncio.Event()
         if self.preview is not None:
             self.preview.set_on_change(self._changed.set)
+            self.preview.set_context_provider(self._active_preview_context)
         self._close_lock = asyncio.Lock()
         self._close_complete = asyncio.Event()
         self._send_task = None
@@ -433,8 +434,27 @@ class NativeTextHost:
             str(id(visit)) if visit is not None else "no-visit",
         )
 
+    def _active_preview_context(self):
+        if self.closed or self.adapter is None:
+            raise NativePreviewError("preview_scope_invalid")
+        adapter = self.adapter
+        state = adapter.snapshot()
+        visit = getattr(adapter, "_visit", None)
+        return adapter.compiled, adapter.facts, (
+            str(adapter.compiled.identity.tool_id),
+            str(adapter.compiled.identity.flow_version_id),
+            str(self._active_generation),
+            str(getattr(adapter, "_revision", 0)),
+            str(id(visit)) if visit is not None else "no-visit",
+            str(state.get("current_node") or "no-node"),
+        )
+
     def _pending_result(self):
         result = self._result(self._turn["output_start"] if self._turn else 0)
+        if self._turn is not None:
+            # Publish each output occurrence once without resetting the original
+            # model-response baseline or deduplicating legitimate repeated text.
+            self._turn["output_start"] = len(self._outputs)
         result["pending_preview"] = self.preview.snapshot() if self.preview else None
         result["safe_preview_effects"] = self.preview.effects if self.preview else []
         result["execution_mode"] = "preview"

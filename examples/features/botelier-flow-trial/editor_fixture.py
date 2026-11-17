@@ -262,13 +262,42 @@ class EditorASGIFixture:
                 and 1 <= body["source_version"] <= 2_147_483_647
             )
         if route == "/api/simulate/message":
-            return (
+            common = (
                 verb == "POST" and query_is({})
-                and self._body_keys(body, {"session_id", "message"})
+                and self._body_keys(body, {"session_id", "message"}, optional={"preview_result"})
                 and isinstance(body.get("session_id"), str)
                 and body.get("session_id") in self._issued_simulation_sessions
                 and isinstance(body.get("message"), str)
                 and len(body["message"].encode("utf-8")) <= 4096
+            )
+            if not common or "preview_result" not in body:
+                return common
+            sample = body["preview_result"]
+            return (
+                body["message"] == ""
+                and isinstance(sample, dict)
+                and set(sample) <= {
+                    "request_id", "status_code", "data", "data_json", "success", "error_type",
+                }
+                and {"request_id", "status_code"} <= set(sample)
+                and (("data" in sample) != ("data_json" in sample))
+                and isinstance(sample["request_id"], str)
+                and re.fullmatch(r"[A-Za-z0-9_-]{1,128}", sample["request_id"]) is not None
+                and type(sample["status_code"]) is int
+                and (sample["status_code"] == 0 or 200 <= sample["status_code"] <= 599)
+                and ("success" not in sample or type(sample["success"]) is bool)
+                and (
+                    sample.get("error_type") is None
+                    or isinstance(sample["error_type"], str)
+                    and sample["error_type"] in {
+                        "error", "auth_error", "not_found", "network_error", "timeout",
+                    }
+                )
+                and (
+                    "data_json" not in sample
+                    or isinstance(sample["data_json"], str)
+                    and len(sample["data_json"].encode("utf-8")) <= 65_536
+                )
             )
         if _SIM_SESSION.fullmatch(route):
             if not query_is({}):
@@ -484,11 +513,23 @@ class EditorASGIFixture:
             x, y = positions[node["id"]]
             node["position"] = {"x": x, "y": y}
             if node["type"] == "collect_slot":
-                node["data"]["slot"].update(type="text", required=True)
+                node["data"]["slot"].update(type="text")
         api_node = next(node for node in initial_config["nodes"] if node["id"] == "lookup")
-        api_node["data"]["api"]["endpointId"] = "editor-fixture-endpoint"
+        # Exercise the actual broker with a no-auth fixture API. The auth/editor
+        # checkpoint must not fabricate integration grants or provider credentials.
+        api_node["data"]["api"]["apiSource"] = "custom"
+        api_node["data"]["api"]["url"] = "https://api.fixture.invalid/search?query={{query}}"
+        for key in ("endpointId", "integrationId", "integrationSlug", "path"):
+            api_node["data"]["api"].pop(key, None)
+        # The following collector owns the question; this presentation describes
+        # results only. Do not configure the same question on both nodes.
+        response_node = next(node for node in initial_config["nodes"] if node["id"] == "response")
+        response_node["data"]["responsePresentation"]["outroText"] = ""
+        # The legacy declaration uses SlotType metadata, not the mapped JSON
+        # value's type. Publishing still requires the output alias; the broker
+        # preserves the actual array rather than coercing it to a text value.
         initial_config["variables"].extend([
-            {"key": "rooms", "type": "array", "description": "Synthetic room results"},
+            {"key": "rooms", "type": "text", "description": "Mapped synthetic room array"},
             {"key": "price", "type": "number", "description": "Synthetic result price"},
         ])
         tool = Tool(
@@ -537,7 +578,7 @@ class EditorASGIFixture:
         ))
         self._patches.enter_context(patch.object(
             native_simulation, "native_action_session_factory",
-            return_value=self._native_fixture.actions.session,
+            return_value=self.factory,
         ))
         from botelier.voice.flows.native_text_host import NativeTextHost
 

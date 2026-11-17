@@ -9,6 +9,27 @@ import pytest
 from unittest.mock import patch
 
 
+def test_mapper_bootstrap_and_editor_preserve_one_inert_model_registry():
+    import asyncio
+
+    async def scenario():
+        import sys
+        from application_support import load_function_mapper
+        from editor_fixture import EditorASGIFixture
+
+        load_function_mapper()
+        before = sys.modules["botelier.database"]
+        assert getattr(before, "_botelier_flow_trial_database", False)
+        async with EditorASGIFixture() as fixture:
+            from botelier.models.account import Account
+            from botelier.models.integration import AccountIntegration
+
+            assert fixture.database is before
+            assert Account.__table__.metadata is before.Base.metadata
+            assert AccountIntegration.__table__.metadata is before.Base.metadata
+    asyncio.run(scenario())
+
+
 def test_bounded_bridge_rejects_foreign_routes_and_legacy_simulation():
     from editor_fixture import EditorASGIFixture
 
@@ -46,6 +67,33 @@ def test_bounded_bridge_rejects_foreign_routes_and_legacy_simulation():
         f"/api/tools/{fixture.tool_id}/flow/versions/1/revert?account_id={fixture.account_id}",
         {"publish_immediately": False},
     )
+
+
+def test_sample_bridge_admits_only_issued_sessions_and_bounded_provider_results():
+    from editor_fixture import EditorASGIFixture
+
+    fixture = EditorASGIFixture()
+    fixture._issued_simulation_sessions.add("native-issued-session")
+    sample = {
+        "request_id": "a" * 32, "status_code": 200, "data_json": '{"rooms":[]}',
+    }
+    payload = {
+        "session_id": "native-issued-session", "message": "", "preview_result": sample,
+    }
+    assert fixture.allowed_request("POST", "/api/simulate/message", payload)
+    for changed in [
+        {"session_id": "foreign-session"}, {"message": "yes"},
+        {"function_call": "confirm_now"}, {"function_args": {}},
+        {"preview_result": {**sample, "facts": {"confirmed": True}}},
+        {"preview_result": {**sample, "data": {}}},
+        {"preview_result": {**sample, "status_code": True}},
+        {"preview_result": {**sample, "error_type": {}}},
+        {"preview_result": {**sample, "data_json": "x" * 65_537}},
+    ]:
+        assert not fixture.allowed_request(
+            "POST", "/api/simulate/message", {**payload, **changed},
+        )
+    assert not fixture.allowed_request("POST", "/api/admin/run", payload)
 
 
 def test_v1_browser_profile_is_exact_tool_scoped_and_sample_only():
@@ -201,6 +249,39 @@ async def test_authenticated_draft_rejects_missing_and_foreign_record_types():
 
 
 @pytest.mark.asyncio
+async def test_fixture_published_graph_is_admitted_by_the_current_native_compiler():
+    """The browser fixture must not keep relying on the retired pilot compiler."""
+    from editor_fixture import EditorASGIFixture
+    from uuid import UUID
+
+    async with EditorASGIFixture() as fixture:
+        from botelier.voice.flows.native_dev_host import prepare_native_dev_selection
+        from botelier.models.assistant import Assistant
+        from botelier.models.flow_version import FlowVersion
+        from botelier.models.tool import Tool
+        from botelier.models.tool_set import ToolSet
+
+        db = fixture.factory()
+        try:
+            assistant = db.get(Assistant, UUID(fixture.assistant_id))
+            tool = db.get(Tool, fixture.tool_id)
+            selection = prepare_native_dev_selection(
+                assistant=assistant,
+                tools=[tool],
+                tool_set=db.get(ToolSet, assistant.tool_set_id),
+                flow_version=db.get(FlowVersion, tool.published_version_id),
+                call_sid="CAofflineEditorAdmission",
+                property_id=assistant.property_id,
+                property_owned=True,
+                requested_tool_id=fixture.tool_id,
+            )
+            assert selection.compiled.node("query").type == "collect_slot"
+            assert "rooms" in selection.compiled.node("lookup").data()["api"]["responseMapping"]
+        finally:
+            db.close()
+
+
+@pytest.mark.asyncio
 async def test_real_auth_save_reload_publish_and_native_simulation_checkpoint():
     from editor_fixture import EditorASGIFixture
 
@@ -348,6 +429,7 @@ async def test_real_auth_save_reload_publish_and_native_simulation_checkpoint():
         assert runtime["tool_id"] == fixture.tool_id
         assert runtime["assistant_id"] == fixture.assistant_id
         assert runtime["flow_version_id"] == draft_id
+        assert runtime["execution_mode"] == "preview"
         assert {entry["key"] for entry in started_body["variables_to_collect"]} >= {
             "query", "choice",
         }
@@ -359,11 +441,55 @@ async def test_real_auth_save_reload_publish_and_native_simulation_checkpoint():
         assert message.status_code == 200, message.text
         message_body = message.json()
         assert message_body["state"]["collected_slots"]["query"] == "standard"
-        assert message_body["function_called"].startswith("pilot_collect_query_")
-        assert message_body["function_result"]["data"] == {
-            "rooms": [{"name": "Standard", "price": 0}],
-            "price": 0,
+        assert message_body["state"]["current_node"] == "lookup"
+        pending = message_body["state"]["pending_preview"]
+        assert pending["source_kind"] == "http"
+        assert set(pending) == {
+            "request_id", "node_id", "source_kind", "expires_in_seconds",
         }
+        blocked_caller = await client.post(
+            "/api/simulate/message",
+            json={"session_id": started_body["session_id"], "message": "yes"},
+            headers=csrf,
+        )
+        assert blocked_caller.status_code == 409, blocked_caller.text
+        sample = {
+            "request_id": "0" * 32, "status_code": 200,
+            "data_json": '{"rooms":[{"name":"Standard","price":0}]}',
+        }
+        stale_sample = await client.post(
+            "/api/simulate/message",
+            json={"session_id": started_body["session_id"], "message": "", "preview_result": sample},
+            headers=csrf,
+        )
+        assert stale_sample.status_code == 409, stale_sample.text
+        sample["request_id"] = pending["request_id"]
+        from botelier.services.action_executor import ActionExecutor
+
+        model_requests = len(fixture._native_fixture.providers.requests)
+        with patch.object(
+            ActionExecutor, "execute",
+            side_effect=AssertionError("text preview dispatched a real business action"),
+        ) as execute:
+            continued = await client.post(
+                "/api/simulate/message",
+                json={"session_id": started_body["session_id"], "message": "", "preview_result": sample},
+                headers=csrf,
+            )
+            execute.assert_not_called()
+        assert continued.status_code == 200, continued.text
+        continued_body = continued.json()
+        assert continued_body["state"]["current_node"] == "choice"
+        assert continued_body["state"]["pending_preview"] is None
+        assert continued_body["state"]["collected_slots"]["query"] == "standard"
+        assert continued_body["function_called"].startswith("native_query_")
+        assert any("Standard costs 0" in item["content"] for item in continued_body["messages"])
+        from node_contract_io import WAIT
+
+        assert [
+            item["content"] for item in continued_body["messages"]
+        ].count(WAIT) == 1
+        assert len(fixture._native_fixture.providers.requests) == model_requests
         assert any(
             message.get("role") in {"system", "developer"}
             and private_guidance in message.get("content", "")

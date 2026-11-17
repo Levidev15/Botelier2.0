@@ -300,24 +300,22 @@ def _preview_global_mcp_functions(selection, assistant, db, preview=None):
                      "required": list(_required), "additionalProperties": False},
                     _arguments,
                 )
+                _compiled, _facts, visit_scope = preview.active_context()
                 sample = await preview.request(
                     node_id="global-" + _tool_name,
                     source_kind="mcp_read",
-                    scope=(
-                        str(selection.compiled.identity.tool_id),
-                        str(selection.compiled.identity.flow_version_id),
-                        str(selection.compiled.identity.call_sid),
-                        _tool_name,
-                    ),
+                    scope=(*visit_scope, _tool_name),
+                    current_scope=lambda: (*preview.active_context()[2], _tool_name),
                 )
                 if not sample.success or not isinstance(sample.data, dict):
                     return {"status": "preview_rejected", "source": "mcp"}
-                result = NativeActionRunner._json_safe_mcp_value(sample.data)
+                result = NativeActionRunner._mcp_sample_envelope(sample.data)
                 if result.get("isError") is True:
                     return {"status": "preview_rejected", "source": "mcp"}
                 from botelier.voice.flows.native_quote_graph import assert_quote_payload_safe
 
-                assert_quote_payload_safe(selection.compiled, {}, result)
+                active_compiled, active_facts, _scope = preview.active_context()
+                assert_quote_payload_safe(active_compiled, active_facts, result)
                 preview.record_effect("mcp_read", "global-" + _tool_name)
                 return result
             except Exception:

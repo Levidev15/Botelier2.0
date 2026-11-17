@@ -36,6 +36,7 @@ def test_actual_text_host_resumes_sequential_startup_actions_without_a_model_tur
                     node for node in source["nodes"] if node["id"] == "lookup"
                 )
                 lookup_source["data"]["api"]["url"] = "https://api.fixture.invalid/items"
+                lookup_source["data"]["api"]["thinkingMessage"] = "Repeated wait test."
                 lookup = deepcopy(lookup_source)
                 lookup["id"] = "lookup2"
                 source["nodes"].insert(
@@ -176,6 +177,11 @@ def test_actual_text_host_resumes_sequential_startup_actions_without_a_model_tur
                     ]
                     assert session._turn_count == 0
                     assert not any(item.get("stream") for item in providers.requests)
+                    # Both lookups legitimately issue the same wait text once.
+                    # Partial-response replay must not turn two utterances into five.
+                    assert [
+                        item["content"] for item in finished["messages"]
+                    ].count("Repeated wait test.") == 2
                     assert providers.business_requests == []
                     db = fixture.factory()
                     try:

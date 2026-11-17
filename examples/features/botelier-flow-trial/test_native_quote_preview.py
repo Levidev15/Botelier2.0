@@ -131,14 +131,21 @@ def test_full_quote_link_graph_previews_http_delivery_and_record_without_calllog
                 await call.wait_until(lambda: call.adapter.snapshot()["completed"])
                 await call.wait_until(lambda: call.adapter.manager.current_node == "done")
 
-                assert submissions == ["http", "http", "tool"]
+                assert submissions == [
+                    "http", "http",
+                    "send_email" if delivery_type == "SEND_EMAIL" else "send_sms",
+                ]
                 assert [item["kind"] for item in preview.effects] == [
                     "api_request", "api_request",
                     "send_email" if delivery_type == "SEND_EMAIL" else "send_sms",
                     "record_create",
                 ]
                 assert all(item["simulated"] for item in preview.effects)
-                assert preview.get_record("save") is not None
+                assert preview.get_record("save", scope=tuple(
+                    str(getattr(call.adapter.compiled.identity, key)) for key in (
+                        "account_id", "property_id", "tool_id", "flow_version_id", "call_sid",
+                    )
+                )) is not None
                 assert call.adapter.facts["quote_total"] == "230.00"
                 recipient_variable = (
                     "caller_email" if delivery_type == "SEND_EMAIL" else "caller_phone"

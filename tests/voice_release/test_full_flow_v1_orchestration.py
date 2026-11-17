@@ -143,6 +143,9 @@ class FullFlowV1OrchestrationTests(unittest.TestCase):
             "test_native_sms_submission.py", "test_native_booking_journey.py",
             "test_flow_response_preview.py", "test_flow_response_preview_routes.py",
             "test_native_flow_recovery.py",
+            "test_native_action_preview.py", "test_native_simulation_selection.py",
+            "test_native_preview_parity.py", "test_native_text_preview.py",
+            "test_native_quote_preview.py",
         }.issubset(exercised), exercised)
         self.assertIn(
             "/ci/examples/features/botelier-flow-trial/test_native_quote_actions.py",
@@ -153,9 +156,16 @@ class FullFlowV1OrchestrationTests(unittest.TestCase):
             calls[0],
         )
         for group, names in (
-            (0, ("test_native_json_templates.py", "test_native_booking_graph.py")),
+            (0, (
+                "test_native_json_templates.py", "test_native_booking_graph.py",
+                "test_native_action_preview.py",
+            )),
             (1, ("test_native_caller_grounding.py", "test_native_quote_privacy.py")),
-            (2, ("test_native_sms_submission.py", "test_native_booking_journey.py")),
+            (2, (
+                "test_native_sms_submission.py", "test_native_booking_journey.py",
+                "test_native_simulation_selection.py", "test_native_preview_parity.py",
+                "test_native_text_preview.py", "test_native_quote_preview.py",
+            )),
         ):
             for name in names:
                 path = "/ci/examples/features/botelier-flow-trial/" + name

@@ -4,7 +4,7 @@ Only editor_guard's in-memory SQLite storage is used. Authentication, model
 definitions and business methods remain actual source; there is no live DB.
 """
 
-from editor_fixture import EditorASGIFixture
+from editor_fixture import EditorASGIFixture, RECORD_TYPE_ID
 
 
 class NativeEffectsFixture(EditorASGIFixture):
@@ -35,6 +35,20 @@ class NativeEffectsFixture(EditorASGIFixture):
         database.Base.metadata.create_all(
             self.engine, tables=[model.__table__ for model in self.effect_models.values()],
         )
+        # The browser fixture owns this seed; effect tests create their own
+        # schemas. Reset only that exact disposable row, not mapped metadata or
+        # unrelated/foreign data, so the real (account, slug) constraint is kept.
+        from uuid import UUID
+
+        db = self.factory()
+        try:
+            db.query(RecordType).filter(
+                RecordType.id == UUID(RECORD_TYPE_ID),
+                RecordType.account_id == UUID(self.account_id),
+            ).delete(synchronize_session=False)
+            db.commit()
+        finally:
+            db.close()
         return self
 
     @property

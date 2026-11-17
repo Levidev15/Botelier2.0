@@ -33,6 +33,7 @@ pure_tests=(
   test_reservation_quote_contract.py
   test_native_quote_actions.py
   test_native_quote_graph.py
+  test_native_action_preview.py
 )
 runtime_tests=(
   test_native_prepared_transport.py
@@ -60,6 +61,10 @@ editor_tests=(
   test_native_quote_delivery.py
   test_native_sms_submission.py
   test_native_booking_journey.py
+  test_native_preview_parity.py
+  test_native_simulation_selection.py
+  test_native_text_preview.py
+  test_native_quote_preview.py
 )
 mcp_tests=(
   test_mcp_native_policy.py

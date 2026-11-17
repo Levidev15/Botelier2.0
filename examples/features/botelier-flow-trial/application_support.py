@@ -62,19 +62,13 @@ API_KEYS = {
 
 
 def load_function_mapper():
-    load_voice_engine()
+    engine = load_voice_engine()
     if "botelier.database" not in sys.modules:
-        # Real ORM declarations, but never an engine, session or connection.
-        from sqlalchemy.orm import declarative_base
+        # Cached ORM models must share the HTTP fixture's inert Base/get_db.
+        # Only fixture data/sessions are fresh, never a second model registry.
+        from simulation_guard import install_test_namespaces
 
-        database = types.ModuleType("botelier.database")
-        database.Base = declarative_base()
-
-        def forbidden_session(*args, **kwargs):
-            guard.deny("database_session_requested")
-
-        database.SessionLocal = forbidden_session
-        sys.modules["botelier.database"] = database
+        install_test_namespaces(Path(engine.__file__).resolve().parents[2])
     # urllib3 probes IPv6 by binding a loopback socket while Twilio imports it.
     # No networking is available in this trial; declare that capability absent
     # rather than permitting bind() or swallowing a guard denial.

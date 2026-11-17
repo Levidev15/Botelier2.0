@@ -171,6 +171,7 @@ class NativeActionPreview:
         self._closed = False
         self._effects = []
         self._records = {}
+        self._context_provider = None
 
     async def request(self, *, node_id, source_kind, scope, current_scope=None):
         if self._closed:
@@ -179,7 +180,7 @@ class NativeActionPreview:
             not isinstance(node_id, str) or not _SAFE_ID.fullmatch(node_id)
             or not isinstance(source_kind, str) or source_kind not in {
                 "http", "integration", "tool", "mcp", "record", "transfer",
-                "mcp_read",
+                "mcp_read", "send_sms", "send_email",
             }
             or not isinstance(scope, tuple) or not scope or len(scope) > 8
             or any(not isinstance(item, str) or not item or len(item) > 256 for item in scope)
@@ -272,6 +273,26 @@ class NativeActionPreview:
             raise NativePreviewError("preview_scope_invalid")
         self._on_change = callback
 
+    def set_context_provider(self, callback):
+        """Bind private live controller context; never include it in snapshots."""
+        if callback is not None and not callable(callback):
+            raise NativePreviewError("preview_scope_invalid")
+        self._context_provider = callback
+
+    def active_context(self):
+        if self._closed or self._context_provider is None:
+            raise NativePreviewError("preview_scope_invalid")
+        value = self._context_provider()
+        if (
+            not isinstance(value, tuple) or len(value) != 3
+            or not callable(getattr(value[0], "config", None))
+            or not isinstance(value[1], dict)
+            or not isinstance(value[2], tuple) or not 1 <= len(value[2]) <= 7
+            or any(not isinstance(item, str) or not item or len(item) > 256 for item in value[2])
+        ):
+            raise NativePreviewError("preview_scope_invalid")
+        return value
+
     def record_effect(self, kind, node_id):
         if (
             self._closed or kind not in _EFFECT_KINDS
@@ -284,11 +305,21 @@ class NativeActionPreview:
         })
         self._changed()
 
-    def get_record(self, node_id):
-        value = self._records.get(node_id)
+    @staticmethod
+    def _record_key(node_id, scope):
+        if (
+            not isinstance(node_id, str) or not _SAFE_ID.fullmatch(node_id)
+            or not isinstance(scope, tuple) or len(scope) > 8
+            or any(not isinstance(item, str) or not item or len(item) > 256 for item in scope)
+        ):
+            raise NativePreviewError("preview_scope_invalid")
+        return scope, node_id
+
+    def get_record(self, node_id, *, scope=()):
+        value = self._records.get(self._record_key(node_id, scope))
         return deepcopy(value) if value is not None else None
 
-    def save_record(self, node_id, record_type_id, data, status):
+    def save_record(self, node_id, record_type_id, data, status, *, scope=()):
         if (
             self._closed or not isinstance(node_id, str)
             or not _SAFE_ID.fullmatch(node_id)
@@ -299,9 +330,10 @@ class NativeActionPreview:
         snapshot = _copy_json({
             "record_type_id": record_type_id, "data": data, "status": status,
         })
-        if node_id not in self._records and len(self._records) >= _MAX_EFFECTS:
+        key = self._record_key(node_id, scope)
+        if key not in self._records and len(self._records) >= _MAX_EFFECTS:
             raise NativePreviewError("preview_budget")
-        self._records[node_id] = snapshot
+        self._records[key] = snapshot
         self._changed()
 
     def close(self):
@@ -313,6 +345,7 @@ class NativeActionPreview:
             pending["future"].cancel()
         self._effects.clear()
         self._records.clear()
+        self._context_provider = None
         self._changed()
 
     def _changed(self):
