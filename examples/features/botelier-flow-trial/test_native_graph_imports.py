@@ -7,8 +7,29 @@ import sys
 from types import SimpleNamespace
 
 
+def _backend_root_from_package():
+    package = importlib.import_module("botelier")
+    package_paths = getattr(package, "__path__", ())
+    candidates = list(package_paths) if package_paths is not None else []
+    spec = getattr(package, "__spec__", None)
+    spec_paths = getattr(spec, "submodule_search_locations", None)
+    if spec_paths is not None:
+        candidates.extend(spec_paths)
+    for package_path in candidates:
+        package_dir = Path(package_path).resolve()
+        if package_dir.name != "botelier":
+            continue
+        backend = package_dir.parent
+        if (
+            (package_dir / "voice" / "__init__.py").is_file()
+            and (package_dir / "services" / "__init__.py").is_file()
+        ):
+            return backend
+    raise AssertionError("Could not locate the loaded botelier package source")
+
+
 def test_voice_public_exports_are_lazy_before_compiler_import():
-    backend = Path(__file__).resolve().parents[3] / "botelier" / "backend"
+    backend = _backend_root_from_package()
     initializer = backend / "botelier" / "voice" / "__init__.py"
     source = initializer.read_text(encoding="utf-8")
     tree = ast.parse(source)
@@ -21,7 +42,7 @@ def test_voice_public_exports_are_lazy_before_compiler_import():
 
 
 def test_services_exports_are_lazy_before_importing_pure_submodules():
-    backend = Path(__file__).resolve().parents[3] / "botelier" / "backend"
+    backend = _backend_root_from_package()
     initializer = backend / "botelier" / "services" / "__init__.py"
     source = initializer.read_text(encoding="utf-8")
     tree = ast.parse(source)
