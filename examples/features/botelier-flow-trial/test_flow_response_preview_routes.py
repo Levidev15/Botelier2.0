@@ -1,5 +1,6 @@
 """Actual authenticated, disposable API routes; no vendor/model dispatch."""
 
+import asyncio
 from unittest.mock import patch
 
 import pyotp
@@ -118,6 +119,19 @@ async def test_preview_rejects_oversized_and_effect_bearing_input_without_echoin
             request["execute"] = True
             rejected = await fixture.client.post(route(fixture), json=request, headers=headers)
             assert rejected.status_code == 422
+            amplified = {
+                "sample": {"blob": "x" * 10_000},
+                "configuration": {
+                    "responseMapping": {f"value_{i}": "$.blob" for i in range(128)},
+                    "responseProjection": {"fields": []},
+                },
+            }
+            rejected = await fixture.client.post(
+                route(fixture), json=amplified, headers=headers,
+            )
+            assert rejected.status_code == 422
+            assert rejected.json()["detail"]["code"] == "preview_result_size"
+            assert len(rejected.content) < 256
 
 
 @pytest.mark.asyncio
@@ -139,6 +153,27 @@ async def test_preview_requires_flow_edit_permission_and_does_not_change_version
         assert denied.status_code == 403, denied.text
         with fixture.factory() as db:
             assert db.query(fixture.models["FlowVersion"]).count() == before
+
+
+@pytest.mark.asyncio
+async def test_slow_preview_upload_has_a_deadline_instead_of_holding_a_database_session():
+    from editor_fixture import EditorASGIFixture
+
+    async with EditorASGIFixture() as fixture:
+        from botelier.api import flow_versions
+
+        headers = await login(fixture)
+
+        async def slow_body():
+            await asyncio.sleep(0.03)
+            yield b'{"sample":{},"configuration":{}}'
+
+        with patch.object(flow_versions, "_RESPONSE_PREVIEW_BODY_TIMEOUT", 0.001, create=True):
+            response = await fixture.client.post(
+                route(fixture), content=slow_body(),
+                headers={**headers, "Content-Type": "application/json"},
+            )
+        assert response.status_code == 408
 
 
 def test_preview_budget_is_bounded_and_expired_entries_do_not_reset_live_quotas():

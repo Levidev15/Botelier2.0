@@ -16,6 +16,7 @@ from time import monotonic
 from botelier.voice.flows.native_response_mapping import (
     NativeResponseMappingError,
     map_project_response,
+    map_response_data,
     resolve_response_variables,
 )
 
@@ -76,6 +77,28 @@ class _Declaration:
         return json.loads(self._data)
 
 
+def _encode_bounded(value, *, limit=1_048_576, reason="preview_sample",
+                    size_reason="preview_size"):
+    """Stop encoding as soon as the total budget is exceeded, not afterward."""
+    encoder = json.JSONEncoder(
+        ensure_ascii=False, allow_nan=False, separators=(",", ":"),
+    )
+    chunks = []
+    size = 0
+    try:
+        for fragment in encoder.iterencode(value):
+            chunk = fragment.encode("utf-8")
+            size += len(chunk)
+            if size > limit:
+                raise FlowResponsePreviewError(size_reason)
+            chunks.append(chunk)
+    except FlowResponsePreviewError:
+        raise
+    except (TypeError, ValueError, RecursionError):
+        raise FlowResponsePreviewError(reason) from None
+    return b"".join(chunks)
+
+
 def _copy_json(value, *, limit=1_048_576, reason="preview_sample"):
     seen = set()
     nodes = 0
@@ -113,14 +136,7 @@ def _copy_json(value, *, limit=1_048_576, reason="preview_sample"):
             raise FlowResponsePreviewError(reason)
 
     walk(value, 0)
-    try:
-        serialized = json.dumps(value, ensure_ascii=False, allow_nan=False)
-        size = len(serialized.encode("utf-8"))
-    except (TypeError, ValueError, RecursionError):
-        raise FlowResponsePreviewError(reason) from None
-    if size > limit:
-        raise FlowResponsePreviewError("preview_size")
-    return json.loads(serialized)
+    return json.loads(_encode_bounded(value, limit=limit, reason=reason))
 
 
 def _explicit_declarations(values):
@@ -145,8 +161,8 @@ def _explicit_declarations(values):
     return tuple(declarations)
 
 
-def preview_flow_response(sample, configuration, *, variable_declarations=()):
-    """Return detached raw mappings and the *identical* native model JSON.
+def _build_response_preview(sample, configuration, *, variable_declarations=()):
+    """Build the detached preview and its bounded UTF-8 encoding in one worker.
 
     Missing inferred outputs are optional, matching the full native compiler.
     Explicit declarations preserve their actual required flag. Legacy ``text``
@@ -167,17 +183,38 @@ def preview_flow_response(sample, configuration, *, variable_declarations=()):
         # A standalone, half-authored sample has no compiled graph yet.
         if any(not _VARIABLE.fullmatch(key) for key in outputs):
             raise FlowResponsePreviewError("mapping_entry")
+        # Aliases can multiply the same sample value. Check actual mapped data
+        # before the shared projection performs any whole-value JSON encoding.
+        scoped_variables = resolve_response_variables(
+            config, declared_variables=outputs, variable_declarations=declarations,
+        )
+        budget_mapped = map_response_data(source, scoped_variables)
+        _encode_bounded(
+            {"mapped_variables": budget_mapped},
+            reason="preview_result", size_reason="preview_result_size",
+        )
         mapped, model = map_project_response(
             config, source, declared_variables=outputs,
             variable_declarations=declarations,
         )
     except NativeResponseMappingError as exc:
         raise FlowResponsePreviewError(str(exc)) from None
-    return {"mapped_variables": mapped, "llm_data": model}
+    result = {"mapped_variables": mapped, "llm_data": model}
+    encoded = _encode_bounded(
+        result, reason="preview_result", size_reason="preview_result_size",
+    )
+    return result, encoded
+
+
+def preview_flow_response(sample, configuration, *, variable_declarations=()):
+    """Return detached mappings and the exact native projection, within budget."""
+    return _build_response_preview(
+        sample, configuration, variable_declarations=variable_declarations,
+    )[0]
 
 
 def preview_flow_response_json(body):
-    """Parse the bounded sample-only HTTP envelope without echoing bad input."""
+    """Parse a sample-only HTTP envelope and return bounded, encoded JSON."""
     if type(body) is not bytes or len(body) > 1_048_576:
         raise FlowResponsePreviewError("preview_size")
 
@@ -204,7 +241,7 @@ def preview_flow_response_json(body):
         or set(data) - {"sample", "configuration", "variableDeclarations"}
     ):
         raise FlowResponsePreviewError("preview_request")
-    return preview_flow_response(
+    return _build_response_preview(
         data["sample"], data["configuration"],
         variable_declarations=data.get("variableDeclarations", []),
-    )
+    )[1]

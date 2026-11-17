@@ -201,3 +201,55 @@ def test_raw_envelope_is_strict_json_and_cannot_request_any_execution(body):
     with pytest.raises(FlowResponsePreviewError) as caught:
         preview_flow_response_json(body)
     assert str(caught.value) in {"preview_json", "preview_request"}
+
+
+@pytest.mark.parametrize("count,public_count", [(128, 0), (100, 9)])
+def test_combined_raw_and_model_response_is_bounded_before_http_serialization(count, public_count):
+    from botelier.services.flow_response_preview import FlowResponsePreviewError
+
+    # A small input can be amplified by many aliases of the same value. Bound
+    # the whole response, even when the model projection itself is empty/small.
+    with pytest.raises(FlowResponsePreviewError, match=r"^preview_result_size$"):
+        preview(
+            {"blob": "x" * 10_000},
+            {
+                "responseMapping": {f"value_{i}": "$.blob" for i in range(count)},
+                "responseProjection": {"fields": [
+                    {"variable": f"value_{i}"} for i in range(public_count)
+                ]},
+            },
+        )
+
+
+def test_bounded_http_result_is_encoded_once_without_mutating_source_values():
+    import json
+
+    from botelier.services.flow_response_preview import preview_flow_response_json
+
+    data = {
+        "sample": {"name": "Hôtel", "total": "230.00", "zero": 0},
+        "configuration": {
+            "responseMapping": {"name": "$.name", "total": "$.total", "zero": "$.zero"},
+        },
+    }
+    encoded = preview_flow_response_json(json.dumps(data).encode("utf-8"))
+    assert type(encoded) is bytes
+    assert len(encoded) <= 1_048_576
+    assert json.loads(encoded) == {
+        "mapped_variables": data["sample"], "llm_data": data["sample"],
+    }
+
+
+def test_amplified_mappings_are_rejected_before_even_the_model_projection_serializer(monkeypatch):
+    from botelier.services.flow_response_preview import FlowResponsePreviewError
+    from botelier.voice.flows import native_response_mapping
+
+    def must_not_project(*_args, **_kwargs):
+        raise AssertionError("Oversized raw mappings must be rejected before projection")
+
+    monkeypatch.setattr(native_response_mapping, "project_mapped_values", must_not_project)
+    with pytest.raises(FlowResponsePreviewError, match=r"^preview_result_size$"):
+        preview(
+            {"blob": "x" * 10_000},
+            {"responseMapping": {f"value_{i}": "$.blob" for i in range(128)}},
+        )

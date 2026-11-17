@@ -9,6 +9,7 @@ Provides endpoints for managing versioned flow configurations:
 Tools are scoped through their ToolSet's account_id for multi-tenant isolation.
 """
 
+import asyncio
 import re
 import uuid
 from datetime import datetime, timezone
@@ -17,7 +18,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Path as RequestPath, Request, status
 from starlette.concurrency import run_in_threadpool
-from starlette.responses import JSONResponse
+from starlette.responses import Response
 from sqlalchemy import desc
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
@@ -39,6 +40,7 @@ router = APIRouter(prefix="/api/tools", tags=["flow-versions"])
 _API_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE"}
 _TEMPLATE_VARIABLE_RE = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*)\s*}}")
 _RESPONSE_PREVIEW_BUDGET = FlowPreviewBudget()
+_RESPONSE_PREVIEW_BODY_TIMEOUT = 10.0
 
 
 def _template_variables(value: object) -> set[str]:
@@ -659,11 +661,33 @@ def _authorize_response_preview(user, db, tool_id, account_id):
     _get_flow_tool(db, tool_id, account_id)
 
 
+async def _read_response_preview_body(request: Request):
+    """Bound upload bytes/time before opening the route's DB dependencies."""
+    if request.headers.get("content-type", "").split(";", 1)[0].lower() != "application/json":
+        raise HTTPException(status_code=415, detail={"code": "preview_content_type"})
+
+    async def read():
+        body = bytearray()
+        async for chunk in request.stream():
+            if len(body) + len(chunk) > 1_048_576:
+                raise HTTPException(status_code=413, detail={"code": "preview_size"})
+            body.extend(chunk)
+        return bytes(body)
+
+    try:
+        return await asyncio.wait_for(read(), timeout=_RESPONSE_PREVIEW_BODY_TIMEOUT)
+    except asyncio.TimeoutError:
+        raise HTTPException(
+            status_code=408, detail={"code": "preview_upload_timeout"},
+            headers={"Cache-Control": "no-store"},
+        ) from None
+
+
 @router.post("/{tool_id}/flow/preview-response")
 async def preview_flow_node_response(
     tool_id: Annotated[str, RequestPath(min_length=1, max_length=128)],
     account_id: uuid.UUID,
-    request: Request,
+    body: bytes = Depends(_read_response_preview_body),
     db: Session = Depends(get_db),
     user: User = Depends(get_current_user),
 ):
@@ -676,21 +700,16 @@ async def preview_flow_node_response(
             status_code=429, detail={"code": "preview_rate_limit"},
             headers={"Retry-After": "60", "Cache-Control": "no-store"},
         )
-    if request.headers.get("content-type", "").split(";", 1)[0].lower() != "application/json":
-        raise HTTPException(status_code=415, detail={"code": "preview_content_type"})
-    body = bytearray()
-    async for chunk in request.stream():
-        if len(body) + len(chunk) > 1_048_576:
-            raise HTTPException(status_code=413, detail={"code": "preview_size"})
-        body.extend(chunk)
     try:
-        result = await run_in_threadpool(preview_flow_response_json, bytes(body))
+        result = await run_in_threadpool(preview_flow_response_json, body)
     except FlowResponsePreviewError as exc:
         raise HTTPException(
             status_code=422, detail={"code": str(exc)},
             headers={"Cache-Control": "no-store"},
         ) from None
-    return JSONResponse(result, headers={"Cache-Control": "no-store"})
+    return Response(
+        result, media_type="application/json", headers={"Cache-Control": "no-store"},
+    )
 
 
 @router.get("/{tool_id}/flow")
