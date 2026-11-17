@@ -337,12 +337,24 @@ async def update_mcp_connection(
     if data.is_active is not None:
         connection.is_active = data.is_active
     if data.connection_config is not None:
-        connection.connection_config = _protect_native_connection_config(
+        replacement_config = _protect_native_connection_config(
             data.connection_config,
             account_id=connection.account_id,
             connection_id=connection.id,
             db=db,
         )
+        if not rebind and "_native_policy_v1" not in replacement_config:
+            from botelier.services.native_mcp_policy import (
+                preserve_sealed_native_policy,
+            )
+
+            replacement_config = preserve_sealed_native_policy(
+                connection.get_connection_config(),
+                replacement_config,
+                account_id=connection.account_id,
+                connection_id=connection.id,
+            )
+        connection.connection_config = replacement_config
     elif rebind:
         from botelier.services.native_mcp_policy import clear_connection_native_policy
 

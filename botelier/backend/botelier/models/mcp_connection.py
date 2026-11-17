@@ -187,6 +187,11 @@ class MCPConnection(Base):
 
     def to_dict(self, include_tools: bool = True) -> dict:
         """Convert to dictionary for API responses."""
+        from botelier.services.native_mcp_policy import (
+            public_connection_config,
+            public_native_flow_policy,
+        )
+
         result = {
             "id": str(self.id),
             "account_id": str(self.account_id),
@@ -201,7 +206,10 @@ class MCPConnection(Base):
             else None,
             "last_error": self.last_error,
             "is_active": self.is_active,
-            "connection_config": self.get_connection_config(),
+            "connection_config": public_connection_config(
+                self.get_connection_config(),
+            ),
+            "native_flow_policy": public_native_flow_policy(self),
             "created_at": self.created_at.isoformat() + "Z" if self.created_at else None,
             "updated_at": self.updated_at.isoformat() + "Z" if self.updated_at else None,
         }

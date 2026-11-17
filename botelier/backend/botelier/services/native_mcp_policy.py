@@ -1,5 +1,6 @@
 """Server-authenticated native MCP grants stored with a connection."""
 
+from copy import deepcopy
 import json
 import re
 from typing import List, Optional
@@ -122,12 +123,11 @@ def clear_connection_native_policy(config):
 
 def public_connection_config(config):
     """Never pass a native grant token or legacy grant fields to remote MCP."""
-    return clear_connection_native_policy(config)
+    return deepcopy(clear_connection_native_policy(config))
 
 
-def resolve_connection_policy(connection):
-    """Decrypt only a server-sealed policy bound to this exact stored connection."""
-    config = connection.get_connection_config() or {}
+def _resolve_connection_policy(config, *, account_id, connection_id):
+    """Validate a seal against the exact owning account and connection."""
     if not isinstance(config, dict):
         raise PermissionError("mcp_tool_policy")
     token = config.get(_POLICY_KEY)
@@ -148,9 +148,20 @@ def resolve_connection_policy(connection):
     except Exception:
         raise PermissionError("mcp_tool_policy") from None
     if (
-        policy.account_id != _uuid(connection.account_id, "mcp_tool_policy")
-        or policy.connection_id != _uuid(connection.id, "mcp_tool_policy")
+        policy.account_id != _uuid(account_id, "mcp_tool_policy")
+        or policy.connection_id != _uuid(connection_id, "mcp_tool_policy")
     ):
+        raise PermissionError("mcp_tool_policy")
+    if policy.property_id is not None:
+        if policy.account_global is not None:
+            raise PermissionError("mcp_tool_policy")
+        try:
+            property_id = _uuid(policy.property_id, "mcp_tool_policy")
+        except ValueError:
+            raise PermissionError("mcp_tool_policy") from None
+        if policy.property_id != property_id:
+            raise PermissionError("mcp_tool_policy")
+    elif policy.account_global is not True:
         raise PermissionError("mcp_tool_policy")
     if (
         len(policy.enabled_tools) != len(set(policy.enabled_tools))
@@ -162,3 +173,73 @@ def resolve_connection_policy(connection):
     ):
         raise PermissionError("mcp_tool_policy")
     return policy
+
+
+def resolve_connection_policy(connection):
+    """Decrypt only a server-sealed policy bound to this exact stored connection."""
+    config = connection.get_connection_config() or {}
+    return _resolve_connection_policy(
+        config, account_id=connection.account_id, connection_id=connection.id,
+    )
+
+
+def public_native_flow_policy(connection):
+    """Return stored sealed-policy status, not current runtime authorization."""
+    unconfigured = {
+        "configured": False,
+        "scope": None,
+        "property_id": None,
+        "enabled_tools": [],
+        "read_only_tools": [],
+    }
+    try:
+        policy = resolve_connection_policy(connection)
+    except Exception:
+        return unconfigured
+    if policy.property_id is not None and policy.account_global is None:
+        return {
+            "configured": True,
+            "scope": "property",
+            "property_id": policy.property_id,
+            "enabled_tools": list(policy.enabled_tools),
+            "read_only_tools": list(policy.read_only_tools),
+        }
+    if policy.property_id is None and policy.account_global is True:
+        return {
+            "configured": True,
+            "scope": "account",
+            "property_id": None,
+            "enabled_tools": list(policy.enabled_tools),
+            "read_only_tools": list(policy.read_only_tools),
+        }
+    return unconfigured
+
+
+def preserve_sealed_native_policy(
+    existing_config, replacement_config, *, account_id, connection_id,
+):
+    """Preserve a valid stored seal across an ordinary config-only edit.
+
+    Callers must first validate the replacement through
+    :func:`protect_connection_config`. Caller-submitted seals and policy fields
+    are never accepted here; fresh typed grants go through the protector.
+    """
+    if not isinstance(replacement_config, dict) or _POLICY_KEY in replacement_config:
+        raise ValueError("native_mcp_policy")
+    if set(replacement_config) & _PLAIN_FIELDS or any(
+        isinstance(key, str) and key.startswith("native_")
+        for key in replacement_config
+    ):
+        raise ValueError("native_mcp_policy")
+    if not isinstance(existing_config, dict):
+        return dict(replacement_config)
+    try:
+        _resolve_connection_policy(
+            existing_config, account_id=account_id, connection_id=connection_id,
+        )
+    except Exception:
+        return deepcopy(replacement_config)
+    token = existing_config[_POLICY_KEY]
+    preserved = deepcopy(replacement_config)
+    preserved[_POLICY_KEY] = token
+    return preserved
