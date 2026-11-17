@@ -241,7 +241,6 @@ class NativeFlowAdapter:
         )
 
         self.manager.register_action("native_enter", self._enter_node)
-        self.manager.register_action("native_after_guided", self._after_guided_message)
 
         @worker.event_handler("on_pipeline_finished")
         async def finished(_, frame):
@@ -615,8 +614,14 @@ class NativeFlowAdapter:
                 self._active_slot = None
                 self._active_form_index = 0
                 return current
+            # Automatic steps have no model invocation of their own. Carry
+            # their guidance into the next conversation step; guided messages
+            # install their own node config and must not add it twice.
+            if kind not in _TERMINALS and not (
+                kind == "message" and data.get("deliveryMode", "guided") == "guided"
+            ):
+                self._carry_private(data.get("instructions"))
             if kind == "initial":
-                self._carry_private(data.get("systemPrompt"))
                 if data.get("greeting") and not self._suppress_initial_greeting:
                     await self._speak(self._render(data["greeting"]))
                 if len(self._flow_catalogue) > 1 and not self._catalog_active:
@@ -791,7 +796,6 @@ class NativeFlowAdapter:
                 self._suppress_initial_greeting = False
             elif data.get("greeting"):
                 speech = self._render(data["greeting"])
-            self._carry_private(data.get("systemPrompt"))
             if data.get("waitForResponse"):
                 functions.append(self._text_response_schema(node_id, source_visit))
                 respond_immediately = False
@@ -872,6 +876,13 @@ class NativeFlowAdapter:
                 "role": "developer",
                 "content": self._render(data["instructions"], speech=False),
             })
+        if node.type in {"collect_slot", "collect_form"}:
+            active_slot = data["slot"] if node.type == "collect_slot" else slots[form_index]
+            if active_slot.get("instructions"):
+                messages.append({
+                    "role": "developer",
+                    "content": self._render(active_slot["instructions"], speech=False),
+                })
         if guided:
             if node.type == "message":
                 guidance = "Speak the configured message before waiting for the caller."
@@ -905,9 +916,13 @@ class NativeFlowAdapter:
             )
         if guided and node.type == "message" and not data.get("waitForResponse", True):
             config["post_actions"] = [{
-                "type": "native_after_guided", "handler": self._after_guided_message,
+                # The SDK queues built-in function actions after the model's
+                # response; custom actions run immediately and replace its
+                # node instructions before the request is even captured.
+                "type": "function", "handler": self._after_guided_message,
                 "node_id": node_id, "source_visit": None,
             }]
+            config["pre_actions"][0]["guided_completion"] = config["post_actions"][0]
         return config
 
     def _next_user_ids(self):
@@ -932,6 +947,8 @@ class NativeFlowAdapter:
         self._revision += 1
         visit = object()
         self._visit = visit
+        if action.get("guided_completion") is not None:
+            action["guided_completion"]["source_visit"] = visit
         self._active_node_id = node.node_id
         self._node_respond_immediately = bool(action["respond_immediately"])
         if node.type == "collect_form":
@@ -948,6 +965,14 @@ class NativeFlowAdapter:
         ]
         task_messages[:] = prior_messages
         self._owned_guidance = []
+        initial_data = self.compiled.node(self.compiled.initial_node_id).data()
+        if initial_data.get("systemPrompt"):
+            flow_persona = {
+                "role": "developer",
+                "content": self._render(initial_data["systemPrompt"], speech=False),
+            }
+            task_messages.append(flow_persona)
+            self._owned_guidance.append(flow_persona)
         global_prompt = self.compiled.config().get(
             "globalPrompt", self.compiled.config().get("global_prompt", ""),
         )
@@ -2011,12 +2036,12 @@ class NativeFlowAdapter:
 
     async def _after_guided_message(self, action, manager):
         node_id = action.get("node_id")
+        visit = action.get("source_visit")
         if (
-            not self._is_open() or self._active_node_id != node_id
+            not self._is_current(visit) or self._active_node_id != node_id
             or manager.current_node != node_id or self._status != "running"
         ):
             return
-        visit = self._visit
         task = asyncio.current_task()
         self._owned_task = task
         try:

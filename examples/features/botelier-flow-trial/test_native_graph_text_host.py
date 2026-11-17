@@ -58,6 +58,145 @@ def test_general_text_host_uses_native_graph_and_records_each_prompt_exactly_onc
     asyncio.run(asyncio.wait_for(scenario(), 15))
 
 
+@pytest.mark.parametrize(
+    "collection_type,automatic_type",
+    [
+        ("collect_slot", None), ("collect_form", None),
+        ("collect_slot", "initial"), ("collect_slot", "message"),
+    ],
+)
+def test_model_wire_keeps_system_and_flow_rules_but_replaces_active_field_guidance(
+    collection_type, automatic_type,
+):
+    """Instructions must reach the real SDK request, not just saved node JSON."""
+    async def scenario():
+        from native_graph_io import simple_flow_config
+
+        definition = simple_flow_config()
+        definition["globalPrompt"] = "FLOW_PRIVATE: keep responses concise."
+        definition["nodes"][0]["data"]["systemPrompt"] = (
+            "FLOW_ROLE_PRIVATE: act as the reservation concierge."
+        )
+        definition["variables"].append({"key": "email", "type": "email"})
+        name_slot = {
+            "variableKey": "name", "prompt": "What is your name?", "order": 0,
+            "instructions": "NAME_FIELD_PRIVATE: confirm the spelling.",
+        }
+        email_slot = {
+            "variableKey": "email", "prompt": "What is your email?", "order": 1,
+            "type": "email",
+            "instructions": "EMAIL_FIELD_PRIVATE: address {{name}} politely.",
+        }
+        if collection_type == "collect_form":
+            definition["nodes"][1] = {"id": "name", "type": "collect_form", "data": {
+                "instructions": "FORM_NODE_PRIVATE: ask one question at a time.",
+                "slots": [
+                    {"id": "name-field", **name_slot},
+                    {"id": "email-field", **email_slot},
+                ],
+            }}
+        else:
+            definition["nodes"][1]["data"].update(
+                instructions="NAME_NODE_PRIVATE: acknowledge the answer.",
+                slot=name_slot,
+            )
+            definition["nodes"].insert(-1, {
+                "id": "email", "type": "collect_slot", "data": {
+                    "instructions": "EMAIL_NODE_PRIVATE: do not repeat the name question.",
+                    "slot": email_slot,
+                },
+            })
+            definition["edges"][-1]["target"] = "email"
+            definition["edges"].append({
+                "id": "email-done", "source": "email", "target": "done",
+            })
+        if automatic_type == "initial":
+            definition["nodes"][0]["data"]["instructions"] = (
+                "AUTOMATIC_PRIVATE: keep the transition reassuring."
+            )
+        elif automatic_type == "message":
+            definition["nodes"].insert(1, {
+                "id": "notice", "type": "message", "data": {
+                    "message": "This notice must stay exactly scripted.",
+                    "deliveryMode": "static", "waitForResponse": False,
+                    "instructions": "AUTOMATIC_PRIVATE: keep the transition reassuring.",
+                },
+            })
+            definition["edges"][0]["target"] = "notice"
+            definition["edges"].append({
+                "id": "notice-name", "source": "notice", "target": "name",
+            })
+
+        async with NativeGraphTextFixture(
+            [
+                tool_delta("collect_name", {"name": "Ada"}),
+                tool_delta(
+                    "collect_name" if collection_type == "collect_form" else "collect_email",
+                    {"email": "ada@example.com"},
+                ),
+            ],
+            definition=definition,
+            system_prompt="SYSTEM_PRIVATE: follow the hotel response policy.",
+        ) as fixture:
+            started = await fixture.host.start()
+            first = await fixture.host.send("My name is Ada.")
+            second = await fixture.host.send("ada@example.com")
+            requests = fixture.providers.requests
+            assert len(requests) == 2
+            for request in requests:
+                assert any(
+                    message.get("role") == "system"
+                    and "SYSTEM_PRIVATE: follow the hotel response policy." in message["content"]
+                    for message in request["messages"]
+                )
+                guidance = [
+                    message["content"] for message in request["messages"]
+                    if message.get("role") == "developer"
+                ]
+                assert guidance.count("FLOW_PRIVATE: keep responses concise.") == 1
+                assert guidance.count(
+                    "FLOW_ROLE_PRIVATE: act as the reservation concierge.",
+                ) == 1
+
+            first_guidance = "\n".join(
+                message["content"] for message in requests[0]["messages"]
+                if message.get("role") == "developer"
+            )
+            second_guidance = "\n".join(
+                message["content"] for message in requests[1]["messages"]
+                if message.get("role") == "developer"
+            )
+            if automatic_type:
+                assert first_guidance.count(
+                    "AUTOMATIC_PRIVATE: keep the transition reassuring.",
+                ) == 1
+                assert "AUTOMATIC_PRIVATE" not in second_guidance
+            if automatic_type == "message":
+                assert [message["content"] for message in started["messages"]] == [
+                    "Welcome to the fixture.",
+                    "This notice must stay exactly scripted.",
+                    "What is your name?",
+                ]
+            assert "NAME_FIELD_PRIVATE: confirm the spelling." in first_guidance
+            assert "EMAIL_FIELD_PRIVATE" not in first_guidance
+            assert "EMAIL_FIELD_PRIVATE: address Ada politely." in second_guidance
+            assert "NAME_FIELD_PRIVATE" not in second_guidance
+            if collection_type == "collect_form":
+                assert "FORM_NODE_PRIVATE" in first_guidance
+                assert "FORM_NODE_PRIVATE" in second_guidance
+            else:
+                assert "NAME_NODE_PRIVATE" in first_guidance
+                assert "EMAIL_NODE_PRIVATE" in second_guidance
+                assert "NAME_NODE_PRIVATE" not in second_guidance
+                assert "EMAIL_NODE_PRIVATE" not in first_guidance
+            for result in (started, first, second):
+                assert all("_PRIVATE:" not in message["content"] for message in result["messages"])
+            assert fixture.host.snapshot()["is_complete"] is True
+            assert fixture.providers.business_requests == []
+
+    asyncio.run(asyncio.wait_for(scenario(), 15))
+
+
 def test_text_host_waits_for_successful_consumer_ack_after_real_context_fence():
     async def scenario():
         async with NativeGraphTextFixture() as fixture:
@@ -122,21 +261,30 @@ def test_guided_start_speech_finishes_and_advances_before_start_response_returns
         from native_graph_io import simple_flow_config
 
         definition = simple_flow_config()
+        definition["globalPrompt"] = "GUIDED_FLOW_PRIVATE: respond naturally."
         definition["nodes"].insert(1, {
             "id": "explain", "type": "message", "data": {
                 "message": "The fixture is ready.", "deliveryMode": "guided",
                 "waitForResponse": False,
+                "instructions": "GUIDED_NODE_PRIVATE: use a warm short sentence.",
             },
         })
         definition["edges"][0]["target"] = "explain"
         definition["edges"].append({"id": "explain-name", "source": "explain", "target": "name"})
         async with NativeGraphTextFixture(
-            ["The fixture is ready."], definition=definition,
+            ["Everything is ready; let's continue."], definition=definition,
         ) as fixture:
             result = await fixture.host.start()
             assert [item["content"] for item in result["messages"]] == [
-                "Welcome to the fixture.", "The fixture is ready.", "What is your name?",
+                "Welcome to the fixture.", "Everything is ready; let's continue.",
+                "What is your name?",
             ]
+            guidance = [
+                message["content"] for message in fixture.providers.requests[0]["messages"]
+                if message.get("role") == "developer"
+            ]
+            assert guidance.count("GUIDED_FLOW_PRIVATE: respond naturally.") == 1
+            assert guidance.count("GUIDED_NODE_PRIVATE: use a warm short sentence.") == 1
             assert fixture.host.snapshot()["current_node"] == "name"
             assert fixture.host._model_inflight == 0
             assert fixture.host._response_ends == 1
@@ -145,7 +293,8 @@ def test_guided_start_speech_finishes_and_advances_before_start_response_returns
                 if item.get("role") == "assistant" and isinstance(item.get("content"), str)
             ]
             assert history == [
-                "Welcome to the fixture.", "The fixture is ready.", "What is your name?",
+                "Welcome to the fixture.", "Everything is ready; let's continue.",
+                "What is your name?",
             ]
 
     asyncio.run(asyncio.wait_for(scenario(), 15))

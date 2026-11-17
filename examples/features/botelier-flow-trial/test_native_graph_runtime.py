@@ -616,14 +616,55 @@ def test_initial_wait_node_injects_configured_system_prompt_once():
         config["nodes"][0]["data"]["waitForResponse"] = True
         compiled = compile_flow(config, compile_simple_flow().identity)
         call = GraphCall(compiled)
-        config = call.adapter._node_config("start", source_visit=None)
-        messages = config["task_messages"]
-        private = [
-            item for item in messages
-            if item.get("role") == "developer"
-            and item.get("content") == "Keep the greeting private guidance."
-        ]
-        assert len(private) == 1
+        try:
+            await call.adapter.start()
+            # Inspect the context actually consumed after the SDK pre-action,
+            # not the partially prepared node configuration.
+            private = [
+                item for item in call.worker.context.get_messages()
+                if item.get("role") == "developer"
+                and item.get("content") == "Keep the greeting private guidance."
+            ]
+            assert len(private) == 1
+        finally:
+            await call.adapter.close()
+
+    asyncio.run(scenario())
+
+
+def test_stale_guided_completion_cannot_advance_a_reentered_node():
+    async def scenario():
+        from botelier.voice.flows.native_graph import compile_flow
+
+        original = compile_simple_flow()
+        definition = original.config()
+        definition["nodes"].insert(1, {
+            "id": "explain", "type": "message", "data": {
+                "message": "A guided explanation.", "deliveryMode": "guided",
+                "waitForResponse": True,
+            },
+        })
+        definition["edges"][0]["target"] = "explain"
+        definition["edges"].append({
+            "id": "explain-name", "source": "explain", "target": "name",
+        })
+        call = GraphCall(compile_flow(definition, original.identity))
+        try:
+            await call.adapter.start()
+            expired_visit = call.adapter._visit
+            await call.adapter.manager.set_node_from_config(
+                call.adapter._node_config("explain", source_visit=expired_visit),
+            )
+            assert call.adapter._visit is not expired_visit
+            before = call.adapter.snapshot()
+            await call.adapter._after_guided_message(
+                {"node_id": "explain", "source_visit": expired_visit},
+                call.adapter.manager,
+            )
+            assert call.adapter.manager.current_node == "explain"
+            assert call.adapter.snapshot() == before
+        finally:
+            await call.adapter.close()
 
     asyncio.run(scenario())
 
@@ -716,6 +757,7 @@ def test_explicit_edit_clears_stale_derived_values_and_never_replays_spent_actio
 
 def test_actual_pipeline_executes_the_full_in_order_native_catalog():
     async def scenario():
+        from botelier.voice.flows.native_graph import compile_flow
         from botelier.voice.flows.native_execution import (
             NativeActionResult, NativeConfirmation, NativeTerminalResult,
         )
@@ -745,8 +787,16 @@ def test_actual_pipeline_executes_the_full_in_order_native_catalog():
             terminal_nodes.append((node.node_id, deepcopy(facts)))
             return NativeTerminalResult(True, completed=True)
 
+        original = compile_full_catalog_flow()
+        definition = original.config()
+        node_data = {node["id"]: node["data"] for node in definition["nodes"]}
+        node_data["query"]["instructions"] = "VOICE_QUERY_NODE_PRIVATE"
+        node_data["query"]["slot"]["instructions"] = "VOICE_QUERY_FIELD_PRIVATE"
+        node_data["form"]["instructions"] = "VOICE_FORM_NODE_PRIVATE"
+        for slot in node_data["form"]["slots"]:
+            slot["instructions"] = f"VOICE_{slot['variableKey'].upper()}_FIELD_PRIVATE"
         call = NativeGraphPipelineCall(
-            compile_full_catalog_flow(),
+            compile_flow(definition, original.identity),
             providers=GraphProviders([
                 tool_delta("collect_query", {"query": "fixtures"}),
                 tool_delta("collect_name", {"name": "Ada"}),
@@ -756,6 +806,7 @@ def test_actual_pipeline_executes_the_full_in_order_native_catalog():
             ]),
             execute_action=execute, terminal_handler=terminal,
         )
+        call.records.assistant.system_prompt = "VOICE_SYSTEM_PRIVATE: keep responses brief."
         holder["call"] = call
         async with call:
             await call.activate()
@@ -793,6 +844,28 @@ def test_actual_pipeline_executes_the_full_in_order_native_catalog():
             assert call.adapter.facts["selected_name"] == "Second room"
             assert call.adapter.facts["selected_price"] == 90
             assert sum(bool(item.get("stream")) for item in call.providers.requests) == 5
+            requests = [item for item in call.providers.requests if item.get("stream")]
+            for index, request in enumerate(requests):
+                system = "\n".join(
+                    message["content"] for message in request["messages"]
+                    if message.get("role") == "system"
+                )
+                assert system.count("VOICE_SYSTEM_PRIVATE: keep responses brief.") == 1
+                guidance = "\n".join(
+                    message["content"] for message in request["messages"]
+                    if message.get("role") == "developer"
+                )
+                assert guidance.count("Private fixture policy; do not quote it.") == 1
+                assert guidance.count("Private initial policy.") == 1
+                for marker, active_turns in (
+                    ("VOICE_QUERY_NODE_PRIVATE", {0}),
+                    ("VOICE_QUERY_FIELD_PRIVATE", {0}),
+                    ("VOICE_FORM_NODE_PRIVATE", {1, 2}),
+                    ("VOICE_NAME_FIELD_PRIVATE", {1}),
+                    ("VOICE_EMAIL_FIELD_PRIVATE", {2}),
+                ):
+                    assert guidance.count(marker) == (1 if index in active_turns else 0)
+            assert all("VOICE_" not in text for text in speech(call))
             assert speech(call)[-1] == "Thanks, Ada."
             context_messages = call.created[4].get_messages()
             developer_text = "\n".join(
@@ -800,7 +873,8 @@ def test_actual_pipeline_executes_the_full_in_order_native_catalog():
                 if message.get("role") == "developer"
             )
             assert developer_text.count("Private fixture policy; do not quote it.") == 1
-            assert "Private initial policy." not in developer_text
+            # Initial.systemPrompt is a flow persona, not transient step guidance.
+            assert developer_text.count("Private initial policy.") == 1
             assert "Privately present results for Ada." not in developer_text
             assert all(any(
                 message.get("role") == "user" and turn in message.get("content", "")

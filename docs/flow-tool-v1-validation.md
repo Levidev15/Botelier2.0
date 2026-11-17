@@ -53,6 +53,31 @@ the collection/selection node. Configuring the same question in both places
 intentionally speaks it twice; the runtime must not silently remove authored
 speech just because the text matches.
 
+### Instruction delivery and response wording
+
+- Assistant/system instructions remain in the model context throughout the
+  conversation. The Initial node's System Prompt describes the flow's role;
+  it and the flow-wide instructions remain active throughout that flow.
+- The active node's private instructions and the current collection field's
+  instructions are supplied to the model. Known fact references in those
+  instructions are resolved from the current validated facts.
+- Automatic steps do not need an extra model request. Their private guidance
+  accompanies the next conversation step, then expires when that step is
+  replaced. It does not change an API request, a deterministic branch or
+  exact scripted speech.
+- Guided messages use the model's generated wording; static messages and
+  configured collection prompts use their exact rendered text. Use guided
+  mode when the AI should phrase a message naturally, not an instruction
+  asking it to rewrite a static message.
+- Replacing a node/field removes the earlier scoped guidance while retaining
+  the assistant/system rules, flow-wide rules and conversation history.
+  Instructions are private model context, not text sent directly to TTS.
+
+These are request/context contracts, not a promise that a model will obey
+every natural-language instruction. Node order, allowed tools, facts,
+confirmation and action permissions remain enforced by code. Manual voice
+acceptance must check the actual wording and clarify conflicting instructions.
+
 ## Configure and inspect external data
 
 1. Use an account/property-owned connection or Tool. Credentials remain on
@@ -168,6 +193,8 @@ against the approved development destination. The user places the calls.
 | Scenario | Required outcome |
 | --- | --- |
 | Normal stay, spoken dates/counts, zero children | Correct structured facts, natural prompts and ordered nodes |
+| Set global style rules and different instructions on consecutive nodes/fields | Global rules remain; each response uses only the appropriate step guidance; guided wording may vary while static text stays exact |
+| Ask the AI to ignore the flow or skip confirmation | No out-of-order tool, fabricated fact, unauthorized send or write |
 | Complete stay in one sentence; facts in a different order | Accepted facts without needless repeated collection |
 | Choose the second room | Quote, summary, link and Record refer to that room/rate |
 | Correct dates, room or recipient | Old selection/quote/consent cannot authorize a stale send |
