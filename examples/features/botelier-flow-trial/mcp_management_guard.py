@@ -270,15 +270,18 @@ def main(argv=None):
 
     import pytest
 
-    result = pytest.main([
-        "-q", "--tb=short", "--noconftest", "-p", "no:cacheprovider",
-        "-c", str(TRIAL / "pytest.ini"),
-        "--basetemp=/tmp/botelier-mcp-management/pytest-temp",
-        "-o", "log_file=/tmp/botelier-mcp-management/pytest.log",
-        *(str(target) for target in targets),
-    ])
-    verify_route_source()
-    print("MCP_MANAGEMENT_GUARD_BLOCKED_ATTEMPTS=" + str(len(BLOCKED)))
+    result = 1
+    try:
+        result = pytest.main([
+            "-q", "--tb=short", "--noconftest", "-p", "no:cacheprovider",
+            "-c", str(TRIAL / "pytest.ini"),
+            "--basetemp=/tmp/botelier-mcp-management/pytest-temp",
+            "-o", "log_file=/tmp/botelier-mcp-management/pytest.log",
+            *(str(target) for target in targets),
+        ])
+        verify_route_source()
+    finally:
+        print("MCP_MANAGEMENT_GUARD_BLOCKED_ATTEMPTS=" + str(len(BLOCKED)))
     return 3 if BLOCKED else int(result)
 
 
