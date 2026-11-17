@@ -172,10 +172,14 @@ class NativeActionRunner:
 
     async def _tool_api(self, node, config, facts, confirmation):
         references = self._request_references(config)
+        from botelier.voice.flows.native_quote_actions import NativeQuoteError
+
         try:
             tool_config, tool_type = await asyncio.to_thread(
                 self._resolve_bound_tool, config.get("toolId"),
             )
+            if "quoteDelivery" in config and tool_type not in {"SEND_SMS", "SEND_EMAIL"}:
+                return _failure("quote_delivery_tool_unsupported")
             if tool_type in {"API_REQUEST", "DYNAMIC_OPERATION", "CAPABILITY"}:
                 from botelier.voice.flows.native_tool_actions import NativeToolActionHandler
 
@@ -196,6 +200,17 @@ class NativeActionRunner:
                 or tool_type == "SEND_SMS" and "subject" in arguments
             ):
                 return _failure("messaging_arguments_invalid")
+            quote_context = (
+                node, config, facts, confirmation, arguments
+            ) if "quoteDelivery" in config else None
+            quote_prepared = None
+            if quote_context is not None:
+                if not isinstance(confirmation, NativeConfirmation):
+                    return _failure("confirmation_required")
+                quote_prepared = self._prepare_quote_delivery(*quote_context)
+                references = (
+                    references - set(quote_prepared.exempt_references)
+                ) | set(quote_prepared.required_references)
             from botelier.voice.flows.native_messaging import NativeMessenger
 
             if tool_type == "SEND_SMS":
@@ -218,6 +233,8 @@ class NativeActionRunner:
                     return _failure("sender_scope_mismatch", "auth_error")
             if invalid:
                 return _failure(invalid)
+        except NativeQuoteError as exc:
+            return _failure(exc.code)
         except LookupError:
             return _failure("tool_not_found", "not_found")
         except PermissionError:
@@ -254,12 +271,26 @@ class NativeActionRunner:
         if claim.outcome != "execute":
             return _failure(claim.failure_reason or "effect_claim_blocked")
         if tool_type == "SEND_SMS":
+            if quote_context is not None:
+                try:
+                    self._prepare_quote_delivery(*quote_context)
+                except Exception as exc:
+                    from botelier.voice.flows.native_quote_actions import NativeQuoteError
+
+                    reason = exc.code if isinstance(exc, NativeQuoteError) else (
+                        "quote_delivery_unavailable"
+                    )
+                    result = _failure(reason)
+                    completed = await asyncio.to_thread(
+                        self._ledger.complete, claim, result, outcome_known=True,
+                    )
+                    return result if completed else _failure("effect_outcome_unknown")
             delivery = await self.messenger.send_sms(recipient, body)
         else:
             try:
                 delivery = await asyncio.wait_for(asyncio.to_thread(
                     self._send_email_from_tool, connection_id,
-                    recipient, subject, body,
+                    recipient, subject, body, quote_context=quote_context,
                 ), timeout=self.messenger.timeout)
             except asyncio.CancelledError:
                 raise
@@ -269,14 +300,22 @@ class NativeActionRunner:
                 )
         if not delivery.accepted:
             result = _failure(delivery.failure_reason or "effect_outcome_unknown")
-            if delivery.failure_reason in {
+            known_failure = delivery.failure_reason in {
                 "messenger_unavailable", "invalid_recipient", "invalid_message",
                 "sender_scope_mismatch", "invalid_subject", "email_sender_unavailable",
                 "preview_required",
-            }:
-                await asyncio.to_thread(
+            }
+            known_quote_failure = (
+                quote_context is not None
+                and isinstance(delivery.failure_reason, str)
+                and delivery.failure_reason.startswith("quote_")
+            )
+            if known_failure or known_quote_failure:
+                completed = await asyncio.to_thread(
                     self._ledger.complete, claim, result, outcome_known=True,
                 )
+                if known_quote_failure and not completed:
+                    return _failure("effect_outcome_unknown")
             return result
         outcome = NativeActionResult(True, variables=mapped, llm_data=projected)
         if not await asyncio.to_thread(
@@ -317,7 +356,9 @@ class NativeActionRunner:
             except Exception:
                 pass
 
-    def _send_email_from_tool(self, connection_id, recipient, subject, body):
+    def _send_email_from_tool(
+        self, connection_id, recipient, subject, body, *, quote_context=None,
+    ):
         from sqlalchemy.orm import joinedload
         from botelier.models.integration import AccountIntegration
 
@@ -338,6 +379,22 @@ class NativeActionRunner:
             if connection is None or not self.messenger._email_connection_matches(connection):
                 return NativeTerminalResult(
                     False, failure_reason="sender_scope_mismatch",
+                )
+            if quote_context is not None:
+                try:
+                    self._prepare_quote_delivery(*quote_context)
+                except Exception as exc:
+                    from botelier.voice.flows.native_quote_actions import NativeQuoteError
+
+                    reason = exc.code if isinstance(exc, NativeQuoteError) else (
+                        "quote_delivery_unavailable"
+                    )
+                    return NativeTerminalResult(False, failure_reason=reason)
+                from html import escape
+
+                safe_html = escape(body, quote=True).replace("\n", "<br>\n")
+                return self.messenger.send_email_sync(
+                    connection, recipient, subject, body, body_html=safe_html, db=db,
                 )
             return self.messenger.send_email_sync(
                 connection, recipient, subject, body, db=db,
@@ -1456,19 +1513,71 @@ class NativeActionRunner:
                 references.update(_TOKEN.findall(value))
         return references
 
+    def _prepare_quote_delivery(self, node, config, facts, confirmation, arguments):
+        from botelier.voice.flows.native_quote_actions import (
+            NativeQuoteError, prepare_quote_delivery,
+        )
+
+        policy = config.get("quoteDelivery")
+        if (
+            type(policy) is not dict
+            or set(policy) != {"quoteNodeId", "recipientVariable"}
+            or type(policy.get("quoteNodeId")) is not str
+            or type(policy.get("recipientVariable")) is not str
+        ):
+            raise NativeQuoteError("quote_delivery_policy")
+        validator = self.compiled.node(policy["quoteNodeId"])
+        if (
+            validator is None or validator.type != "capability"
+            or validator.node_id == node.node_id
+        ):
+            raise NativeQuoteError("quote_delivery_node")
+        validator_api = validator.data().get("api")
+        if (
+            type(validator_api) is not dict
+            or validator_api.get("apiSource") != "capability"
+            or validator_api.get("capability") != "validate_reservation_quote"
+        ):
+            raise NativeQuoteError("quote_delivery_node")
+        return prepare_quote_delivery(
+            validator_api, facts, confirmation, arguments,
+            recipient_variable=policy["recipientVariable"],
+            variable_declarations=self.compiled.variable_declarations,
+        )
+
     def _confirmation_matches(self, confirmation, facts, node, references):
         if not isinstance(confirmation, NativeConfirmation):
             return False
         consent_node = self.compiled.node(confirmation.node_id)
         if consent_node is None or consent_node.type != "confirmation":
             return False
+        consent_config = consent_node.data().get("confirmation")
+        expected_fields = (
+            consent_config.get("variablesToConfirm")
+            if isinstance(consent_config, dict) else None
+        )
+        if (
+            type(expected_fields) is not list
+            or tuple(expected_fields) != confirmation.confirmed_fields
+        ):
+            return False
         values = confirmation.values()
         if not set(references) <= set(confirmation.confirmed_fields):
             return False
-        return all(
-            key in facts and key in values and values[key] == facts[key]
-            for key in confirmation.confirmed_fields
-        )
+        try:
+            return all(
+                key in facts and key in values
+                and json.dumps(
+                    values[key], sort_keys=True, ensure_ascii=False,
+                    allow_nan=False, separators=(",", ":"),
+                ) == json.dumps(
+                    facts[key], sort_keys=True, ensure_ascii=False,
+                    allow_nan=False, separators=(",", ":"),
+                )
+                for key in confirmation.confirmed_fields
+            )
+        except (TypeError, ValueError, RecursionError):
+            return False
 
     async def close(self):
         self._closed = True

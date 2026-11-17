@@ -87,7 +87,9 @@ class NativeMessenger:
             self.send_email_sync, connection, recipient, subject, body, db=db,
         ), timeout=self.timeout)
 
-    def send_email_sync(self, connection, recipient, subject, body, *, db=None):
+    def send_email_sync(
+        self, connection, recipient, subject, body, *, db=None, body_html=None,
+    ):
         invalid = self.validate_email(
             connection, recipient, subject, body, self.identity,
         )
@@ -101,7 +103,15 @@ class NativeMessenger:
             from botelier.services.email_service import send_email_via_connection
             dispatch = send_email_via_connection
         try:
-            accepted = dispatch(connection, [recipient], subject, body, db=db)
+            if body_html is None:
+                accepted = dispatch(connection, [recipient], subject, body, db=db)
+            else:
+                if not isinstance(body_html, str) or not body_html:
+                    return NativeTerminalResult(False, failure_reason="invalid_message")
+                accepted = dispatch(
+                    connection, [recipient], subject, body,
+                    body_html=body_html, db=db,
+                )
         except Exception:
             return NativeTerminalResult(False, failure_reason="effect_outcome_unknown")
         if accepted is not True:
