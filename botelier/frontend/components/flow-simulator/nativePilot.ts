@@ -16,6 +16,9 @@ export interface SimulationState {
   is_complete: boolean;
   is_ended: boolean;
   progress: { collected: number; total: number; percentage: number };
+  /** Untrusted response metadata; render only through the preview parsers. */
+  pending_preview?: unknown;
+  preview_effects?: unknown;
 }
 
 export interface SimulationVariable {
@@ -54,6 +57,9 @@ const NATIVE_ERROR_MESSAGES: Record<string, string> = {
   native_simulation_failed: "Native development could not complete this request. Review the published flow and try again.",
   native_simulation_invalid_input: "That message could not be used in this development test. Try a shorter, plain-text message.",
   native_simulation_manual_calls_disabled: "Manual calls are not available in this text simulation. Continue with the development text test.",
+  native_simulation_preview_pending: "Supply a sample result for the waiting action before sending another caller message.",
+  native_simulation_preview_request_mismatch: "The waiting action changed or the sample was already used. Use the current form, or reset the test.",
+  native_simulation_preview_invalid: "The sample was not accepted. Check its JSON, status and size, then try again.",
   native_simulation_not_found: "This simulation session is no longer available. Reset the test and start again.",
   native_simulation_closed: "This simulation has ended. Reset the test to start a new session.",
   native_simulation_busy: "The native simulation is still processing. Wait a moment before sending another message.",
@@ -124,6 +130,9 @@ export function verifyNativeRuntime(
 ): boolean {
   return !!runtime &&
     runtime.engine === "native_pilot" &&
+    runtime.execution_mode === "preview" &&
+    runtime.effect_mode === "simulation" &&
+    runtime.effects_simulated === true &&
     runtime.source === "published" &&
     runtime.tool_id === toolId &&
     runtime.assistant_id === snapshot.assistantId &&

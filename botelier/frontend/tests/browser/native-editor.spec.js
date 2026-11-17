@@ -47,7 +47,7 @@ test.afterEach(async () => {
 async function routeBrowser(page, { integrationsManage = true, mcpConfigured = false } = {}) {
   const observed = {
     real: [], mocked: [], unexpected: [], responses: [], pageErrors: [],
-    mcpRequests: [], mcpTestCalls: 0, mcpDtos: [],
+    mcpRequests: [], mcpTestCalls: 0, mcpDtos: [], simulationRequests: [],
   };
   let mcpDto = {
     id: "synthetic-mcp-connection",
@@ -195,6 +195,22 @@ async function routeBrowser(page, { integrationsManage = true, mcpConfigured = f
         .map(value => value.trim()).find(value => value.startsWith("botelier_mfa_session="));
       if (mfaCookie) headers.cookie = mfaCookie;
       const body = request.postData() ? request.postDataJSON() : undefined;
+      if (url.pathname === "/api/simulate/message" && body && typeof body === "object") {
+        const previewResult = body.preview_result;
+        observed.simulationRequests.push({
+          message: body.message,
+          previewResult: previewResult && typeof previewResult === "object"
+            ? {
+              requestId: previewResult.request_id,
+              statusCode: previewResult.status_code,
+              dataJson: previewResult.data_json,
+              success: previewResult.success,
+              errorType: previewResult.error_type,
+              hasParsedData: Object.hasOwn(previewResult, "data"),
+            }
+            : null,
+        });
+      }
       const result = await bridge.request({
         method: request.method(), path: url.pathname + url.search, headers, body,
       });
@@ -1007,6 +1023,120 @@ test("the 15-node inspector is reachable and typed capability/quote bindings per
     item.method === "POST",
   )).toBe(true);
   expect(observations.real.some(item => /api-tester\/test/.test(item.path))).toBe(false);
+  expect(observations.pageErrors).toEqual([]);
+  expect(observations.unexpected).toEqual([]);
+});
+
+test("authenticated native Text Lab resumes a paused API action with the exact raw sample", async ({ page }) => {
+  const observations = await signInToEditor(page);
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "Open Test Lab" }).click();
+  await page.getByLabel("Test engine").selectOption("native");
+
+  const startResponsePromise = page.waitForResponse(response =>
+    new URL(response.url()).pathname === "/api/simulate/start" &&
+    response.request().method() === "POST");
+  await page.getByRole("button", { name: "Start native development test" }).click();
+  const startResponse = await startResponsePromise;
+  expect(startResponse.status()).toBe(200);
+  const startEvidence = observations.responses.find(item => item.path === "/api/simulate/start");
+  expect(startEvidence.body.runtime).toMatchObject({
+    engine: "native_pilot",
+    execution_mode: "preview",
+    effect_mode: "simulation",
+    effects_simulated: true,
+    tool_id: fixture.tool_id,
+    assistant_id: fixture.assistant_id,
+  });
+  const testLab = page.getByLabel("Flow Simulator");
+  const labBounds = await testLab.boundingBox();
+  expect(labBounds).not.toBeNull();
+  expect(labBounds.x).toBe(0);
+  expect(labBounds.width).toBeGreaterThanOrEqual(389);
+  expect(labBounds.height).toBeGreaterThanOrEqual(843);
+
+  // The model double extracts the caller's real test message; its native
+  // callback then pauses at this HTTP node before any external I/O.
+  const callerMessage = "standard";
+  await page.getByLabel("Message as guest").fill(callerMessage);
+  const callerResponsePromise = page.waitForResponse(response =>
+    new URL(response.url()).pathname === "/api/simulate/message" &&
+    response.request().method() === "POST");
+  await page.getByRole("button", { name: "Send", exact: true }).click();
+  expect((await callerResponsePromise).status()).toBe(200);
+  const callerRequest = observations.simulationRequests.at(-1);
+  expect(callerRequest.message).toBe(callerMessage);
+  expect(callerRequest.previewResult).toBeNull();
+  await expect(page.getByRole("form", { name: "Supply sample action response" })).toBeVisible();
+  const actionPause = observations.responses
+    .filter(item => item.path === "/api/simulate/message").at(-1);
+  const pendingPreview = actionPause.body.state.pending_preview;
+  expect(pendingPreview).toMatchObject({
+    node_id: "lookup",
+    source_kind: "http",
+  });
+
+  const sampleField = page.getByLabel("Sample response JSON");
+  const sampleBounds = await sampleField.boundingBox();
+  expect(sampleBounds).not.toBeNull();
+  expect(sampleBounds.width).toBeGreaterThanOrEqual(340);
+  await expect(page.getByLabel("Message as guest")).toBeDisabled();
+
+  const rawSample = '{"rooms":[{"name":"Standard","price":0}],"reservation_id":9007199254740993,"active":false}';
+  await sampleField.fill(rawSample);
+  const sampleResponsePromise = page.waitForResponse(response =>
+    new URL(response.url()).pathname === "/api/simulate/message" &&
+    response.request().method() === "POST");
+  await page.getByRole("button", { name: "Continue with sample", exact: true }).click();
+  const sampleResponse = await sampleResponsePromise;
+  expect(sampleResponse.status()).toBe(200);
+  const sampleRequest = observations.simulationRequests.at(-1);
+  expect(sampleRequest).toMatchObject({
+    message: "",
+    previewResult: {
+      requestId: pendingPreview.request_id,
+      statusCode: 200,
+      dataJson: rawSample,
+      hasParsedData: false,
+    },
+  });
+  expect(sampleRequest.previewResult).not.toHaveProperty("success");
+  expect(await page.getByRole("form", { name: "Supply sample action response" }).count()).toBe(0);
+  await expect(page.getByText("The synthetic standard option is selected.", { exact: true })).toBeVisible();
+  await expect(page.getByLabel("Message as guest")).toBeEnabled();
+  await expect(page.getByText(/configured model may incur provider usage/i)).toBeVisible();
+  expect(observations.real.filter(item => item.path.startsWith("/api/simulate/"))
+    .map(item => `${item.method} ${item.path}`)).toContain("POST /api/simulate/start");
+  expect(observations.real.filter(item => item.path === "/api/simulate/message")).toHaveLength(2);
+  expect(observations.mocked.some(item => item.path.startsWith("/api/simulate/"))).toBe(false);
+  expect(observations.unexpected).toEqual([]);
+  expect(observations.pageErrors).toEqual([]);
+});
+
+test("Test Lab opens as a full-width mobile panel and closes accessibly", async ({ page }) => {
+  const observations = await signInToEditor(page);
+  await page.getByRole("button", { name: "Test", exact: true }).click();
+  const desktopLab = page.getByLabel("Flow Simulator");
+  const desktopBounds = await desktopLab.boundingBox();
+  expect(desktopBounds.width).toBeGreaterThanOrEqual(310);
+  expect(desktopBounds.width).toBeLessThanOrEqual(321);
+  await page.getByRole("button", { name: "Close simulator" }).click();
+  await expect(desktopLab).toBeHidden();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.getByRole("button", { name: "Open Test Lab" }).click();
+  await expect(desktopLab).toBeVisible();
+  const mobileBounds = await desktopLab.boundingBox();
+  expect(mobileBounds.x).toBe(0);
+  expect(mobileBounds.width).toBeGreaterThanOrEqual(389);
+  expect(mobileBounds.height).toBeGreaterThanOrEqual(843);
+  fs.mkdirSync(path.join(repo, "generated-artifacts"), { recursive: true });
+  await page.screenshot({
+    path: path.join(repo, "generated-artifacts/native-test-lab-mobile-checkpoint.png"),
+  });
+  await expect(page.getByRole("button", { name: "Close simulator" })).toBeVisible();
+  await page.keyboard.press("Escape");
+  await expect(desktopLab).toBeHidden();
   expect(observations.pageErrors).toEqual([]);
   expect(observations.unexpected).toEqual([]);
 });

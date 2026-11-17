@@ -147,7 +147,8 @@ test("native runtime identity mismatch refuses the session and deletes a returne
           messages: [{ role: "assistant", content: "not to be shown" }],
           state: {},
           runtime: {
-            engine: "native_pilot", source: "published", tool_id: "tool-3", assistant_id: "assistant-7",
+            engine: "native_pilot", execution_mode: "preview", effect_mode: "simulation", effects_simulated: true,
+            source: "published", tool_id: "tool-3", assistant_id: "assistant-7",
             account_id: "account-2", property_id: "property-4", flow_version_id: "another-version",
             version_number: 12, llm_provider: "hidden", llm_model: "hidden",
           },
@@ -179,6 +180,9 @@ test("matching native runtime evidence is returned only after exact snapshot ver
   const { requestSimulationStart } = loadSimulator();
   const runtime = {
     engine: "native_pilot",
+    execution_mode: "preview",
+    effect_mode: "simulation",
+    effects_simulated: true,
     source: "published",
     tool_id: "tool-3",
     assistant_id: "assistant-7",
@@ -214,6 +218,9 @@ test("native runtime verification rejects each identity or source field mismatch
   const snapshot = validSnapshot();
   const runtime = {
     engine: "native_pilot",
+    execution_mode: "preview",
+    effect_mode: "simulation",
+    effects_simulated: true,
     source: "published",
     tool_id: "tool-3",
     assistant_id: "assistant-7",
@@ -223,6 +230,10 @@ test("native runtime verification rejects each identity or source field mismatch
   assert.equal(verifyNativeRuntime(runtime, "tool-3", snapshot), true);
   for (const changed of [
     { engine: "legacy" },
+    { execution_mode: "execute" },
+    { execution_mode: undefined },
+    { effect_mode: "execute" },
+    { effects_simulated: false },
     { source: "draft" },
     { tool_id: "other-tool" },
     { assistant_id: "other-assistant" },

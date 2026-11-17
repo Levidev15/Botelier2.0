@@ -25,7 +25,7 @@ import FlowSchemaPanel from "./FlowSchemaPanel";
 import FlowAIBuilderSidebar from "./FlowAIBuilderSidebar";
 import { FlowSimulatorSidebar } from "@/components/flow-simulator";
 import { notify } from "@/lib/notifications";
-import { X } from "lucide-react";
+import { FlaskConical, X } from "lucide-react";
 
 interface FlowEditorProps {
   toolId: string;
@@ -152,13 +152,37 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
   }, [selectNode]);
 
   useEffect(() => {
-    if (!mobileInspectorOpen || window.matchMedia("(min-width: 768px)").matches) return;
+    if (!mobileInspectorOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") closeMobileInspector();
+      if (event.key === "Escape" && window.matchMedia("(max-width: 767px)").matches) {
+        closeMobileInspector();
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [closeMobileInspector, mobileInspectorOpen]);
+
+  useEffect(() => {
+    if (!showSimulator) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && window.matchMedia("(max-width: 767px)").matches) {
+        setShowSimulator(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [showSimulator]);
+
+  const toggleSimulator = useCallback(() => {
+    const opening = !showSimulator;
+    setShowSimulator(opening);
+    setShowAIBuilder(false);
+    setShowSchema(false);
+    if (opening) {
+      setMobileInspectorOpen(false);
+      selectNode(null);
+    }
+  }, [selectNode, showSimulator]);
 
   const handleSave = async () => {
     setIsSaving(true);
@@ -280,12 +304,22 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
         onSave={handleSave} 
         isSaving={isSaving} 
         showSimulator={showSimulator}
-        onToggleSimulator={() => { setShowSimulator(!showSimulator); setShowAIBuilder(false); setShowSchema(false); }}
+        onToggleSimulator={toggleSimulator}
         showSchema={showSchema}
         onToggleSchema={() => { setShowSchema(!showSchema); setShowAIBuilder(false); }}
         showAIBuilder={showAIBuilder}
         onToggleAIBuilder={() => { setShowAIBuilder(!showAIBuilder); setShowSchema(false); }}
       />
+      {!showSimulator && (
+        <button
+          type="button"
+          onClick={toggleSimulator}
+          aria-label="Open Test Lab"
+          className="md:hidden fixed bottom-4 right-4 z-40 flex h-12 w-12 items-center justify-center rounded-full border border-cyan-300/30 bg-cyan-700 text-white shadow-lg"
+        >
+          <FlaskConical className="h-5 w-5" aria-hidden="true" />
+        </button>
+      )}
       
       <div className="flex-1 flex min-h-0 flex-col md:flex-row">
         <div className="flex-1 relative min-h-[32vh] md:min-h-0">
@@ -370,7 +404,7 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
         />
 
         {showSimulator && (
-          <div className="w-80 flex-shrink-0">
+          <div className="fixed inset-0 z-[90] h-[100dvh] w-screen max-w-none flex-shrink-0 md:static md:inset-auto md:z-auto md:h-full md:w-80">
             <FlowSimulatorSidebar
               toolId={toolId}
               toolName={toolName || "Flow"}
