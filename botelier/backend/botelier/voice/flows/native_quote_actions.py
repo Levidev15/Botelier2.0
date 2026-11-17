@@ -11,7 +11,7 @@ from botelier.services.reservation_quote_contract import (
 )
 from botelier.voice.flows.native_execution import NativeActionResult, NativeConfirmation
 from botelier.voice.flows.native_response_mapping import (
-    NativeResponseMappingError, map_project_response,
+    NativeResponseMappingError, map_project_response, resolve_response_variables,
 )
 
 
@@ -19,7 +19,18 @@ _KEY = re.compile(r"[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
 _URL = re.compile(r"https?://[^\s<>\"']+", re.IGNORECASE)
 _POLICY_FIELDS = frozenset({
     "allowedCheckoutOrigins", "requireCheckoutLink", "providerSelectedDimensions",
-    "fingerprintVariable", "privateUrlVariable", "publicConfirmationVariables",
+    "fingerprintVariable", "privateUrlVariable", "publicConfirmationFields",
+})
+_REQUIRED_PUBLIC_FIELDS = frozenset({
+    "room_id", "check_in", "check_out", "adults", "children",
+    "pricing.basis", "pricing.currency", "pricing.subtotal", "pricing.tax_total",
+    "pricing.tax_treatment", "pricing.fees_total", "pricing.fees_treatment",
+    "pricing.total",
+})
+_PUBLIC_FIELDS = _REQUIRED_PUBLIC_FIELDS | frozenset({
+    "quote_id", "hotel_id", "rate_id", "offer_id", "terms", "expires_at",
+    "pricing.tax_lines", "pricing.fee_lines", "pricing.rounding_adjustment",
+    "pricing.discount_total", "pricing.due_now", "pricing.pay_at_property",
 })
 
 
@@ -49,7 +60,11 @@ class NativeQuotePolicy:
     provider_selected_dimensions: tuple[str, ...]
     fingerprint_variable: str
     private_url_variable: str
-    public_confirmation_variables: tuple[str, ...]
+    public_confirmation_fields: tuple[tuple[str, str], ...]
+
+    @property
+    def public_confirmation_variables(self):
+        return tuple(variable for _, variable in self.public_confirmation_fields)
 
     @classmethod
     def from_config(cls, config):
@@ -58,7 +73,7 @@ class NativeQuotePolicy:
             raise NativeQuoteError("quote_policy_fields")
         origins = value["allowedCheckoutOrigins"]
         dimensions = value["providerSelectedDimensions"]
-        fields = value["publicConfirmationVariables"]
+        fields = value["publicConfirmationFields"]
         required = value["requireCheckoutLink"]
         if (
             type(origins) is not list or len(origins) > 16
@@ -67,7 +82,8 @@ class NativeQuotePolicy:
             or any(type(item) is not str for item in dimensions)
             or len(set(dimensions)) != len(dimensions)
             or not set(dimensions) <= {"rate_id", "offer_id"}
-            or type(fields) is not list or not 1 <= len(fields) <= 32
+            or type(fields) is not dict
+            or not _REQUIRED_PUBLIC_FIELDS <= set(fields) <= _PUBLIC_FIELDS
         ):
             raise NativeQuoteError("quote_policy_values")
         try:
@@ -77,12 +93,13 @@ class NativeQuotePolicy:
             raise NativeQuoteError("quote_policy_origins") from None
         fingerprint = _key(value["fingerprintVariable"])
         private_url = _key(value["privateUrlVariable"])
-        public_fields = tuple(_key(item) for item in fields)
+        public_fields = tuple((path, _key(item)) for path, item in fields.items())
+        public_variables = tuple(variable for _, variable in public_fields)
         if (
             len(set(normalized)) != len(normalized)
             or fingerprint == private_url
-            or len(set(public_fields)) != len(public_fields)
-            or {fingerprint, private_url} & set(public_fields)
+            or len(set(public_variables)) != len(public_variables)
+            or {fingerprint, private_url} & set(public_variables)
         ):
             raise NativeQuoteError("quote_policy_variables")
         return cls(
@@ -147,16 +164,46 @@ def _arguments(config, facts):
     return arguments
 
 
+def validate_quote_configuration(config, *, variable_declarations=()):
+    """Check literal public roles and exact mapper precedence before execution."""
+    policy = NativeQuotePolicy.from_config(config)
+    projection = config.get("responseProjection")
+    if type(projection) is not dict or type(projection.get("fields")) is not list:
+        raise NativeQuoteError("quote_projection_required")
+    try:
+        entries = {
+            item.variable_key: item for item in resolve_response_variables(
+                config, variable_declarations=variable_declarations,
+            )
+        }
+    except (NativeResponseMappingError, TypeError, ValueError):
+        raise NativeQuoteError("quote_projection_mapping") from None
+    paths = {
+        variable: "public." + path
+        for path, variable in policy.public_confirmation_fields
+    }
+    paths[policy.fingerprint_variable] = "fingerprint"
+    paths[policy.private_url_variable] = "private.checkout_url"
+    for key, path in paths.items():
+        entry = entries.get(key)
+        if (
+            entry is None or entry.has_default
+            or entry.json_path not in {path, "$." + path}
+        ):
+            raise NativeQuoteError("quote_policy_output_binding")
+    return policy
+
+
 def prepare_quote(
     config, facts, *, variable_declarations=(), now: datetime | None = None,
     confirmed_fingerprint=None,
 ):
     """Validate, map and project without provider, payment, ledger or message I/O."""
-    policy = NativeQuotePolicy.from_config(config)
+    policy = validate_quote_configuration(
+        config, variable_declarations=variable_declarations,
+    )
     arguments = _arguments(config, facts)
-    projection = config.get("responseProjection")
-    if type(projection) is not dict or type(projection.get("fields")) is not list:
-        raise NativeQuoteError("quote_projection_required")
+    projection = config["responseProjection"]
     try:
         validated = validate_reservation_quote(
             arguments["quote"], expected=arguments["expected"],
@@ -183,6 +230,7 @@ def prepare_quote(
     if (
         variables.get(policy.fingerprint_variable) != validated.fingerprint
         or variables.get(policy.private_url_variable) != private_url
+        or any(key not in variables for key in policy.public_confirmation_variables)
     ):
         raise NativeQuoteError("quote_policy_output_binding")
     selected = (entry["variable"] for entry in projection["fields"])
@@ -240,6 +288,11 @@ def prepare_quote_delivery(
     ):
         raise NativeQuoteError("quote_confirmation_fields")
     confirmed = confirmation.values()
+    if (
+        policy.private_url_variable in confirmation.confirmed_fields
+        or policy.private_url_variable in confirmed
+    ):
+        raise NativeQuoteError("quote_confirmation_private")
     if any(
         key not in facts or key not in confirmed or not _same(facts[key], confirmed[key])
         for key in required
@@ -253,7 +306,7 @@ def prepare_quote_delivery(
     if (
         facts[policy.fingerprint_variable] != prepared.validated.fingerprint
         or any(
-            key in values and not _same(facts[key], values[key])
+            key not in values or not _same(facts[key], values[key])
             for key in policy.public_confirmation_variables
         )
     ):
@@ -268,6 +321,8 @@ def prepare_quote_delivery(
     ):
         raise NativeQuoteError("quote_delivery_arguments")
     private_url = prepared.validated.data().get("checkout_url")
+    if _contains(confirmed, private_url):
+        raise NativeQuoteError("quote_confirmation_private")
     if (
         type(private_url) is not str or not private_url
         or facts.get(policy.private_url_variable) != private_url
@@ -283,4 +338,5 @@ def prepare_quote_delivery(
 __all__ = [
     "NativeQuoteError", "NativeQuotePolicy", "PreparedNativeQuote",
     "PreparedQuoteDelivery", "prepare_quote", "prepare_quote_delivery",
+    "validate_quote_configuration",
 ]

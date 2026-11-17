@@ -9,7 +9,22 @@ import pytest
 from test_reservation_quote_contract import NOW, ORIGINS, quote_data, selected
 
 
+def public_fields():
+    return {
+        "room_id": "quote_room",
+        "check_in": "quote_check_in", "check_out": "quote_check_out",
+        "adults": "quote_adults", "children": "quote_children",
+        "pricing.basis": "quote_basis", "pricing.currency": "quote_currency",
+        "pricing.subtotal": "quote_subtotal", "pricing.tax_total": "quote_taxes",
+        "pricing.tax_treatment": "quote_tax_treatment",
+        "pricing.fees_total": "quote_fees",
+        "pricing.fees_treatment": "quote_fees_treatment",
+        "pricing.total": "quote_total",
+    }
+
+
 def configuration():
+    fields = public_fields()
     return {
         "apiSource": "capability",
         "capability": "validate_reservation_quote",
@@ -20,20 +35,16 @@ def configuration():
             "providerSelectedDimensions": [],
             "fingerprintVariable": "quote_fingerprint",
             "privateUrlVariable": "private_checkout_url",
-            "publicConfirmationVariables": ["quote_room", "quote_total", "quote_currency"],
+            "publicConfirmationFields": fields,
         },
         "responseMapping": {
-            "quote_room": "$.public.room_id",
-            "quote_total": "$.public.pricing.total",
-            "quote_currency": "$.public.pricing.currency",
+            **{variable: "$.public." + path for path, variable in fields.items()},
             "quote_fingerprint": "$.fingerprint",
             "private_checkout_url": "$.private.checkout_url",
         },
-        "responseProjection": {"fields": [
-            {"variable": "quote_room"},
-            {"variable": "quote_total"},
-            {"variable": "quote_currency"},
-        ]},
+        "responseProjection": {
+            "fields": [{"variable": variable} for variable in fields.values()],
+        },
     }
 
 
@@ -79,6 +90,10 @@ def test_maps_exact_public_values_and_keeps_private_data_out_of_the_model_result
     assert prepared.result.variables["quote_fingerprint"] == prepared.validated.fingerprint
     assert prepared.result.llm_data == {
         "quote_room": "suite", "quote_total": "230.00", "quote_currency": "USD",
+        "quote_check_in": "2026-12-01", "quote_check_out": "2026-12-03",
+        "quote_adults": 2, "quote_children": 0, "quote_basis": "stay",
+        "quote_subtotal": "200.00", "quote_taxes": "20.00", "quote_fees": "10.00",
+        "quote_tax_treatment": "exclusive", "quote_fees_treatment": "exclusive",
     }
     assert "synthetic-test-only" not in json.dumps(prepared.result.llm_data)
     assert prepared.validated.fingerprint not in json.dumps(prepared.result.llm_data)
@@ -96,8 +111,9 @@ def test_maps_exact_public_values_and_keeps_private_data_out_of_the_model_result
     {"requireCheckoutLink": 1},
     {"providerSelectedDimensions": ["hotel_id"]},
     {"fingerprintVariable": "private_checkout_url"},
-    {"publicConfirmationVariables": ["private_checkout_url"]},
-    {"publicConfirmationVariables": ["quote_fingerprint"]},
+    {"publicConfirmationFields": {**public_fields(), "room_id": "private_checkout_url"}},
+    {"publicConfirmationFields": {**public_fields(), "room_id": "quote_fingerprint"}},
+    {"publicConfirmationFields": {"room_id": "quote_room"}},
     {"unknownAuthority": True},
 ])
 def test_literal_policy_rejects_runtime_injection_ambiguous_scope_and_unknown_keys(update):
@@ -152,6 +168,51 @@ def test_cleanup_cannot_disguise_a_private_url_before_the_privacy_check():
     })
     with pytest.raises(NativeQuoteError, match="quote_projection"):
         prepare_quote(config, facts, now=NOW)
+
+
+@pytest.mark.parametrize("change", ["omitted", "defaulted", "subtotal"])
+def test_protected_public_amount_must_be_bound_to_the_canonical_total(change):
+    from botelier.voice.flows.native_quote_actions import NativeQuoteError, prepare_quote
+
+    config = configuration()
+    if change == "omitted":
+        del config["responseMapping"]["quote_total"]
+        config["responseProjection"]["fields"] = [
+            field for field in config["responseProjection"]["fields"]
+            if field["variable"] != "quote_total"
+        ]
+    elif change == "defaulted":
+        config["responseVariables"] = [{
+            "variableKey": "quote_total",
+            "jsonPath": "$.public.missing", "defaultValue": "1.00",
+        }]
+    else:
+        config["responseMapping"]["quote_total"] = "$.public.pricing.subtotal"
+    with pytest.raises(NativeQuoteError, match="quote_"):
+        prepare_quote(config, caller_facts(), now=NOW)
+
+
+@pytest.mark.parametrize("where", ["field", "extra_value", "raw_quote_alias"])
+def test_confirmation_cannot_already_contain_the_private_url(where):
+    from botelier.voice.flows.native_execution import NativeConfirmation
+    from botelier.voice.flows.native_quote_actions import (
+        NativeQuoteError, prepare_quote_delivery,
+    )
+
+    config, facts, confirmation, arguments = confirmed_delivery()
+    values, fields = confirmation.values(), confirmation.confirmed_fields
+    if where == "raw_quote_alias":
+        values["raw_provider_alias"] = facts["provider_quote"]
+    else:
+        values["private_checkout_url"] = facts["private_checkout_url"]
+        if where == "field":
+            fields = (*fields, "private_checkout_url")
+    confirmation = NativeConfirmation("confirm", 7, values, fields)
+    with pytest.raises(NativeQuoteError, match="quote_confirmation"):
+        prepare_quote_delivery(
+            config, facts, confirmation, arguments,
+            recipient_variable="caller_phone", now=NOW,
+        )
 
 
 def test_prepares_only_the_validated_private_url_exception_not_a_second_consent_mechanism():
