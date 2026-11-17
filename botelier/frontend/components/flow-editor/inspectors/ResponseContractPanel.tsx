@@ -2,7 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { AlertCircle, CheckCircle2, Loader2, Plus, Sparkles, X } from "lucide-react";
-import type { APIRequestConfig, FlowVariable } from "../store";
+import type { APIRequestConfig, APIRequestNodeData, FlowVariable } from "../store";
 import { useFlowStore } from "../store";
 import { buildResponsePreviewPayload, looksFinancialVariable, previewMappedResponse } from "./responsePreview";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
@@ -44,8 +44,12 @@ export default function ResponseContractPanel({ nodeId, toolId, api, variables, 
     ...outputKeys,
   ])).filter(Boolean).sort();
   const fields = api.responseProjection?.fields ?? [];
+  const getLatestApi = (): APIRequestConfig => {
+    const node = useFlowStore.getState().nodes.find((candidate) => candidate.id === nodeId);
+    return (node?.data as APIRequestNodeData | undefined)?.api ?? api;
+  };
   const update = (patch: Partial<APIRequestConfig>) => {
-    updateNodeData(nodeId, { api: { ...api, ...patch } });
+    updateNodeData(nodeId, { api: { ...getLatestApi(), ...patch } });
   };
 
   useEffect(() => {

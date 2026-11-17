@@ -192,8 +192,12 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [integrations]);
 
+  const getLatestApi = (): typeof api => {
+    const node = useFlowStore.getState().nodes.find((candidate) => candidate.id === nodeId);
+    return (node?.data as APIRequestNodeData | undefined)?.api ?? api;
+  };
   const updateApi = (updates: Partial<typeof api>) => {
-    updateNodeData(nodeId, { api: { ...api, ...updates } });
+    updateNodeData(nodeId, { api: { ...getLatestApi(), ...updates } });
   };
 
   const quoteProtection = findQuoteSpeechProtections(nodes, edges, nodeId);
@@ -409,15 +413,15 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
 
   const responseMappingEntries = Object.entries(api.responseMapping || {});
   const addResponseMapping = () => {
-    const newMapping = { ...(api.responseMapping || {}), "": "" };
+    const newMapping = { ...(getLatestApi().responseMapping || {}), "": "" };
     updateApi({ responseMapping: newMapping });
   };
-  const updateResponseMapping = (oldKey: string, newKey: string, value: string, index: number) => {
-    const entries = Object.entries(api.responseMapping || {});
+  const updateResponseMapping = (index: number, patch: { key?: string; value?: string }) => {
+    const entries = Object.entries(getLatestApi().responseMapping || {});
     const newMapping: Record<string, string> = {};
     entries.forEach(([k, v], i) => {
       if (i === index) {
-        newMapping[newKey] = value;
+        newMapping[patch.key ?? k] = patch.value ?? v;
       } else {
         newMapping[k] = v;
       }
@@ -425,7 +429,7 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
     updateApi({ responseMapping: newMapping });
   };
   const removeResponseMapping = (index: number) => {
-    const entries = Object.entries(api.responseMapping || {});
+    const entries = Object.entries(getLatestApi().responseMapping || {});
     const newMapping: Record<string, string> = {};
     entries.forEach(([k, v], i) => {
       if (i !== index) newMapping[k] = v;
@@ -1022,7 +1026,7 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
                       <input
                         type="text"
                         value={key}
-                        onChange={(e) => updateResponseMapping(key, e.target.value, path, i)}
+                        onChange={(e) => updateResponseMapping(i, { key: e.target.value })}
                         className={smallInputCls}
                         placeholder="variable_name"
                       />
@@ -1034,7 +1038,7 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
                     <input
                       type="text"
                       value={path}
-                      onChange={(e) => updateResponseMapping(key, key, e.target.value, i)}
+                      onChange={(e) => updateResponseMapping(i, { value: e.target.value })}
                       className={`${smallInputCls} flex-1`}
                       placeholder="$.data.guest.name"
                     />

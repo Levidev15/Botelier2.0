@@ -122,6 +122,15 @@ const nodeTypeConfig: NodeInfo[] = [
     whenToUse: "Place immediately after an API Request node when you want the platform to read out results — especially lists — directly and reliably.",
     example: "After fetching available rooms, read each option aloud: 'Option 1: Deluxe King — 250 per night. Option 2: Suite — 400 per night.'"
   },
+  {
+    type: "capability",
+    label: "Capability",
+    icon: <Sparkles className="h-3 w-3" />,
+    color: "bg-fuchsia-500",
+    description: "Runs a catalogued domain action with typed inputs and outputs. Native-only capabilities execute only in the native Flow path.",
+    whenToUse: "Use for a backend-supported capability rather than a custom endpoint. The server remains authoritative about current availability.",
+    example: "Validate a reservation quote in the native Flow and map only the explicitly declared public fields.",
+  },
   { 
     type: "condition", 
     label: "Condition", 

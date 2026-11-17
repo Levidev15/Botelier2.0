@@ -161,7 +161,7 @@ export default function NodeInspector({
   ];
 
   return (
-    <div className="w-[480px] bg-[#141414] border-l border-gray-800 flex flex-col overflow-hidden flex-shrink-0">
+    <div className="w-full md:w-[480px] h-[52vh] md:h-full bg-[#141414] border-t md:border-t-0 md:border-l border-gray-800 flex flex-col overflow-hidden flex-shrink-0">
       {/* ── Node header ─────────────────────────────────────────────────────── */}
       {selectedNode ? (
         <div

@@ -270,8 +270,8 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
         onToggleAIBuilder={() => { setShowAIBuilder(!showAIBuilder); setShowSchema(false); }}
       />
       
-      <div className="flex-1 flex min-h-0">
-        <div className="flex-1 relative">
+      <div className="flex-1 flex min-h-0 flex-col md:flex-row">
+        <div className="flex-1 relative min-h-[32vh] md:min-h-0">
           <ReactFlow
             nodes={nodesWithHighlight as any}
             edges={edges}

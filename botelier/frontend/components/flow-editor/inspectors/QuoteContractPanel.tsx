@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle, Info, X } from "lucide-react";
-import type { APIRequestConfig } from "../store";
+import { useFlowStore, type APIRequestConfig } from "../store";
 import type { FlowOutputVariable } from "../flowEditorData";
 import {
   DEFAULT_QUOTE_ARGUMENTS,
@@ -35,6 +35,7 @@ function projectionKeys(api: APIRequestConfig, policy: QuotePolicyEditorValue): 
 }
 
 export default function QuoteContractPanel({ nodeId, api, update, variables }: Props) {
+  const updateVariable = useFlowStore((state) => state.updateVariable);
   const initializedNodeRef = useRef<string | null>(null);
   const [nameDrafts, setNameDrafts] = useState<Record<string, string>>({});
   const [originDraft, setOriginDraft] = useState("");
@@ -124,12 +125,11 @@ export default function QuoteContractPanel({ nodeId, api, update, variables }: P
       (variable.origin === "declared" || !knownQuoteKey.has(value))
     )) return;
     const previous = policy.publicConfirmationFields[path];
-    const nextPolicy = {
-      ...policy,
-      publicConfirmationFields: { ...policy.publicConfirmationFields, [path]: value },
-    };
-    const nextProjected = projectionKeys(api, policy).map((key) => key === previous ? value : key);
-    commitPolicy(nextPolicy, nextProjected);
+    // A quote output rename is a typed flow-variable rename. Reuse the store's
+    // atomic graph migration so canonical JSONPath role keys stay fixed while
+    // mappings, projection values, confirmation requirements and templates
+    // follow the new output name.
+    updateVariable(previous, { key: value });
   };
 
   const changeProtectedVariable = (key: "fingerprintVariable" | "privateUrlVariable", value: string) => {
@@ -138,9 +138,9 @@ export default function QuoteContractPanel({ nodeId, api, update, variables }: P
     const otherProtected = key === "fingerprintVariable" ? policy.privateUrlVariable : policy.fingerprintVariable;
     if (value === otherProtected || publicNames.includes(value)) return;
     if (variables.some((variable) => variable.key === value && variable.origin === "declared")) return;
-    const nextPolicy = { ...policy, [key]: value };
-    const selected = projectionKeys(api, policy);
-    commitPolicy(nextPolicy, selected);
+    // This also migrates the one private URL token in any linked SMS/email
+    // delivery template, without rewriting canonical source-path keys.
+    updateVariable(policy[key], { key: value });
   };
 
   const toggleOptionalField = (path: string) => {
