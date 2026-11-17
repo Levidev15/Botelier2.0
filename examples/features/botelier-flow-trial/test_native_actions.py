@@ -111,6 +111,73 @@ def test_native_custom_api_uses_action_executor_and_exact_projection(monkeypatch
     asyncio.run(scenario())
 
 
+def test_output_only_mapping_defaults_preserve_false_and_required_missing_fails(monkeypatch):
+    from native_effect_io import NativeEffectsFixture
+
+    async def scenario():
+        from botelier.services.ssrf_safe_transport import SSRFSafeTransport
+        from botelier.voice.flows.native_actions import NativeActionRunner
+        from botelier.voice.flows.native_graph import compile_flow
+
+        responses = [
+            {"amount": 0, "flag": None},
+            {},
+        ]
+
+        async def controlled_transport(_transport, request):
+            return httpx.Response(200, json=responses.pop(0), request=request)
+
+        async with NativeEffectsFixture() as fixture:
+            monkeypatch.setattr(
+                SSRFSafeTransport, "handle_async_request", controlled_transport,
+            )
+            config = {
+                "initial_node": "start",
+                "variables": [
+                    {"key": "query", "type": "text", "required": False},
+                    {"key": "amount", "type": "number"},
+                ],
+                "nodes": [
+                    {"id": "start", "type": "initial", "data": {"greeting": ""}},
+                    {"id": "lookup", "type": "api_request", "data": {"api": {
+                        "apiSource": "custom", "method": "GET",
+                        "url": "https://api.fixture.invalid/items",
+                        "responseMapping": {"amount": "$.amount"},
+                        "responseVariables": [
+                            {"variableKey": "flag", "jsonPath": "$.flag",
+                             "defaultValue": False},
+                            {"variableKey": "optionalZero", "jsonPath": "$.missing",
+                             "defaultValue": 0},
+                            {"variableKey": "optional", "jsonPath": "$.optional"},
+                        ],
+                        "responseProjection": {
+                            "fields": [
+                                {"variable": "amount"}, {"variable": "flag"},
+                                {"variable": "optionalZero"},
+                            ],
+                        },
+                        "timeout": 2, "retryCount": 0,
+                    }}},
+                ],
+                "edges": [{"id": "start-lookup", "source": "start", "target": "lookup"}],
+            }
+            compiled = compile_flow(config, fixture.identity)
+            runner = NativeActionRunner(compiled, fixture.factory)
+
+            first = await runner.execute(compiled.node("lookup"), {"query": "unused"})
+            assert first.success is True
+            assert first.variables == {
+                "amount": 0, "flag": False, "optionalZero": 0,
+            }
+            assert first.llm_data == {
+                "amount": 0, "flag": False, "optionalZero": 0,
+            }
+            second = await runner.execute(compiled.node("lookup"), {"query": "unused"})
+            assert second.failure_reason == "response_mapping_invalid"
+
+    asyncio.run(scenario())
+
+
 def test_native_action_runner_rejects_node_not_in_compiled_flow():
     from dataclasses import replace
     from native_effect_io import NativeEffectsFixture

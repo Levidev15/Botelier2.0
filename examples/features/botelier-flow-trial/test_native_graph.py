@@ -68,8 +68,8 @@ def sample_node(node_type):
                                         "mapping": {"name": "{{name}}"}}},
         "transfer": {"transfer": {"phoneNumber": "+15555550100",
                                    "warmTransfer": False}},
-        "capability": {"api": {"apiSource": "capability", "method": "GET",
-                               "capability": "availability"}},
+        "capability": {"api": {"apiSource": "capability",
+                               "capability": "search_availability"}},
         "option_picker": {"optionPicker": {"sourceVariable": "items",
                                             "labelPath": "name",
                                             "prompt": "Which one?",
@@ -132,6 +132,181 @@ def test_api_source_rejects_missing_native_binding():
         compiler.compile_flow(config, identity())
 
 
+def test_api_request_capability_source_is_admitted_without_flow_executor():
+    compiler = graph_api()
+    config = config_for("api_request")
+    api = config["nodes"][1]["data"]["api"]
+    for key in ("url", "method", "bodyTemplate"):
+        api.pop(key, None)
+    api.update({
+        "apiSource": "capability",
+        "capability": "search_availability",
+        "responseMapping": {"availability": "$.data.availability"},
+    })
+
+    compiled = compiler.compile_flow(config, identity())
+
+    assert compiled.node("target").data()["api"]["apiSource"] == "capability"
+    assert "availability" not in {slot.variable for slot in compiled.caller_slots}
+
+
+def test_compiled_variable_declarations_include_immutable_output_only_names():
+    compiler = graph_api()
+    config = config_for("api_request")
+    config["variables"] = [
+        {"key": "name", "type": "text", "required": False},
+        {"key": "count", "type": "number", "required": False, "defaultValue": 0},
+    ]
+    api = config["nodes"][1]["data"]["api"]
+    api["responseMapping"] = {
+        "count": "$.count",
+        "items": "$.items",
+    }
+    api["responseVariables"] = [
+        {"variableKey": "flag", "jsonPath": "$.flag", "defaultValue": False},
+    ]
+    source_variables = list(config["variables"])
+
+    compiled = compiler.compile_flow(config, identity())
+
+    declarations = {item.key: item for item in compiled.variable_declarations}
+    assert declarations["count"].origin == "explicit"
+    assert declarations["count"].data()["defaultValue"] == 0
+    assert declarations["items"].origin == "output"
+    assert declarations["items"].data()["type"] is None
+    assert declarations["flag"].data()["defaultValue"] is False
+    changed = declarations["flag"].data()
+    changed["defaultValue"] = True
+    assert declarations["flag"].data()["defaultValue"] is False
+    assert list(compiled.config()["variables"]) == source_variables
+    assert "items" not in {slot.variable for slot in compiled.caller_slots}
+
+
+@pytest.mark.parametrize("key", ["account_id", "bad-name", "1invalid"])
+def test_output_only_declarations_reject_reserved_or_malformed_names(key):
+    compiler = graph_api()
+    config = config_for("api_request")
+    api = config["nodes"][1]["data"]["api"]
+    api["responseMapping"] = {key: "$.value"}
+
+    with pytest.raises(compiler.NativeGraphError):
+        compiler.compile_flow(config, identity())
+
+
+def test_service_backed_payment_capability_is_not_native_admitted():
+    compiler = graph_api()
+    config = config_for("api_request")
+    api = config["nodes"][1]["data"]["api"]
+    api.clear()
+    api.update({"apiSource": "capability", "capability": "collect_payment"})
+
+    with pytest.raises(compiler.NativeGraphError, match="capability_unavailable"):
+        compiler.compile_flow(config, identity())
+
+
+def test_response_variable_default_type_matches_explicit_declaration():
+    compiler = graph_api()
+    config = config_for("api_request")
+    config["variables"] = [{"key": "count", "type": "number"}]
+    api = config["nodes"][1]["data"]["api"]
+    api.pop("bodyTemplate")
+    api["responseVariables"] = [{
+        "variableKey": "count", "jsonPath": "$.count", "defaultValue": False,
+    }]
+
+    with pytest.raises(compiler.NativeGraphError, match="api_mapping"):
+        compiler.compile_flow(config, identity())
+
+
+def test_record_update_is_bound_to_reachable_same_type_create_node():
+    compiler = graph_api()
+    config = config_for("save_record")
+    config["nodes"].insert(2, node(
+        "correct", "save_record", {
+            "saveRecord": {
+                "recordTypeId": "record_type_1",
+                "updateSourceNodeId": "target",
+                "mapping": {"name": "{{name}}"},
+            },
+        },
+    ))
+    config["edges"] = [
+        edge("start", "target"),
+        edge("target", "correct"),
+        edge("correct", "finish"),
+    ]
+    compiled = compiler.compile_flow(config, identity())
+    assert compiled.node("correct").data()["saveRecord"]["updateSourceNodeId"] == "target"
+
+    config["nodes"][2]["data"]["saveRecord"]["updateSourceNodeId"] = "missing"
+    with pytest.raises(compiler.NativeGraphError):
+        compiler.compile_flow(config, identity())
+
+    config["nodes"][2]["data"]["saveRecord"]["updateSourceNodeId"] = "target"
+    config["nodes"][2]["data"]["saveRecord"]["recordTypeId"] = "other-type"
+    with pytest.raises(compiler.NativeGraphError):
+        compiler.compile_flow(config, identity())
+
+
+def test_output_only_json_arrays_are_available_to_downstream_nodes():
+    compiler = graph_api()
+
+    presentation = config_for("api_response")
+    compiled_presentation = compiler.compile_flow(presentation, identity())
+    declarations = {
+        item.key: item for item in compiled_presentation.variable_declarations
+    }
+    assert declarations["items"].origin == "output"
+    assert declarations["items"].data()["type"] is None
+    assert "items" not in {
+        slot.variable for slot in compiled_presentation.caller_slots
+    }
+
+    selection = config_for("option_picker")
+    compiled_selection = compiler.compile_flow(selection, identity())
+    assert compiled_selection.node("target").data()["optionPicker"]["sourceVariable"] == "items"
+
+    condition = config_for("condition")
+    condition["nodes"].insert(1, node("lookup", "api_request", {"api": {
+        "method": "GET", "url": "https://example.invalid/items",
+        "responseMapping": {"offers": "$.offers"},
+        "timeout": 8, "retryCount": 0,
+    }}))
+    condition["nodes"][2]["data"]["condition"]["variable"] = "offers"
+    condition["edges"] = [
+        edge("start", "lookup"), edge("lookup", "target"),
+        edge("target", "finish", "true"), edge("target", "else", "false"),
+    ]
+    compiler.compile_flow(condition, identity())
+
+    message = config_for("message")
+    message["nodes"].insert(1, node("lookup", "api_request", {"api": {
+        "method": "GET", "url": "https://example.invalid/items",
+        "responseMapping": {"offers": "$.offers"},
+        "timeout": 8, "retryCount": 0,
+    }}))
+    message["nodes"][2]["data"]["message"] = "Available offers: {{offers}}"
+    message["edges"] = [
+        edge("start", "lookup"), edge("lookup", "target"),
+        edge("target", "finish"),
+    ]
+    compiler.compile_flow(message, identity())
+
+
+@pytest.mark.parametrize("node_type", ["api_response", "option_picker"])
+def test_array_consumers_reject_explicit_non_array_declarations(node_type):
+    compiler = graph_api()
+    config = config_for(node_type)
+    target = next(item for item in config["nodes"] if item["id"] == "target")
+    if node_type == "api_response":
+        target["data"]["responsePresentation"]["arrayVariable"] = "name"
+    else:
+        target["data"]["optionPicker"]["sourceVariable"] = "name"
+
+    with pytest.raises(compiler.NativeGraphError):
+        compiler.compile_flow(config, identity())
+
+
 def test_custom_api_compiler_admits_only_explicit_account_secret_sinks():
     compiler = graph_api()
     config = config_for("api_request")
@@ -155,6 +330,14 @@ def config_for(node_type):
         node("finish", "end", {"name": "End", "closingMessage": ""}),
     ]
     edges = [edge("start", "target")]
+    if node_type in {"api_response", "option_picker"}:
+        lookup = node("lookup", "api_request", {"api": {
+            "method": "GET", "url": "https://example.invalid/items",
+            "responseMapping": {"items": "$.items"},
+            "timeout": 8, "retryCount": 0,
+        }})
+        nodes = [nodes[0], lookup, selected, nodes[-1]]
+        edges = [edge("start", "lookup"), edge("lookup", "target")]
     if node_type == "condition":
         nodes.append(node("else", "end", {"name": "Else", "closingMessage": ""}))
         edges.extend([edge("target", "finish", "true"), edge("target", "else", "false")])
@@ -189,7 +372,6 @@ def config_for(node_type):
         "name": {"key": "name", "type": "text", "description": "", "required": True},
         "choice": {"key": "choice", "type": "choice", "description": "",
                    "required": True, "choices": ["a"]},
-        "items": {"key": "items", "type": "text", "description": "", "required": False},
     }
     return {
         "initial_node": "start",
@@ -264,7 +446,8 @@ def test_json_path_root_is_explicit_and_option_picker_empty_path_means_whole_ite
     assert graph_api().compile_flow(config, identity()).node("target")
 
     picker = config_for("option_picker")
-    picker["nodes"][1]["data"]["optionPicker"]["writes"][0]["path"] = ""
+    target = next(item for item in picker["nodes"] if item["id"] == "target")
+    target["data"]["optionPicker"]["writes"][0]["path"] = ""
     assert graph_api().compile_flow(picker, identity()).node("target")
 
 
@@ -285,7 +468,8 @@ def test_json_paths_keep_root_and_optional_root_dot_compatibility(path):
 
 def test_api_item_templates_use_provider_item_fields_not_flow_variable_names():
     config = config_for("api_response")
-    config["nodes"][1]["data"]["responsePresentation"]["itemTemplate"] = (
+    target = next(item for item in config["nodes"] if item["id"] == "target")
+    target["data"]["responsePresentation"]["itemTemplate"] = (
         "{{room_name}} costs {{price}} at index {{index}}"
     )
     compiled = graph_api().compile_flow(config, identity())
@@ -300,7 +484,6 @@ def test_representative_combined_flow_preserves_configured_native_controls():
             {"key": "name", "type": "text", "description": "", "required": True},
             {"key": "choice", "type": "choice", "description": "", "required": True,
              "choices": ["a"]},
-            {"key": "items", "type": "text", "description": "", "required": False},
         ],
         "nodes": [
             node("start", "initial", {"name": "Start", "systemPrompt": "",

@@ -1,7 +1,6 @@
 """Fail-closed broker for scoped native graph business actions."""
 
 import asyncio
-import hashlib
 import json
 import re
 from uuid import UUID
@@ -20,6 +19,10 @@ from botelier.voice.flows.native_execution import (
 )
 from botelier.voice.flows.native_effect_ledger import NativeEffectLedger
 from botelier.voice.flows.native_graph import CompiledFlow, CompiledNode
+from botelier.voice.flows.native_response_mapping import (
+    NativeResponseMappingError, map_project_response as _map_project_response,
+    map_response_data, resolve_response_variables,
+)
 
 
 _TOKEN = re.compile(r"{{\s*([A-Za-z][A-Za-z0-9_]*)\s*}}")
@@ -107,7 +110,7 @@ class NativeActionRunner:
         if source == "tool":
             return await self._tool_api(node, config, detached, confirmation)
         if source == "capability":
-            return _failure("capability_unavailable")
+            return await self._capability_api(node, config, detached, confirmation)
         return _failure("api_source_unavailable")
 
     def _verify_flow_scope(self):
@@ -147,10 +150,9 @@ class NativeActionRunner:
             if tool_set is None or version is None or property_row is None:
                 raise LookupError("native_scope_mismatch")
             version_status = getattr(version.status, "value", version.status)
-            is_live_binding = (
-                version_status == "published"
-                and str(flow.published_version_id or "") == str(version.id)
-            )
+            # The host admits the immutable version once at call start. Publishing
+            # another version must not strand that admitted call mid-conversation.
+            is_live_binding = version_status == "published"
             is_simulation_binding = (
                 is_live_binding
                 or version_status == "draft"
@@ -174,6 +176,12 @@ class NativeActionRunner:
             tool_config, tool_type = await asyncio.to_thread(
                 self._resolve_bound_tool, config.get("toolId"),
             )
+            if tool_type in {"API_REQUEST", "DYNAMIC_OPERATION", "CAPABILITY"}:
+                from botelier.voice.flows.native_tool_actions import NativeToolActionHandler
+
+                return await NativeToolActionHandler(self).execute(
+                    node, config, facts, confirmation, tool_config, tool_type,
+                )
             if tool_type not in {"SEND_SMS", "SEND_EMAIL"}:
                 return _failure("tool_type_not_supported")
             arguments = render_json_template(
@@ -216,6 +224,8 @@ class NativeActionRunner:
             return _failure("tool_scope_mismatch", "auth_error")
         except (KeyError, RequestTemplateError, TypeError, ValueError):
             return _failure("messaging_arguments_invalid")
+        except Exception:
+            return _failure("tool_binding_unavailable", "auth_error")
 
         if not self._confirmation_matches(confirmation, facts, node, references):
             return _failure("confirmation_required")
@@ -223,7 +233,7 @@ class NativeActionRunner:
             mapped, projected = map_project_response(
                 config, {"status": "accepted"},
                 declared_variables={
-                    item["key"] for item in self.compiled.config()["variables"]
+                    item.key for item in self.compiled.variable_declarations
                 },
             )
         except (ValueError, TypeError, ResponseProjectionError):
@@ -259,7 +269,11 @@ class NativeActionRunner:
                 )
         if not delivery.accepted:
             result = _failure(delivery.failure_reason or "effect_outcome_unknown")
-            if delivery.failure_reason != "effect_outcome_unknown":
+            if delivery.failure_reason in {
+                "messenger_unavailable", "invalid_recipient", "invalid_message",
+                "sender_scope_mismatch", "invalid_subject", "email_sender_unavailable",
+                "preview_required",
+            }:
                 await asyncio.to_thread(
                     self._ledger.complete, claim, result, outcome_known=True,
                 )
@@ -292,7 +306,10 @@ class NativeActionRunner:
                 raise PermissionError("tool_scope")
             target_type = getattr(target.tool_type, "value", target.tool_type)
             if target_type not in {"SEND_SMS", "SEND_EMAIL"}:
-                return dict(target.config or {}), str(target_type)
+                config = dict(target.config or {})
+                config["_native_tool_name"] = target.name
+                config["_native_tool_description"] = target.description
+                return config, str(target_type)
             return dict(target.config or {}), str(target_type)
         finally:
             try:
@@ -361,7 +378,7 @@ class NativeActionRunner:
     async def _mcp_api(self, node, config, facts, confirmation):
         try:
             arguments = render_json_template(config["argumentsTemplate"], facts)
-            self._effective_mappings(config)
+            mappings = self._effective_mappings(config)
             connection, read_only = await asyncio.to_thread(
                 self._resolve_mcp_connection, config.get("mcpConnectionId"),
                 config.get("mcpToolName"),
@@ -371,7 +388,8 @@ class NativeActionRunner:
         except PermissionError:
             return _failure("mcp_connection_scope_mismatch", "auth_error")
         except (
-            KeyError, RequestTemplateError, ResponseProjectionError,
+            KeyError, RequestTemplateError, NativeResponseMappingError,
+            ResponseProjectionError,
             TypeError, ValueError,
         ):
             return _failure("mcp_arguments_invalid")
@@ -418,7 +436,7 @@ class NativeActionRunner:
         if raw.get("isError"):
             return _failure("effect_outcome_unknown" if writing else "mcp_tool_error")
         try:
-            mapped = self._map_outputs(config, raw)
+            mapped = self._map_outputs(raw, mappings)
             projected = project_mapped_values(mapped, config.get("responseProjection"))
         except (ValueError, TypeError, ResponseProjectionError):
             return _failure(
@@ -670,8 +688,16 @@ class NativeActionRunner:
         raise ValueError("mcp_result_shape")
 
     async def _integration_api(self, node, config, facts, confirmation):
+        return await self._execute_integration(
+            node, config, facts, confirmation,
+        )
+
+    async def _execute_integration(
+        self, node, config, facts, confirmation, *, force_write=False,
+        confirmation_references=None,
+    ):
         from botelier.services.action_executor import ActionContext, ActionExecutionRequest
-        from botelier.services.integration_runtime.types import ResponseVariable
+        from botelier.services.integration_runtime.types import ResponseVariable as IntegrationResponseVariable
 
         method = config.get("method", "GET")
         if method not in {
@@ -694,14 +720,21 @@ class NativeActionRunner:
             return _failure("integration_config_invalid")
         try:
             mappings = self._effective_mappings(config, policy_mapping)
-        except (ResponseProjectionError, TypeError, ValueError):
+        except (NativeResponseMappingError, ResponseProjectionError, TypeError, ValueError):
             return _failure("response_mapping_invalid")
 
         if risk in {"financial", "payment", "collect_payment"}:
             return _failure("financial_action_not_supported", "auth_error")
-        writing = method not in _SAFE_METHODS or risk not in {"read", "safe"}
+        writing = (
+            force_write
+            or method not in _SAFE_METHODS
+            or risk not in {"read", "safe"}
+        )
         if (writing or confirm_required) and not self._confirmation_matches(
-            confirmation, facts, node, self._request_references(config),
+            confirmation, facts, node,
+            confirmation_references
+            if confirmation_references is not None
+            else self._request_references(config),
         ):
             return _failure("confirmation_required")
         if self.preview_only:
@@ -712,7 +745,8 @@ class NativeActionRunner:
                 {
                     "source": "integration", "integration_id": integration_config.integration_id,
                     "endpoint_id": integration_config.endpoint_id, "method": method,
-                    "facts": facts,
+                    "facts": facts, "operation_policy": policy,
+                    "risk": risk, "confirm_required": confirm_required,
                     "body": prepared.value() if prepared is not None else None,
                 },
             )
@@ -724,8 +758,11 @@ class NativeActionRunner:
             claim = None
 
         response_variables = [
-            ResponseVariable(variable_key=key, json_path=path)
-            for key, path in mappings.items()
+            IntegrationResponseVariable(
+                variable_key=entry.variable_key, json_path=entry.json_path,
+                default_value=entry.default_value if entry.has_default else None,
+            )
+            for entry in mappings
         ]
         integration_config.response_variables = response_variables
         request = ActionExecutionRequest(
@@ -756,7 +793,7 @@ class NativeActionRunner:
             return _failure("effect_outcome_unknown")
         if result.success:
             try:
-                mapped = self._map_outputs(config, result.data, mappings=mappings)
+                mapped = self._map_outputs(result.data, mappings)
                 projected = project_mapped_values(mapped, config.get("responseProjection"))
             except (ValueError, TypeError, ResponseProjectionError):
                 return _failure(
@@ -776,7 +813,10 @@ class NativeActionRunner:
                 branch,
             )
         if writing:
-            known = result.success or result.status_code in _DEFINITIVE_REJECTION_STATUSES
+            known = outcome.success or (
+                not result.success
+                and result.status_code in _DEFINITIVE_REJECTION_STATUSES
+            )
             if not known:
                 return _failure("effect_outcome_unknown")
             if not await asyncio.to_thread(
@@ -784,6 +824,129 @@ class NativeActionRunner:
             ):
                 return _failure("effect_outcome_unknown")
         return outcome
+
+    async def _capability_api(self, node, config, facts, confirmation):
+        from botelier.services.capabilities.registry import get_capability
+
+        capability_name = config.get("capability")
+        spec = get_capability(capability_name)
+        if spec is None or spec.service_backed:
+            return _failure("capability_unavailable")
+        arguments = {
+            key: facts[key] for key in spec.parameters if key in facts
+        }
+        try:
+            self._validate_mcp_schema(spec.json_schema(), arguments)
+            resolved = await asyncio.to_thread(
+                self._resolve_capability, capability_name, arguments, facts,
+                config, bool(spec.mutating),
+            )
+        except LookupError:
+            return _failure("capability_unavailable", "not_found")
+        except PermissionError:
+            return _failure("capability_scope_mismatch", "auth_error")
+        except (TypeError, ValueError, KeyError):
+            return _failure("capability_arguments_invalid")
+
+        api_config, translated, confirmation_fields, is_write = resolved
+        if is_write and not self._confirmation_matches(
+            confirmation, facts, node, confirmation_fields,
+        ):
+            return _failure("confirmation_required")
+        return await self._execute_integration(
+            node, api_config, translated, confirmation,
+            force_write=is_write, confirmation_references=confirmation_fields,
+        )
+
+    def _resolve_capability(
+        self, capability_name, arguments, facts, source_config, is_write,
+    ):
+        from botelier.models.integration import AccountIntegration
+        from botelier.services.capabilities.resolver import CapabilityResolver
+        from botelier.services.property_scope import property_access_allowed
+        from botelier.services.capabilities.registry import get_capability
+
+        db = self.session_factory()
+        try:
+            resolver = CapabilityResolver(
+                db, self.compiled.identity.account_id,
+                self.compiled.identity.property_id,
+            )
+            resolution = resolver.resolve(capability_name)
+            if resolution is None:
+                raise LookupError("capability_unavailable")
+            connection = db.query(AccountIntegration).filter(
+                AccountIntegration.id == UUID(resolution.integration_id),
+                AccountIntegration.account_id == UUID(self.compiled.identity.account_id),
+            ).first()
+            if (
+                connection is None
+                or getattr(connection.status, "value", connection.status) != "connected"
+                or connection.integration_type is None
+                or connection.integration_type.is_enabled is not True
+                or not property_access_allowed(
+                    self.compiled.identity.property_id, connection.property_id,
+                )
+            ):
+                raise PermissionError("capability_connection_scope")
+            endpoints = connection.integration_type.get_endpoints() or []
+            matches = [
+                endpoint for endpoint in endpoints
+                if isinstance(endpoint, dict)
+                and endpoint.get("id") == resolution.endpoint_id
+                and endpoint.get("capability") == capability_name
+            ]
+            if len(matches) != 1:
+                raise PermissionError("capability_endpoint_scope")
+            endpoint = matches[0]
+            endpoint_enabled = endpoint.get("enabled", endpoint.get("is_enabled", True))
+            if endpoint_enabled is False or endpoint_enabled == 0 or (
+                isinstance(endpoint_enabled, str)
+                and endpoint_enabled.casefold() in {"false", "disabled", "no"}
+            ):
+                raise PermissionError("capability_endpoint_disabled")
+            source_variables = {
+                item.key for item in self.compiled.variable_declarations
+            }
+            endpoint_references = set()
+            pending = [endpoint]
+            while pending:
+                value = pending.pop()
+                if isinstance(value, dict):
+                    pending.extend(value.values())
+                elif isinstance(value, list):
+                    pending.extend(value)
+                elif isinstance(value, str):
+                    endpoint_references.update(_TOKEN.findall(value))
+            extras = {
+                key: facts[key]
+                for key in endpoint_references & source_variables
+                if key not in arguments and key in facts
+            }
+            vendor_vars = dict(arguments)
+            vendor_vars.update(extras)
+            translated = resolver.translate_variables(resolution, vendor_vars)
+            synthetic = {
+                "apiSource": "integration",
+                "integrationId": str(connection.id),
+                "integrationSlug": connection.integration_type.slug,
+                "endpointId": resolution.endpoint_id,
+                "method": resolution.method,
+                "path": endpoint.get("path"),
+                "timeout": source_config.get("timeout", 8),
+                "retryCount": source_config.get("retryCount", 0),
+                "responseMapping": source_config.get("responseMapping") or {},
+                "responseVariables": source_config.get("responseVariables") or [],
+                "responseProjection": source_config.get("responseProjection"),
+            }
+            if get_capability(capability_name) is None:
+                raise LookupError("capability_unavailable")
+            return synthetic, translated, set(arguments) | set(extras), is_write
+        finally:
+            try:
+                db.close()
+            except Exception:
+                pass
 
     def _resolve_integration_config(self, api, method, headers, prepared):
         import json
@@ -795,14 +958,21 @@ class NativeActionRunner:
 
         db = self.session_factory()
         try:
-            try:
-                connection_id = UUID(api["integrationId"])
-            except (KeyError, ValueError, TypeError, AttributeError):
-                raise LookupError("integration_not_found") from None
-            connection = db.query(AccountIntegration).filter(
-                AccountIntegration.id == connection_id,
-                AccountIntegration.account_id == UUID(self.compiled.identity.account_id),
-            ).first()
+            if api.get("integrationId"):
+                try:
+                    connection_id = UUID(api["integrationId"])
+                except (ValueError, TypeError, AttributeError):
+                    raise LookupError("integration_not_found") from None
+                connection = db.query(AccountIntegration).filter(
+                    AccountIntegration.id == connection_id,
+                    AccountIntegration.account_id == UUID(self.compiled.identity.account_id),
+                ).first()
+            elif api.get("integrationSlug"):
+                connection = self._resolve_integration_slug(
+                    db, api["integrationSlug"],
+                )
+            else:
+                raise LookupError("integration_not_found")
             if connection is None or connection.status != IntegrationStatus.CONNECTED:
                 raise LookupError("integration_not_found")
             if connection.property_id is not None:
@@ -907,6 +1077,38 @@ class NativeActionRunner:
             except Exception:
                 pass
 
+    def _resolve_integration_slug(self, db, slug):
+        from botelier.models.integration import AccountIntegration, IntegrationStatus
+
+        if not isinstance(slug, str) or not slug or len(slug) > 128:
+            raise LookupError("integration_not_found")
+        candidates = db.query(AccountIntegration).filter(
+            AccountIntegration.account_id == UUID(self.compiled.identity.account_id),
+            AccountIntegration.status == IntegrationStatus.CONNECTED,
+        ).all()
+        matching = [
+            connection for connection in candidates
+            if connection.integration_type is not None
+            and connection.integration_type.is_enabled is True
+            and connection.integration_type.slug == slug
+            and (
+                connection.property_id is None
+                or str(connection.property_id) == self.compiled.identity.property_id
+            )
+        ]
+        bound = [
+            connection for connection in matching
+            if str(connection.property_id or "") == self.compiled.identity.property_id
+        ]
+        selected = bound or [
+            connection for connection in matching if connection.property_id is None
+        ]
+        if not selected:
+            raise LookupError("integration_not_found")
+        if len(selected) != 1:
+            raise PermissionError("integration_slug_ambiguous")
+        return selected[0]
+
     @staticmethod
     def _matching_integration_endpoints(endpoints, api, method, parsed_path, requested_query):
         matches = []
@@ -975,9 +1177,12 @@ class NativeActionRunner:
             references.update(_TOKEN.findall(template))
         if not self._confirmation_matches(confirmation, facts, node, references):
             return _failure("confirmation_required")
+        from botelier.voice.flows.native_record_actions import NativeRecordActionStore
+
+        store = NativeRecordActionStore(self.session_factory, self.compiled.identity)
         try:
             prepared = await asyncio.to_thread(
-                self._prepare_record, setting, facts,
+                store.prepare, setting, facts,
             )
         except LookupError:
             return _failure("record_type_unavailable")
@@ -986,212 +1191,12 @@ class NativeActionRunner:
         if prepared is None:
             return _failure("record_source_unavailable")
         record_data, record_status, call_log_id, assistant_id = prepared
-        args = {
-            "record_type_id": setting["recordTypeId"],
-            "data": record_data, "status": record_status,
-            "source_call_log_id": str(call_log_id),
-            "assistant_id": str(assistant_id) if assistant_id else None,
-        }
         if self.preview_only:
             return _failure("preview_required")
-        claim = await asyncio.to_thread(self._ledger.claim, node.node_id, args)
-        if claim.outcome == "replay":
-            return claim.result
-        if claim.outcome != "execute":
-            return _failure(claim.failure_reason or "effect_claim_blocked")
-
-        result = await asyncio.to_thread(
-            self._create_record, node.node_id, setting, args,
+        return await asyncio.to_thread(
+            store.apply, node.node_id, setting, record_data, record_status,
+            call_log_id, assistant_id,
         )
-        if not result.success:
-            # A record commit error may occur after the database accepted it.
-            # Keep the claim pending; a retry must never create a duplicate.
-            if result.failure_reason == "record_validation_rejected":
-                await asyncio.to_thread(
-                    self._ledger.complete, claim, result, outcome_known=True,
-                )
-            return result
-        if not await asyncio.to_thread(
-            self._ledger.complete, claim, result, outcome_known=True,
-        ):
-            return _failure("effect_outcome_unknown")
-        return result
-
-    def _prepare_record(self, setting, facts):
-        from botelier.models.assistant import Assistant
-        from botelier.models.call_log import CallLog
-        from botelier.models.record_type import RecordType
-
-        db = self.session_factory()
-        try:
-            try:
-                type_id = UUID(setting["recordTypeId"])
-            except (ValueError, TypeError, AttributeError):
-                raise LookupError("record_type_unavailable") from None
-            record_type = db.query(RecordType).filter(
-                RecordType.id == type_id,
-                RecordType.account_id == UUID(self.compiled.identity.account_id),
-                RecordType.is_active.is_(True),
-            ).first()
-            if record_type is None:
-                raise LookupError("record_type_unavailable")
-            fields = record_type.fields or []
-            definitions = {field.get("key"): field for field in fields if isinstance(field, dict)}
-            if len(definitions) != len(fields):
-                raise ValueError("record_schema_invalid")
-            mapping = setting.get("mapping") or {}
-            if set(mapping) - set(definitions):
-                raise ValueError("record_field_invalid")
-            values = {}
-            for key, template in mapping.items():
-                if not isinstance(template, str):
-                    raise ValueError("record_value_invalid")
-                exact = _TOKEN.fullmatch(template)
-                if exact:
-                    variable = exact.group(1)
-                    if variable not in facts:
-                        raise ValueError("record_value_missing")
-                    value = facts[variable]
-                else:
-                    value = render_content_template(
-                        template, facts, media_type="text/plain",
-                    )
-                field = definitions[key]
-                self._validate_record_field(field, value)
-                values[key] = value
-            for field in fields:
-                if field.get("required") and (
-                    field.get("key") not in values
-                    or values[field["key"]] is None
-                    or values[field["key"]] == ""
-                ):
-                    raise ValueError("record_required_field")
-            status = None
-            if setting.get("status") is not None:
-                exact = _TOKEN.fullmatch(setting["status"])
-                if exact:
-                    if exact.group(1) not in facts:
-                        raise ValueError("record_status_missing")
-                    status = facts[exact.group(1)]
-                else:
-                    status = render_content_template(
-                        setting["status"], facts, media_type="text/plain",
-                    )
-                allowed = {
-                    item.get("value") for item in record_type.status_options or []
-                    if isinstance(item, dict) and isinstance(item.get("value"), str)
-                }
-                if status not in allowed:
-                    raise ValueError("record_status_invalid")
-            call_log = db.query(CallLog).filter(
-                CallLog.call_sid == self.compiled.identity.call_sid,
-                CallLog.account_id == UUID(self.compiled.identity.account_id),
-            ).first()
-            if call_log is None or call_log.assistant_id is None:
-                return None
-            assistant = db.query(Assistant).filter(
-                Assistant.id == call_log.assistant_id,
-                Assistant.account_id == UUID(self.compiled.identity.account_id),
-                Assistant.is_active.is_(True),
-            ).first()
-            if (
-                assistant is None or assistant.property_id is not None
-                and assistant.property_id != UUID(self.compiled.identity.property_id)
-            ):
-                return None
-            return values, status, call_log.id, call_log.assistant_id
-        finally:
-            try:
-                db.close()
-            except Exception:
-                pass
-
-    @staticmethod
-    def _validate_record_field(field, value):
-        from datetime import date, datetime
-
-        kind = field.get("type", "text")
-        def valid_date(item):
-            if not isinstance(item, str):
-                return False
-            try:
-                date.fromisoformat(item)
-                return True
-            except ValueError:
-                return False
-
-        def valid_datetime(item):
-            if not isinstance(item, str) or len(item) > 64:
-                return False
-            try:
-                datetime.fromisoformat(item.replace("Z", "+00:00"))
-                return True
-            except ValueError:
-                return False
-
-        options = field.get("options") or []
-        option_values = {
-            option.get("value") if isinstance(option, dict) else option
-            for option in options
-        }
-        valid = {
-            "text": lambda item: isinstance(item, str) and len(item) <= 8000,
-            "number": lambda item: type(item) in (int, float),
-            "date": valid_date,
-            "datetime": valid_datetime,
-            "boolean": lambda item: type(item) is bool,
-            "select": lambda item: item in option_values,
-            "phone": lambda item: isinstance(item, str) and bool(
-                re.fullmatch(r"[+0-9() .-]{7,32}", item)
-            ),
-            "email": lambda item: isinstance(item, str) and len(item) <= 320 and bool(
-                re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", item)
-            ),
-        }.get(kind)
-        if valid is None or not valid(value):
-            raise ValueError("record_field_type")
-
-    def _create_record(self, node_id, setting, args):
-        from botelier.models.record import Record
-        from botelier.models.record_type import RecordType
-
-        db = self.session_factory()
-        try:
-            record_type = db.query(RecordType).filter(
-                RecordType.id == UUID(setting["recordTypeId"]),
-                RecordType.account_id == UUID(self.compiled.identity.account_id),
-                RecordType.is_active.is_(True),
-            ).first()
-            if record_type is None:
-                return _failure("record_validation_rejected")
-            key_input = json.dumps([
-                "native-record-v1", self.compiled.identity.account_id,
-                self.compiled.identity.property_id, self.compiled.identity.call_sid,
-                self.compiled.identity.tool_id, node_id,
-            ], separators=(",", ":"))
-            idempotency_key = hashlib.sha256(key_input.encode()).hexdigest()
-            row = Record(
-                account_id=UUID(self.compiled.identity.account_id),
-                record_type_id=record_type.id, status=args["status"], data=args["data"],
-                source_channel="voice", capture_method="flow_node",
-                idempotency_key=idempotency_key,
-                source_call_log_id=UUID(args["source_call_log_id"]),
-                assistant_id=UUID(args["assistant_id"]) if args["assistant_id"] else None,
-            )
-            db.add(row)
-            db.commit()
-            return NativeActionResult(True)
-        except Exception:
-            try:
-                db.rollback()
-            except Exception:
-                pass
-            return _failure("effect_outcome_unknown")
-        finally:
-            try:
-                db.close()
-            except Exception:
-                pass
 
     async def _custom_api(self, node, config, facts, confirmation):
         from botelier.services.action_executor import (
@@ -1207,11 +1212,11 @@ class NativeActionRunner:
         try:
             url = render_request_url(config.get("url", ""), facts)
             headers, prepared = await self._prepare_custom_request(config, facts)
-            self._effective_mappings(config)
+            mappings = self._effective_mappings(config)
+        except NativeResponseMappingError:
+            return _failure("response_mapping_invalid")
         except (RequestTemplateError, ValueError, TypeError):
             return _failure("api_request_invalid")
-        except ResponseProjectionError:
-            return _failure("response_mapping_invalid")
 
         if writing:
             if not self._confirmation_matches(
@@ -1272,7 +1277,7 @@ class NativeActionRunner:
             return _failure("effect_outcome_unknown")
         if result.success:
             try:
-                mapped = self._map_outputs(config, result.data)
+                mapped = self._map_outputs(result.data, mappings)
                 projected = project_mapped_values(mapped, config.get("responseProjection"))
             except (ValueError, TypeError, ResponseProjectionError):
                 return _failure(
@@ -1392,53 +1397,17 @@ class NativeActionRunner:
                 pass
 
     def _effective_mappings(self, config, override=None):
-        from botelier.services.integration_runtime.jsonpath import extract_json_value
-        from botelier.services.response_projection import validate_mapped_projection
-
-        source = override or config.get("responseMapping")
-        if source is None:
-            source = {}
-        if not isinstance(source, dict) or len(source) > 128:
-            raise ValueError("native_response_mapping")
-        mappings = dict(source)
-        for entry in config.get("responseVariables") or []:
-            if not isinstance(entry, dict):
-                raise ValueError("native_response_mapping")
-            mappings[entry.get("variableKey")] = entry.get("jsonPath")
-        declared = {
-            item["key"] for item in self.compiled.config().get("variables", [])
-        }
-        if set(mappings) - declared:
-            raise ValueError("native_response_mapping")
-        for key, path in mappings.items():
-            if (
-                not isinstance(key, str) or not isinstance(path, str)
-                or not path or len(path) > 512 or "{{" in path or "}}" in path
-                or path.strip() in {"$", "$."}
-            ):
-                raise ValueError("native_response_mapping")
-            extract_json_value({}, path)
-        validate_mapped_projection(
-            config.get("responseProjection"), mappings.keys(),
+        declared = {item.key for item in self.compiled.variable_declarations}
+        return resolve_response_variables(
+            config,
+            variable_declarations=self.compiled.variable_declarations,
+            mapping_override=override,
+            declared_variables=declared,
         )
-        return mappings
 
     @staticmethod
-    def _map_outputs(config, response, *, mappings=None):
-        from botelier.services.integration_runtime.jsonpath import extract_json_value
-
-        mappings = mappings if mappings is not None else dict(
-            config.get("responseMapping") or {},
-        )
-        if mappings is None:
-            mappings = {}
-        output = {}
-        for key, path in mappings.items():
-            value = extract_json_value(response, path)
-            if value is None:
-                raise ValueError("native_required_response_missing")
-            output[key] = value
-        return output
+    def _map_outputs(response, mappings):
+        return map_response_data(response, mappings)
 
     @staticmethod
     def _request_references(config):
@@ -1467,15 +1436,14 @@ class NativeActionRunner:
         self._closed = True
 
 
-def map_project_response(config, response, declared_variables=None):
+def map_project_response(
+    config, response, declared_variables=None, *, variable_declarations=(),
+):
     """Purely map provider/sample data and apply the exact configured projection."""
-    mapped = NativeActionRunner._map_outputs(config, response)
-    if declared_variables is not None and set(mapped) - set(declared_variables):
-        raise ResponseProjectionError("response_variable_unavailable")
-    projected = project_mapped_values(
-        mapped, config.get("responseProjection"),
+    return _map_project_response(
+        config, response, declared_variables=declared_variables,
+        variable_declarations=variable_declarations,
     )
-    return mapped, projected
 
 
 __all__ = ["NativeActionRunner", "map_project_response"]

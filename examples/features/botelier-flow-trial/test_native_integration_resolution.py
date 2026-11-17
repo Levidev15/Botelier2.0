@@ -11,6 +11,7 @@ def test_legacy_connection_resolves_unique_enabled_endpoint_from_owned_metadata(
                 AccountIntegration, IntegrationStatus, IntegrationType,
             )
             from botelier.models.operation_policy import ConnectionOperationPolicy
+            from botelier.models.property import Property
             from botelier.voice.flows.native_actions import NativeActionRunner
             from botelier.voice.flows.native_graph import compile_flow
 
@@ -39,7 +40,22 @@ def test_legacy_connection_resolves_unique_enabled_endpoint_from_owned_metadata(
                 status=IntegrationStatus.CONNECTED,
                 connection_config='{"base_url":"https://api.fixture.invalid"}',
             )
-            db.add_all([integration_type, connection])
+            other_property_id = uuid.uuid4()
+            other_property = Property(
+                id=other_property_id, account_id=uuid.UUID(fixture.account_id),
+                name="Another fixture property", timezone="UTC",
+                is_default=False, is_active=True,
+            )
+            foreign_connection = AccountIntegration(
+                id=uuid.uuid4(), account_id=uuid.UUID(fixture.account_id),
+                integration_type_id=integration_type_id,
+                property_id=other_property_id,
+                status=IntegrationStatus.CONNECTED,
+                connection_config='{"base_url":"https://foreign.fixture.invalid"}',
+            )
+            db.add_all([
+                integration_type, connection, other_property, foreign_connection,
+            ])
             db.add_all([
                 ConnectionOperationPolicy(
                     account_integration_id=connection_id,
@@ -67,7 +83,7 @@ def test_legacy_connection_resolves_unique_enabled_endpoint_from_owned_metadata(
                 "nodes": [
                     {"id": "start", "type": "initial", "data": {"greeting": ""}},
                     {"id": "lookup", "type": "api_request", "data": {"api": {
-                        "apiSource": "integration", "integrationId": str(connection_id),
+                        "apiSource": "integration", "integrationSlug": "owned-search",
                         "method": "GET", "path": "/search?query={{query}}",
                         "responseMapping": {"price": "$.price"},
                     }}},
@@ -105,6 +121,26 @@ def test_legacy_connection_resolves_unique_enabled_endpoint_from_owned_metadata(
             assert simulation.failure_reason == "integration_policy_rejected"
 
             db = fixture.factory()
+            duplicate_connection = AccountIntegration(
+                id=uuid.uuid4(), account_id=uuid.UUID(fixture.account_id),
+                integration_type_id=integration_type_id,
+                property_id=uuid.UUID(fixture.property_id),
+                status=IntegrationStatus.CONNECTED,
+                connection_config='{"base_url":"https://duplicate.fixture.invalid"}',
+            )
+            db.add(duplicate_connection)
+            db.commit()
+            db.close()
+            try:
+                runner._resolve_integration_config({
+                    **api, "integrationId": None,
+                }, "GET", {}, None)
+            except PermissionError:
+                pass
+            else:
+                raise AssertionError("Ambiguous integration slug binding was accepted")
+
+            db = fixture.factory()
             second_policy = db.query(ConnectionOperationPolicy).filter(
                 ConnectionOperationPolicy.account_integration_id == connection_id,
                 ConnectionOperationPolicy.operation_id == "search-disabled",
@@ -114,10 +150,21 @@ def test_legacy_connection_resolves_unique_enabled_endpoint_from_owned_metadata(
             db.commit()
             db.close()
             try:
-                runner._resolve_integration_config(api, "GET", {}, None)
+                runner._resolve_integration_config({
+                    **api, "integrationId": str(connection_id),
+                    "integrationSlug": "owned-search",
+                }, "GET", {}, None)
             except PermissionError:
                 pass
             else:
                 raise AssertionError("Ambiguous enabled endpoint binding was accepted")
+            try:
+                runner._resolve_integration_config({
+                    **api, "integrationSlug": "not-owned-or-connected",
+                }, "GET", {}, None)
+            except LookupError:
+                pass
+            else:
+                raise AssertionError("Missing integration slug binding was accepted")
 
     asyncio.run(scenario())

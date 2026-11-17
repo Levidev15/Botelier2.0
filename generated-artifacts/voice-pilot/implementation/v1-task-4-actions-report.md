@@ -21,7 +21,19 @@ This report describes implementation evidence, not production activation.
 - `NativeMessenger(*, identity, twilio_client, from_number,
   execution_mode="execute", email_dispatch=None, timeout=8.0)`
 - Pure host helper:
-  `map_project_response(config, response, declared_variables=None)`
+  `map_project_response(config, response, declared_variables=None,
+  *, variable_declarations=())`
+
+`CompiledFlow.variable_declarations` is an immutable tuple of frozen
+declarations (`key`, `origin`, `.data()`). Explicit declarations remain
+authoritative; validated API/capability response mappings and
+`responseVariables` contribute output-only declarations. Unknown output types
+remain bounded JSON (`type=None`) and never become caller slots. `config()` is
+unchanged. Mapping defaults preserve falsy values such as `0` and `False`, and
+required explicit outputs still fail when missing. Output-only values are
+available to downstream presentation, selection, conditions, and templates;
+array consumers reject explicit non-array declarations and defer unknown JSON
+shape checks to runtime.
 
 `channel` accepts only `"voice"` or `"simulation"`. Simulation selects the
 existing `"test"` operation-policy channel and is always preview-only, even if
@@ -33,18 +45,34 @@ provider request. Host-supplied sample responses can use the public pure
 
 ## Implemented safeguards
 
-- Rechecks the active flow tool, account-owned ToolSet, current flow version,
-  and active property before every action; voice requires the currently
-  published version, while simulation requires the current draft or published
-  binding.
+- Rechecks the active flow tool, account-owned ToolSet, immutable flow-version
+  status, and active property before every action. A host-admitted published
+  version remains usable if a newer version becomes the current pointer during
+  the call; current connection/account/property revocations still block.
 - Custom HTTP uses the existing `ActionExecutor`, request-template helpers,
   secret loading, and SSRF-safe transport. Output mapping and projection are
   bounded; custom API origin is not caller-controlled through path values.
 - Imported integrations use current owned connection metadata and operation
-  policy. Legacy ID-less binding is permitted only when exact method/path and
-  declared query keys resolve one enabled permitted endpoint. Missing,
-  disabled, foreign, or ambiguous endpoints fail closed. Integration channel
-  policy receives `"voice"` or `"test"`, never `"voice"` for TestLab.
+  policy. Legacy ID-less `integrationSlug` binding is permitted only when the
+  account/property-scoped connected integration resolves uniquely and the
+  exact method/path and declared query keys resolve one enabled permitted
+  endpoint. Missing, disabled, foreign, or ambiguous connections/endpoints fail
+  closed. Integration channel policy receives `"voice"` or `"test"`, never
+  `"voice"` for TestLab.
+- Both direct `apiSource="capability"` and selected `CAPABILITY` Tool sources
+  use the existing `CapabilityResolver`/registry, current property-owned
+  connection, endpoint, and operation policy. Canonical arguments are schema
+  checked and translated through current endpoint metadata. Integration-backed
+  reads and confirmed writes use the strict native effect ledger; service-backed
+  payment is rejected at compile and runtime.
+- Selected `API_REQUEST` Tools resolve from the current account-owned ToolSet,
+  use the existing `ActionExecutor`, pinned HTTPS origin/template rendering,
+  stored output-map policy, confirmation for writes, and strict native effect
+  ledger. Selected `DYNAMIC_OPERATION` Tools recheck current connection,
+  published action/version, endpoint, operation policy, allowed channel,
+  confirmation, response policy, and output mapping before reusing the existing
+  `build_operation_api_config`/`ActionExecutor` path. Nested FLOW and terminal
+  Tool types are not dispatched; payment-classified operations remain blocked.
 - Node-level MCP reads the current account-owned connection and explicit
   property/global scope, checks the configured enabled tool list, ignores
   server `readOnly` annotations, validates the current tool schema and args,
@@ -53,13 +81,22 @@ provider request. Host-supplied sample responses can use the public pure
   projection can reach LLM-facing data.
 - SAVE_RECORD validates current RecordType and typed fields, required/status
   constraints, and the account-owned call/assistant association before
-  idempotent creation. Zero and false values are preserved.
+  idempotent creation. Record mutation and encrypted known receipt are committed
+  atomically in one transaction using the existing unique
+  `OperationIdempotency` table; internal Record claims never commit pending.
+  Same-input creation replays its receipt, while changed create arguments are
+  blocked. A separate versioned correction path is available only through
+  `updateSourceNodeId`, bound to a reachable same-type source-node Record and
+  prior `updated_at`+data+status compare-and-set. Its typed operation key binds
+  that prior revision and intended replacement. Fresh confirmation is required;
+  external booking/message/API effect-ledger rules are unchanged. Zero and
+  false values are preserved.
 - SMS and email use deterministic configured templates and current
   confirmation. SMS sender/recipient and email sender/recipient/subject/body
   are validated; only supported Gmail/Microsoft sender connections are
   accepted. Provider timeouts remain ambiguous, and acceptance is not reported
   as delivery or a completed booking.
-- Financial/payment actions and unsupported capability/tool types fail closed.
+- Financial/payment actions and unsupported Tool types fail closed.
 - API mapping/projection uses `map_project_response`, which preserves zero and
   false while exposing only configured outputs.
 
@@ -72,49 +109,29 @@ provider request. Host-supplied sample responses can use the public pure
 
 `native_enabled_tools` is a required, unique list of exact enabled server tool
 names (maximum 128). `native_read_only_tools` is an optional unique list of
-exact names that must be a subset of `native_enabled_tools`. Every enabled
-tool not in `native_read_only_tools` is treated as a write and requires
-confirmation. Remote server read-only annotations are not trusted. This is
-node-level MCP only; parent-owned assistant-global/shared MCP integration is
-not included.
+exact names that must be a subset of `native_enabled_tools`. Every enabled tool
+not in `native_read_only_tools` is treated as a write and requires confirmation.
+Remote server read-only annotations are not trusted. This is node-level MCP
+only; parent-owned assistant-global/shared MCP integration is not included.
 
 ## Guard evidence
 
-Latest lifecycle guard command (all commands were run under the prescribed
-`flock /tmp/botelier-flow-v1-guard.lock`):
+The scoped `editor_guard.py` suite was run under
+`flock /tmp/botelier-flow-v1-guard.lock` with:
+`test_native_graph.py`, `test_native_actions.py`,
+`test_native_capabilities.py`, `test_native_integration_resolution.py`,
+`test_native_record_actions.py`, and `test_native_tool_sources.py`.
 
-```sh
-flock /tmp/botelier-flow-v1-guard.lock env -i PATH="$PATH" \
-  HOME="$PWD/generated-artifacts/voice-pilot/offline-assets" \
-  PYTHONPATH=/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages \
-  PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 LOGURU_LEVEL=ERROR \
-  python -B examples/features/botelier-flow-trial/lifecycle_guard.py \
-  --backend-root "$PWD/botelier/backend" \
-  --package-root /home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/pipecat \
-  --tests "$PWD/examples/features/botelier-flow-trial/test_native_graph.py" \
-          "$PWD/examples/features/botelier-flow-trial/test_native_integration_binding.py" \
-          "$PWD/examples/features/botelier-flow-trial/test_native_messaging.py"
-```
-
-Result: **62 passed; 0 lifecycle guard blocks**.
-
-An initial editor-guard retry was blocked by the parent-owned dummy text-host
-fixture: its old `CompiledPilot` was incompatible with the current
-`CompiledFlow` path. The parent resolved this by setting
-`NativeTextFixture(create_host=False)` for the unused dummy and checking source
-identity through `NativeFlowAdapter`; `make_config` already returns the
-required `VoiceAgentConfig`. The subsequent parent-reported
-`v1-broker-storage-parent-decoupled.log` run has **21 passed, 0 guard blocks**,
-including actual storage broker and strict-ledger coverage. No host/fixture
-files were changed in this commit.
+Result: **80 passed; 0 guard blocks**. Coverage includes compiler declarations,
+output-only JSON downstream use and explicit non-array rejection, source
+binding, actual scoped capability/API/dynamic-operation execution, slug
+resolution, typed/default mapping, actual disposable Record storage, encrypted
+atomic receipts, acknowledgement-loss replay, and correction CAS.
+The parent separately owns the host fixture and strict external-ledger
+integration; no host/fixture files are included in this scoped change.
 
 ## Limitations and handoff
 
-- Safe correction/update of an existing Record after caller correction is not
-  implemented. The strict ledger correctly blocks changed arguments for the
-  same action identity; a separately authorized/versioned update operation is
-  needed rather than weakening that invariant.
-- `capability` nodes and Tool types other than SMS/email remain unavailable.
 - Preview does not invent sample provider results; hosts may project an
   operator-supplied sample with the pure helper above.
 - No live provider credentials, calls, messages, or production services were

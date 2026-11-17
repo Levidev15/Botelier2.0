@@ -32,6 +32,10 @@ _NODE_ID = re.compile(r"[A-Za-z][A-Za-z0-9_-]{0,47}\Z")
 _VARIABLE = re.compile(r"[A-Za-z][A-Za-z0-9_]{0,47}\Z")
 _TOKEN = re.compile(r"{{\s*([A-Za-z][A-Za-z0-9_]*)\s*}}")
 _SECRET_TOKEN = re.compile(r"{{\s*secrets\.([A-Za-z][A-Za-z0-9_]*)\s*}}")
+_RESERVED_VARIABLES = frozenset({
+    "status", "current_node_id", "flow_version_id", "account_id",
+    "property_id", "call_sid", "tool_id", "outcome", "success",
+})
 _SLOT_TYPES = frozenset({"text", "date", "number", "phone", "email", "time", "choice"})
 _NODE_TYPES = frozenset({
     "initial", "message", "collect_slot", "collect_form", "api_request",
@@ -252,6 +256,19 @@ class CompiledNode:
 
 
 @dataclass(frozen=True)
+class CompiledVariableDeclaration:
+    """Immutable explicit input or mapping-derived output declaration."""
+
+    key: str
+    origin: str
+    _data_json: str = field(repr=False)
+
+    def data(self) -> dict:
+        """Return a fresh detached legacy-shaped declaration."""
+        return json.loads(self._data_json)
+
+
+@dataclass(frozen=True)
 class CompiledEdge:
     edge_id: str
     source: str
@@ -267,6 +284,7 @@ class CompiledFlow:
     nodes: tuple[CompiledNode, ...]
     edges: tuple[CompiledEdge, ...]
     caller_slots: tuple[CallerSlot, ...]
+    variable_declarations: tuple[CompiledVariableDeclaration, ...]
     max_nodes: int
     max_edges: int
     max_revisits: int
@@ -334,6 +352,8 @@ def _validate_variable_declarations(config: dict) -> tuple[dict[str, dict], set[
             "key", "type", "description", "required", "defaultValue", "choices",
         }), "variables")
         key = _identifier(declaration.get("key"), _VARIABLE, "variables", field_name="key")
+        if key in _RESERVED_VARIABLES:
+            _fail("variables", field_name="key")
         slot_type = declaration.get("type", "text")
         if not isinstance(slot_type, str) or slot_type not in _SLOT_TYPES or key in declarations:
             _fail("variables", field_name="type")
@@ -431,12 +451,19 @@ def _validate_slot(slot: Any, node_id: str, variables: dict[str, dict], *, form=
     return CallerSlot(node_id, key, prompt, slot_type)
 
 
-def _validate_api(api: Any, node_id: str, variables: set[str], *, capability=False):
+def _validate_api(
+    api: Any, node_id: str, variables: dict[str, dict], *,
+    available_variables=None, capability=False,
+):
     if not isinstance(api, dict):
         _fail("api_config", node_id, "api")
+    declared = set(available_variables) if available_variables is not None else set(variables)
     _keys(api, _API_FIELDS, "unknown_field", node_id)
     source = api.get("apiSource", "capability" if capability else "custom")
-    allowed_sources = {"capability"} if capability else {"custom", "integration", "mcp", "tool"}
+    allowed_sources = (
+        {"capability"} if capability else
+        {"custom", "integration", "mcp", "tool", "capability"}
+    )
     if not isinstance(source, str) or source not in allowed_sources:
         _fail("api_source", node_id, "apiSource")
     integration_bindings = {
@@ -457,6 +484,11 @@ def _validate_api(api: Any, node_id: str, variables: set[str], *, capability=Fal
             "url", "method", "headers", "bodyTemplate", "queryParams",
             "queryParamOverrides", "path",
         }
+    elif source == "capability":
+        incompatible = {
+            "integrationId", "integrationSlug", "endpointId", "endpointName",
+            "mcpConnectionId", "mcpToolName", "argumentsTemplate", "toolId",
+        }
     elif source == "custom":
         incompatible = {
             "integrationId", "integrationSlug", "endpointId", "endpointName",
@@ -466,8 +498,13 @@ def _validate_api(api: Any, node_id: str, variables: set[str], *, capability=Fal
         incompatible = set()
     if set(api) & incompatible:
         _fail("api_source", node_id, "binding")
-    if capability:
+    if source == "capability":
         _text(api.get("capability"), "api_config", node_id, "capability", required=True, limit=128)
+        from botelier.services.capabilities.registry import get_capability
+
+        capability_spec = get_capability(api.get("capability"))
+        if capability_spec is not None and capability_spec.service_backed:
+            _fail("capability_unavailable", node_id, "capability")
     elif source in {"custom", "integration"}:
         method = api.get("method", "GET")
         if not isinstance(method, str) or method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
@@ -485,7 +522,7 @@ def _validate_api(api: Any, node_id: str, variables: set[str], *, capability=Fal
                     _text(api[key], "api_config", node_id, key, required=True, limit=256)
             if not api.get("endpointId"):
                 _text(api.get("path"), "api_config", node_id, "path", required=True, limit=4096)
-    else:
+    elif source in {"mcp", "tool"}:
         bindings = {
             "mcp": ("mcpConnectionId", "mcpToolName"),
             "tool": ("toolId",),
@@ -501,41 +538,41 @@ def _validate_api(api: Any, node_id: str, variables: set[str], *, capability=Fal
             "argumentsTemplate", required=True, limit=32_000,
         )
         residual = _TOKEN.sub("", template)
-        if set(_TOKEN.findall(template)) - variables or "{{" in residual or "}}" in residual:
+        if set(_TOKEN.findall(template)) - declared or "{{" in residual or "}}" in residual:
             _fail("api_template", node_id, "argumentsTemplate")
         try:
             parsed_arguments = render_json_template(
-                template, {name: "" for name in variables},
+                template, {name: "" for name in declared},
             )
         except (RequestTemplateError, TypeError, ValueError, RecursionError):
             _fail("api_template", node_id, "argumentsTemplate")
         if not isinstance(parsed_arguments, dict):
             _fail("api_template", node_id, "argumentsTemplate")
     if api.get("url") is not None:
-        _template(api["url"], variables, "api_template", node_id, "url")
+        _template(api["url"], declared, "api_template", node_id, "url")
     for key in ("bodyTemplate",):
         if key in api:
             body = _text(api[key], "api_template", node_id, key, limit=32_000)
             without_secrets = _SECRET_TOKEN.sub("", body)
             residual = _TOKEN.sub("", without_secrets)
             if (
-                set(_TOKEN.findall(body)) - variables or "{{" in residual or "}}" in residual
+                set(_TOKEN.findall(body)) - declared or "{{" in residual or "}}" in residual
                 or source != "custom" and _SECRET_TOKEN.search(body)
             ):
                 _fail("api_template", node_id, key)
             try:
                 rendered = render_json_template(
-                    body, {name: "" for name in variables},
+                    body, {name: "" for name in declared},
                     secret_resolver=lambda _key: "",
                 )
             except (RequestTemplateError, TypeError, ValueError, RecursionError):
                 _fail("api_template", node_id, key)
     if "path" in api:
-        _template(api["path"], variables, "api_template", node_id, "path", limit=4096)
+        _template(api["path"], declared, "api_template", node_id, "path", limit=4096)
     for key in ("thinkingMessage", "onSuccess", "onError", "onComplete", "onNotFound",
                 "onAuthError", "responseInstructions"):
         if key in api:
-            _template(api[key], variables, "api_template", node_id, key)
+            _template(api[key], declared, "api_template", node_id, key)
     timeout = api.get("timeout", 8)
     _integer(timeout, 1, 60, "api_limits", node_id, "timeout")
     _integer(api.get("retryCount", 0), 0, 3, "api_limits", node_id, "retryCount")
@@ -571,19 +608,36 @@ def _validate_api(api: Any, node_id: str, variables: set[str], *, capability=Fal
             if not isinstance(mapping, dict) or len(mapping) > 128:
                 _fail("api_mapping", node_id, name)
             for key, path in mapping.items():
-                if not isinstance(key, str) or key not in variables:
+                if not isinstance(key, str):
+                    _fail("api_mapping", node_id, name)
+                _identifier(key, _VARIABLE, "api_mapping", node_id, name)
+                if key in _RESERVED_VARIABLES:
+                    _fail("api_mapping", node_id, name)
+                if name == "autoMappingSource" and key not in declared:
                     _fail("api_mapping", node_id, name)
                 _json_path(path, "api_mapping", node_id, name)
     if "responseVariables" in api:
         mappings = api["responseVariables"]
         if not isinstance(mappings, list) or len(mappings) > 128:
             _fail("api_mapping", node_id, "responseVariables")
+        seen_response_variables = set()
         for entry in mappings:
             if not isinstance(entry, dict) or set(entry) - {"variableKey", "jsonPath", "defaultValue"}:
                 _fail("api_mapping", node_id, "responseVariables")
-            if not isinstance(entry.get("variableKey"), str) or entry["variableKey"] not in variables or not isinstance(entry.get("jsonPath"), str):
+            if not isinstance(entry.get("variableKey"), str) or not isinstance(entry.get("jsonPath"), str):
                 _fail("api_mapping", node_id, "responseVariables")
+            key = _identifier(
+                entry["variableKey"], _VARIABLE, "api_mapping", node_id,
+                "responseVariables",
+            )
+            if key in _RESERVED_VARIABLES or key in seen_response_variables:
+                _fail("api_mapping", node_id, "responseVariables")
+            seen_response_variables.add(key)
             _json_path(entry["jsonPath"], "api_mapping", node_id, "responseVariables")
+            if "defaultValue" in entry:
+                _validate_mapped_default(
+                    entry["defaultValue"], variables.get(key), node_id,
+                )
     projection = api.get("responseProjection")
     mappings = dict(api.get("responseMapping") or {})
     for entry in api.get("responseVariables", []):
@@ -594,7 +648,135 @@ def _validate_api(api: Any, node_id: str, variables: set[str], *, capability=Fal
         _fail("api_projection", node_id, "responseProjection")
 
 
-def _validate_node(node: dict, variables: dict[str, dict], declared: set[str]) -> tuple[CallerSlot, ...]:
+def _validate_mapped_default(value, declaration, node_id):
+    if value is None or declaration is None:
+        return
+    kind = declaration.get("type", "text")
+    valid = {
+        "text": lambda item: isinstance(item, str),
+        "date": lambda item: isinstance(item, str),
+        "phone": lambda item: isinstance(item, str),
+        "email": lambda item: isinstance(item, str),
+        "time": lambda item: isinstance(item, str),
+        "choice": lambda item: isinstance(item, str) and item in declaration.get("choices", []),
+        "number": lambda item: type(item) in (int, float),
+    }.get(kind)
+    if valid is None or not valid(value):
+        _fail("api_mapping", node_id, "responseVariables.defaultValue")
+
+
+def _compiled_variable_declarations(declarations, nodes):
+    outputs = {}
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("type") not in {"api_request", "capability"}:
+            continue
+        data = node.get("data")
+        api = data.get("api") if isinstance(data, dict) else None
+        if not isinstance(api, dict):
+            continue
+        for key in (api.get("responseMapping") or {}):
+            outputs[key] = {"key": key, "type": None, "required": False}
+        for entry in api.get("responseVariables") or []:
+            if not isinstance(entry, dict):
+                continue
+            declaration = {
+                "key": entry.get("variableKey"),
+                "type": None,
+                "required": False,
+            }
+            if "defaultValue" in entry:
+                declaration["defaultValue"] = entry["defaultValue"]
+            outputs[entry.get("variableKey")] = declaration
+    result = []
+    for key, declaration in declarations.items():
+        result.append(CompiledVariableDeclaration(
+            key=key, origin="explicit",
+            _data_json=json.dumps(
+                declaration, ensure_ascii=False, allow_nan=False, separators=(",", ":"),
+            ),
+        ))
+    for key, declaration in outputs.items():
+        if key in declarations:
+            continue
+        result.append(CompiledVariableDeclaration(
+            key=key, origin="output",
+            _data_json=json.dumps(
+                declaration, ensure_ascii=False, allow_nan=False, separators=(",", ":"),
+            ),
+        ))
+    return tuple(result)
+
+
+def _validate_record_update_bindings(nodes, by_id, edges):
+    adjacency = {}
+    for edge in edges:
+        adjacency.setdefault(edge.source, set()).add(edge.target)
+    for node in nodes:
+        if not isinstance(node, dict) or node.get("type") != "save_record":
+            continue
+        data = node.get("data") or {}
+        setting = data.get("saveRecord", data.get("save_record")) or {}
+        source_id = setting.get("updateSourceNodeId")
+        if source_id is None:
+            continue
+        source = by_id.get(source_id)
+        source_data = source.get("data") if isinstance(source, dict) else None
+        source_setting = (
+            source_data.get("saveRecord", source_data.get("save_record"))
+            if isinstance(source_data, dict) else None
+        )
+        if (
+            source is None or source.get("type") != "save_record"
+            or not isinstance(source_setting, dict)
+            or source_setting.get("updateSourceNodeId") is not None
+            or source_setting.get("recordTypeId") != setting.get("recordTypeId")
+            or source_id == node.get("id")
+        ):
+            _fail("save_record_update_binding", node.get("id"), "updateSourceNodeId")
+        visited = set()
+        pending = [source_id]
+        while pending:
+            current = pending.pop()
+            if current == node["id"]:
+                break
+            if current in visited:
+                continue
+            visited.add(current)
+            pending.extend(adjacency.get(current, ()))
+        else:
+            _fail("save_record_update_unreachable", node.get("id"), "updateSourceNodeId")
+
+
+def _candidate_output_names(nodes):
+    names = set()
+    for node in nodes:
+        if not isinstance(node, dict):
+            continue
+        node_type = node.get("type")
+        if not isinstance(node_type, str) or node_type not in {
+            "api_request", "capability",
+        }:
+            continue
+        data = node.get("data")
+        api = data.get("api") if isinstance(data, dict) else None
+        if not isinstance(api, dict):
+            continue
+        mapping = api.get("responseMapping")
+        if isinstance(mapping, dict):
+            names.update(key for key in mapping if isinstance(key, str))
+        response_variables = api.get("responseVariables")
+        if isinstance(response_variables, list):
+            names.update(
+                item.get("variableKey") for item in response_variables
+                if isinstance(item, dict)
+                and isinstance(item.get("variableKey"), str)
+            )
+    return names
+
+
+def _validate_node(
+    node: dict, variables: dict[str, dict], declared: set[str],
+) -> tuple[CallerSlot, ...]:
     node_id, kind = node["id"], node["type"]
     data = node.get("data")
     if not isinstance(data, dict):
@@ -640,7 +822,10 @@ def _validate_node(node: dict, variables: dict[str, dict], declared: set[str]) -
         if sorted(orders) != list(range(len(form_slots))):
             _fail("form_order", node_id, "slots")
     elif kind in {"api_request", "capability"}:
-        _validate_api(data.get("api"), node_id, declared, capability=(kind == "capability"))
+        _validate_api(
+            data.get("api"), node_id, variables,
+            available_variables=declared, capability=(kind == "capability"),
+        )
     elif kind == "api_response":
         presentation = data.get("responsePresentation")
         if not isinstance(presentation, dict):
@@ -649,6 +834,10 @@ def _validate_node(node: dict, variables: dict[str, dict], declared: set[str]) -
         _keys(presentation, allowed, "unknown_field", node_id)
         array_variable = presentation.get("arrayVariable", "")
         if not isinstance(array_variable, str) or (array_variable and array_variable not in declared):
+            _fail("api_presentation", node_id, "arrayVariable")
+        if array_variable and array_variable in variables and (
+            variables[array_variable].get("type", "text") != "array"
+        ):
             _fail("api_presentation", node_id, "arrayVariable")
         for key in ("introText", "outroText", "noResultsText"):
             if key in presentation:
@@ -724,6 +913,8 @@ def _validate_node(node: dict, variables: dict[str, dict], declared: set[str]) -
         key = setting.get("variableKey")
         if not isinstance(key, str) or key not in declared or not isinstance(setting.get("valueType"), str) or setting.get("valueType") not in {"static", "template", "expression"}:
             _fail("set_variable", node_id, "variableKey")
+        if key not in variables:
+            _fail("set_variable", node_id, "variableKey")
         value = _text(setting.get("value"), "set_variable", node_id, "value", limit=8000)
         if setting["valueType"] == "template":
             _template(value, declared, "set_variable", node_id, "value")
@@ -735,9 +926,17 @@ def _validate_node(node: dict, variables: dict[str, dict], declared: set[str]) -
         record = data.get("saveRecord", data.get("save_record"))
         if not isinstance(record, dict):
             _fail("save_record", node_id, "saveRecord")
-        _keys(record, frozenset({"recordTypeId", "recordTypeName", "mapping", "status"}),
+        _keys(record, frozenset({
+            "recordTypeId", "recordTypeName", "mapping", "status",
+            "updateSourceNodeId",
+        }),
               "unknown_field", node_id)
         _text(record.get("recordTypeId"), "save_record", node_id, "recordTypeId", required=True, limit=128)
+        if "updateSourceNodeId" in record:
+            _identifier(
+                record.get("updateSourceNodeId"), _NODE_ID,
+                "save_record", node_id, "updateSourceNodeId",
+            )
         mapping = record.get("mapping")
         if not isinstance(mapping, dict) or not mapping or len(mapping) > 128:
             _fail("save_record", node_id, "mapping")
@@ -771,6 +970,10 @@ def _validate_node(node: dict, variables: dict[str, dict], declared: set[str]) -
                                  "maxRetries", "writes"}), "unknown_field", node_id)
         if not isinstance(picker.get("sourceVariable"), str) or picker.get("sourceVariable") not in declared:
             _fail("option_picker", node_id, "sourceVariable")
+        if picker["sourceVariable"] in variables and (
+            variables[picker["sourceVariable"]].get("type", "text") != "array"
+        ):
+            _fail("option_picker", node_id, "sourceVariable")
         _json_path(picker.get("labelPath"), "option_picker", node_id, "labelPath")
         if not picker.get("labelPath"):
             _fail("option_picker", node_id, "labelPath")
@@ -786,7 +989,10 @@ def _validate_node(node: dict, variables: dict[str, dict], declared: set[str]) -
             if not isinstance(write, dict) or set(write) != {"variableKey", "path"}:
                 _fail("option_picker", node_id, "writes")
             key = write.get("variableKey")
-            if not isinstance(key, str) or key not in declared or key in destinations:
+            if (
+                not isinstance(key, str) or key not in variables
+                or key in destinations
+            ):
                 _fail("option_picker", node_id, "writes")
             destinations.add(key)
             _json_path(write.get("path"), "option_picker", node_id, "writes",
@@ -943,6 +1149,7 @@ def compile_flow(config: dict, identity: PilotIdentity) -> CompiledFlow:
     if "globalPrompt" in snapshot and "global_prompt" in snapshot:
         _fail("definition_field")
     declarations, declared = _validate_variable_declarations(snapshot)
+    available_variables = declared | _candidate_output_names(nodes)
     for prompt_key in ("globalPrompt", "global_prompt"):
         if prompt_key in snapshot:
             _template(snapshot[prompt_key], declared, "definition", "flow", prompt_key)
@@ -967,7 +1174,7 @@ def compile_flow(config: dict, identity: PilotIdentity) -> CompiledFlow:
                                     allow_nan=False, separators=(",", ":")).encode("utf-8")) if "data" in node else 0
         if data_bytes > MAX_NODE_BYTES:
             _fail("node_size", node_id)
-        caller_slots.extend(_validate_node(node, declarations, declared))
+        caller_slots.extend(_validate_node(node, declarations, available_variables))
         compiled_nodes.append(CompiledNode(
             node_id, kind,
             json.dumps(node["data"], ensure_ascii=False, allow_nan=False, separators=(",", ":")),
@@ -979,6 +1186,7 @@ def compile_flow(config: dict, identity: PilotIdentity) -> CompiledFlow:
         _fail("initial_node")
     compiled_edges, outgoing = _validate_edges(edges, by_id)
     _validate_topology(nodes, by_id, compiled_edges, outgoing, initial_id)
+    _validate_record_update_bindings(nodes, by_id, compiled_edges)
     total_io = config_bytes + sum(
         len(node._data_json.encode("utf-8")) for node in compiled_nodes
     )
@@ -990,6 +1198,9 @@ def compile_flow(config: dict, identity: PilotIdentity) -> CompiledFlow:
         nodes=tuple(compiled_nodes),
         edges=compiled_edges,
         caller_slots=tuple(caller_slots),
+        variable_declarations=_compiled_variable_declarations(
+            declarations, nodes,
+        ),
         max_nodes=MAX_NODES,
         max_edges=MAX_EDGES,
         max_revisits=MAX_REVISITS,
@@ -1001,6 +1212,7 @@ def compile_flow(config: dict, identity: PilotIdentity) -> CompiledFlow:
 
 __all__ = [
     "CallerSlot", "CompiledEdge", "CompiledFlow", "CompiledNode",
+    "CompiledVariableDeclaration",
     "MAX_DEFINITION_BYTES", "MAX_EDGES", "MAX_NODES", "MAX_REVISITS",
     "MAX_TOTAL_IO_BYTES", "NativeGraphError", "compile_flow",
 ]
