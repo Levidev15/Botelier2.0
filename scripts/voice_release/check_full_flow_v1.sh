@@ -21,6 +21,10 @@ checkpoint="$EVIDENCE/full-flow-v1-checkpoint.json"
 # A failed retry must not retain a completed checkpoint from an earlier run.
 # Failure logs remain available, but completion is emitted only after every gate.
 rm -f -- "$checkpoint" "$checkpoint.tmp"
+[[ -f "$root/botelier/backend/tests/test_action_executor.py" ]] || {
+  printf '%s\n' "Missing legacy action contract fixture for the read-only runtime mount." >&2
+  exit 2
+}
 
 pure_tests=(
   test_native_graph.py
@@ -74,7 +78,7 @@ run_boundary() {
   local label="$1" guard="$2"
   shift 2
   local name
-  local -a tests=() profile_env=()
+  local -a tests=() profile_env=() fixture_mounts=()
   for name in "$@"; do
     [[ "$name" =~ ^test_[a-z0-9_]+\.py$ ]] || refuse
     [[ -f "$root/examples/features/botelier-flow-trial/$name" ]] || {
@@ -92,6 +96,9 @@ run_boundary() {
       NEXTAUTH_URL=http://127.0.0.1:5011
     )
   elif [[ "$label" == "runtime" ]]; then
+    # Backend tests are deliberately excluded from the runtime image. Keep
+    # the legacy cases separate and read-only at their trial-relative path.
+    fixture_mounts=(-v "$root/botelier/backend/tests:/ci/botelier/backend/tests:ro")
     profile_env=(
       HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1
       HF_HUB_DISABLE_TELEMETRY=1 DO_NOT_TRACK=1
@@ -105,6 +112,7 @@ run_boundary() {
       --tmpfs /tmp:rw,nosuid,nodev,size=256m \
       -v "$root/examples/features/botelier-flow-trial:$trial:ro" \
       -v "$RUNNER_TEMP/voice-test-tools:/test-tools:ro" \
+      "${fixture_mounts[@]}" \
       --entrypoint env "$IMAGE" -i \
       PATH=/usr/local/bin:/usr/bin:/bin HOME=/tmp NLTK_DATA=/opt/nltk_data \
       PYTHONPATH=/test-tools PYTHONDONTWRITEBYTECODE=1 \

@@ -20,10 +20,16 @@ class FullFlowV1OrchestrationTests(unittest.TestCase):
         self, *, actions="true", image=None, revision=REVISION,
         fail_guard="", stale_checkpoint=False,
         mcp_self_test_denials="12", mcp_blocked_attempts="0",
+        missing_legacy_fixture=False,
     ):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             log = root / "docker.jsonl"
+            workspace = ROOT
+            if missing_legacy_fixture:
+                workspace = root / "checkout"
+                workspace.mkdir()
+                (workspace / "examples").symlink_to(ROOT / "examples", target_is_directory=True)
             if stale_checkpoint:
                 (root / "evidence").mkdir()
                 (root / "evidence/full-flow-v1-checkpoint.json").write_text(
@@ -65,7 +71,7 @@ class FullFlowV1OrchestrationTests(unittest.TestCase):
                     "IMAGE": image or "voice-flow-candidate:" + REVISION,
                     "GITHUB_SHA": revision,
                     "RUNNER_TEMP": str(root),
-                    "GITHUB_WORKSPACE": str(ROOT),
+                    "GITHUB_WORKSPACE": str(workspace),
                     "EVIDENCE": str(root / "evidence"),
                     "FIXTURE_DOCKER_LOG": str(log),
                     "FIXTURE_FAIL_GUARD": fail_guard,
@@ -225,6 +231,23 @@ class FullFlowV1OrchestrationTests(unittest.TestCase):
             "application_guard", "lifecycle_guard", "editor_guard",
             "mcp_management_self_test", "mcp_management_guard",
         ])
+
+    def test_legacy_action_contracts_are_a_readonly_runtime_fixture_not_image_content(self):
+        result, calls, _ = self.launch()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        mount = f"{ROOT}/botelier/backend/tests:/ci/botelier/backend/tests:ro"
+        self.assertIn(mount, calls[1])
+        for index in (0, 2, 3, 4):
+            self.assertNotIn(mount, calls[index])
+
+    def test_missing_legacy_fixture_fails_before_any_container_without_stale_success(self):
+        result, calls, evidence = self.launch(
+            missing_legacy_fixture=True, stale_checkpoint=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(calls, [])
+        self.assertIsNone(evidence)
+        self.assertIn("Missing legacy action contract fixture", result.stderr)
 
     def test_refuses_local_execution_before_any_docker_invocation(self):
         result, calls, _ = self.launch(actions="false")

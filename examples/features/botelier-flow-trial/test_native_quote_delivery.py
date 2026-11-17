@@ -8,6 +8,8 @@ from types import SimpleNamespace
 import threading
 import uuid
 
+import pytest
+
 
 def _delivery_definition(identity, tool_id, tool_type):
     from test_native_quote_actions import configuration
@@ -148,19 +150,51 @@ def _fixed_quote_clock(monkeypatch, clock):
 
 def _use_vetted_offline_sentence_assets():
     """Use the candidate's vetted offline tokenizer data without downloading."""
+    import os
     from pathlib import Path
 
     import nltk.data
 
-    assets = (
-        Path(__file__).resolve().parents[3]
-        / "generated-artifacts/voice-pilot/offline-assets/nltk_data"
-    ).resolve()
+    assets = Path(os.environ.get("NLTK_DATA", ""))
     english_tab = assets / "tokenizers/punkt_tab/english/abbrev_types.txt"
-    if not english_tab.is_file():
+    if not assets.is_absolute() or not english_tab.is_file():
         raise RuntimeError("The vetted offline NLTK sentence assets are unavailable")
+    assets = assets.resolve()
     if str(assets) not in nltk.data.path:
         nltk.data.path.insert(0, str(assets))
+
+
+def test_offline_sentence_assets_use_configured_location_after_fixture_relocation(monkeypatch):
+    import os
+    from pathlib import Path
+
+    import nltk.data
+
+    assets = Path(os.environ["NLTK_DATA"]).resolve()
+    assert (assets / "tokenizers/punkt_tab/english/abbrev_types.txt").is_file()
+    monkeypatch.setitem(
+        globals(), "__file__",
+        "/ci/examples/features/botelier-flow-trial/test_native_quote_delivery.py",
+    )
+    monkeypatch.setattr(nltk.data, "path", [])
+    _use_vetted_offline_sentence_assets()
+    assert nltk.data.path == [str(assets)]
+
+
+@pytest.mark.parametrize("configured", [None, "missing", "relative"])
+def test_offline_sentence_assets_refuse_missing_configuration_without_cache_fallback(
+    monkeypatch, configured,
+):
+    if configured is None:
+        monkeypatch.delenv("NLTK_DATA", raising=False)
+    else:
+        value = (
+            f"/tmp/botelier-missing-nltk-{uuid.uuid4().hex}"
+            if configured == "missing" else "relative/assets"
+        )
+        monkeypatch.setenv("NLTK_DATA", value)
+    with pytest.raises(RuntimeError, match="vetted offline NLTK sentence assets"):
+        _use_vetted_offline_sentence_assets()
 
 
 def _runner(
