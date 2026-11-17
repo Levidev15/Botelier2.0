@@ -267,6 +267,104 @@ def test_full_catalog_order_selection_confirmation_actions_and_terminal():
     asyncio.run(scenario())
 
 
+@pytest.mark.parametrize(
+    "utterance",
+    [
+        "yes, but I need to change the room",
+        "No, not yes; I need to change the room",
+    ],
+)
+def test_actual_pipeline_rejects_qualified_or_negative_yes_before_write(utterance):
+    async def scenario():
+        from node_contract_io import tool_delta
+
+        action_nodes = []
+        rooms = [
+            {"name": "First room", "price": 50},
+            {"name": "Second room", "price": 90},
+        ]
+
+        async def execute(node, facts, *, confirmation):
+            action_nodes.append(node.node_id)
+            from botelier.voice.flows.native_execution import NativeActionResult
+            if node.node_id == "lookup":
+                return NativeActionResult(
+                    True, variables={"items": rooms},
+                    llm_data={"items": rooms, "count": 2},
+                )
+            return NativeActionResult(True)
+
+        call = NativeGraphPipelineCall(
+            compile_full_catalog_flow(),
+            providers=GraphProviders([
+                tool_delta("collect_query", {"query": "fixtures"}),
+                tool_delta("collect_name", {"name": "Ada"}),
+                tool_delta("collect_email", {"email": "ada@example.com"}),
+                tool_delta("select_room", {"ordinal": 2, "label": "Second room"}),
+                tool_delta("confirm", {"response": "yes"}),
+                "Please confirm yes or no.",
+            ]),
+            execute_action=execute,
+        )
+        async with call:
+            await call.activate()
+            def native_tools():
+                return {
+                    item.name for item in getattr(
+                        call.created[4].tools, "standard_tools", (),
+                    ) if item.name.startswith("native_")
+                }
+
+            await call.wait_until(lambda: bool(native_tools()))
+            turns = ("fixtures", "Ada", "ada@example.com", "Second room", utterance)
+            expected_nodes = ("form", "form", "picker", "confirm", "confirm")
+            for index, (turn, expected_node) in enumerate(zip(turns, expected_nodes)):
+                previous_tools = native_tools()
+                await call.providers.user_turn(turn, turn_index=index)
+                if index < len(turns) - 1:
+                    await call.wait_until(lambda: (
+                        call.adapter.manager.current_node == expected_node
+                        and native_tools() != previous_tools
+                    ))
+                else:
+                    await call.wait_until(lambda: len([
+                        item for item in call.created[4].messages
+                        if item.get("role") == "tool"
+                    ]) >= index + 1)
+            messages = [
+                item for item in call.created[4].messages if item.get("role") == "tool"
+            ]
+            assert json.loads(messages[-1]["content"]) == {
+                "status": "rejected", "reason": "caller_response_mismatch",
+            }
+            assert call.adapter.manager.current_node == "confirm"
+            assert action_nodes == ["lookup"]
+            await call.finish("graceful_end")
+            call.assert_clean()
+
+    asyncio.run(scenario())
+
+
+def test_initial_wait_node_injects_configured_system_prompt_once():
+    async def scenario():
+        from botelier.voice.flows.native_graph import compile_flow
+
+        config = compile_simple_flow().config()
+        config["nodes"][0]["data"]["waitForResponse"] = True
+        compiled = compile_flow(config, compile_simple_flow().identity)
+        call = GraphCall(compiled)
+        config = call.adapter._node_config("start", source_visit=None)
+        messages = config["task_messages"]
+        private = [
+            item for item in messages
+            if item.get("role") == "developer"
+            and item.get("content") == "Keep the greeting private guidance."
+        ]
+        assert len(private) == 1
+
+    asyncio.run(scenario())
+
+
 def test_retry_and_stale_schema_rejection_keep_facts_and_effects_owned():
     async def scenario():
         config = full_catalog_config()

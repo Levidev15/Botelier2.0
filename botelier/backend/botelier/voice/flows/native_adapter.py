@@ -482,11 +482,6 @@ class NativeFlowAdapter:
                 "role": "developer",
                 "content": self._render(data["instructions"], speech=False),
             })
-        if node.type == "initial" and data.get("systemPrompt"):
-            messages.append({
-                "role": "developer",
-                "content": self._render(data["systemPrompt"], speech=False),
-            })
         if guided:
             if node.type == "message":
                 guidance = "Speak the configured message before waiting for the caller."
@@ -858,6 +853,15 @@ class NativeFlowAdapter:
             ),
         )
 
+    @staticmethod
+    def _same_confirmation(caller, response):
+        """Consent is exact: a model-selected yes cannot override a qualification."""
+        def normalize(value):
+            value = re.sub(r"[.!?]+$", "", value.casefold().strip())
+            return " ".join(value.split())
+
+        return normalize(caller) == normalize(response)
+
     async def _choose_option(self, node_id, visit, arguments):
         if not self._available(node_id, visit):
             return self._rejected("busy_or_stale")
@@ -977,7 +981,7 @@ class NativeFlowAdapter:
             return self._rejected("invalid_arguments")
         response = arguments["response"].strip().casefold()
         latest = self._latest_user_text()
-        if latest is not None and not self._same_answer(latest, response):
+        if latest is None or not self._same_confirmation(latest, response):
             return self._rejected("caller_response_mismatch")
         if response not in ({"yes", "no", "edit"} if configuration.get("allowEdit") else {"yes", "no"}):
             return self._rejected("invalid_confirmation")
