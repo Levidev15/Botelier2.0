@@ -41,6 +41,10 @@ _SPOKEN_NUMBER = re.compile(
 _EMPTY_COUNT = re.compile(
     r"^(?:none|no(?:\s+(?:children|kids|infants|adults|guests|rooms|people|persons))?)[.!?]?$", re.I,
 )
+_NO_COUNT = re.compile(r"\bno\s+(?:children|kids|infants|adults|guests|rooms|people|persons)\b", re.I)
+_COUNT_CORRECTION = re.compile(
+    r"\b(?:mean|meant|actually|rather|instead|correction|sorry|make\s+that)\b", re.I,
+)
 _PHONE = re.compile(r"(?<![\w+])\+?[0-9(][0-9 () .-]{5,30}[0-9](?!\w)")
 _TIME = re.compile(r"(?<!\w)(?:[0-9]{1,2}:[0-9]{2}\s*(?:am|pm)?|[0-9]{1,2}\s*(?:am|pm))(?!\w)", re.I)
 _EMAIL = re.compile(r"\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,63}\b", re.I)
@@ -122,8 +126,9 @@ def _grounded_number(caller, proposed, *, built_in):
         return False
     digits = list(islice(_DIGITS.finditer(source), 9))
     words = list(islice(_SPOKEN_NUMBER.finditer(source), 9))
-    if len(digits) > 8 or len(words) > 8 or (
-        _ALTERNATIVE.search(source) and len(digits) + len(words) > 1
+    empty_counts = list(islice(_NO_COUNT.finditer(source), 9))
+    if any(len(matches) > 8 for matches in (digits, words, empty_counts)) or (
+        _ALTERNATIVE.search(source) and len(digits) + len(words) + len(empty_counts) > 1
     ):
         return False
     for match in digits:
@@ -134,6 +139,12 @@ def _grounded_number(caller, proposed, *, built_in):
     if not built_in:
         return False
     if target == 0 and _EMPTY_COUNT.fullmatch(caller.strip()):
+        return True
+    if target == 0 and any(
+        not _negated_at(source, match.start(), match.end())
+        and not _COUNT_CORRECTION.search(source[match.end():match.end() + 128])
+        for match in empty_counts
+    ):
         return True
     if not words:
         return False

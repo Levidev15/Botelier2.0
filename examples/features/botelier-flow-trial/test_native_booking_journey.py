@@ -17,8 +17,9 @@ from test_native_quote_delivery import (
 
 @pytest.mark.parametrize("availability_source", ["http", "mcp"])
 @pytest.mark.parametrize("delivery_type", ["SEND_SMS", "SEND_EMAIL"])
+@pytest.mark.parametrize("batch_stay", [False, True])
 def test_booking_link_uses_real_sdk_broker_and_record_without_creating_payment(
-    monkeypatch, availability_source, delivery_type,
+    monkeypatch, availability_source, delivery_type, batch_stay,
 ):
     import guard as provider_guard
     from native_effect_io import NativeEffectsFixture
@@ -39,11 +40,14 @@ def test_booking_link_uses_real_sdk_broker_and_record_without_creating_payment(
             )
             compiled = compile_flow(source, fixture.identity)
             recipient_variable = "caller_email" if delivery_type == "SEND_EMAIL" else "caller_phone"
-            providers = GraphProviders([
+            stay_replies = [tool_delta("collect_stay", STAY)] if batch_stay else [
                 tool_delta("collect_check_in", {"check_in": STAY["check_in"]}),
                 tool_delta("collect_check_out", {"check_out": STAY["check_out"]}),
                 tool_delta("collect_adults", {"adults": 2}),
                 tool_delta("collect_children", {"children": 0}),
+            ]
+            providers = GraphProviders([
+                *stay_replies,
                 tool_delta("select_room", {"ordinal": 2, "label": "Ocean Suite"}),
                 tool_delta("collect_contact", {recipient_variable: RECIPIENTS[delivery_type]}),
                 tool_delta("confirm", {"response": "yes"}),
@@ -151,9 +155,14 @@ def test_booking_link_uses_real_sdk_broker_and_record_without_creating_payment(
                     }
 
                 await call.wait_until(lambda: bool(native_tools()))
-                turns = [
+                turns = [(
+                    "From December 1, 2026 to December 3, 2026, for two adults and no children.",
+                    "picker",
+                )] if batch_stay else [
                     ("December 1, 2026", "stay"), ("December 3, 2026", "stay"),
                     ("Two adults", "stay"), ("No children", "picker"),
+                ]
+                turns += [
                     ("The second room, Ocean Suite", "contact"),
                     (RECIPIENTS[delivery_type], "confirm"),
                 ]
@@ -186,7 +195,7 @@ def test_booking_link_uses_real_sdk_broker_and_record_without_creating_payment(
                 prior_results = sum(
                     message.get("role") == "tool" for message in call.created[4].get_messages()
                 )
-                await providers.user_turn("Yes, but I need to change the room.", turn_index=6)
+                await providers.user_turn("Yes, but I need to change the room.", turn_index=len(turns))
                 await call.wait_until(lambda: sum(
                     message.get("role") == "tool" for message in call.created[4].get_messages()
                 ) > prior_results)
@@ -197,11 +206,15 @@ def test_booking_link_uses_real_sdk_broker_and_record_without_creating_payment(
                 assert sent == [] and _ledger_rows(fixture) == []
                 assert actions == ["availability", "fetch_quote", "validate_quote"]
 
-                await providers.user_turn("Yes.", turn_index=7)
+                await providers.user_turn("Yes.", turn_index=len(turns) + 1)
                 await call.wait_until(lambda: (
                     call.adapter.snapshot()["completed"]
                     and call.adapter.manager.current_node == "done"
                 ))
+                # The real host also sends one non-streaming, one-token warmup;
+                # it must not be confused with or consume a scripted caller turn.
+                warmups = [request for request in providers.requests if not request.get("stream")]
+                assert len(warmups) == 1 and warmups[0]["max_tokens"] == 1
                 assert actions == [
                     "availability", "fetch_quote", "validate_quote", "delivery", "save",
                 ], [(name, result.failure_reason) for name, result in results]
@@ -262,7 +275,7 @@ def test_booking_link_uses_real_sdk_broker_and_record_without_creating_payment(
                 assert quote["checkout_url"] not in model_and_speech
                 assert html.unescape(quote["checkout_url"]) not in model_and_speech
                 assert call.adapter.facts["quote_fingerprint"] not in model_and_speech
-                assert len([request for request in providers.requests if request.get("stream")]) == 9
+                assert len([request for request in providers.requests if request.get("stream")]) == len(stay_replies) + 5
                 assert providers.business_requests == []
                 assert len(http_requests) == (1 if availability_source == "mcp" else 2)
                 assert mcp_calls == ([STAY] if availability_source == "mcp" else [])
