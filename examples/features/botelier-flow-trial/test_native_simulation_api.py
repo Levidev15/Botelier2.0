@@ -296,6 +296,62 @@ def test_native_http_requires_explicit_assistant_and_refuses_unsupported_globals
     run(scenario)
 
 
+@pytest.mark.parametrize(("setting", "diagnostic"), [
+    ("global", "global_instructions"),
+    ("node_type", "node_types"),
+    ("collection_validation", "slot"),
+])
+def test_unsupported_published_flow_reports_safe_actionable_admission_category(
+    setting, diagnostic,
+):
+    async def scenario():
+        async with NativeSimulationAPIHarness() as harness:
+            config = harness.records.version.flow_config
+            if setting == "global":
+                config["globalPrompt"] = "PRIVATE-DESIGNER-PROMPT-NOT-FOR-ERRORS"
+            elif setting == "node_type":
+                config["nodes"][0]["type"] = "PRIVATE-UNSUPPORTED-NODE-TYPE"
+            else:
+                collection = next(
+                    node for node in config["nodes"]
+                    if node["type"] == "collect_slot"
+                )
+                collection["data"]["slot"]["validation"] = {"maxLength": 20}
+
+            response = await harness.start()
+
+            assert response.status_code == 400, response.text
+            assert response.json() == {"detail": {
+                "code": "native_simulation_flow_unsupported",
+                "diagnostic": diagnostic,
+            }}
+            assert "PRIVATE-" not in response.text
+            assert harness.fixture.providers.requests == []
+            assert harness.fixture.providers.business_requests == []
+            assert harness.registry is None or harness.registry.active_count == 0
+            assert harness.registry is None or harness.registry.pending_count == 0
+    run(scenario)
+
+
+@pytest.mark.parametrize("diagnostic", [
+    "PRIVATE-EXCEPTION-WITH-CONFIGURATION",
+    {"globalPrompt": "PRIVATE-PROMPT"},
+    ["global_instructions"],
+    None,
+])
+def test_unknown_admission_diagnostics_are_not_exposed(diagnostic):
+    from botelier.api.simulation import _native_http_error
+    from botelier.services.native_simulation_session import NativeSimulationError
+
+    error = NativeSimulationError(
+        "native_simulation_flow_unsupported", diagnostic=diagnostic,
+    )
+    response = _native_http_error(error)
+
+    assert response.status_code == 400
+    assert response.detail == "native_simulation_flow_unsupported"
+
+
 def test_native_http_host_start_failure_releases_pending_reservation():
     async def scenario():
         async with NativeSimulationAPIHarness() as harness:

@@ -141,3 +141,68 @@ pass a customer connection string, or relax the ordinary offline guards. The
 new recovery guard allows only the fixed CI Unix-socket fixture and still denies
 providers, subprocesses, credentials and full server/database startup. Synthetic
 commit/outcome loss is not a certification of real carrier or database failover.
+
+## Isolated editor to native-runtime checkpoint
+
+The candidate editor's Test sidebar keeps **Legacy** as its default and offers
+an explicit **Native development** option. Native tests require a linked primary
+assistant and a clean, current published version. A native session is accepted
+only when its engine, tool, assistant, version number and version ID match that
+selection. Drafts, unsaved edits, outdated versions and unsupported configurations
+are refused; there is no automatic retry through the legacy engine.
+
+This is still the bounded six-node, read-only pilot—not a general booking,
+MCP-action, records, SMS/email or payment-link runtime. The version badge shows
+the runtime actually returned by the backend; publishing does not opt production
+calls into the pilot. Unsupported-flow diagnostics contain fixed categories,
+never raw node instructions, provider responses or exception text.
+
+The independent `editor_guard.py` admits only the actual authentication, MFA,
+flow-version and simulation leaf routers. It uses real password/TOTP/session and
+permission checks with an in-memory SQLite database. It does not import the full
+server, replace authentication dependencies, use a real database or invoke a
+provider. Existing guards remain unchanged.
+
+```bash
+# Run from the isolated candidate checkout; use only already installed tools.
+env -i PATH="$PATH" HOME=/tmp \
+  PYTHONPATH=/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages \
+  PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 LOGURU_LEVEL=ERROR \
+  NEXTAUTH_SECRET=botelier-editor-trial-only-synthetic-nextauth-secret-v1 \
+  INTEGRATION_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA= \
+  BOTELIER_ENV=development BOTELIER_NATIVE_FLOWS_DEV=1 \
+  NEXTAUTH_URL=http://127.0.0.1:5011 NLTK_DATA=/home/runner/nltk_data \
+  python -B examples/features/botelier-flow-trial/editor_guard.py \
+  --backend-root "$PWD/botelier/backend" \
+  --package-root /home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/pipecat \
+  --tests "$PWD/examples/features/botelier-flow-trial/test_editor_fixture.py"
+```
+
+Use `--self-test` instead of `--tests ...` for intentional refusal checks, in a
+separate process. Ordinary tests must finish with zero guard refusals.
+
+The actual browser path builds the candidate frontend and runs real sign-in,
+MFA, edit/save/reload/publish and native start/message requests through those
+guarded routers. It exchanges bounded JSON-lines over child-process stdin/stdout,
+not an exposed Python HTTP listener. Browser-issued cookies, Origin and CSRF
+headers are forwarded, never synthesized; the ASGI client's own cookie jar is
+cleared between forwarded requests. Supporting dashboard metadata and external
+model/API transports are explicitly synthetic. Traces and credential-bearing
+request logs are disabled.
+
+```bash
+env -i PATH="$PATH" HOME=/tmp \
+  NODE_PATH=/home/runner/workspace/botelier/frontend/node_modules \
+  CHROMIUM_PATH=/repl/tools/bin/chromium \
+  EDITOR_PYTHONPATH=/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages \
+  EDITOR_PACKAGE_ROOT=/home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/pipecat \
+  node botelier/frontend/tests/offline-check.cjs --browser --native-editor
+```
+
+The runner refuses existing candidate dependency/build directories, temporarily
+links approved installed dependencies, and removes its link, build output and
+bounded frontend server afterward. In CI, the same browser controller runs the
+backend in the exact verified candidate image with no network and read-only
+source; only that CI lane executes containers. Passing these checks does not
+verify the full application bootstrap, real provider behavior, voice quality,
+manual calls, Azure deployment or the complete booking-link journey.

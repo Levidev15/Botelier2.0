@@ -1510,8 +1510,12 @@ def _is_native_session(state) -> bool:
 
 
 def _native_http_error(error) -> HTTPException:
+    detail = (
+        {"code": error.code, "diagnostic": error.diagnostic}
+        if error.diagnostic is not None else error.code
+    )
     return HTTPException(
-        status_code=error.status_code, detail=error.code,
+        status_code=error.status_code, detail=detail,
         headers={"Retry-After": "60"} if error.status_code == 429 else None,
     )
 

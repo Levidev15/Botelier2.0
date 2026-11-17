@@ -116,7 +116,8 @@ export interface ResponseProjectionConfig {
 
 export interface APIRequestConfig {
   method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
-  url: string;
+  /** Custom requests use a URL; saved integration endpoints need not have one. */
+  url?: string;
   headers?: Record<string, string>;
   bodyTemplate?: string;
   responseMapping?: Record<string, string>;
@@ -351,6 +352,7 @@ export interface FlowState {
   // Versioning state
   currentSource: "draft" | "published" | "legacy";
   currentVersionNumber: number;
+  currentVersionId: string | null;
   publishedVersionNumber: number;
   hasDraft: boolean;
   hasPublished: boolean;
@@ -406,6 +408,8 @@ export interface FlowState {
 }
 
 let nodeIdCounter = 0;
+let flowLoadGeneration = 0;
+let versionHistoryGeneration = 0;
 
 const generateNodeId = () => {
   nodeIdCounter += 1;
@@ -1994,6 +1998,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   // Versioning state
   currentSource: "legacy",
   currentVersionNumber: 0,
+  currentVersionId: null,
   publishedVersionNumber: 0,
   hasDraft: false,
   hasPublished: false,
@@ -2009,18 +2014,22 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   setEdges: (edges) => set({ edges, isDirty: true, errorNodeIds: [] }),
 
   onNodesChange: (changes) => {
+    // React Flow emits measurements and selection on mount. Neither is part
+    // of the saved definition; treating them as edits invalidates every test.
+    const edited = changes.some(change => change.type !== "dimensions" && change.type !== "select");
     set({
       nodes: applyNodeChanges(changes, get().nodes),
-      isDirty: true,
-      errorNodeIds: [],
+      isDirty: get().isDirty || edited,
+      ...(edited ? { errorNodeIds: [] } : {}),
     });
   },
 
   onEdgesChange: (changes) => {
+    const edited = changes.some(change => change.type !== "select");
     set({
       edges: applyEdgeChanges(changes, get().edges),
-      isDirty: true,
-      errorNodeIds: [],
+      isDirty: get().isDirty || edited,
+      ...(edited ? { errorNodeIds: [] } : {}),
     });
   },
 
@@ -2233,15 +2242,32 @@ export const useFlowStore = create<FlowState>((set, get) => ({
   },
 
   loadFlow: async (toolId: string, accountId: string, source?: "draft" | "published") => {
-    set({ isLoading: true, toolId, accountId });
+    const generation = ++flowLoadGeneration;
+    const changingTool = get().toolId !== toolId || get().accountId !== accountId;
+    set({
+      isLoading: true,
+      toolId,
+      accountId,
+      currentVersionId: null,
+      ...(changingTool ? {
+        currentSource: "legacy",
+        currentVersionNumber: 0,
+        publishedVersionNumber: 0,
+        versions: [],
+        hasDraft: false,
+        hasPublished: false,
+      } : {}),
+    });
     try {
       const sourceParam = source ? `&source=${source}` : "";
       const response = await fetch(`/api/tools/${toolId}/flow?account_id=${accountId}${sourceParam}`, {
         headers: { ...getAuthHeaders() },
       });
       if (!response.ok) throw new Error(await extractErrorMessage(response, "Failed to load flow"));
+      if (generation !== flowLoadGeneration) return;
       
       const data = await response.json();
+      if (generation !== flowLoadGeneration) return;
       
       if (data.flow_config && data.flow_config.nodes) {
         const loadedEdges = (data.flow_config.edges || []).map((e: any) => ({
@@ -2264,6 +2290,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
           isDirty: false,
           currentSource: data.source || "legacy",
           currentVersionNumber: data.version_number || 0,
+          currentVersionId: typeof data.version_id === "string" && data.version_id ? data.version_id : null,
           publishedVersionNumber: data.published_version_number || 0,
           hasDraft: data.has_draft || false,
           hasPublished: data.has_published || false,
@@ -2278,6 +2305,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
           isDirty: false,
           currentSource: "legacy",
           currentVersionNumber: 0,
+          currentVersionId: null,
           publishedVersionNumber: 0,
           hasDraft: false,
           hasPublished: false,
@@ -2287,9 +2315,12 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       // Load version history
       get().loadVersions();
     } catch (error) {
-      console.error("Failed to load flow:", error);
+      if (generation === flowLoadGeneration) {
+        set({ currentVersionId: null });
+        console.error("Failed to load flow:", error);
+      }
     } finally {
-      set({ isLoading: false });
+      if (generation === flowLoadGeneration) set({ isLoading: false });
     }
   },
 
@@ -2297,15 +2328,18 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     const { toolId, accountId } = get();
     if (!toolId || !accountId) return;
 
-    set({ isLoading: true });
+    const generation = ++flowLoadGeneration;
+    set({ isLoading: true, currentVersionId: null });
     try {
       const response = await fetch(
         `/api/tools/${toolId}/flow?account_id=${accountId}&version=${versionNumber}`,
         { headers: { ...getAuthHeaders() } }
       );
       if (!response.ok) throw new Error(await extractErrorMessage(response, "Failed to load version"));
+      if (generation !== flowLoadGeneration) return;
 
       const data = await response.json();
+      if (generation !== flowLoadGeneration) return;
 
       if (data.flow_config && data.flow_config.nodes) {
         const loadedEdges = (data.flow_config.edges || []).map((e: any) => ({
@@ -2328,13 +2362,17 @@ export const useFlowStore = create<FlowState>((set, get) => ({
           isDirty: false,
           currentSource: data.source || "legacy",
           currentVersionNumber: data.version_number || versionNumber,
+          currentVersionId: typeof data.version_id === "string" && data.version_id ? data.version_id : null,
         });
       }
     } catch (error) {
-      console.error("Failed to load version:", error);
+      if (generation === flowLoadGeneration) {
+        set({ currentVersionId: null });
+        console.error("Failed to load version:", error);
+      }
       throw error;
     } finally {
-      set({ isLoading: false });
+      if (generation === flowLoadGeneration) set({ isLoading: false });
     }
   },
 
@@ -2342,6 +2380,7 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     const { toolId, accountId, nodes, edges, variables, globalPrompt, draftDescription } = get();
     if (!toolId || !accountId) return;
 
+    const loadGeneration = flowLoadGeneration;
     set({ isLoading: true });
     try {
       const initialNode = nodes.find((n) => n.type === "initial");
@@ -2395,11 +2434,13 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       }
       
       const result = await response.json();
+      if (loadGeneration !== flowLoadGeneration || get().toolId !== toolId || get().accountId !== accountId) return;
       
       set({ 
         isDirty: false,
         currentSource: "draft",
         currentVersionNumber: result.version_number,
+        currentVersionId: typeof result.version_id === "string" && result.version_id ? result.version_id : null,
         hasDraft: true,
         errorNodeIds: [],
       });
@@ -2410,14 +2451,16 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       console.error("Failed to save flow:", error);
       throw error;
     } finally {
-      set({ isLoading: false });
+      if (loadGeneration === flowLoadGeneration && get().toolId === toolId && get().accountId === accountId) {
+        set({ isLoading: false });
+      }
     }
   },
   
   publishFlow: async (description?: string) => {
     const { toolId, accountId } = get();
     if (!toolId || !accountId) return;
-    
+    const loadGeneration = flowLoadGeneration;
     set({ isLoading: true });
     try {
       const response = await fetch(`/api/tools/${toolId}/flow/publish?account_id=${accountId}`, {
@@ -2443,10 +2486,12 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       }
       
       const result = await response.json();
+      if (loadGeneration !== flowLoadGeneration || get().toolId !== toolId || get().accountId !== accountId) return result;
       
       set({
         currentSource: "published",
         currentVersionNumber: result.version_number,
+        currentVersionId: typeof result.version_id === "string" && result.version_id ? result.version_id : null,
         publishedVersionNumber: result.version_number,
         hasDraft: false,
         hasPublished: true,
@@ -2460,13 +2505,18 @@ export const useFlowStore = create<FlowState>((set, get) => ({
       console.error("Failed to publish flow:", error);
       throw error;
     } finally {
-      set({ isLoading: false });
+      if (loadGeneration === flowLoadGeneration && get().toolId === toolId && get().accountId === accountId) {
+        set({ isLoading: false });
+      }
     }
   },
   
   discardDraft: async () => {
     const { toolId, accountId } = get();
     if (!toolId || !accountId) return;
+    const generation = flowLoadGeneration;
+    const isCurrent = () => generation === flowLoadGeneration &&
+      get().toolId === toolId && get().accountId === accountId;
     
     set({ isLoading: true });
     try {
@@ -2474,43 +2524,54 @@ export const useFlowStore = create<FlowState>((set, get) => ({
         method: "DELETE",
         headers: { ...getAuthHeaders() },
       });
+      if (!isCurrent()) return;
       
       if (!response.ok) throw new Error(await extractErrorMessage(response, "Failed to discard draft"));
       
       // Reload the published version
       await get().loadFlow(toolId, accountId, "published");
     } catch (error) {
+      if (!isCurrent()) return;
       console.error("Failed to discard draft:", error);
       throw error;
     } finally {
-      set({ isLoading: false });
+      if (isCurrent()) set({ isLoading: false });
     }
   },
   
   loadVersions: async () => {
     const { toolId, accountId } = get();
     if (!toolId || !accountId) return;
+    const generation = flowLoadGeneration;
+    const historyGeneration = ++versionHistoryGeneration;
+    const isCurrent = () => generation === flowLoadGeneration &&
+      historyGeneration === versionHistoryGeneration &&
+      get().toolId === toolId && get().accountId === accountId;
     
     try {
       const response = await fetch(`/api/tools/${toolId}/flow/versions?account_id=${accountId}`, {
         headers: { ...getAuthHeaders() },
       });
-      if (!response.ok) return;
+      if (!response.ok || !isCurrent()) return;
       
       const data = await response.json();
+      if (!isCurrent()) return;
       set({
         versions: data.versions || [],
         publishedVersionNumber: data.published_version_number || 0,
         hasDraft: data.has_draft || false,
       });
     } catch (error) {
-      console.error("Failed to load versions:", error);
+      if (isCurrent()) console.error("Failed to load versions:", error);
     }
   },
   
   revertToVersion: async (versionNumber: number, publishImmediately = false) => {
     const { toolId, accountId } = get();
     if (!toolId || !accountId) return;
+    const generation = flowLoadGeneration;
+    const isCurrent = () => generation === flowLoadGeneration &&
+      get().toolId === toolId && get().accountId === accountId;
     
     set({ isLoading: true });
     try {
@@ -2522,16 +2583,18 @@ export const useFlowStore = create<FlowState>((set, get) => ({
           body: JSON.stringify({ publish_immediately: publishImmediately }),
         }
       );
+      if (!isCurrent()) return;
       
       if (!response.ok) throw new Error(await extractErrorMessage(response, "Failed to revert to version"));
       
       // Reload the flow
       await get().loadFlow(toolId, accountId);
     } catch (error) {
+      if (!isCurrent()) return;
       console.error("Failed to revert to version:", error);
       throw error;
     } finally {
-      set({ isLoading: false });
+      if (isCurrent()) set({ isLoading: false });
     }
   },
   
@@ -2608,14 +2671,26 @@ export const useFlowStore = create<FlowState>((set, get) => ({
     });
   },
 
-  clearFlow: () => set({
-    nodes: [],
-    edges: [],
-    variables: [],
-    selectedNode: null,
-    isDirty: false,
-    toolId: null,
-  }),
+  clearFlow: () => {
+    flowLoadGeneration += 1;
+    set({
+      nodes: [],
+      edges: [],
+      variables: [],
+      selectedNode: null,
+      isDirty: false,
+      toolId: null,
+      accountId: null,
+      currentSource: "legacy",
+      currentVersionNumber: 0,
+      currentVersionId: null,
+      publishedVersionNumber: 0,
+      versions: [],
+      hasDraft: false,
+      hasPublished: false,
+      isLoading: false,
+    });
+  },
 
   setIsDirty: (dirty) => set({ isDirty: dirty }),
   setToolId: (id) => set({ toolId: id }),

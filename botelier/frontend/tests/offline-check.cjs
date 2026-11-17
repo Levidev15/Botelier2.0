@@ -10,9 +10,29 @@ const { spawn, spawnSync } = require("node:child_process");
 const frontend = path.resolve(__dirname, "..");
 const args = process.argv.slice(2);
 const runBrowser = args.includes("--browser");
-if (args.some(arg => arg !== "--browser")) {
-  console.error("Usage: node tests/offline-check.cjs [--browser]");
+const runNativeEditor = args.includes("--native-editor");
+if (args.some(arg => !["--browser", "--native-editor"].includes(arg)) ||
+    (runNativeEditor && !runBrowser)) {
+  console.error("Usage: node tests/offline-check.cjs [--browser [--native-editor]]");
   process.exit(2);
+}
+
+const editorCI = process.env.GITHUB_ACTIONS === "true";
+if (runNativeEditor) {
+  try {
+    require("./editor-rpc.cjs").fixtureInvocation({
+      repo: path.resolve(frontend, "../.."),
+      ci: editorCI,
+      image: process.env.EDITOR_CANDIDATE_IMAGE,
+      testTools: process.env.EDITOR_TEST_TOOLS,
+      pythonPath: process.env.EDITOR_PYTHONPATH,
+      packageRoot: process.env.EDITOR_PACKAGE_ROOT,
+      path: process.env.PATH,
+    });
+  } catch {
+    console.error("Native editor browser mode requires the explicit isolated backend configuration.");
+    process.exit(2);
+  }
 }
 
 const packageRoots = (process.env.NODE_PATH || "")
@@ -73,6 +93,17 @@ const syntheticEnv = {
   OFFLINE_ALLOWED_PORT: String(appPort),
   CHROMIUM_PATH: process.env.CHROMIUM_PATH || "/repl/tools/bin/chromium",
   MFA_BROWSER_BASE_URL: `http://127.0.0.1:${appPort}`,
+  ...(runNativeEditor ? {
+    NATIVE_EDITOR_BROWSER: "1",
+    EDITOR_CI: editorCI ? "1" : "0",
+    ...(editorCI ? {
+      EDITOR_CANDIDATE_IMAGE: process.env.EDITOR_CANDIDATE_IMAGE,
+      EDITOR_TEST_TOOLS: process.env.EDITOR_TEST_TOOLS,
+    } : {
+      EDITOR_PYTHONPATH: process.env.EDITOR_PYTHONPATH,
+      EDITOR_PACKAGE_ROOT: process.env.EDITOR_PACKAGE_ROOT,
+    }),
+  } : {}),
 };
 
 let serverProcess;

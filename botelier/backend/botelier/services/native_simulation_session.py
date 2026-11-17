@@ -69,6 +69,16 @@ _SAFE_HOST_CODES = {
     "initialization": "native_simulation_failed",
 }
 
+# Designer-facing categories only. Never serialize exception text, saved
+# configuration, prompts or provider results as admission diagnostics.
+_FLOW_DIAGNOSTICS = frozenset({
+    "definition", "definition_size", "definition_json", "global_instructions",
+    "node_ids", "node_types", "node_data", "edges", "topology", "initial",
+    "slot", "variables", "automatic_instructions", "connected_get", "api_fields",
+    "endpoint_identity", "request_template", "request_limits", "speech",
+    "mapping", "presentation",
+})
+
 _PRIVATE_RUNTIME_KEYS = {
     "api_key",
     "api_keys",
@@ -88,10 +98,16 @@ _PRIVATE_RUNTIME_KEYS = {
 class NativeSimulationError(Exception):
     """Payload-free, fixed-category error suitable for an API adapter."""
 
-    def __init__(self, code: str, status_code: int = 400):
+    def __init__(self, code: str, status_code: int = 400, *, diagnostic=None):
         safe_code = code if code in _STATUS_BY_CODE else "native_simulation_failed"
         expected_status = _STATUS_BY_CODE[safe_code]
         self.code = safe_code
+        self.diagnostic = (
+            diagnostic
+            if safe_code == "native_simulation_flow_unsupported"
+            and isinstance(diagnostic, str) and diagnostic in _FLOW_DIAGNOSTICS
+            else None
+        )
         # A caller may request an explicitly supported status only when it
         # agrees with this fixed code; arbitrary exception status is discarded.
         self.status_code = (

@@ -22,7 +22,8 @@ function APIRequestNode({ data, selected }: APIRequestNodeProps) {
   const isError = data.isError;
   const api = data.api;
   
-  const extractDomain = (url: string) => {
+  const extractDomain = (url: unknown) => {
+    if (typeof url !== "string" || !url.trim()) return "Configure endpoint";
     try {
       if (url.includes("{{")) return url.substring(0, 40) + "...";
       const urlObj = new URL(url);
@@ -70,7 +71,9 @@ function APIRequestNode({ data, selected }: APIRequestNodeProps) {
                 {api.method}
               </span>
               <span className="text-xs text-gray-400 truncate">
-                {extractDomain(api.url)}
+                {api.apiSource === "integration"
+                  ? api.endpointName || "Connected endpoint"
+                  : extractDomain(api.url)}
               </span>
             </div>
             

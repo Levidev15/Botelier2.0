@@ -3,6 +3,23 @@ const assert = require("node:assert/strict");
 const fs = require("node:fs");
 const path = require("node:path");
 const vm = require("node:vm");
+const { spawnSync } = require("node:child_process");
+
+test("native browser mode refuses missing isolated backend configuration before building or serving", () => {
+  const result = spawnSync(process.execPath, [
+    path.join(__dirname, "offline-check.cjs"), "--browser", "--native-editor",
+  ], {
+    env: {
+      PATH: process.env.PATH || "/usr/bin:/bin",
+      NODE_PATH: process.env.NODE_PATH || "",
+      HOME: "/tmp",
+    },
+    encoding: "utf8",
+    timeout: 10_000,
+  });
+  assert.equal(result.status, 2);
+  assert.match(result.stderr, /native editor.*requires.*isolated backend/i);
+});
 
 test("browser output remains in the ignored generated-artifacts directory", () => {
   const config = require("./offline-playwright.config.cjs");

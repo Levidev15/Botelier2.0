@@ -138,7 +138,7 @@ async def prepare_native_simulation(
             str(error) if str(error) in _ADMISSION_CODES
             else "native_simulation_flow_unsupported"
         )
-        raise NativeSimulationError(code) from None
+        raise NativeSimulationError(code, diagnostic=str(error)) from None
 
     if (
         type(getattr(version, "version_number", None)) is not int
@@ -156,6 +156,18 @@ async def prepare_native_simulation(
         raise NativeSimulationError("native_simulation_model_configuration") from None
 
     identity = selection.compiled.identity
+    # Alternative nodes can collect the same variable. Match the host's
+    # unique-variable progress and keep the first collection prompt in the UI.
+    variables_by_key = {}
+    for slot in (
+        selection.compiled.query, selection.compiled.choice,
+        selection.compiled.failure,
+    ):
+        variables_by_key.setdefault(slot.variable, {
+            "key": slot.variable, "type": "string",
+            "description": slot.prompt, "required": True,
+            "node_id": slot.node_id,
+        })
     return NativeSimulationPlan(
         compiled=selection.compiled,
         config=config,
@@ -167,17 +179,7 @@ async def prepare_native_simulation(
             "version_number": version.version_number,
             "llm_provider": config.llm_provider, "llm_model": config.llm_model,
         },
-        variables_to_collect=[
-            {
-                "key": slot.variable, "type": "string",
-                "description": slot.prompt, "required": True,
-                "node_id": slot.node_id,
-            }
-            for slot in (
-                selection.compiled.query, selection.compiled.choice,
-                selection.compiled.failure,
-            )
-        ],
+        variables_to_collect=list(variables_by_key.values()),
     )
 
 

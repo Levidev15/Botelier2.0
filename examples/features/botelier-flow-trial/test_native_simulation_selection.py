@@ -64,6 +64,10 @@ def test_native_simulator_uses_the_owned_published_graph_not_stale_tool_config()
             plan.compiled.failure.variable,
         }
         assert all(entry["type"] == "string" for entry in plan.variables_to_collect)
+        assert len(plan.variables_to_collect) == len({
+            entry["key"] for entry in plan.variables_to_collect
+        }), "alternative collection nodes must not duplicate a variable in the editor"
+        assert plan.variables_to_collect[0]["node_id"] == plan.compiled.query.node_id
         arguments["db"].close()
     asyncio.run(scenario())
 

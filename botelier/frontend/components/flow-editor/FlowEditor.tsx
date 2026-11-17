@@ -111,6 +111,10 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
     activeNodeId,
     setActiveNodeId,
     errorNodeIds,
+    currentSource,
+    currentVersionNumber,
+    currentVersionId,
+    publishedVersionNumber,
   } = useFlowStore();
 
   const [isSaving, setIsSaving] = useState(false);
@@ -287,6 +291,13 @@ function FlowEditorInner({ toolId, accountId, toolName, assistantId, assistantTt
             <FlowSimulatorSidebar
               toolId={toolId}
               toolName={toolName || "Flow"}
+              assistantId={assistantId}
+              isDirty={isDirty}
+              currentSource={currentSource}
+              currentVersionNumber={currentVersionNumber}
+              currentVersionId={currentVersionId}
+              publishedVersionNumber={publishedVersionNumber}
+              isFlowLoading={isLoading}
               onClose={() => setShowSimulator(false)}
               onNodeChange={setActiveNodeId}
             />

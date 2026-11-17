@@ -3,8 +3,10 @@ const path = require("node:path");
 module.exports = {
   testDir: path.join(__dirname, "browser"),
   outputDir: path.resolve(__dirname, "../../../generated-artifacts/frontend-browser"),
-  testMatch: "mfa.spec.js",
-  timeout: 60_000,
+  testMatch: process.env.NATIVE_EDITOR_BROWSER === "1"
+    ? ["mfa.spec.js", "native-editor.spec.js"]
+    : "mfa.spec.js",
+  timeout: 120_000,
   expect: { timeout: 15_000 },
   fullyParallel: false,
   workers: 1,
