@@ -156,7 +156,12 @@ def _json_path(value: Any, category: str, node_id: str, field_name: str, *,
         if allow_empty:
             return
         _fail(category, node_id, field_name)
-    normalized = (value[1:] if value.startswith("$") else value).replace("[", ".[")
+    normalized = value[1:] if value.startswith("$") else value
+    if normalized.startswith("."):
+        normalized = normalized[1:]
+    if not normalized or normalized.endswith(".") or ".." in normalized:
+        _fail(category, node_id, field_name)
+    normalized = normalized.replace("[", ".[")
     parts = [part for part in normalized.split(".") if part]
     if not parts:
         _fail(category, node_id, field_name)

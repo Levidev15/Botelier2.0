@@ -201,6 +201,21 @@ def test_json_path_root_is_explicit_and_option_picker_empty_path_means_whole_ite
     assert graph_api().compile_flow(picker, identity()).node("target")
 
 
+@pytest.mark.parametrize("path", ["name..first", "name.", "name.[0]."])
+def test_json_paths_reject_empty_interior_and_trailing_components(path):
+    config = config_for("api_request")
+    config["nodes"][1]["data"]["api"]["responseMapping"] = {"name": path}
+    with pytest.raises(graph_api().NativeGraphError, match="api_mapping"):
+        graph_api().compile_flow(config, identity())
+
+
+@pytest.mark.parametrize("path", ["$", "name", "$.name", "name[0].first", "name.[0].first"])
+def test_json_paths_keep_root_and_optional_root_dot_compatibility(path):
+    config = config_for("api_request")
+    config["nodes"][1]["data"]["api"]["responseMapping"] = {"name": path}
+    assert graph_api().compile_flow(config, identity()).node("target")
+
+
 def test_api_item_templates_use_provider_item_fields_not_flow_variable_names():
     config = config_for("api_response")
     config["nodes"][1]["data"]["responsePresentation"]["itemTemplate"] = (

@@ -26,8 +26,9 @@ source mutation and mutation of accessor copies do not alter the active graph.
 Positions, styles, React Flow selection/layout metadata are accepted and retained
 by `config()` but are not used as behavior. `next_node` resolves only an exact
 branch or an unambiguous default. Legacy single unnamed continuation edges are
-also used for requested `confirmed` and API/capability `success`/`error`
-transitions; ambiguous labeled branches are not silently selected.
+also used for requested `confirmed`, `selected`, and API/capability `success`
+transitions only. An unnamed API/capability edge is never an implicit error
+recovery path; errors require an explicit branch.
 
 Bounds are 128 nodes, 512 edges, 256,000 input-definition bytes, 32,000 bytes
 per node data object, 1,000,000 total config/data I/O bytes, and 12 runtime
