@@ -145,18 +145,21 @@ def _fixed_quote_clock(monkeypatch, clock):
     monkeypatch.setattr(native_quote_actions, "validate_reservation_quote", fixed_clock)
 
 
-def _suppress_unused_sentence_cache_download(monkeypatch):
-    """Pipecat imports sentence utilities; this suite never tokenizes speech."""
+def _use_vetted_offline_sentence_assets():
+    """Use the candidate's vetted offline tokenizer data without downloading."""
+    from pathlib import Path
+
     import nltk.data
 
-    find = nltk.data.find
-
-    def find_without_download(resource, *args, **kwargs):
-        if resource == "tokenizers/punkt_tab":
-            return object()
-        return find(resource, *args, **kwargs)
-
-    monkeypatch.setattr(nltk.data, "find", find_without_download)
+    assets = (
+        Path(__file__).resolve().parents[3]
+        / "generated-artifacts/voice-pilot/offline-assets/nltk_data"
+    ).resolve()
+    english_tab = assets / "tokenizers/punkt_tab/english/abbrev_types.txt"
+    if not english_tab.is_file():
+        raise RuntimeError("The vetted offline NLTK sentence assets are unavailable")
+    if str(assets) not in nltk.data.path:
+        nltk.data.path.insert(0, str(assets))
 
 
 def _runner(fixture, compiled, *, email=False, execution_mode="execute"):
@@ -311,7 +314,7 @@ def test_compiled_sms_and_email_quote_delivery_send_once_and_replay(monkeypatch)
     from test_reservation_quote_contract import NOW
 
     async def scenario(tool_type):
-        _suppress_unused_sentence_cache_download(monkeypatch)
+        _use_vetted_offline_sentence_assets()
         async with NativeEffectsFixture() as fixture:
             clock = [NOW]
             _fixed_quote_clock(monkeypatch, clock)
@@ -371,7 +374,7 @@ def test_unconfirmed_stale_and_unsafe_quote_delivery_inputs_never_submit(monkeyp
     from botelier.voice.flows import native_actions
 
     async def scenario():
-        _suppress_unused_sentence_cache_download(monkeypatch)
+        _use_vetted_offline_sentence_assets()
         async with NativeEffectsFixture() as fixture:
             _fixed_quote_clock(monkeypatch, [NOW])
             tool_id = "offline-quote-invalid"
@@ -479,7 +482,7 @@ def test_valid_preview_quote_delivery_never_claims_or_submits(monkeypatch):
     from test_reservation_quote_contract import NOW
 
     async def scenario():
-        _suppress_unused_sentence_cache_download(monkeypatch)
+        _use_vetted_offline_sentence_assets()
         async with NativeEffectsFixture() as fixture:
             _fixed_quote_clock(monkeypatch, [NOW])
             tool_id = "offline-quote-preview"
@@ -503,7 +506,7 @@ def test_quote_delivery_revalidates_after_claim_and_records_known_no_submit(monk
     from test_reservation_quote_contract import NOW
 
     async def scenario():
-        _suppress_unused_sentence_cache_download(monkeypatch)
+        _use_vetted_offline_sentence_assets()
         async with NativeEffectsFixture() as fixture:
             clock = [NOW]
             _fixed_quote_clock(monkeypatch, clock)
@@ -539,7 +542,7 @@ def test_email_quote_delivery_revalidates_after_sender_resolution_and_claim(monk
     from test_reservation_quote_contract import NOW
 
     async def scenario():
-        _suppress_unused_sentence_cache_download(monkeypatch)
+        _use_vetted_offline_sentence_assets()
         async with NativeEffectsFixture() as fixture:
             clock = [NOW]
             _fixed_quote_clock(monkeypatch, clock)
@@ -575,7 +578,7 @@ def test_quote_selection_mutation_after_claim_is_known_no_submit(monkeypatch):
     from test_reservation_quote_contract import NOW
 
     async def scenario():
-        _suppress_unused_sentence_cache_download(monkeypatch)
+        _use_vetted_offline_sentence_assets()
         async with NativeEffectsFixture() as fixture:
             _fixed_quote_clock(monkeypatch, [NOW])
             tool_id = "offline-quote-selection-race"
