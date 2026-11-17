@@ -24,7 +24,7 @@ class SimulationDBQuery:
     def filter(self, *criteria):
         for criterion in criteria:
             operator = getattr(getattr(criterion, "operator", None), "__name__", "")
-            if operator != "eq":
+            if operator not in {"eq", "is_"}:
                 guard.deny("unsupported_simulation_metadata_filter")
             field = getattr(getattr(criterion, "left", None), "key", None)
             right = getattr(criterion, "right", None)
@@ -35,6 +35,8 @@ class SimulationDBQuery:
                 expected = False
             elif type(right).__name__ == "Null":
                 expected = None
+            if operator == "is_" and type(expected) not in {bool, type(None)}:
+                guard.deny("unsupported_simulation_metadata_filter")
             if not field or not isinstance(
                 expected, (str, int, float, bool, uuid.UUID, type(None)),
             ):
@@ -387,7 +389,12 @@ class NativeSimulationAPIHarness:
                 },
             ))
 
-        self.fixture = NativeTextFixture(self.replies, payload=self.payload)
+        # The actual ASGI route constructs a CompiledFlow from owned published
+        # records. This fixture supplies only the provider/action transports;
+        # its unrelated retired CompiledPilot must not become a second host.
+        self.fixture = NativeTextFixture(
+            self.replies, payload=self.payload, create_host=False,
+        )
         await self.fixture.__aenter__()
 
         async def observe_provider(request):
@@ -412,7 +419,7 @@ class NativeSimulationAPIHarness:
             self._patches.enter_context(patch.object(
                 native_simulation,
                 "native_action_session_factory",
-                return_value=self.fixture.actions.session,
+                return_value=self.records.session,
             ))
 
         import importlib

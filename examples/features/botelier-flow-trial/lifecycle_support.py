@@ -56,10 +56,26 @@ class OfflineCall:
         # independent cache-warmer's constructor. Both clients remain real.
         importlib.import_module("pipecat.services.openai.llm")
         import openai
+        from pipecat.services.openai import base_llm
 
         real_warmup_client = openai.AsyncOpenAI
 
+        def provider_http_client(**kwargs):
+            # The pinned Pipecat service supplies an OpenAI-specific default
+            # Httpx client class captured at module import. Inject a real
+            # httpx client with an explicit mock transport there rather than
+            # relying on patching AsyncHTTPTransport after that capture.
+            return httpx.AsyncClient(
+                transport=httpx.MockTransport(self.providers.http), **kwargs,
+            )
+
         def warmup_client(*args, **kwargs):
+            kwargs.setdefault(
+                "http_client",
+                httpx.AsyncClient(
+                    transport=httpx.MockTransport(self.providers.http),
+                ),
+            )
             client = real_warmup_client(*args, **kwargs)
             self.warmup_clients.append(client)
             return client
@@ -123,6 +139,7 @@ class OfflineCall:
             (module, "get_or_generate_greeting_audio", greeting_cache),
             (module.VoiceEngineFactory, "create_pipeline", factory),
             (flux, "websocket_connect", self.providers.connect_stt),
+            (base_llm, "DefaultAsyncHttpxClient", provider_http_client),
             (httpx.AsyncHTTPTransport, "handle_async_request", http_boundary),
             (openai, "AsyncOpenAI", warmup_client),
         ):

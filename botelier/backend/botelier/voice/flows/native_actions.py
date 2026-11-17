@@ -127,7 +127,11 @@ class NativeActionRunner:
                 Tool.id == self.compiled.identity.tool_id,
                 Tool.is_active == "true",
             ).first()
-            if flow is None or flow.tool_set_id is None:
+            if (
+                flow is None
+                or str(flow.id) != str(self.compiled.identity.tool_id)
+                or flow.tool_set_id is None
+            ):
                 raise LookupError("native_flow_tool_unavailable")
             flow_type = getattr(flow.tool_type, "value", flow.tool_type)
             if flow_type != "FLOW":

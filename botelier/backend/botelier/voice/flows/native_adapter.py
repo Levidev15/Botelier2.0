@@ -1244,18 +1244,29 @@ class NativeFlowAdapter:
             variable = current["variableKey"]
             declaration = self._declaration(variable)
             slot_type = current.get("type", declaration.get("type", "text"))
+            validation = current.get("validation", {})
             if slot_type == "number":
                 schema = {"type": "number"}
                 for key in ("min", "max"):
-                    if key in current.get("validation", {}):
-                        schema[key] = current["validation"][key]
+                    if key in validation:
+                        schema[key] = validation[key]
             else:
                 schema = {
                     "type": "string", "minLength": 1,
                     "maxLength": _MAX_ARGUMENTS,
                 }
+                for key in ("minLength", "maxLength", "pattern"):
+                    value = validation.get(key)
+                    if value is not None:
+                        if key in {"minLength", "maxLength"} and (
+                            type(value) is not int
+                        ):
+                            continue
+                        schema[key] = max(1, value) if key == "minLength" else value
                 if slot_type == "choice":
-                    schema["enum"] = declaration.get("choices", [])
+                    schema["enum"] = validation.get(
+                        "choices", declaration.get("choices", []),
+                    )
             properties[variable] = schema
 
         async def collect(arguments, manager):

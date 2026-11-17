@@ -101,11 +101,23 @@ class NativeSimulationError(Exception):
     def __init__(self, code: str, status_code: int = 400, *, diagnostic=None):
         safe_code = code if code in _STATUS_BY_CODE else "native_simulation_failed"
         expected_status = _STATUS_BY_CODE[safe_code]
+        raw_diagnostic = (
+            diagnostic.split(":", 1)[0]
+            if isinstance(diagnostic, str) else None
+        )
+        diagnostic_category = {
+            "node_type": "node_types",
+            "slot_type": "slot",
+            "slot_validation": "slot",
+            "slot_variable": "slot",
+            "initial_count": "initial",
+            "initial_node": "initial",
+        }.get(raw_diagnostic, raw_diagnostic)
         self.code = safe_code
         self.diagnostic = (
-            diagnostic
+            diagnostic_category
             if safe_code == "native_simulation_flow_unsupported"
-            and isinstance(diagnostic, str) and diagnostic in _FLOW_DIAGNOSTICS
+            and diagnostic_category in _FLOW_DIAGNOSTICS
             else None
         )
         # A caller may request an explicitly supported status only when it

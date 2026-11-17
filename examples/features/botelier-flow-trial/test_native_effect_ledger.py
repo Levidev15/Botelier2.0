@@ -5,6 +5,7 @@ from datetime import datetime, timedelta
 import importlib
 import importlib.util
 import json
+import uuid
 from uuid import UUID
 
 import pytest
@@ -384,5 +385,218 @@ def test_claim_encryption_preflight_failure_never_opens_storage_or_grants_a_writ
                 assert db.query(fixture.effect_models["OperationIdempotency"]).count() == 0
             finally:
                 db.close()
+
+    asyncio.run(scenario())
+
+
+def test_accepted_http_write_with_missing_required_mapping_stays_pending(monkeypatch):
+    async def scenario():
+        import httpx
+
+        async with NativeEffectsFixture() as fixture:
+            from botelier.services.ssrf_safe_transport import SSRFSafeTransport
+            from botelier.voice.flows.native_actions import NativeActionRunner
+            from botelier.voice.flows.native_execution import NativeConfirmation
+            from botelier.voice.flows.native_graph import compile_flow
+
+            requests = []
+
+            async def controlled_transport(_transport, request):
+                requests.append(request)
+                return httpx.Response(200, json={}, request=request)
+
+            monkeypatch.setattr(
+                SSRFSafeTransport, "handle_async_request", controlled_transport,
+            )
+            config = {
+                "initial_node": "start",
+                "variables": [
+                    {"key": "amount", "type": "number"},
+                    {"key": "reference", "type": "text"},
+                ],
+                "nodes": [
+                    {"id": "start", "type": "initial", "data": {"greeting": ""}},
+                    {"id": "confirm", "type": "confirmation", "data": {
+                        "confirmation": {
+                            "summaryTemplate": "Confirm {{amount}}.",
+                            "confirmPrompt": "Proceed?",
+                            "variablesToConfirm": ["amount"],
+                            "allowEdit": False,
+                        },
+                    }},
+                    {"id": "write", "type": "api_request", "data": {"api": {
+                        "apiSource": "custom", "method": "POST",
+                        "url": "https://api.fixture.invalid/reserve",
+                        "bodyTemplate": '{"amount":{{amount}}}',
+                        "responseMapping": {"reference": "$.reference"},
+                        "timeout": 2, "retryCount": 0,
+                    }}},
+                    {"id": "done", "type": "end", "data": {"closingMessage": ""}},
+                ],
+                "edges": [
+                    {"id": "start-confirm", "source": "start", "target": "confirm"},
+                    {"id": "confirmed-write", "source": "confirm", "target": "write",
+                     "sourceHandle": "confirmed"},
+                    {"id": "write-done", "source": "write", "target": "done",
+                     "sourceHandle": "success"},
+                ],
+            }
+            compiled = compile_flow(config, fixture.identity)
+            runner = NativeActionRunner(compiled, fixture.factory)
+            facts = {"amount": 0}
+            consent = NativeConfirmation(
+                "confirm", 2, json.dumps(facts), ("amount",),
+            )
+
+            denied = await runner.execute(compiled.node("write"), facts)
+            assert denied.failure_reason == "confirmation_required"
+            assert requests == []
+            preview_runner = NativeActionRunner(
+                compiled, fixture.factory, execution_mode="preview",
+            )
+            preview_denied = await preview_runner.execute(
+                compiled.node("write"), facts,
+            )
+            assert preview_denied.failure_reason == "confirmation_required"
+            preview = await preview_runner.execute(
+                compiled.node("write"), facts, confirmation=consent,
+            )
+            assert preview.failure_reason == "preview_required"
+            assert requests == []
+            first = await runner.execute(
+                compiled.node("write"), facts, confirmation=consent,
+            )
+            second = await runner.execute(
+                compiled.node("write"), facts, confirmation=consent,
+            )
+            assert first.failure_reason == "effect_outcome_unknown"
+            assert second.failure_reason == "effect_outcome_unknown"
+            assert len(requests) == 1
+            await runner.close()
+            await preview_runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_effect_receipts_are_scoped_to_entered_tool_and_published_version(monkeypatch):
+    async def scenario():
+        import httpx
+
+        async with NativeEffectsFixture() as fixture:
+            from botelier.models.flow_version import FlowVersion, FlowVersionStatus
+            from botelier.models.operation_idempotency import OperationIdempotency
+            from botelier.models.tool import Tool, ToolType
+            from botelier.services.ssrf_safe_transport import SSRFSafeTransport
+            from botelier.voice.flows.native_actions import NativeActionRunner
+            from botelier.voice.flows.native_execution import NativeConfirmation
+            from botelier.voice.flows.native_graph import compile_flow
+            from botelier.voice.flows.pilot_contract import PilotIdentity
+
+            child_tool_id = str(uuid.uuid4())
+            child_version_id = str(uuid.uuid4())
+            config = {
+                "initial_node": "start",
+                "variables": [
+                    {"key": "amount", "type": "number"},
+                    {"key": "reference", "type": "text"},
+                ],
+                "nodes": [
+                    {"id": "start", "type": "initial", "data": {"greeting": ""}},
+                    {"id": "confirm", "type": "confirmation", "data": {
+                        "confirmation": {
+                            "summaryTemplate": "Confirm {{amount}}.",
+                            "confirmPrompt": "Proceed?",
+                            "variablesToConfirm": ["amount"],
+                            "allowEdit": False,
+                        },
+                    }},
+                    {"id": "write", "type": "api_request", "data": {"api": {
+                        "apiSource": "custom", "method": "POST",
+                        "url": "https://api.fixture.invalid/reserve",
+                        "bodyTemplate": '{"amount":{{amount}}}',
+                        "responseMapping": {"reference": "$.reference"},
+                        "timeout": 2, "retryCount": 0,
+                    }}},
+                    {"id": "done", "type": "end", "data": {"closingMessage": ""}},
+                ],
+                "edges": [
+                    {"id": "start-confirm", "source": "start", "target": "confirm"},
+                    {"id": "confirmed-write", "source": "confirm", "target": "write",
+                     "sourceHandle": "confirmed"},
+                    {"id": "write-done", "source": "write", "target": "done",
+                     "sourceHandle": "success"},
+                ],
+            }
+            db = fixture.factory()
+            db.add(Tool(
+                id=child_tool_id, name="Alternate write", description="Scoped test",
+                tool_type=ToolType.FLOW, config=config,
+                tool_set_id=UUID("00000000-0000-0000-0000-000000000105"),
+                published_version_id=UUID(child_version_id),
+                published_version_number=1,
+            ))
+            db.add(FlowVersion(
+                id=UUID(child_version_id), tool_id=child_tool_id,
+                version_number=1, status=FlowVersionStatus.PUBLISHED,
+                flow_config=config,
+            ))
+            db.commit()
+            db.close()
+
+            identity = fixture.identity
+            child_identity = PilotIdentity(
+                account_id=identity.account_id,
+                property_id=identity.property_id,
+                tool_id=child_tool_id,
+                flow_version_id=child_version_id,
+                call_sid=identity.call_sid,
+            )
+            root_flow = compile_flow(config, identity)
+            child_flow = compile_flow(config, child_identity)
+            root_runner = NativeActionRunner(root_flow, fixture.factory)
+            child_runner = NativeActionRunner(child_flow, fixture.factory)
+            requests = []
+
+            async def controlled_transport(_transport, request):
+                requests.append(request)
+                return httpx.Response(
+                    200, json={"reference": "fixture-receipt"}, request=request,
+                )
+
+            monkeypatch.setattr(
+                SSRFSafeTransport, "handle_async_request", controlled_transport,
+            )
+            facts = {"amount": 12}
+            root_consent = NativeConfirmation(
+                "confirm", 2, json.dumps(facts), ("amount",),
+            )
+            child_consent = NativeConfirmation(
+                "confirm", 3, json.dumps(facts), ("amount",),
+            )
+            try:
+                root_result = await root_runner.execute(
+                    root_flow.node("write"), facts, confirmation=root_consent,
+                )
+                child_result = await child_runner.execute(
+                    child_flow.node("write"), facts, confirmation=child_consent,
+                )
+                root_replay = await root_runner.execute(
+                    root_flow.node("write"), facts, confirmation=root_consent,
+                )
+                assert root_result.success and child_result.success
+                assert root_replay.success
+                assert len(requests) == 2
+                db = fixture.factory()
+                receipts = db.query(OperationIdempotency).all()
+                assert len(receipts) == 2
+                operations = {row.operation for row in receipts}
+                assert len(operations) == 2
+                assert all(item.startswith("native:write:") for item in operations)
+                assert len({row.idempotency_key for row in receipts}) == 2
+                assert all(row.status == "succeeded" for row in receipts)
+                db.close()
+            finally:
+                await root_runner.close()
+                await child_runner.close()
 
     asyncio.run(scenario())

@@ -53,6 +53,10 @@ def install_test_namespaces(backend: Path):
         def bind_session_factory(factory):
             database._session_factory = factory
 
+        def unbind_session_factory(factory):
+            if database._session_factory is factory:
+                database._session_factory = None
+
         def forbidden_database_factory(*args, **kwargs):
             guard.deny("live_database_session_requested")
 
@@ -67,6 +71,7 @@ def install_test_namespaces(backend: Path):
                 session.close()
 
         database.bind_session_factory = bind_session_factory
+        database.unbind_session_factory = unbind_session_factory
         database.SessionLocal = forbidden_database_factory
         database.get_db = get_db
     # Already-imported real route Depends objects retain get_db's closure.

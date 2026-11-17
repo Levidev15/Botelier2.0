@@ -74,6 +74,7 @@ class EditorASGIFixture:
         self.client = None
         self.engine = None
         self.factory = None
+        self.database = None
         self._lifespan = None
         self._native_fixture = None
         self._patches = None
@@ -269,6 +270,7 @@ class EditorASGIFixture:
         from simulation_guard import install_test_namespaces
 
         database = install_test_namespaces(backend)
+        self.database = database
 
         @compiles(JSONB, "sqlite")
         def _jsonb_sqlite(type_, compiler, **kw):
@@ -560,22 +562,24 @@ class EditorASGIFixture:
         }
 
     async def __aexit__(self, exc_type, exc, traceback):
-        if self.client is not None:
-            await self.client.aclose()
-        if self._lifespan is not None:
-            await self._lifespan.__aexit__(exc_type, exc, traceback)
-        if self._native_fixture is not None:
-            await self._native_fixture.__aexit__(exc_type, exc, traceback)
-        if self._patches is not None:
-            self._patches.close()
-        if self.engine is not None:
-            self.engine.dispose()
-        if self.factory is not None:
-            from botelier.crypto import reset_cipher_cache
+        try:
+            if self.client is not None:
+                await self.client.aclose()
+            if self._lifespan is not None:
+                await self._lifespan.__aexit__(exc_type, exc, traceback)
+            if self._native_fixture is not None:
+                await self._native_fixture.__aexit__(exc_type, exc, traceback)
+            if self._patches is not None:
+                self._patches.close()
+        finally:
+            if self.engine is not None:
+                self.engine.dispose()
+            if (
+                self.database is not None and self.factory is not None
+                and callable(getattr(self.database, "unbind_session_factory", None))
+            ):
+                self.database.unbind_session_factory(self.factory)
+            if self.factory is not None:
+                from botelier.crypto import reset_cipher_cache
 
-            reset_cipher_cache()
-        from sqlalchemy.dialects.postgresql import JSONB, UUID
-        from sqlalchemy.ext.compiler import deregister
-
-        deregister(JSONB)
-        deregister(UUID)
+                reset_cipher_cache()

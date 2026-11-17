@@ -11,6 +11,7 @@ from lifecycle_support import OfflineCall
 from node_contract_io import (
     ACCOUNT, CONNECTION, PROPERTY, ActionRecords, CatalogueRecords,
     CatalogueSession, flow_config, synthetic_integration,
+    speech,
 )
 from pilot_io import PilotProviders
 
@@ -59,7 +60,10 @@ class NativeDevCatalogueSession(CatalogueSession):
         if self.closed:
             guard.deny("closed_native_dev_catalogue_query")
         if self.model == "Tool":
-            return self.records.rows["Tool"][0]
+            return next(
+                (tool for tool in self.records.rows["Tool"] if self._matches(tool)),
+                None,
+            )
         if self.model == "FlowSession":
             return next(iter(self.all()), None)
         if self.model == "FlowVersion":
@@ -470,3 +474,43 @@ class NativeDevVoiceCall(OfflineCall):
         assert self.handler.call_mappers == {}
         assert all(session.closed for session in self.records.sessions)
         assert self.remaining_tasks() == []
+
+    async def wait_until(self, predicate, timeout=4.0):
+        try:
+            await super().wait_until(predicate, timeout)
+        except TimeoutError as error:
+            adapter = self.handler.native_flow_hosts.get(CALL_SID)
+            raise AssertionError({
+                "worker_started": self.started.is_set(),
+                "adapter_started": getattr(adapter, "_started", None),
+                "active_tool_id": (
+                    str(adapter.compiled.identity.tool_id) if adapter else None
+                ),
+                "node": (
+                    adapter.manager.current_node if adapter else None
+                ),
+                "catalog_active": getattr(adapter, "_catalog_active", None),
+                "awaiting_flow_choice": getattr(
+                    adapter, "_awaiting_flow_choice", None,
+                ),
+                "speech": speech(self),
+                "model_turns": sum(
+                    bool(item.get("stream")) for item in self.providers.requests
+                ),
+                "model_requests": [
+                    {
+                        "last_messages": item.get("messages", [])[-3:],
+                        "tools": [
+                            tool.get("function", {}).get("name")
+                            for tool in item.get("tools", [])
+                            if tool.get("type") == "function"
+                        ],
+                    }
+                    for item in self.providers.requests if item.get("stream")
+                ],
+                "business_requests": [
+                    str(request.url) for request in self.providers.business_requests
+                ],
+                "errors": self.errors,
+                "pipeline_errors": [str(frame) for frame in self.pipeline_errors],
+            }) from error

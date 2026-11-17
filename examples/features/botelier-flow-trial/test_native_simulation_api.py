@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 from native_simulation_io import NativeSimulationAPIHarness, auth_header
-from node_contract_io import API_URL, ACCOUNT, PROPERTY, tool_delta
+from node_contract_io import ACCOUNT, PROPERTY
 from native_dev_voice_io import TOOL_ID, VERSION_ID
 
 
@@ -80,11 +80,7 @@ def test_revocation_blocks_message_state_and_delete_without_running_a_tool():
 def test_native_http_flow_uses_real_owned_published_graph_and_native_text_worker():
     async def scenario():
         async with NativeSimulationAPIHarness(
-            replies=[
-                tool_delta("collect_query", {"query": "standard"}, "http-query"),
-                tool_delta("collect_choice", {"choice": "standard"}, "http-choice"),
-                "Your choice is paused for this pilot.",
-            ],
+            replies=["Your choice is paused for this pilot."],
         ) as harness:
             api = harness.api
             with patch.object(
@@ -105,6 +101,7 @@ def test_native_http_flow_uses_real_owned_published_graph_and_native_text_worker
             assert start_body["runtime"] == {
                 "engine": "native_pilot",
                 "source": "published",
+                "implementation": "NativeFlowAdapter",
                 "tool_id": TOOL_ID,
                 "assistant_id": str(harness.records.assistant.id),
                 "account_id": ACCOUNT,
@@ -113,6 +110,7 @@ def test_native_http_flow_uses_real_owned_published_graph_and_native_text_worker
                 "version_number": 1,
                 "llm_provider": harness.records.assistant.llm_provider,
                 "llm_model": harness.records.assistant.llm_model,
+                "read_only_global_tools": [],
             }
             assert start_body["state"]["current_node"] == "query"
             assert start_body["state"]["pending_slot"] == "query"
@@ -123,12 +121,12 @@ def test_native_http_flow_uses_real_owned_published_graph_and_native_text_worker
             assert harness.fixture.providers.business_requests == []
 
             from botelier.voice.flows.native_text_host import NativeTextHost
-            from botelier.voice.flows.pilot_adapter import NativePilotAdapter
+            from botelier.voice.flows.native_adapter import NativeFlowAdapter
             from pipecat.flows.manager import FlowManager
             from pipecat.pipeline.worker import PipelineWorker
 
             assert isinstance(host, NativeTextHost)
-            assert isinstance(host.adapter, NativePilotAdapter)
+            assert isinstance(host.adapter, NativeFlowAdapter)
             assert isinstance(host.adapter.manager, FlowManager)
             assert isinstance(host._worker, PipelineWorker)
             processor_names = {
@@ -139,7 +137,7 @@ def test_native_http_flow_uses_real_owned_published_graph_and_native_text_worker
                 tool.name for tool in host.context.tools.standard_tools
             }
             assert len(initial_tools) == 1
-            assert next(iter(initial_tools)).startswith("pilot_collect_query_")
+            assert next(iter(initial_tools)).startswith("native_query_")
 
             harness.events.clear()
             queried = await harness.message(
@@ -148,76 +146,52 @@ def test_native_http_flow_uses_real_owned_published_graph_and_native_text_worker
             )
             assert queried.status_code == 200, queried.text
             query_body = queried.json()
-            assert isinstance(query_body["function_called"], str)
-            assert query_body["function_called"].startswith("pilot_collect_query_")
-            assert query_body["function_result"]["data"] == {
-                "rooms": [{"name": "Standard", "price": 0}],
-                "price": 0,
-            }
+            assert query_body["function_called"] is None
+            assert query_body["function_result"] is None
             assert query_body["runtime"] == start_body["runtime"]
             assert query_body["suggested_functions"] == []
             assert query_body["error"] is None
-            assert len(harness.fixture.providers.business_requests) == 1
-            business_request = harness.fixture.providers.business_requests[0]
-            assert business_request.method == "GET"
-            assert str(business_request.url) == API_URL + "?query=standard"
-            assert query_body["state"]["current_node"] == "choice"
-            assert query_body["state"]["pending_slot"] == "choice"
+            assert harness.fixture.providers.business_requests == []
+            assert query_body["state"]["current_node"] == "query"
+            assert query_body["state"]["pending_slot"] == "query"
             assert all(message["role"] == "assistant" for message in query_body["messages"])
-            assert host.snapshot()["current_node"] == "choice"
+            assert "Your choice is paused for this pilot." in " ".join(
+                message["content"] for message in query_body["messages"]
+            )
+            assert host.snapshot()["current_node"] == "query"
 
             provider_index = next(
                 index for index, event in enumerate(harness.events)
                 if event[0] == "provider"
             )
-            db_close_index = next(
+            db_open_indexes = [
+                index for index, event in enumerate(harness.events)
+                if event[0] == "db.open"
+            ]
+            db_close_indexes = [
                 index for index, event in enumerate(harness.events)
                 if event[0] == "db.close"
-            )
-            assert db_close_index < provider_index, (
+            ]
+            assert min(db_close_indexes) < provider_index, (
                 "request DB must close before provider/action work begins"
             )
-            assert not any(
-                event[0] == "db.query" for event in harness.events[provider_index + 1:]
-            )
+            assert len(db_open_indexes) == len(db_close_indexes)
 
             current_tools = {
                 tool.name for tool in host.context.tools.standard_tools
             }
             assert len(current_tools) == 1
-            assert next(iter(current_tools)).startswith("pilot_collect_choice_")
+            assert next(iter(current_tools)).startswith("native_query_")
 
-            # NativeSimulationSession enforces its production minimum interval.
-            await asyncio.sleep(1.05)
-            paused = await harness.message(
-                start_body["session_id"],
-                "I choose the standard option.",
-            )
-            assert paused.status_code == 200, paused.text
-            paused_body = paused.json()
-            assert paused_body["runtime"] == start_body["runtime"]
-            assert isinstance(paused_body["function_called"], str)
-            assert paused_body["function_called"].startswith("pilot_collect_choice_")
-            assert paused_body["function_result"]["outcome"] == "paused"
-            assert paused_body["function_result"]["booking_completed"] is False
-            assert paused_body["state"] == host.snapshot()
-            assert paused_body["state"]["is_complete"] is False
-            assert paused_body["state"]["progress"] == {
-                "collected": 2, "total": 2, "percentage": 100,
-            }
-            assert len(harness.fixture.providers.business_requests) == 1
             model_requests = [
                 request for request in harness.fixture.providers.requests
                 if request.get("stream")
             ]
-            assert len(model_requests) == 3, (
-                "final paused collection must include the SDK follow-up model cycle"
-            )
+            assert len(model_requests) == 1
             for model_request in model_requests:
                 assert model_request["model"] == harness.records.assistant.llm_model
                 assert model_request["temperature"] == harness.records.assistant.temperature
                 assert model_request["max_completion_tokens"] == harness.records.assistant.max_tokens
-            assert harness.fixture.actions.writes
 
             state = await harness.state(start_body["session_id"])
             assert state.status_code == 200, state.text
@@ -296,27 +270,64 @@ def test_native_http_requires_explicit_assistant_and_refuses_unsupported_globals
     run(scenario)
 
 
-@pytest.mark.parametrize(("setting", "diagnostic"), [
-    ("global", "global_instructions"),
-    ("node_type", "node_types"),
-    ("collection_validation", "slot"),
-])
-def test_unsupported_published_flow_reports_safe_actionable_admission_category(
-    setting, diagnostic,
-):
+@pytest.mark.parametrize("feature", ["global_prompt", "slot_max_length"])
+def test_supported_published_prompt_and_slot_constraints_reach_the_real_host(feature):
     async def scenario():
-        async with NativeSimulationAPIHarness() as harness:
+        async with NativeSimulationAPIHarness(
+            replies=["The fixture answer remains in preview mode."],
+        ) as harness:
             config = harness.records.version.flow_config
-            if setting == "global":
-                config["globalPrompt"] = "PRIVATE-DESIGNER-PROMPT-NOT-FOR-ERRORS"
-            elif setting == "node_type":
-                config["nodes"][0]["type"] = "PRIVATE-UNSUPPORTED-NODE-TYPE"
+            if feature == "global_prompt":
+                config["globalPrompt"] = (
+                    "PRIVATE-FLOW-GUIDANCE: keep the requested dates intact."
+                )
             else:
                 collection = next(
                     node for node in config["nodes"]
                     if node["type"] == "collect_slot"
                 )
                 collection["data"]["slot"]["validation"] = {"maxLength": 20}
+
+            started = await harness.start()
+            assert started.status_code == 200, started.text
+            session_id = started.json()["session_id"]
+            assert harness.fixture.providers.business_requests == []
+
+            if feature == "global_prompt":
+                response = await harness.message(session_id, "Check the fixture.")
+                assert response.status_code == 200, response.text
+                body = response.json()
+                assert "PRIVATE-FLOW-GUIDANCE" not in response.text
+                request = harness.fixture.providers.requests[-1]
+                assert any(
+                    message.get("role") == "developer"
+                    and "PRIVATE-FLOW-GUIDANCE" in message.get("content", "")
+                    for message in request["messages"]
+                )
+                assert body["state"]["current_node"] == "query"
+                assert body["function_called"] is None
+                assert harness.fixture.providers.business_requests == []
+            else:
+                assert started.json()["state"]["current_node"] == "query"
+                assert started.json()["state"]["pending_slot"] == "query"
+                host = harness.active_sessions[-1].host
+                query_tool = next(
+                    tool for tool in host.context.tools.standard_tools
+                    if tool.name.startswith("native_query_")
+                )
+                assert query_tool.properties["query"]["maxLength"] == 20
+
+    run(scenario)
+
+
+@pytest.mark.parametrize("diagnostic", ["node_types"])
+def test_unsupported_published_flow_reports_safe_actionable_admission_category(
+    diagnostic,
+):
+    async def scenario():
+        async with NativeSimulationAPIHarness() as harness:
+            config = harness.records.version.flow_config
+            config["nodes"][0]["type"] = "PRIVATE-UNSUPPORTED-NODE-TYPE"
 
             response = await harness.start()
 

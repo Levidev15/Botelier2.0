@@ -197,6 +197,8 @@ def test_repeated_fixture_namespaces_keep_the_real_dependency_on_fresh_in_memory
     first = install_test_namespaces(editor_guard.BACKEND_ROOT)
     original = first._session_factory
     dependency = first.get_db
+    base = first.Base
+    metadata = base.metadata
     closed = []
 
     class Session:
@@ -208,6 +210,8 @@ def test_repeated_fixture_namespaces_keep_the_real_dependency_on_fresh_in_memory
         second = install_test_namespaces(editor_guard.BACKEND_ROOT)
         assert second is first
         assert second.get_db is dependency
+        assert second.Base is base
+        assert second.Base.metadata is metadata
         assert second.SessionLocal.__name__ == "forbidden_database_factory"
         second.bind_session_factory(lambda: session)
         generator = dependency()
@@ -216,3 +220,49 @@ def test_repeated_fixture_namespaces_keep_the_real_dependency_on_fresh_in_memory
         assert closed == [True]
     finally:
         first.bind_session_factory(original)
+
+
+def test_editor_fixture_disposes_data_but_preserves_cached_orm_metadata():
+    async def scenario():
+        import editor_guard
+        from native_effect_io import NativeEffectsFixture
+        from simulation_guard import install_test_namespaces
+        from uuid import uuid4
+
+        database = install_test_namespaces(editor_guard.BACKEND_ROOT)
+        base = database.Base
+        metadata = base.metadata
+        first_engine = None
+
+        async with NativeEffectsFixture() as first:
+            from botelier.models.flow_session import FlowSession
+
+            assert database.Base is base
+            assert FlowSession.metadata is metadata
+            assert metadata.tables["flow_sessions"] is FlowSession.__table__
+            first_engine = first.engine
+            db = first.factory()
+            try:
+                db.add(FlowSession(
+                    id=uuid4(), channel="native",
+                    session_key="fixture-metadata-cleanup",
+                    tool_id=uuid4(), collected_slots={"fixture": "first"},
+                ))
+                db.commit()
+                assert db.query(FlowSession).count() == 1
+            finally:
+                db.close()
+
+        assert database._session_factory is None
+        async with NativeEffectsFixture() as second:
+            assert second.engine is not first_engine
+            assert database.Base is base
+            assert database.Base.metadata is metadata
+            assert metadata.tables["flow_sessions"] is FlowSession.__table__
+            db = second.factory()
+            try:
+                assert db.query(FlowSession).count() == 0
+            finally:
+                db.close()
+
+    asyncio.run(scenario())

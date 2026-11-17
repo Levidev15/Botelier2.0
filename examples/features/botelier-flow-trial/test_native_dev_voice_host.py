@@ -231,6 +231,7 @@ def test_native_root_selects_and_returns_between_published_assigned_flows():
             tool_delta("collect_select_flow", {"tool_id": ALT_TOOL_ID}),
             tool_delta("collect_query", {"query": "alternate"}),
             tool_delta("collect_choice", {"choice": "Standard"}),
+            "Would you like another task, or should I end the call?",
         ])
         async with NativeDevVoiceCall(
             extra_published_flow=True, providers=providers,
@@ -240,6 +241,12 @@ def test_native_root_selects_and_returns_between_published_assigned_flows():
             await call.wait_until(lambda: (
                 adapter._started and adapter.manager.current_node == "start"
             ))
+            root_runner = adapter._action_runners[TOOL_ID]
+            child_runner = adapter._action_runners[ALT_TOOL_ID]
+            assert adapter.execute_action.__self__ is root_runner
+            assert root_runner.compiled.node("lookup").node_id == (
+                child_runner.compiled.node("lookup").node_id
+            )
             await call.providers.user_turn("Use the fixture support workflow.")
             await call.wait_until(lambda: (
                 adapter.compiled.identity.tool_id == ALT_TOOL_ID
@@ -247,6 +254,7 @@ def test_native_root_selects_and_returns_between_published_assigned_flows():
             ))
             assert adapter._catalog_active is True
             assert adapter.manager.current_node == "query"
+            assert adapter.execute_action.__self__ is child_runner
             await call.providers.user_turn("Find alternate.")
             await call.wait_until(lambda: (
                 PRESENTATION in speech(call)
@@ -261,6 +269,7 @@ def test_native_root_selects_and_returns_between_published_assigned_flows():
                 in speech(call)
             ))
             assert adapter._catalog_active is False
+            assert adapter.execute_action.__self__ is root_runner
             assert adapter.facts == {
                 "query": "alternate",
                 "choice": "Standard",

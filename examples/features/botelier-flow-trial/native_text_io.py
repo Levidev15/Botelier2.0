@@ -27,11 +27,15 @@ class NativeTextFixture:
         system_prompt="Private host policy. Never emit this instruction.",
         turn_timeout=5.0,
         create_host=True,
+        identity=None,
+        available_flows=None,
+        session_factory=None,
+        providers=None,
     ):
         load_voice_engine()
         from botelier.voice.flows.pilot_contract import PilotIdentity, compile_pilot
 
-        self.providers = PilotProviders(
+        self.providers = providers or PilotProviders(
             replies, status=status, payload=payload,
         )
         self.actions = ActionRecords(synthetic_integration())
@@ -45,7 +49,7 @@ class NativeTextFixture:
         )
         self.compiled = compile_pilot(
             pilot_config(),
-            PilotIdentity(
+            identity or PilotIdentity(
                 account_id=ACCOUNT,
                 property_id=PROPERTY,
                 tool_id="offline-flow",
@@ -53,6 +57,8 @@ class NativeTextFixture:
                 call_sid="offline-text-call",
             ),
         )
+        self.available_flows = available_flows
+        self.session_factory = session_factory or self.actions.session
         self.turn_timeout = turn_timeout
         self.create_host = create_host
         self._patches = ExitStack()
@@ -62,12 +68,21 @@ class NativeTextFixture:
     async def __aenter__(self):
         from botelier.services.ssrf_safe_transport import SSRFSafeTransport
         from botelier.voice.flows.native_text_host import NativeTextHost
+        from pipecat.services.openai import base_llm
 
         async def transport(_, request):
             return await self.providers.http(request)
 
+        def provider_http_client(**kwargs):
+            return httpx.AsyncClient(
+                transport=httpx.MockTransport(self.providers.http), **kwargs,
+            )
+
         self._patches.enter_context(patch.object(
             httpx.AsyncHTTPTransport, "handle_async_request", transport,
+        ))
+        self._patches.enter_context(patch.object(
+            base_llm, "DefaultAsyncHttpxClient", provider_http_client,
         ))
         self._patches.enter_context(patch.object(
             SSRFSafeTransport, "handle_async_request", transport,
@@ -83,8 +98,9 @@ class NativeTextFixture:
             self.compiled,
             config=self.config,
             api_keys=API_KEYS,
-            session_factory=self.actions.session,
+            session_factory=self.session_factory,
             turn_timeout=self.turn_timeout,
+            available_flows=self.available_flows,
         )
         self.hosts.append(self.host)
         return self
@@ -107,8 +123,9 @@ class NativeTextFixture:
             compiled,
             config=self.config.model_copy(update={"greeting_message": greeting}),
             api_keys=API_KEYS,
-            session_factory=self.actions.session,
+            session_factory=self.session_factory,
             turn_timeout=self.turn_timeout,
+            available_flows=self.available_flows,
         )
         self.hosts.append(host)
         await host.start()
