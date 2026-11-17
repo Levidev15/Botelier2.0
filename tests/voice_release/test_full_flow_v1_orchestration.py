@@ -19,6 +19,7 @@ class FullFlowV1OrchestrationTests(unittest.TestCase):
     def launch(
         self, *, actions="true", image=None, revision=REVISION,
         fail_guard="", stale_checkpoint=False,
+        mcp_self_test_denials="12", mcp_blocked_attempts="0",
     ):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -36,9 +37,23 @@ class FullFlowV1OrchestrationTests(unittest.TestCase):
                 "with open(os.environ['FIXTURE_DOCKER_LOG'],'a') as out:\n"
                 " out.write(json.dumps(args)+'\\n')\n"
                 "target=os.environ.get('FIXTURE_FAIL_GUARD')\n"
-                "if target and any(a.endswith('/'+target) for a in args):\n"
+                "self_test_denials=os.environ.get('FIXTURE_MCP_SELF_TEST_DENIALS','12')\n"
+                "blocked_attempts=os.environ.get('FIXTURE_MCP_BLOCKED_ATTEMPTS','0')\n"
+                "matched=any(a.endswith('/'+target) for a in args) if target else False\n"
+                "mcp_guard=any(a.endswith('/mcp_management_guard.py') for a in args)\n"
+                "if target=='mcp_management_self_test':\n"
+                " matched=mcp_guard and '--self-test' in args\n"
+                "if target=='mcp_management_tests':\n"
+                " matched=mcp_guard and any(a.endswith('/test_mcp_native_policy.py') "
+                "for a in args)\n"
+                "if matched:\n"
                 " print('synthetic guarded-suite failure',file=sys.stderr)\n"
                 " sys.exit(19)\n"
+                "if mcp_guard and '--self-test' in args:\n"
+                " print('{\"guard_self_test\":\"passed\",\"expected_denials\":'+"
+                "self_test_denials+'}')\n"
+                "elif mcp_guard:\n"
+                " print('MCP_MANAGEMENT_GUARD_BLOCKED_ATTEMPTS='+blocked_attempts)\n"
                 "print('synthetic command enumeration only, not test evidence')\n"
             )
             binary.chmod(0o700)
@@ -54,6 +69,8 @@ class FullFlowV1OrchestrationTests(unittest.TestCase):
                     "EVIDENCE": str(root / "evidence"),
                     "FIXTURE_DOCKER_LOG": str(log),
                     "FIXTURE_FAIL_GUARD": fail_guard,
+                    "FIXTURE_MCP_SELF_TEST_DENIALS": mcp_self_test_denials,
+                    "FIXTURE_MCP_BLOCKED_ATTEMPTS": mcp_blocked_attempts,
                 },
             )
             calls = [
@@ -63,10 +80,10 @@ class FullFlowV1OrchestrationTests(unittest.TestCase):
             evidence = json.loads(checkpoints[0].read_text()) if checkpoints else None
             return result, calls, evidence
 
-    def test_runs_all_three_boundaries_on_the_exact_revision_without_network(self):
+    def test_runs_all_profiles_on_the_exact_revision_without_network(self):
         result, calls, evidence = self.launch()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(len(calls), 3)
+        self.assertEqual(len(calls), 5)
         guards = []
         exercised = set()
         for call in calls:
@@ -94,6 +111,7 @@ class FullFlowV1OrchestrationTests(unittest.TestCase):
             )
         self.assertEqual(guards, [
             "application_guard.py", "lifecycle_guard.py", "editor_guard.py",
+            "mcp_management_guard.py", "mcp_management_guard.py",
         ])
         self.assertIn(
             "/ci/examples/features/botelier-flow-trial/test_native_prepared_transport.py",
@@ -110,17 +128,71 @@ class FullFlowV1OrchestrationTests(unittest.TestCase):
             "test_native_graph.py", "test_native_graph_imports.py",
             "test_native_values.py", "test_native_output_values.py",
             "test_native_request_templates.py", "test_native_prepared_transport.py",
-            "test_reservation_quote_contract.py",
+            "test_reservation_quote_contract.py", "test_native_quote_actions.py",
+            "test_native_quote_graph.py",
             "test_native_graph_runtime.py", "test_native_graph_corrections.py",
             "test_native_graph_text_host.py", "test_native_graph_host_selection.py",
             "test_native_actions.py", "test_native_effect_ledger.py",
             "test_native_effect_actions.py", "test_native_capabilities.py",
             "test_native_messaging.py", "test_native_tool_sources.py",
             "test_native_record_actions.py", "test_native_integration_binding.py",
-            "test_native_integration_resolution.py",
+            "test_native_integration_resolution.py", "test_native_quote_bridge.py",
+            "test_native_quote_delivery.py",
             "test_flow_response_preview.py", "test_flow_response_preview_routes.py",
             "test_native_flow_recovery.py",
         }.issubset(exercised), exercised)
+        self.assertIn(
+            "/ci/examples/features/botelier-flow-trial/test_native_quote_actions.py",
+            calls[0],
+        )
+        self.assertIn(
+            "/ci/examples/features/botelier-flow-trial/test_native_quote_graph.py",
+            calls[0],
+        )
+        editor = set(
+            item.rsplit("/", 1)[-1] for item in calls[2]
+            if item.endswith(".py") and "/test_" in item
+        )
+        for name in (
+            "test_native_actions.py", "test_native_capabilities.py",
+            "test_native_tool_sources.py", "test_native_integration_resolution.py",
+            "test_native_quote_bridge.py", "test_native_quote_delivery.py",
+        ):
+            self.assertIn(name, editor)
+            self.assertNotIn(
+                "/ci/examples/features/botelier-flow-trial/" + name, calls[1],
+            )
+        self.assertIn("--self-test", calls[3])
+        self.assertNotIn("--tests", calls[3])
+        self.assertIn("NEXTAUTH_SECRET=botelier-editor-trial-only-synthetic-nextauth-secret-v1", calls[3])
+        self.assertIn("NEXTAUTH_SECRET=botelier-editor-trial-only-synthetic-nextauth-secret-v1", calls[4])
+        self.assertIn(
+            "INTEGRATION_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            calls[3],
+        )
+        self.assertIn(
+            "INTEGRATION_ENCRYPTION_KEY=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            calls[4],
+        )
+        self.assertIn("BOTELIER_NATIVE_FLOWS_DEV=1", calls[3])
+        self.assertIn("BOTELIER_NATIVE_FLOWS_DEV=1", calls[4])
+        self.assertIn("NEXTAUTH_URL=http://127.0.0.1:5011", calls[3])
+        self.assertIn("NEXTAUTH_URL=http://127.0.0.1:5011", calls[4])
+        self.assertIn("--tests", calls[4])
+        self.assertEqual(
+            [
+                item for item in calls[4]
+                if item.endswith(".py") and "/test_" in item
+            ],
+            ["/ci/examples/features/botelier-flow-trial/test_mcp_native_policy.py"],
+        )
+        self.assertNotIn("test_mcp_native_policy.py", calls[0])
+        self.assertNotIn("test_mcp_native_policy.py", calls[1])
+        self.assertNotIn("test_mcp_native_policy.py", calls[2])
+        self.assertIn(
+            "/ci/examples/features/botelier-flow-trial/test_mcp_native_policy.py",
+            calls[4],
+        )
         self.assertEqual(evidence["commit"], REVISION)
         self.assertFalse(evidence["production_activation"])
         self.assertFalse(evidence["manual_audio_certified"])
@@ -128,6 +200,7 @@ class FullFlowV1OrchestrationTests(unittest.TestCase):
         self.assertEqual(evidence["result"], "passed")
         self.assertEqual(evidence["completed_boundaries"], [
             "application_guard", "lifecycle_guard", "editor_guard",
+            "mcp_management_self_test", "mcp_management_guard",
         ])
 
     def test_refuses_local_execution_before_any_docker_invocation(self):
@@ -147,7 +220,10 @@ class FullFlowV1OrchestrationTests(unittest.TestCase):
 
     def test_preserves_suite_failure_and_stops_before_later_boundaries(self):
         for count, guard in enumerate(
-            ("application_guard.py", "lifecycle_guard.py", "editor_guard.py"), 1,
+            (
+                "application_guard.py", "lifecycle_guard.py", "editor_guard.py",
+                "mcp_management_self_test", "mcp_management_tests",
+            ), 1,
         ):
             with self.subTest(guard=guard):
                 result, calls, evidence = self.launch(
@@ -158,6 +234,24 @@ class FullFlowV1OrchestrationTests(unittest.TestCase):
                 self.assertIsNone(
                     evidence, "A failed rerun must not leave a completed checkpoint.",
                 )
+
+    def test_mcp_self_test_must_report_all_twelve_denials_before_suite(self):
+        result, calls, evidence = self.launch(
+            mcp_self_test_denials="11", stale_checkpoint=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(len(calls), 4)
+        self.assertIn("--self-test", calls[3])
+        self.assertIsNone(evidence)
+
+    def test_mcp_suite_must_report_zero_guard_blocks_before_completion(self):
+        result, calls, evidence = self.launch(
+            mcp_blocked_attempts="1", stale_checkpoint=True,
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(len(calls), 5)
+        self.assertIn("/test_mcp_native_policy.py", calls[4][-1])
+        self.assertIsNone(evidence)
 
     def test_the_real_workflow_invokes_the_full_v1_gate_without_replacing_old_checks(self):
         source = (ROOT / ".github/workflows/voice-flow-candidate.yml").read_text()
@@ -190,3 +284,15 @@ class FullFlowV1OrchestrationTests(unittest.TestCase):
         ]
         self.assertTrue(exports, "The candidate workflow should retain its image export.")
         self.assertLess(index, min(exports))
+
+    def test_mcp_portable_guard_policy_is_in_existing_release_test_discovery(self):
+        workflow = (ROOT / ".github/workflows/voice-flow-candidate.yml").read_text()
+        self.assertIn(
+            "python -B -m unittest discover -s tests/voice_release -v", workflow,
+        )
+        self.assertTrue(
+            (ROOT / "tests/voice_release/test_mcp_management_guard.py").is_file(),
+        )
+        script = SCRIPT.read_text()
+        self.assertIn('"expected_denials"[[:space:]]*:[[:space:]]*12', script)
+        self.assertIn("MCP_MANAGEMENT_GUARD_BLOCKED_ATTEMPTS=0", script)
