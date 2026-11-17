@@ -20,7 +20,6 @@ from botelier.database import SessionLocal, get_db
 from botelier.models.sms_conversation import MessageStatus, SMSConversation, SMSMessage
 from botelier.models.user import User
 from botelier.services.notification_broadcaster import broadcaster
-from botelier.services.sms_service import SMSService
 
 from ._auth import assert_sms_account_access
 
@@ -133,6 +132,9 @@ async def sms_webhook(
         media_urls = [url for i in range(num_media) if (url := form_data.get(f"MediaUrl{i}"))]
 
         logger.info(f"📩 Incoming SMS: {from_number} -> {to_number} | {body[:50]}...")
+
+        # Notification authentication must not initialize SMS/AI providers.
+        from botelier.services.sms_service import SMSService
 
         sms_service = SMSService(db)
         # process_incoming_sms is fully synchronous and, when MCP tools are

@@ -294,9 +294,6 @@ def _install(backend_root, *, postgres=False, frontend_root=None, node_binary=No
         raise AuthGuardError("Use only the fixed synthetic test signing key")
     if os.environ.get("INTEGRATION_ENCRYPTION_KEY") != TEST_FERNET_KEY:
         raise AuthGuardError("Use only the fixed synthetic test encryption key")
-    # Imported only because the actual SMS SSE module shares its file with
-    # SMSService; no model/provider invocation is allowed by this harness.
-    os.environ["OPENAI_API_KEY"] = "offline-auth-guard-not-a-credential"
     backend_root = backend_root.resolve()
     if not (backend_root / "botelier" / "api" / "auth.py").is_file():
         raise AuthGuardError("Backend root does not contain botelier/api/auth.py")
