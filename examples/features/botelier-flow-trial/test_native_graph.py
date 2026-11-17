@@ -1,14 +1,10 @@
 """Guarded contract tests for the reusable immutable native graph compiler."""
 
-from copy import deepcopy
 from dataclasses import FrozenInstanceError
 import importlib
-import importlib.util
 import json
 import re
-from pathlib import Path
 import sys
-import types
 
 import pytest
 
@@ -22,30 +18,11 @@ IDENTITY_FIELDS = {
 }
 
 
-def _install_pure_package_paths():
-    """Bypass eager application package initializers; load only pure flow modules."""
-    backend = Path(__file__).resolve().parents[3] / "botelier" / "backend"
-    for name, relative in (
-        ("botelier.voice", "botelier/voice"),
-        ("botelier.voice.flows", "botelier/voice/flows"),
-        ("botelier.services", "botelier/services"),
-    ):
-        package = types.ModuleType(name)
-        package.__path__ = [str(backend / relative)]
-        sys.modules.setdefault(name, package)
-
-
 def graph_api():
-    _install_pure_package_paths()
-    module_name = "botelier.voice.flows.native_graph"
-    assert importlib.util.find_spec(module_name) is not None, (
-        "The general native graph admission compiler is not implemented"
-    )
-    return importlib.import_module(module_name)
+    return importlib.import_module("botelier.voice.flows.native_graph")
 
 
 def identity():
-    _install_pure_package_paths()
     pilot = importlib.import_module("botelier.voice.flows.pilot_contract")
     return pilot.PilotIdentity(**IDENTITY_FIELDS)
 
@@ -102,6 +79,14 @@ def sample_node(node_type):
         "end": {"closingMessage": "Goodbye"},
     }
     return {**common, **samples[node_type]}
+
+
+def test_normal_compiler_import_is_pure_without_synthetic_package_modules():
+    compiler = graph_api()
+    assert compiler.__file__.endswith("/botelier/voice/flows/native_graph.py")
+    assert "botelier.voice.call_handler" not in sys.modules
+    assert "botelier.services.call_logger" not in sys.modules
+    assert "botelier.services.mcp_client" not in sys.modules
 
 
 def config_for(node_type):
@@ -200,6 +185,20 @@ def test_integrations_and_safe_expressions_are_admitted_without_resolution_or_ev
     )
     compiled_expression = graph_api().compile_flow(expression_config, identity())
     assert compiled_expression.node("target").data()["setVariable"]["value"] == "'literal' + ' text'"
+
+
+def test_json_path_root_is_explicit_and_option_picker_empty_path_means_whole_item():
+    config = config_for("api_request")
+    config["nodes"][1]["data"]["api"]["responseMapping"] = {"name": ""}
+    with pytest.raises(graph_api().NativeGraphError, match="api_mapping"):
+        graph_api().compile_flow(config, identity())
+
+    config["nodes"][1]["data"]["api"]["responseMapping"] = {"name": "$"}
+    assert graph_api().compile_flow(config, identity()).node("target")
+
+    picker = config_for("option_picker")
+    picker["nodes"][1]["data"]["optionPicker"]["writes"][0]["path"] = ""
+    assert graph_api().compile_flow(picker, identity()).node("target")
 
 
 def test_api_item_templates_use_provider_item_fields_not_flow_variable_names():
@@ -320,6 +319,11 @@ def test_arbitrary_condition_router_fallback_and_legacy_default_edges_are_resolv
     legacy_success = config_for("api_request")
     compiled_success = graph_api().compile_flow(legacy_success, identity())
     assert compiled_success.next_node("target", "success").node_id == "finish"
+    assert compiled_success.next_node("target", "unknown") is None
+    assert compiled_success.next_node("target", "error") is None
+    assert compiled_success.next_node("target", "not_found") is None
+    assert compiled_success.next_node("target", {"success": True}) is None
+    assert compiled_legacy.next_node("target", "unrecognized") is None
 
 
 def test_bounded_wait_cycle_is_allowed_but_automatic_cycle_is_rejected():

@@ -146,3 +146,85 @@ forbidden attempts. No provider, database, or customer resource was accessed.
 - `botelier/backend/botelier/voice/flows/native_graph.py`
 - `examples/features/botelier-flow-trial/test_native_graph.py`
 - `generated-artifacts/voice-pilot/implementation/v1-task-1-report.md`
+
+## Independent-review follow-up
+
+### Fixes
+
+- Made `botelier.voice` public `VoiceAgent` and `CallHandler` exports lazy, and
+  made `botelier.services` exports (`CallLogger`, MCP client API) lazy. Their
+  existing `__all__` names and public lookup paths are retained. The compiler
+  now imports normally without loading `CallHandler`, `CallLogger`, or the MCP
+  client pool. `botelier.voice.flows.FlowTemplates` remains available through
+  its existing package export.
+- Replaced the local response-projection validator with the existing
+  `botelier.services.response_projection.validate_mapped_projection`. The
+  now-lazy services package lets this pure validator be imported without the
+  service startup imports.
+- API/integration response mappings reject `""`; exact `$` is the explicitly
+  documented whole-response JSONPath-lite root. Option-picker write path `""`
+  remains the configured whole-selected-item binding.
+- `next_node` now falls back to one unnamed edge only for compatibility
+  handles `success`, `confirmed`, and `selected` (API/capability,
+  confirmation, option-picker respectively). Unrecognized handles, API
+  `error`/`not_found`, and non-string handles return `None`; no default branch
+  is guessed.
+
+### Red/green and compatibility checks
+
+The new guarded import-boundary test first ran against the eager initializer
+without attempting the forbidden import. Red output:
+
+```text
+F                                                                        [100%]
+...test_voice_public_exports_are_lazy_before_compiler_import
+AssertionError: assert 'CallHandler' not in {'CallHandler', 'VoiceAgent'}
+1 failed in 0.04s
+APPLICATION_GUARD_BLOCKED_ATTEMPTS=0
+```
+
+Final guarded command (normal imports, no synthetic package modules):
+
+```sh
+cd /home/runner/workspace/.worktrees/azure-flow-pilot
+env -i PATH=/home/runner/workspace/.pythonlibs/bin:/usr/bin:/bin \
+  HOME=/home/runner PYTHONDONTWRITEBYTECODE=1 PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
+  python -B examples/features/botelier-flow-trial/application_guard.py \
+  --backend-root /home/runner/workspace/.worktrees/azure-flow-pilot/botelier/backend \
+  --package-root /home/runner/workspace/.pythonlibs/lib/python3.11/site-packages/pipecat \
+  --tests examples/features/botelier-flow-trial/test_native_graph_imports.py \
+  examples/features/botelier-flow-trial/test_native_graph.py \
+  examples/features/botelier-flow-trial/test_configurable_response_projection.py
+```
+
+Actual output:
+
+```text
+........................................................................ [ 90%]
+........                                                                 [100%]
+80 passed in 0.22s
+APPLICATION_GUARD_BLOCKED_ATTEMPTS=0
+```
+
+The existing guarded legacy `FlowTemplates` compatibility test also passed:
+`6 passed in 0.02s`, `APPLICATION_GUARD_BLOCKED_ATTEMPTS=0`. This exercises
+the actual public `FlowTemplates` import and frozen template characterization.
+`VoiceAgent` is imported through its public name under the guard. The
+`CallHandler` lazy export lookup is tested with a local stand-in because the
+component guard intentionally forbids importing the real handler; its module
+was not loaded. Existing response-projection tests and the normal compiler
+import test pass under the same application guard.
+
+The compile admission policy and runtime-execution limitations above are
+unchanged. The first milestone's historical guard-denied-attempt concern
+remains accurately recorded; all follow-up guarded runs above report zero
+blocked attempts.
+
+Follow-up-owned files: `botelier/backend/botelier/voice/__init__.py`,
+`botelier/backend/botelier/services/__init__.py`,
+`botelier/backend/botelier/voice/flows/native_graph.py`,
+`examples/features/botelier-flow-trial/test_native_graph.py`,
+`examples/features/botelier-flow-trial/test_native_graph_imports.py`, and this
+report. The parent's `native_values.py`, `native_expression.py`,
+`test_native_values.py`, and requirements change are not part of this
+follow-up.

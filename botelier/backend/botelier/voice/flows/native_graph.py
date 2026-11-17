@@ -13,6 +13,10 @@ import json
 import re
 from typing import Any
 
+from botelier.services.response_projection import (
+    ResponseProjectionError,
+    validate_mapped_projection,
+)
 from botelier.voice.flows.pilot_contract import PilotIdentity
 
 
@@ -82,7 +86,6 @@ _VALIDATION_FIELDS = frozenset({
 _NUMERIC_VALIDATION = frozenset({
     "min", "max", "minLength", "maxLength", "minDaysAhead", "maxDaysAhead",
 })
-_PROJECTION_CLEANUP = frozenset({"trim", "collapse_whitespace", "clean_text"})
 
 
 class NativeGraphError(ValueError):
@@ -142,39 +145,25 @@ def _template(value: Any, declared: set[str], category: str, node_id: str,
     return value
 
 
-def _json_path(value: Any, category: str, node_id: str, field_name: str):
+def _json_path(value: Any, category: str, node_id: str, field_name: str, *,
+               allow_empty=False):
+    """Validate JSONPath-lite; '$' is root, empty is reserved for whole-item writes."""
     if not isinstance(value, str) or len(value) > 512:
         _fail(category, node_id, field_name)
-    normalized = value.removeprefix("$").removeprefix(".").replace("[", ".[")
-    parts = normalized.split(".") if normalized else []
+    if value == "$":
+        return
+    if not value:
+        if allow_empty:
+            return
+        _fail(category, node_id, field_name)
+    normalized = (value[1:] if value.startswith("$") else value).replace("[", ".[")
+    parts = [part for part in normalized.split(".") if part]
+    if not parts:
+        _fail(category, node_id, field_name)
     if any(not re.fullmatch(
         r"(?:[A-Za-z_][A-Za-z0-9_-]*|\d+|\[(?:\d+|\*)\])", part
     ) for part in parts):
         _fail(category, node_id, field_name)
-
-
-def _validate_projection(configuration: Any, mappings: dict, node_id: str):
-    if configuration is None:
-        return
-    if not isinstance(configuration, dict) or set(configuration) != {"fields"}:
-        _fail("api_projection", node_id, "responseProjection")
-    fields = configuration["fields"]
-    if not isinstance(fields, list) or len(fields) > 64:
-        _fail("api_projection", node_id, "responseProjection")
-    seen = set()
-    for entry in fields:
-        if not isinstance(entry, dict) or set(entry) - {"variable", "cleanup"}:
-            _fail("api_projection", node_id, "responseProjection")
-        variable = entry.get("variable")
-        if not isinstance(variable, str) or not _VARIABLE.fullmatch(variable) or variable in seen or variable not in mappings:
-            _fail("api_projection", node_id, "responseProjection")
-        seen.add(variable)
-        cleanup = entry.get("cleanup", [])
-        if not isinstance(cleanup, list) or len(cleanup) > 3 or any(
-            not isinstance(operation, str) or operation not in _PROJECTION_CLEANUP
-            for operation in cleanup
-        ):
-            _fail("api_projection", node_id, "responseProjection")
 
 
 def _safe_expression_names(expression: str) -> set[str] | None:
@@ -293,6 +282,8 @@ class CompiledFlow:
         return next((item for item in self.nodes if item.node_id == node_id), None)
 
     def next_node(self, node_id: str, handle: str | None = None) -> CompiledNode | None:
+        if not isinstance(node_id, str) or (handle is not None and not isinstance(handle, str)):
+            return None
         current = self.node(node_id)
         if current is None:
             return None
@@ -301,12 +292,16 @@ class CompiledFlow:
             selected = next((edge for edge in edges if edge.source_handle == handle), None)
             if selected is not None:
                 return self.node(selected.target)
-            # Older confirmations, option pickers and API steps commonly have
-            # one unnamed continuation; resolve only an unambiguous default.
+            # Preserve only the legacy confirmed/selected/success default-edge
+            # cases; arbitrary or unsupported handles never take that edge.
             defaults = [edge for edge in edges if not edge.source_handle]
-            if len(defaults) == 1 and current.type in {
-                "api_request", "capability", "confirmation", "option_picker",
-            }:
+            legacy_default_handles = {
+                "api_request": {"success"},
+                "capability": {"success"},
+                "confirmation": {"confirmed"},
+                "option_picker": {"selected"},
+            }
+            if len(defaults) == 1 and handle in legacy_default_handles.get(current.type, set()):
                 return self.node(defaults[0].target)
             return None
         default = next((edge for edge in edges if not edge.source_handle), None)
@@ -508,7 +503,10 @@ def _validate_api(api: Any, node_id: str, variables: set[str], *, capability=Fal
     mappings = dict(api.get("responseMapping") or {})
     for entry in api.get("responseVariables", []):
         mappings[entry["variableKey"]] = entry["jsonPath"]
-    _validate_projection(projection, mappings, node_id)
+    try:
+        validate_mapped_projection(projection, mappings)
+    except ResponseProjectionError:
+        _fail("api_projection", node_id, "responseProjection")
 
 
 def _validate_node(node: dict, variables: dict[str, dict], declared: set[str]) -> tuple[CallerSlot, ...]:
@@ -706,7 +704,8 @@ def _validate_node(node: dict, variables: dict[str, dict], declared: set[str]) -
             if not isinstance(key, str) or key not in declared or key in destinations:
                 _fail("option_picker", node_id, "writes")
             destinations.add(key)
-            _json_path(write.get("path"), "option_picker", node_id, "writes")
+            _json_path(write.get("path"), "option_picker", node_id, "writes",
+                       allow_empty=True)
     return tuple(slots)
 
 
