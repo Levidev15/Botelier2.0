@@ -285,7 +285,29 @@ class NativeActionRunner:
                         self._ledger.complete, claim, result, outcome_known=True,
                     )
                     return result if completed else _failure("effect_outcome_unknown")
-            delivery = await self.messenger.send_sms(recipient, body)
+            if quote_context is None:
+                delivery = await self.messenger.send_sms(recipient, body)
+            else:
+                def quote_pre_submit_guard():
+                    if self._closed:
+                        return "action_runner_closed"
+                    if not self._confirmation_matches(
+                        confirmation, facts, node, references,
+                    ):
+                        return "quote_confirmation_changed"
+                    try:
+                        self._prepare_quote_delivery(*quote_context)
+                    except NativeQuoteError as exc:
+                        return exc.code
+                    except Exception:
+                        return "quote_delivery_unavailable"
+                    if self._closed:
+                        return "action_runner_closed"
+                    return None
+
+                delivery = await self.messenger.send_sms(
+                    recipient, body, before_submit=quote_pre_submit_guard,
+                )
         else:
             try:
                 delivery = await asyncio.wait_for(asyncio.to_thread(
@@ -303,7 +325,7 @@ class NativeActionRunner:
             known_failure = delivery.failure_reason in {
                 "messenger_unavailable", "invalid_recipient", "invalid_message",
                 "sender_scope_mismatch", "invalid_subject", "email_sender_unavailable",
-                "preview_required",
+                "preview_required", "action_runner_closed",
             }
             known_quote_failure = (
                 quote_context is not None

@@ -2,6 +2,7 @@
 
 import asyncio
 import re
+import threading
 
 from botelier.voice.flows.native_execution import NativeTerminalResult
 
@@ -12,6 +13,31 @@ _MAX_SMS_BODY = 1600
 _MAX_EMAIL_SUBJECT = 200
 _MAX_EMAIL_BODY = 30_000
 _DEFAULT_TIMEOUT = 8.0
+
+
+class _SMSSubmissionState:
+    """Linearize cancellation against the final pre-submit boundary."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self._cancelled = False
+        self._submitting = False
+
+    def cancelled(self):
+        with self._lock:
+            return self._cancelled
+
+    def cancel_before_submission(self):
+        with self._lock:
+            if not self._submitting:
+                self._cancelled = True
+
+    def begin_submission(self):
+        with self._lock:
+            if self._cancelled:
+                return False
+            self._submitting = True
+            return True
 
 
 class NativeMessenger:
@@ -40,7 +66,13 @@ class NativeMessenger:
         self.email_dispatch = email_dispatch
         self.timeout = float(timeout)
 
-    async def send_sms(self, recipient, body):
+    async def send_sms(self, recipient, body, *, before_submit=None):
+        """Send SMS after an optional synchronous worker-thread pre-submit guard.
+
+        The guard runs after resolving the provider callable and immediately
+        before the submission boundary; it returns ``None`` to proceed or a
+        bounded failure reason to reject without provider I/O.
+        """
         invalid = self.validate_sms(recipient, body, self.from_number)
         if invalid:
             return NativeTerminalResult(False, failure_reason=invalid)
@@ -48,21 +80,53 @@ class NativeMessenger:
             return NativeTerminalResult(False, failure_reason="preview_required")
         if self.twilio_client is None:
             return NativeTerminalResult(False, failure_reason="messenger_unavailable")
+        if before_submit is not None and not callable(before_submit):
+            return NativeTerminalResult(False, failure_reason="pre_submit_guard_invalid")
 
+        submission = _SMSSubmissionState()
         try:
-            accepted = await asyncio.wait_for(asyncio.to_thread(
-                self.twilio_client.messages.create,
-                body=body, from_=self.from_number, to=recipient,
-            ), timeout=self.timeout)
+            accepted = await asyncio.wait_for(
+                asyncio.to_thread(
+                    self._submit_sms, recipient, body, before_submit, submission,
+                ),
+                timeout=self.timeout,
+            )
         except asyncio.CancelledError:
+            submission.cancel_before_submission()
             raise
         except Exception:
+            submission.cancel_before_submission()
             # A synchronous provider may continue after asyncio's timeout. Do
             # not assert rejection; the durable claim must remain pending.
             return NativeTerminalResult(False, failure_reason="effect_outcome_unknown")
+        if isinstance(accepted, NativeTerminalResult):
+            return accepted
         if not isinstance(getattr(accepted, "sid", None), str) or not accepted.sid:
             return NativeTerminalResult(False, failure_reason="effect_outcome_unknown")
         return NativeTerminalResult(True, completed=False)
+
+    def _submit_sms(self, recipient, body, before_submit, submission):
+        if submission.cancelled():
+            return NativeTerminalResult(False, failure_reason="submission_cancelled")
+        create = self.twilio_client.messages.create
+        if submission.cancelled():
+            return NativeTerminalResult(False, failure_reason="submission_cancelled")
+        if before_submit is not None:
+            try:
+                rejected = before_submit()
+            except Exception:
+                return NativeTerminalResult(
+                    False, failure_reason="pre_submit_guard_failed",
+                )
+            if rejected is not None:
+                if type(rejected) is not str:
+                    return NativeTerminalResult(
+                        False, failure_reason="pre_submit_guard_invalid",
+                    )
+                return NativeTerminalResult(False, failure_reason=rejected)
+        if not submission.begin_submission():
+            return NativeTerminalResult(False, failure_reason="submission_cancelled")
+        return create(body=body, from_=self.from_number, to=recipient)
 
     @staticmethod
     def validate_sms(recipient, body, from_number):

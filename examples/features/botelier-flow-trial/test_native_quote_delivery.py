@@ -5,6 +5,7 @@ from copy import deepcopy
 from datetime import timedelta
 import html
 from types import SimpleNamespace
+import threading
 import uuid
 
 
@@ -162,7 +163,9 @@ def _use_vetted_offline_sentence_assets():
         nltk.data.path.insert(0, str(assets))
 
 
-def _runner(fixture, compiled, *, email=False, execution_mode="execute"):
+def _runner(
+    fixture, compiled, *, email=False, execution_mode="execute", sms_client=None,
+):
     from botelier.voice.flows.native_actions import NativeActionRunner
     from botelier.voice.flows.native_messaging import NativeMessenger
 
@@ -182,7 +185,9 @@ def _runner(fixture, compiled, *, email=False, execution_mode="execute"):
 
     messenger = NativeMessenger(
         identity=fixture.identity,
-        twilio_client=None if email else SimpleNamespace(messages=Messages()),
+        twilio_client=(
+            None if email else sms_client or SimpleNamespace(messages=Messages())
+        ),
         from_number="+12025550100", execution_mode=execution_mode,
         email_dispatch=email_dispatch if email else None,
     )
@@ -191,6 +196,25 @@ def _runner(fixture, compiled, *, email=False, execution_mode="execute"):
         execution_mode=execution_mode, channel="voice",
     )
     return runner, sent
+
+
+def _held_sms_client(entered, release, sent):
+    class Messages:
+        def create(self, **kwargs):
+            sent.append({"kind": "sms", **kwargs})
+            return SimpleNamespace(sid="SMoffline-held")
+
+    messages = Messages()
+
+    class Client:
+        @property
+        def messages(self):
+            entered.set()
+            if not release.wait(5):
+                raise TimeoutError("held fake SMS client setup was not released")
+            return messages
+
+    return Client()
 
 
 def _ledger_rows(fixture):
@@ -324,6 +348,15 @@ def test_compiled_sms_and_email_quote_delivery_send_once_and_replay(monkeypatch)
             runner, sent = _runner(
                 fixture, compiled, email=tool_type == "SEND_EMAIL",
             )
+            prepare_threads = []
+            main_thread = threading.get_ident()
+            original_prepare = runner._prepare_quote_delivery
+
+            def track_prepare(*args):
+                prepare_threads.append(threading.get_ident())
+                return original_prepare(*args)
+
+            monkeypatch.setattr(runner, "_prepare_quote_delivery", track_prepare)
             recipient_variable = (
                 "caller_email" if tool_type == "SEND_EMAIL" else "caller_phone"
             )
@@ -336,6 +369,9 @@ def test_compiled_sms_and_email_quote_delivery_send_once_and_replay(monkeypatch)
                 compiled.node("delivery"), facts, confirmation=confirmation,
             )
             assert result.success is True, result
+            if tool_type == "SEND_SMS":
+                assert len(prepare_threads) == 3
+                assert sum(thread_id != main_thread for thread_id in prepare_threads) == 1
             assert facts == original_facts
             assert confirmation.values()["quote_total"] == "230.00"
             assert confirmation.values()["quote_taxes"] == "20.00"
@@ -360,6 +396,9 @@ def test_compiled_sms_and_email_quote_delivery_send_once_and_replay(monkeypatch)
                 compiled.node("delivery"), facts, confirmation=confirmation,
             )
             assert replay.success is True, replay
+            if tool_type == "SEND_SMS":
+                assert len(prepare_threads) == 4
+                assert sum(thread_id != main_thread for thread_id in prepare_threads) == 1
             assert len(sent) == 1
             assert len(_ledger_rows(fixture)) == 1
             await runner.close()
@@ -532,6 +571,264 @@ def test_quote_delivery_revalidates_after_claim_and_records_known_no_submit(monk
             rows = _ledger_rows(fixture)
             assert len(rows) == 1
             assert rows[0].status == "failed"
+            await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_sms_quote_revalidates_after_async_entry_before_provider_submission(monkeypatch):
+    from native_effect_io import NativeEffectsFixture
+    from test_reservation_quote_contract import NOW
+
+    async def scenario():
+        _use_vetted_offline_sentence_assets()
+        async with NativeEffectsFixture() as fixture:
+            clock = [NOW]
+            _fixed_quote_clock(monkeypatch, clock)
+            tool_id = "offline-quote-async-entry-expiry-race"
+            _add_tool_and_sender(fixture, tool_id, "SEND_SMS")
+            compiled = _delivery_definition(fixture.identity, tool_id, "SEND_SMS")
+            runner, sent = _runner(fixture, compiled)
+            facts, confirmation = _confirmed_facts("caller_phone")
+            original_send = runner.messenger.send_sms
+            entered = asyncio.Event()
+            release = asyncio.Event()
+
+            async def hold_after_broker_check(recipient, body, *, before_submit=None):
+                entered.set()
+                await release.wait()
+                if before_submit is None:
+                    return await original_send(recipient, body)
+                return await original_send(
+                    recipient, body, before_submit=before_submit,
+                )
+
+            runner.messenger.send_sms = hold_after_broker_check
+            task = asyncio.create_task(runner.execute(
+                compiled.node("delivery"), facts, confirmation=confirmation,
+            ))
+            await asyncio.wait_for(entered.wait(), timeout=3)
+            clock[0] = NOW + timedelta(minutes=11)
+            release.set()
+            result = await task
+
+            assert result.failure_reason == "quote_quote_expired", result
+            assert sent == []
+            rows = _ledger_rows(fixture)
+            assert len(rows) == 1
+            assert rows[0].status == "failed"
+            await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_sms_quote_revalidates_after_held_worker_client_setup(monkeypatch):
+    from native_effect_io import NativeEffectsFixture
+    from test_reservation_quote_contract import NOW
+
+    async def scenario():
+        _use_vetted_offline_sentence_assets()
+        async with NativeEffectsFixture() as fixture:
+            clock = [NOW]
+            _fixed_quote_clock(monkeypatch, clock)
+            tool_id = "offline-quote-held-client-expiry-race"
+            _add_tool_and_sender(fixture, tool_id, "SEND_SMS")
+            compiled = _delivery_definition(fixture.identity, tool_id, "SEND_SMS")
+            entered, release = threading.Event(), threading.Event()
+            sent = []
+            runner, _ = _runner(
+                fixture, compiled,
+                sms_client=_held_sms_client(entered, release, sent),
+            )
+            facts, confirmation = _confirmed_facts("caller_phone")
+
+            task = asyncio.create_task(runner.execute(
+                compiled.node("delivery"), facts, confirmation=confirmation,
+            ))
+            assert await asyncio.wait_for(
+                asyncio.to_thread(entered.wait, 3), timeout=4,
+            )
+            clock[0] = NOW + timedelta(minutes=11)
+            release.set()
+            result = await task
+
+            assert result.failure_reason == "quote_quote_expired", result
+            assert sent == []
+            rows = _ledger_rows(fixture)
+            assert len(rows) == 1
+            assert rows[0].status == "failed"
+            await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_sms_quote_is_fenced_if_runner_closes_before_provider_submission(monkeypatch):
+    from native_effect_io import NativeEffectsFixture
+    from test_reservation_quote_contract import NOW
+
+    async def scenario():
+        _use_vetted_offline_sentence_assets()
+        async with NativeEffectsFixture() as fixture:
+            _fixed_quote_clock(monkeypatch, [NOW])
+            tool_id = "offline-quote-close-before-submit"
+            _add_tool_and_sender(fixture, tool_id, "SEND_SMS")
+            compiled = _delivery_definition(fixture.identity, tool_id, "SEND_SMS")
+            entered, release = threading.Event(), threading.Event()
+            sent = []
+            runner, _ = _runner(
+                fixture, compiled,
+                sms_client=_held_sms_client(entered, release, sent),
+            )
+            facts, confirmation = _confirmed_facts("caller_phone")
+
+            task = asyncio.create_task(runner.execute(
+                compiled.node("delivery"), facts, confirmation=confirmation,
+            ))
+            assert await asyncio.wait_for(
+                asyncio.to_thread(entered.wait, 3), timeout=4,
+            )
+            await runner.close()
+            release.set()
+            result = await task
+
+            assert result.failure_reason == "action_runner_closed", result
+            assert sent == []
+            rows = _ledger_rows(fixture)
+            assert len(rows) == 1
+            assert rows[0].status == "failed"
+
+    asyncio.run(scenario())
+
+
+def test_sms_quote_is_fenced_if_owner_is_cancelled_before_provider_submission(monkeypatch):
+    from native_effect_io import NativeEffectsFixture
+    from test_reservation_quote_contract import NOW
+
+    async def scenario():
+        _use_vetted_offline_sentence_assets()
+        async with NativeEffectsFixture() as fixture:
+            _fixed_quote_clock(monkeypatch, [NOW])
+            tool_id = "offline-quote-cancel-before-submit"
+            _add_tool_and_sender(fixture, tool_id, "SEND_SMS")
+            compiled = _delivery_definition(fixture.identity, tool_id, "SEND_SMS")
+            entered, release, worker_finished = (
+                threading.Event(), threading.Event(), threading.Event(),
+            )
+            sent = []
+            runner, _ = _runner(
+                fixture, compiled,
+                sms_client=_held_sms_client(entered, release, sent),
+            )
+            original_submit = runner.messenger._submit_sms
+
+            def track_worker(*args):
+                try:
+                    return original_submit(*args)
+                finally:
+                    worker_finished.set()
+
+            runner.messenger._submit_sms = track_worker
+            facts, confirmation = _confirmed_facts("caller_phone")
+
+            task = asyncio.create_task(runner.execute(
+                compiled.node("delivery"), facts, confirmation=confirmation,
+            ))
+            assert await asyncio.wait_for(
+                asyncio.to_thread(entered.wait, 3), timeout=4,
+            )
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            else:
+                raise AssertionError("the owning action task must remain cancelled")
+            release.set()
+            assert await asyncio.wait_for(
+                asyncio.to_thread(worker_finished.wait, 3), timeout=4,
+            )
+
+            assert sent == []
+            rows = _ledger_rows(fixture)
+            assert len(rows) == 1
+            assert rows[0].status == "pending"
+            retry = await runner.execute(
+                compiled.node("delivery"), facts, confirmation=confirmation,
+            )
+            assert retry.failure_reason == "effect_outcome_unknown"
+            assert sent == []
+            assert len(_ledger_rows(fixture)) == 1
+            await runner.close()
+
+    asyncio.run(scenario())
+
+
+def test_cancelled_quote_sms_after_submission_stays_pending_and_cannot_replay(monkeypatch):
+    from native_effect_io import NativeEffectsFixture
+    from test_reservation_quote_contract import NOW
+
+    async def scenario():
+        _use_vetted_offline_sentence_assets()
+        async with NativeEffectsFixture() as fixture:
+            _fixed_quote_clock(monkeypatch, [NOW])
+            tool_id = "offline-quote-cancel-after-submit"
+            _add_tool_and_sender(fixture, tool_id, "SEND_SMS")
+            compiled = _delivery_definition(fixture.identity, tool_id, "SEND_SMS")
+            entered, release, worker_finished = (
+                threading.Event(), threading.Event(), threading.Event(),
+            )
+            sent = []
+
+            class Messages:
+                def create(self, **kwargs):
+                    sent.append({"kind": "sms", **kwargs})
+                    entered.set()
+                    if not release.wait(5):
+                        raise TimeoutError("fake provider submission was not released")
+                    return SimpleNamespace(sid="SMoffline-completes-after-cancel")
+
+            runner, _ = _runner(
+                fixture, compiled,
+                sms_client=SimpleNamespace(messages=Messages()),
+            )
+            original_submit = runner.messenger._submit_sms
+
+            def track_worker(*args):
+                try:
+                    return original_submit(*args)
+                finally:
+                    worker_finished.set()
+
+            runner.messenger._submit_sms = track_worker
+            facts, confirmation = _confirmed_facts("caller_phone")
+            task = asyncio.create_task(runner.execute(
+                compiled.node("delivery"), facts, confirmation=confirmation,
+            ))
+            assert await asyncio.wait_for(
+                asyncio.to_thread(entered.wait, 3), timeout=4,
+            )
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            else:
+                raise AssertionError("the owning action task must remain cancelled")
+            release.set()
+            assert await asyncio.wait_for(
+                asyncio.to_thread(worker_finished.wait, 3), timeout=4,
+            )
+
+            assert len(sent) == 1
+            rows = _ledger_rows(fixture)
+            assert len(rows) == 1
+            assert rows[0].status == "pending"
+            retry = await runner.execute(
+                compiled.node("delivery"), facts, confirmation=confirmation,
+            )
+            assert retry.failure_reason == "effect_outcome_unknown"
+            assert len(sent) == 1
+            assert len(_ledger_rows(fixture)) == 1
             await runner.close()
 
     asyncio.run(scenario())
