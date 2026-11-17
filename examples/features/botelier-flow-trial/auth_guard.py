@@ -1,12 +1,12 @@
 """Isolated auth/MFA test launcher: real auth modules, disposable SQLite only."""
 import argparse
+from collections import deque
 import importlib.abc
 import json
 import os
 from pathlib import Path
 import shutil
 import sys
-import traceback
 import types
 
 
@@ -21,6 +21,7 @@ ALLOWED_ENV = {
 }
 BLOCKED = []
 DIAGNOSTICS = False
+DENIAL_TRACES = deque(maxlen=8)
 ALLOWED_BOTELIER_MODULES = {
     "botelier.database",
     "botelier.api.auth",
@@ -67,12 +68,39 @@ class AuthGuardError(RuntimeError):
     """An operation outside this isolated auth/MFA test scope."""
 
 
-def deny(category):
-    BLOCKED.append(category)
+def _record_denial(category, event):
+    """Keep bounded code locations, never source lines, arguments or locals."""
+    frames = []
+    frame = sys._getframe(2)
+    try:
+        while frame is not None and len(frames) < 24:
+            frames.append({
+                "file": frame.f_code.co_filename[-256:],
+                "function": frame.f_code.co_name[-80:],
+                "line": frame.f_lineno,
+            })
+            frame = frame.f_back
+    finally:
+        del frame
+    DENIAL_TRACES.append({
+        "category": category, "event": event, "frames": frames,
+    })
+
+
+def _print_denial_traces():
     if DIAGNOSTICS:
-        print("AUTH_GUARD_CATEGORY=" + category, file=sys.stderr)
-        traceback.print_stack(limit=10, file=sys.stderr)
-    raise AuthGuardError("AUTH TRIAL GUARD: " + category)
+        for record in tuple(DENIAL_TRACES):
+            print("AUTH_GUARD_TRACE=" + json.dumps(record, separators=(",", ":")))
+
+
+def deny(category, *, event="policy"):
+    BLOCKED.append(category)
+    try:
+        if DIAGNOSTICS:
+            print("AUTH_GUARD_CATEGORY=" + category, file=sys.stderr)
+            _record_denial(category, event)
+    finally:
+        raise AuthGuardError("AUTH TRIAL GUARD: " + category)
 
 
 def _check_path(raw, *, writing=False):
@@ -94,7 +122,7 @@ def _audit(event, args):
         "socket.gethostbyname", "socket.gethostbyaddr", "socket.sendto",
         "os.system", "os.posix_spawn",
     }:
-        deny("network_or_subprocess")
+        deny("network_or_subprocess", event=event)
     if event == "open":
         mode, flags = args[1], args[2]
         writing = (
@@ -340,18 +368,26 @@ def main():
         node_binary=args.node_binary,
     )
     if args.self_test:
-        _self_test()
+        try:
+            _self_test()
+        finally:
+            _print_denial_traces()
         return 0
     import pytest
 
     out = Path("/tmp/botelier-auth-trial")
-    result = pytest.main([
-        "-q", "--tb=short", "--noconftest", "-p", "no:cacheprovider",
-        "-p", "pytest_asyncio.plugin",
-        "--basetemp=" + str(out / "pytest-temp"),
-        "-o", "log_file=" + str(out / "pytest.log"),
-        *[str(path) for path in args.tests],
-    ])
+    try:
+        result = pytest.main([
+            "-q", "--tb=short", "--noconftest", "-p", "no:cacheprovider",
+            "-p", "pytest_asyncio.plugin",
+            "--basetemp=" + str(out / "pytest-temp"),
+            "-o", "log_file=" + str(out / "pytest.log"),
+            *[str(path) for path in args.tests],
+        ])
+    finally:
+        # Passing tests may capture a dependency's caught refusal. Emit only
+        # after pytest restores output, including when its driver raises.
+        _print_denial_traces()
     print("AUTH_GUARD_BLOCKED_ATTEMPTS=" + str(len(BLOCKED)))
     if BLOCKED:
         print("AUTH_GUARD_BLOCKED_CATEGORIES=" + ",".join(BLOCKED))
