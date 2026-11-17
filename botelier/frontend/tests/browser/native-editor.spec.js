@@ -1110,10 +1110,13 @@ test("authenticated native Text Lab resumes a paused API action with the exact r
   expect(sampleRequest.previewResult).not.toHaveProperty("success");
   expect(await page.getByRole("form", { name: "Supply sample action response" }).count()).toBe(0);
   await expect(page.getByText(
-    "Here are the fixture options. Standard costs 0. Which option?",
+    "Here are the fixture options. Standard costs 0.",
     { exact: true },
   )).toBeVisible();
-  await expect(page.getByText("Which option?", { exact: true })).toBeVisible();
+  await expect(testLab.getByText("Which option?", { exact: true })).toHaveCount(1);
+  await expect(testLab.locator("div.flex.justify-end p")).toHaveCount(1);
+  await expect(testLab.locator("div.flex.justify-end p").first()).toHaveText("standard");
+  await expect(testLab.getByText("I am checking the fixture.", { exact: true })).toHaveCount(1);
   const continued = observations.responses
     .filter(item => item.path === "/api/simulate/message").at(-1).body;
   expect(continued.state.current_node).toBe("choice");

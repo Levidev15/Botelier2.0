@@ -19,6 +19,15 @@ import type {
   PendingNativePreview,
 } from "./nativePreview";
 import {
+  appendNativeAssistantHistory,
+  initializeNativeAssistantHistory,
+  mergeNativeAssistantTail,
+} from "./nativeConversation";
+import type {
+  ConversationMessage,
+  NativeServerHistoryCursor,
+} from "./nativeConversation";
+import {
   deleteSimulationSession,
   formatNativeError,
   requestSimulationStart,
@@ -41,21 +50,13 @@ interface FlowSimulatorSidebarProps {
   onNodeChange?: (nodeId: string | null) => void;
 }
 
-interface Message {
-  role: "user" | "assistant" | "system";
-  content: string;
-  metadata?: {
-    function_called?: string;
-    function_result?: Record<string, unknown>;
-    record_saved?: boolean;
-  };
-}
+type Message = ConversationMessage;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
-function normalizeMessages(value: unknown, native: boolean): Message[] {
+function normalizeLegacyMessages(value: unknown): Message[] {
   if (!Array.isArray(value)) return [];
   return value.slice(-100).flatMap((entry) => {
     if (!isRecord(entry) ||
@@ -65,7 +66,7 @@ function normalizeMessages(value: unknown, native: boolean): Message[] {
       role: entry.role as Message["role"],
       content: entry.content,
     };
-    if (!native && isRecord(entry.metadata)) {
+    if (isRecord(entry.metadata)) {
       const metadata: NonNullable<Message["metadata"]> = {};
       if (typeof entry.metadata.function_called === "string" &&
           entry.metadata.function_called.length <= 128) {
@@ -158,6 +159,7 @@ export default function FlowSimulatorSidebar({
   } | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const stateRef = useRef<SimulationState | null>(state);
+  const nativeHistoryCursorRef = useRef<NativeServerHistoryCursor | null>(null);
   const { authFetch } = useAuthToken();
   const authFetchRef = useRef(authFetch);
   authFetchRef.current = authFetch;
@@ -209,6 +211,7 @@ export default function FlowSimulatorSidebar({
     sessionSourceKeyRef.current = null;
     setSessionId(null);
     setMessages([]);
+    nativeHistoryCursorRef.current = null;
     stateRef.current = null;
     setState(null);
     setVariables([]);
@@ -297,7 +300,18 @@ export default function FlowSimulatorSidebar({
       setSessionId(data.session_id!);
       const nextState = normalizeSimulationState(data.state);
       stateRef.current = nextState;
-      setMessages(normalizeMessages(data.messages, current.engine === "native"));
+      if (current.engine === "native") {
+        const history = initializeNativeAssistantHistory(data.messages, {
+          sessionId: data.session_id!,
+          sourceKey: startedSourceKey,
+          generation,
+        });
+        nativeHistoryCursorRef.current = history.cursor;
+        setMessages(history.messages);
+      } else {
+        nativeHistoryCursorRef.current = null;
+        setMessages(normalizeLegacyMessages(data.messages));
+      }
       setState(nextState);
       setVariables(normalizeVariables(data.variables_to_collect));
       setRuntimeEvidence({
@@ -385,7 +399,17 @@ export default function FlowSimulatorSidebar({
       }
       const nextState = normalizeSimulationState(data.state);
       stateRef.current = nextState;
-      setMessages(normalizeMessages(data.messages, latestRef.current.engine === "native"));
+      if (latestRef.current.engine === "native") {
+        const history = appendNativeAssistantHistory(
+          data.messages,
+          nativeHistoryCursorRef.current,
+          { sessionId: ownedSession, sourceKey: sessionSourceKey, generation },
+        );
+        nativeHistoryCursorRef.current = history.cursor;
+        setMessages((previous) => mergeNativeAssistantTail(previous, history.messages));
+      } else {
+        setMessages(normalizeLegacyMessages(data.messages));
+      }
       setState(nextState);
       if (hasNativePendingPreview(nextState)) setInput("");
       if (nextState?.current_node) onNodeChangeRef.current?.(nextState.current_node);
@@ -487,7 +511,13 @@ export default function FlowSimulatorSidebar({
         return;
       }
       stateRef.current = nextState;
-      setMessages(normalizeMessages(data.messages, true));
+      const history = appendNativeAssistantHistory(
+        data.messages,
+        nativeHistoryCursorRef.current,
+        { sessionId: ownedSession, sourceKey: sessionSourceKey, generation },
+      );
+      nativeHistoryCursorRef.current = history.cursor;
+      setMessages((previous) => mergeNativeAssistantTail(previous, history.messages));
       setState(nextState);
       if (Object.prototype.hasOwnProperty.call(data, "variables_to_collect")) {
         setVariables(normalizeVariables(data.variables_to_collect));
@@ -518,6 +548,7 @@ export default function FlowSimulatorSidebar({
       sessionIdRef.current = null;
       sessionSourceKeyRef.current = null;
       stateRef.current = null;
+      nativeHistoryCursorRef.current = null;
       deleteSimulationSession(authFetchRef.current, ownedSession).catch(() => {});
       onNodeChangeRef.current?.(null);
     };
