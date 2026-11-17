@@ -24,3 +24,5 @@ num2words>=0.5.13
 sendgrid>=6.11.0
 pyotp==2.9.0
 qrcode==8.2
+# Bounded matching of configurable slot patterns; already used transitively by Pipecat.
+regex==2025.11.3
