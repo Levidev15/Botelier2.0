@@ -305,6 +305,7 @@ class NativeSimulationAPIHarness:
         self.shutdown_active_count = None
 
     async def __aenter__(self):
+        import botelier
         import httpx
         from fastapi import FastAPI
 
@@ -312,7 +313,9 @@ class NativeSimulationAPIHarness:
         from native_text_io import NativeTextFixture
         from simulation_guard import install_test_namespaces
 
-        backend = Path(__file__).resolve().parents[3] / "botelier" / "backend"
+        # CI mounts trial code separately from the installed app. Keep the
+        # exact router identity check against the loaded backend, not /ci.
+        backend = Path(botelier.__file__).resolve().parent.parent
         self.database = sys.modules.get("botelier.database")
         if self.database is None:
             self.database = install_test_namespaces(backend)

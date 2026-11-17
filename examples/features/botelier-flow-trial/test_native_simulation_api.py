@@ -394,3 +394,35 @@ def test_native_api_route_and_schema_are_actual_candidate_sources():
             assert harness.api.StartSimulationRequest.model_fields["source"].default is None
             assert harness.api.StartSimulationRequest.model_fields["source_version"].default is None
     run(scenario)
+
+
+def test_native_http_uses_backend_source_when_trial_files_are_mounted_separately():
+    async def scenario():
+        import native_simulation_io
+
+        with patch.object(
+            native_simulation_io, "__file__",
+            "/ci/examples/features/botelier-flow-trial/native_simulation_io.py",
+        ):
+            async with NativeSimulationAPIHarness() as harness:
+                response = await harness.start()
+                assert response.status_code == 200, response.text
+                assert response.json()["runtime"]["engine"] == "native_pilot"
+                await harness.delete(response.json()["session_id"])
+    run(scenario)
+
+
+def test_native_http_harness_still_rejects_a_counterfeit_router_source():
+    async def scenario():
+        import botelier.api.simulation as actual_api
+
+        harness = NativeSimulationAPIHarness()
+        with patch.object(
+            actual_api, "__file__", "/not-approved/botelier/api/simulation.py",
+        ):
+            try:
+                with pytest.raises(RuntimeError, match="actual simulation API route"):
+                    await harness.__aenter__()
+            finally:
+                await harness.__aexit__(None, None, None)
+    run(scenario)
