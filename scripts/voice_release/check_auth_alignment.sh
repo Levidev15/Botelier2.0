@@ -73,11 +73,11 @@ for check in self-test protocol postgres; do
   case "$check" in
     self-test) set -- --self-test ;;
     protocol)
-      set -- --tests /app/tests/test_authenticator_mfa.py \
+      set -- --tests /ci/auth-tests/test_authenticator_mfa.py \
         /ci/examples/features/botelier-flow-trial/test_auth_enforcement.py
       ;;
     postgres)
-      set -- --postgres --tests /app/tests/test_mfa_postgres_races.py \
+      set -- --postgres --tests /ci/auth-tests/test_mfa_postgres_races.py \
         /ci/examples/features/botelier-flow-trial/test_mfa_schema_upgrade.py
       ;;
   esac
@@ -89,6 +89,7 @@ for check in self-test protocol postgres; do
     -v "$socket:/tmp/botelier-auth-fixture:ro" \
     -v "$node_binary:/test-node/node:ro" \
     -v "$encoder_root:/frontend:ro" \
+    -v "$GITHUB_WORKSPACE/botelier/backend/tests:/ci/auth-tests:ro" \
     -v "$GITHUB_WORKSPACE/examples/features/botelier-flow-trial:/ci/examples/features/botelier-flow-trial:ro" \
     -v "$RUNNER_TEMP/voice-test-tools:/test-tools:ro" \
     --entrypoint env "$IMAGE" -i \

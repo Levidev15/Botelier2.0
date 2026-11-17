@@ -20,6 +20,16 @@ class AuthOrchestrationTests(unittest.TestCase):
             (root / "botelier/frontend").mkdir(parents=True)
             (root / "deps/node_modules/next-auth").mkdir(parents=True)
             (root / "deps/package.json").write_text('{"name":"synthetic-encoder-fixture"}')
+            for name in (
+                "botelier/backend/tests/test_authenticator_mfa.py",
+                "botelier/backend/tests/test_mfa_postgres_races.py",
+                "examples/features/botelier-flow-trial/auth_guard.py",
+                "examples/features/botelier-flow-trial/test_auth_enforcement.py",
+                "examples/features/botelier-flow-trial/test_mfa_schema_upgrade.py",
+            ):
+                source = root / name
+                source.parent.mkdir(parents=True, exist_ok=True)
+                source.touch()
             binary = root / "docker"
             binary.write_text(
                 "#!/usr/bin/env python3\n"
@@ -44,6 +54,11 @@ class AuthOrchestrationTests(unittest.TestCase):
                 "    destination=Path(parent)/target[len(parent_target)+1:]\n"
                 "    if not destination.exists():\n"
                 "     sys.stderr.write('Read-only parent has no nested mount destination\\n'); sys.exit(125)\n"
+                " if '--tests' in args:\n"
+                "  for test in args[args.index('--tests')+1:]:\n"
+                "   found=any(test.startswith(target+'/') and (Path(source)/test[len(target)+1:]).is_file() for source,target,mode in mounts)\n"
+                "   if not found:\n"
+                "    sys.stderr.write('Test file absent from the mounted fixture\\n'); sys.exit(4)\n"
                 " if os.environ.get('FAIL_CHECK') and os.environ['FAIL_CHECK'] in ' '.join(args): sys.exit(19)\n"
             )
             binary.chmod(0o700)
@@ -79,10 +94,10 @@ class AuthOrchestrationTests(unittest.TestCase):
             self.assertNotIn("--publish", call)
         checks = runs[1:]
         self.assertIn("--self-test", checks[0])
-        self.assertIn("/app/tests/test_authenticator_mfa.py", checks[1])
+        self.assertIn("/ci/auth-tests/test_authenticator_mfa.py", checks[1])
         self.assertNotIn("--postgres", checks[1])
         self.assertIn("--postgres", checks[2])
-        self.assertIn("/app/tests/test_mfa_postgres_races.py", checks[2])
+        self.assertIn("/ci/auth-tests/test_mfa_postgres_races.py", checks[2])
         self.assertIn(
             "/ci/examples/features/botelier-flow-trial/test_mfa_schema_upgrade.py",
             checks[2],
@@ -93,6 +108,7 @@ class AuthOrchestrationTests(unittest.TestCase):
             mounts = [call[i + 1] for i, value in enumerate(call) if value == "-v"]
             self.assertTrue(any(m.endswith("/deps:/frontend:ro") for m in mounts))
             self.assertFalse(any(m.endswith(":/frontend/node_modules:ro") for m in mounts))
+            self.assertTrue(any(m.endswith("/backend/tests:/ci/auth-tests:ro") for m in mounts))
             self.assertTrue(any(m.endswith(":/test-node/node:ro") for m in mounts))
             self.assertTrue(any(m.endswith(":/tmp/botelier-auth-fixture:ro") for m in mounts))
         self.assertEqual(calls[-1], ["rm", "-f", "synthetic-auth-fixture"])
