@@ -204,8 +204,12 @@ async function routeBrowser(page, { integrationsManage = true, mcpConfigured = f
               requestId: previewResult.request_id,
               statusCode: previewResult.status_code,
               dataJson: previewResult.data_json,
-              success: previewResult.success,
-              errorType: previewResult.error_type,
+              ...(Object.hasOwn(previewResult, "success")
+                ? { success: previewResult.success }
+                : {}),
+              ...(Object.hasOwn(previewResult, "error_type")
+                ? { errorType: previewResult.error_type }
+                : {}),
               hasParsedData: Object.hasOwn(previewResult, "data"),
             }
             : null,
@@ -1075,6 +1079,9 @@ test("authenticated native Text Lab resumes a paused API action with the exact r
     node_id: "lookup",
     source_kind: "http",
   });
+  await page.screenshot({
+    path: path.join(repo, "generated-artifacts/native-action-preview-mobile-checkpoint.png"),
+  });
 
   const sampleField = page.getByLabel("Sample response JSON");
   const sampleBounds = await sampleField.boundingBox();
@@ -1102,9 +1109,22 @@ test("authenticated native Text Lab resumes a paused API action with the exact r
   });
   expect(sampleRequest.previewResult).not.toHaveProperty("success");
   expect(await page.getByRole("form", { name: "Supply sample action response" }).count()).toBe(0);
-  await expect(page.getByText("The synthetic standard option is selected.", { exact: true })).toBeVisible();
+  await expect(page.getByText(
+    "Here are the fixture options. Standard costs 0. Which option?",
+    { exact: true },
+  )).toBeVisible();
+  await expect(page.getByText("Which option?", { exact: true })).toBeVisible();
+  const continued = observations.responses
+    .filter(item => item.path === "/api/simulate/message").at(-1).body;
+  expect(continued.state.current_node).toBe("choice");
+  expect(continued.state.pending_slot).toBe("choice");
+  expect(continued.state.collected_slots.query).toBe("standard");
+  expect(continued.state.pending_preview).toBeFalsy();
   await expect(page.getByLabel("Message as guest")).toBeEnabled();
   await expect(page.getByText(/configured model may incur provider usage/i)).toBeVisible();
+  await page.screenshot({
+    path: path.join(repo, "generated-artifacts/native-continuation-mobile-checkpoint.png"),
+  });
   expect(observations.real.filter(item => item.path.startsWith("/api/simulate/"))
     .map(item => `${item.method} ${item.path}`)).toContain("POST /api/simulate/start");
   expect(observations.real.filter(item => item.path === "/api/simulate/message")).toHaveLength(2);
@@ -1120,6 +1140,10 @@ test("Test Lab opens as a full-width mobile panel and closes accessibly", async 
   const desktopBounds = await desktopLab.boundingBox();
   expect(desktopBounds.width).toBeGreaterThanOrEqual(310);
   expect(desktopBounds.width).toBeLessThanOrEqual(321);
+  fs.mkdirSync(path.join(repo, "generated-artifacts"), { recursive: true });
+  await page.screenshot({
+    path: path.join(repo, "generated-artifacts/native-test-lab-desktop-checkpoint.png"),
+  });
   await page.getByRole("button", { name: "Close simulator" }).click();
   await expect(desktopLab).toBeHidden();
 
@@ -1130,7 +1154,6 @@ test("Test Lab opens as a full-width mobile panel and closes accessibly", async 
   expect(mobileBounds.x).toBe(0);
   expect(mobileBounds.width).toBeGreaterThanOrEqual(389);
   expect(mobileBounds.height).toBeGreaterThanOrEqual(843);
-  fs.mkdirSync(path.join(repo, "generated-artifacts"), { recursive: true });
   await page.screenshot({
     path: path.join(repo, "generated-artifacts/native-test-lab-mobile-checkpoint.png"),
   });
