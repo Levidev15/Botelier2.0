@@ -41,31 +41,37 @@ def install_test_namespaces(backend: Path):
     """Provide inert package boundaries without importing server/database boot."""
     from sqlalchemy.orm import declarative_base
 
-    database = types.ModuleType("botelier.database")
-    database.__package__ = "botelier"
-    database.__spec__ = ModuleSpec("botelier.database", loader=None)
-    database.Base = declarative_base()
-    database._session_factory = None
+    database = sys.modules.get("botelier.database")
+    if not getattr(database, "_botelier_flow_trial_database", False):
+        database = types.ModuleType("botelier.database")
+        database.__package__ = "botelier"
+        database.__spec__ = ModuleSpec("botelier.database", loader=None)
+        database.Base = declarative_base()
+        database._session_factory = None
+        database._botelier_flow_trial_database = True
 
-    def bind_session_factory(factory):
-        database._session_factory = factory
+        def bind_session_factory(factory):
+            database._session_factory = factory
 
-    def forbidden_database_factory(*args, **kwargs):
-        guard.deny("live_database_session_requested")
+        def forbidden_database_factory(*args, **kwargs):
+            guard.deny("live_database_session_requested")
 
-    def get_db():
-        factory = database._session_factory
-        if factory is None:
-            guard.deny("synthetic_database_session_not_configured")
-        session = factory()
-        try:
-            yield session
-        finally:
-            session.close()
+        def get_db():
+            factory = database._session_factory
+            if factory is None:
+                guard.deny("synthetic_database_session_not_configured")
+            session = factory()
+            try:
+                yield session
+            finally:
+                session.close()
 
-    database.bind_session_factory = bind_session_factory
-    database.SessionLocal = forbidden_database_factory
-    database.get_db = get_db
+        database.bind_session_factory = bind_session_factory
+        database.SessionLocal = forbidden_database_factory
+        database.get_db = get_db
+    # Already-imported real route Depends objects retain get_db's closure.
+    # Keep that inert dependency identity while each fixture binds a fresh
+    # in-memory database; otherwise later fixtures query a disposed old DB.
     sys.modules["botelier.database"] = database
 
     # botelier.api.__init__ imports every route. Install only a namespace path,
