@@ -8,6 +8,8 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
+from botelier.services.request_templates import PreparedRequestBody
+
 
 class _MissingRequiredVariables(Exception):
     """Raised when a required endpoint query param cannot be resolved from variables."""
@@ -77,3 +79,5 @@ class IntegrationAPIConfig:
     on_error_message: str = "There was an issue processing your request"
     on_not_found_message: str = "The requested information was not found"
     on_auth_error_message: str = "There was an authentication issue with the system"
+    # Internal, already context-encoded native input. Never interpolate again.
+    prepared_body: Optional[PreparedRequestBody] = None

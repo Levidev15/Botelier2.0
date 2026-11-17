@@ -10,7 +10,7 @@ import json
 import re
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime
 from typing import Any, Optional
 
@@ -37,11 +37,17 @@ from botelier.services.integration_client import (
     extract_json_value,
 )
 from botelier.services.ssrf_safe_transport import SSRFSafeTransport
+from botelier.services.request_templates import PreparedRequestBody, prepare_body_headers
 
 _VAR_RE = re.compile(r"\{\{(\w+)\}\}")
 _SECRET_RE = re.compile(r"\{\{secrets\.(\w+)\}\}")
 _SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
 _ALLOWED_METHODS = {"GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"}
+_MAX_CUSTOM_RESPONSE_BYTES = 10 * 1024 * 1024
+
+
+class _ResponseTooLarge(ValueError):
+    """No upstream payload is retained in an error."""
 
 
 @dataclass
@@ -81,6 +87,8 @@ class ActionExecutionRequest:
     # Universal Adapter — response bounding + redaction policy forwarded from
     # ConnectionOperationPolicy or IntegrationAction.response_policy.
     response_policy: Optional[dict[str, Any]] = None
+    # Server-only native boundary: validated/encoded once, never re-rendered.
+    prepared_body: Optional[PreparedRequestBody] = None
 
 
 @dataclass
@@ -171,6 +179,7 @@ class ActionExecutor:
                 context=request.context,
                 request_id=request_id,
                 start_ms=start_ms,
+                prepared_body=request.prepared_body,
             )
             return result
         finally:
@@ -374,6 +383,16 @@ class ActionExecutor:
     async def _execute_integration(
         self, request: ActionExecutionRequest, config: IntegrationAPIConfig
     ) -> APIResponse:
+        if request.prepared_body is not None:
+            if not isinstance(request.prepared_body, PreparedRequestBody) or (
+                config.prepared_body is not None and config.prepared_body != request.prepared_body
+            ):
+                return APIResponse(
+                    success=False, status_code=0,
+                    error_type=APIErrorType.VALIDATION_ERROR,
+                    error_message="Invalid prepared request body",
+                )
+            config = replace(config, prepared_body=request.prepared_body)
         self._lock_integration_refresh(config.integration_id)
         client = IntegrationClient(
             request.context.account_id,
@@ -432,6 +451,7 @@ class ActionExecutor:
         context: ActionContext,
         request_id: str,
         start_ms: int,
+        prepared_body: Optional[PreparedRequestBody] = None,
     ) -> ActionExecutionResult:
         method = str(config.get("method", "GET")).upper()
         if method not in _ALLOWED_METHODS:
@@ -456,7 +476,9 @@ class ActionExecutor:
                 for k, v in (config.get("headers") or {}).items()
                 if k
             }
-            body = self._build_body(config, variables, context.account_id)
+            if prepared_body is not None and not isinstance(prepared_body, PreparedRequestBody):
+                raise ValueError("invalid_prepared_body")
+            body = prepared_body if prepared_body is not None else self._build_body(config, variables, context.account_id)
 
             last_error: Optional[Exception] = None
             for _attempt in range(retry_count + 1):
@@ -487,26 +509,46 @@ class ActionExecutor:
                 error_type,
                 str(last_error) if last_error else "Request failed",
             )
+        except _ResponseTooLarge:
+            return self._error(
+                request_id, start_ms, APIErrorType.SERVER_ERROR, "Upstream response is too large",
+            )
         except Exception as exc:
-            logger.warning(f"Action execution failed: {exc}")
-            return self._error(request_id, start_ms, APIErrorType.UNKNOWN, str(exc))
+            logger.warning("Action execution failed category={}", type(exc).__name__)
+            return self._error(request_id, start_ms, APIErrorType.UNKNOWN, "Action execution failed")
 
     async def _send(self, client, method: str, url: str, headers: dict, body: Any):
-        if method == "GET":
-            return await client.get(url, headers=headers)
-        if method == "HEAD":
-            return await client.head(url, headers=headers)
-        if method == "OPTIONS":
-            return await client.options(url, headers=headers)
-        if method == "POST":
-            return await client.post(url, headers=headers, json=body)
-        if method == "PUT":
-            return await client.put(url, headers=headers, json=body)
-        if method == "PATCH":
-            return await client.patch(url, headers=headers, json=body)
-        if method == "DELETE":
-            return await client.delete(url, headers=headers)
-        raise ValueError(f"Unsupported HTTP method: {method}")
+        if method not in _ALLOWED_METHODS:
+            raise ValueError("Unsupported HTTP method")
+        headers = dict(headers)
+        arguments = {}
+        if isinstance(body, PreparedRequestBody):
+            headers = prepare_body_headers(body, headers)
+            value = body.value()
+            if body.mode == "content":
+                value = value.encode("utf-8")
+            elif body.mode == "files":
+                headers = {key: item for key, item in headers.items() if key.casefold() != "content-type"}
+                value = {key: (None, item if isinstance(item, str) else json.dumps(item)) for key, item in value.items()}
+            arguments[body.mode] = value
+        elif body is not None and method in {"POST", "PUT", "PATCH"}:
+            arguments["json"] = body
+        request = client.build_request(method, url, headers=headers, **arguments)
+        response = await client.send(request, stream=True)
+        try:
+            declared = response.headers.get("content-length")
+            if declared and declared.isdigit() and int(declared) > _MAX_CUSTOM_RESPONSE_BYTES:
+                raise _ResponseTooLarge()
+            buffered = bytearray()
+            async for chunk in response.aiter_bytes(chunk_size=65536):
+                buffered.extend(chunk)
+                if len(buffered) > _MAX_CUSTOM_RESPONSE_BYTES:
+                    raise _ResponseTooLarge()
+            # Same bounded buffering contract used by IntegrationClient.
+            response._content = bytes(buffered)
+            return response
+        finally:
+            await response.aclose()
 
     def _process_http_response(
         self,

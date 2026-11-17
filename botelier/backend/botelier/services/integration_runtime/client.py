@@ -322,8 +322,8 @@ class IntegrationClient:
                     "Ask the caller to provide this information, then try again."
                 ),
             )
-        headers = self._build_headers(integration, config)
         try:
+            headers = self._build_headers(integration, config)
             body = self._build_body(config, effective_vars, endpoint_def)
         except _InvalidBodyTemplate as exc:
             self._write_call_log(
@@ -1112,7 +1112,9 @@ class IntegrationClient:
         credentials = integration.get_credentials()
         adapter = self._resolve_adapter(integration)
 
-        headers = {"Content-Type": "application/json", "Accept": "application/json"}
+        headers = {"Accept": "application/json"}
+        if config.prepared_body is None:
+            headers["Content-Type"] = "application/json"
 
         # Config headers apply first, auth headers LAST: per-node/draft header
         # maps come from stored JSON that operators (or the LLM-facing editor)
@@ -1130,6 +1132,13 @@ class IntegrationClient:
             }
             headers.update(auth_headers)
 
+        if config.prepared_body is not None:
+            from botelier.services.request_templates import RequestTemplateError, prepare_body_headers
+
+            try:
+                headers = prepare_body_headers(config.prepared_body, headers)
+            except RequestTemplateError:
+                raise _InvalidBodyTemplate("Prepared body and Content-Type are incompatible") from None
         return headers
 
     def _build_body(
@@ -1138,6 +1147,21 @@ class IntegrationClient:
         variables: dict[str, Any],
         endpoint_def: Optional[dict] = None,
     ) -> Optional[_RequestBody]:
+        if config.prepared_body is not None:
+            from botelier.services.request_templates import PreparedRequestBody
+
+            prepared = config.prepared_body
+            if not isinstance(prepared, PreparedRequestBody):
+                raise _InvalidBodyTemplate("Invalid prepared request body")
+            value = prepared.value()
+            if prepared.mode == "content":
+                value = value.encode("utf-8")
+            elif prepared.mode == "files":
+                value = {
+                    key: (None, item if isinstance(item, str) else json.dumps(item))
+                    for key, item in value.items()
+                }
+            return _RequestBody(mode=prepared.mode, value=value)
         body_template = config.body_template
         if not body_template and endpoint_def:
             seed_body = endpoint_def.get("body_template")
@@ -1264,8 +1288,10 @@ class IntegrationClient:
             request_kwargs[body.mode] = body.value
             if body.mode == "files":
                 # Let httpx generate `multipart/form-data; boundary=...`.
-                request_headers.pop("Content-Type", None)
-                request_headers.pop("content-type", None)
+                request_headers = {
+                    key: value for key, value in request_headers.items()
+                    if key.casefold() != "content-type"
+                }
         # Each redirect is routed through SSRFSafeTransport, which validates the
         # redirect target independently before connecting. httpx strips sensitive
         # headers when a redirect changes origin.
