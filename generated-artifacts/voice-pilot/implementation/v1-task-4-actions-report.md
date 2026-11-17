@@ -98,14 +98,15 @@ flock /tmp/botelier-flow-v1-guard.lock env -i PATH="$PATH" \
 
 Result: **62 passed; 0 lifecycle guard blocks**.
 
-The editor guard was also retried after parent changes to
-`native_text_host.py`/text-host fixture integration. It currently stops during
-fixture setup, before the broker assertions: the parent fixture passes its
-plain-dict voice config into `NativeTextHost`, which now requires a
-`VoiceAgentConfig`. The attempt reported 7 fixture-setup failures, 2 passes,
-and 0 guard blocks. Parent-owned host/fixture code was not modified. Broker
-tests that require `NativeEffectsFixture` need that parent-owned fixture
-signature synchronized before they can be re-run against the current host.
+An initial editor-guard retry was blocked by the parent-owned dummy text-host
+fixture: its old `CompiledPilot` was incompatible with the current
+`CompiledFlow` path. The parent resolved this by setting
+`NativeTextFixture(create_host=False)` for the unused dummy and checking source
+identity through `NativeFlowAdapter`; `make_config` already returns the
+required `VoiceAgentConfig`. The subsequent parent-reported
+`v1-broker-storage-parent-decoupled.log` run has **21 passed, 0 guard blocks**,
+including actual storage broker and strict-ledger coverage. No host/fixture
+files were changed in this commit.
 
 ## Limitations and handoff
 
