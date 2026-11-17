@@ -39,8 +39,10 @@ def _number(value, code="slot_number"):
         raise NativeValueError(code) from None
 
 
-def _date_value(raw, today, built_in, future):
+def normalize_date_value(raw, today, built_in, future):
+    """Parse configured date formats without applying range/cross-field policy."""
     if built_in:
+        raw = re.sub(r"(\d)(st|nd|rd|th)\b", r"\1", raw, flags=re.I)
         relative = {"today": 0, "tonight": 0, "tomorrow": 1, "next week": 7}
         if raw.casefold() in relative:
             return today + timedelta(days=relative[raw.casefold()])
@@ -95,7 +97,7 @@ def validate_value(slot, value, facts, *, today=None):
             raise NativeValueError("slot_contact")
         if kind == "date":
             future = constraints.get("requireFuture", constraints.get("require_future", True))
-            parsed = _date_value(result, today, built_in, future)
+            parsed = normalize_date_value(result, today, built_in, future)
             if future and parsed < today:
                 raise NativeValueError("slot_date_future")
             if "minDaysAhead" in constraints and parsed < today + timedelta(days=constraints["minDaysAhead"]):

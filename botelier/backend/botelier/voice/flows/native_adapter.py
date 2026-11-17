@@ -23,6 +23,7 @@ from pipecat.frames.frames import TTSSpeakFrame
 from botelier.voice.flows.native_execution import (
     NativeActionResult, NativeConfirmation, NativeTerminalResult, copy_native_json,
 )
+from botelier.voice.flows.native_grounding import caller_value_is_grounded
 from botelier.voice.flows.native_values import (
     NativeValueError, evaluate_condition, evaluate_value, present_response,
     render_text, resolve_option, validate_value,
@@ -1385,7 +1386,12 @@ class NativeFlowAdapter:
             )
             if not valid_value_type:
                 return self._rejected("invalid_arguments")
-            if not self._same_answer(latest, str(raw)):
+            evidence_slot = {**candidate, "type": slot_type}
+            if slot_type == "choice":
+                evidence_slot["choices"] = declaration.get("choices", [])
+            if not caller_value_is_grounded(
+                evidence_slot, latest, raw, today=self.today,
+            ):
                 return self._rejected("caller_response_mismatch")
         claim = object()
         self._claim = claim
