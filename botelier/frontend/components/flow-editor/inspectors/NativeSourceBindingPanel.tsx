@@ -5,6 +5,7 @@ import { AlertCircle, RefreshCw } from "lucide-react";
 import { useFlowStore, type APIRequestConfig, type APIRequestNodeData, type FlowVariable } from "../store";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
+import { nativeFlowToolAccess, type MCPNativeFlowPolicy } from "@/components/mcpNativePolicy";
 import {
   defaultQuoteDeliveryTemplate,
   validateQuoteDeliveryTemplate,
@@ -32,6 +33,7 @@ interface MCPConnection {
   status: string;
   is_active: boolean;
   discovered_tools?: MCPDiscoveredTool[];
+  native_flow_policy?: MCPNativeFlowPolicy;
 }
 
 interface SavedTool {
@@ -51,6 +53,7 @@ interface Capability {
   required?: string[];
   service_backed?: boolean;
   mutating?: boolean;
+  native_flow_only?: boolean;
 }
 
 interface Props {
@@ -166,9 +169,14 @@ export default function NativeSourceBindingPanel({ api, nodeId, update, variable
   }, [accountId, authFetch, retryKey]);
 
   const selectedConnection = connections.find((connection) => connection.id === api.mcpConnectionId);
-  const selectedMcpTool = selectedConnection?.discovered_tools?.find(
-    (tool) => tool.name === api.mcpToolName,
-  );
+  const allowedMcpTools = selectedConnection?.native_flow_policy?.configured
+    ? selectedConnection.discovered_tools?.filter((tool) =>
+      nativeFlowToolAccess(selectedConnection.native_flow_policy, tool.name) !== "unavailable",
+    ) ?? []
+    : [];
+  const selectedMcpTool = allowedMcpTools.find((tool) => tool.name === api.mcpToolName);
+  const selectedMcpReadOnly = !!selectedMcpTool &&
+    nativeFlowToolAccess(selectedConnection?.native_flow_policy, selectedMcpTool.name) === "read_only";
   const selectedTool = tools.find((tool) => tool.id === api.toolId);
   const selectedCapability = capabilities.find((capability) => capability.name === api.capability);
   const quoteNodes = nodes.filter((node) => {
@@ -365,11 +373,27 @@ export default function NativeSourceBindingPanel({ api, nodeId, update, variable
           {selectedConnection && (
             <div>
               <label className="mb-1 block text-xs text-gray-400">Discovered tool</label>
-              <select value={api.mcpToolName ?? ""} onChange={(event) => setMcpTool(event.target.value)} className={inputClass}>
-                <option value="">Select a discovered tool…</option>
-                {(selectedConnection.discovered_tools ?? []).map((tool) => <option key={tool.name} value={tool.name}>{tool.name}</option>)}
+              <select value={selectedMcpTool?.name ?? ""} onChange={(event) => setMcpTool(event.target.value)} className={inputClass}>
+                <option value="">Select a granted tool…</option>
+                {allowedMcpTools.map((tool) => (
+                  <option key={tool.name} value={tool.name}>
+                    {tool.name}{selectedConnection.native_flow_policy?.read_only_tools.includes(tool.name) ? " · read-only" : ""}
+                  </option>
+                ))}
               </select>
-              <p className="mt-1 text-[10px] text-gray-500">Runtime validates the sealed tool allowlist and property/account scope. Discovery is not permission to execute.</p>
+              {selectedConnection.native_flow_policy?.configured ? (
+                <p className="mt-1 text-[10px] text-emerald-300/80">
+                  Stored {selectedConnection.native_flow_policy.scope === "account" ? "account-wide" : "property-scoped"} grant · runtime authorization and property scope are rechecked by the server.
+                </p>
+              ) : (
+                <p className="mt-1 text-[10px] text-amber-300">
+                  No stored native Flow grant. Ask an integrations.manage user to enable discovered tools; discovery alone does not authorize execution.
+                </p>
+              )}
+              {api.mcpToolName && !selectedMcpTool && (
+                <p role="alert" className="mt-1 text-[10px] text-amber-300">This saved MCP tool is no longer enabled by the public native policy summary. Choose an enabled tool or clear the binding.</p>
+              )}
+              {selectedMcpReadOnly && <p className="mt-1 text-[10px] text-gray-400">This grant is configured read-only. The server still enforces this at runtime.</p>}
             </div>
           )}
           {selectedMcpTool?.description && <p className="text-xs text-gray-400">{selectedMcpTool.description}</p>}
@@ -461,10 +485,15 @@ export default function NativeSourceBindingPanel({ api, nodeId, update, variable
             className={inputClass}
           >
             <option value="">Select a capability…</option>
-            {capabilities.map((capability) => <option key={capability.name} value={capability.name}>{capability.name.replaceAll("_", " ")}</option>)}
+            {capabilities.map((capability) => (
+              <option key={capability.name} value={capability.name}>
+                {capability.name.replaceAll("_", " ")}{capability.native_flow_only ? " · native Flow only" : ""}
+              </option>
+            ))}
           </select>
           {selectedCapability?.description && <p className="mt-1 text-xs text-gray-400">{selectedCapability.description}</p>}
           {selectedCapability?.service_backed && <p className="mt-1 text-[11px] text-amber-300">Managed-service capability; native availability is verified by the server before a test begins.</p>}
+          {selectedCapability?.native_flow_only && <p className="mt-1 text-[11px] text-emerald-300">This pure action is available in native Flow only, not as a standalone/legacy Capability Tool.</p>}
         </div>
       )}
 

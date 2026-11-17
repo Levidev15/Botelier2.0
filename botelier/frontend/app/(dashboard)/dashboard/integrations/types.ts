@@ -1,3 +1,6 @@
+import type { MCPNativeFlowPolicy } from "@/components/mcpNativePolicy";
+export type { MCPNativeFlowPolicy } from "@/components/mcpNativePolicy";
+
 export interface AccountSecret {
   id: string;
   key: string;
@@ -70,9 +73,11 @@ export interface MCPConnection {
   last_error: string | null;
   is_active: boolean;
   discovered_tools: MCPTool[];
+  native_flow_policy: MCPNativeFlowPolicy;
   created_at: string;
   updated_at: string | null;
 }
+
 
 export interface IntegrationStats {
   total_calls: number;

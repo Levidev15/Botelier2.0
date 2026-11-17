@@ -36,6 +36,7 @@ interface Capability {
   required: string[];
   mutating: boolean;
   service_backed: boolean;
+  native_flow_only?: boolean;
 }
 
 interface FormData {
@@ -100,6 +101,9 @@ export default function CapabilityForm({ onSuccess, onCancel, tool, accountId, t
   }, [tool]);
 
   const selected = capabilities.find((c) => c.name === formData.capability);
+  const selectableCapabilities = capabilities.filter((capability) =>
+    !capability.native_flow_only || capability.name === formData.capability,
+  );
 
   const validateForm = (): boolean => {
     const newErrors: FormErrors = {};
@@ -111,6 +115,9 @@ export default function CapabilityForm({ onSuccess, onCancel, tool, accountId, t
     }
     if (!formData.capability) {
       newErrors.capability = "Select a capability";
+    }
+    if (selected?.native_flow_only) {
+      newErrors.capability = "This action is native Flow-only and cannot be created as a standalone Capability Tool.";
     }
     setErrors(newErrors);
     return Object.keys(newErrors).length === 0;
@@ -205,15 +212,20 @@ export default function CapabilityForm({ onSuccess, onCancel, tool, accountId, t
             } rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-600 focus:border-transparent`}
           >
             <option value="">Select a capability...</option>
-            {capabilities.map((c) => (
-              <option key={c.name} value={c.name}>
-                {prettify(c.name)}
+            {selectableCapabilities.map((c) => (
+              <option key={c.name} value={c.name} disabled={c.native_flow_only}>
+                {prettify(c.name)}{c.native_flow_only ? " · native Flow only (legacy binding)" : ""}
               </option>
             ))}
           </select>
         )}
         {errors.capability && (
           <p className="text-xs text-red-500 mt-1">{errors.capability}</p>
+        )}
+        {selected?.native_flow_only && (
+          <p role="alert" className="mt-1 text-xs text-amber-300">
+            This registered capability is available only as a node in the native Flow editor. Choose another capability to create or update a standalone Tool.
+          </p>
         )}
         {selected && (
           <div className="mt-2 rounded-lg border border-gray-800 bg-[#141414] p-3 space-y-2">

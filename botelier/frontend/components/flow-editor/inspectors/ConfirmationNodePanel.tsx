@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { AlertCircle } from "lucide-react";
 import { useFlowStore, ConfirmationNodeData, DeliveryMode, CapabilityNodeData } from "../store";
-import { collectFlowVariables, findQuoteConfirmationContext } from "../flowEditorData";
+import { collectFlowVariables, findQuoteConfirmationContext, hasQuotePrivateSpeech } from "../flowEditorData";
 
 interface Props {
   data: ConfirmationNodeData;
@@ -44,6 +44,11 @@ export default function ConfirmationNodePanel({ data, nodeId }: Props) {
     ...Array.from(quotePrivateVariables),
     ...quoteContext.fingerprintVariables,
   ]);
+  const quoteSpeechProtection = {
+    privateVariables: quoteContext.privateVariables,
+    fingerprintVariables: quoteContext.fingerprintVariables,
+    rawQuoteVariables: quoteContext.rawQuoteVariables,
+  };
   const currentVariablesToConfirm = confirmation.variablesToConfirm || [];
   const quoteRoomVariable = quoteContext.validators
     .map(({ id }) => getQuoteApi(id)?.quotePolicy?.publicConfirmationFields?.room_id)
@@ -56,7 +61,7 @@ export default function ConfirmationNodePanel({ data, nodeId }: Props) {
     confirmation.confirmPrompt || "",
     confirmation.editPrompt || "",
   ].some((value) =>
-    Array.from(protectedSpeechVariables).some((key) => key && value.includes(`{{${key}}}`)) ||
+    hasQuotePrivateSpeech(value, quoteSpeechProtection) ||
     (protectedSpeechVariables.size > 0 && /https?:\/\/\S+/i.test(value)),
   );
 
@@ -73,10 +78,7 @@ export default function ConfirmationNodePanel({ data, nodeId }: Props) {
   }, [nodeId, requiredSignature, currentVariablesToConfirm, confirmation, updateNodeData]);
 
   const writeSpeech = (field: "summaryTemplate" | "confirmPrompt" | "editPrompt", value: string) => {
-    const unsafeVariable = Array.from(protectedSpeechVariables).find(
-      (key) => key && value.includes(`{{${key}}}`),
-    );
-    if (unsafeVariable || /https?:\/\/\S+/i.test(value)) {
+    if (hasQuotePrivateSpeech(value, quoteSpeechProtection) || /https?:\/\/\S+/i.test(value)) {
       setSpeechError("Keep the fingerprint, raw quote and private URL out of every spoken confirmation field.");
       return;
     }

@@ -2289,7 +2289,12 @@ export const useFlowStore = create<FlowState>((set, get) => ({
                 field === "variable" ||
                 field === "compareWith" ||
                 field === "afterDateVariable" ||
-                field === "after_date_variable"
+                field === "after_date_variable" ||
+                field === "recipientVariable" ||
+                field === "fingerprintVariable" ||
+                field === "privateUrlVariable" ||
+                field === "sourceVariable" ||
+                field === "arrayVariable"
               ) && val === key
             ) {
               migrated = newKey;
@@ -2301,6 +2306,17 @@ export const useFlowStore = create<FlowState>((set, get) => ({
           ) {
             // Rename the variable-name keys of these record objects
             out[field] = renameMappingKey(val as Record<string, string>);
+          } else if (
+            field === "publicConfirmationFields" &&
+            val !== null && typeof val === "object" && !Array.isArray(val)
+          ) {
+            // Canonical JSON paths are contract keys; rename only their bound variable values.
+            out[field] = Object.fromEntries(
+              Object.entries(val as Record<string, string>).map(([path, variableKey]) => [
+                path,
+                variableKey === key ? newKey : variableKey,
+              ]),
+            );
           } else if (field === "variablesToConfirm" && Array.isArray(val)) {
             // Confirmation nodes carry an array of bare variable names
             out[field] = (val as string[]).map((k) => (k === key ? newKey : k));

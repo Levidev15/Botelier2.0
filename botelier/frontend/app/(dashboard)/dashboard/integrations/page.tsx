@@ -22,6 +22,7 @@ export default function IntegrationsPage() {
   const { accountId, loading: contextLoading } = useAccountContext();
   const { authFetch, loading: authLoading, isAuthenticated } = useAuthToken();
   const { can: canPerm, loading: permsLoading } = usePermissions();
+  const canView = canPerm("integrations", "view");
   const canManage = canPerm("integrations", "manage");
   const [integrationTypes, setIntegrationTypes] = useState<IntegrationType[]>([]);
   const [accountIntegrations, setAccountIntegrations] = useState<AccountIntegration[]>([]);
@@ -59,10 +60,10 @@ export default function IntegrationsPage() {
   useEffect(() => {
     if (!contextLoading && !authLoading && isAuthenticated && accountId) {
       fetchIntegrations();
-      fetchMCPConnections();
+      if (canView) fetchMCPConnections();
       fetchSecrets();
     }
-  }, [accountId, contextLoading, authLoading, isAuthenticated]);
+  }, [accountId, contextLoading, authLoading, isAuthenticated, canView]);
 
   const fetchIntegrationStats = async (integrations: AccountIntegration[]) => {
     const connected = integrations.filter(i => i.status === "connected");
@@ -116,6 +117,7 @@ export default function IntegrationsPage() {
   };
 
   const fetchMCPConnections = async () => {
+    if (!canView || !accountId) return;
     try {
       const response = await authFetch(`/api/mcp-connections?account_id=${accountId}&include_tools=true`);
       if (response.ok) {
@@ -167,16 +169,19 @@ export default function IntegrationsPage() {
   };
 
   const handleCreateMcp = () => {
+    if (!canManage) return;
     setEditingMcp(null);
     setShowMcpModal(true);
   };
 
   const handleEditMcp = (mcp: MCPConnection) => {
+    if (!canView) return;
     setEditingMcp(mcp);
     setShowMcpModal(true);
   };
 
   const handleDeleteMcp = async (mcp: MCPConnection) => {
+    if (!canManage) return;
     const confirmed = await confirmAction(`Are you sure you want to delete "${mcp.name}"?`, {
       confirmText: "Delete",
     });
@@ -196,6 +201,7 @@ export default function IntegrationsPage() {
   };
 
   const handleTestMcp = async (mcp: MCPConnection) => {
+    if (!canManage) return;
     setTestingMcp(mcp.id);
 
     try {
@@ -206,13 +212,14 @@ export default function IntegrationsPage() {
       const result = await response.json();
 
       if (result.success) {
+        showNotification("success", "MCP connection test completed.");
         fetchMCPConnections();
       } else {
-        alert(`Connection failed: ${result.error}`);
+        showNotification("error", "MCP connection test failed. Review saved settings; provider details are hidden.");
         fetchMCPConnections();
       }
-    } catch (error) {
-      console.error("Failed to test MCP connection:", error);
+    } catch {
+      showNotification("error", "MCP connection test failed. Review saved settings; provider details are hidden.");
     } finally {
       setTestingMcp(null);
     }
@@ -388,7 +395,7 @@ export default function IntegrationsPage() {
           <div>
             <p className="font-medium">Read-only access</p>
             <p className="text-gray-400 mt-0.5">
-              Your role can view integration status but cannot connect, test, or disconnect integrations. Ask an account admin if you need to make changes.
+              Your role has read-only integration access. MCP connection name and description can be edited, but creating, testing, deleting, changing server credentials, or managing native Flow grants requires integrations.manage.
             </p>
           </div>
         </div>
@@ -423,14 +430,21 @@ export default function IntegrationsPage() {
           </div>
 
           <div className="max-w-4xl">
-            <MCPSection
-              mcpConnections={mcpConnections}
-              testingMcp={testingMcp}
-              onCreateMcp={handleCreateMcp}
-              onTestMcp={handleTestMcp}
-              onEditMcp={handleEditMcp}
-              onDeleteMcp={handleDeleteMcp}
-            />
+            {canView ? (
+              <MCPSection
+                mcpConnections={mcpConnections}
+                testingMcp={testingMcp}
+                onCreateMcp={handleCreateMcp}
+                onTestMcp={handleTestMcp}
+                onEditMcp={handleEditMcp}
+                onDeleteMcp={handleDeleteMcp}
+                canManage={canManage}
+              />
+            ) : (
+              <div className="mt-10 rounded-lg border border-gray-800 bg-[#141414] px-5 py-4 text-sm text-gray-400">
+                You need integrations.view to see MCP connection and native Flow policy status.
+              </div>
+            )}
 
             <SecretsSection
               secrets={secrets}
@@ -473,6 +487,7 @@ export default function IntegrationsPage() {
           editingMcp={editingMcp}
           accountId={accountId}
           authFetch={authFetch}
+          canManage={canManage}
           onSuccess={fetchMCPConnections}
           onClose={() => setShowMcpModal(false)}
         />

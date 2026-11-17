@@ -1,6 +1,9 @@
 "use client";
 
+import { useState } from "react";
+import { AlertCircle } from "lucide-react";
 import { useFlowStore, TransferNodeData } from "../store";
+import { useQuoteSpeechPrivacy } from "../useQuoteSpeechPrivacy";
 
 interface Props {
   data: TransferNodeData;
@@ -9,6 +12,8 @@ interface Props {
 
 export default function TransferNodePanel({ data, nodeId }: Props) {
   const { updateNodeData } = useFlowStore();
+  const { hasUnsafeText } = useQuoteSpeechPrivacy(nodeId);
+  const [speechError, setSpeechError] = useState<string | null>(null);
   const transfer = data.transfer || { phoneNumber: "", preTransferMessage: "", transferMode: "warm" as const };
 
   const updateTransfer = (updates: Partial<typeof transfer>) => {
@@ -16,6 +21,15 @@ export default function TransferNodePanel({ data, nodeId }: Props) {
   };
 
   const transferMode = transfer.transferMode || "warm";
+  const updatePreTransferMessage = (value: string) => {
+    if (hasUnsafeText(value)) {
+      setSpeechError("Keep quote-private URLs, fingerprints and raw quote values out of spoken output.");
+      return;
+    }
+    setSpeechError(null);
+    updateTransfer({ preTransferMessage: value });
+  };
+  const unsafeStoredMessage = hasUnsafeText(transfer.preTransferMessage);
 
   return (
     <div className="space-y-4">
@@ -34,11 +48,17 @@ export default function TransferNodePanel({ data, nodeId }: Props) {
         <label className="block text-sm font-medium text-gray-400 mb-1">Pre-Transfer Message</label>
         <textarea
           value={transfer.preTransferMessage || ""}
-          onChange={(e) => updateTransfer({ preTransferMessage: e.target.value })}
+          onChange={(e) => updatePreTransferMessage(e.target.value)}
           rows={2}
           className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-cyan-500 focus:outline-none resize-none"
           placeholder="Please hold while I connect you..."
         />
+        {(speechError || unsafeStoredMessage) && (
+          <p role="alert" className="mt-1 flex items-start gap-1.5 text-[10px] text-amber-300">
+            <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+            {speechError || "Existing transfer text references quote-private data. Remove it before continuing."}
+          </p>
+        )}
       </div>
 
       <div>

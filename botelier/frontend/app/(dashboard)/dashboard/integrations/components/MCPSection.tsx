@@ -11,9 +11,10 @@ interface MCPSectionProps {
   onTestMcp: (mcp: MCPConnection) => void;
   onEditMcp: (mcp: MCPConnection) => void;
   onDeleteMcp: (mcp: MCPConnection) => void;
+  canManage: boolean;
 }
 
-export default function MCPSection({ mcpConnections, testingMcp, onCreateMcp, onTestMcp, onEditMcp, onDeleteMcp }: MCPSectionProps) {
+export default function MCPSection({ mcpConnections, testingMcp, onCreateMcp, onTestMcp, onEditMcp, onDeleteMcp, canManage }: MCPSectionProps) {
   return (
     <div className="mt-10">
       <div className="flex items-center justify-between mb-4">
@@ -26,13 +27,16 @@ export default function MCPSection({ mcpConnections, testingMcp, onCreateMcp, on
             Connect to external MCP servers to enable dynamic tools for your assistants
           </p>
         </div>
-        <button
-          onClick={onCreateMcp}
-          className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition"
-        >
-          <Plus className="h-4 w-4 mr-2" />
-          Add Connection
-        </button>
+        {canManage && (
+          <button
+            type="button"
+            onClick={onCreateMcp}
+            className="inline-flex items-center px-4 py-2 text-sm font-medium text-white bg-blue-600 hover:bg-blue-700 rounded-lg transition"
+          >
+            <Plus className="h-4 w-4 mr-2" />
+            Add Connection
+          </button>
+        )}
       </div>
 
       <div className="space-y-4">
@@ -44,6 +48,7 @@ export default function MCPSection({ mcpConnections, testingMcp, onCreateMcp, on
             handleTestMcp={onTestMcp}
             handleEditMcp={onEditMcp}
             handleDeleteMcp={onDeleteMcp}
+            canManage={canManage}
           />
         ))}
         {mcpConnections.length === 0 && (

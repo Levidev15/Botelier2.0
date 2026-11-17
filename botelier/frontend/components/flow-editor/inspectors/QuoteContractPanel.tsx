@@ -190,7 +190,7 @@ export default function QuoteContractPanel({ nodeId, api, update, variables }: P
       <header>
         <div className="flex items-center gap-2">
           <h4 className="text-sm font-semibold text-emerald-200">Reservation quote contract</h4>
-          <span className="rounded-full border border-emerald-800 px-2 py-0.5 text-[9px] uppercase tracking-wide text-emerald-300">V1 · validation only</span>
+          <span className="rounded-full border border-emerald-800 px-2 py-0.5 text-[9px] uppercase tracking-wide text-emerald-300">V1 · native Flow only · pure validation</span>
         </div>
         <p className="mt-1 text-[11px] leading-relaxed text-gray-400">
           Configures pure validation of provider quote data against the caller&apos;s current selection. The server decides execution availability; this editor never fetches a quote, creates a reservation, or starts payment.

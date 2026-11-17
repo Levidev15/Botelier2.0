@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { AlertCircle } from "lucide-react";
 import { useFlowStore, MessageNodeData } from "../store";
-import { collectFlowVariables, findQuoteSpeechProtections } from "../flowEditorData";
+import { collectFlowVariables, findQuoteSpeechProtections, hasQuotePrivateSpeech } from "../flowEditorData";
 
 interface Props {
   data: MessageNodeData;
@@ -22,9 +22,7 @@ export default function MessageNodePanel({ data, nodeId }: Props) {
     ...quoteProtection.rawQuoteVariables,
   ]);
   const spokenContent = data.message || "";
-  const containsProtectedReference = (value: string) =>
-    Array.from(protectedKeys).some((key) => key && value.includes(`{{${key}}}`)) ||
-    (protectedKeys.size > 0 && /https?:\/\/\S+/i.test(value));
+  const containsProtectedReference = (value: string) => hasQuotePrivateSpeech(value, quoteProtection);
   const messageError = containsProtectedReference(spokenContent)
     ? "A quote fingerprint, raw quote or private checkout URL cannot be included in spoken text."
     : null;

@@ -34,6 +34,7 @@ import {
   Copy,
 } from "lucide-react";
 import { useFlowStore, NodeType, AVAILABLE_TEMPLATES, FlowVersionInfo } from "./store";
+import { useQuoteSpeechPrivacy } from "./useQuoteSpeechPrivacy";
 import { toast } from "sonner";
 
 interface FlowToolbarProps {
@@ -233,6 +234,10 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
   const [showNodeInfo, setShowNodeInfo] = useState<NodeInfo | null>(null);
   const [showSettingsModal, setShowSettingsModal] = useState(false);
   const [tempGlobalPrompt, setTempGlobalPrompt] = useState("");
+  const { hasUnsafeText: hasUnsafeQuoteSpeech } = useQuoteSpeechPrivacy();
+  const [globalPromptError, setGlobalPromptError] = useState<string | null>(null);
+  const unsafeGlobalPrompt = hasUnsafeQuoteSpeech(globalPrompt);
+  const unsafeTempGlobalPrompt = hasUnsafeQuoteSpeech(tempGlobalPrompt);
 
   const handleAddNode = (type: NodeType) => {
     const lastNode = nodes[nodes.length - 1];
@@ -839,10 +844,22 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
                 </p>
                 <textarea
                   value={tempGlobalPrompt}
-                  onChange={(e) => setTempGlobalPrompt(e.target.value)}
+                  onChange={(e) => {
+                    if (hasUnsafeQuoteSpeech(e.target.value)) {
+                      setGlobalPromptError("Keep quote-private URLs, fingerprints and raw quote values out of global instructions.");
+                      return;
+                    }
+                    setGlobalPromptError(null);
+                    setTempGlobalPrompt(e.target.value);
+                  }}
                   placeholder="Example: Always spell out guest names letter by letter for confirmation. Use formal language throughout the conversation."
                   className="w-full px-3 py-2 bg-[#0a0a0a] border border-gray-700 rounded-lg text-white text-sm resize-none h-32 focus:border-blue-500 focus:outline-none"
                 />
+                {(globalPromptError || unsafeGlobalPrompt || unsafeTempGlobalPrompt) && (
+                  <p role="alert" className="mt-1 text-xs text-amber-300">
+                    {globalPromptError || "Existing global instructions reference quote-private data. Remove it before saving."}
+                  </p>
+                )}
               </div>
             </div>
             
@@ -856,11 +873,16 @@ export default function FlowToolbar({ onSave, isSaving, showSimulator, onToggleS
               </button>
               <button
                 onClick={() => {
+                  if (hasUnsafeQuoteSpeech(tempGlobalPrompt)) {
+                    setGlobalPromptError("Keep quote-private URLs, fingerprints and raw quote values out of global instructions.");
+                    return;
+                  }
                   setGlobalPrompt(tempGlobalPrompt);
                   setShowSettingsModal(false);
                   toast.success("Flow settings updated");
                 }}
-                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium"
+                disabled={unsafeTempGlobalPrompt}
+                className="px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium disabled:opacity-40"
               >
                 Save Settings
               </button>

@@ -3,7 +3,7 @@
 import { useRef, useState, useCallback } from "react";
 import { AlertTriangle } from "lucide-react";
 import { useFlowStore, APIResponseNodeData, APIResponseConfig } from "../store";
-import { collectFlowVariables, findQuoteSpeechProtections } from "../flowEditorData";
+import { collectFlowVariables, findQuoteSpeechProtections, hasQuotePrivateSpeech } from "../flowEditorData";
 
 interface Props {
   data: APIResponseNodeData;
@@ -122,10 +122,7 @@ export default function APIResponseNodePanel({ data, nodeId }: Props) {
   };
 
   const updateSpeechField = (patch: Partial<APIResponseConfig>, value: string) => {
-    if (
-      protectedKeys.some((key) => key && value.includes(`{{${key}}}`)) ||
-      protectedKeys.length > 0 && /https?:\/\/\S+/i.test(value)
-    ) {
+    if (hasQuotePrivateSpeech(value, quoteProtection)) {
       setSpeechError("Quote fingerprint, raw quote and private checkout URL cannot be included in spoken output.");
       return;
     }
@@ -157,9 +154,7 @@ export default function APIResponseNodePanel({ data, nodeId }: Props) {
   const allText = [cfg.introText, cfg.itemTemplate, cfg.outroText, cfg.noResultsText]
     .filter(Boolean)
     .join(" ");
-  const existingQuoteExposure =
-    protectedKeys.some((key) => key && allText.includes(`{{${key}}}`)) ||
-    protectedKeys.length > 0 && /https?:\/\/\S+/i.test(allText);
+  const existingQuoteExposure = hasQuotePrivateSpeech(allText, quoteProtection);
   const referencedVars = Array.from(new Set(
     Array.from(allText.matchAll(/\{\{(\w+)\}\}/g)).map((m) => m[1]),
   )).filter((name) => {

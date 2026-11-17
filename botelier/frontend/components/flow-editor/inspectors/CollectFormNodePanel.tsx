@@ -1,9 +1,10 @@
 "use client";
 
 import { useState } from "react";
-import { ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react";
+import { AlertCircle, ChevronDown, ChevronRight, Plus, Trash2 } from "lucide-react";
 import { useFlowStore, CollectFormNodeData, FormSlotConfig, SlotType } from "../store";
 import { slotTypes, defaultPromptsByType, defaultRetryByType } from "./shared";
+import { useQuoteSpeechPrivacy } from "../useQuoteSpeechPrivacy";
 
 interface Props {
   data: CollectFormNodeData;
@@ -12,11 +13,26 @@ interface Props {
 
 export default function CollectFormNodePanel({ data, nodeId }: Props) {
   const { updateNodeData, addVariable, updateVariable, variables } = useFlowStore();
+  const { hasUnsafeText } = useQuoteSpeechPrivacy(nodeId);
+  const [speechError, setSpeechError] = useState<string | null>(null);
   const slots = data.slots || [];
   const [expandedSlot, setExpandedSlot] = useState<string | null>(null);
   const [draggedSlot, setDraggedSlot] = useState<string | null>(null);
 
   const sortedSlots = [...slots].sort((a, b) => a.order - b.order);
+
+  const updateIntroMessage = (value: string) => {
+    if (hasUnsafeText(value)) {
+      setSpeechError("Keep quote-private URLs, fingerprints and raw quote values out of spoken form prompts.");
+      return;
+    }
+    setSpeechError(null);
+    updateNodeData(nodeId, { introMessage: value });
+  };
+
+  const unsafeStoredSpeech = hasUnsafeText(data.introMessage || "") || slots.some((slot) =>
+    hasUnsafeText(slot.prompt || "") || hasUnsafeText(slot.retryPrompt || ""),
+  );
 
   const addSlot = () => {
     const newSlot: FormSlotConfig = {
@@ -33,6 +49,14 @@ export default function CollectFormNodePanel({ data, nodeId }: Props) {
   };
 
   const updateSlot = (slotId: string, updates: Partial<FormSlotConfig>) => {
+    if (
+      (updates.prompt !== undefined && hasUnsafeText(updates.prompt)) ||
+      (updates.retryPrompt !== undefined && hasUnsafeText(updates.retryPrompt))
+    ) {
+      setSpeechError("Keep quote-private URLs, fingerprints and raw quote values out of spoken form prompts.");
+      return;
+    }
+    if (updates.prompt !== undefined || updates.retryPrompt !== undefined) setSpeechError(null);
     const newSlots = slots.map((s) => {
       if (s.id !== slotId) return s;
       const updated = { ...s, ...updates };
@@ -113,11 +137,17 @@ export default function CollectFormNodePanel({ data, nodeId }: Props) {
         </label>
         <textarea
           value={data.introMessage || ""}
-          onChange={(e) => updateNodeData(nodeId, { introMessage: e.target.value })}
+          onChange={(e) => updateIntroMessage(e.target.value)}
           rows={2}
           className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-violet-500 focus:outline-none resize-none"
           placeholder="I'll need to collect a few details from you..."
         />
+        {(speechError || unsafeStoredSpeech) && (
+          <p role="alert" className="mt-1 flex items-start gap-1.5 text-[10px] text-amber-300">
+            <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+            {speechError || "Existing form prompts reference quote-private data. Remove it before continuing."}
+          </p>
+        )}
       </div>
 
       <div>

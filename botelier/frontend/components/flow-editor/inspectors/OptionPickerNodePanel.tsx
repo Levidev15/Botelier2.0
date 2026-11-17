@@ -2,7 +2,7 @@
 
 import { Plus, X, AlertTriangle } from "lucide-react";
 import { useFlowStore, OptionPickerNodeData, OptionPickerConfig, OptionPickerWrite } from "../store";
-import { collectFlowVariables, findQuoteSpeechProtections } from "../flowEditorData";
+import { collectFlowVariables, findQuoteSpeechProtections, hasQuotePrivateSpeech } from "../flowEditorData";
 
 interface Props {
   data: OptionPickerNodeData;
@@ -33,16 +33,12 @@ export default function OptionPickerNodePanel({ data, nodeId }: Props) {
   const update = (patch: Partial<OptionPickerConfig>) =>
     updateNodeData(nodeId, { optionPicker: { ...picker, ...patch } });
   const updateSpokenText = (key: "prompt" | "retryPrompt", value: string) => {
-    if (
-      protectedKeys.some((variable) => variable && value.includes(`{{${variable}}}`)) ||
-      protectedKeys.length > 0 && /https?:\/\/\S+/i.test(value)
-    ) return;
+    if (hasQuotePrivateSpeech(value, quoteProtection)) return;
     update({ [key]: value });
   };
   const hasPrivateSource = protectedKeys.includes(picker.sourceVariable);
   const hasPrivateSpeech = [picker.prompt, picker.retryPrompt].some((text) =>
-    protectedKeys.some((key) => key && text?.includes(`{{${key}}}`)) ||
-    protectedKeys.length > 0 && /https?:\/\/\S+/i.test(text ?? ""),
+    hasQuotePrivateSpeech(text ?? "", quoteProtection),
   );
 
   const writes = picker.writes || [];

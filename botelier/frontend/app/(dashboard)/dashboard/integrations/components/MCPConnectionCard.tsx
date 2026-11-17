@@ -2,6 +2,7 @@
 
 import { Check, AlertCircle, Loader2, RefreshCw, Pencil, Trash2, Server, Wrench } from "lucide-react";
 import type { MCPConnection } from "../types";
+import { displayMCPServerHost } from "@/components/mcpNativePolicy";
 
 function getMcpStatusBadge(status: string) {
   switch (status) {
@@ -41,6 +42,7 @@ interface MCPConnectionCardProps {
   handleTestMcp: (mcp: MCPConnection) => void;
   handleEditMcp: (mcp: MCPConnection) => void;
   handleDeleteMcp: (mcp: MCPConnection) => void;
+  canManage: boolean;
 }
 
 export default function MCPConnectionCard({
@@ -49,6 +51,7 @@ export default function MCPConnectionCard({
   handleTestMcp,
   handleEditMcp,
   handleDeleteMcp,
+  canManage,
 }: MCPConnectionCardProps) {
   return (
     <div className="bg-[#141414] border border-gray-800 rounded-lg p-6 hover:border-gray-700 transition">
@@ -70,15 +73,15 @@ export default function MCPConnectionCard({
             {mcp.description && (
               <p className="text-sm text-gray-400 mt-1">{mcp.description}</p>
             )}
-            <p className="text-xs text-gray-500 mt-2 font-mono">{mcp.server_url}</p>
+            <p className="text-xs text-gray-500 mt-2 font-mono" aria-label="MCP server host">{displayMCPServerHost(mcp.server_url)}</p>
             {mcp.last_error && (
-              <p className="text-xs text-red-400 mt-1">Error: {mcp.last_error}</p>
+              <p className="text-xs text-red-400 mt-1">Last connection test failed. Raw provider details are hidden.</p>
             )}
             {mcp.discovered_tools && mcp.discovered_tools.length > 0 && (
               <div className="mt-3">
                 <p className="text-xs text-gray-500 mb-1 flex items-center gap-1">
                   <Wrench className="h-3 w-3" />
-                  {mcp.discovered_tools.length} tool{mcp.discovered_tools.length !== 1 ? "s" : ""} available
+                  {mcp.discovered_tools.length} discovered tool{mcp.discovered_tools.length !== 1 ? "s" : ""}
                 </p>
                 <div className="flex flex-wrap gap-1">
                   {mcp.discovered_tools.slice(0, 5).map((tool) => (
@@ -98,36 +101,61 @@ export default function MCPConnectionCard({
                 </div>
               </div>
             )}
+            <div className="mt-3 rounded-lg border border-gray-800 bg-[#101010] px-3 py-2">
+              {mcp.native_flow_policy?.configured ? (
+                <>
+                  <p className="text-xs font-medium text-emerald-300">
+                    Native Flow grant recorded · {mcp.native_flow_policy.scope === "account" ? "account-wide" : "property-scoped"}
+                    {mcp.native_flow_policy.scope === "property" && mcp.native_flow_policy.property_id ? ` · ${mcp.native_flow_policy.property_id}` : ""}
+                  </p>
+                  <p className="mt-1 text-[10px] text-gray-400">
+                    {mcp.native_flow_policy.enabled_tools.length} enabled · {mcp.native_flow_policy.read_only_tools.length} read-only. Stored policy only; runtime authorization/readiness is rechecked by the server.
+                  </p>
+                </>
+              ) : (
+                <p className="text-xs text-gray-500">No stored native Flow grant. Discovery alone does not authorize execution.</p>
+              )}
+            </div>
           </div>
         </div>
 
         <div className="flex items-center gap-2">
+          {canManage && (
+            <button
+              type="button"
+              onClick={() => handleTestMcp(mcp)}
+              disabled={testingMcp === mcp.id}
+              className="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition disabled:opacity-50"
+              title="Test connection and refresh discovered tools"
+              aria-label={`Test ${mcp.name} connection`}
+            >
+              {testingMcp === mcp.id ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <RefreshCw className="h-4 w-4" />
+              )}
+            </button>
+          )}
           <button
-            onClick={() => handleTestMcp(mcp)}
-            disabled={testingMcp === mcp.id}
-            className="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition disabled:opacity-50"
-            title="Test Connection"
-          >
-            {testingMcp === mcp.id ? (
-              <Loader2 className="h-4 w-4 animate-spin" />
-            ) : (
-              <RefreshCw className="h-4 w-4" />
-            )}
-          </button>
-          <button
+            type="button"
             onClick={() => handleEditMcp(mcp)}
             className="p-2 text-gray-400 hover:text-white hover:bg-gray-800 rounded-lg transition"
-            title="Edit"
+            title={canManage ? "Edit connection and native Flow grant" : "Edit name and description"}
+            aria-label={`Edit ${mcp.name}`}
           >
             <Pencil className="h-4 w-4" />
           </button>
-          <button
-            onClick={() => handleDeleteMcp(mcp)}
-            className="p-2 text-gray-400 hover:text-red-400 hover:bg-gray-800 rounded-lg transition"
-            title="Delete"
-          >
-            <Trash2 className="h-4 w-4" />
-          </button>
+          {canManage && (
+            <button
+              type="button"
+              onClick={() => handleDeleteMcp(mcp)}
+              className="p-2 text-gray-400 hover:text-red-400 hover:bg-gray-800 rounded-lg transition"
+              title="Delete connection"
+              aria-label={`Delete ${mcp.name}`}
+            >
+              <Trash2 className="h-4 w-4" />
+            </button>
+          )}
         </div>
       </div>
     </div>

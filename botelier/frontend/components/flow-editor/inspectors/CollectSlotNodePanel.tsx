@@ -1,8 +1,10 @@
 "use client";
 
 import { useState, useEffect } from "react";
+import { AlertCircle } from "lucide-react";
 import { useFlowStore, CollectSlotNodeData, SlotType } from "../store";
 import { slotTypes } from "./shared";
+import { useQuoteSpeechPrivacy } from "../useQuoteSpeechPrivacy";
 
 interface Props {
   data: CollectSlotNodeData;
@@ -11,6 +13,8 @@ interface Props {
 
 export default function CollectSlotNodePanel({ data, nodeId }: Props) {
   const { updateNodeData, addVariable, updateVariable, variables } = useFlowStore();
+  const { hasUnsafeText } = useQuoteSpeechPrivacy(nodeId);
+  const [speechError, setSpeechError] = useState<string | null>(null);
   const slot = data.slot || { variableKey: "", prompt: "", type: "text" as SlotType };
   const [localVarKey, setLocalVarKey] = useState(slot.variableKey || "");
 
@@ -19,6 +23,14 @@ export default function CollectSlotNodePanel({ data, nodeId }: Props) {
   }, [nodeId, slot.variableKey]);
 
   const updateSlot = (updates: Partial<typeof slot>) => {
+    if (
+      (updates.prompt !== undefined && hasUnsafeText(updates.prompt)) ||
+      (updates.retryPrompt !== undefined && hasUnsafeText(updates.retryPrompt))
+    ) {
+      setSpeechError("Keep quote-private URLs, fingerprints and raw quote values out of spoken prompts.");
+      return;
+    }
+    if (updates.prompt !== undefined || updates.retryPrompt !== undefined) setSpeechError(null);
     const newSlot = { ...slot, ...updates };
     updateNodeData(nodeId, { slot: newSlot });
 
@@ -89,6 +101,12 @@ export default function CollectSlotNodePanel({ data, nodeId }: Props) {
           className="w-full bg-[#1a1a1a] border border-gray-700 rounded-lg px-3 py-2 text-white text-sm focus:border-purple-500 focus:outline-none resize-none"
           placeholder="May I have your name, please?"
         />
+        {(speechError || hasUnsafeText(slot.prompt) || hasUnsafeText(slot.retryPrompt)) && (
+          <p role="alert" className="mt-1 flex items-start gap-1.5 text-[10px] text-amber-300">
+            <AlertCircle className="mt-0.5 h-3 w-3 shrink-0" />
+            {speechError || "Existing collection prompts reference quote-private data. Remove it before continuing."}
+          </p>
+        )}
       </div>
 
       <div>

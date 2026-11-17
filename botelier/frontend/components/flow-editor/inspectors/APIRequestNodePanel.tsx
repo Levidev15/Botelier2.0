@@ -10,7 +10,7 @@ import VariableReferencePills from "./VariableReferencePills";
 import NativeSourceBindingPanel from "./NativeSourceBindingPanel";
 import ResponseContractPanel from "./ResponseContractPanel";
 import QuoteContractPanel from "./QuoteContractPanel";
-import { collectFlowVariables, findQuoteSpeechProtections } from "../flowEditorData";
+import { collectFlowVariables, findQuoteSpeechProtections, hasQuotePrivateSpeech } from "../flowEditorData";
 
 interface EndpointVariable {
   key: string;
@@ -205,9 +205,7 @@ export default function APIRequestNodePanel({ data, nodeId, assistantId }: Props
   const speechVariables = collectFlowVariables(variables, nodes).filter(
     (variable) => !speechProtectedVariables.includes(variable.key),
   );
-  const isUnsafeQuoteSpeech = (value: string) =>
-    speechProtectedVariables.some((key) => key && value.includes(`{{${key}}}`)) ||
-    (speechProtectedVariables.length > 0 && /https?:\/\/\S+/i.test(value));
+  const isUnsafeQuoteSpeech = (value: string) => hasQuotePrivateSpeech(value, quoteProtection);
   const updateSpeechText = (
     field: "thinkingMessage" | "responseInstructions" | "onSuccess" | "onComplete" | "onError" | "onNotFound" | "onAuthError",
     value: string | undefined,

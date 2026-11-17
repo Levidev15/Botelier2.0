@@ -4,7 +4,6 @@ import type { APIRequestConfig, FlowVariable, NodeData } from "./store";
 function nodeApi(node: Node<NodeData>): APIRequestConfig | undefined {
   return (node.data as NodeData & { api?: APIRequestConfig }).api;
 }
-
 export interface FlowOutputVariable extends FlowVariable {
   origin: "declared" | "mapped";
 }
@@ -173,6 +172,52 @@ export interface QuoteSpeechProtections {
   rawQuoteVariables: string[];
 }
 
+export function findQuoteSpeechProtections(
+  nodes: Node<NodeData>[],
+  edges: Edge[],
+  targetNodeId?: string,
+): QuoteSpeechProtections {
+  const validators = nodes.filter((node) =>
+    (node.type === "api_request" || node.type === "capability") &&
+    nodeApi(node)?.apiSource === "capability" &&
+    nodeApi(node)?.capability === "validate_reservation_quote" &&
+    (!targetNodeId || canReachNode(edges, node.id, targetNodeId)),
+  );
+  const privateVariables = new Set<string>();
+  const fingerprintVariables = new Set<string>();
+  const rawQuoteVariables = new Set<string>();
+  for (const validator of validators) {
+    const api = nodeApi(validator)!;
+    if (api.quotePolicy?.privateUrlVariable) privateVariables.add(api.quotePolicy.privateUrlVariable);
+    if (api.quotePolicy?.fingerprintVariable) fingerprintVariables.add(api.quotePolicy.fingerprintVariable);
+    const rawQuoteVariable = api.argumentsTemplate?.match(
+      /"quote"\s*:\s*\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/,
+    )?.[1];
+    if (rawQuoteVariable) rawQuoteVariables.add(rawQuoteVariable);
+  }
+  return {
+    privateVariables: Array.from(privateVariables),
+    fingerprintVariables: Array.from(fingerprintVariables),
+    rawQuoteVariables: Array.from(rawQuoteVariables),
+  };
+}
+
+export function hasQuotePrivateSpeech(
+  value: string,
+  protections: QuoteSpeechProtections,
+): boolean {
+  const protectedVariables = [
+    ...protections.privateVariables,
+    ...protections.fingerprintVariables,
+    ...protections.rawQuoteVariables,
+  ];
+  const escapeRegExp = (key: string) => key.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return protectedVariables.some((key) =>
+    !!key && new RegExp(`\\{\\{\\s*${escapeRegExp(key)}(?:\\s*\\.|\\s*\\}\\})`).test(value),
+  ) ||
+    (protectedVariables.length > 0 && /https?:\/\/\S+/i.test(value));
+}
+
 function canReachNode(edges: Edge[], from: string, to: string): boolean {
   const pending = [from];
   const visited = new Set<string>();
@@ -229,36 +274,6 @@ export function findQuoteConfirmationContext(
     fingerprintVariables: Array.from(fingerprintVariables),
     recipientVariables: Array.from(recipientVariables),
     privateVariables: Array.from(privateVariables),
-    rawQuoteVariables: Array.from(rawQuoteVariables),
-  };
-}
-
-export function findQuoteSpeechProtections(
-  nodes: Node<NodeData>[],
-  edges: Edge[],
-  targetNodeId: string,
-): QuoteSpeechProtections {
-  const validators = nodes.filter((node) =>
-    (node.type === "api_request" || node.type === "capability") &&
-    nodeApi(node)?.apiSource === "capability" &&
-    nodeApi(node)?.capability === "validate_reservation_quote" &&
-    canReachNode(edges, node.id, targetNodeId),
-  );
-  const privateVariables = new Set<string>();
-  const fingerprintVariables = new Set<string>();
-  const rawQuoteVariables = new Set<string>();
-  for (const validator of validators) {
-    const api = nodeApi(validator)!;
-    if (api.quotePolicy?.privateUrlVariable) privateVariables.add(api.quotePolicy.privateUrlVariable);
-    if (api.quotePolicy?.fingerprintVariable) fingerprintVariables.add(api.quotePolicy.fingerprintVariable);
-    const rawQuoteVariable = api.argumentsTemplate?.match(
-      /"quote"\s*:\s*\{\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}\}/,
-    )?.[1];
-    if (rawQuoteVariable) rawQuoteVariables.add(rawQuoteVariable);
-  }
-  return {
-    privateVariables: Array.from(privateVariables),
-    fingerprintVariables: Array.from(fingerprintVariables),
     rawQuoteVariables: Array.from(rawQuoteVariables),
   };
 }

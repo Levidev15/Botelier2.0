@@ -6,7 +6,7 @@ import { useFlowStore, CapabilityNodeData, APIRequestConfig } from "../store";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import ResponseContractPanel from "./ResponseContractPanel";
 import QuoteContractPanel from "./QuoteContractPanel";
-import { collectFlowVariables, findQuoteSpeechProtections } from "../flowEditorData";
+import { collectFlowVariables, findQuoteSpeechProtections, hasQuotePrivateSpeech } from "../flowEditorData";
 
 interface CapabilityParam {
   type?: string;
@@ -20,6 +20,7 @@ interface Capability {
   required: string[];
   mutating: boolean;
   service_backed: boolean;
+  native_flow_only?: boolean;
 }
 
 interface Props {
@@ -87,10 +88,7 @@ export default function CapabilityNodePanel({ data, nodeId }: Props) {
     ...quoteProtection.rawQuoteVariables,
   ];
   const writeSpeech = (field: "thinkingMessage" | "responseInstructions", value: string) => {
-    if (
-      protectedSpeechVariables.some((key) => key && value.includes(`{{${key}}}`)) ||
-      protectedSpeechVariables.length > 0 && /https?:\/\/\S+/i.test(value)
-    ) {
+    if (hasQuotePrivateSpeech(value, quoteProtection)) {
       setSpeechError("Keep the quote fingerprint, raw quote and private checkout URL out of spoken content.");
       return;
     }
@@ -173,7 +171,7 @@ export default function CapabilityNodePanel({ data, nodeId }: Props) {
             <option value="">Select a capability...</option>
             {capabilities.map((c) => (
               <option key={c.name} value={c.name}>
-                {prettify(c.name)}
+                {prettify(c.name)}{c.native_flow_only ? " · native Flow only" : ""}
               </option>
             ))}
           </select>
@@ -200,6 +198,11 @@ export default function CapabilityNodePanel({ data, nodeId }: Props) {
             {selected.service_backed && (
               <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/40 text-blue-400 font-medium">
                 Managed service
+              </span>
+            )}
+            {selected.native_flow_only && (
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-900/40 text-emerald-300 font-medium">
+                Native Flow only
               </span>
             )}
           </div>

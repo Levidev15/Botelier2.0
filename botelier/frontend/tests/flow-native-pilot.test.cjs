@@ -44,6 +44,10 @@ function loadQuoteEditor() {
   return loadModule("components/flow-editor/inspectors/quoteEditor.ts");
 }
 
+function loadMCPNativePolicy() {
+  return loadModule("components/mcpNativePolicy.ts");
+}
+
 function validSnapshot(overrides = {}) {
   return {
     assistantId: "assistant-7",
@@ -392,6 +396,7 @@ test("quote confirmation requirements bind public fields, fingerprint and delive
   const {
     findQuoteConfirmationContext,
     findQuoteSpeechProtections,
+    hasQuotePrivateSpeech,
   } = loadFlowEditorData();
   const { DEFAULT_QUOTE_POLICY, DEFAULT_QUOTE_ARGUMENTS } = loadQuoteEditor();
   const nodes = [
@@ -423,6 +428,34 @@ test("quote confirmation requirements bind public fields, fingerprint and delive
   assert.deepEqual(JSON.parse(JSON.stringify(speech.privateVariables)), ["private_checkout_url"]);
   assert.deepEqual(JSON.parse(JSON.stringify(speech.fingerprintVariables)), ["quote_fingerprint"]);
   assert.deepEqual(JSON.parse(JSON.stringify(speech.rawQuoteVariables)), ["provider_quote"]);
+  const allFlowSpeech = findQuoteSpeechProtections(nodes, edges);
+  assert.equal(hasQuotePrivateSpeech("Use {{private_checkout_url}}", allFlowSpeech), true);
+  assert.equal(hasQuotePrivateSpeech("Use {{private_checkout_url.host}}", allFlowSpeech), true);
+  assert.equal(hasQuotePrivateSpeech("Use {{quote_fingerprint}}", allFlowSpeech), true);
+  assert.equal(hasQuotePrivateSpeech("Use {{provider_quote}}", allFlowSpeech), true);
+  assert.equal(hasQuotePrivateSpeech("Visit https://checkout.example.test/x", allFlowSpeech), true);
+  assert.equal(hasQuotePrivateSpeech("Your total is {{stay_total}}", allFlowSpeech), false);
+  assert.equal(hasQuotePrivateSpeech("Visit https://help.example.test", { privateVariables: [], fingerprintVariables: [], rawQuoteVariables: [] }), false);
+});
+
+test("every human-facing flow prompt panel uses shared graph-derived quote privacy", () => {
+  for (const relative of [
+    "components/flow-editor/inspectors/InitialNodePanel.tsx",
+    "components/flow-editor/inspectors/CollectSlotNodePanel.tsx",
+    "components/flow-editor/inspectors/CollectFormNodePanel.tsx",
+    "components/flow-editor/inspectors/TransferNodePanel.tsx",
+    "components/flow-editor/inspectors/EndNodePanel.tsx",
+    "components/flow-editor/inspectors/MessageNodePanel.tsx",
+    "components/flow-editor/inspectors/ConfirmationNodePanel.tsx",
+    "components/flow-editor/inspectors/APIRequestNodePanel.tsx",
+    "components/flow-editor/inspectors/APIResponseNodePanel.tsx",
+    "components/flow-editor/inspectors/CapabilityNodePanel.tsx",
+    "components/flow-editor/inspectors/OptionPickerNodePanel.tsx",
+    "components/flow-editor/FlowToolbar.tsx",
+  ]) {
+    const source = fs.readFileSync(path.join(__dirname, "..", relative), "utf8");
+    assert.match(source, /useQuoteSpeechPrivacy|findQuoteSpeechProtections|findQuoteConfirmationContext/, relative);
+  }
 });
 
 test("quote editor emits exact canonical output paths, no defaults, and public-only projection", () => {
@@ -480,6 +513,88 @@ test("saved SMS/email quote delivery requires one private-link token and exact t
   assert.ok(validateQuoteDeliveryTemplate(smsTemplate.replace("{{caller_phone}}", "{{different_phone}}"), "SEND_SMS", "caller_phone", "private_checkout_url"));
   assert.ok(validateQuoteDeliveryTemplate(smsTemplate.replace("Review your selected reservation:", "Visit https://other.example/page"), "SEND_SMS", "caller_phone", "private_checkout_url"));
   assert.ok(validateQuoteDeliveryTemplate(emailTemplate.replace("Your reservation quote", "{{private_checkout_url}}"), "SEND_EMAIL", "caller_email", "private_checkout_url"));
+});
+
+test("MCP Flow grants serialize strict account/property scope and readonly subsets", () => {
+  const { buildMCPGrantConnectionConfig, nativeFlowToolAccess, displayMCPServerHost } = loadMCPNativePolicy();
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(buildMCPGrantConnectionConfig({
+      scope: "property",
+      propertyId: "property-uuid-7",
+      enabledTools: ["search", "reserve"],
+      readOnlyTools: ["search"],
+    }))),
+    {
+      ok: true,
+      connectionConfig: {
+        property_id: "property-uuid-7",
+        native_enabled_tools: ["search", "reserve"],
+        native_read_only_tools: ["search"],
+      },
+    },
+  );
+  assert.deepEqual(
+    JSON.parse(JSON.stringify(buildMCPGrantConnectionConfig({
+      scope: "account",
+      propertyId: "ignored-property",
+      enabledTools: ["search"],
+      readOnlyTools: [],
+    }))),
+    {
+      ok: true,
+      connectionConfig: {
+        account_global: true,
+        native_enabled_tools: ["search"],
+        native_read_only_tools: [],
+      },
+    },
+  );
+  assert.equal(buildMCPGrantConnectionConfig({
+    scope: "property", propertyId: "", enabledTools: ["search"], readOnlyTools: [],
+  }).ok, false);
+  assert.equal(buildMCPGrantConnectionConfig({
+    scope: "account", propertyId: "", enabledTools: [], readOnlyTools: [],
+  }).ok, false);
+  assert.equal(buildMCPGrantConnectionConfig({
+    scope: "account", propertyId: "", enabledTools: ["write"], readOnlyTools: ["other"],
+  }).ok, false);
+  const policy = { configured: true, scope: "property", property_id: "property-uuid-7", enabled_tools: ["search", "reserve"], read_only_tools: ["search"] };
+  assert.equal(nativeFlowToolAccess(policy, "search"), "read_only");
+  assert.equal(nativeFlowToolAccess(policy, "reserve"), "write");
+  assert.equal(nativeFlowToolAccess({ ...policy, configured: false }, "reserve"), "unavailable");
+  assert.equal(nativeFlowToolAccess(policy, "not-granted"), "unavailable");
+  assert.equal(displayMCPServerHost("https://agent:secret@mcp.example.test:8443/mcp?token=hidden"), "mcp.example.test:8443");
+  assert.equal(displayMCPServerHost("not-a-url-with-secrets"), "Endpoint saved");
+});
+
+test("MCP management UI uses the safe DTO, explicit grants and manager-only provider actions", () => {
+  const root = path.join(__dirname, "..");
+  const modal = fs.readFileSync(path.join(root, "app/(dashboard)/dashboard/integrations/components/MCPModal.tsx"), "utf8");
+  const page = fs.readFileSync(path.join(root, "app/(dashboard)/dashboard/integrations/page.tsx"), "utf8");
+  const card = fs.readFileSync(path.join(root, "app/(dashboard)/dashboard/integrations/components/MCPConnectionCard.tsx"), "utf8");
+  const sourcePanel = fs.readFileSync(path.join(root, "components/flow-editor/inspectors/NativeSourceBindingPanel.tsx"), "utf8");
+  assert.match(modal, /submitFreshGrant/);
+  assert.match(modal, /payload\.connection_config = grant\.connectionConfig/);
+  assert.doesNotMatch(modal, /editingMcp\.connection_config|encrypted_grant|sealed_grant|error\.detail/);
+  assert.match(page, /canPerm\("integrations", "view"\)/);
+  assert.match(page, /canPerm\("integrations", "manage"\)/);
+  assert.match(card, /native_flow_policy/);
+  assert.doesNotMatch(card, />\s*\{mcp\.last_error\}/);
+  assert.match(sourcePanel, /nativeFlowToolAccess/);
+  assert.match(sourcePanel, /runtime authorization and property scope are rechecked/);
+  assert.doesNotMatch(sourcePanel, /connection_config|encrypted_grant|sealed_grant/);
+});
+
+test("native-only validator stays in flow catalogs but is excluded from standalone Capability Tool creation", () => {
+  const root = path.join(__dirname, "..");
+  const standalone = fs.readFileSync(path.join(root, "app/(dashboard)/dashboard/tools/components/tool-types/CapabilityForm.tsx"), "utf8");
+  const nativeNode = fs.readFileSync(path.join(root, "components/flow-editor/inspectors/CapabilityNodePanel.tsx"), "utf8");
+  const nativeBinding = fs.readFileSync(path.join(root, "components/flow-editor/inspectors/NativeSourceBindingPanel.tsx"), "utf8");
+  assert.match(standalone, /!capability\.native_flow_only/);
+  assert.match(standalone, /native Flow-only and cannot be created as a standalone Capability Tool/);
+  assert.match(nativeNode, /capabilities\.map\(\(c\)/);
+  assert.match(nativeNode, /c\.native_flow_only \? " · native Flow only"/);
+  assert.match(nativeBinding, /capabilities\.map\(\(capability\)/);
 });
 
 test("pure response preview payload keeps exact declarations, mappings and projection", () => {
@@ -574,6 +689,96 @@ function createStore() {
   });
   return storeModule.useFlowStore;
 }
+
+test("renaming typed quote variables updates delivery, protected bindings and round-trips through save/reload", async () => {
+  const store = createStore();
+  const previousFetch = global.fetch;
+  let savedFlowConfig;
+  global.fetch = async (url, options = {}) => {
+    if (options.method === "PUT") {
+      savedFlowConfig = JSON.parse(options.body).flow_config;
+      return new Response(JSON.stringify({ version_number: 4, version_id: "draft-4" }));
+    }
+    if (String(url).includes("/flow/versions?")) {
+      return new Response(JSON.stringify({ versions: [], published_version_number: 0, has_draft: true }));
+    }
+    if (String(url).includes("/flow?")) {
+      return new Response(JSON.stringify({ flow_config: savedFlowConfig, source: "draft", version_number: 4 }));
+    }
+    throw new Error(`Unexpected flow request: ${url}`);
+  };
+  try {
+    store.setState({
+      toolId: "rename-tool",
+      accountId: "rename-account",
+      variables: [
+        "caller_email", "stay_total", "quote_fingerprint", "private_checkout_url",
+        "provider_quote", "selected_option",
+      ].map((key) => ({ key, type: "text", required: false })),
+      nodes: [
+        {
+          id: "quote", type: "capability", position: { x: 0, y: 0 }, data: {
+            name: "Quote",
+            api: {
+              apiSource: "capability",
+              capability: "validate_reservation_quote",
+              argumentsTemplate: '{\n  "quote": {{provider_quote}},\n  "expected": {{selected_option}}\n}',
+              quotePolicy: {
+                fingerprintVariable: "quote_fingerprint",
+                privateUrlVariable: "private_checkout_url",
+                publicConfirmationFields: { room_id: "room_id", "pricing.total": "stay_total" },
+              },
+              responseMapping: { stay_total: "$.public.pricing.total" },
+              responseProjection: { fields: [{ variable: "stay_total" }] },
+            },
+          },
+        },
+        {
+          id: "sender", type: "api_request", position: { x: 1, y: 1 }, data: {
+            api: {
+              apiSource: "tool",
+              argumentsTemplate: '{"recipient":"{{caller_email}}","body":"{{private_checkout_url}}"}',
+              quoteDelivery: { quoteNodeId: "quote", recipientVariable: "caller_email" },
+            },
+          },
+        },
+      ],
+      edges: [{ id: "quote-send", source: "quote", target: "sender" }],
+      globalPrompt: "",
+    });
+    for (const [oldKey, newKey] of [
+      ["caller_email", "confirmed_email"],
+      ["stay_total", "booking_total"],
+      ["quote_fingerprint", "booking_fingerprint"],
+      ["private_checkout_url", "private_quote_url"],
+      ["provider_quote", "normalized_quote"],
+    ]) {
+      store.getState().updateVariable(oldKey, { key: newKey });
+    }
+    const quote = store.getState().nodes.find((node) => node.id === "quote").data.api;
+    const sender = store.getState().nodes.find((node) => node.id === "sender").data.api;
+    assert.equal(sender.quoteDelivery.recipientVariable, "confirmed_email");
+    assert.match(sender.argumentsTemplate, /\{\{confirmed_email\}\}/);
+    assert.match(sender.argumentsTemplate, /\{\{private_quote_url\}\}/);
+    assert.equal(quote.quotePolicy.fingerprintVariable, "booking_fingerprint");
+    assert.equal(quote.quotePolicy.privateUrlVariable, "private_quote_url");
+    assert.equal(quote.quotePolicy.publicConfirmationFields["pricing.total"], "booking_total");
+    assert.equal(quote.quotePolicy.publicConfirmationFields.booking_total, undefined, "canonical path keys stay immutable");
+    assert.equal(quote.responseMapping.booking_total, "$.public.pricing.total");
+    assert.equal(quote.responseProjection.fields[0].variable, "booking_total");
+    assert.match(quote.argumentsTemplate, /\{\{normalized_quote\}\}/);
+
+    await store.getState().saveFlow();
+    assert.equal(savedFlowConfig.nodes.find((node) => node.id === "sender").data.api.quoteDelivery.recipientVariable, "confirmed_email");
+    await store.getState().loadFlow("rename-tool", "rename-account");
+    const reloaded = store.getState().nodes.find((node) => node.id === "sender").data.api;
+    assert.equal(reloaded.quoteDelivery.recipientVariable, "confirmed_email");
+    assert.match(reloaded.argumentsTemplate, /\{\{confirmed_email\}\}/);
+    assert.match(reloaded.argumentsTemplate, /\{\{private_quote_url\}\}/);
+  } finally {
+    global.fetch = previousFetch;
+  }
+});
 
 test("node measurements and selection preserve published cleanliness while graph edits require saving", () => {
   const store = createStore();
