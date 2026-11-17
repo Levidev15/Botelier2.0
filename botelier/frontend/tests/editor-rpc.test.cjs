@@ -140,11 +140,17 @@ test("CI editor backend runs the exact candidate image without network, credenti
     repo, ci: true, image, testTools: "/runner/test-tools", path: "/usr/bin:/bin",
   });
   assert.equal(invocation.command, "docker");
+  assert.ok(invocation.args.includes(
+    "/ci/examples/features/botelier-flow-trial/editor_guard.py",
+  ), "CI must preserve the existing trial helper's repository-relative depth");
+  assert.ok(invocation.args.some(argument => argument.endsWith(
+    ":/ci/examples/features/botelier-flow-trial:ro",
+  )));
   assert.equal(invocation.args[invocation.args.indexOf("--network") + 1], "none");
   assert.ok(invocation.args.includes("--read-only"));
   assert.ok(invocation.args.includes("--interactive"));
   assert.ok(invocation.args.includes(image));
-  assert.ok(invocation.args.includes(`${repo}/examples/features/botelier-flow-trial:/ci/trial:ro`));
+  assert.ok(invocation.args.includes(`${repo}/examples/features/botelier-flow-trial:/ci/examples/features/botelier-flow-trial:ro`));
   assert.ok(invocation.args.includes("/runner/test-tools:/test-tools:ro"));
   assert.ok(invocation.args.includes("/app"));
   assert.ok(invocation.args.includes("/usr/local/lib/python3.11/site-packages/pipecat"));

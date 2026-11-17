@@ -131,11 +131,11 @@ jobs:
             if [ "$check" = self-test ]; then
               set -- --self-test
             else
-              set -- --tests /ci/trial/test_editor_fixture.py
+              set -- --tests /ci/examples/features/botelier-flow-trial/test_editor_fixture.py
             fi
             docker run --rm --network none --read-only \
               --tmpfs /tmp:rw,nosuid,nodev,size=256m \
-              -v "$GITHUB_WORKSPACE/examples/features/botelier-flow-trial:/ci/trial:ro" \
+              -v "$GITHUB_WORKSPACE/examples/features/botelier-flow-trial:/ci/examples/features/botelier-flow-trial:ro" \
               -v "$RUNNER_TEMP/voice-test-tools:/test-tools:ro" \
               --entrypoint env "$IMAGE" -i \
               PATH=/usr/local/bin:/usr/bin:/bin HOME=/tmp \
@@ -146,7 +146,7 @@ jobs:
               BOTELIER_ENV=development BOTELIER_NATIVE_FLOWS_DEV=1 \
               NEXTAUTH_URL=http://127.0.0.1:5011 \
               NLTK_DATA=/opt/nltk_data \
-              python -B /ci/trial/editor_guard.py \
+              python -B /ci/examples/features/botelier-flow-trial/editor_guard.py \
               --backend-root /app \
               --package-root /usr/local/lib/python3.11/site-packages/pipecat \
               "$@" 2>&1 | tee "$EVIDENCE/editor-$check.log"

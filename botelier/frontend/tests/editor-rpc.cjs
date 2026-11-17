@@ -42,12 +42,12 @@ function fixtureInvocation({ repo, ci = false, image, pythonPath, packageRoot, t
     args: [
       "run", "--rm", "--interactive", "--network", "none", "--read-only",
       "--tmpfs", "/tmp:rw,nosuid,nodev,size=256m",
-      "-v", `${path.join(repo, "examples/features/botelier-flow-trial")}:/ci/trial:ro`,
+      "-v", `${path.join(repo, "examples/features/botelier-flow-trial")}:/ci/examples/features/botelier-flow-trial:ro`,
       "-v", `${testTools}:/test-tools:ro`,
       "--entrypoint", "env", image, "-i",
       ...Object.entries({ ...env, PATH: "/usr/local/bin:/usr/bin:/bin", PYTHONPATH: "/test-tools" })
         .map(([key, value]) => `${key}=${value}`),
-      "python", "-B", "/ci/trial/editor_guard.py",
+      "python", "-B", "/ci/examples/features/botelier-flow-trial/editor_guard.py",
       "--backend-root", "/app",
       "--package-root", "/usr/local/lib/python3.11/site-packages/pipecat", "--stdio",
     ],

@@ -48,6 +48,9 @@ class EditorOrchestrationTests(unittest.TestCase):
             "editor_guard.py", "--self-test", "test_editor_fixture.py",
             "--backend-root /app",
             "--package-root /usr/local/lib/python3.11/site-packages/pipecat",
+            ':/ci/examples/features/botelier-flow-trial:ro"',
+            "python -B /ci/examples/features/botelier-flow-trial/editor_guard.py",
+            "--tests /ci/examples/features/botelier-flow-trial/test_editor_fixture.py",
         ):
             self.assertIn(fragment, editor["run"])
         export = next(
