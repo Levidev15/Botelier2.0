@@ -97,6 +97,14 @@ class NodeReplacementGuard:
             or self.assistant.has_function_calls_in_progress
         )
 
+    @property
+    def calls_in_flight(self):
+        """Actual executions, separately from a host's unacknowledged entry."""
+        return bool(
+            self._calls or self._globals
+            or self.assistant.has_function_calls_in_progress
+        )
+
     def protect(self, schema):
         """Keep the original native signature/options and business owner."""
         handler = schema.handler

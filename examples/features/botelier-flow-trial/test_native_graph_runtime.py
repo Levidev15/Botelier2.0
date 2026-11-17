@@ -68,6 +68,68 @@ def test_declared_defaults_are_typed_facts_with_progress_not_model_generated():
     asyncio.run(scenario())
 
 
+def test_explicit_mapped_outputs_work_without_mutating_the_original_flow_declarations():
+    async def scenario():
+        from botelier.voice.flows.native_execution import NativeActionResult, NativeTerminalResult
+        from botelier.voice.flows.native_graph import compile_flow
+
+        base = compile_simple_flow()
+        definition = base.config()
+        definition["nodes"].extend([
+            {"id": "lookup", "type": "api_request", "data": {"api": {
+                "apiSource": "custom", "method": "GET",
+                "url": "https://api.fixture.invalid/search",
+                "responseMapping": {"offers": "rooms"},
+            }}},
+            {"id": "response", "type": "api_response", "data": {
+                "responsePresentation": {
+                    "arrayVariable": "offers", "introText": "Available options.",
+                    "itemTemplate": "{{name}} costs {{price}}.",
+                    "outroText": "", "noResultsText": "No options.",
+                },
+            }},
+        ])
+        next(edge for edge in definition["edges"] if edge["source"] == "name")["target"] = "lookup"
+        definition["edges"].extend([
+            {"id": "lookup-response", "source": "lookup", "sourceHandle": "success", "target": "response"},
+            {"id": "lookup-error", "source": "lookup", "sourceHandle": "error", "target": "done"},
+            {"id": "response-done", "source": "response", "sourceHandle": "has_results", "target": "done"},
+            {"id": "response-empty", "source": "response", "sourceHandle": "no_results", "target": "done"},
+        ])
+        compiled = compile_flow(definition, base.identity)
+        assert compiled.config() == definition
+        assert {item.key: item.origin for item in compiled.variable_declarations} == {
+            "name": "explicit", "offers": "output",
+        }
+        offers = [
+            {"name": "Standard", "price": 0, "tax_inclusive": False},
+            {"name": "Suite", "price": 125},
+        ]
+
+        async def execute(node, facts, *, confirmation):
+            assert node.node_id == "lookup" and facts == {"name": "Ada"}
+            return NativeActionResult(True, variables={"offers": offers})
+
+        async def terminal(node, facts):
+            return NativeTerminalResult(True, completed=True)
+
+        call = GraphCall(compiled, execute_action=execute, terminal_handler=terminal)
+        try:
+            await call.adapter.start()
+            call.user_turn("Ada")
+            result = await call.invoke(next(iter(call.worker.tools)), {"name": "Ada"})
+            assert result["status"] == "accepted"
+            assert call.adapter.facts == {"name": "Ada", "offers": offers}
+            assert call.adapter.snapshot()["variables"]["offers"]["status"] == "collected"
+            copied = call.adapter._normalize_assignment("offers", offers)
+            assert copied == offers and copied is not offers
+            assert call.adapter.snapshot()["status"] == "completed"
+        finally:
+            await call.adapter.close()
+
+    asyncio.run(scenario())
+
+
 def test_real_flow_manager_runs_initial_greeting_then_only_current_collection_tool():
     async def scenario():
         from botelier.voice.flows.native_execution import NativeTerminalResult

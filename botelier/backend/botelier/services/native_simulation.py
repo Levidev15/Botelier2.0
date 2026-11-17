@@ -20,7 +20,7 @@ from botelier.voice.assistant_config import build_assistant_agent_config
 from botelier.voice.flows.native_dev_host import (
     NativeDevAdmissionError,
     NativeFlowDevPolicy,
-    apply_native_pilot_context,
+    apply_native_flow_context,
     ensure_native_dev_resources,
     prepare_native_dev_selection,
 )
@@ -104,14 +104,10 @@ async def prepare_native_simulation(
             Tool.tool_set_id == assistant.tool_set_id,
             Tool.is_active == "true",
         ).all()
-        if len(tools) != 1:
-            raise NativeDevAdmissionError("native_dev_resources")
-        if str(tools[0].id) != str(tool.id):
-            raise NativeDevAdmissionError("native_dev_selection")
         tool_set = db.query(ToolSet).filter(
             ToolSet.id == assistant.tool_set_id,
         ).first()
-        version_id = getattr(tools[0], "published_version_id", None)
+        version_id = getattr(tool, "published_version_id", None)
         version = (
             db.query(FlowVersion).filter(
                 FlowVersion.id == version_id,
@@ -130,6 +126,7 @@ async def prepare_native_simulation(
             assistant=assistant, tools=tools, tool_set=tool_set,
             flow_version=version, call_sid=session_id,
             property_id=assistant.property_id, property_owned=owned,
+            requested_tool_id=str(tool.id),
         )
         if selection is None:
             raise NativeDevAdmissionError("native_dev_selection")
@@ -148,7 +145,7 @@ async def prepare_native_simulation(
 
     try:
         config = await build_assistant_agent_config(assistant)
-        apply_native_pilot_context(config, assistant=assistant, tool=selection.tool)
+        apply_native_flow_context(config, assistant=assistant, tool=selection.tool)
         _validate_model_configuration(config)
     except NativeSimulationError:
         raise
@@ -159,12 +156,9 @@ async def prepare_native_simulation(
     # Alternative nodes can collect the same variable. Match the host's
     # unique-variable progress and keep the first collection prompt in the UI.
     variables_by_key = {}
-    for slot in (
-        selection.compiled.query, selection.compiled.choice,
-        selection.compiled.failure,
-    ):
+    for slot in selection.compiled.caller_slots:
         variables_by_key.setdefault(slot.variable, {
-            "key": slot.variable, "type": "string",
+            "key": slot.variable, "type": "string" if slot.type == "text" else slot.type,
             "description": slot.prompt, "required": True,
             "node_id": slot.node_id,
         })
@@ -173,6 +167,7 @@ async def prepare_native_simulation(
         config=config,
         runtime={
             "engine": "native_pilot", "source": "published",
+            "implementation": "NativeFlowAdapter",
             "tool_id": identity.tool_id, "assistant_id": str(assistant.id),
             "account_id": identity.account_id, "property_id": identity.property_id,
             "flow_version_id": identity.flow_version_id,

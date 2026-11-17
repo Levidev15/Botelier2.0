@@ -46,6 +46,8 @@ def logical_function_name(name):
     """Human-readable fixture view; runtime dispatch NEVER uses this alias."""
     if name.startswith("pilot_collect_"):
         return "collect_" + name[len("pilot_collect_"):].rsplit("_", 1)[0]
+    if name.startswith("native_"):
+        return "collect_" + name[len("native_"):].rsplit("_", 1)[0]
     return name
 
 

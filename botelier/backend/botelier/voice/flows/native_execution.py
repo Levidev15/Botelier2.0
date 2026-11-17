@@ -36,6 +36,11 @@ def _reason(value):
     return value
 
 
+def copy_native_json(value):
+    """Detach a bounded JSON output without guessing or coercing its type."""
+    return json.loads(_snapshot({"value": value}, "native_json_value"))["value"]
+
+
 @dataclass(frozen=True, init=False)
 class NativeActionResult:
     """Only mapped action values and the explicitly configured LLM projection."""
@@ -132,4 +137,7 @@ class NativeTerminalResult:
         _reason(self.failure_reason)
 
 
-__all__ = ["NativeActionResult", "NativeConfirmation", "NativeTerminalResult"]
+__all__ = [
+    "NativeActionResult", "NativeConfirmation", "NativeTerminalResult",
+    "copy_native_json",
+]

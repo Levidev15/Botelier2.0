@@ -1,13 +1,12 @@
-"""Explicit, fail-closed host policy for the narrow native voice development pilot."""
+"""Explicit, fail-closed host policy for native voice development flows."""
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
 import hashlib
 import os
 
-from botelier.voice.flows.pilot_contract import (
-    PilotAdmissionError, PilotIdentity, compile_pilot,
-)
+from botelier.voice.flows.native_graph import CompiledFlow, NativeGraphError, compile_flow
+from botelier.voice.flows.pilot_contract import PilotIdentity
 
 
 class NativeDevAdmissionError(ValueError):
@@ -16,7 +15,7 @@ class NativeDevAdmissionError(ValueError):
 
 @dataclass(frozen=True)
 class NativeFlowDevPolicy:
-    """The native pilot is available only under both exact development gates."""
+    """Native flows are available only under both exact development gates."""
 
     environment: str | None
     enabled_value: str | None
@@ -38,7 +37,7 @@ class NativeFlowDevPolicy:
 class NativeDevSelection:
     """One published, admitted graph and the existing tool's LLM overrides."""
 
-    compiled: object
+    compiled: CompiledFlow
     tool: object
 
 
@@ -61,29 +60,39 @@ def ensure_native_dev_resources(
 
 def prepare_native_dev_selection(
     *, assistant, tools, tool_set, flow_version, call_sid,
-    property_id, property_owned,
+    property_id, property_owned, requested_tool_id=None,
 ):
-    """Compile the explicitly selected published FLOW, refusing other resources.
+    """Compile the exact owned published FLOW, never a first-tool fallback.
 
     The caller invokes this outside its legacy per-tool exception handling and
     only after resolving the current ToolSet, FlowVersion and property owner.
+    Test Lab may supply its separately authorized source tool without changing
+    the assistant's voice-call selection or routing.
     """
     settings = getattr(assistant, "call_settings", None) or {}
     if not isinstance(settings, dict):
         raise NativeDevAdmissionError("native_dev_selection")
-    selected_id = settings.get("native_flow_tool_id")
+    selected_id = (
+        requested_tool_id if requested_tool_id is not None
+        else settings.get("native_flow_tool_id")
+    )
     if selected_id is None:
         return None
     if not isinstance(selected_id, str) or not selected_id.strip():
         raise NativeDevAdmissionError("native_dev_selection")
     ensure_native_dev_resources(assistant)
-    if len(tools or []) != 1:
-        raise NativeDevAdmissionError("native_dev_resources")
-
-    tool = tools[0]
-    tool_id = str(getattr(tool, "id", "") or "")
-    if tool_id != selected_id:
+    if not isinstance(tools, (list, tuple)):
         raise NativeDevAdmissionError("native_dev_selection")
+    matches = [
+        tool for tool in tools
+        if str(getattr(tool, "id", "") or "") == selected_id
+    ]
+    if len(matches) != 1:
+        raise NativeDevAdmissionError("native_dev_selection")
+    tool = matches[0]
+    tool_id = str(getattr(tool, "id", "") or "")
+    if getattr(tool, "is_active", None) != "true":
+        raise NativeDevAdmissionError("native_dev_resources")
     tool_type = getattr(getattr(tool, "tool_type", None), "value", None)
     if tool_type != "FLOW":
         raise NativeDevAdmissionError("native_dev_selection")
@@ -119,7 +128,7 @@ def prepare_native_dev_selection(
         raise NativeDevAdmissionError("native_dev_published_version")
 
     try:
-        compiled = compile_pilot(
+        compiled = compile_flow(
             getattr(flow_version, "flow_config", None),
             PilotIdentity(
                 account_id=account_id,
@@ -129,14 +138,14 @@ def prepare_native_dev_selection(
                 call_sid=str(call_sid),
             ),
         )
-    except PilotAdmissionError as exc:
+    except NativeGraphError as exc:
         # Admission messages are already fixed safe category codes. Never echo
         # the saved graph or parser/provider details into a log or caller path.
         raise NativeDevAdmissionError(str(exc)) from None
     return NativeDevSelection(compiled=compiled, tool=tool)
 
 
-def apply_native_pilot_context(config, *, assistant, tool, now=None) -> None:
+def apply_native_flow_context(config, *, assistant, tool, now=None) -> None:
     """Apply the same native host policy and selected-tool overrides everywhere.
 
     ``runtime_has_flow`` specifically opts the clock updater into *legacy*
@@ -178,6 +187,10 @@ def apply_native_pilot_context(config, *, assistant, tool, now=None) -> None:
     if not any(value is not None for value in overrides.values()):
         if assistant.temperature is None:
             config.llm_temperature = 0.4
+
+
+# Compatibility import for callers migrated in separate, tested checkpoints.
+apply_native_pilot_context = apply_native_flow_context
 
 
 def redacted_reference(value) -> str:

@@ -439,7 +439,7 @@ class EditorASGIFixture:
                                           "arguments": '{"choice":"standard"}'}}]},
             "The synthetic standard option is selected.",
         ]
-        self._native_fixture = NativeTextFixture(replies)
+        self._native_fixture = NativeTextFixture(replies, create_host=False)
         await self._native_fixture.__aenter__()
         from botelier.services import native_simulation
 
@@ -459,12 +459,12 @@ class EditorASGIFixture:
         host_module = sys.modules[NativeTextHost.__module__]
         if Path(host_module.__file__).resolve() != expected_host.resolve():
             raise EditorFixtureError("Native text host source identity mismatch")
-        from botelier.voice.flows.pilot_adapter import NativePilotAdapter
+        from botelier.voice.flows.native_adapter import NativeFlowAdapter
 
-        adapter_module = sys.modules[NativePilotAdapter.__module__]
-        expected_adapter = backend / "botelier" / "voice" / "flows" / "pilot_adapter.py"
+        adapter_module = sys.modules[NativeFlowAdapter.__module__]
+        expected_adapter = backend / "botelier" / "voice" / "flows" / "native_adapter.py"
         if Path(adapter_module.__file__).resolve() != expected_adapter.resolve():
-            raise EditorFixtureError("Native pilot adapter source identity mismatch")
+            raise EditorFixtureError("Native flow adapter source identity mismatch")
 
         self.app = FastAPI()
         # Avoid botelier.api.__init__ importing the whole server route catalogue.

@@ -8,6 +8,7 @@ those effects enter only through the explicitly injected async callbacks.
 from __future__ import annotations
 
 import asyncio
+import inspect
 from copy import deepcopy
 from datetime import date
 import json
@@ -20,7 +21,7 @@ from pipecat.flows.types import ContextStrategy, ContextStrategyConfig
 from pipecat.frames.frames import TTSSpeakFrame
 
 from botelier.voice.flows.native_execution import (
-    NativeActionResult, NativeConfirmation, NativeTerminalResult,
+    NativeActionResult, NativeConfirmation, NativeTerminalResult, copy_native_json,
 )
 from botelier.voice.flows.native_values import (
     NativeValueError, evaluate_condition, evaluate_value, present_response,
@@ -34,6 +35,14 @@ from botelier.voice.flows.pilot_replacement import NodeReplacementGuard
 _MAX_ARGUMENTS = 2048
 _MAX_TOTAL_STEPS = 2048
 _NATIVE_PREFIX = "native_"
+_YES_PHRASES = frozenset({
+    "yes", "yes please", "yes, please", "yes, that's correct",
+    "yes that's correct", "that's correct", "correct", "absolutely",
+    "sure", "okay", "ok", "go ahead", "please do",
+})
+_NO_PHRASES = frozenset({
+    "no", "no thanks", "no, thanks", "no thank you", "no, thank you",
+})
 _ACTION_TYPES = frozenset({"api_request", "capability", "save_record"})
 _TERMINALS = frozenset({"end", "transfer"})
 _ANSWER_TYPES = frozenset({
@@ -48,7 +57,7 @@ class NativeFlowAdapter:
     def __init__(
         self, compiled, *, llm, worker, context_aggregator, execute_action=None,
         terminal_handler=None, global_functions=(), text_observer=None,
-        text_observer_timeout=5.0, today=None,
+        text_observer_timeout=5.0, today=None, direct_speech_observer=None,
     ):
         if not callable(getattr(compiled, "node", None)) or not callable(
             getattr(compiled, "next_node", None)
@@ -68,6 +77,10 @@ class NativeFlowAdapter:
         self.context_aggregator = context_aggregator
         self.execute_action = execute_action
         self.terminal_handler = terminal_handler
+        if direct_speech_observer is not None and not callable(direct_speech_observer):
+            raise ValueError("native_speech_observer")
+        self._direct_speech_observer = direct_speech_observer
+        self._node_respond_immediately = False
         self.today = today or date.today()
         self.closed = False
         self._started = False
@@ -89,6 +102,8 @@ class NativeFlowAdapter:
         self._total_steps = 0
         self._spent_effects = set()
         self._derived = set()
+        self._caller_values = {}
+        self._edit_recollect = False
         self._confirmation = None
         self._status = "not_started"
         self._completed = False
@@ -111,7 +126,14 @@ class NativeFlowAdapter:
         self.manager.worker.attach()
         self.manager.state["facts"] = {}
         self.manager.state["native_llm_data"] = {}
-        for declaration in compiled.config().get("variables", []):
+        self._declarations_by_key = {
+            entry.key: entry for entry in compiled.variable_declarations
+        }
+        for entry in compiled.variable_declarations:
+            declaration = entry.data()
+            if entry.origin != "explicit":
+                # A response fallback is not a fact before its API node runs.
+                continue
             if declaration.get("defaultValue") is not None:
                 key = declaration["key"]
                 self.manager.state["facts"][key] = self._normalize_assignment(
@@ -144,12 +166,25 @@ class NativeFlowAdapter:
     def facts(self):
         return deepcopy(self.manager.state["facts"])
 
+    @property
+    def execution_busy(self):
+        """Executing work, not the separate consumer-acknowledgment marker."""
+        return bool(
+            self._claim is not None or self._owned_task is not None
+            or self._replacement.in_progress or self._replacement.calls_in_flight
+        )
+
+    def acknowledge_consumed_node(self):
+        """Host-only acknowledgment after real context/tool consumer fences."""
+        if self.execution_busy:
+            return False
+        return not self._pending_is_unentered(self._visit)
+
     def snapshot(self):
-        config = self.compiled.config()
-        declarations = config.get("variables", [])
         facts = self.manager.state["facts"]
         progress = {}
-        for declaration in declarations:
+        for entry in self.compiled.variable_declarations:
+            declaration = entry.data()
             key = declaration["key"]
             progress[key] = {
                 "type": declaration.get("type", "text"),
@@ -164,6 +199,7 @@ class NativeFlowAdapter:
             "outcome": self._outcome,
             "failure_reason": self._failure_reason,
             "variables": progress,
+            "respond_immediately": self._node_respond_immediately,
         }
 
     async def start(self):
@@ -382,13 +418,25 @@ class NativeFlowAdapter:
             return
         if not self._is_open():
             raise RuntimeError("native_flow_closed")
+        if self._direct_speech_observer is not None:
+            observed = self._direct_speech_observer(text)
+            if inspect.isawaitable(observed):
+                observed = await observed
+            if observed is False or not self._is_open():
+                raise RuntimeError("native_speech_context_closed")
+        self.manager.worker.node_speech_started(text, append_to_context=True)
         await self.manager.worker.queue_frame(TTSSpeakFrame(
-            text=text, append_to_context=False,
+            text=text, append_to_context=True,
         ))
 
     def _normalize_assignment(self, key, value):
         declaration = self._declaration(key)
         kind = declaration.get("type", "text")
+        if kind is None:
+            try:
+                return copy_native_json(value)
+            except ValueError:
+                raise RuntimeError("native_assignment_type") from None
         slot = {
             "type": kind, "validation": {}, "useBuiltInValidator": False,
             "choices": declaration.get("choices", []),
@@ -399,10 +447,10 @@ class NativeFlowAdapter:
             raise RuntimeError("native_assignment_type") from None
 
     def _declaration(self, key):
-        for declaration in self.compiled.config().get("variables", []):
-            if declaration.get("key") == key:
-                return declaration
-        raise RuntimeError("native_variable_missing")
+        entry = self._declarations_by_key.get(key)
+        if entry is None:
+            raise RuntimeError("native_variable_missing")
+        return entry.data()
 
     def _node_config(self, node_id, *, source_visit, form_index=0):
         node, data = self._node_data(node_id)
@@ -533,6 +581,7 @@ class NativeFlowAdapter:
         visit = object()
         self._visit = visit
         self._active_node_id = node.node_id
+        self._node_respond_immediately = bool(action["respond_immediately"])
         if node.type == "collect_form":
             self._active_form_index = action["form_index"]
         task_messages = action["task_messages"]
@@ -573,11 +622,18 @@ class NativeFlowAdapter:
             self._owned_guidance.append(self._guidance)
         functions = action["functions"]
         functions[:] = self._functions_for_visit(node, data, visit, action["form_index"])
+        if self._edit_recollect:
+            slot = None
+            if node.type == "collect_slot":
+                slot = data["slot"]
+            elif node.type == "collect_form":
+                slot = sorted(data["slots"], key=lambda item: item["order"])[action["form_index"]]
+            elif node.type == "confirmation":
+                self._edit_recollect = False
+            if slot is not None:
+                self.manager.state["facts"].pop(slot["variableKey"], None)
         self._active_user_ids = self._next_user_ids()
         if action.get("speech"):
-            self.manager.worker.node_speech_started(
-                action["speech"], append_to_context=False,
-            )
             await self._speak(action["speech"])
         if self._pending_entry is not None and source is not None:
             self._pending_entry = (action["node_id"], visit)
@@ -727,6 +783,7 @@ class NativeFlowAdapter:
             if not self._owned(node_id, visit, claim, task):
                 return self._rejected("busy_or_stale")
             self.manager.state["facts"][key] = value
+            self._caller_values[key] = deepcopy(value)
             self._derived.discard(key)
             self._confirmation = None
             next_index = None
@@ -855,12 +912,20 @@ class NativeFlowAdapter:
 
     @staticmethod
     def _same_confirmation(caller, response):
-        """Consent is exact: a model-selected yes cannot override a qualification."""
+        """Whole affirmative phrases authorize; an edit never grants consent."""
         def normalize(value):
-            value = re.sub(r"[.!?]+$", "", value.casefold().strip())
+            value = re.sub(r"[.!?]+$", "", value.casefold().strip().replace("’", "'"))
             return " ".join(value.split())
 
-        return normalize(caller) == normalize(response)
+        caller, response = normalize(caller), normalize(response)
+        if response == "yes":
+            return caller in _YES_PHRASES
+        if response == "no":
+            return caller in _NO_PHRASES
+        # The model may classify a natural correction request only when the
+        # node explicitly enables its edit branch. This clears confirmation
+        # and prepared results; it can never authorize a write.
+        return response == "edit" and bool(caller)
 
     async def _choose_option(self, node_id, visit, arguments):
         if not self._available(node_id, visit):
@@ -1037,11 +1102,16 @@ class NativeFlowAdapter:
 
     def _clear_stale_for_edit(self, configuration):
         facts = self.manager.state["facts"]
-        for key in configuration["variablesToConfirm"]:
-            facts.pop(key, None)
+        # Confirmation is invalidated, not every unrelated caller answer.
+        # The configured edit route still has to collect a fresh answer;
+        # per-entry/user-turn guards prohibit reusing the previous answer.
         for key in tuple(self._derived):
-            facts.pop(key, None)
+            if key in self._caller_values:
+                facts[key] = deepcopy(self._caller_values[key])
+            else:
+                facts.pop(key, None)
         self._derived.clear()
+        self._edit_recollect = True
         self._confirmation = None
         self._llm_data = {}
         self.manager.state["native_llm_data"] = {}
@@ -1094,9 +1164,7 @@ class NativeFlowAdapter:
                 False, branch="error", failure_reason="action_unavailable",
             )
         mapped_values = result.variables if result.success else {}
-        valid_keys = {
-            entry["key"] for entry in self.compiled.config().get("variables", [])
-        }
+        valid_keys = set(self._declarations_by_key)
         if set(mapped_values) - valid_keys:
             self._fail("action_mapping")
             return None, "error"
@@ -1146,7 +1214,7 @@ class NativeFlowAdapter:
             except NativeValueError:
                 self._fail("terminal_message")
                 return
-        if text:
+        if text and getattr(self.terminal_handler, "owns_speech", False) is not True:
             await self._speak(text)
         if not callable(self.terminal_handler):
             result = NativeTerminalResult(False, failure_reason="terminal_unavailable")

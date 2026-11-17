@@ -1,4 +1,4 @@
-"""Bounded text-only host for the admitted native pilot flow."""
+"""Bounded text-only host for the full admitted native flow graph."""
 
 import asyncio
 from copy import deepcopy
@@ -26,8 +26,9 @@ from botelier.voice.engine import (
     AssistantLocalTimeContextUpdater,
     VoiceEngineFactory,
 )
-from botelier.voice.flows.pilot_adapter import NativePilotAdapter
-from botelier.voice.flows.pilot_contract import CompiledPilot
+from botelier.voice.flows.native_adapter import NativeFlowAdapter
+from botelier.voice.flows.native_execution import NativeTerminalResult
+from botelier.voice.flows.native_graph import CompiledFlow
 from botelier.voice.flows.native_text_observer import (
     NativeTextObserver,
     NativeTextTurnBarrier,
@@ -62,14 +63,15 @@ class NativeTextHost:
 
     def __init__(
         self,
-        compiled: CompiledPilot,
+        compiled: CompiledFlow,
         *,
         config: VoiceAgentConfig,
         api_keys: dict[str, str],
         session_factory,
         turn_timeout: float = 120.0,
+        execution_mode: str = "preview",
     ):
-        if not isinstance(compiled, CompiledPilot) or not isinstance(config, VoiceAgentConfig):
+        if not isinstance(compiled, CompiledFlow) or not isinstance(config, VoiceAgentConfig):
             raise NativeTextHostError("invalid")
         if (
             not isinstance(turn_timeout, (int, float))
@@ -79,18 +81,17 @@ class NativeTextHost:
             or turn_timeout > _MAX_TURN_TIMEOUT
             or not isinstance(api_keys, dict)
             or not callable(session_factory)
+            or execution_mode not in {"execute", "preview"}
         ):
             raise NativeTextHostError("invalid")
         self.compiled = compiled
         self.config = config
         self._session_factory = session_factory
         self._turn_timeout = float(turn_timeout)
-        action = compiled.api_config()
-        self._adapter_close_timeout = (
-            float(action.get("timeout", 30))
-            * (int(action.get("retryCount", 2)) + 1)
-            + 2.0
-        )
+        self._execution_mode = execution_mode
+        self._action_runner = None
+        self._adapter_close_timeout = _CLOSE_TIMEOUT
+        self._expected_model_ends = 0
         self._api_keys = dict(api_keys)
         self.closed = False
         self.adapter = None
@@ -143,6 +144,8 @@ class NativeTextHost:
             await self.close()
             raise NativeTextHostError("unsupported_provider")
         greeting = self.config.greeting_message or ""
+        if self.compiled.node(self.compiled.initial_node_id).data().get("greeting", "").strip():
+            greeting = ""
         if not isinstance(greeting, str) or len(greeting) > _MAX_OUTPUT_MESSAGE:
             await self.close()
             raise NativeTextHostError("initialization")
@@ -167,7 +170,7 @@ class NativeTextHost:
                     await self._worker.queue_frame(TTSSpeakFrame(text=greeting))
                     await self._ack_output()
                 await self.adapter.start()
-                await self._ack_output()
+                await self._await_start_idle()
                 self._raise_if_failed()
                 result = self._result(0)
                 self._outputs.clear()
@@ -307,12 +310,22 @@ class NativeTextHost:
                     self._function_result = deepcopy(frame.result)
             self._changed.set()
 
-        self.adapter = NativePilotAdapter(
+        execute_action = None
+        if any(node.type in {"api_request", "capability", "save_record"} for node in self.compiled.nodes):
+            from botelier.voice.flows.native_actions import NativeActionRunner
+
+            self._action_runner = NativeActionRunner(
+                self.compiled, self._session_factory,
+                execution_mode=self._execution_mode, channel="simulation",
+            )
+            execute_action = self._action_runner.execute
+        self.adapter = NativeFlowAdapter(
             self.compiled,
             llm=self._llm,
             worker=self._worker,
             context_aggregator=self._context_aggregator,
-            session_factory=self._session_factory,
+            execute_action=execute_action,
+            terminal_handler=self._simulate_terminal,
             text_observer=self._observer,
             text_observer_timeout=min(5.0, self._turn_timeout),
         )
@@ -325,7 +338,54 @@ class NativeTextHost:
                 future.set_result(None)
 
     def _node_update_consumer_acknowledged(self):
+        if self.adapter is not None and self.adapter.snapshot().get("respond_immediately"):
+            self._expected_model_ends = max(self._expected_model_ends, self._response_ends + 1)
         self._changed.set()
+
+    async def _simulate_terminal(self, node, facts):
+        # Text simulations never hang up or transfer a real phone call.
+        return NativeTerminalResult(
+            True, completed=node.type == "end",
+            failure_reason=None if node.type == "end" else "simulated_transfer",
+        )
+
+    def _native_idle(self):
+        if self.adapter is None or self._model_inflight or self._active_calls:
+            return False
+        if self._transition_expected or self._observer.node_updates:
+            return False
+        if self._response_ends < self._expected_model_ends or self.adapter.execution_busy:
+            return False
+        state = self.adapter.snapshot()
+        node = self.compiled.node(state["current_node"]) if state["current_node"] else None
+        return not (
+            node is not None and node.type == "message"
+            and node.data().get("deliveryMode", "static") == "guided"
+            and not node.data().get("waitForResponse", True)
+            and state["status"] == "running"
+        )
+
+    async def _drain_native_output(self):
+        await self._ack_output()
+        if self._observer.has_pending_speech and not self._observer.node_updates:
+            await self._observer.commit_pending_speech()
+            await self._ack_output()
+        if (
+            self.adapter is not None and not self._transition_expected
+            and not self._observer.node_updates
+        ):
+            self.adapter.acknowledge_consumed_node()
+
+    async def _await_start_idle(self):
+        while True:
+            self._raise_if_failed()
+            await self._drain_native_output()
+            if self._native_idle():
+                return
+            self._changed.clear()
+            if self._native_idle():
+                continue
+            await self._changed.wait()
 
     def node_update_failed(self):
         if not self.closed:
@@ -413,14 +473,9 @@ class NativeTextHost:
     def _turn_ready(self, initial_response_ends):
         return (
             self._response_ends > initial_response_ends
-            and self._model_inflight == 0
-            and not self._active_calls
-            and not self._transition_expected
-            and not self._observer.node_updates
+            and self._native_idle()
             and self._context_aggregator is not None
             and not self._context_aggregator.assistant().has_function_calls_in_progress
-            and self.adapter is not None
-            and not self.adapter._replacement.busy
         )
 
     async def _ack_output(self):
@@ -437,7 +492,7 @@ class NativeTextHost:
             self._turn_barriers.pop(id(frame), None)
 
     async def send(self, message):
-        if self.closed:
+        if self.closed or (self.adapter is not None and self.snapshot()["is_ended"]):
             raise NativeTextHostError("closed")
         if self._worker is None or not self._started_event.is_set():
             raise NativeTextHostError("initialization")
@@ -471,7 +526,7 @@ class NativeTextHost:
                 while True:
                     self._raise_if_failed()
                     if self._turn_ready(initial_response_ends):
-                        await self._ack_output()
+                        await self._drain_native_output()
                         self._raise_if_failed()
                         if self._turn_ready(initial_response_ends):
                             result = self._result(self._output_start)
@@ -518,13 +573,9 @@ class NativeTextHost:
             current = None
             facts = {}
         else:
-            current = self.adapter.manager.current_node
+            current = self.adapter.snapshot()["current_node"]
             facts = self.adapter.facts
-        slots = (
-            self.compiled.query,
-            self.compiled.choice,
-            self.compiled.failure,
-        )
+        slots = self.compiled.caller_slots
         caller_variables = tuple(dict.fromkeys(
             slot.variable for slot in slots
         ))
@@ -534,7 +585,7 @@ class NativeTextHost:
             if variable in facts
         }
         current_slot = next(
-            (slot for slot in slots if slot.node_id == current),
+            (slot for slot in slots if slot.node_id == current and slot.variable not in collected),
             None,
         )
         pending = (
@@ -548,8 +599,12 @@ class NativeTextHost:
             "collected_slots": collected,
             "current_node": current,
             "pending_slot": pending,
-            "is_complete": False,
-            "is_ended": self.closed,
+            "is_complete": self.adapter is not None and self.adapter.snapshot()["completed"],
+            "is_ended": self.closed or (
+                self.adapter is not None and self.adapter.snapshot()["status"] in {
+                    "completed", "terminal_pending", "terminal_failed", "failed",
+                }
+            ),
             "progress": {
                 "collected": count,
                 "total": total,
@@ -580,6 +635,12 @@ class NativeTextHost:
                     async with asyncio.timeout(self._adapter_close_timeout):
                         await self.adapter.close()
                 except BaseException:
+                    pass
+            if self._action_runner is not None:
+                try:
+                    async with asyncio.timeout(_CLOSE_TIMEOUT):
+                        await self._action_runner.close()
+                except Exception:
                     pass
             try:
                 if self._runner is not None:

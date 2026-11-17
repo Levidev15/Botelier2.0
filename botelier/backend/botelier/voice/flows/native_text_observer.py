@@ -96,7 +96,7 @@ class NativeTextObserver:
     def node_speech_started(self, text, *, append_to_context=True):
         if self.host.closed:
             return
-        if self._pending_node_speeches or not isinstance(text, str):
+        if len(self._pending_node_speeches) >= 16 or not isinstance(text, str):
             self.host._failure = self.host.error_type("initialization")
             self.host._changed.set()
             return
@@ -109,7 +109,12 @@ class NativeTextObserver:
     def defer_node_speech_frame(self, frame):
         if not self._pending_node_speeches:
             return False
-        pending = self._pending_node_speeches[0]
+        pending = next(
+            (item for item in self._pending_node_speeches if not item["seen"]),
+            None,
+        )
+        if pending is None:
+            return False
         if (
             pending["text"] != frame.text
             or pending["append_to_context"] != frame.append_to_context
@@ -118,7 +123,12 @@ class NativeTextObserver:
         pending["seen"] = True
         return True
 
-    async def node_update_acknowledged(self):
+    @property
+    def has_pending_speech(self):
+        return bool(self._pending_node_speeches)
+
+    async def commit_pending_speech(self):
+        """Commit each occurrence after the host/SDK's real consumer fence."""
         pending = self._pending_node_speeches
         if pending and not self.host.closed:
             if any(not item["seen"] for item in pending):
@@ -131,6 +141,9 @@ class NativeTextObserver:
                     append_to_context=item["append_to_context"],
                 ))
         self._pending_node_speeches = []
+
+    async def node_update_acknowledged(self):
+        await self.commit_pending_speech()
         self._node_updates = max(0, self._node_updates - 1)
         self.host._node_update_consumer_acknowledged()
 
