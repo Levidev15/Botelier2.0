@@ -2,7 +2,9 @@
 export interface PendingNativePreview {
   request_id: string;
   node_id: string;
-  source_kind: "http" | "integration" | "tool" | "mcp" | "mcp_read" | "record" | "transfer";
+  source_kind:
+    | "http" | "integration" | "tool" | "mcp" | "mcp_read"
+    | "record" | "transfer" | "send_sms" | "send_email";
   expires_in_seconds: number;
 }
 
@@ -34,7 +36,17 @@ export function isNativePreviewCurrent(
 
 export const MAX_NATIVE_PREVIEW_JSON_BYTES = 65_536;
 const SAFE_ID = /^[A-Za-z0-9_-]{1,128}$/;
-const SOURCE_KINDS = ["http", "integration", "tool", "mcp", "mcp_read", "record", "transfer"];
+const SOURCE_KINDS = [
+  "http", "integration", "tool", "mcp", "mcp_read", "record", "transfer",
+  "send_sms", "send_email",
+];
+const OUTCOME_ONLY_SOURCE_KINDS = ["send_sms", "send_email", "transfer"];
+
+export function isNativeOutcomeOnly(
+  sourceKind: unknown,
+): sourceKind is "send_sms" | "send_email" | "transfer" {
+  return typeof sourceKind === "string" && OUTCOME_ONLY_SOURCE_KINDS.includes(sourceKind);
+}
 
 function record(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
@@ -106,6 +118,9 @@ export function buildNativePreviewMessage({
   if (typeof sessionId !== "string" || !SAFE_ID.test(sessionId) ||
       !current || current.expires_in_seconds <= 0) {
     throw new Error("This sample no longer has a waiting action. Reset the test and try again.");
+  }
+  if (isNativeOutcomeOnly(current.source_kind) && dataJson !== "{}") {
+    throw new Error("This action accepts a simulated outcome only, not provider response JSON.");
   }
   if (!Number.isInteger(statusCode) || (statusCode !== 0 && (statusCode < 200 || statusCode > 599))) {
     throw new Error("Use an HTTP status from 200 to 599, or 0 for a network failure.");
