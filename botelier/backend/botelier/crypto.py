@@ -231,7 +231,7 @@ def re_encrypt_all(db) -> dict:
     cipher = get_cipher()
     summary: dict[str, int] = {}
 
-    def _rekey(label: str, ciphertext: str | None, row_id) -> str | None:
+    def _rekey(label: str, ciphertext: str | None, row_id, *, strict=False) -> str | None:
         """Decrypt with any listed key, re-encrypt with the primary key."""
         if not ciphertext:
             return ciphertext
@@ -239,6 +239,12 @@ def re_encrypt_all(db) -> dict:
             plaintext = cipher.decrypt(ciphertext.encode())
             return cipher.encrypt(plaintext).decode()
         except InvalidToken:
+            if strict:
+                db.rollback()
+                raise RuntimeError(
+                    "MFA key rotation failed: an existing factor cannot be decrypted. "
+                    "Restore the original key before retrying; no rotation was committed."
+                ) from None
             logger.warning(
                 "re_encrypt_all: %s id=%s — ciphertext unreadable with current key list; "
                 "leaving unchanged.  Add the original key back to INTEGRATION_ENCRYPTION_KEY "
@@ -285,6 +291,27 @@ def re_encrypt_all(db) -> dict:
         if row.value_encrypted != orig:
             count += 1
     summary["AccountSecret"] = count
+
+    # MFA ciphertext is security state: never report successful rotation if any
+    # enrolled or pending factor cannot be decrypted with the configured keys.
+    from botelier.models.user import User
+    from botelier.models.mfa import MFASession
+    count = 0
+    for row in db.query(User).filter(User.mfa_secret_encrypted.isnot(None)).all():
+        before = row.mfa_secret_encrypted
+        row.mfa_secret_encrypted = _rekey("User.mfa_secret", before, row.id, strict=True)
+        if before != row.mfa_secret_encrypted:
+            count += 1
+    summary["UserMFA"] = count
+    count = 0
+    for row in db.query(MFASession).filter(MFASession.pending_secret_encrypted.isnot(None)).all():
+        before = row.pending_secret_encrypted
+        row.pending_secret_encrypted = _rekey(
+            "MFASession.pending_secret", before, row.id, strict=True
+        )
+        if before != row.pending_secret_encrypted:
+            count += 1
+    summary["PendingMFA"] = count
 
     db.commit()
     logger.info("re_encrypt_all complete — re-keyed records: %s", summary)

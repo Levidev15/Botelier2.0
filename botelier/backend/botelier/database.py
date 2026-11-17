@@ -12,6 +12,8 @@ from sqlalchemy import create_engine, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 
+from botelier.mfa_schema import MFA_ADDITIVE_MIGRATIONS, assert_mfa_schema
+
 # Get database URL from environment
 DATABASE_URL = os.environ.get("DATABASE_URL")
 
@@ -100,6 +102,9 @@ def get_db():
 # For that, see _sync_system_role_permissions() further below.
 # ---------------------------------------------------------------------------
 _ADDITIVE_MIGRATIONS = [
+    # Existing identities and policy values are preserved. create_all does not
+    # add columns to legacy users/accounts; assert the result before serving.
+    *MFA_ADDITIVE_MIGRATIONS,
     # Task #538 — atomic cross-worker SAVE_RECORD deduplication.
     "ALTER TABLE records ADD COLUMN IF NOT EXISTS idempotency_key VARCHAR(64)",
     """CREATE UNIQUE INDEX IF NOT EXISTS ix_records_idempotency_key
@@ -1981,6 +1986,7 @@ def init_db():
         invitation,  # noqa: F401
         knowledge_entry,  # noqa: F401
         mcp_connection,  # noqa: F401
+        mfa,  # noqa: F401
         operation_idempotency,  # noqa: F401
         payment,  # noqa: F401
         payment_page_template,  # noqa: F401
@@ -1997,6 +2003,8 @@ def init_db():
     Base.metadata.create_all(bind=engine)
     _run_hotel_account_migration()
     _run_additive_migrations()
+    with engine.connect() as connection:
+        assert_mfa_schema(connection)
     _convert_combined_voice_rates()
     # Task #123 — verify the schema invariant the additive migrations are
     # supposed to guarantee, AFTER they have had a chance to run. Failing

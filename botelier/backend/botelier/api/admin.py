@@ -78,7 +78,7 @@ class AccountListResponse(BaseModel):
 
 class UserResponse(BaseModel):
     id: str
-    replit_id: str
+    replit_id: Optional[str]
     email: Optional[str]
     first_name: Optional[str]
     last_name: Optional[str]
@@ -87,6 +87,7 @@ class UserResponse(BaseModel):
     is_active: bool
     created_at: datetime
     last_login_at: Optional[datetime]
+    mfa_enabled: bool = False
 
     class Config:
         from_attributes = True
@@ -592,6 +593,7 @@ async def list_users(
             is_active=user.is_active,
             created_at=user.created_at,
             last_login_at=user.last_login_at,
+            mfa_enabled=user.mfa_enabled,
         )
         for user in users
     ]
@@ -604,12 +606,11 @@ async def make_platform_admin(
     db: Session = Depends(get_db),
 ):
     """Promote a user to platform admin."""
-    user = db.query(User).filter(User.id == user_id).first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
+    from botelier.services import mfa_service as mfa
+    admin, user = mfa.lock_admin_mutation(db, admin, user_id)
     user.user_type = UserType.PLATFORM_ADMIN
+    mfa.revoke_all(db, user)
+    mfa.audit(db, admin, f"platform_admin_promoted:{user.id}")
     db.commit()
 
     return {"success": True, "message": f"User {user.display_name} is now a platform admin"}
@@ -622,15 +623,14 @@ async def remove_platform_admin(
     db: Session = Depends(get_db),
 ):
     """Demote a platform admin to regular user."""
-    if str(admin.id) == user_id:
+    from botelier.services import mfa_service as mfa
+    admin, user = mfa.lock_admin_mutation(db, admin, user_id)
+    if admin.id == user.id:
         raise HTTPException(status_code=400, detail="You cannot demote yourself")
 
-    user = db.query(User).filter(User.id == user_id).first()
-
-    if not user:
-        raise HTTPException(status_code=404, detail="User not found")
-
     user.user_type = UserType.ACCOUNT_USER
+    mfa.revoke_all(db, user)
+    mfa.audit(db, admin, f"platform_admin_demoted:{user.id}")
     db.commit()
 
     return {"success": True, "message": f"User {user.display_name} is no longer a platform admin"}

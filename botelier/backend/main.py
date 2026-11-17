@@ -33,6 +33,7 @@ from botelier.api.analytics import router as analytics_router
 from botelier.api.api_tester import router as api_tester_router
 from botelier.api.assistants import router as assistants_router
 from botelier.api.auth import router as auth_router
+from botelier.api.mfa import configured_origins, router as mfa_router
 from botelier.api.call_logs import router as call_logs_router
 from botelier.api.calls import router as calls_router
 from botelier.api.capabilities import router as capabilities_router
@@ -80,7 +81,7 @@ app = FastAPI(
 # CORS configuration for Next.js frontend
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # TODO: Restrict in production
+    allow_origins=sorted(configured_origins()),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -105,6 +106,7 @@ app.include_router(flow_ai_router)   # AI flow builder assistant
 app.include_router(simulation_router)
 app.include_router(invitations_router)  # Public invitation endpoints
 app.include_router(auth_router)  # Email/password auth endpoints
+app.include_router(mfa_router)  # Restricted authenticator enrollment/challenges
 app.include_router(dispositions_router)  # Assistant dispositions
 app.include_router(properties_router)  # Per-property data isolation (Task #327)
 app.include_router(record_types_router)  # Structured output record type definitions

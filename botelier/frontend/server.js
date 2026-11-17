@@ -127,7 +127,9 @@ app.prepare().then(() => {
         '/api/auth/login',
         '/api/auth/register', 
         '/api/auth/validate',
-        '/api/auth/verify-invitation'
+        '/api/auth/verify-invitation',
+        '/api/auth/mfa',
+        '/api/auth/preferences'
       ];
       
       if (backendAuthRoutes.some(route => pathname.startsWith(route))) {

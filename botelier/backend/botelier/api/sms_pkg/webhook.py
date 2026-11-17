@@ -5,6 +5,7 @@ POST /api/sms/status   — Twilio delivery status callback
 GET  /api/sms/stream   — Server-Sent Events stream for real-time updates
 """
 
+import asyncio
 import os
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
@@ -15,7 +16,7 @@ from sqlalchemy.orm import Session
 from sse_starlette.sse import EventSourceResponse
 
 from botelier.auth.middleware import decode_jwt_token, is_valid_uuid
-from botelier.database import get_db
+from botelier.database import SessionLocal, get_db
 from botelier.models.sms_conversation import MessageStatus, SMSConversation, SMSMessage
 from botelier.models.user import User
 from botelier.services.notification_broadcaster import broadcaster
@@ -276,36 +277,18 @@ async def sms_status_callback(
         return PlainTextResponse(content="OK")
 
 
-@router.get("/stream")
-async def sms_event_stream(
-    account_id: str = Query(...),
-    token: str = Query(
-        ...,
-        description=(
-            "JWT bearer token, passed as a query param because the browser "
-            "EventSource API cannot set custom headers."
-        ),
-    ),
-    db: Session = Depends(get_db),
-):
-    """Server-Sent Events stream for real-time SMS notifications.
-
-    Each browser tab opens one persistent connection. The server pushes
-    events when messages arrive — no polling needed.
-
-    Auth (Task #137 V1): EventSource cannot send an Authorization header,
-    so the JWT is supplied as a `?token=` query parameter. We decode it
-    with the same NEXTAUTH_SECRET as `Authorization: Bearer`, resolve the
-    user, and assert account membership before opening the stream.
-
-    Event types:
-        new_message       — inbound customer SMS
-        new_reply         — outbound agent/AI reply
-        handoff_requested — AI escalated to human
-        handler_changed   — agent took over or returned to AI
-        keepalive         — every 15s to keep proxies alive
-    """
-    payload = decode_jwt_token(token)
+def _authenticate_sms_stream(token: str | None, account_id: str, cookie_token: str | None = None) -> str:
+    """Authenticate SSE in a short-lived worker-thread database session."""
+    from botelier.services import mfa_service as mfa
+    if not token and cookie_token:
+        db = SessionLocal()
+        try:
+            user = mfa.full_cookie_user(db, cookie_token)
+            assert_sms_account_access(user, account_id, db)
+            return str(user.id)
+        finally:
+            db.close()
+    payload = decode_jwt_token(token) if token else None
     if not payload:
         raise HTTPException(status_code=401, detail="Invalid or expired token")
 
@@ -313,22 +296,47 @@ async def sms_event_stream(
     if not sub:
         raise HTTPException(status_code=401, detail="Token missing subject")
 
-    if is_valid_uuid(sub):
-        user = db.query(User).filter(User.id == sub).first()
-    else:
-        user = db.query(User).filter(User.replit_id == sub).first()
+    db = SessionLocal()
+    try:
+        if is_valid_uuid(sub):
+            import uuid
+            user = db.query(User).filter(User.id == uuid.UUID(str(sub))).first()
+        else:
+            user = db.query(User).filter(User.replit_id == sub).first()
+        if not user:
+            raise HTTPException(status_code=401, detail="Unknown user")
+        if not getattr(user, "is_active", True):
+            raise HTTPException(status_code=401, detail="User is deactivated")
+        mfa.enforce_payload(db, user, payload)
+        assert_sms_account_access(user, account_id, db)
+        return str(user.id)
+    finally:
+        db.close()
 
-    if not user:
-        raise HTTPException(status_code=401, detail="Unknown user")
-    # The query-token path skips the standard get_current_user dep, so
-    # mirror its is_active gate explicitly here — a deactivated user
-    # otherwise keeps streaming events until the JWT expires.
-    if not getattr(user, "is_active", True):
-        raise HTTPException(status_code=401, detail="User is deactivated")
 
-    assert_sms_account_access(user, account_id, db)
+@router.get("/stream")
+async def sms_event_stream(request: Request, account_id: str = Query(...)):
+    """SSE auth accepts the HttpOnly session cookie or Authorization, never URL tokens."""
+    from botelier.services.mfa_service import COOKIE_NAME
+    authorization = request.headers.get("authorization", "")
+    token = authorization[7:] if authorization.startswith("Bearer ") else None
+    cookie_token = request.cookies.get(COOKIE_NAME)
+    if cookie_token and not token:
+        from botelier.api.mfa import validate_cookie_origin
+        validate_cookie_origin(request)
+    if request.query_params.get("token"):
+        raise HTTPException(status_code=400, detail="Use the authenticated session cookie, not a URL token")
+    await asyncio.to_thread(_authenticate_sms_stream, token, account_id, cookie_token)
+
+    async def authorized_events():
+        async for event in broadcaster.event_generator(account_id=account_id):
+            try:
+                await asyncio.to_thread(_authenticate_sms_stream, token, account_id, cookie_token)
+            except HTTPException:
+                return
+            yield event
 
     return EventSourceResponse(
-        broadcaster.event_generator(account_id=account_id),
+        authorized_events(),
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
     )

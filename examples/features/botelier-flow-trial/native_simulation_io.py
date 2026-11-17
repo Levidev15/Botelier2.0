@@ -1,7 +1,8 @@
 """Synthetic persistence/auth metadata and transport for actual simulator API tests."""
 
 from contextlib import ExitStack
-from datetime import datetime
+from datetime import datetime, timedelta
+import hashlib
 import os
 from pathlib import Path
 import sys
@@ -96,6 +97,19 @@ class SimulationDBSession:
             guard.deny("unexpected_simulation_metadata_query")
         return SimulationDBQuery(self, model)
 
+    def get(self, model, identity):
+        self._assert_open()
+        if model.__name__ not in {"User", "MFASession"}:
+            guard.deny("unexpected_simulation_assurance_lookup")
+        self.events.append(("db.get", model.__name__))
+        return next(
+            (
+                row for row in self.records.rows_for(model)
+                if _equal(row.id, identity)
+            ),
+            None,
+        )
+
     def commit(self):
         self._assert_open()
         self.events.append(("db.commit", id(self)))
@@ -125,13 +139,14 @@ class NativeSimulationRecords:
 
     allowed_models = {
         "Account", "AccountMembership", "Assistant", "FlowVersion", "Property",
-        "Role", "Tool", "ToolSet", "User",
+        "Role", "Tool", "ToolSet", "User", "MFASession",
     }
 
     def __init__(self, *, stale_tool_config=True, bad_contract=False, events=None):
         from native_dev_voice_io import NativeDevRecords
         from botelier.models.role import AccountMembership, Role
         from botelier.models.user import User, UserType
+        from botelier.models.mfa import MFASession
         from node_contract_io import ACCOUNT
 
         self.metadata = NativeDevRecords(bad_contract=bad_contract)
@@ -169,6 +184,31 @@ class NativeSimulationRecords:
         )
         self.denied_user.account_memberships = [membership]
         self.users = [self.admin, self.other_admin, self.denied_user]
+        # Represent completed factor verification in the synthetic persistence
+        # boundary; the real middleware must still resolve/check every session.
+        # Actual enrollment and factor/recovery behavior has a separate real
+        # SQLite/PostgreSQL HTTP suite, not a middleware dependency override.
+        now = datetime.utcnow()
+        self.assurance_sessions = [
+            MFASession(
+                id=hashlib.sha256(
+                    f"native-simulation-fixture:{user.id}".encode()
+                ).hexdigest(),
+                user_id=user.id,
+                version=0,
+                primary_at=now,
+                verified_at=now,
+                expires_at=now + timedelta(minutes=10),
+                restricted=False,
+                recovery_grant=False,
+                revoked=False,
+                pending_secret_encrypted=None,
+                pending_expires_at=None,
+                attempts=0,
+                created_at=now,
+            )
+            for user in self.users
+        ]
         self.memberships = [membership]
         self.roles = [role]
 
@@ -190,6 +230,8 @@ class NativeSimulationRecords:
         name = model.__name__
         if name == "User":
             return self.users
+        if name == "MFASession":
+            return self.assurance_sessions
         if name == "AccountMembership":
             return self.memberships
         if name == "Role":
@@ -210,6 +252,9 @@ class NativeSimulationRecords:
         self.sessions.append(session)
         return session
 
+    def assurance_for(self, user):
+        return next(row for row in self.assurance_sessions if row.user_id == user.id)
+
 
 def _user(model, user_type, replit_id):
     return model(
@@ -220,21 +265,33 @@ def _user(model, user_type, replit_id):
         last_name="Simulator",
         user_type=user_type,
         is_active=True,
+        mfa_enabled=True,
+        mfa_version=0,
+        mfa_recovery_required=False,
+        primary_credentials_revoked_at=None,
         account_memberships=[],
         last_login_at=None,
     )
 
 
-def auth_header(user, secret):
+def auth_header(user, secret, *, assurance=None):
     from jose import jwt
 
     now = int(datetime.utcnow().timestamp())
     token = jwt.encode(
         {
-            "sub": user.replit_id,
+            "sub": str(user.id),
             "iat": now,
             "exp": now + 600,
             "email": user.email,
+            **(
+                {
+                    "sid": assurance.id,
+                    "purpose": "botelier_session",
+                    "auth_time": now,
+                }
+                if assurance is not None else {}
+            ),
         },
         secret,
         algorithm="HS256",
@@ -379,7 +436,12 @@ class NativeSimulationAPIHarness:
         return self
 
     def headers(self, user=None):
-        return auth_header(user, self.secret) if user is not None else {}
+        return (
+            auth_header(
+                user, self.secret, assurance=self.records.assurance_for(user),
+            )
+            if user is not None else {}
+        )
 
     def start_payload(
         self, *, engine="native_pilot", source="published", source_version=1,

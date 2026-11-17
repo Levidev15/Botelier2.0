@@ -3,6 +3,8 @@
 import { useRouter, useSearchParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff, Lock, Mail } from "lucide-react";
+import { signIn } from "next-auth/react";
+import { acceptAuthResult, safeReturnPath } from "@/lib/auth/mfa-client";
 
 export default function LoginForm() {
   const router = useRouter();
@@ -13,11 +15,13 @@ export default function LoginForm() {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const callbackUrl = searchParams.get("callbackUrl") || "/dashboard";
+  const callbackUrl = safeReturnPath(searchParams.get("callbackUrl"));
+  const reauth = searchParams.get("reauth") === "1";
   const reason = searchParams.get("reason");
   const sessionExpired = reason === "session_expired";
 
   useEffect(() => {
+    if (reauth) { setCheckingSession(false); return; }
     const storedToken = localStorage.getItem("botelier_token");
     const storedUser = localStorage.getItem("botelier_user");
 
@@ -36,6 +40,8 @@ export default function LoginForm() {
         if (data.valid) {
           const redirectUrl = data.user?.user_type === "platform_admin" ? "/admin" : callbackUrl;
           router.replace(redirectUrl);
+        } else if (data.mfa_required || data.detail?.code === "mfa_required") {
+          router.replace("/security");
         } else {
           localStorage.removeItem("botelier_token");
           localStorage.removeItem("botelier_user");
@@ -47,7 +53,7 @@ export default function LoginForm() {
         localStorage.removeItem("botelier_user");
         setCheckingSession(false);
       });
-  }, [callbackUrl, router]);
+  }, [callbackUrl, router, reauth]);
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -57,25 +63,30 @@ export default function LoginForm() {
     try {
       const res = await fetch("/api/auth/login", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-MFA-CSRF": "1" },
         body: JSON.stringify({ email, password }),
       });
 
       const data = await res.json();
 
       if (res.ok) {
-        localStorage.setItem("botelier_token", data.access_token);
-        localStorage.setItem("botelier_user", JSON.stringify(data.user));
+        if (!acceptAuthResult(data)) {
+          router.replace(`/security?next=${encodeURIComponent(callbackUrl)}`);
+          return;
+        }
+        if (reauth) { router.replace("/security"); return; }
         const redirectUrl = data.user?.user_type === "platform_admin" ? "/admin" : callbackUrl;
         router.replace(redirectUrl);
       } else {
-        setError(data.detail || "Invalid email or password");
+        setError(typeof data.detail === "string" ? data.detail : data.detail?.message || "Invalid email or password");
       }
     } catch (err) {
       console.error("Login error:", err);
       setError("An error occurred. Please try again.");
     } finally {
       setIsLoading(false);
+      setPassword("");
     }
   };
 
@@ -186,6 +197,10 @@ export default function LoginForm() {
               )}
             </button>
           </form>
+
+          <button type="button" onClick={() => signIn("replit", { callbackUrl: "/security?replit=1" })} className="mt-4 w-full rounded-lg border border-[#333333] px-4 py-3 text-sm text-gray-300 hover:bg-[#222222]">
+            Continue with Replit
+          </button>
 
           <p className="mt-6 text-xs text-gray-500 text-center">
             By signing in, you agree to our Terms of Service and Privacy Policy.

@@ -3,6 +3,7 @@
 import { useRouter, useParams } from "next/navigation";
 import { useEffect, useState } from "react";
 import { Eye, EyeOff, CheckCircle, XCircle, Mail, User, Lock } from "lucide-react";
+import { acceptAuthResult } from "@/lib/auth/mfa-client";
 
 interface InvitationDetails {
   valid: boolean;
@@ -70,7 +71,8 @@ export default function InvitePage() {
     try {
       const res = await fetch("/api/auth/register", {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json", "X-MFA-CSRF": "1" },
         body: JSON.stringify({
           email: invitation.email,
           password: password,
@@ -83,15 +85,17 @@ export default function InvitePage() {
       const data = await res.json();
 
       if (res.ok) {
-        localStorage.setItem("botelier_token", data.access_token);
-        localStorage.setItem("botelier_user", JSON.stringify(data.user));
+        if (!acceptAuthResult(data)) {
+          router.push("/security");
+          return;
+        }
         
         setSuccess(`Welcome to ${invitation.account_name}!`);
         setTimeout(() => {
           router.push(data.redirect_url || "/dashboard");
         }, 2000);
       } else {
-        setError(data.detail || "Failed to create account");
+        setError(typeof data.detail === "string" ? data.detail : data.detail?.message || "Failed to create account");
       }
     } catch (err) {
       console.error("Error creating account:", err);

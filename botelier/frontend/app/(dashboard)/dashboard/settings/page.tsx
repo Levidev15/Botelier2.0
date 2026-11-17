@@ -11,6 +11,7 @@ import { usePermissions } from "@/lib/auth/usePermissions";
 import { useAccountContext } from "@/lib/auth/useAccountContext";
 import { useAuthToken } from "@/lib/auth/useAuthToken";
 import { notify } from "@/lib/notifications";
+import { MfaPolicyCard } from "@/components/security/MfaPolicyCard";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -374,7 +375,10 @@ function SettingsPageInner() {
 
       {/* Tab content */}
       {activeTab === "general" && (
-        <GeneralTab canBilling={canBilling} canEdit={canEdit} />
+        <div className="space-y-6">
+          {accountId && <MfaPolicyCard accountId={accountId} canEdit={canEdit} />}
+          <GeneralTab canBilling={canBilling} canEdit={canEdit} />
+        </div>
       )}
       {activeTab === "email" && accountId && (
         <EmailAccountsTab accountId={accountId} />

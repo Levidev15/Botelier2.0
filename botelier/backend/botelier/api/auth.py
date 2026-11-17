@@ -7,7 +7,7 @@ from datetime import datetime, timedelta
 from typing import Optional
 
 import bcrypt
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from jose import ExpiredSignatureError, JWTError, jwt
 from pydantic import BaseModel, EmailStr, Field
 from sqlalchemy.orm import Session
@@ -17,6 +17,8 @@ from botelier.database import get_db
 from botelier.models.invitation import AccountInvitation, InvitationStatus
 from botelier.models.role import AccountMembership
 from botelier.models.user import AuthProvider, User, UserType
+from botelier.services import mfa_service as mfa
+from botelier.api.mfa import csrf, set_session_cookie
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -37,7 +39,10 @@ def hash_password(password: str) -> str:
 
 def verify_password(password: str, password_hash: str) -> bool:
     """Verify a password against its hash."""
-    return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+    try:
+        return bcrypt.checkpw(password.encode("utf-8"), password_hash.encode("utf-8"))
+    except ValueError:
+        return False
 
 
 def create_jwt_token(user: User) -> str:
@@ -58,9 +63,11 @@ class LoginRequest(BaseModel):
 
 
 class LoginResponse(BaseModel):
-    access_token: str
+    access_token: Optional[str] = None
     token_type: str = "bearer"
     user: dict
+    mfa_required: bool = False
+    enrollment_required: bool = False
 
 
 class RegisterRequest(BaseModel):
@@ -72,16 +79,20 @@ class RegisterRequest(BaseModel):
 
 
 class RegisterResponse(BaseModel):
-    access_token: str
+    access_token: Optional[str] = None
     token_type: str = "bearer"
     user: dict
     redirect_url: Optional[str] = None
+    mfa_required: bool = False
+    enrollment_required: bool = False
 
 
-@router.post("/login", response_model=LoginResponse)
-async def login(request: LoginRequest, db: Session = Depends(get_db)):
+@router.post("/login", response_model=LoginResponse, dependencies=[Depends(csrf)])
+def login(request: LoginRequest, response: Response, http_request: Request, db: Session = Depends(get_db)):
     """Authenticate user with email and password."""
-    user = db.query(User).filter(User.email == request.email).first()
+    user = db.query(User).filter(User.email == request.email.lower()).first()
+    mfa.rate_limit(db, user.id if user else request.email.lower(),
+                   http_request.client.host if http_request.client else "unknown", "primary")
 
     if not user:
         raise HTTPException(
@@ -107,29 +118,22 @@ async def login(request: LoginRequest, db: Session = Depends(get_db)):
             detail="Account is deactivated",
         )
 
+    user = mfa.lock_user(db, user)
     user.last_login_at = datetime.utcnow()
+    session, raw = mfa.new_session(db, user, primary_at=datetime.utcnow())
+    mfa.audit(db, user, "primary_login")
     db.commit()
-
-    token = create_jwt_token(user)
-
-    return LoginResponse(
-        access_token=token,
-        user={
-            "id": str(user.id),
-            "email": user.email,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "display_name": user.display_name,
-            "user_type": user.user_type.value,
-            "profile_image_url": user.profile_image_url,
-        },
-    )
+    set_session_cookie(response, http_request, session, raw)
+    return mfa.auth_response(db, user, session)
 
 
-@router.post("/register", response_model=RegisterResponse)
-async def register(request: RegisterRequest, db: Session = Depends(get_db)):
+@router.post("/register", response_model=RegisterResponse, dependencies=[Depends(csrf)])
+def register(request: RegisterRequest, response: Response, http_request: Request, db: Session = Depends(get_db)):
     """Register a new user with email and password."""
-    existing_user = db.query(User).filter(User.email == request.email).first()
+    mfa.rate_limit(db, request.email.lower(), http_request.client.host if http_request.client else "unknown", "register")
+    if len(request.password.encode("utf-8")) > 72:
+        raise HTTPException(status_code=400, detail="Password must be at most 72 UTF-8 bytes")
+    existing_user = db.query(User).filter(User.email == request.email.lower()).first()
 
     if existing_user:
         raise HTTPException(
@@ -202,21 +206,11 @@ async def register(request: RegisterRequest, db: Session = Depends(get_db)):
 
     db.commit()
 
-    token = create_jwt_token(user)
-
-    return RegisterResponse(
-        access_token=token,
-        user={
-            "id": str(user.id),
-            "email": user.email,
-            "first_name": user.first_name,
-            "last_name": user.last_name,
-            "display_name": user.display_name,
-            "user_type": user.user_type.value,
-            "profile_image_url": user.profile_image_url,
-        },
-        redirect_url=redirect_url,
-    )
+    session, raw = mfa.new_session(db, user, primary_at=datetime.utcnow())
+    mfa.audit(db, user, "registration")
+    db.commit()
+    set_session_cookie(response, http_request, session, raw)
+    return {**mfa.auth_response(db, user, session), "redirect_url": redirect_url}
 
 
 class VerifyInvitationResponse(BaseModel):
@@ -277,6 +271,7 @@ async def validate_token(request: ValidateTokenRequest, db: Session = Depends(ge
         if not user or not user.is_active:
             return ValidateTokenResponse(valid=False)
 
+        mfa.enforce_payload(db, user, payload)
         return ValidateTokenResponse(
             valid=True,
             user={

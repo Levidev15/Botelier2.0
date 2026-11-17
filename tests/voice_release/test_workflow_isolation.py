@@ -192,3 +192,20 @@ class WorkflowIsolationTests(unittest.TestCase):
             if step.get("id") == "export_candidate_image"
         )
         self.assertLess(steps.index(check), export)
+
+    def test_editor_and_mfa_checks_are_mandatory_before_candidate_image_export(self):
+        steps = load("voice-flow-candidate.yml")["jobs"]["candidate"]["steps"]
+        export = next(
+            i for i, step in enumerate(steps)
+            if step.get("id") == "export_candidate_image"
+        )
+        for identity in ("frontend_alignment", "auth_alignment"):
+            check = next((step for step in steps if step.get("id") == identity), None)
+            self.assertIsNotNone(check, f"The {identity} gate is missing")
+            self.assertNotIn("continue-on-error", check)
+            self.assertNotIn("if", check)
+            self.assertLess(steps.index(check), export)
+        frontend = next(step for step in steps if step.get("id") == "frontend_alignment")
+        self.assertIn("tests/offline-check.cjs --browser", frontend["run"])
+        auth = next(step for step in steps if step.get("id") == "auth_alignment")
+        self.assertIn("bash scripts/voice_release/check_auth_alignment.sh", auth["run"])

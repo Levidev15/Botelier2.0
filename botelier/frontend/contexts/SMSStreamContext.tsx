@@ -10,7 +10,7 @@
  *
  * Compared to each component owning its own EventSource:
  *   - One TCP connection per tab instead of N.
- *   - One reconnect path, one token-read, one keepalive stream.
+ *   - One reconnect path, one authenticated session, one keepalive stream.
  *   - Badge badge counter and message list both react to the same event instantly.
  */
 
@@ -62,14 +62,11 @@ export function SMSStreamProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     if (!accountId) return;
 
-    const sseToken =
-      typeof window !== "undefined"
-        ? (window.localStorage.getItem("botelier_token") ?? "")
-        : "";
-    if (!sseToken) return;
-
+    // The HttpOnly application session authenticates streaming. Never put
+    // bearer credentials in URLs (browser/proxy logs can retain them).
     const es = new EventSource(
-      `/api/sms/stream?account_id=${accountId}&token=${encodeURIComponent(sseToken)}`
+      `/api/sms/stream?account_id=${encodeURIComponent(accountId)}`,
+      { withCredentials: true }
     );
 
     // Build a dispatcher per event type that fans out to all registered handlers.

@@ -66,6 +66,28 @@ whisker_setup.py
 # Pasted / attached assets (may contain secrets or PII)
 attached_assets/
 
+# Approved existing frontend auth and account source restored from the editor baseline.
+# Keep every other frontend/lib path ignored.
+!/botelier/frontend/lib/
+/botelier/frontend/lib/*
+!/botelier/frontend/lib/auth/
+/botelier/frontend/lib/auth/*
+!/botelier/frontend/lib/auth/config.ts
+!/botelier/frontend/lib/auth/useAuthToken.ts
+!/botelier/frontend/lib/auth/accountContext.ts
+!/botelier/frontend/lib/auth/useAccountContext.ts
+!/botelier/frontend/lib/auth/usePermissions.ts
+!/botelier/frontend/lib/auth/types.ts
+!/botelier/frontend/lib/auth/mfa-client.ts
+!/botelier/frontend/lib/hooks/
+/botelier/frontend/lib/hooks/*
+!/botelier/frontend/lib/hooks/useAccountFeatures.ts
+!/botelier/frontend/lib/hooks/useTimezonePreference.ts
+!/botelier/frontend/lib/theme/
+/botelier/frontend/lib/theme/*
+!/botelier/frontend/lib/theme/ThemeContext.tsx
+!/botelier/frontend/lib/notifications.ts
+
 # Isolated engineering candidates and generated verification output
 /.worktrees/
 /generated-artifacts/

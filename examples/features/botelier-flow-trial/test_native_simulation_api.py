@@ -1,11 +1,12 @@
 """End-to-end HTTP checks for the actual simulator router and native text host."""
 
 import asyncio
+from datetime import datetime, timedelta
 from unittest.mock import patch
 
 import pytest
 
-from native_simulation_io import NativeSimulationAPIHarness
+from native_simulation_io import NativeSimulationAPIHarness, auth_header
 from node_contract_io import API_URL, ACCOUNT, PROPERTY, tool_delta
 from native_dev_voice_io import TOOL_ID, VERSION_ID
 
@@ -17,6 +18,63 @@ def run(scenario):
 def error_code(response):
     detail = response.json().get("detail")
     return detail.get("code") if isinstance(detail, dict) else detail
+
+
+@pytest.mark.parametrize("condition", ["restricted", "revoked", "expired", "old_version"])
+def test_native_start_requires_a_current_full_assurance_session(condition):
+    async def scenario():
+        async with NativeSimulationAPIHarness() as harness:
+            assurance = harness.records.assurance_for(harness.records.admin)
+            if condition == "restricted":
+                assurance.restricted = True
+            elif condition == "revoked":
+                assurance.revoked = True
+            elif condition == "expired":
+                assurance.expires_at = datetime.utcnow() - timedelta(seconds=1)
+            else:
+                assurance.version = 9
+            response = await harness.start()
+            assert response.status_code == (403 if condition == "restricted" else 401)
+            assert harness.active_sessions == []
+            assert harness.fixture.providers.requests == []
+            assert harness.fixture.providers.business_requests == []
+            assert harness.api.SimulationSession.native_registry is None
+    run(scenario)
+
+
+def test_legacy_admin_identity_token_cannot_start_native_simulation():
+    async def scenario():
+        async with NativeSimulationAPIHarness() as harness:
+            response = await harness.client.post(
+                "/api/simulate/start",
+                json=harness.start_payload(),
+                headers=auth_header(harness.records.admin, harness.secret),
+            )
+            assert response.status_code == 403
+            assert error_code(response) == "mfa_required"
+            assert harness.active_sessions == []
+            assert harness.fixture.providers.requests == []
+    run(scenario)
+
+
+def test_revocation_blocks_message_state_and_delete_without_running_a_tool():
+    async def scenario():
+        async with NativeSimulationAPIHarness() as harness:
+            started = await harness.start()
+            assert started.status_code == 200, started.text
+            session_id = started.json()["session_id"]
+            harness.records.assurance_for(harness.records.admin).revoked = True
+            for response in (
+                await harness.message(session_id, "Do not execute this."),
+                await harness.state(session_id),
+                await harness.delete(session_id),
+            ):
+                assert response.status_code == 401, response.text
+                assert error_code(response) == "session_expired"
+            assert harness.fixture.providers.requests == []
+            assert harness.fixture.providers.business_requests == []
+        assert harness.shutdown_active_count == 0
+    run(scenario)
 
 
 def test_native_http_flow_uses_real_owned_published_graph_and_native_text_worker():

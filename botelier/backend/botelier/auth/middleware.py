@@ -32,8 +32,8 @@ if not NEXTAUTH_SECRET:
 
 def derive_encryption_key(secret: str) -> bytes:
     """Derive encryption key matching NextAuth's key derivation."""
-    salt = b"NextAuth.js Generated Encryption Key"
-    info = b""
+    salt = b""
+    info = b"NextAuth.js Generated Encryption Key"
 
     from cryptography.hazmat.backends import default_backend
     from cryptography.hazmat.primitives import hashes
@@ -57,7 +57,10 @@ def decode_jwt_token(token: str) -> Optional[dict]:
     """
     for secret in [NEXTAUTH_SECRET]:
         try:
-            payload = jwt.decode(token, secret, algorithms=["HS256"], options={"verify_aud": False})
+            payload = jwt.decode(
+                token, secret, algorithms=["HS256"],
+                options={"verify_aud": False, "require_exp": True},
+            )
             return payload
         except JWTError:
             continue
@@ -68,7 +71,13 @@ def decode_jwt_token(token: str) -> Optional[dict]:
 
         key = derive_encryption_key(NEXTAUTH_SECRET)
         decrypted = jwe.decrypt(token, key)
-        return json.loads(decrypted)
+        payload = json.loads(decrypted)
+        import time
+        if not isinstance(payload, dict) or not isinstance(payload.get("exp"), (int, float)):
+            return None
+        if payload["exp"] <= time.time():
+            return None
+        return payload
     except Exception:
         pass
 
@@ -91,7 +100,40 @@ def is_valid_uuid(val: str) -> bool:
         return False
 
 
-async def get_current_user_optional(
+def resolve_primary_identity(db: Session, payload: dict) -> Optional[User]:
+    """Resolve a verified identity without linking by email or granting access."""
+    from botelier.models.user import AuthProvider
+    import uuid
+
+    sub = payload.get("sub")
+    if not isinstance(sub, str) or not sub or len(sub) > 255:
+        return None
+    if is_valid_uuid(sub):
+        return db.query(User).filter(User.id == uuid.UUID(sub)).first()
+    user = db.query(User).filter(User.replit_id == sub).first()
+    if not user:
+        email = payload.get("email") or f"{sub}@replit.user"
+        if db.query(User.id).filter(User.email == email).first():
+            raise HTTPException(
+                status_code=409,
+                detail="An account already uses this email. Sign in using its existing method.",
+            )
+        parts = (payload.get("name") or "").split()
+        user = User(
+            replit_id=sub, email=email,
+            first_name=payload.get("first_name") or (parts[0] if parts else None),
+            last_name=payload.get("last_name") or (" ".join(parts[1:]) if len(parts) > 1 else None),
+            profile_image_url=payload.get("picture") or payload.get("image"),
+            auth_provider=AuthProvider.REPLIT, user_type=UserType.ACCOUNT_USER,
+            last_login_at=datetime.utcnow(),
+        )
+        db.add(user)
+        db.flush()
+        user._primary_identity_created = True
+    return user
+
+
+def get_current_user_optional(
     request: Request,
     credentials: HTTPAuthorizationCredentials = Depends(security),
     db: Session = Depends(get_db),
@@ -102,8 +144,16 @@ async def get_current_user_optional(
     - Email/password JWT tokens (sub = user UUID)
     - NextAuth tokens (sub = Replit ID)
     """
+    from botelier.services import mfa_service as mfa
     if not credentials:
-        return None
+        raw = request.cookies.get(mfa.COOKIE_NAME)
+        if raw:
+            from botelier.api.mfa import validate_cookie_origin
+            validate_cookie_origin(request)
+        if raw and request.method not in ("GET", "HEAD", "OPTIONS"):
+            from botelier.api.mfa import csrf
+            csrf(request)
+        return mfa.full_cookie_user(db, raw) if raw else None
 
     token = credentials.credentials
     payload = decode_nextauth_token(token)
@@ -111,47 +161,27 @@ async def get_current_user_optional(
     if not payload:
         return None
 
-    sub = payload.get("sub")
-    if not sub:
+    if not payload.get("sub"):
         return None
 
-    if is_valid_uuid(sub):
-        user = db.query(User).filter(User.id == sub).first()
-
-        if user:
-            user.last_login_at = datetime.utcnow()
-            db.commit()
-
-        return user
-
-    user = db.query(User).filter(User.replit_id == sub).first()
-
+    _LOGIN_COOLDOWN_SECONDS = 300
+    user = resolve_primary_identity(db, payload)
     if not user:
-        from botelier.models.user import AuthProvider
-
-        user = User(
-            replit_id=sub,
-            email=payload.get("email") or f"{sub}@replit.user",
-            first_name=payload.get("first_name") or payload.get("name", "").split()[0]
-            if payload.get("name")
-            else None,
-            last_name=payload.get("last_name") or " ".join(payload.get("name", "").split()[1:])
-            if payload.get("name")
-            else None,
-            profile_image_url=payload.get("picture") or payload.get("image"),
-            auth_provider=AuthProvider.REPLIT,
-            user_type=UserType.ACCOUNT_USER,
-            last_login_at=datetime.utcnow(),
-        )
-        db.add(user)
-        db.commit()
-        db.refresh(user)
-    else:
-        user.last_login_at = datetime.utcnow()
-        if payload.get("email") and user.email != payload.get("email"):
-            pass
-        if payload.get("picture") or payload.get("image"):
-            user.profile_image_url = payload.get("picture") or payload.get("image")
+        return None
+    if not user.is_active:
+        raise HTTPException(status_code=403, detail="User account is disabled")
+    mfa.enforce_payload(db, user, payload)
+    now = datetime.utcnow()
+    needs_commit = getattr(user, "_primary_identity_created", False)
+    if user.last_login_at is None or (now - user.last_login_at).total_seconds() > _LOGIN_COOLDOWN_SECONDS:
+        user.last_login_at = now
+        needs_commit = True
+    if not is_valid_uuid(payload["sub"]):
+        new_pic = payload.get("picture") or payload.get("image")
+        if new_pic and user.profile_image_url != new_pic:
+            user.profile_image_url = new_pic
+            needs_commit = True
+    if needs_commit:
         db.commit()
 
     return user

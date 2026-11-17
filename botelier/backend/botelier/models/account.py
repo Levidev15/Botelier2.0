@@ -76,6 +76,8 @@ class Account(Base):
 
     settings = Column(Text, nullable=True)
 
+    require_mfa = Column(Boolean, nullable=False, default=False, server_default="false")
+
     feature_flags = Column(JSONB, nullable=False, server_default="{}")
 
     # Per-account email sender identity (optional).  When set, emails sent on

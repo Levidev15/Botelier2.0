@@ -9,7 +9,7 @@ import enum
 import uuid
 from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, String, Text
+from sqlalchemy import BigInteger, Boolean, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy import Enum as SQLEnum
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
@@ -58,6 +58,13 @@ class User(Base):
     user_type = Column(SQLEnum(UserType), default=UserType.ACCOUNT_USER, nullable=False)
 
     is_active = Column(Boolean, default=True)
+
+    mfa_enabled = Column(Boolean, nullable=False, default=False, server_default="false")
+    mfa_secret_encrypted = Column(Text, nullable=True)
+    mfa_last_step = Column(BigInteger, nullable=True)
+    mfa_version = Column(Integer, nullable=False, default=0, server_default="0")
+    mfa_recovery_required = Column(Boolean, nullable=False, default=False, server_default="false")
+    primary_credentials_revoked_at = Column(DateTime, nullable=True)
 
     # Small per-user UI preferences (e.g. {"timezone": "America/New_York"}).
     # Server-persisted so choices like the dashboard timezone survive sessions

@@ -4,6 +4,7 @@ All SQLAlchemy models should be imported here for database initialization.
 """
 
 from botelier.models.account import Account, AccountStatus, SubscriptionTier
+from botelier.models.mfa import MFAAudit, MFARecoveryCode, MFARateLimit, MFASession
 from botelier.models.billing import (
     AccountBillingAlert,
     AccountBillingConfig,
@@ -70,6 +71,10 @@ __all__ = [
     "SubscriptionTier",
     "User",
     "UserType",
+    "MFASession",
+    "MFARecoveryCode",
+    "MFARateLimit",
+    "MFAAudit",
     "Role",
     "AccountMembership",
     "AccountInvitation",
