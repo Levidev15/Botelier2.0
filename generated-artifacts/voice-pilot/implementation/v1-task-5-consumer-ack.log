@@ -108,6 +108,18 @@ Test correction history:
   "no tests ran" (zero blocks); all corrected invocations are recorded above.
 - No blocked external/application attempts were recorded in the passing suites.
 
+Final actual typed-utterance parity refinement:
+- Expanded the same real worker/STT/tool/TTS conversation to include one
+  same-utterance phone and number alongside relative date, email, and choice.
+  The native SDK request schema declares phone as string and guest count as
+  number; the typed arguments are validated, phone is normalized, and action
+  facts observe date 2026-11-18, email, normalized phone, and integer count.
+  Exact direct prompts remain in TTS output.
+- Lifecycle regression rerun after this refinement: 83 passed; zero guard
+  blocks. One test initially asserted the form prompt as a standalone TTS
+  chunk; the actual Pipecat sink correctly coalesced it with its intro. The
+  assertion now checks the exact combined spoken utterance.
+
 Recovery and parity continuation:
 - Added optimistic compare-and-swap snapshots in the existing FlowSession store.
   Recovery pins root and active flow-version identity plus exact source digests,

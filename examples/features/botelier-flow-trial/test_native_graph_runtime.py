@@ -439,7 +439,7 @@ def test_full_catalog_order_selection_confirmation_actions_and_terminal():
 )
 def test_actual_pipeline_rejects_qualified_or_negative_yes_before_write(utterance):
     async def scenario():
-        from node_contract_io import tool_delta
+        from node_contract_io import speech, tool_delta
         from botelier.voice.flows.native_graph import compile_flow
 
         action_nodes = []
@@ -463,6 +463,22 @@ def test_actual_pipeline_rejects_qualified_or_negative_yes_before_write(utteranc
         base = compile_full_catalog_flow()
         config = base.config()
         config["variables"][0]["type"] = "date"
+        config["variables"].extend([
+            {"key": "phone", "type": "phone"},
+            {"key": "guest_count", "type": "number"},
+        ])
+        form = next(node for node in config["nodes"] if node["id"] == "form")
+        form["data"]["slots"].extend([
+            {
+                "id": "form-phone", "order": 2, "variableKey": "phone",
+                "prompt": "What phone number should I use?", "type": "phone",
+            },
+            {
+                "id": "form-guest-count", "order": 3,
+                "variableKey": "guest_count",
+                "prompt": "How many guests?", "type": "number",
+            },
+        ])
         query = next(node for node in config["nodes"] if node["id"] == "query")
         query["data"]["slot"].update(
             type="date", validation={"minDaysAhead": 1},
@@ -473,6 +489,7 @@ def test_actual_pipeline_rejects_qualified_or_negative_yes_before_write(utteranc
                 tool_delta("collect_query", {"query": "tomorrow"}),
                 tool_delta("collect_name", {
                     "name": "Ada", "email": "ada@example.com",
+                    "phone": "212-555-0100", "guest_count": 2,
                 }),
                 tool_delta("select_room", {"ordinal": 2, "label": "Second room"}),
                 tool_delta("confirm", {"response": "yes"}),
@@ -492,7 +509,9 @@ def test_actual_pipeline_rejects_qualified_or_negative_yes_before_write(utteranc
 
             await call.wait_until(lambda: bool(native_tools()))
             turns = (
-                "tomorrow", "My name is Ada and my email is ada@example.com.",
+                "tomorrow",
+                "My name is Ada, my email is ada@example.com, "
+                "my phone is 212-555-0100, and there are 2 guests.",
                 "Second room", utterance,
             )
             expected_nodes = ("form", "picker", "confirm", "confirm")
@@ -519,6 +538,22 @@ def test_actual_pipeline_rejects_qualified_or_negative_yes_before_write(utteranc
             assert action_nodes == ["lookup"]
             assert action_facts[0]["query"] == "2026-11-18"
             assert action_facts[0]["email"] == "ada@example.com"
+            assert action_facts[0]["phone"] == "+12125550100"
+            assert action_facts[0]["guest_count"] == 2
+            assert "What should I search for?" in speech(call)
+            assert "A few details. Your name?" in speech(call)
+            form_properties = [
+                tool["function"]["parameters"]["properties"]
+                for request in call.providers.requests
+                for tool in request.get("tools", [])
+                if tool.get("type") == "function"
+                and "name" in tool["function"]["parameters"].get("properties", {})
+            ]
+            assert any(
+                properties["phone"]["type"] == "string"
+                and properties["guest_count"]["type"] == "number"
+                for properties in form_properties
+            )
             assert any(
                 "email" in tool["function"]["parameters"]["properties"]
                 and "email" not in tool["function"]["parameters"].get("required", [])
