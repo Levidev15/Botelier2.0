@@ -853,10 +853,27 @@ class NativeActionRunner:
         spec = get_capability(capability_name)
         if spec is None or spec.service_backed:
             return _failure("capability_unavailable")
-        arguments = {
-            key: facts[key] for key in spec.parameters if key in facts
-        }
+        if capability_name == "validate_reservation_quote":
+            from botelier.voice.flows.native_quote_actions import (
+                NativeQuoteError, prepare_quote,
+            )
+
+            try:
+                return prepare_quote(
+                    config, facts,
+                    variable_declarations=self.compiled.variable_declarations,
+                ).result
+            except NativeQuoteError as exc:
+                return _failure(exc.code)
+        if spec.native_flow_only:
+            return _failure("capability_unavailable")
         try:
+            arguments = (
+                render_json_template(config["argumentsTemplate"], facts)
+                if "argumentsTemplate" in config else {
+                    key: facts[key] for key in spec.parameters if key in facts
+                }
+            )
             self._validate_mcp_schema(spec.json_schema(), arguments)
             resolved = await asyncio.to_thread(
                 self._resolve_capability, capability_name, arguments, facts,

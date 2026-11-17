@@ -38,6 +38,7 @@ def list_capabilities(user: User = Depends(get_current_user)) -> List[dict]:
                 "required": spec.required,
                 "mutating": spec.mutating,
                 "service_backed": spec.service_backed,
+                "native_flow_only": spec.native_flow_only,
             }
         )
     return result

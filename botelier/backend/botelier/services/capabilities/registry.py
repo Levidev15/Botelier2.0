@@ -51,6 +51,8 @@ class CapabilitySpec:
             v1 — runtime capability calls run in an unauthenticated voice / SMS
             context; tool *configuration* is already permission-gated at the API
             edge.
+        native_flow_only: Requires the compiled native flow contract; never
+            resolve this capability through a legacy PMS or payment dispatcher.
     """
 
     name: str
@@ -61,6 +63,7 @@ class CapabilitySpec:
     mutating: bool = False
     service_backed: bool = False
     required_permissions: List[str] = field(default_factory=list)
+    native_flow_only: bool = False
 
     def json_schema(self) -> Dict[str, Any]:
         """Return the OpenAI-style ``parameters`` JSON schema object."""
@@ -86,6 +89,20 @@ class CapabilitySpec:
 # vendor-neutral across both providers.
 # ---------------------------------------------------------------------------
 _CAPABILITIES: Dict[str, CapabilitySpec] = {
+    "validate_reservation_quote": CapabilitySpec(
+        name="validate_reservation_quote",
+        description=(
+            "Validate an authoritative reservation quote against the selected "
+            "stay, room, occupancy and literal checkout-origin policy. Preserve "
+            "provider pricing exactly; do not book, charge or create a session."
+        ),
+        parameters={
+            "quote": {"type": "object"},
+            "expected": {"type": "object"},
+        },
+        required=["quote", "expected"],
+        native_flow_only=True,
+    ),
     "search_availability": CapabilitySpec(
         name="search_availability",
         description=(

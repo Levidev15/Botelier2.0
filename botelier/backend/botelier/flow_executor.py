@@ -4448,7 +4448,7 @@ class FlowExecutor:
             }
 
         spec = get_capability(capability_name)
-        if spec is None:
+        if spec is None or spec.native_flow_only:
             failed_node = self._resolve_api_edge(node_id, success=False)
             failed_node_id = node_id
             if failed_node and self.state.current_node_id == node_id:
@@ -4456,7 +4456,11 @@ class FlowExecutor:
                 failed_node_id = failed_node.id
             return {
                 "success": False,
-                "message": f"Unknown capability '{capability_name}'.",
+                "message": (
+                    "This capability requires the native flow runtime."
+                    if spec is not None
+                    else f"Unknown capability '{capability_name}'."
+                ),
                 "action": None,
                 "current_node_id": failed_node_id,
             }
@@ -4518,6 +4522,18 @@ class FlowExecutor:
         The AI-safe result (``{status, payment_id, message}``) drives the branch;
         processor identifiers never enter flow state.
         """
+        if capability_name != "collect_payment":
+            failed_node = self._resolve_api_edge(node_id, success=False)
+            failed_node_id = node_id
+            if failed_node and self.state.current_node_id == node_id:
+                self.state.advance_to(failed_node.id)
+                failed_node_id = failed_node.id
+            return {
+                "success": False,
+                "message": "That internal capability service is not available.",
+                "action": None,
+                "current_node_id": failed_node_id,
+            }
         slots = self.state.collected_slots or {}
 
         idem_key = None
@@ -4539,7 +4555,6 @@ class FlowExecutor:
 
         def _run() -> dict:
             from botelier.services.payments import PaymentService
-
             service = PaymentService(self.account_id, self.property_id)
             return service.collect_payment(
                 amount=slots.get("amount"),

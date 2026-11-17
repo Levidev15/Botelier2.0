@@ -211,7 +211,8 @@ class CapabilityResolver:
         ``None`` means fail closed: unknown capability, no connected provider for
         this property, or an ambiguous tie the resolver refuses to break.
         """
-        if get_capability(capability_name) is None:
+        spec = get_capability(capability_name)
+        if spec is None or spec.native_flow_only:
             logger.warning("capability resolver: unknown capability '%s'", capability_name)
             return None
 
@@ -281,6 +282,11 @@ class CapabilityResolver:
             return None, {
                 "error": f"Unknown capability '{capability_name}'.",
                 "status": "failed",
+            }
+        if spec.native_flow_only:
+            return None, {
+                "error": "This capability requires the native flow runtime.",
+                "status": "unavailable",
             }
         resolution = self.resolve(capability_name)
         if resolution is None:
@@ -412,6 +418,12 @@ class CapabilityResolver:
         On SMS the per-conversation ``contact_ref`` keeps two guests' identical
         payments from colliding on one dedup key.
         """
+        if capability_name != "collect_payment":
+            return {
+                "error": "That internal capability service is not available.",
+                "status": "unavailable",
+            }
+
         from botelier.services.payments import PaymentService
 
         args = arguments or {}

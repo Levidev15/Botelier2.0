@@ -79,7 +79,7 @@ _API_FIELDS = frozenset({
     "onNotFound", "onAuthError", "apiSource", "capability", "integrationId",
     "integrationSlug", "endpointId", "endpointName", "autoMappingSource",
     "queryParamOverrides", "path", "responseVariables",
-    "mcpConnectionId", "mcpToolName", "argumentsTemplate", "toolId",
+    "mcpConnectionId", "mcpToolName", "argumentsTemplate", "toolId", "quotePolicy",
 })
 _SLOT_FIELDS = frozenset({
     "id", "order", "variableKey", "prompt", "type", "validation",
@@ -487,7 +487,7 @@ def _validate_api(
     elif source == "capability":
         incompatible = {
             "integrationId", "integrationSlug", "endpointId", "endpointName",
-            "mcpConnectionId", "mcpToolName", "argumentsTemplate", "toolId",
+            "mcpConnectionId", "mcpToolName", "toolId",
         }
     elif source == "custom":
         incompatible = {
@@ -505,6 +505,17 @@ def _validate_api(
         capability_spec = get_capability(api.get("capability"))
         if capability_spec is not None and capability_spec.service_backed:
             _fail("capability_unavailable", node_id, "capability")
+        if api.get("capability") == "validate_reservation_quote":
+            from botelier.voice.flows.native_quote_actions import (
+                NativeQuoteError, validate_quote_configuration,
+            )
+
+            try:
+                validate_quote_configuration(api)
+            except NativeQuoteError as exc:
+                _fail(exc.code, node_id, "quotePolicy")
+        elif "quotePolicy" in api:
+            _fail("quote_policy", node_id, "quotePolicy")
     elif source in {"custom", "integration"}:
         method = api.get("method", "GET")
         if not isinstance(method, str) or method not in {"GET", "POST", "PUT", "PATCH", "DELETE"}:
@@ -533,6 +544,14 @@ def _validate_api(
             "mcpConnectionId" in api or "mcpToolName" in api
         ):
             _fail("api_source", node_id, "binding")
+    if "quotePolicy" in api and not (
+        source == "capability"
+        and api.get("capability") == "validate_reservation_quote"
+    ):
+        _fail("quote_policy", node_id, "quotePolicy")
+    if source in {"mcp", "tool"} or (
+        source == "capability" and "argumentsTemplate" in api
+    ):
         template = _text(
             api.get("argumentsTemplate"), "api_template", node_id,
             "argumentsTemplate", required=True, limit=32_000,
