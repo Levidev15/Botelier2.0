@@ -32,8 +32,8 @@ remain bounded JSON (`type=None`) and never become caller slots. `config()` is
 unchanged. Mapping defaults preserve falsy values such as `0` and `False`, and
 required explicit outputs still fail when missing. Output-only values are
 available to downstream presentation, selection, conditions, and templates;
-array consumers reject explicit non-array declarations and defer unknown JSON
-shape checks to runtime.
+array consumers do not treat caller-slot metadata as API output typing; actual
+array shape is checked by runtime presentation/selection helpers.
 
 `channel` accepts only `"voice"` or `"simulation"`. Simulation selects the
 existing `"test"` operation-policy channel and is always preview-only, even if
@@ -64,7 +64,11 @@ provider request. Host-supplied sample responses can use the public pure
   connection, endpoint, and operation policy. Canonical arguments are schema
   checked and translated through current endpoint metadata. Integration-backed
   reads and confirmed writes use the strict native effect ledger; service-backed
-  payment is rejected at compile and runtime.
+  payment is rejected at compile and runtime. Registry audit found
+  `collect_payment` is the sole V1 `service_backed` entry; it routes through
+  `PaymentService` to initiate hosted/PMS payment effects, so it is intentionally
+  excluded by the no-payment-processing boundary. No other V1 service-backed
+  capability path is omitted.
 - Selected `API_REQUEST` Tools resolve from the current account-owned ToolSet,
   use the existing `ActionExecutor`, pinned HTTPS origin/template rendering,
   stored output-map policy, confirmation for writes, and strict native effect
@@ -116,17 +120,28 @@ only; parent-owned assistant-global/shared MCP integration is not included.
 
 ## Guard evidence
 
-The scoped `editor_guard.py` suite was run under
+The compiler/runtime/host regression subset was run under
 `flock /tmp/botelier-flow-v1-guard.lock` with:
+`test_native_graph_imports.py`, `test_native_graph.py`,
+`test_native_graph_runtime.py`, `test_native_graph_host_selection.py`,
+`test_native_graph_text_host.py`, `test_native_graph_corrections.py`,
+`test_native_output_values.py`, and `test_native_values.py`.
+
+Result: **188 passed; 0 guard blocks**. This exercises the actual full-catalog
+flow in compiler, pipeline runtime, voice admission, and text host, plus
+downstream output presentation/selection, malformed/non-array response checks,
+correction paths, and detached JSON output handling.
+
+The scoped broker suite was also run under the same guard lock with:
 `test_native_graph.py`, `test_native_actions.py`,
 `test_native_capabilities.py`, `test_native_integration_resolution.py`,
 `test_native_record_actions.py`, and `test_native_tool_sources.py`.
 
 Result: **80 passed; 0 guard blocks**. Coverage includes compiler declarations,
-output-only JSON downstream use and explicit non-array rejection, source
-binding, actual scoped capability/API/dynamic-operation execution, slug
-resolution, typed/default mapping, actual disposable Record storage, encrypted
-atomic receipts, acknowledgement-loss replay, and correction CAS.
+source-compatible mapped-text and output-only JSON arrays, source binding,
+actual scoped capability/API/dynamic-operation execution, slug resolution,
+typed/default mapping, actual disposable Record storage, encrypted atomic
+receipts, acknowledgement-loss replay, and correction CAS.
 The parent separately owns the host fixture and strict external-ledger
 integration; no host/fixture files are included in this scoped change.
 

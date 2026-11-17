@@ -835,10 +835,6 @@ def _validate_node(
         array_variable = presentation.get("arrayVariable", "")
         if not isinstance(array_variable, str) or (array_variable and array_variable not in declared):
             _fail("api_presentation", node_id, "arrayVariable")
-        if array_variable and array_variable in variables and (
-            variables[array_variable].get("type", "text") != "array"
-        ):
-            _fail("api_presentation", node_id, "arrayVariable")
         for key in ("introText", "outroText", "noResultsText"):
             if key in presentation:
                 _template(presentation[key], declared, "api_presentation", node_id, key)
@@ -969,10 +965,6 @@ def _validate_node(
         _keys(picker, frozenset({"sourceVariable", "labelPath", "prompt", "retryPrompt",
                                  "maxRetries", "writes"}), "unknown_field", node_id)
         if not isinstance(picker.get("sourceVariable"), str) or picker.get("sourceVariable") not in declared:
-            _fail("option_picker", node_id, "sourceVariable")
-        if picker["sourceVariable"] in variables and (
-            variables[picker["sourceVariable"]].get("type", "text") != "array"
-        ):
             _fail("option_picker", node_id, "sourceVariable")
         _json_path(picker.get("labelPath"), "option_picker", node_id, "labelPath")
         if not picker.get("labelPath"):

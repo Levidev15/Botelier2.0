@@ -294,17 +294,18 @@ def test_output_only_json_arrays_are_available_to_downstream_nodes():
 
 
 @pytest.mark.parametrize("node_type", ["api_response", "option_picker"])
-def test_array_consumers_reject_explicit_non_array_declarations(node_type):
+def test_existing_text_slot_can_receive_mapped_json_array(node_type):
     compiler = graph_api()
     config = config_for(node_type)
-    target = next(item for item in config["nodes"] if item["id"] == "target")
-    if node_type == "api_response":
-        target["data"]["responsePresentation"]["arrayVariable"] = "name"
-    else:
-        target["data"]["optionPicker"]["sourceVariable"] = "name"
+    config["variables"].append({
+        "key": "items", "type": "text", "description": "", "required": False,
+    })
 
-    with pytest.raises(compiler.NativeGraphError):
-        compiler.compile_flow(config, identity())
+    compiled = compiler.compile_flow(config, identity())
+
+    assert {
+        item.key: item for item in compiled.variable_declarations
+    }["items"].origin == "explicit"
 
 
 def test_custom_api_compiler_admits_only_explicit_account_secret_sinks():
