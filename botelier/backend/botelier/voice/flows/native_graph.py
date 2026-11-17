@@ -572,7 +572,9 @@ def _validate_api(
             "argumentsTemplate", required=True, limit=32_000,
         )
         residual = _TOKEN.sub("", template)
-        if set(_TOKEN.findall(template)) - declared or "{{" in residual or "}}" in residual:
+        # Adjacent JSON closing braces are normal structure, not a dangling
+        # placeholder. The typed JSON parser below validates the full grammar.
+        if set(_TOKEN.findall(template)) - declared or "{{" in residual:
             _fail("api_template", node_id, "argumentsTemplate")
         try:
             parsed_arguments = render_json_template(
@@ -590,7 +592,7 @@ def _validate_api(
             without_secrets = _SECRET_TOKEN.sub("", body)
             residual = _TOKEN.sub("", without_secrets)
             if (
-                set(_TOKEN.findall(body)) - declared or "{{" in residual or "}}" in residual
+                set(_TOKEN.findall(body)) - declared or "{{" in residual
                 or source != "custom" and _SECRET_TOKEN.search(body)
             ):
                 _fail("api_template", node_id, key)
