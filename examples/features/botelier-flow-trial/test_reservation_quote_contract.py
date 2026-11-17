@@ -310,3 +310,63 @@ def test_boolean_false_does_not_impersonate_a_zero_child_count():
     quote = quote_data()
     quote["children"] = False
     assert_invalid(quote, "quote_identity")
+
+
+def test_selected_rate_cannot_be_accidentally_omitted_from_expected_binding():
+    expected = selected()
+    del expected["rate_id"]
+    error = assert_invalid(quote_data(), "selection_required", expected=expected)
+    assert error.path == "expected.rate_id"
+
+
+def test_provider_assigned_rate_requires_explicit_policy_and_is_still_fingerprinted():
+    expected = selected()
+    del expected["rate_id"]
+    policy = {"expected": expected, "provider_selected_dimensions": ("rate_id",)}
+    result = validate(**policy)
+    quote = quote_data()
+    quote["rate_id"] = "different-provider-assigned-rate"
+    assert_invalid(
+        quote, "quote_changed", confirmed_fingerprint=result.fingerprint, **policy,
+    )
+
+
+@pytest.mark.parametrize("dimension", ["offer_id", "hotel_id"])
+def test_reported_selection_dimensions_must_not_be_silently_unbound(dimension):
+    quote = quote_data()
+    quote[dimension] = "provider-dimension"
+    error = assert_invalid(quote, "selection_required")
+    assert error.path == f"expected.{dimension}"
+    expected = selected()
+    expected[dimension] = "provider-dimension"
+    assert validate(quote, expected=expected).data()[dimension] == "provider-dimension"
+
+
+def test_property_identity_cannot_be_waived_as_a_provider_selected_dimension():
+    assert_invalid(
+        quote_data(), "selection_policy",
+        provider_selected_dimensions=("hotel_id",),
+    )
+
+
+@pytest.mark.parametrize("dimension", ["room_id", "rate_id"])
+def test_opaque_numeric_provider_ids_are_preserved_and_match_without_loss(dimension):
+    quote = quote_data()
+    quote[dimension] = 42
+    expected = selected()
+    expected[dimension] = 42
+    assert validate(quote, expected=expected).data()[dimension] == 42
+    expected[dimension] = "42"
+    assert validate(quote, expected=expected).data()[dimension] == 42
+    quote[dimension] = "042"
+    assert_invalid(quote, "selection_mismatch", expected=expected)
+
+
+def test_uyi_uses_zero_minor_units_instead_of_defaulting_to_two():
+    quote = quote_data()
+    quote["pricing"].update({
+        "currency": "UYI", "subtotal": "200.50", "total": "230.50",
+    })
+    expected = selected()
+    expected["currency"] = "UYI"
+    assert_invalid(quote, "money_precision", expected=expected)

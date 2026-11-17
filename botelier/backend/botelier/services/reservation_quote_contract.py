@@ -49,7 +49,7 @@ _EXPECTED_REQUIRED = frozenset({
 })
 _ZERO_DECIMAL = frozenset({
     "BIF", "CLP", "DJF", "GNF", "ISK", "JPY", "KMF", "KRW",
-    "PYG", "RWF", "UGX", "VND", "VUV", "XAF", "XOF", "XPF",
+    "PYG", "RWF", "UGX", "UYI", "VND", "VUV", "XAF", "XOF", "XPF",
 })
 _THREE_DECIMAL = frozenset({"BHD", "IQD", "JOD", "KWD", "LYD", "OMR", "TND"})
 _MONEY = re.compile(r"-?\d{1,12}(?:\.\d{1,4})?\Z", re.ASCII)
@@ -127,13 +127,18 @@ def _bounded_copy(value):
     return deepcopy(value)
 
 
+def _opaque_id(value, path):
+    if type(value) is int and abs(value) <= (2 ** 64 - 1):
+        return str(value)
+    if type(value) is str and value.strip() and len(value) <= 256:
+        return value
+    _fail("quote_identity", path)
+
+
 def _identity(data, path):
     for key in ("room_id", "quote_id", "rate_id", "offer_id", "hotel_id"):
-        if key in data and (
-            type(data[key]) is not str
-            or not data[key].strip() or len(data[key]) > 256
-        ):
-            _fail("quote_identity", f"{path}.{key}")
+        if key in data:
+            _opaque_id(data[key], f"{path}.{key}")
     for key in ("adults", "children"):
         value = data.get(key)
         if type(value) is not int or not (0 <= value <= 100):
@@ -335,9 +340,15 @@ def _expiry(value, now):
 
 def validate_reservation_quote(
     quote, *, expected, allowed_checkout_origins=(), require_checkout_link=False,
-    confirmed_fingerprint=None, now=None,
+    confirmed_fingerprint=None, now=None, provider_selected_dimensions=(),
 ):
-    """Check a mapped provider snapshot; failures have safe code/path only."""
+    """Check a mapped provider snapshot; failures have safe code/path only.
+
+    Expected identity must cover reported rate/offer/property identifiers.
+    Published policy may explicitly allow a rate/offer first assigned by the
+    quote provider; it cannot waive property identity. Such identifiers still
+    enter the final quote fingerprint and require normal caller confirmation.
+    """
     data = _bounded_copy(quote)
     if not _QUOTE_REQUIRED <= set(data) or (
         set(data) - _QUOTE_REQUIRED - _QUOTE_OPTIONAL
@@ -345,14 +356,38 @@ def validate_reservation_quote(
         _fail("quote_fields")
     _identity(data, "quote")
     if (
+        type(provider_selected_dimensions) not in (tuple, list)
+        or len(provider_selected_dimensions) > 2
+        or any(
+            type(key) is not str or key not in {"rate_id", "offer_id"}
+            for key in provider_selected_dimensions
+        )
+        or len(set(provider_selected_dimensions)) != len(provider_selected_dimensions)
+    ):
+        _fail("selection_policy", "provider_selected_dimensions")
+    if (
         type(expected) is not dict or not _EXPECTED_REQUIRED <= set(expected)
         or set(expected) - set(_IDENTITY) - {"currency"}
     ):
         _fail("selection_required", "expected")
+    expected = _bounded_copy(expected)
     _identity(expected, "expected")
+    id_fields = {"quote_id", "room_id", "rate_id", "offer_id", "hotel_id"}
+    for key in ("rate_id", "offer_id", "hotel_id"):
+        if (
+            key in data and key not in expected
+            and key not in provider_selected_dimensions
+        ):
+            _fail("selection_required", f"expected.{key}")
     for key in _IDENTITY:
-        if key in expected and data.get(key) != expected[key]:
-            _fail("selection_mismatch", key)
+        if key in expected:
+            current = data.get(key)
+            wanted = expected[key]
+            if current is not None and key in id_fields:
+                current = _opaque_id(current, key)
+                wanted = _opaque_id(wanted, key)
+            if current != wanted:
+                _fail("selection_mismatch", key)
     amounts = _pricing(data["pricing"], expected["currency"])
     if "terms" in data and (type(data["terms"]) is not str or len(data["terms"]) > 4096):
         _fail("quote_fields", "terms")
@@ -377,6 +412,8 @@ def validate_reservation_quote(
     meaning = {
         key: data[key] for key in (*_IDENTITY, "terms") if key in data
     }
+    for key in id_fields & set(meaning):
+        meaning[key] = _opaque_id(meaning[key], key)
     meaning["pricing"] = deepcopy(data["pricing"])
     for key, amount in amounts.items():
         fixed = format(amount, "f")
